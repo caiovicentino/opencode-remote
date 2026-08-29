@@ -11,9 +11,10 @@ hardware; o relay é um tubo cego que não consegue ler o tráfego.
 
 ## Arquitetura
 
-- **`packages/protocol`** — tipos do wire protocol + criptografia E2E
-  (X25519 + XSalsa20-Poly1305 via tweetnacl). O pairing é a âncora de confiança:
-  a chave pública do daemon vem no QR code.
+- **`packages/protocol`** — tipos do wire protocol + criptografia E2E v2
+  (ECDH P-256 + HKDF-SHA256 + AES-256-GCM via WebCrypto, replay protection no
+  AAD). O pairing é a âncora de confiança: a chave pública do daemon vem no QR
+  code.
 - **`apps/relay`** — roteador WebSocket *burro*: encaminha frames cifrados por
   sala. Não lê, não autentica, não armazena. Self-hostable em um VPS de $5 ou
   dentro da rede da empresa.
@@ -50,6 +51,8 @@ pronto: sessões, chat e aprovações do seu opencode no celular.
 | `OPENCODE_SERVER_PASSWORD` | — | basic auth do opencode, se configurado |
 | `OCR_MACHINE_NAME` | `my-machine` | nome exibido no pairing |
 | `OCR_VAPID_SUBJECT` | `mailto:…` | contato enviado ao push service |
+| `OCR_METRICS_PORT` | — | se setado, expõe métricas em 127.0.0.1 |
+| `OCR_UPLOAD_MAX_MB` | `20` | limite por arquivo persistido (kind=file) |
 
 ### Web Push (aprovações como notificação)
 
@@ -83,16 +86,50 @@ O daemon em container monta `~/.opencode-remote` como volume — a identidade
 `host.docker.internal`. TLS em `wss://` é obrigatório antes de expor o relay
 publicamente; o Caddy cuida do certificado sozinho.
 
-### Rodando como serviço (sem Docker)
+### Rodando como serviço (macOS, launchd)
 
-O daemon também roda como serviço nativo — auto-start no boot, reconexão com
-retry, sobrevive a logout. Templates prontos:
+Instala relay + daemon + timer de rotação de log como serviços nativos com
+**KeepAlive** (auto-start no boot, restart em crash, sobrevive a logout):
 
-- **macOS (launchd):** `apps/daemon/launchd/com.opencode-remote.daemon.plist`
-- **Linux (systemd):** `apps/daemon/systemd/opencode-remote.service`
+```bash
+./deploy/install.sh
+# ou com relay remoto:
+RELAY_URL=wss://seu-relay:8788 ./deploy/install.sh
+```
 
-Edite os caminhos absolutos indicados nos comentários e siga os passos de
-instalação dentro de cada arquivo.
+O que o installer faz (idempotente):
+
+- gera `~/Library/LaunchAgents/com.ocr.{relay,daemon,logrotate}.plist` com os
+  paths reais da máquina (node, tsx, certs) e `KeepAlive` + `RunAtLoad`
+- derruba execuções ad-hoc (`pkill tsx`) e re-bootstrapa via `launchctl`
+- logs em `~/.opencode-remote/logs/{relay,daemon}.log`
+
+**Rotação de log:** `com.ocr.logrotate` roda todo dia 03:07
+(`deploy/rotate-logs.sh`) — archive+truncate acima de 10MB, mantém os 5
+arquivamentos mais recentes. Rode manualmente com `./deploy/rotate-logs.sh`.
+
+**Métricas** (bind 127.0.0.1, JSON ou `?format=prom`):
+
+```bash
+curl 127.0.0.1:8790/metrics   # relay: conexões, frames/bytes roteados, rejects
+curl 127.0.0.1:8791/metrics   # daemon: handshakes, ops, erros, uploads, whisper
+```
+
+Contadores úteis no daemon: `ocr_ops_total`, `ocr_ops_errors_total`,
+`ocr_handshakes_total`, `ocr_reconnects_asked_total`, `ocr_relay_connected`,
+`ocr_sessions_active`, `ocr_transcriptions_total`, `ocr_uploads_completed_total`,
+`ocr_sealed_bytes_total`. Portas configuráveis via `RELAY_METRICS_PORT` /
+`OCR_METRICS_PORT`.
+
+**Verificação de sanidade pós-install:**
+
+```bash
+launchctl print gui/$(id -u)/com.ocr.daemon | grep state   # state = running
+launchctl kickstart -k gui/$(id -u)/com.ocr.daemon         # mata → ressoa
+```
+
+Para Linux (systemd), use `apps/daemon/systemd/opencode-remote.service` como
+referência.
 
 ## Roadmap
 
