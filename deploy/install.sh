@@ -11,7 +11,8 @@ NODE="$(command -v node)"
 TSX="$REPO/node_modules/tsx/dist/cli.mjs"
 LOGS="$HOME/.opencode-remote/logs"
 GUI="gui/$(id -u)"
-RELAY_URL="${RELAY_URL:-wss://your-relay-host:8788}"
+# point this at your relay, e.g. wss://your-host.tailnet-name.ts.net:8788
+RELAY_URL="${RELAY_URL:?set RELAY_URL=wss://your-relay-host:8788}"
 
 [ -f "$TSX" ] || { echo "tsx not found at $TSX — run npm install first"; exit 1; }
 mkdir -p "$LOGS"
