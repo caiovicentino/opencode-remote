@@ -114,24 +114,49 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
     })();
   }, [sessionId]);
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [bubbles, sending]);
-
-  // stream: rebuild the tail of the conversation from live part events
+  // stream: rebuild the tail of the conversation from live part events.
+  // `session.idle` finalizes the turn: stream text becomes a bubble, Stop goes away.
   const [liveText, setLiveText] = useState("");
+  const liveRef = useRef("");
   useEffect(() => {
+    let text = "";
+    let idle = false;
+    let errored = "";
     for (const evt of events) {
       const p = evt.properties as {
         sessionID?: string;
         part?: { type?: string; text?: string };
-        type?: string;
+        error?: unknown;
       };
-      if (p?.sessionID === sessionId && p.part?.type === "text" && p.part.text) {
-        setLiveText(p.part.text);
+      if (p?.sessionID !== sessionId) continue;
+      if (evt.type === "session.error") errored = JSON.stringify(evt.properties).slice(0, 200);
+      if (p.part?.type === "text" && p.part.text) {
+        text = p.part.text;
+        idle = false;
       }
+      if (evt.type === "session.idle") idle = true;
+    }
+    if (text) {
+      liveRef.current = text;
+      setLiveText(text);
+    }
+    if (idle) {
+      if (liveRef.current) {
+        const final = liveRef.current;
+        setBubbles((b) =>
+          b[b.length - 1]?.text === final ? b : [...b, { role: "assistant" as const, text: final }],
+        );
+        liveRef.current = "";
+      }
+      setLiveText("");
+      setSending(false);
+      if (errored) setError(`agent error: ${errored}`);
     }
   }, [events, sessionId]);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [bubbles, sending, liveText]);
 
   const pending: PermissionAsk[] = [];
   for (const evt of events.slice(-50)) {
@@ -147,7 +172,7 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
 
   async function send(override?: string) {
     const text = (override ?? input).trim();
-    if ((!text && images.length === 0) || sending) return;
+    if ((!text && images.length === 0) || sending || liveText) return;
     setSending(true);
     setError("");
     setInput("");
@@ -177,8 +202,6 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
       const res = await request("POST", `/session/${sessionId}/message`, body);
       if (res.status !== 200) {
         setError(`opencode responded ${res.status}: ${JSON.stringify(res.body).slice(0, 200)}`);
-      } else {
-        setLiveText("");
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -692,8 +715,13 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
               }
             }}
           />
-          <button className="primary" onClick={() => void send()} disabled={sending}>
-            Send
+          <button
+            className="primary"
+            onClick={() => void send()}
+            disabled={sending || !!liveText}
+            title={liveText ? "Agent is streaming — wait or Stop" : "Send"}
+          >
+            {liveText ? "…" : "Send"}
           </button>
         </div>
       </div>
