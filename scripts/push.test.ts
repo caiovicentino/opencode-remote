@@ -38,7 +38,7 @@ ws.on("message", (d) => {
   })();
 });
 ws.send(JSON.stringify({ room: st.room, from: myId, payload: Buffer.from(JSON.stringify({ type: "hello", hello })).toString("base64") }));
-await new Promise((r) => setTimeout(r, 1500));
+await new Promise((r) => setTimeout(r, 8000));
 
 const req = { id: crypto.randomUUID(), method: "POST", path: "/__ocr/push/test" };
 const res = await new Promise<OpResponse>((resolve) => {

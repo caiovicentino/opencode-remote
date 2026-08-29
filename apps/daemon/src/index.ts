@@ -29,6 +29,7 @@ import type {
 import { log } from "./log.js";
 import { detectWhisper, transcribeAudio, type WhisperTool } from "./whisper.js";
 import { metrics, startMetricsServer } from "./metrics.js";
+import { loadRoutines, saveRoutines, type Routine } from "./routines.js";
 
 const RELAY_URL = process.env.RELAY_URL ?? "ws://127.0.0.1:8787";
 const OPENCODE_URL = process.env.OPENCODE_URL ?? "http://127.0.0.1:4096";
@@ -210,6 +211,31 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
   if (req.path === "/__ocr/push/test" && req.method === "POST") {
     const results = await pushDiagnostics();
     return { id: req.id, status: 200, body: { results } };
+  }
+
+  // --- scheduled routines -----------------------------------------------------
+  if (req.path === "/__ocr/routines" && req.method === "GET") {
+    return { id: req.id, status: 200, body: { routines } };
+  }
+  if (req.path === "/__ocr/routines" && req.method === "POST") {
+    const b = (req.body ?? {}) as { name?: string; prompt?: string; hour?: number; minute?: number };
+    const name = (b.name ?? "").trim().slice(0, 40);
+    const prompt = (b.prompt ?? "").trim();
+    const hour = Number(b.hour);
+    const minute = Number(b.minute);
+    if (!name || !prompt || !Number.isInteger(hour) || hour < 0 || hour > 23 || !Number.isInteger(minute) || minute < 0 || minute > 59) {
+      return { id: req.id, status: 400, body: { error: "name, prompt and valid hour/minute required" } };
+    }
+    const routine: Routine = { id: randomUUID(), name, prompt, hour, minute };
+    routines.push(routine);
+    saveRoutines(routines);
+    return { id: req.id, status: 200, body: { routine } };
+  }
+  if (req.path === "/__ocr/routines" && req.method === "DELETE") {
+    const { id } = (req.body ?? {}) as { id?: string };
+    routines = routines.filter((r) => r.id !== id);
+    saveRoutines(routines);
+    return { id: req.id, status: 200, body: { ok: true } };
   }
 
   // --- file delivery: the agent hands artifacts back to the phone ------------
@@ -566,6 +592,89 @@ interface ClientSession {
 
 const sessions = new Map<string, ClientSession>();
 
+// --- scheduled routines: daemon fires prompts and ships results to the phone -
+let routines = loadRoutines();
+const pendingRuns = new Map<string, string>(); // sessionID -> routineID
+
+async function fireRoutine(r: Routine, today: string) {
+  try {
+    const headers = { "content-type": "application/json", ...(authHeader ? { authorization: authHeader } : {}) };
+    const created = (await (
+      await fetch(new URL("/session", OPENCODE_URL), {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ title: `⏰ ${r.name}` }),
+      })
+    ).json()) as { id?: string };
+    if (!created.id) throw new Error("session create failed");
+    r.lastRun = today;
+    r.lastSessionID = created.id;
+    saveRoutines(routines);
+    pendingRuns.set(created.id, r.id);
+    await fetch(new URL(`/session/${created.id}/message`, OPENCODE_URL), {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ parts: [{ type: "text", text: r.prompt }] }),
+    });
+    log("info", "routine fired", { routine: r.name, session: created.id });
+  } catch (err) {
+    log("warn", "routine fire failed", { routine: r.name, error: (err as Error).message });
+  }
+}
+
+async function completeRoutine(routineId: string, sessionID: string) {
+  const r = routines.find((x) => x.id === routineId);
+  pendingRuns.delete(sessionID);
+  if (!r) return;
+  try {
+    await new Promise((res) => setTimeout(res, 2000)); // let opencode persist parts
+    const res = await fetch(new URL(`/session/${sessionID}/message`, OPENCODE_URL), {
+      headers: authHeader ? { authorization: authHeader } : {},
+    });
+    const rows = (await res.json()) as {
+      info?: { role?: string };
+      parts?: { type: string; text?: string }[];
+    }[];
+    const lastAssistant = [...rows].reverse().find((x) => x.info?.role === "assistant");
+    const text = (lastAssistant?.parts ?? [])
+      .filter((p) => p.type === "text")
+      .map((p) => p.text)
+      .join("\n");
+    if (!text) return;
+    const dir = join(STATE_DIR, "uploads");
+    mkdirSync(dir, { recursive: true });
+    const slug = r.name.toLowerCase().replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").slice(0, 30);
+    const path = join(dir, `${new Date().toISOString().slice(0, 10)}-${slug || "routine"}.md`);
+    writeFileSync(path, text);
+    r.lastSessionID = undefined;
+    saveRoutines(routines);
+    void pushToSubscribers(`⏰ ${r.name} pronto`, "Rotina concluída — toque para ver/salvar o arquivo", {
+      url: "#/files",
+    });
+    log("info", "routine completed", { routine: r.name, path, bytes: text.length });
+  } catch (err) {
+    log("warn", "routine completion failed", { error: (err as Error).message });
+  }
+}
+
+function checkRoutines() {
+  const now = new Date();
+  const today = now.toLocaleDateString("sv"); // local YYYY-MM-DD
+  const nowMin = now.getHours() * 60 + now.getMinutes();
+  for (const r of routines) {
+    if (r.lastRun === today) continue;
+    if (nowMin < r.hour * 60 + r.minute) continue;
+    void fireRoutine(r, today);
+  }
+}
+
+// retry pending routine completions after a restart
+for (const r of loadRoutines()) {
+  if (r.lastSessionID) pendingRuns.set(r.lastSessionID, r.id);
+}
+setInterval(checkRoutines, 30_000);
+setTimeout(checkRoutines, 10_000);
+
 // relay frames are capped at 1MB; keep a safety margin for the sealed payload
 const SAFE_PAYLOAD = 900_000;
 
@@ -645,6 +754,8 @@ async function forwardEvents() {
                 { url: sessionID ? `#/session/${sessionID}` : "#/", evt },
               );
             } else if (evt.type === "session.idle") {
+              const rid = pendingRuns.get(sessionID);
+              if (rid) void completeRoutine(rid, sessionID);
               if (appSettings.notify.idle)
                 void pushToSubscribers("Agent finished", `Session idle on ${machineName}`, {
                   url: sessionID ? `#/session/${sessionID}` : "#/",

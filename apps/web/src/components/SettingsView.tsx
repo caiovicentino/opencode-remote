@@ -16,6 +16,14 @@ interface Device {
   label?: string;
 }
 
+interface Routine {
+  id: string;
+  name: string;
+  prompt: string;
+  hour: number;
+  minute: number;
+}
+
 const VOICE_KEY = "ocr_voice";
 const THEME_KEY = "ocr_theme";
 const FONT_KEY = "ocr_font";
@@ -47,6 +55,17 @@ export default function SettingsView({ request, onBack }: Props) {
   const [pushTesting, setPushTesting] = useState(false);
   const [pushMsg, setPushMsg] = useState("");
   const [pushSubs, setPushSubs] = useState(0);
+  const [routines, setRoutines] = useState<Routine[]>([]);
+  const [nrName, setNrName] = useState("");
+  const [nrTime, setNrTime] = useState("07:00");
+  const [nrPrompt, setNrPrompt] = useState("");
+
+  useEffect(() => {
+    void (async () => {
+      const r = await request("GET", "/__ocr/routines");
+      if (r.status === 200) setRoutines((r.body as { routines?: Routine[] }).routines ?? []);
+    })();
+  }, []);
 
   useEffect(() => {
     void (async () => {
@@ -291,6 +310,67 @@ export default function SettingsView({ request, onBack }: Props) {
             2. or in Shortcuts, create a shortcut that copies the shared text and opens
             "OpenCode Remote" (share sheet → Atalhos → shortcut).
           </p>
+        </div>
+
+        <div className="card">
+          <h3>Scheduled routines</h3>
+          {routines.map((r) => (
+            <div key={r.id} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
+              <span style={{ flex: 1, minWidth: 0 }}>
+                <b>{String(r.hour).padStart(2, "0")}:{String(r.minute).padStart(2, "0")}</b> · {r.name}
+                <div className="muted" style={{ fontSize: "0.72rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {r.prompt}
+                </div>
+              </span>
+              <button
+                className="danger"
+                onClick={() =>
+                  void (async () => {
+                    await request("DELETE", "/__ocr/routines", { id: r.id });
+                    setRoutines((prev) => prev.filter((x) => x.id !== r.id));
+                  })()
+                }
+              >
+                Delete
+              </button>
+            </div>
+          ))}
+          <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+            <input style={{ width: 90, flexGrow: 1 }} placeholder="name" value={nrName} onChange={(e) => setNrName(e.target.value)} />
+            <input style={{ width: 90 }} type="time" value={nrTime} onChange={(e) => setNrTime(e.target.value)} />
+          </div>
+          <textarea
+            rows={2}
+            placeholder="prompt for the agent (e.g. summarize crypto news and save a report)"
+            style={{ width: "100%", marginTop: 6 }}
+            value={nrPrompt}
+            onChange={(e) => setNrPrompt(e.target.value)}
+          />
+          <button
+            className="primary"
+            onClick={() =>
+              void (async () => {
+                const [h, m] = nrTime.split(":").map(Number);
+                const res = await request("POST", "/__ocr/routines", {
+                  name: nrName,
+                  prompt: nrPrompt,
+                  hour: h,
+                  minute: m,
+                });
+                if (res.status === 200) {
+                  const { routine } = res.body as { routine: Routine };
+                  setRoutines((prev) => [...prev, routine]);
+                  setNrName("");
+                  setNrPrompt("");
+                  setMsg("routine added");
+                } else {
+                  setMsg("routine rejected — check fields");
+                }
+              })()
+            }
+          >
+            Add routine
+          </button>
         </div>
 
         <div className="card">
