@@ -14,6 +14,7 @@ import SessionsView from "./components/SessionsView";
 import ChatView from "./components/ChatView";
 import SettingsView, { applyTheme } from "./components/SettingsView";
 import FilesView from "./components/FilesView";
+import SendToAgentView from "./components/SendToAgentView";
 
 type Phase = "unpaired" | "connecting" | "paired" | "error";
 
@@ -26,6 +27,7 @@ export default function App() {
   const [session, setSession] = useState<string | null>(null);
   const [settings, setSettings] = useState(false);
   const [filesView, setFilesView] = useState(false);
+  const [share, setShare] = useState<{ title?: string; text?: string; url?: string } | null>(null);
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
@@ -62,6 +64,17 @@ export default function App() {
   useEffect(() => {
     function applyHash() {
       const h = location.hash;
+      // #/send?text=...&url=... — share ingestion via hash route
+      if (h.startsWith("#/send")) {
+        const qs = h.split("?")[1] ?? "";
+        const sp = new URLSearchParams(qs);
+        const payload = { title: sp.get("title") ?? "", text: sp.get("text") ?? "", url: sp.get("url") ?? "" };
+        if (payload.title || payload.text || payload.url) {
+          setShare(payload);
+          setSession(null);
+        }
+        return;
+      }
       const sid = /^#\/session\/([\w-]+)/.exec(h)?.[1];
       if (sid && clientRef.current) {
         setSession(sid);
@@ -79,6 +92,20 @@ export default function App() {
   useEffect(() => {
     const stored = loadState();
     if (stored) void connect(stored.pairing, false);
+  }, []);
+
+  // Web Share Target (Android/desktop Chrome): shared content arrives as query params
+  useEffect(() => {
+    const sp = new URLSearchParams(location.search);
+    const payload = {
+      title: sp.get("title") ?? "",
+      text: sp.get("text") ?? "",
+      url: sp.get("url") ?? "",
+    };
+    if (payload.title || payload.text || payload.url) {
+      setShare(payload);
+      history.replaceState(null, "", location.pathname);
+    }
   }, []);
 
   // machine name is user-editable — refresh it from the daemon after connecting
@@ -158,6 +185,16 @@ export default function App() {
     />
   ) : filesView ? (
     <FilesView request={request} onBack={() => setFilesView(false)} />
+  ) : share ? (
+    <SendToAgentView
+      request={request}
+      payload={share}
+      onBack={() => setShare(null)}
+      onOpenSession={(id) => {
+        setShare(null);
+        setSession(id);
+      }}
+    />
   ) : (
     <SessionsView
       request={request}

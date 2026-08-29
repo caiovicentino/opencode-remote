@@ -697,6 +697,24 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
 
         <div className="composer">
           <button
+            onClick={() =>
+              void navigator.clipboard
+                .readText()
+                .then((clip) => {
+                  if (clip.trim()) setInput((prev) => (prev ? `${prev} ${clip.trim()}` : clip.trim()));
+                })
+                .catch(() =>
+                  setError("clipboard read denied — paste manually with a long press on the text field"),
+                )
+            }
+            disabled={recState === "busy"}
+            aria-label="Paste from clipboard"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M16 2H8a2 2 0 0 0-2 2v1H5a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-1V4a2 2 0 0 0-2-2Zm-8 2h8v3H8V4Z" />
+            </svg>
+          </button>
+          <button
             onClick={() => fileRef.current?.click()}
             disabled={uploading || recState === "busy"}
             aria-label="Attach image"
