@@ -66,6 +66,8 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
   const [model, setModel] = useState(localStorage.getItem("ocr_model") ?? "");
   const [agent, setAgent] = useState(localStorage.getItem("ocr_agent") ?? "");
   const [tapToggle, setTapToggle] = useState(false);
+  const [responded, setResponded] = useState<Set<string>>(new Set());
+  const rolesRef = useRef<Record<string, string>>({});
   const [pendingVideo, setPendingVideo] = useState<{ file: File; dur: number } | null>(null);
   const [trimStart, setTrimStart] = useState("");
   const [trimEnd, setTrimEnd] = useState("");
@@ -95,6 +97,11 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
   }, []);
 
   useEffect(() => {
+    rolesRef.current = {};
+    setResponded(new Set());
+  }, [sessionId]);
+
+  useEffect(() => {
     void (async () => {
       try {
         const res = await request("GET", `/session/${sessionId}/message`);
@@ -116,7 +123,8 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
   }, [sessionId]);
 
   // stream: rebuild the tail of the conversation from live part events.
-  // `session.idle` finalizes the turn: stream text becomes a bubble, Stop goes away.
+  // user messages echo as parts too — track message roles and only stream
+  // assistant parts. `session.idle`/`session.status:idle` finalize the turn.
   const [liveText, setLiveText] = useState("");
   const liveRef = useRef("");
   useEffect(() => {
@@ -126,12 +134,20 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
     for (const evt of events) {
       const p = evt.properties as {
         sessionID?: string;
-        part?: { type?: string; text?: string };
+        status?: { type?: string };
+        info?: { id?: string; role?: string };
+        part?: { type?: string; text?: string; messageID?: string };
         error?: unknown;
       };
       if (p?.sessionID !== sessionId) continue;
+      if (evt.type === "message.updated" && p.info?.id) {
+        rolesRef.current[p.info.id] = p.info.role ?? "assistant";
+        continue;
+      }
+      if (evt.type === "session.status") idle = p.status?.type === "idle" || idle;
       if (evt.type === "session.error") errored = JSON.stringify(evt.properties).slice(0, 200);
       if (p.part?.type === "text" && p.part.text) {
+        if (p.part.messageID && rolesRef.current[p.part.messageID] === "user") continue;
         text = p.part.text;
         idle = false;
       }
@@ -162,13 +178,32 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
   const pending: PermissionAsk[] = [];
   for (const evt of events.slice(-50)) {
     const ask = extractPermission(evt, sessionId);
-    if (ask) pending.push(ask);
+    if (ask && !responded.has(ask.permissionID)) pending.push(ask);
   }
 
   async function respond(permissionID: string, response: "approve" | "reject") {
-    await request("POST", `/session/${sessionId}/permissions/${permissionID}`, {
-      response,
-    });
+    // opencode's enum is once|always|reject — "approve" is rejected with 400
+    setResponded((prev) => new Set(prev).add(permissionID));
+    try {
+      const res = await request("POST", `/session/${sessionId}/permissions/${permissionID}`, {
+        response: response === "approve" ? "once" : "reject",
+      });
+      if (res.status !== 200) {
+        setResponded((prev) => {
+          const next = new Set(prev);
+          next.delete(permissionID);
+          return next;
+        });
+        setError(`approve failed (${res.status}): ${JSON.stringify(res.body).slice(0, 140)}`);
+      }
+    } catch (err) {
+      setResponded((prev) => {
+        const next = new Set(prev);
+        next.delete(permissionID);
+        return next;
+      });
+      setError(err instanceof Error ? err.message : String(err));
+    }
   }
 
   async function send(override?: string) {
