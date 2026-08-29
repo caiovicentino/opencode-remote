@@ -57,9 +57,26 @@ export default function SessionsView({
     void load();
   }, [tick]);
 
+  const [creating, setCreating] = useState(false);
+
   async function createSession() {
-    const res = await request("POST", "/session", { title: "Remote session" });
-    if (res.status === 200) void load();
+    if (creating) return;
+    setCreating(true);
+    setError("");
+    try {
+      const res = await request("POST", "/session", { title: "Remote session" });
+      const created = res.body as { id?: string };
+      if (res.status === 200 && created.id) {
+        onOpen(created.id);
+        void load();
+      } else {
+        setError(`create failed (${res.status}): ${JSON.stringify(res.body).slice(0, 140)}`);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCreating(false);
+    }
   }
 
   async function renameSession(id: string, current?: string) {
@@ -138,8 +155,8 @@ export default function SessionsView({
         ))}
       </div>
 
-      <button className="primary" onClick={createSession}>
-        New session
+      <button className="primary" disabled={creating} onClick={createSession}>
+        {creating ? "Creating…" : "New session"}
       </button>
 
       <details className="card">
