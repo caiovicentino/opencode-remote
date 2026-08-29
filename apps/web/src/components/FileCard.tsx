@@ -36,6 +36,71 @@ export default function FileCard({
     }
   }
 
+  // fullscreen viewer: "View" opens the document full-bleed, "← Chat" returns
+  if (preview?.html) {
+    return (
+      <div
+        style={{
+          position: "fixed",
+          inset: 0,
+          zIndex: 1000,
+          background: "#fff",
+          display: "flex",
+          flexDirection: "column",
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            padding: "10px 12px",
+            background: "var(--surface)",
+            color: "var(--text)",
+            borderBottom: "1px solid var(--border)",
+          }}
+        >
+          <button onClick={() => setPreview(null)}>← Chat</button>
+          <span
+            style={{
+              flex: 1,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              fontSize: "0.85rem",
+            }}
+          >
+            {name}
+          </span>
+          <button
+            className="primary"
+            disabled={busy}
+            onClick={() =>
+              void (async () => {
+                setBusy(true);
+                try {
+                  await saveFile(request, path);
+                } catch (err) {
+                  onError?.(err instanceof Error ? err.message : String(err));
+                } finally {
+                  setBusy(false);
+                }
+              })()
+            }
+          >
+            {busy ? "…" : "Save"}
+          </button>
+        </div>
+        <iframe
+          title={name}
+          sandbox="allow-scripts"
+          srcDoc={preview.html}
+          style={{ flex: 1, border: "none", width: "100%" }}
+        />
+      </div>
+    );
+  }
+
   return (
     <div style={{ margin: "4px 0" }}>
       <div
@@ -80,14 +145,6 @@ export default function FileCard({
       </div>
       {preview?.url && (
         <img src={preview.url} alt={name} style={{ maxWidth: "100%", borderRadius: 8, marginTop: 4 }} />
-      )}
-      {preview?.html && (
-        <iframe
-          title={name}
-          sandbox=""
-          srcDoc={preview.html}
-          style={{ width: "100%", height: 320, border: "1px solid var(--border)", borderRadius: 8, marginTop: 4, background: "#fff" }}
-        />
       )}
     </div>
   );
