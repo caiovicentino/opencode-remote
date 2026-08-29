@@ -16,16 +16,18 @@ export default function FileCard({
   const ext = name.split(".").pop()?.toLowerCase() ?? "";
   const kind = ["png", "jpg", "jpeg", "webp", "gif"].includes(ext)
     ? "image"
-    : ext === "html" || ext === "htm"
-      ? "html"
-      : null;
+    : ext === "pdf"
+      ? "pdf"
+      : ext === "html" || ext === "htm"
+        ? "html"
+        : null;
 
   async function loadPreview() {
     setBusy(true);
     try {
       const file = await downloadFile(request, path);
       setPreview(
-        kind === "image"
+        kind === "image" || kind === "pdf"
           ? { url: URL.createObjectURL(file) }
           : { html: await file.text() },
       );
@@ -37,7 +39,7 @@ export default function FileCard({
   }
 
   // fullscreen viewer: "View" opens the document full-bleed, "← Chat" returns
-  if (preview?.html) {
+  if (preview?.html || (preview?.url && kind === "pdf")) {
     return (
       <div
         style={{
@@ -91,12 +93,20 @@ export default function FileCard({
             {busy ? "…" : "Save"}
           </button>
         </div>
-        <iframe
-          title={name}
-          sandbox="allow-scripts"
-          srcDoc={preview.html}
-          style={{ flex: 1, border: "none", width: "100%" }}
-        />
+        {preview.url ? (
+          <iframe
+            title={name}
+            src={preview.url}
+            style={{ flex: 1, border: "none", width: "100%" }}
+          />
+        ) : (
+          <iframe
+            title={name}
+            sandbox="allow-scripts"
+            srcDoc={preview.html}
+            style={{ flex: 1, border: "none", width: "100%" }}
+          />
+        )}
       </div>
     );
   }
