@@ -13,6 +13,7 @@ import PairingView from "./components/PairingView";
 import SessionsView from "./components/SessionsView";
 import ChatView from "./components/ChatView";
 import SettingsView, { applyTheme } from "./components/SettingsView";
+import FilesView from "./components/FilesView";
 
 type Phase = "unpaired" | "connecting" | "paired" | "error";
 
@@ -24,6 +25,7 @@ export default function App() {
   const clientRef = useRef<OcrClient | null>(null);
   const [session, setSession] = useState<string | null>(null);
   const [settings, setSettings] = useState(false);
+  const [filesView, setFilesView] = useState(false);
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
@@ -115,6 +117,8 @@ export default function App() {
     />
   ) : settings ? (
     <SettingsView request={request} onBack={() => setSettings(false)} />
+  ) : filesView ? (
+    <FilesView request={request} onBack={() => setFilesView(false)} />
   ) : (
     <SessionsView
       request={request}
@@ -127,6 +131,7 @@ export default function App() {
         await enablePush(request);
       }}
       onOpenSettings={() => setSettings(true)}
+      onOpenFiles={() => setFilesView(true)}
       tick={tick}
     />
   );

@@ -28,6 +28,17 @@ Tools: `tools/clip.mjs` (needs whisper-cli + ffmpeg, already installed).
 
 Videos the user sends from the phone are saved under `~/.opencode-remote/uploads/`.
 
+## Entregando arquivos pro usuário (PDF, planilhas, relatórios...)
+
+Quando gerar um artefato para o usuário, salve-o em `~/.opencode-remote/uploads/`
+e inclua na sua resposta uma linha no formato:
+
+    [file: /Users/<user>/.opencode-remote/uploads/relatorio.pdf]
+
+O app do celular mostra um card com botão "Save" — o usuário salva direto
+no telefone. Diretórios acessíveis para download: `~/.opencode-remote/uploads`,
+`~/Desktop`, `~/Downloads`, `~/Documents` e o diretório deste repo.
+
 Caption appearance can be customized: `~/.opencode-remote/clip-style.json` accepts
 `font`, `fontSize`, `primary`, `secondary`, `outlineColor`, `outline` and `marginV`.
 The phone app edits this file for you — if the user asks for a caption style change,

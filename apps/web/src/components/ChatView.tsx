@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { EventEnvelope } from "@ocr/protocol";
 import { WavRecorder, encodeWav } from "../lib/recorder";
 import { getVoiceSettings } from "./SettingsView";
+import { renderBubbleText } from "./FileCard";
 
 interface Props {
   sessionId: string;
@@ -493,7 +494,7 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
         <div className="messages">
           {bubbles.map((b, i) => (
             <div key={i} className={`msg ${b.role}`}>
-              {b.text}
+              {renderBubbleText(b.text, request, setError)}
             </div>
           ))}
           {liveText && <div className="msg assistant">{liveText}▍</div>}

@@ -1,6 +1,6 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, statSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, statSync, readdirSync, openSync, readSync, closeSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import QRCode from "qrcode";
 import WebSocket from "ws";
@@ -169,6 +169,21 @@ function writeSettings(s: AppSettings) {
   chmodSync(STATE_FILE, 0o600);
 }
 
+// --- file delivery: which paths the phone may download ----------------------
+const DOWNLOAD_ROOTS = [
+  join(STATE_DIR, "uploads"),
+  join(homedir(), "Desktop"),
+  join(homedir(), "Downloads"),
+  join(homedir(), "Documents"),
+  resolve("."),
+].map((r) => resolve(r));
+const downloads = new Map<string, { path: string; size: number; at: number }>();
+
+function accessibleDownload(p: string): string | null {
+  const abs = resolve(p);
+  return DOWNLOAD_ROOTS.some((r) => abs === r || abs.startsWith(r + "/")) ? abs : null;
+}
+
 async function proxy(req: OpRequest): Promise<OpResponse> {
   // daemon-local endpoints never reach opencode
   if (req.path === "/__ocr/clip-style" && req.method === "GET") {
@@ -182,6 +197,61 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
   if (req.path === "/__ocr/clip-style" && req.method === "PUT") {
     writeFileSync(join(STATE_DIR, "clip-style.json"), JSON.stringify(req.body ?? {}, null, 2));
     return { id: req.id, status: 200, body: { ok: true } };
+  }
+
+  // --- file delivery: the agent hands artifacts back to the phone ------------
+  if (req.path === "/__ocr/files" && req.method === "GET") {
+    const files: { path: string; name: string; size: number; mtime: number }[] = [];
+    for (const root of DOWNLOAD_ROOTS) {
+      let entries: string[] = [];
+      try {
+        entries = readdirSync(root);
+      } catch {
+        continue;
+      }
+      for (const name of entries) {
+        const full = join(root, name);
+        try {
+          const st = statSync(full);
+          if (st.isFile()) files.push({ path: full, name, size: st.size, mtime: st.mtimeMs });
+        } catch {}
+      }
+    }
+    files.sort((a, b) => b.mtime - a.mtime);
+    return { id: req.id, status: 200, body: { files: files.slice(0, 30) } };
+  }
+  if (req.path === "/__ocr/download/start" && req.method === "POST") {
+    const { path: p } = (req.body ?? {}) as { path?: string };
+    const abs = p ? accessibleDownload(p) : null;
+    if (!abs) return { id: req.id, status: 403, body: { error: "path not allowed" } };
+    let size: number;
+    try {
+      size = statSync(abs).size;
+    } catch {
+      return { id: req.id, status: 404, body: { error: "file not found" } };
+    }
+    const id = randomUUID();
+    downloads.set(id, { path: abs, size, at: Date.now() });
+    for (const [k, v] of downloads) {
+      if (Date.now() - v.at > 30 * 60_000) downloads.delete(k);
+    }
+    metrics.inc("ocr_downloads_total");
+    return { id: req.id, status: 200, body: { id, size, chunks: Math.max(1, Math.ceil(size / 500_000)) } };
+  }
+  if (req.path === "/__ocr/download/chunk" && req.method === "GET" && req.query) {
+    log("debug", "chunk request", { query: req.query, mapSize: downloads.size });
+    const d = downloads.get(req.query.id ?? "");
+    if (!d) return { id: req.id, status: 404, body: { error: "download expired; start a new one" } };
+    let fd: number;
+    try {
+      fd = openSync(d.path, "r");
+    } catch {
+      return { id: req.id, status: 404, body: { error: "file gone" } };
+    }
+    const buf = Buffer.alloc(500_000);
+    const read = readSync(fd, buf, 0, 500_000, Number(req.query.idx ?? 0) * 500_000);
+    closeSync(fd);
+    return { id: req.id, status: 200, body: { data: buf.subarray(0, read).toString("base64") } };
   }
   if (req.path === "/__ocr/devices" && req.method === "GET") {
     return { id: req.id, status: 200, body: { devices: readAllowlist() } };

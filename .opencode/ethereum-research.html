@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Research Completo — Ethereum</title>
+<style>
+  :root{
+    --bg:#0d1117; --card:#161b22; --border:#30363d; --text:#e6edf3;
+    --muted:#8b949e; --eth:#627eea; --green:#3fb950; --red:#f85149; --blue:#58a6ff;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.6}
+  .container{max-width:1000px;margin:0 auto;padding:40px 24px}
+  header{text-align:center;padding:40px 0;border-bottom:1px solid var(--border);margin-bottom:40px}
+  header h1{font-size:2.6rem;color:var(--eth)}
+  header .symbol{font-size:4rem;color:var(--eth)}
+  header p{color:var(--muted);margin-top:8px}
+  .price-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin-bottom:40px}
+  .price-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px;text-align:center}
+  .price-card .label{color:var(--muted);font-size:.85rem;text-transform:uppercase;letter-spacing:1px}
+  .price-card .value{font-size:1.8rem;font-weight:700;margin:6px 0}
+  .up{color:var(--green)} .down{color:var(--red)}
+  section{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:28px;margin-bottom:24px}
+  section h2{color:var(--eth);margin-bottom:16px;font-size:1.4rem;border-bottom:1px solid var(--border);padding-bottom:8px}
+  section p{color:var(--text);margin-bottom:12px}
+  ul{margin-left:24px;margin-bottom:12px}
+  li{margin-bottom:6px}
+  table{width:100%;border-collapse:collapse;margin:12px 0}
+  th,td{padding:10px 14px;text-align:left;border-bottom:1px solid var(--border)}
+  th{color:var(--eth);font-size:.9rem;text-transform:uppercase;letter-spacing:.5px}
+  .muted{color:var(--muted);font-size:.85rem}
+  .hl{color:var(--blue)}
+  .quote{border-left:3px solid var(--eth);padding:10px 18px;background:rgba(98,126,234,.08);border-radius:0 8px 8px 0;font-style:italic;margin:12px 0}
+  footer{text-align:center;color:var(--muted);font-size:.8rem;padding:24px 0}
+</style>
+</head>
+<body>
+<div class="container">
+
+<header>
+  <div class="symbol">Ξ</div>
+  <h1>Ethereum — Research Completo</h1>
+  <p>Relatório gerado pelo opencode · <span id="date"></span></p>
+</header>
+
+<div class="price-grid">
+  <div class="price-card">
+    <div class="label">Preço (USD)</div>
+    <div class="value">$2.457</div>
+    <div class="up">▲ +1,02% (24h)</div>
+  </div>
+  <div class="price-card">
+    <div class="label">Preço (BRL)</div>
+    <div class="value">R$ 12.764</div>
+    <div class="up">▲ +0,98% (24h)</div>
+  </div>
+  <div class="price-card">
+    <div class="label">Preço (EUR)</div>
+    <div class="value">€ 2.121</div>
+    <div class="up">▲ +1,02% (24h)</div>
+  </div>
+  <div class="price-card">
+    <div class="label">Valor de Mercado</div>
+    <div class="value">~$297 bi</div>
+    <div class="muted">volume 24h ~$5,8 bi</div>
+  </div>
+</div>
+
+<section>
+  <h2>🌐 O que é o Ethereum</h2>
+  <p>O Ethereum é uma <strong>plataforma descentralizada</strong> capaz de executar <strong>contratos inteligentes</strong> (smart contracts) e <strong>aplicações descentralizadas</strong> (dApps) usando a tecnologia blockchain. Seu diferencial em relação ao Bitcoin é ser uma <span class="hl">máquina virtual Turing-completa</span> — a <strong>Ethereum Virtual Machine (EVM)</strong> — que executa scripts em uma rede global de nós públicos.</p>
+  <div class="quote">O Ethereum visa levar a blockchain e os contratos inteligentes para "tudo" que possa ser programado — um grande computador de escala planetária onde os usuários pagam pelo recurso utilizado.</div>
+  <p>O token da rede é o <strong>ether (Ξ, ETH)</strong>, usado para pagar taxas de transação e execução computacional ("gas"). Unidades: wei (10⁻¹⁸), finney, szabo e gwei.</p>
+</section>
+
+<section>
+  <h2>👨‍💻 Criador e História</h2>
+  <ul>
+    <li><strong>2013</strong> — Vitalik Buterin (19 anos, russo-canadense) publica a proposta do Ethereum</li>
+    <li><strong>2014</strong> — Projeto fundado formalmente; financiamento coletivo de +US$ 18 mi (3º maior crowdfunding da história à época); Gavin Wood formaliza a EVM</li>
+    <li><strong>30/jul/2015</strong> — Lançamento da rede (versão Frontier)</li>
+    <li><strong>2016</strong> — Colapso do The DAO (US$ 50 mi roubados) → hard fork que divide a rede e cria o <strong>Ethereum Classic (ETC)</strong></li>
+    <li><strong>2022</strong> — <strong>The Merge</strong>: migração de Proof-of-Work para <strong>Proof-of-Stake</strong>, reduzindo o consumo de energia em ~99,9%</li>
+    <li><strong>2021</strong> — CVM aprova primeiro ETF de ETH no Brasil (QR Asset)</li>
+  </ul>
+</section>
+
+<section>
+  <h2>⚙️ Características Técnicas</h2>
+  <table>
+    <tr><th>Propriedade</th><th>Valor</th></tr>
+    <tr><td>Consenso</td><td>Proof-of-Stake (desde 2022)</td></tr>
+    <tr><td>Tempo de bloco</td><td>~12 segundos</td></tr>
+    <tr><td>Oferta</td><td>Sem limite fixo, porém em <strong>desinflação</strong> (queima de taxas via EIP-1559)</td></tr>
+    <tr><td>Staking</td><td>Validadores depositam 32 ETH e recebem recompensas</td></tr>
+    <tr><td>Escalabilidade</td><td>Camada 1 + rollups de camada 2 (Arbitrum, Optimism, zkSync)</td></tr>
+    <tr><td>Linguagens</td><td>Solidity, Vyper (compiladas para bytecode EVM)</td></tr>
+    <tr><td>Implementações</td><td>Go, C++, Python, Rust, Node.js</td></tr>
+  </table>
+</section>
+
+<section>
+  <h2>🏗️ Padrões de Tokens (ERC)</h2>
+  <ul>
+    <li><strong>ERC-20</strong> — tokens fungíveis (a base da maioria das criptomoedas e stablecoins, ex.: USDT, USDC)</li>
+    <li><strong>ERC-721</strong> — tokens não fungíveis (<strong>NFTs</strong>)</li>
+    <li><strong>ERC-1155</strong> — híbrido (fungível + NFT), muito usado em games</li>
+    <li>Qualquer dev pode propor melhorias via <strong>EIP</strong> (Ethereum Improvement Proposal); aprovadas viram ERCs</li>
+  </ul>
+</section>
+
+<section>
+  <h2>🚀 Ecossistema e Casos de Uso</h2>
+  <ul>
+    <li><strong>DeFi</strong> — Uniswap, Aave, MakerDAO: empréstimos, trocas e rendimento sem bancos</li>
+    <li><strong>Stablecoins</strong> — a maior parte do USDT/USDC roda na Ethereum</li>
+    <li><strong>NFTs</strong> — OpenSea e mercado de arte digital</li>
+    <li><strong>DAOs</strong> — organizações autônomas governadas por código</li>
+    <li><strong>Empresas</strong> — Microsoft, JPMorgan e a Aliança Empresarial Ethereum (EEA)</li>
+  </ul>
+</section>
+
+<section>
+  <h2>📉 Fatos Marcantes e Críticas</h2>
+  <ul>
+    <li><strong>The DAO (2016)</strong> — US$ 50 mi roubados por falha de código; originou o Ethereum Classic</li>
+    <li><strong>Boato da morte de Vitalik (2017)</strong> — queda de ~30% (US$ 4 bi saíram da moeda) até ele provar que estava vivo</li>
+    <li><strong>Falhas em contratos</strong> — a rede é confiável, mas o código de terceiros pode ter brechas</li>
+    <li><strong>Taxas voláteis</strong> — o "gas" pode ficar caro em períodos de congestionamento ( mitigado pelas L2)</li>
+    <li><strong>Esquemas Ponzi</strong> — contratos fraudulentos usam a rede, embora a rede em si não os permita impedir</li>
+  </ul>
+</section>
+
+<section>
+  <h2>🆚 Ethereum vs Bitcoin</h2>
+  <table>
+    <tr><th></th><th>Bitcoin</th><th>Ethereum</th></tr>
+    <tr><td>Foco</td><td>Dinheiro digital / reserva de valor</td><td>Plataforma de computação descentralizada</td></tr>
+    <tr><td>Consenso</td><td>Proof-of-Work</td><td>Proof-of-Stake</td></tr>
+    <tr><td>Oferta</td><td>Limitada (21 mi)</td><td>Sem limite fixo (desinflacionária)</td></tr>
+    <tr><td>Tempo de bloco</td><td>~10 min</td><td>~12 s</td></tr>
+    <tr><td>Programabilidade</td><td>Limitada (Script)</td><td>Turing-completa (EVM)</td></tr>
+    <tr><td>Cap. de mercado</td><td>~$1,57 tri (1º)</td><td>~$297 bi (2º)</td></tr>
+  </table>
+</section>
+
+<footer>
+  Fontes: Wikipédia (pt) · CoinGecko API · dados coletados em tempo real pelo opencode<br>
+  Este relatório é informativo e não constitui recomendação de investimento.
+</footer>
+
+</div>
+<script>document.getElementById('date').textContent = new Date().toLocaleString('pt-BR');</script>
+</body>
+</html>

@@ -20,6 +20,7 @@ interface Props {
   onDisconnect: () => void;
   onEnablePush: () => Promise<void>;
   onOpenSettings: () => void;
+  onOpenFiles: () => void;
   tick: number;
 }
 
@@ -31,6 +32,7 @@ export default function SessionsView({
   onDisconnect,
   onEnablePush,
   onOpenSettings,
+  onOpenFiles,
   tick,
 }: Props) {
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -104,6 +106,11 @@ export default function SessionsView({
       <header>
         <h1 style={{ fontSize: "1rem", margin: 0 }}>{machineName}</h1>
         <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={onOpenFiles} aria-label="Files">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M4 5a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-8.6L9.6 5.2A2 2 0 0 0 8.2 4.6H4Z" />
+            </svg>
+          </button>
           <button onClick={onOpenSettings} aria-label="Settings">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
               <path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm9 4a7.2 7.2 0 0 1-.1 1.2l2 1.6a.5.5 0 0 1 .1.7l-1.9 3.2a.5.5 0 0 1-.6.2l-2.4-1a7.6 7.6 0 0 1-2 1.2l-.4 2.5a.5.5 0 0 1-.5.4h-3.8a.5.5 0 0 1-.5-.4l-.4-2.5a7.6 7.6 0 0 1-2-1.2l-2.4 1a.5.5 0 0 1-.6-.2L1.7 15.5a.5.5 0 0 1 .1-.7l2-1.6a7.2 7.2 0 0 1 0-2.4l-2-1.6a.5.5 0 0 1-.1-.7L3.6 5.3a.5.5 0 0 1 .6-.2l2.4 1a7.6 7.6 0 0 1 2-1.2l.4-2.5a.5.5 0 0 1 .5-.4h3.8a.5.5 0 0 1 .5.4l.4 2.5a7.6 7.6 0 0 1 2 1.2l2.4-1a.5.5 0 0 1 .6.2l1.9 3.2a.5.5 0 0 1-.1.7l-2 1.6c.1.4.1.8.1 1.2Z" />

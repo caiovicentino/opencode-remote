@@ -8,17 +8,16 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 NODE="$(command -v node)"
-TSX="$REPO/node_modules/tsx/dist/cli.mjs"
 LOGS="$HOME/.opencode-remote/logs"
 GUI="gui/$(id -u)"
 # point this at your relay, e.g. wss://your-host.tailnet-name.ts.net:8788
 RELAY_URL="${RELAY_URL:?set RELAY_URL=wss://your-relay-host:8788}"
 
-[ -f "$TSX" ] || { echo "tsx not found at $TSX — run npm install first"; exit 1; }
+[ -d "$REPO/node_modules/tsx" ] || { echo "tsx not found — run npm install first"; exit 1; }
 mkdir -p "$LOGS"
 
 write_plist() {
-  # $1 = label, $2 = stdout log, $3 = stderr log, $4 = env file content
+  # $1 = label, $2 = stdout log, $3 = stderr log, $4 = script path, $5 = env block
   cat > "$HOME/Library/LaunchAgents/$1.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -26,7 +25,8 @@ write_plist() {
   <key>Label</key><string>$1</string>
   <key>ProgramArguments</key><array>
     <string>$NODE</string>
-    <string>$TSX</string>
+    <string>--import</string>
+    <string>tsx/esm</string>
     <string>$4</string>
   </array>
   <key>WorkingDirectory</key><string>$REPO</string>
@@ -48,6 +48,8 @@ launchctl bootout "$GUI/com.ocr.relay" 2>/dev/null || true
 launchctl bootout "$GUI/com.ocr.logrotate" 2>/dev/null || true
 pkill -f "tsx apps/daemon/src/index.ts" 2>/dev/null || true
 pkill -f "tsx apps/relay/src/index.ts" 2>/dev/null || true
+pkill -f "daemon/src/index.ts" 2>/dev/null || true
+pkill -f "relay/src/index.ts" 2>/dev/null || true
 sleep 1
 
 RELAY_ENV="    <key>RELAY_PORT</key><string>8788</string>

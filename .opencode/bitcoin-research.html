@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Research Completo — Bitcoin</title>
+<style>
+  :root{
+    --bg:#0d1117; --card:#161b22; --border:#30363d; --text:#e6edf3;
+    --muted:#8b949e; --orange:#f7931a; --green:#3fb950; --red:#f85149; --blue:#58a6ff;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.6}
+  .container{max-width:1000px;margin:0 auto;padding:40px 24px}
+  header{text-align:center;padding:40px 0;border-bottom:1px solid var(--border);margin-bottom:40px}
+  header h1{font-size:2.6rem;color:var(--orange)}
+  header .symbol{font-size:4rem}
+  header p{color:var(--muted);margin-top:8px}
+  .price-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin-bottom:40px}
+  .price-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px;text-align:center}
+  .price-card .label{color:var(--muted);font-size:.85rem;text-transform:uppercase;letter-spacing:1px}
+  .price-card .value{font-size:1.8rem;font-weight:700;margin:6px 0}
+  .up{color:var(--green)} .down{color:var(--red)}
+  section{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:28px;margin-bottom:24px}
+  section h2{color:var(--orange);margin-bottom:16px;font-size:1.4rem;border-bottom:1px solid var(--border);padding-bottom:8px}
+  section p{color:var(--text);margin-bottom:12px}
+  ul{margin-left:24px;margin-bottom:12px}
+  li{margin-bottom:6px}
+  table{width:100%;border-collapse:collapse;margin:12px 0}
+  th,td{padding:10px 14px;text-align:left;border-bottom:1px solid var(--border)}
+  th{color:var(--orange);font-size:.9rem;text-transform:uppercase;letter-spacing:.5px}
+  .muted{color:var(--muted);font-size:.85rem}
+  .hl{color:var(--blue)}
+  .quote{border-left:3px solid var(--orange);padding:10px 18px;background:rgba(247,147,26,.08);border-radius:0 8px 8px 0;font-style:italic;margin:12px 0}
+  footer{text-align:center;color:var(--muted);font-size:.8rem;padding:24px 0}
+</style>
+</head>
+<body>
+<div class="container">
+
+<header>
+  <div class="symbol">₿</div>
+  <h1>Bitcoin — Research Completo</h1>
+  <p>Relatório gerado pelo opencode · <span id="date"></span></p>
+</header>
+
+<div class="price-grid">
+  <div class="price-card">
+    <div class="label">Preço (USD)</div>
+    <div class="value">$78.052</div>
+    <div class="up">▲ +0,30% (24h)</div>
+  </div>
+  <div class="price-card">
+    <div class="label">Preço (BRL)</div>
+    <div class="value">R$ 405.432</div>
+    <div class="down">▼ -0,03% (24h)</div>
+  </div>
+  <div class="price-card">
+    <div class="label">Preço (EUR)</div>
+    <div class="value">€ 67.376</div>
+    <div class="up">▲ +0,32% (24h)</div>
+  </div>
+  <div class="price-card">
+    <div class="label">Valor de Mercado</div>
+    <div class="value">~$1,57 tri</div>
+    <div class="muted">volume 24h ~$19 bi</div>
+  </div>
+</div>
+
+<section>
+  <h2>🔍 O que é o Bitcoin</h2>
+  <p>O Bitcoin (₿, BTC) é uma <strong>criptomoeda descentralizada e de código aberto</strong>, projetada como dinheiro eletrônico para transações <strong>ponto a ponto</strong>, sem intermediários. As transações são verificadas por todos os nós da rede e registradas no <span class="hl">blockchain</span>, um banco de dados distribuído sem entidade administradora central — o que torna inviável que governos ou bancos manipulem a emissão ou induzam inflação com emissão extra.</p>
+  <p>Financeiramente, é enquadrado como <strong>ativo especulativo</strong>, <strong>dinheiro commodity</strong> e <strong>unidade de conta</strong> — frequentemente chamado de "ouro digital" por sua escassez relativa.</p>
+  <div class="quote">"Chancellor on brink of second bailout for banks" — texto gravado no bloco gênesis, crítica ao sistema bancário tradicional.</div>
+</section>
+
+<section>
+  <h2>📜 Linha do Tempo</h2>
+  <table>
+    <tr><th>Ano</th><th>Evento</th></tr>
+    <tr><td>2008</td><td>Satoshi Nakamoto publica o white paper <em>Bitcoin: A Peer-to-Peer Electronic Cash System</em></td></tr>
+    <tr><td>2009</td><td>Lançamento do software (3/jan); mineração do bloco gênesis</td></tr>
+    <tr><td>2010</td><td>Satoshi desaparece da comunidade</td></tr>
+    <tr><td>2011–2012</td><td>Uso concentrado em mercados negros (Silk Road)</td></tr>
+    <tr><td>2013</td><td>Preço sobe de $13 para $770; primeiro fork da blockchain</td></tr>
+    <tr><td>2017</td><td>Pico de $19.666; China proíbe comércio de criptomoedas</td></tr>
+    <tr><td>2021</td><td>Tesla compra US$ 1,5 bi; PayPal habilita BTC nos EUA; máxima de $60 mil</td></tr>
+    <tr><td>2024</td><td>Halving reduz recompensa para 3,125 BTC/bloco</td></tr>
+    <tr><td>2025</td><td>Máxima histórica acima de US$ 126.000 (out/2025)</td></tr>
+  </table>
+</section>
+
+<section>
+  <h2>🕵️ Satoshi Nakamoto</h2>
+  <p>Pseudônimo anônimo do criador (ou grupo de criadores) do protocolo, ativo de 2007 a meados de 2010. A identidade real nunca foi confirmada:</p>
+  <ul>
+    <li>Estudo de linguística forense (2014, Universidade de Aston) apontou semelhanças de escrita com o criptógrafo <strong>Nick Szabo</strong></li>
+    <li><strong>Craig Wright</strong> alegou ser Satoshi em 2016, mas as provas técnicas foram contestadas (colisão de hash implausível)</li>
+    <li>As carteiras de Satoshi (~1 mi de BTC) jamais se moveram — torná-lo-ia uma das pessoas mais ricas do mundo</li>
+  </ul>
+</section>
+
+<section>
+  <h2>⚙️ Características Técnicas</h2>
+  <table>
+    <tr><th>Propriedade</th><th>Valor</th></tr>
+    <tr><td>Oferta máxima</td><td><strong>21 milhões de BTC</strong> (escassez programada)</td></tr>
+    <tr><td>Unidade mínima</td><td>1 satoshi = 0,00000001 BTC</td></tr>
+    <tr><td>Algoritmo</td><td>Prova de trabalho SHA-256</td></tr>
+    <tr><td>Tempo de bloco</td><td>~10 minutos</td></tr>
+    <tr><td>Recompensa atual</td><td>3,125 BTC/bloco (após halving de 2024)</td></tr>
+    <tr><td>Códigos ISO</td><td>BTC / XBT</td></tr>
+    <tr><td>Fim da emissão</td><td>~2140</td></tr>
+  </table>
+  <p><strong>Halving:</strong> a cada ~4 anos a recompensa de mineração cai pela metade, mecanismo anti-inflação embutido no protocolo. A emissão diminui 6,25 → 3,125 → 1,5625 BTC e assim por diante.</p>
+</section>
+
+<section>
+  <h2>🌎 Adoção e Regulação</h2>
+  <ul>
+    <li><strong>El Salvador</strong>: único país a adotar o BTC como moeda oficial</li>
+    <li><strong>Japão (2017)</strong>: primeira legislação completa de regulação</li>
+    <li><strong>Alemanha (2018)</strong>: criptomoedas legalizadas como meio de pagamento isento de impostos</li>
+    <li><strong>Suíça</strong>: cantão de Zug aceita impostos em BTC desde 2021</li>
+    <li><strong>Empresas</strong>: MicroStrategy, Tesla e Square têm BTC no balanço</li>
+    <li><strong>Brasil</strong>: PL 2.303/2015 propõe enquadramento sob o Banco Central; primeira empresa com BTC em balanço foi a startup Yubb</li>
+    <li><strong>China</strong>: proibição total desde 2018</li>
+  </ul>
+</section>
+
+<section>
+  <h2>💹 Economia e Valor</h2>
+  <p>O preço é definido livremente 24h por dia pela oferta e demanda. Marcos históricos:</p>
+  <ul>
+    <li>2013: de $13 → $770 (+5.800% no ano)</li>
+    <li>Dez/2017: $19.666 → Fev/2018: $5.920 (<span class="down">-70%</span>)</li>
+    <li>2021: ciclo de $20 mil → $69 mil</li>
+    <li>Out/2025: máxima histórica acima de <strong>$126.000</strong></li>
+    <li>Atual: <strong>~$78 mil</strong> (retirada de ~38% do topo)</li>
+  </ul>
+  <p class="muted">A cotação sofre alta instabilidade, influenciada por ataques a bolsas, regulamentações e movimentos especulativos.</p>
+</section>
+
+<section>
+  <h2>💬 Principais Críticas</h2>
+  <ul>
+    <li><strong>Volatilidade</strong> — ciclos de queda de 70–80% já ocorreram múltiplas vezes</li>
+    <li><strong>Escalabilidade</strong> — ~7 transações/segundo na rede base (soluções: Lightning Network)</li>
+    <li><strong>Consumo energético</strong> — mineração consome energia comparável à de países médios</li>
+    <li><strong>Uso criminal</strong> — historicamente associado a mercados negros, ainda que transações sejam rastreáveis</li>
+    <li><strong>Centralização de mineração</strong> — concentração de pools e hardware (ASICs)</li>
+  </ul>
+</section>
+
+<section>
+  <h2>🧭 Como Começar (visão geral)</h2>
+  <ul>
+    <li><strong>Corretoras no Brasil</strong>: Mercado Bitcoin, Binance, Coinbase, NovaDAX</li>
+    <li><strong>Carteiras</strong>: hardware wallet (Ledger, Trezor) para valores maiores; carteiras móveis para uso diário</li>
+    <li><strong>ETFs</strong>: HASH11 (B3) e ETFs de spot nos EUA permitem exposição sem autodial</li>
+    <li><strong>Risco</strong>: ativo de altíssima volatilidade — não é recomendação de investimento</li>
+  </ul>
+</section>
+
+<footer>
+  Fontes: Wikipédia (pt) · CoinGecko API · dados coletados em tempo real pelo opencode<br>
+  Este relatório é informativo e não constitui recomendação de investimento.
+</footer>
+
+</div>
+<script>document.getElementById('date').textContent = new Date().toLocaleString('pt-BR');</script>
+</body>
+</html>
