@@ -45,3 +45,23 @@ export async function enablePush(request: RequestFn): Promise<string> {
   if (res.status !== 200) throw new Error("daemon rejected push subscription");
   return sub.endpoint;
 }
+
+/**
+ * Silent restore: if this device already has permission + a push subscription,
+ * re-sync it with the daemon so the user never re-authorizes. Returns the
+ * endpoint when restored, null when the user must tap "Enable push" first.
+ */
+export async function restorePush(request: RequestFn): Promise<string | null> {
+  try {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) return null;
+    if (Notification.permission !== "granted") return null;
+    const reg = await navigator.serviceWorker.register("/sw.js");
+    await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if (!sub) return null;
+    const res = await request("POST", "/__ocr/push-subscription", sub.toJSON());
+    return res.status === 200 ? sub.endpoint : null;
+  } catch {
+    return null;
+  }
+}

@@ -41,6 +41,17 @@ export default function SessionsView({
   const [pushState, setPushState] = useState<"idle" | "enabling" | "enabled">("idle");
   const [query, setQuery] = useState("");
 
+  // silent restore: a device that already granted permission never re-authorizes
+  useEffect(() => {
+    void (async () => {
+      try {
+        const { restorePush } = await import("../lib/push");
+        if (await restorePush(request)) setPushState("enabled");
+      } catch {}
+    })();
+    // run once per mount
+  }, []);
+
   async function load() {
     setLoading(true);
     setError("");
