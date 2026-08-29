@@ -1,3 +1,5 @@
+import { createServer } from "node:https";
+import { readFileSync } from "node:fs";
 import { WebSocketServer, type WebSocket } from "ws";
 
 /**
@@ -45,8 +47,24 @@ function ev(level: "info" | "warn", msg: string, data?: unknown) {
   console.log(JSON.stringify({ ts: new Date().toISOString(), level, msg, ...(data ? { data } : {}) }));
 }
 
-const wss = new WebSocketServer({ port: PORT, maxPayload: MAX_FRAME });
+// optional TLS: set RELAY_TLS_CERT + RELAY_TLS_KEY to serve wss:// directly
+// (browsers refuse ws:// from https:// pages — mixed content)
+const tlsCert = process.env.RELAY_TLS_CERT;
+const tlsKey = process.env.RELAY_TLS_KEY;
+const server = tlsCert && tlsKey
+  ? createServer({ cert: readFileSync(tlsCert), key: readFileSync(tlsKey) })
+  : createServer();
+const wss = new WebSocketServer({ server, maxPayload: MAX_FRAME });
 let counter = 0;
+
+server.listen(PORT, () => {
+  ev("info", "relay listening", {
+    port: PORT,
+    tls: Boolean(tlsCert),
+    maxFrame: MAX_FRAME,
+    maxPerRoom: MAX_PER_ROOM,
+  });
+});
 
 wss.on("connection", (socket: Socket) => {
   if (wss.clients.size > MAX_SOCKETS) {
@@ -100,5 +118,3 @@ wss.on("connection", (socket: Socket) => {
   });
   socket.on("error", () => leaveAll(socket));
 });
-
-ev("info", "relay listening", { port: PORT, maxFrame: MAX_FRAME, maxPerRoom: MAX_PER_ROOM });
