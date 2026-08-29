@@ -17,7 +17,12 @@ export function b64(bytes: Uint8Array): string {
 }
 
 export function fromB64(s: string): Uint8Array {
-  const bin = atob(s);
+  // tolerate base64url (-, _) and whitespace, pad when missing
+  const norm = s
+    .replace(/[\s-]/g, (m) => (m === "-" ? "+" : ""))
+    .replace(/_/g, "/");
+  const padded = norm + "=".repeat((4 - (norm.length % 4)) % 4);
+  const bin = atob(padded);
   const out = new Uint8Array(new ArrayBuffer(bin.length));
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
@@ -50,6 +55,7 @@ export interface DaemonHello {
 export interface ServerAccept {
   ok: true;
   confirm: string;
+  caps?: { transcribe?: boolean };
 }
 
 const HELLO_AAD = "ocr-hello";
@@ -156,8 +162,24 @@ export async function serverAccept(
   }
 }
 
-export async function acceptPayload(sessionKey: CryptoKey): Promise<ServerAccept> {
-  return { ok: true, confirm: await seal({ ok: true }, sessionKey, te.encode(CONFIRM_AAD)) };
+export async function acceptPayload(
+  sessionKey: CryptoKey,
+  caps?: { transcribe?: boolean },
+): Promise<ServerAccept> {
+  return { ok: true, confirm: await seal({ ok: true, caps }, sessionKey, te.encode(CONFIRM_AAD)) };
+}
+
+const REJECT_AAD = "ocr-reject";
+
+/** Encrypted allowlist rejection, sent before dropping a rejected client. */
+export async function rejectPayload(
+  sessionKey: CryptoKey,
+  reason: string,
+): Promise<{ ok: false; reject: string }> {
+  return {
+    ok: false,
+    reject: await seal({ ok: false, reason }, sessionKey, te.encode(REJECT_AAD)),
+  };
 }
 
 /** Encrypt JSON: base64(nonce12 || ciphertext || tag16). */

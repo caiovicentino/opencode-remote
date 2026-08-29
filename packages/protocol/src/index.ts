@@ -8,6 +8,7 @@ export {
   clientHello,
   serverAccept,
   acceptPayload,
+  rejectPayload,
   seal,
   openSealed,
   seqAad,
