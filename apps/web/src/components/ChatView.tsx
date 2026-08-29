@@ -65,6 +65,9 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
   const [model, setModel] = useState(localStorage.getItem("ocr_model") ?? "");
   const [agent, setAgent] = useState(localStorage.getItem("ocr_agent") ?? "");
   const [tapToggle, setTapToggle] = useState(false);
+  const [pendingVideo, setPendingVideo] = useState<{ file: File; dur: number } | null>(null);
+  const [trimStart, setTrimStart] = useState("");
+  const [trimEnd, setTrimEnd] = useState("");
   const downAt = useRef(0);
   const recorder = useRef<WavRecorder | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -200,8 +203,39 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
   }
 
   async function attachFile(file: File) {
-    if (file.type.startsWith("video/")) return void processVideo(file);
+    if (file.type.startsWith("video/")) return void stageVideo(file);
     return void attachImage(file);
+  }
+
+  async function stageVideo(file: File) {
+    const dur = await videoDuration(file);
+    if (!dur) throw new Error("empty video");
+    setTrimStart("0");
+    setTrimEnd(String(Math.round(dur * 10) / 10));
+    setPendingVideo({ file, dur });
+  }
+
+  async function videoDuration(file: File): Promise<number> {
+    const url = URL.createObjectURL(file);
+    const v = document.createElement("video");
+    v.src = url;
+    v.muted = true;
+    v.preload = "metadata";
+    await new Promise<void>((res) => {
+      v.onloadedmetadata = () => res();
+      v.onerror = () => res();
+    });
+    URL.revokeObjectURL(url);
+    return v.duration || 0;
+  }
+
+  function confirmTrim(useTrim: boolean) {
+    if (!pendingVideo) return;
+    const { file, dur } = pendingVideo;
+    setPendingVideo(null);
+    const start = useTrim ? Math.max(0, Number(trimStart) || 0) : 0;
+    const end = useTrim ? Math.min(dur, Number(trimEnd) || dur) : dur;
+    void processVideo(file, start, end);
   }
 
   async function uploadBytes(
@@ -224,7 +258,7 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
     return kind === "file" ? body.path! : body.url!;
   }
 
-  async function extractFrames(file: File): Promise<PendingImage[]> {
+  async function extractFrames(file: File, start: number, end: number): Promise<PendingImage[]> {
     const url = URL.createObjectURL(file);
     const video = document.createElement("video");
     video.src = url;
@@ -235,8 +269,8 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
       video.onloadedmetadata = () => res();
       video.onerror = () => rej(new Error("cannot read video"));
     });
-    const dur = Math.min(video.duration || 0, 60);
-    if (!dur) throw new Error("empty video");
+    const span = Math.min(end - start, 60);
+    if (span <= 0) throw new Error("empty video");
     const canvas = document.createElement("canvas");
     const scale = Math.min(1, 1024 / Math.max(video.videoWidth, video.videoHeight));
     canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
@@ -246,7 +280,7 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
     const out: PendingImage[] = [];
     const stamp = Date.now();
     for (let i = 0; i < 4; i++) {
-      video.currentTime = Math.min(dur - 0.05, (dur * i) / 4 + 0.1);
+      video.currentTime = Math.min(end - 0.05, start + (span * i) / 4 + 0.1);
       await new Promise<void>((res) => {
         video.onseeked = () => res();
       });
@@ -268,18 +302,18 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
     return out;
   }
 
-  async function extractAudio(file: File): Promise<Blob | null> {
+  async function extractAudio(file: File, start: number, end: number): Promise<Blob | null> {
     try {
       const ac = new AudioContext();
       const decoded = await ac.decodeAudioData(await file.arrayBuffer());
       await ac.close();
-      const secs = Math.min(decoded.duration || 0, 120);
+      const secs = Math.min(end - start, 120);
       if (secs < 0.1) return null;
       const off = new OfflineAudioContext(1, Math.ceil(secs * 16000), 16000);
       const src = off.createBufferSource();
       src.buffer = decoded;
       src.connect(off.destination);
-      src.start(0, 0, secs);
+      src.start(0, start, secs);
       const rendered = await off.startRendering();
       return new Blob([encodeWav(rendered.getChannelData(0), 16000)], { type: "audio/wav" });
     } catch {
@@ -287,16 +321,16 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
     }
   }
 
-  async function processVideo(file: File) {
+  async function processVideo(file: File, start: number, end: number) {
     setUploading(true);
     setError("");
     try {
-      const audio = await extractAudio(file);
+      const audio = await extractAudio(file, start, end);
       if (audio) {
         const text = await transcribe(audio);
         if (text) setInput((prev) => (prev ? `${prev} ${text}` : text));
       }
-      const frames = await extractFrames(file);
+      const frames = await extractFrames(file, start, end);
       for (const f of frames) {
         const id = await uploadBytes(f.raw!, f.mime, f.filename);
         setImages((prev) => [...prev.slice(-3), { ...f, id }]);
@@ -307,10 +341,11 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
         file.name || "video.mp4",
         "file",
       );
-      setInput(
-        (prev) =>
-          `${prev ? `${prev} ` : ""}[full video saved at ${path} — use ffmpeg to inspect frame by frame]`,
-      );
+      const trimmed = end - start < (await videoDuration(file)) - 0.5;
+      const note = trimmed
+        ? `[trim ${start.toFixed(1)}-${end.toFixed(1)}s — full video saved at ${path}; use ffmpeg to cut or inspect]`
+        : `[full video saved at ${path} — use ffmpeg to inspect frame by frame]`;
+      setInput((prev) => `${prev ? `${prev} ` : ""}${note}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -476,13 +511,65 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
           ref={fileRef}
           type="file"
           accept="image/*,video/*"
+          multiple
           hidden
           onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (f) void attachFile(f);
+            const files = Array.from(e.target.files ?? []);
             e.target.value = "";
+            void (async () => {
+              for (const f of files) {
+                await attachFile(f).catch((err) =>
+                  setError(err instanceof Error ? err.message : String(err)),
+                );
+              }
+            })();
           }}
         />
+
+        {pendingVideo && (
+          <div
+            className="card"
+            style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", padding: 8 }}
+          >
+            <span
+              style={{
+                flex: 1,
+                minWidth: 100,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                fontSize: "0.8rem",
+              }}
+            >
+              {pendingVideo.file.name}
+            </span>
+            <input
+              type="number"
+              step="0.1"
+              min={0}
+              max={pendingVideo.dur}
+              style={{ width: 64, padding: "6px 8px" }}
+              value={trimStart}
+              onChange={(e) => setTrimStart(e.target.value)}
+              aria-label="Trim start (s)"
+            />
+            <span className="muted">→</span>
+            <input
+              type="number"
+              step="0.1"
+              min={0}
+              max={pendingVideo.dur}
+              style={{ width: 64, padding: "6px 8px" }}
+              value={trimEnd}
+              onChange={(e) => setTrimEnd(e.target.value)}
+              aria-label="Trim end (s)"
+            />
+            <button className="primary" onClick={() => confirmTrim(true)}>
+              Attach
+            </button>
+            <button onClick={() => confirmTrim(false)}>Full</button>
+          </div>
+        )}
 
         {images.length > 0 && (
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
