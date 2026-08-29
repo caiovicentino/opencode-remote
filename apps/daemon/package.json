@@ -20,6 +20,7 @@
   },
   "scripts": {
     "dev": "tsx src/index.ts",
+    "manage": "tsx src/manage.ts",
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit"
   }

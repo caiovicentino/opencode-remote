@@ -108,12 +108,14 @@ instalação dentro de cada arquivo.
       getUserMedia + jsQR (BarcodeDetector não existe no iPhone)
 
 **v1**
+- [x] Identidade não-extraível (WebCrypto ECDH P-256 + IndexedDB) + gate
+      biométrico WebAuthn + replay protection no AAD (protocolo v2)
+- [x] Allowlist/revogação de clientes + multi-device no daemon
+- [x] CI (GitHub Actions): typecheck + build + smoke E2E + integração real
 - [ ] Rotinas e triggers no daemon (cron + webhooks)
 - [ ] Skills/commands do opencode como botões de 1-tap
 - [ ] Multi-máquina no mesmo app
 - [ ] Wake hints + bufferização de eventos quando a máquina dorme
-- [x] Identidade não-extraível (WebCrypto ECDH P-256 + IndexedDB) + gate
-      biométrico WebAuthn + replay protection no AAD (protocolo v2)
 
 **Enterprise**
 - [ ] Relay self-hosted (Docker) + audit log imutável
@@ -135,8 +137,21 @@ instalação dentro de cada arquivo.
 - **AES-256-GCM em tudo** que passa no relay, com **seq no AAD**: o relay não
   pode reordenar, replayar ou recombinar frames — o receptor rejeita
   `seq <= último visto`.
-- **Relay cego**: reencaminha ciphertext opaco por sala; sem TLS ele ainda não
-  lê nada, mas use `wss://` (Caddy incluso no compose).
+- **Allowlist de clientes**: o primeiro pareamento (via QR na sua máquina) é
+  persistido em `daemon.json`; a partir daí só clientes na allowlist conectam.
+  Multi-device suportado — todos os clientes pareados recebem eventos.
+- **Estado com permissão 0600**: `daemon.json` (chaves + allowlist) é
+  restringido no boot e a cada escrita.
+- **Relay cego e com limites**: reencaminha ciphertext opaco por sala, com
+  teto de frame (1 MB), sockets por sala e conexões totais.
 
 Trust anchor = QR code lido na máquina do usuário. Sem servidores de
 identidade no caminho.
+
+### Gerenciando clientes pareados
+
+```bash
+npm run manage --workspace apps/daemon -- list          # lista pubkeys pareadas
+npm run manage --workspace apps/daemon -- revoke <prefix>  # revoga um cliente
+npm run manage --workspace apps/daemon -- revoke-all    # recomeça (QR pareia de novo)
+```

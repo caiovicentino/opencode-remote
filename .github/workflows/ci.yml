@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: E2E smoke (ephemeral relay + daemon)
+        run: |
+          npx tsx apps/relay/src/index.ts &
+          npx tsx apps/daemon/src/index.ts &
+          sleep 3
+          npx tsx scripts/smoke.ts
+
+      - name: Integration (real opencode, skips if binary absent)
+        run: npx tsx scripts/integration.ts
+        env:
+          OPENCODE_BIN: /usr/local/bin/opencode

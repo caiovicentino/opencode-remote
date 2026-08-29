@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -25,6 +25,7 @@ import type {
   OpResponse,
   RelayFrame,
 } from "@ocr/protocol";
+import { log } from "./log.js";
 
 const RELAY_URL = process.env.RELAY_URL ?? "ws://127.0.0.1:8787";
 const OPENCODE_URL = process.env.OPENCODE_URL ?? "http://127.0.0.1:4096";
@@ -33,13 +34,20 @@ const OPENCODE_PASS = process.env.OPENCODE_SERVER_PASSWORD ?? "";
 const MACHINE_NAME = process.env.OCR_MACHINE_NAME ?? "my-machine";
 
 // ---------------------------------------------------------------------------
-// identity (protocol v2: ECDH P-256), persisted across restarts
+// identity + client allowlist, persisted with restrictive permissions
 // ---------------------------------------------------------------------------
+
+export interface PairedClient {
+  pub: string; // client ECDH SPKI base64
+  label?: string;
+  addedAt: string;
+}
 
 interface DaemonIdentity {
   room: string;
   identity: Identity;
   vapid: { publicKey: string; privateKey: string };
+  clients: PairedClient[];
 }
 
 interface IdentityFile {
@@ -49,14 +57,25 @@ interface IdentityFile {
   ecdhPub: string;
   ecdhPriv: string; // PKCS8 base64
   vapid: { publicKey: string; privateKey: string };
+  clients?: PairedClient[];
+}
+
+const STATE_DIR = join(homedir(), ".opencode-remote");
+const STATE_FILE = join(STATE_DIR, "daemon.json");
+
+function assertPrivateMode(file: string) {
+  const mode = statSync(file).mode & 0o777;
+  if (mode !== 0o600) {
+    chmodSync(file, 0o600);
+    log("warn", "state file permissions tightened to 0600", { file, previousMode: mode.toString(8) });
+  }
 }
 
 async function loadIdentity(): Promise<DaemonIdentity> {
-  const dir = join(homedir(), ".opencode-remote");
-  const file = join(dir, "daemon.json");
+  const dir = STATE_DIR;
   mkdirSync(dir, { recursive: true });
-  let raw: Partial<IdentityFile> = existsSync(file)
-    ? (JSON.parse(readFileSync(file, "utf8")) as Partial<IdentityFile>)
+  let raw: Partial<IdentityFile> = existsSync(STATE_FILE)
+    ? (JSON.parse(readFileSync(STATE_FILE, "utf8")) as Partial<IdentityFile>)
     : {};
 
   if (!raw.ecdhPub || !raw.ecdhPriv) {
@@ -65,19 +84,31 @@ async function loadIdentity(): Promise<DaemonIdentity> {
     const pkcs8 = await exportPkcs8(generated);
     raw = {
       ...raw,
+      room: raw.room ?? randomUUID().replaceAll("-", ""),
       ecdhPub: generated.publicKey,
       ecdhPriv: b64(pkcs8),
       vapid: raw.vapid ?? webpush.generateVAPIDKeys(),
     };
-    writeFileSync(file, JSON.stringify(raw, null, 2));
   }
+
+  writeFileSync(STATE_FILE, JSON.stringify(raw, null, 2));
+  chmodSync(STATE_FILE, 0o600);
+  assertPrivateMode(STATE_FILE);
 
   const identity = await importPrivateIdentity(raw.ecdhPub!, fromB64(raw.ecdhPriv!));
   return {
     room: raw.room ?? randomUUID().replaceAll("-", ""),
     identity,
     vapid: raw.vapid ?? webpush.generateVAPIDKeys(),
+    clients: raw.clients ?? [],
   };
+}
+
+function saveClients(clients: PairedClient[]) {
+  const raw = JSON.parse(readFileSync(STATE_FILE, "utf8")) as IdentityFile;
+  raw.clients = clients;
+  writeFileSync(STATE_FILE, JSON.stringify(raw, null, 2));
+  chmodSync(STATE_FILE, 0o600);
 }
 
 const daemon = await loadIdentity();
@@ -150,7 +181,7 @@ interface PushSub {
 }
 
 function subscriptionsFile(): string {
-  return join(homedir(), ".opencode-remote", "subscriptions.json");
+  return join(STATE_DIR, "subscriptions.json");
 }
 
 function loadSubscriptions(): PushSub[] {
@@ -165,6 +196,7 @@ function loadSubscriptions(): PushSub[] {
 
 function saveSubscriptions(subs: PushSub[]) {
   writeFileSync(subscriptionsFile(), JSON.stringify(subs, null, 2));
+  chmodSync(subscriptionsFile(), 0o600);
 }
 
 webpush.setVapidDetails(
@@ -185,37 +217,46 @@ async function pushToSubscribers(title: string, body: string, data?: unknown) {
     } catch (err) {
       const status = (err as { statusCode?: number }).statusCode;
       if (status === 404 || status === 410) dead.push(sub.endpoint);
-      else console.warn("[daemon] push failed:", (err as Error).message);
+      else log("warn", "push delivery failed", { error: (err as Error).message });
     }
   }
   if (dead.length) saveSubscriptions(subs.filter((s) => !dead.includes(s.endpoint)));
 }
 
 // ---------------------------------------------------------------------------
-// event forwarding: SSE from opencode -> sealed frames to the client
+// connected client sessions (multi-device: every paired client gets events)
 // ---------------------------------------------------------------------------
 
-let clientSocket: WebSocket | null = null;
-let sessionKey: CryptoKey | null = null;
-let clientLastSeq = 0; // highest seq accepted from the client (replay guard)
-let sendSeq = 0; // monotonically increasing per daemon frame
+interface ClientSession {
+  from: string;
+  pub: string;
+  key: CryptoKey;
+  socket: WebSocket;
+  lastSeq: number; // highest seq accepted from this client (replay guard)
+  sendSeq: number; // monotonically increasing per daemon->client frame
+}
 
-function sendToClient(env: DaemonEnvelope) {
-  if (!clientSocket || !sessionKey || clientSocket.readyState !== WebSocket.OPEN) return;
-  const seq = ++sendSeq;
-  void seal(env, sessionKey, seqAad(daemon.room, seq)).then((payload) => {
-    clientSocket?.send(
-      JSON.stringify({
-        room: daemon.room,
-        from: daemon.room,
-        seq,
-        payload,
-      } satisfies RelayFrame),
-    );
-  });
+const sessions = new Map<string, ClientSession>();
+
+function sendToSession(session: ClientSession, env: DaemonEnvelope) {
+  const seq = ++session.sendSeq;
+  void seal(env, session.key, seqAad(daemon.room, seq))
+    .then((payload) => {
+      if (session.socket.readyState === WebSocket.OPEN) {
+        session.socket.send(
+          JSON.stringify({ room: daemon.room, from: daemon.room, seq, payload } satisfies RelayFrame),
+        );
+      }
+    })
+    .catch((err) => log("error", "seal failed", { error: (err as Error).message }));
+}
+
+function broadcast(env: DaemonEnvelope) {
+  for (const session of sessions.values()) sendToSession(session, env);
 }
 
 async function forwardEvents() {
+  let attempt = 0;
   for (;;) {
     try {
       const url = new URL("/event", OPENCODE_URL);
@@ -223,6 +264,8 @@ async function forwardEvents() {
         headers: authHeader ? { authorization: authHeader } : {},
       });
       if (!res.body) throw new Error("no body");
+      attempt = 0;
+      log("info", "opencode event stream attached");
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -254,7 +297,7 @@ async function forwardEvents() {
             } else if (evt.type === "session.idle") {
               void pushToSubscribers("Agent finished", `Session idle on ${MACHINE_NAME}`);
             }
-            sendToClient({
+            broadcast({
               type: "event",
               event: { id: randomUUID(), type: evt.type, properties: evt.properties },
             });
@@ -264,12 +307,13 @@ async function forwardEvents() {
         }
       }
     } catch (err) {
-      console.warn(
-        "[daemon] event stream error:",
-        err instanceof Error ? err.message : err,
-      );
+      log("warn", "event stream error", {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
-    await new Promise((r) => setTimeout(r, 2000));
+    // exponential backoff with jitter: 2s, 4s, 8s, ... capped at 30s
+    const delay = Math.min(30_000, 2000 * 2 ** attempt++) + Math.floor(Math.random() * 1000);
+    await new Promise((r) => setTimeout(r, delay));
   }
 }
 
@@ -278,23 +322,27 @@ async function forwardEvents() {
 // ---------------------------------------------------------------------------
 
 async function handleSealedFrame(frame: RelayFrame, ws: WebSocket) {
-  if (!sessionKey) return;
+  const session = sessions.get(frame.from);
+  if (!session) {
+    log("warn", "sealed frame from unknown session", { from: frame.from });
+    return;
+  }
   const seq = frame.seq ?? 0;
-  if (seq <= clientLastSeq) {
-    console.warn(`[daemon] replay rejected: seq ${seq} <= ${clientLastSeq}`);
+  if (seq <= session.lastSeq) {
+    log("warn", "replay rejected", { from: frame.from, seq, lastSeq: session.lastSeq });
     return;
   }
   const envelope = await openSealed<ClientEnvelope>(
     frame.payload,
-    sessionKey,
+    session.key,
     seqAad(frame.from, seq),
   );
   if (!envelope || envelope.type !== "op") {
-    console.warn(`[daemon] undecryptable frame from ${frame.from} (auth failure)`);
+    log("warn", "undecryptable frame (auth failure)", { from: frame.from });
     return;
   }
-  clientLastSeq = seq;
-  await proxy(envelope.req).then((res) => sendToClient({ type: "res", res }));
+  session.lastSeq = seq;
+  await proxy(envelope.req).then((res) => sendToSession(session, { type: "res", res }));
 }
 
 interface HelloMsg {
@@ -310,7 +358,7 @@ async function handleMessage(data: WebSocket.RawData, ws: WebSocket) {
     return;
   }
   if (frame.from === daemon.room) return;
-  console.log(`[daemon] frame from ${frame.from} (${frame.payload?.slice(0, 12)}…)`);
+  log("debug", "frame received", { from: frame.from, bytes: frame.payload?.length ?? 0 });
 
   // control frames carry clear JSON (b64-encoded) with a `type` field
   let isControl = false;
@@ -322,15 +370,40 @@ async function handleMessage(data: WebSocket.RawData, ws: WebSocket) {
       isControl = true;
       const accepted = await serverAccept(maybeControl.hello, daemon.identity);
       if (!accepted) {
-        console.warn("[daemon] handshake failed for", frame.from);
+        log("warn", "handshake failed", { from: frame.from });
         return;
       }
-      sessionKey = accepted.sessionKey;
-      clientLastSeq = 0;
-      sendSeq = 0;
-      clientSocket = ws;
-      console.log(`[daemon] client paired: ${accepted.clientPub.slice(0, 12)}…`);
-      const confirm = await acceptPayload(sessionKey);
+
+      // ---- client authorization ------------------------------------------
+      // bootstrap: the first client ever to pair is stored automatically;
+      // afterwards only clients in the allowlist may connect.
+      let client = daemon.clients.find((c) => c.pub === accepted.clientPub);
+      if (!client && daemon.clients.length === 0) {
+        client = { pub: accepted.clientPub, addedAt: new Date().toISOString(), label: "first" };
+        daemon.clients.push(client);
+        saveClients(daemon.clients);
+        log("info", "bootstrap client persisted", { pub: accepted.clientPub.slice(0, 16) });
+      }
+      if (!client) {
+        log("warn", "client rejected: not in allowlist", {
+          pub: accepted.clientPub.slice(0, 16),
+        });
+        return;
+      }
+
+      sessions.set(frame.from, {
+        from: frame.from,
+        pub: accepted.clientPub,
+        key: accepted.sessionKey,
+        socket: ws,
+        lastSeq: 0,
+        sendSeq: 0,
+      });
+      log("info", "client paired", {
+        pub: accepted.clientPub.slice(0, 16),
+        activeSessions: sessions.size,
+      });
+      const confirm = await acceptPayload(accepted.sessionKey);
       ws.send(
         JSON.stringify({
           room: daemon.room,
@@ -342,7 +415,7 @@ async function handleMessage(data: WebSocket.RawData, ws: WebSocket) {
     }
   } catch (err) {
     if (isControl) {
-      console.error("[daemon] handshake error:", err);
+      log("error", "handshake error", { error: (err as Error).message });
       return;
     }
     // not control JSON -> sealed envelope
@@ -354,20 +427,19 @@ function connectRelay() {
   const ws = new WebSocket(RELAY_URL);
 
   ws.on("open", () => {
-    console.log(`[daemon] connected to relay ${RELAY_URL} (room ${daemon.room})`);
+    log("info", "connected to relay", { relay: RELAY_URL, room: daemon.room });
     ws.send(JSON.stringify({ room: daemon.room, from: daemon.room, payload: "" }));
   });
 
   ws.on("message", (data) => void handleMessage(data, ws));
 
   ws.on("close", () => {
-    console.log("[daemon] relay connection lost; retrying in 2s");
-    clientSocket = null;
-    sessionKey = null;
+    log("warn", "relay connection lost; retrying in 2s");
+    sessions.clear();
     setTimeout(connectRelay, 2000);
   });
 
-  ws.on("error", (err) => console.error("[daemon] relay error:", err.message));
+  ws.on("error", (err) => log("error", "relay error", { error: err.message }));
 }
 
 // ---------------------------------------------------------------------------
@@ -375,6 +447,27 @@ function connectRelay() {
 // ---------------------------------------------------------------------------
 
 async function main() {
+  log("info", "daemon starting (protocol v2)", {
+    machine: MACHINE_NAME,
+    opencode: OPENCODE_URL,
+    relay: RELAY_URL,
+    pairedClients: daemon.clients.length,
+  });
+
+  // boot healthcheck: fail loudly early if opencode is unreachable
+  try {
+    const res = await fetch(new URL("/global/health", OPENCODE_URL), {
+      headers: authHeader ? { authorization: authHeader } : {},
+    });
+    const body = (await res.json()) as { healthy?: boolean; version?: string };
+    log("info", "opencode healthcheck", { status: res.status, ...body });
+  } catch (err) {
+    log("warn", "opencode unreachable at boot (will keep retrying events)", {
+      opencode: OPENCODE_URL,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
   const pairingUri =
     `opencode-remote://pair?v=2` +
     `&relay=${encodeURIComponent(RELAY_URL)}` +
@@ -387,6 +480,7 @@ async function main() {
   console.log(`  machine:  ${MACHINE_NAME}`);
   console.log(`  opencode: ${OPENCODE_URL}`);
   console.log(`  relay:    ${RELAY_URL}`);
+  console.log(`  clients:  ${daemon.clients.length} paired`);
   console.log(`\n  Pair with the PWA by scanning this QR code:\n`);
   console.log(await QRCode.toString(pairingUri, { type: "terminal", small: true }));
   console.log(`  or paste: ${pairingUri}\n`);
@@ -396,6 +490,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error(err);
+  log("error", "fatal", { error: err instanceof Error ? err.stack : String(err) });
   process.exit(1);
 });
