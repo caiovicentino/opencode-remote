@@ -145,7 +145,14 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
         continue;
       }
       if (evt.type === "session.status") idle = p.status?.type === "idle" || idle;
-      if (evt.type === "session.error") errored = JSON.stringify(evt.properties).slice(0, 200);
+      if (evt.type === "session.error") {
+        const errObj = (p as { error?: { name?: string } }).error;
+        if (errObj?.name === "MessageAbortedError") {
+          idle = true; // user pressed Stop — expected, not a failure
+        } else {
+          errored = JSON.stringify(evt.properties).slice(0, 200);
+        }
+      }
       if (p.part?.type === "text" && p.part.text) {
         if (p.part.messageID && rolesRef.current[p.part.messageID] === "user") continue;
         text = p.part.text;
