@@ -214,7 +214,7 @@ export default function SettingsView({ request, onBack }: Props) {
           {devices.map((d) => (
             <div key={d.pub} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
               <span style={{ flex: 1 }}>
-                {d.label ?? "device"} · {d.pub.slice(0, 10)} · {new Date(d.addedAt).toLocaleDateString()}
+                {d.label ?? "device"} · …{d.pub.slice(-6)} · {new Date(d.addedAt).toLocaleDateString()}
               </span>
               <button className="danger" onClick={() => void revoke(d.pub)}>
                 Revoke

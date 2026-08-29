@@ -4,7 +4,7 @@
  * exactly like smoke.ts, then exercises every /__ocr/* route end-to-end.
  * Run: RELAY_URL=wss://host:8788 npx tsx scripts/live-eval.ts
  */
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import WebSocket from "ws";
@@ -40,6 +40,17 @@ function report(name: string, ok: boolean, detail = "") {
 
 // self-authorize (same trust level as reading the QR code)
 const identity = await newIdentity(false);
+
+// leave no trace in the production allowlist
+process.on("exit", () => {
+  try {
+    const f = stateFile;
+    const j = JSON.parse(readFileSync(f, "utf8")) as { clients?: { pub: string }[] };
+    j.clients = (j.clients ?? []).filter((c) => c.pub !== identity.publicKey);
+    writeFileSync(f, JSON.stringify(j, null, 2));
+    chmodSync(f, 0o600);
+  } catch {}
+});
 identityFile.clients = [
   ...(identityFile.clients ?? []).filter((c) => c.pub !== identity.publicKey),
   { pub: identity.publicKey, addedAt: new Date().toISOString(), label: "eval" },

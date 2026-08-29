@@ -5,7 +5,7 @@
  *   2. replayed frames are rejected by the daemon
  * Run: npx tsx scripts/smoke.ts
  */
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import WebSocket from "ws";
@@ -29,6 +29,17 @@ setTimeout(() => {
   console.error("SMOKE TEST TIMED OUT (global 20s)");
   process.exit(1);
 }, 20_000).unref();
+
+// leave no trace in the production allowlist
+process.on("exit", () => {
+  try {
+    const f = join(homedir(), ".opencode-remote", "daemon.json");
+    const j = JSON.parse(readFileSync(f, "utf8")) as { clients?: { pub: string }[] };
+    j.clients = (j.clients ?? []).filter((c) => c.pub !== identity.publicKey);
+    writeFileSync(f, JSON.stringify(j, null, 2));
+    chmodSync(f, 0o600);
+  } catch {}
+});
 
 // --- 1. non-extractability proof -------------------------------------------
 const identity = await newIdentity(false);
