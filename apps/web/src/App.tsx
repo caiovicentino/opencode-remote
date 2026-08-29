@@ -58,6 +58,24 @@ export default function App() {
     }
   }
 
+  // deep-link routing: notifications open #/session/<id> or #/files
+  useEffect(() => {
+    function applyHash() {
+      const h = location.hash;
+      const sid = /^#\/session\/([\w-]+)/.exec(h)?.[1];
+      if (sid && clientRef.current) {
+        setSession(sid);
+        setFilesView(false);
+        setSettings(false);
+        return;
+      }
+      if (h === "#/files" && clientRef.current) setFilesView(true);
+    }
+    applyHash();
+    window.addEventListener("hashchange", applyHash);
+    return () => window.removeEventListener("hashchange", applyHash);
+  }, [phase]);
+
   useEffect(() => {
     const stored = loadState();
     if (stored) void connect(stored.pairing, false);
@@ -125,7 +143,10 @@ export default function App() {
       request={request}
       events={events}
       voice={clientRef.current?.caps?.transcribe === true}
-      onBack={() => setSession(null)}
+      onBack={() => {
+        setSession(null);
+        history.replaceState(null, "", "#/");
+      }}
     />
   ) : settings ? (
     <SettingsView

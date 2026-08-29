@@ -30,18 +30,21 @@ self.addEventListener("fetch", (event) => {
 });
 
 self.addEventListener("push", (event) => {
-  let payload = { title: "OpenCode Remote", body: "New event", url: "/" };
+  let payload = { title: "OpenCode Remote", body: "New event", url: "#/" };
   try {
     payload = { ...payload, ...event.data.json() };
   } catch {
     // keep defaults
   }
+  // deep-link: the daemon sends { url } (or data.url) with an in-app hash route
+  const raw = (payload.data && payload.data.url) || payload.url || "#/";
+  const abs = new URL(raw, self.registration.scope).href;
   event.waitUntil(
     self.registration.showNotification(payload.title, {
       body: payload.body,
       icon: "/icon.svg",
       badge: "/icon.svg",
-      data: { url: payload.url },
+      data: { url: abs },
       tag: "opencode-remote",
     }),
   );
@@ -51,14 +54,20 @@ self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   const url = event.notification.data?.url || "/";
   event.waitUntil(
-    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((list) => {
+    (async () => {
+      const list = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
       for (const client of list) {
-        if ("focus" in client) {
-          client.navigate(url);
-          return client.focus();
+        if ("navigate" in client) {
+          try {
+            await client.navigate(url);
+          } catch {
+            // iOS Safari may refuse navigation of an open PWA — focus is still useful
+          }
+          if ("focus" in client) await client.focus();
+          return;
         }
       }
-      return self.clients.openWindow(url);
-    }),
+      await self.clients.openWindow(url);
+    })(),
   );
 });

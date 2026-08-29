@@ -636,15 +636,19 @@ async function forwardEvents() {
 
             // notable events become push notifications
             const t = evt.type.toLowerCase();
+            const sessionID = ((evt.properties ?? {}) as { sessionID?: string }).sessionID ?? "";
             if (t.includes("permission") && appSettings.notify.permission) {
               const p = (evt.properties ?? {}) as { type?: string };
               void pushToSubscribers(
                 "Approve needed",
                 `opencode wants to ${p.type ?? "perform an action"} on ${machineName}`,
-                evt.properties,
+                { url: sessionID ? `#/session/${sessionID}` : "#/", evt },
               );
             } else if (evt.type === "session.idle") {
-              if (appSettings.notify.idle) void pushToSubscribers("Agent finished", `Session idle on ${machineName}`);
+              if (appSettings.notify.idle)
+                void pushToSubscribers("Agent finished", `Session idle on ${machineName}`, {
+                  url: sessionID ? `#/session/${sessionID}` : "#/",
+                });
             }
             broadcast({
               type: "event",
