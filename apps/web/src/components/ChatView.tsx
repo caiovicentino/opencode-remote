@@ -74,6 +74,7 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
   const [agent, setAgent] = useState(localStorage.getItem("ocr_agent") ?? "");
   const [tapToggle, setTapToggle] = useState(false);
   const [responded, setResponded] = useState<Set<string>>(new Set());
+  const [persistedAsks, setPersistedAsks] = useState<PermissionAsk[]>([]);
   const rolesRef = useRef<Record<string, string>>({});
   const [pendingVideo, setPendingVideo] = useState<{ file: File; dur: number } | null>(null);
   const [trimStart, setTrimStart] = useState("");
@@ -106,6 +107,23 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
   useEffect(() => {
     rolesRef.current = {};
     setResponded(new Set());
+    // ask the daemon for pending permissions on this session — covers asks that
+    // happened before the app was open (otherwise the agent stays stuck invisibly)
+    void (async () => {
+      try {
+        const res = await request("GET", "/permission");
+        const list = (Array.isArray(res.body) ? res.body : []) as {
+          id: string;
+          sessionID?: string;
+          permission?: string;
+        }[];
+        setPersistedAsks(
+          list
+            .filter((x) => x.sessionID === sessionId)
+            .map((x) => ({ permissionID: x.id, label: x.permission ?? "action" })),
+        );
+      } catch {}
+    })();
   }, [sessionId]);
 
   useEffect(() => {
@@ -194,6 +212,11 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
     const ask = extractPermission(evt, sessionId);
     if (ask && !responded.has(ask.permissionID)) pending.push(ask);
   }
+  // persisted asks (server-side pending list) — covers events lost before mount
+  for (const pa of persistedAsks) {
+    if (!responded.has(pa.permissionID) && !pending.some((p) => p.permissionID === pa.permissionID))
+      pending.push(pa);
+  }
 
   async function respond(permissionID: string, response: "approve" | "reject") {
     // opencode's enum is once|always|reject — "approve" is rejected with 400
@@ -209,6 +232,8 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
           return next;
         });
         setError(`approve failed (${res.status}): ${JSON.stringify(res.body).slice(0, 140)}`);
+      } else {
+        setPersistedAsks((prev) => prev.filter((p) => p.permissionID !== permissionID));
       }
     } catch (err) {
       setResponded((prev) => {

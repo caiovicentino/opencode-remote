@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Panorama DeFi — notas de mercado</title>
+<style>
+  :root{
+    --ink:#1a1d21; --paper:#fbfaf7; --line:#d8d5cc; --soft:#efede6;
+    --accent:#0e5a3c; --accent2:#8a4b12; --muted:#6b675e; --neg:#a33a2a;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:var(--paper);color:var(--ink);font-family:Georgia,'Times New Roman',serif;line-height:1.55}
+  .wrap{max-width:860px;margin:0 auto;padding:48px 28px 80px}
+  .kicker{font-family:ui-monospace,'SF Mono',Menlo,monospace;font-size:.72rem;letter-spacing:.18em;text-transform:uppercase;color:var(--accent2)}
+  h1{font-size:2.1rem;font-weight:700;line-height:1.15;margin:6px 0 10px}
+  .standfirst{font-size:1.06rem;color:var(--muted);max-width:60ch;font-style:italic}
+  .byline{display:flex;gap:14px;align-items:center;margin:22px 0 8px;font-family:ui-monospace,Menlo,monospace;font-size:.75rem;color:var(--muted)}
+  .byline .dot{width:5px;height:5px;background:var(--accent2);border-radius:50%}
+  hr.rule{border:none;border-top:2px solid var(--ink);margin:26px 0}
+  h2{font-size:1.15rem;margin:38px 0 12px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+  h2 .num{color:var(--accent2);font-family:ui-monospace,Menlo,monospace;font-size:.85rem;margin-right:8px}
+  p{margin-bottom:12px}
+  .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:0;border:1px solid var(--line);margin:20px 0}
+  .kpi{padding:14px 16px;border-right:1px solid var(--line)}
+  .kpi:last-child{border-right:none}
+  .kpi .v{font-family:ui-monospace,Menlo,monospace;font-size:1.25rem;font-weight:600}
+  .kpi .l{font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-top:2px}
+  .pos{color:var(--accent)} .neg{color:var(--neg)}
+  table{width:100%;border-collapse:collapse;font-size:.92rem;margin:10px 0 6px}
+  th{font-family:ui-monospace,Menlo,monospace;font-size:.68rem;text-transform:uppercase;letter-spacing:.1em;text-align:left;color:var(--muted);padding:8px 10px;border-bottom:2px solid var(--ink)}
+  td{padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  td.n,th.n{text-align:right;font-family:ui-monospace,Menlo,monospace;font-variant-numeric:tabular-nums;white-space:nowrap}
+  tr:hover td{background:var(--soft)}
+  .note{font-size:.8rem;color:var(--muted);margin-top:6px}
+  .bars{margin:14px 0}
+  .bar-row{display:grid;grid-template-columns:150px 1fr 70px;gap:12px;align-items:center;margin-bottom:8px;font-size:.85rem}
+  .bar-row .lab{text-align:right;color:var(--ink)}
+  .bar-row .track{background:var(--soft);border-radius:2px;height:16px;position:relative}
+  .bar-row .fill{background:var(--accent);height:100%;border-radius:2px}
+  .bar-row .val{font-family:ui-monospace,Menlo,monospace;font-size:.78rem;color:var(--muted)}
+  .chart{margin:18px 0}
+  .chart svg{width:100%;height:auto;display:block}
+  .axis{font-family:ui-monospace,Menlo,monospace;font-size:.68rem;fill:var(--muted)}
+  .callout{border-left:3px solid var(--accent2);background:var(--soft);padding:14px 18px;margin:18px 0;font-size:.95rem}
+  .foot{margin-top:56px;border-top:1px solid var(--line);padding-top:14px;font-size:.78rem;color:var(--muted)}
+  .foot p{margin-bottom:4px}
+  @media(max-width:640px){.kpis{grid-template-columns:repeat(2,1fr)}.kpi:nth-child(2){border-right:none}.kpi:nth-child(-n+2){border-bottom:1px solid var(--line)}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<div class="kicker">Notas de Mercado · Finanças Descentralizadas</div>
+<h1>Panorama DeFi: TVL recua 41% em 12 meses, mas fatia do Ethereum se sustenta em 56%</h1>
+<p class="standfirst">Leitura consolidada do setor com base nos dados públicos do DefiLlama: Valor Total Travado (TVL) por rede, protocolos líderes, categorias, stablecoins e as taxas mais altas do momento — com o contexto de risco que os números escondem.</p>
+
+<div class="byline"><span class="dot"></span><span>Dados coletados via API em 29/08/2026</span><span class="dot"></span><span>Fonte: DefiLlama</span></div>
+
+<hr class="rule">
+
+<div class="kpis">
+  <div class="kpi"><div class="v">US$ 87,9 bi</div><div class="l">TVL DeFi atual</div></div>
+  <div class="kpi"><div class="v neg">−50,5%</div><div class="l">vs. máxima (2021)</div></div>
+  <div class="kpi"><div class="v pos">+16,6%</div><div class="l">últimos 30 dias</div></div>
+  <div class="kpi"><div class="v neg">−41,8%</div><div class="l">últimos 12 meses</div></div>
+</div>
+
+<h2><span class="num">01</span>O número que importa</h2>
+<p>Os US$ 87,9 bilhões travados em contratos DeFi colocam o setor a caminho de encerrar 2026 em patamar similar ao de 2020 — muito abaixo dos US$ 177,5 bi registrados em novembro de 2021. O corte de quase metade em 12 meses reflete a correção generalizada dos criptoativos; ainda assim, os últimos trinta dias mostram recuperação (+16,6%), puxada sobretudo por Aave e pelos protocolos de staking líquido.</p>
+
+<div class="chart">
+  <svg viewBox="0 0 720 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="TVL histórico do DeFi">
+    <line x1="0" y1="180" x2="720" y2="180" stroke="#d8d5cc" stroke-width="1"/>
+    <line x1="0" y1="90" x2="720" y2="90" stroke="#d8d5cc" stroke-width="1" stroke-dasharray="4 4"/>
+    <text x="4" y="86" class="axis">US$ 90 bi</text>
+    <polyline fill="none" stroke="#0e5a3c" stroke-width="2.5" points="0.0,180.0 10.3,180.0 20.6,180.0 30.9,180.0 41.1,180.0 51.4,180.0 61.7,180.0 72.0,180.0 82.3,180.0 92.6,180.0 102.9,180.0 113.1,179.7 123.4,179.7 133.7,179.5 144.0,179.5 154.3,179.6 164.6,179.5 174.9,179.4 185.1,179.4 195.4,179.0 205.7,179.4 216.0,179.2 226.3,177.9 236.6,173.7 246.9,170.1 257.1,168.1 267.4,161.1 277.7,133.3 288.0,105.4 298.3,105.4 308.6,91.6 318.9,61.7 329.1,43.3 339.4,14.1 349.7,26.0 360.0,48.1 370.3,26.6 380.6,100.3 390.9,125.6 401.1,120.9 411.4,128.1 421.7,139.8 432.0,139.7 442.3,132.0 452.6,129.9 462.9,132.4 473.1,134.3 483.4,142.2 493.7,143.4 504.0,133.9 514.3,123.7 524.6,101.6 534.9,96.5 545.1,81.9 555.4,88.3 565.7,101.7 576.0,96.4 586.3,60.3 596.6,57.8 606.9,75.3 617.1,93.9 627.4,69.7 637.7,46.4 648.0,30.2 658.3,31.5 668.6,59.4 678.9,54.9 689.1,85.1 699.4,94.8 709.7,110.6 720.0,102.8"/>
+    <text x="0" y="196" class="axis">meados 2020</text>
+    <text x="300" y="196" class="axis">2022</text>
+    <text x="480" y="196" class="axis">2024</text>
+    <text x="675" y="196" class="axis">ago/2026</text>
+  </svg>
+  <p class="note">TVL agregado do DeFi, em US$ bi. A ponta de 2021 (US$ 177,5 bi) segue como referência histórica. Fonte: DefiLlama.</p>
+</div>
+
+<h2><span class="num">02</span>Redes: Ethereum domina, L2s e Solana brigam pela vice-liderança</h2>
+<p>Fora de temporada de bull market, o TVL concentra-se onde o dinheiro grande opera. O Ethereum responde sozinho por <strong>US$ 48,96 bi — 55,8% de tudo</strong> — e nenhuma outra rede chega perto. A briga pelo segundo lugar é apertada: Solana (US$ 5,90 bi), Base (US$ 5,51 bi) e BSC (US$ 5,48 bi) estão tecnicamente empatadas. Chama atenção o Bitcoin (US$ 4,09 bi) aparecendo no radar via pontes e camadas, e a presença de nomes novos como Monad, Plasma e Robinhood Chain.</p>
+<table>
+  <thead><tr><th>Rede</th><th class="n">TVL (US$ bi)</th><th class="n">Fatia</th></tr></thead>
+  <tbody>
+    <tr><td>Ethereum</td><td class="n">48,96</td><td class="n">55,8%</td></tr>
+    <tr><td>Solana</td><td class="n">5,90</td><td class="n">6,7%</td></tr>
+    <tr><td>Base</td><td class="n">5,51</td><td class="n">6,3%</td></tr>
+    <tr><td>BSC</td><td class="n">5,48</td><td class="n">6,2%</td></tr>
+    <tr><td>Tron</td><td class="n">5,24</td><td class="n">6,0%</td></tr>
+    <tr><td>Bitcoin</td><td class="n">4,09</td><td class="n">4,7%</td></tr>
+    <tr><td>Provenance</td><td class="n">1,85</td><td class="n">2,1%</td></tr>
+    <tr><td>Hyperliquid L1</td><td class="n">1,55</td><td class="n">1,8%</td></tr>
+    <tr><td>Arbitrum</td><td class="n">1,41</td><td class="n">1,6%</td></tr>
+    <tr><td>Monad</td><td class="n">0,96</td><td class="n">1,1%</td></tr>
+  </tbody>
+</table>
+<p class="note">Top 10 redes por TVL. As demais (Polygon, Avalanche, Sui etc.) somam cerca de 8% do total.</p>
+
+<h2><span class="num">03</span>Protocolos: staking líquido e crédito no comando</h2>
+<p>Entre os protocolos puramente DeFi, a liderança é do <strong>Lido</strong> (US$ 23,6 bi), seguido de perto pelo <strong>Aave V3</strong> (US$ 17,2 bi). A lista abaixo filtra as corretoras centralizadas — que aparecem no agregador, mas não são DeFi. Vale notar a força dos mercados de empréstimo (Aave, Morpho, SparkLend) e do staking líquido (Lido, SSV, ether.fi).</p>
+<table>
+  <thead><tr><th>Protocolo</th><th>Categoria</th><th class="n">TVL (US$ mi)</th><th class="n">7 dias</th></tr></thead>
+  <tbody>
+    <tr><td>Lido</td><td>Staking líquido</td><td class="n">23.630</td><td class="n pos">+1,6%</td></tr>
+    <tr><td>Aave V3</td><td>Empréstimos</td><td class="n">17.216</td><td class="n pos">+1,4%</td></tr>
+    <tr><td>SSV Network</td><td>Staking</td><td class="n">12.343</td><td class="n pos">+0,7%</td></tr>
+    <tr><td>Morpho Blue</td><td>Empréstimos</td><td class="n">9.576</td><td class="n pos">+2,2%</td></tr>
+    <tr><td>WBTC</td><td>Ponte</td><td class="n">8.928</td><td class="n pos">+1,3%</td></tr>
+    <tr><td>Coinbase Bridge</td><td>Ponte</td><td class="n">7.913</td><td class="n pos">+4,6%</td></tr>
+    <tr><td>LayerZero V2</td><td>Ponte</td><td class="n">7.318</td><td class="n pos">+5,2%</td></tr>
+    <tr><td>EigenCloud</td><td>Restaking</td><td class="n">6.493</td><td class="n pos">+0,5%</td></tr>
+    <tr><td>Sky (ex-Maker)</td><td>CDP</td><td class="n">5.533</td><td class="n neg">−2,4%</td></tr>
+    <tr><td>SparkLend</td><td>Empréstimos</td><td class="n">4.369</td><td class="n neg">−8,7%</td></tr>
+    <tr><td>ether.fi Stake</td><td>Staking líquido</td><td class="n">4.334</td><td class="n pos">+1,4%</td></tr>
+  </tbody>
+</table>
+<p class="note">Variação de 7 dias conforme API do DefiLlama na data da coleta. CEXs (Binance, OKX, Bitfinex etc.) foram excluídos da tabela por não serem protocolos DeFi.</p>
+
+<h2><span class="num">04</span>Onde está o dinheiro, por categoria</h2>
+<div class="bars">
+  <div class="bar-row"><span class="lab">Ponte</span><div class="track"><div class="fill" style="width:100%"></div></div><span class="val">52,1 bi</span></div>
+  <div class="bar-row"><span class="lab">Staking líquido</span><div class="track"><div class="fill" style="width:98%"></div></div><span class="val">51,1 bi</span></div>
+  <div class="bar-row"><span class="lab">Empréstimos</span><div class="track"><div class="fill" style="width:95%"></div></div><span class="val">49,4 bi</span></div>
+  <div class="bar-row"><span class="lab">RWA</span><div class="track"><div class="fill" style="width:53%"></div></div><span class="val">27,7 bi</span></div>
+  <div class="bar-row"><span class="lab">Staking</span><div class="track"><div class="fill" style="width:27%"></div></div><span class="val">13,8 bi</span></div>
+  <div class="bar-row"><span class="lab">DEXs</span><div class="track"><div class="fill" style="width:24%"></div></div><span class="val">12,7 bi</span></div>
+  <div class="bar-row"><span class="lab">Restaking</span><div class="track"><div class="fill" style="width:19%"></div></div><span class="val">9,9 bi</span></div>
+  <div class="bar-row"><span class="lab">CDP</span><div class="track"><div class="fill" style="width:15%"></div></div><span class="val">7,9 bi</span></div>
+</div>
+<p class="note">TVL por categoria, excluindo CEXs (que somariam US$ 305 bi e distorceriam o gráfico). RWA = ativos do mundo real tokenizados, categoria que mais cresce desde 2024.</p>
+
+<h2><span class="num">05</span>Stablecoins: a espinha dorsal do setor</h2>
+<p>Nenhuma conversa sobre DeFi faz sentido sem olhar as stablecoins — o combustível do sistema. As dez maiores somam <strong>US$ 288,9 bi</strong> em circulação, quase o triplo do TVL total do DeFi. A Tether segue soberana, mas o quadro abaixo mostra a chegada de players institucionais (BlackRock, PayPal, World Liberty Financial).</p>
+<table>
+  <thead><tr><th>Stablecoin</th><th>Emissor</th><th class="n">Circulação (US$ bi)</th></tr></thead>
+  <tbody>
+    <tr><td>USDT</td><td>Tether</td><td class="n">183,4</td></tr>
+    <tr><td>USDC</td><td>Circle</td><td class="n">74,2</td></tr>
+    <tr><td>USDS</td><td>Sky</td><td class="n">6,7</td></tr>
+    <tr><td>DAI</td><td>Sky</td><td class="n">4,8</td></tr>
+    <tr><td>USD1</td><td>World Liberty Financial</td><td class="n">4,2</td></tr>
+    <tr><td>USDe</td><td>Ethena</td><td class="n">4,1</td></tr>
+    <tr><td>USDG</td><td>Global Dollar</td><td class="n">3,3</td></tr>
+    <tr><td>BUIDL</td><td>BlackRock</td><td class="n">2,8</td></tr>
+    <tr><td>USYC</td><td>Circle</td><td class="n">2,8</td></tr>
+    <tr><td>PYUSD</td><td>PayPal</td><td class="n">2,8</td></tr>
+  </tbody>
+</table>
+<p class="note">Somente top 10 (peg em USD). BUIDL e USYC são fundos tokenizados lastreados em títulos do Tesouro americano.</p>
+
+<h2><span class="num">06</span>As taxas mais altas — e por que desconfiar delas</h2>
+<p>A tabela abaixo lista pares com os maiores APYs divulgados no agregador de yields, filtrados por liquidez mínima de US$ 5 mi. Regra de ouro: <strong>rendimento de dois dígitos sustentado quase sempre tem uma explicação</strong> — incentivo em token novo, posição de concentrada ou risco de emissor. O APY de 97% do Raydium não é dinheiro de graça; é prêmio por risco.</p>
+<table>
+  <thead><tr><th>Protocolo</th><th>Par</th><th>Rede</th><th class="n">TVL (US$ mi)</th><th class="n">APY</th></tr></thead>
+  <tbody>
+    <tr><td>Raydium</td><td>WSOL-USDC</td><td>Solana</td><td class="n">14,3</td><td class="n pos">97,2%</td></tr>
+    <tr><td>Nest CL</td><td>WHYPE-USDC</td><td>Hyperliquid</td><td class="n">5,6</td><td class="n pos">85,4%</td></tr>
+    <tr><td>Aerodrome</td><td>WETH-USDC</td><td>Base</td><td class="n">8,1</td><td class="n pos">84,2%</td></tr>
+    <tr><td>Aerodrome</td><td>WETH-CBBTC</td><td>Base</td><td class="n">12,1</td><td class="n pos">82,2%</td></tr>
+    <tr><td>Uniswap V4</td><td>ETH-USDC</td><td>Arbitrum</td><td class="n">9,7</td><td class="n pos">59,2%</td></tr>
+    <tr><td>Orca</td><td>SOL-USDC</td><td>Solana</td><td class="n">25,3</td><td class="n pos">43,7%</td></tr>
+    <tr><td>Usual</td><td>USD0</td><td>Ethereum</td><td class="n">8,0</td><td class="n pos">34,9%</td></tr>
+    <tr><td>Uniswap V4</td><td>ETH-UNI</td><td>Ethereum</td><td class="n">6,9</td><td class="n pos">31,5%</td></tr>
+  </tbody>
+</table>
+
+<div class="callout"><strong>O que acompanhar nos próximos meses:</strong> (1) se o TVL sustenta a recuperação dos 30 dias ou volta a testar os US$ 75 bi; (2) a evolução dos RWAs tokenizados, hoje em US$ 27,7 bi, única categoria que cresceu de forma consistente no ciclo; (3) a consolidação entre L2s — Base e Arbitrum já disputam o mesmo público e a migração de liquidez tende a se intensificar.</div>
+
+<div class="foot">
+  <p><strong>Metodologia e fontes:</strong> dados extraídos diretamente das APIs públicas do DefiLlama (api.llama.fi, yields.llama.fi, stablecoins.llama.fi) em 29/08/2026. TVL = Valor Total Travado em contratos inteligentes, em dólar. CEXs (corretoras centralizadas) aparecem nas estatísticas do agregador, mas foram segregados nas tabelas de protocolos.</p>
+  <p>Este material é informativo e não constitui recomendação de investimento. Criptoativos envolvem risco de perda total.</p>
+</div>
+
+</div>
+</body>
+</html>
