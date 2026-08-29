@@ -5,7 +5,7 @@
  *   2. replayed frames are rejected by the daemon
  * Run: npx tsx scripts/smoke.ts
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import WebSocket from "ws";
@@ -20,7 +20,7 @@ import {
 
 const identityFile = JSON.parse(
   readFileSync(join(homedir(), ".opencode-remote", "daemon.json"), "utf8"),
-) as { room: string; ecdhPub?: string; publicKey?: string };
+) as { room: string; ecdhPub?: string; publicKey?: string; clients?: { pub: string }[] };
 const daemonPub = identityFile.ecdhPub ?? identityFile.publicKey!;
 const RELAY = process.env.RELAY_URL ?? "ws://127.0.0.1:8787";
 
@@ -39,6 +39,19 @@ try {
 } catch {
   console.log("Non-extractable identity key: OK");
 }
+
+// the smoke acts as the machine owner: it authorizes its own client key in
+// the daemon allowlist (same trust level as displaying the QR code). The
+// daemon reads the allowlist fresh on every handshake, so this works even
+// with the daemon already running.
+identityFile.clients = [
+  ...(identityFile.clients ?? []).filter((c) => c.pub !== identity.publicKey),
+  { pub: identity.publicKey, addedAt: new Date().toISOString(), label: "smoke" },
+];
+writeFileSync(
+  join(homedir(), ".opencode-remote", "daemon.json"),
+  JSON.stringify(identityFile, null, 2),
+);
 
 // --- 2. connect, handshake, pair --------------------------------------------
 const ws = new WebSocket(RELAY);

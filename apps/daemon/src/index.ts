@@ -47,7 +47,6 @@ interface DaemonIdentity {
   room: string;
   identity: Identity;
   vapid: { publicKey: string; privateKey: string };
-  clients: PairedClient[];
 }
 
 interface IdentityFile {
@@ -62,6 +61,19 @@ interface IdentityFile {
 
 const STATE_DIR = join(homedir(), ".opencode-remote");
 const STATE_FILE = join(STATE_DIR, "daemon.json");
+
+/** Fresh read per handshake: `manage.ts revoke` takes effect instantly. */
+function readAllowlist(): PairedClient[] {
+  const raw = JSON.parse(readFileSync(STATE_FILE, "utf8")) as IdentityFile;
+  return raw.clients ?? [];
+}
+
+function saveAllowlist(clients: PairedClient[]) {
+  const raw = JSON.parse(readFileSync(STATE_FILE, "utf8")) as IdentityFile;
+  raw.clients = clients;
+  writeFileSync(STATE_FILE, JSON.stringify(raw, null, 2));
+  chmodSync(STATE_FILE, 0o600);
+}
 
 function assertPrivateMode(file: string) {
   const mode = statSync(file).mode & 0o777;
@@ -100,15 +112,7 @@ async function loadIdentity(): Promise<DaemonIdentity> {
     room: raw.room ?? randomUUID().replaceAll("-", ""),
     identity,
     vapid: raw.vapid ?? webpush.generateVAPIDKeys(),
-    clients: raw.clients ?? [],
   };
-}
-
-function saveClients(clients: PairedClient[]) {
-  const raw = JSON.parse(readFileSync(STATE_FILE, "utf8")) as IdentityFile;
-  raw.clients = clients;
-  writeFileSync(STATE_FILE, JSON.stringify(raw, null, 2));
-  chmodSync(STATE_FILE, 0o600);
 }
 
 const daemon = await loadIdentity();
@@ -375,13 +379,15 @@ async function handleMessage(data: WebSocket.RawData, ws: WebSocket) {
       }
 
       // ---- client authorization ------------------------------------------
-      // bootstrap: the first client ever to pair is stored automatically;
+      // fresh read per handshake: `manage.ts revoke` takes effect instantly.
+      // bootstrap: the first QR pairing on a virgin daemon auto-persists;
       // afterwards only clients in the allowlist may connect.
-      let client = daemon.clients.find((c) => c.pub === accepted.clientPub);
-      if (!client && daemon.clients.length === 0) {
+      const allowlist = readAllowlist();
+      let client = allowlist.find((c) => c.pub === accepted.clientPub);
+      if (!client && allowlist.length === 0) {
         client = { pub: accepted.clientPub, addedAt: new Date().toISOString(), label: "first" };
-        daemon.clients.push(client);
-        saveClients(daemon.clients);
+        allowlist.push(client);
+        saveAllowlist(allowlist);
         log("info", "bootstrap client persisted", { pub: accepted.clientPub.slice(0, 16) });
       }
       if (!client) {
@@ -451,7 +457,7 @@ async function main() {
     machine: MACHINE_NAME,
     opencode: OPENCODE_URL,
     relay: RELAY_URL,
-    pairedClients: daemon.clients.length,
+    pairedClients: readAllowlist().length,
   });
 
   // boot healthcheck: fail loudly early if opencode is unreachable
@@ -480,7 +486,7 @@ async function main() {
   console.log(`  machine:  ${MACHINE_NAME}`);
   console.log(`  opencode: ${OPENCODE_URL}`);
   console.log(`  relay:    ${RELAY_URL}`);
-  console.log(`  clients:  ${daemon.clients.length} paired`);
+  console.log(`  clients:  ${readAllowlist().length} paired`);
   console.log(`\n  Pair with the PWA by scanning this QR code:\n`);
   console.log(await QRCode.toString(pairingUri, { type: "terminal", small: true }));
   console.log(`  or paste: ${pairingUri}\n`);
