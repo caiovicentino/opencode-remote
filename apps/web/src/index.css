@@ -6,7 +6,19 @@
   --muted: #8a8a8a;
   --accent: #4ade80;
   --danger: #f87171;
+  --user-bubble: #1d3b26;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+:root[data-theme="light"] {
+  --bg: #f4f4f5;
+  --surface: #ffffff;
+  --border: #d4d4d8;
+  --text: #18181b;
+  --muted: #71717a;
+  --accent: #16a34a;
+  --danger: #dc2626;
+  --user-bubble: #dcfce7;
 }
 
 * {
@@ -95,10 +107,22 @@ textarea {
 
 .session-card {
   cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 .session-card h3 {
   margin: 0 0 4px;
   font-size: 0.95rem;
+}
+
+select {
+  font: inherit;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px;
 }
 
 .chat {
@@ -128,7 +152,7 @@ textarea {
 }
 .msg.user {
   align-self: flex-end;
-  background: #1d3b26;
+  background: var(--user-bubble);
 }
 .msg.assistant {
   align-self: flex-start;

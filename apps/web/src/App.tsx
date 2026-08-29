@@ -12,6 +12,7 @@ import { gateVerify, gateEnroll } from "./lib/gate";
 import PairingView from "./components/PairingView";
 import SessionsView from "./components/SessionsView";
 import ChatView from "./components/ChatView";
+import SettingsView, { applyTheme } from "./components/SettingsView";
 
 type Phase = "unpaired" | "connecting" | "paired" | "error";
 
@@ -22,7 +23,12 @@ export default function App() {
   const [events, setEvents] = useState<EventEnvelope[]>([]);
   const clientRef = useRef<OcrClient | null>(null);
   const [session, setSession] = useState<string | null>(null);
+  const [settings, setSettings] = useState(false);
   const [tick, setTick] = useState(0);
+
+  useEffect(() => {
+    applyTheme();
+  }, []);
 
   async function connect(pairing: Pairing, persist: boolean) {
     setPhase("connecting");
@@ -104,8 +110,11 @@ export default function App() {
       sessionId={session}
       request={request}
       events={events}
+      voice={clientRef.current?.caps?.transcribe === true}
       onBack={() => setSession(null)}
     />
+  ) : settings ? (
+    <SettingsView request={request} onBack={() => setSettings(false)} />
   ) : (
     <SessionsView
       request={request}
@@ -117,6 +126,7 @@ export default function App() {
         const { enablePush } = await import("./lib/push");
         await enablePush(request);
       }}
+      onOpenSettings={() => setSettings(true)}
       tick={tick}
     />
   );
