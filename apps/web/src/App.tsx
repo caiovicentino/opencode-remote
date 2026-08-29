@@ -63,6 +63,18 @@ export default function App() {
     if (stored) void connect(stored.pairing, false);
   }, []);
 
+  // machine name is user-editable — refresh it from the daemon after connecting
+  useEffect(() => {
+    if (phase !== "paired") return;
+    void (async () => {
+      try {
+        const res = await request("GET", "/__ocr/settings");
+        const name = (res.body as { name?: string }).name;
+        if (name) setMachineName(name);
+      } catch {}
+    })();
+  }, [phase, tick]);
+
   function disconnect() {
     clientRef.current?.close();
     clientRef.current = null;
@@ -116,7 +128,13 @@ export default function App() {
       onBack={() => setSession(null)}
     />
   ) : settings ? (
-    <SettingsView request={request} onBack={() => setSettings(false)} />
+    <SettingsView
+      request={request}
+      onBack={() => {
+        setSettings(false);
+        setTick((t) => t + 1); // re-fetch machine name after settings edits
+      }}
+    />
   ) : filesView ? (
     <FilesView request={request} onBack={() => setFilesView(false)} />
   ) : (

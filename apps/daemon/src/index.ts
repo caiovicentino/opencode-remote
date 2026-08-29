@@ -199,6 +199,19 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
     return { id: req.id, status: 200, body: { ok: true } };
   }
 
+  // --- push diagnostics: the user fixes delivery from the app itself ---------
+  if (req.path === "/__ocr/push/status" && req.method === "GET") {
+    return {
+      id: req.id,
+      status: 200,
+      body: { subscribers: loadSubscriptions().length, last: lastPushResult },
+    };
+  }
+  if (req.path === "/__ocr/push/test" && req.method === "POST") {
+    const results = await pushDiagnostics();
+    return { id: req.id, status: 200, body: { results } };
+  }
+
   // --- file delivery: the agent hands artifacts back to the phone ------------
   if (req.path === "/__ocr/files" && req.method === "GET") {
     const files: { path: string; name: string; size: number; mtime: number }[] = [];
@@ -481,27 +494,61 @@ function saveSubscriptions(subs: PushSub[]) {
 }
 
 webpush.setVapidDetails(
-  process.env.OCR_VAPID_SUBJECT ?? "mailto:hello@opencode-remote.local",
+  process.env.OCR_VAPID_SUBJECT ?? "https://github.com/caiovicentino/opencode-remote",
   daemon.vapid.publicKey,
   daemon.vapid.privateKey,
 );
 
+interface PushAttempt {
+  endpoint: string;
+  ok: boolean;
+  status?: number;
+  error?: string;
+}
+let lastPushResult: { at: number; results: PushAttempt[] } | null = null;
+
 async function pushToSubscribers(title: string, body: string, data?: unknown) {
   const subs = loadSubscriptions();
   const dead: string[] = [];
+  const results: PushAttempt[] = [];
   for (const sub of subs) {
     try {
       await webpush.sendNotification(sub, JSON.stringify({ title, body, data }), {
         TTL: 3600,
         urgency: "high",
       });
+      results.push({ endpoint: sub.endpoint, ok: true });
     } catch (err) {
       const status = (err as { statusCode?: number }).statusCode;
+      const message = (err as Error).message;
+      results.push({ endpoint: sub.endpoint, ok: false, status, error: message });
       if (status === 404 || status === 410) dead.push(sub.endpoint);
-      else log("warn", "push delivery failed", { error: (err as Error).message });
+      else log("warn", "push delivery failed", { error: message });
     }
   }
   if (dead.length) saveSubscriptions(subs.filter((s) => !dead.includes(s.endpoint)));
+  lastPushResult = { at: Date.now(), results };
+}
+
+// in-app push diagnostics: the user must be able to see WHY it fails
+async function pushDiagnostics() {
+  const subs = loadSubscriptions();
+  const res: PushAttempt[] = [];
+  for (const sub of subs) {
+    try {
+      await webpush.sendNotification(sub, JSON.stringify({ title: "opencode-remote", body: "Test notification — push works 🎉" }), { TTL: 300 });
+      res.push({ endpoint: sub.endpoint, ok: true });
+    } catch (err) {
+      res.push({
+        endpoint: sub.endpoint,
+        ok: false,
+        status: (err as { statusCode?: number }).statusCode,
+        error: (err as Error).message,
+      });
+    }
+  }
+  lastPushResult = { at: Date.now(), results: res };
+  return res;
 }
 
 // ---------------------------------------------------------------------------

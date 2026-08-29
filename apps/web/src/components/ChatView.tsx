@@ -497,7 +497,12 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
               {renderBubbleText(b.text, request, setError)}
             </div>
           ))}
-          {liveText && <div className="msg assistant">{liveText}▍</div>}
+          {liveText && (
+            <div className="msg assistant">
+              {renderBubbleText(liveText, request, setError)}
+              <span>▍</span>
+            </div>
+          )}
           {sending && <div className="muted">agent is working…</div>}
           {(sending || liveText) && (
             <button

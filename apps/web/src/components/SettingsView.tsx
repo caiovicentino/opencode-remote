@@ -44,6 +44,9 @@ export default function SettingsView({ request, onBack }: Props) {
   const [theme, setTheme] = useState(localStorage.getItem(THEME_KEY) ?? "dark");
   const [font, setFont] = useState(localStorage.getItem(FONT_KEY) ?? "normal");
   const [msg, setMsg] = useState("");
+  const [pushTesting, setPushTesting] = useState(false);
+  const [pushMsg, setPushMsg] = useState("");
+  const [pushSubs, setPushSubs] = useState(0);
 
   useEffect(() => {
     void (async () => {
@@ -207,6 +210,73 @@ export default function SettingsView({ request, onBack }: Props) {
               <option value="large">Large</option>
             </select>
           </label>
+        </div>
+
+        <div className="card">
+          <h3>Push notifications</h3>
+          <button
+            className="primary"
+            disabled={pushTesting}
+            onClick={() =>
+              void (async () => {
+                setPushTesting(true);
+                setPushMsg("");
+                try {
+                  const res = await request("POST", "/__ocr/push/test");
+                  const { results } = res.body as {
+                    results?: { endpoint: string; ok: boolean; status?: number; error?: string }[];
+                  };
+                  if (!results?.length) setPushMsg("no device subscribed — tap Re-subscribe");
+                  else {
+                    const bad = results.filter((r) => !r.ok);
+                    setPushMsg(
+                      bad.length === 0
+                        ? "sent OK — check the phone"
+                        : bad
+                            .map(
+                              (r) =>
+                                `endpoint …${r.endpoint.slice(-12)}: HTTP ${r.status ?? "?"} ${
+                                  r.error ?? ""
+                                }`.slice(0, 160),
+                            )
+                            .join(" | "),
+                    );
+                  }
+                  const st = await request("GET", "/__ocr/push/status");
+                  setPushSubs((st.body as { subscribers?: number }).subscribers ?? 0);
+                } catch (err) {
+                  setPushMsg(err instanceof Error ? err.message : String(err));
+                } finally {
+                  setPushTesting(false);
+                }
+              })()
+            }
+          >
+            {pushTesting ? "Sending…" : "Send test notification"}
+          </button>
+          <button
+            style={{ marginLeft: 8 }}
+            onClick={() =>
+              void (async () => {
+                setPushMsg("");
+                try {
+                  const { enablePush } = await import("../lib/push");
+                  await enablePush(request);
+                  setPushMsg("subscribed");
+                  const st = await request("GET", "/__ocr/push/status");
+                  setPushSubs((st.body as { subscribers?: number }).subscribers ?? 0);
+                } catch (err) {
+                  setPushMsg(err instanceof Error ? err.message : String(err));
+                }
+              })()
+            }
+          >
+            Re-subscribe
+          </button>
+          {pushMsg && <p className="muted" style={{ marginBottom: 0 }}>{pushMsg}</p>}
+          <p className="muted" style={{ marginBottom: 0 }}>
+            {pushSubs} device(s) subscribed · iOS: app must be on the Home Screen
+          </p>
         </div>
 
         <div className="card">
