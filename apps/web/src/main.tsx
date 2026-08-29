@@ -4,12 +4,12 @@ import App from "./App";
 import ErrorBoundary from "./components/ErrorBoundary";
 import "./index.css";
 
+// No StrictMode: its double-mount in dev races getUserMedia on iOS
+// (camera stop/start aborts with AbortError).
 createRoot(document.getElementById("root")!).render(
-  <React.StrictMode>
-    <ErrorBoundary>
-      <App />
-    </ErrorBoundary>
-  </React.StrictMode>,
+  <ErrorBoundary>
+    <App />
+  </ErrorBoundary>,
 );
 
 if ("serviceWorker" in navigator && import.meta.env.PROD) {

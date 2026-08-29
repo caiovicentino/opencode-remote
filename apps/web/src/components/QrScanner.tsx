@@ -6,12 +6,18 @@ interface Props {
   onCancel: () => void;
 }
 
-/**
- * In-app QR scanner built on getUserMedia + jsQR.
- *
- * Works on iOS Safari (iPhone) and every other browser: no BarcodeDetector
- * dependency. The video must be muted + playsinline or iOS refuses playback.
- */
+/** iOS getUserMedia wraps permission dismissal and camera races in
+ * AbortError — translate to what the user should actually do. */
+function friendlyError(err: unknown): string {
+  const name = (err as { name?: string })?.name ?? "";
+  if (name === "NotAllowedError") return "Camera permission denied. Allow camera access for this site (Settings → Safari → Camera) and try again.";
+  if (name === "NotFoundError") return "No camera found on this device.";
+  if (name === "NotReadableError") return "Camera is in use by another app. Close it and try again.";
+  if (name === "AbortError") return "Camera was interrupted. Tap Scan again — iOS sometimes aborts the first attempt.";
+  return err instanceof Error ? err.message : "camera unavailable";
+}
+
+/** In-app QR scanner built on getUserMedia + jsQR. Works on iOS Safari. */
 export default function QrScanner({ onScan, onCancel }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [error, setError] = useState("");
@@ -20,18 +26,24 @@ export default function QrScanner({ onScan, onCancel }: Props) {
   useEffect(() => {
     let stream: MediaStream | null = null;
     let raf = 0;
+    let cancelled = false;
 
-    async function start() {
+    async function start(retry: boolean) {
       try {
         stream = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: "environment" },
           audio: false,
         });
+        if (cancelled) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
         const video = videoRef.current;
         if (!video) return;
-        video.srcObject = stream;
+        // iOS: attributes must be set before srcObject
         video.setAttribute("playsinline", "true");
         video.muted = true;
+        video.srcObject = stream;
         await video.play();
 
         const tick = () => {
@@ -56,17 +68,21 @@ export default function QrScanner({ onScan, onCancel }: Props) {
         };
         raf = requestAnimationFrame(tick);
       } catch (err) {
-        setError(
-          err instanceof Error
-            ? `${err.name}: ${err.message}`
-            : "camera unavailable",
-        );
+        // iOS aborts the first getUserMedia in some flows (permission
+        // prompt dismissal, rapid restart). One retry resolves it.
+        if ((err as { name?: string })?.name === "AbortError" && retry) {
+          await new Promise((r) => setTimeout(r, 400));
+          if (!cancelled) return start(false);
+          return;
+        }
+        setError(friendlyError(err));
       }
     }
 
-    void start();
+    void start(true);
     return () => {
-      doneRef.current = true;
+      cancelled = true;
+      doneRef.current = false;
       cancelAnimationFrame(raf);
       stream?.getTracks().forEach((t) => t.stop());
     };
