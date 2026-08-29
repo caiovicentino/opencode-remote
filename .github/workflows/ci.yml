@@ -32,7 +32,13 @@ jobs:
           sleep 3
           npx tsx scripts/smoke.ts
 
-      - name: Integration (real opencode, skips if binary absent)
-        run: npx tsx scripts/integration.ts
+      - name: Daemon restart resilience
+        run: npx tsx scripts/reconnect.test.ts
+
+      - name: Integration (real opencode)
+        run: |
+          curl -fsSL https://opencode.ai/install | bash
+          echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
+          npx tsx scripts/integration.ts
         env:
-          OPENCODE_BIN: /usr/local/bin/opencode
+          OPENCODE_BIN: opencode
