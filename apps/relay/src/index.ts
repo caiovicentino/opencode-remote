@@ -1,4 +1,5 @@
-import { createServer } from "node:https";
+import { createServer as createHttpServer } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
 import { readFileSync } from "node:fs";
 import { WebSocketServer, type WebSocket } from "ws";
 
@@ -24,6 +25,37 @@ interface Socket extends WebSocket {
 }
 
 const rooms = new Map<string, Set<Socket>>();
+
+// --- optional metrics endpoint (localhost-only) -----------------------------
+const METRICS_PORT = Number(process.env.RELAY_METRICS_PORT ?? 0);
+const m = { connectionsTotal: 0, framesRouted: 0, bytesRouted: 0, rejects: 0, startedAt: Date.now() };
+if (METRICS_PORT) {
+  createHttpServer((req, res) => {
+      if (req.url?.startsWith("/metrics")) {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify(
+            {
+              uptime_s: Math.round((Date.now() - m.startedAt) / 1000),
+              connections_total: m.connectionsTotal,
+              connections_active: wss.clients.size,
+              frames_routed: m.framesRouted,
+              bytes_routed: m.bytesRouted,
+              rejects: m.rejects,
+              rooms_active: rooms.size,
+            },
+            null,
+            2,
+          ),
+        );
+        return;
+      }
+      res.writeHead(404).end();
+    })
+    .listen(METRICS_PORT, "127.0.0.1", () =>
+      ev("info", "metrics listening", { port: METRICS_PORT, bind: "127.0.0.1" }),
+    );
+}
 
 function join(socket: Socket, room: string) {
   socket.rooms ??= new Set();
@@ -52,8 +84,8 @@ function ev(level: "info" | "warn", msg: string, data?: unknown) {
 const tlsCert = process.env.RELAY_TLS_CERT;
 const tlsKey = process.env.RELAY_TLS_KEY;
 const server = tlsCert && tlsKey
-  ? createServer({ cert: readFileSync(tlsCert), key: readFileSync(tlsKey) })
-  : createServer();
+  ? createHttpsServer({ cert: readFileSync(tlsCert), key: readFileSync(tlsKey) })
+  : createHttpServer();
 const wss = new WebSocketServer({ server, maxPayload: MAX_FRAME });
 let counter = 0;
 
@@ -67,7 +99,9 @@ server.listen(PORT, () => {
 });
 
 wss.on("connection", (socket: Socket) => {
+  m.connectionsTotal++;
   if (wss.clients.size > MAX_SOCKETS) {
+    m.rejects++;
     socket.close(1013, "server busy");
     return;
   }
@@ -95,12 +129,15 @@ wss.on("connection", (socket: Socket) => {
     join(socket, frame.room);
     if ((rooms.get(frame.room)?.size ?? 0) > MAX_PER_ROOM) {
       ev("warn", "room capacity exceeded", { room: frame.room.slice(0, 8) });
+      m.rejects++;
       socket.close(1013, "room full");
       return;
     }
 
     const targets = rooms.get(frame.room);
     if (!targets) return;
+    m.framesRouted++;
+    m.bytesRouted += frame.payload.length;
     const out = JSON.stringify({
       room: frame.room,
       from: frame.from ?? socket.id,
