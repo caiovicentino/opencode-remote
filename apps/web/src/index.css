@@ -7,7 +7,7 @@
   --accent: #4ade80;
   --danger: #f87171;
   --user-bubble: #1d3b26;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Segoe UI", sans-serif;
 }
 
 :root[data-theme="light"] {
@@ -144,11 +144,15 @@ select {
 .msg {
   padding: 10px 12px;
   border-radius: 12px;
-  max-width: 85%;
+  max-width: 92%;
   white-space: pre-wrap;
   word-break: break-word;
-  font-size: 0.9rem;
-  line-height: 1.45;
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+.msg code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
 }
 .msg.user {
   align-self: flex-end;

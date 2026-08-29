@@ -303,12 +303,9 @@ export default function SettingsView({ request, onBack }: Props) {
           <p className="muted" style={{ margin: 0 }}>
             <b>Android/desktop</b>: the system share sheet offers "OpenCode Remote" directly.
             <br />
-            <b>iOS</b>: no system share target for PWAs — two paths:
-            <br />
-            1. copy the link anywhere, open the app, tap the paste button in the chat;
-            <br />
-            2. or in Shortcuts, create a shortcut that copies the shared text and opens
-            "OpenCode Remote" (share sheet → Atalhos → shortcut).
+            <b>iOS</b>: copy the link anywhere, open the app, long-press the message field → Colar,
+            add your instruction and send. Or create a Shortcut (Shortcuts app) that copies the
+            shared text and opens "OpenCode Remote".
           </p>
         </div>
 
