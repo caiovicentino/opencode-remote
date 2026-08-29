@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fechados vs. abertos — notas de mercado</title>
+<style>
+  :root{
+    --ink:#1a1d21; --paper:#fbfaf7; --line:#d8d5cc; --soft:#efede6;
+    --accent:#0e5a3c; --accent2:#8a4b12; --muted:#6b675e; --neg:#a33a2a; --closed:#4a3b6b;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:var(--paper);color:var(--ink);font-family:Georgia,'Times New Roman',serif;line-height:1.55}
+  .wrap{max-width:860px;margin:0 auto;padding:48px 28px 80px}
+  .kicker{font-family:ui-monospace,'SF Mono',Menlo,monospace;font-size:.72rem;letter-spacing:.18em;text-transform:uppercase;color:var(--accent2)}
+  h1{font-size:2.1rem;font-weight:700;line-height:1.15;margin:6px 0 10px}
+  .standfirst{font-size:1.06rem;color:var(--muted);max-width:60ch;font-style:italic}
+  .byline{display:flex;gap:14px;align-items:center;margin:22px 0 8px;font-family:ui-monospace,Menlo,monospace;font-size:.75rem;color:var(--muted)}
+  .byline .dot{width:5px;height:5px;background:var(--accent2);border-radius:50%}
+  hr.rule{border:none;border-top:2px solid var(--ink);margin:26px 0}
+  h2{font-size:1.15rem;margin:38px 0 12px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+  h2 .num{color:var(--accent2);font-family:ui-monospace,Menlo,monospace;font-size:.85rem;margin-right:8px}
+  p{margin-bottom:12px}
+  .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:0;border:1px solid var(--line);margin:20px 0}
+  .kpi{padding:14px 16px;border-right:1px solid var(--line)}
+  .kpi:last-child{border-right:none}
+  .kpi .v{font-family:ui-monospace,Menlo,monospace;font-size:1.15rem;font-weight:600}
+  .kpi .l{font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-top:2px}
+  .pos{color:var(--accent)} .neg{color:var(--neg)}
+  table{width:100%;border-collapse:collapse;font-size:.92rem;margin:10px 0 6px}
+  th{font-family:ui-monospace,Menlo,monospace;font-size:.68rem;text-transform:uppercase;letter-spacing:.1em;text-align:left;color:var(--muted);padding:8px 10px;border-bottom:2px solid var(--ink)}
+  td{padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  td.n,th.n{text-align:right;font-family:ui-monospace,Menlo,monospace;font-variant-numeric:tabular-nums;white-space:nowrap}
+  tr:hover td{background:var(--soft)}
+  .mono{font-family:ui-monospace,Menlo,monospace;font-size:.82rem}
+  .note{font-size:.8rem;color:var(--muted);margin-top:6px}
+  .tag{display:inline-block;font-family:ui-monospace,Menlo,monospace;font-size:.62rem;text-transform:uppercase;letter-spacing:.08em;padding:2px 7px;border-radius:3px;margin-left:6px;vertical-align:1px}
+  .tag.closed{background:#e6e2f0;color:var(--closed)}
+  .tag.open{background:#ddece4;color:var(--accent)}
+  .callout{border-left:3px solid var(--accent2);background:var(--soft);padding:14px 18px;margin:18px 0;font-size:.95rem}
+  .foot{margin-top:56px;border-top:1px solid var(--line);padding-top:14px;font-size:.78rem;color:var(--muted)}
+  .foot p{margin-bottom:4px}
+  @media(max-width:640px){.kpis{grid-template-columns:repeat(2,1fr)}.kpi:nth-child(2){border-right:none}.kpi:nth-child(-n+2){border-bottom:1px solid var(--line)}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<div class="kicker">Notas de Mercado · IA &amp; Modelos Abertos</div>
+<h1>Fechados vs. abertos: três pontos separam o topo do pódio — e é a menor diferença da história</h1>
+<p class="standfirst">Com base no Intelligence Index do Artificial Analysis (v4.1.1), o mais completo termômetro independente do setor, este comparativo mede o que separa os modelos proprietários dos de pesos abertos em inteligência, preço, velocidade e contexto.</p>
+
+<div class="byline"><span class="dot"></span><span>Dados coletados em 29/08/2026</span><span class="dot"></span><span>Fonte: Artificial Analysis · Intelligence Index v4.1.1</span></div>
+
+<hr class="rule">
+
+<div class="kpis">
+  <div class="kpi"><div class="v">63</div><div class="l">líder fechado (Claude Opus 5)</div></div>
+  <div class="kpi"><div class="v">60</div><div class="l">líder aberto (Kimi K3 e GLM-5.3)</div></div>
+  <div class="kpi"><div class="v neg">3 pts</div><div class="l">diferença fechado↔aberto</div></div>
+  <div class="kpi"><div class="v">98/177</div><div class="l">modelos abertos no índice</div></div>
+</div>
+
+<h2><span class="num">01</span>O placar</h2>
+<p>O Artificial Analysis avalia 624 modelos e publica o ranking detalhado de 177 deles. Do lado fechado, o <strong>Claude Opus 5</strong> (Anthropic) comanda com nota 63 no Intelligence Index, seguido por sua própria versão "xhigh" (63), o Claude Fable 5 (62) e o <strong>GPT-5.6 Sol</strong> (OpenAI, 61). Do lado aberto, a disputa acirrou-se de forma inédita: <strong>Kimi K3 (Moonshot) e GLM-5.3 (Z.ai) empatam na segunda casa decimal — 60</strong> — com o Qwen3.8 2.4T A95B (Alibaba) logo atrás, com 58.</p>
+<p>Traduzindo: a elite aberta está a <strong>três pontos</strong> do melhor modelo fechado do planeta. Em 2023, o abismo era de dezenas de pontos e nenhum modelo aberto sequer aparecia nos rankings de fronteira.</p>
+
+<table>
+  <thead><tr><th>#</th><th>Modelo</th><th>Organização</th><th class="n">Intelligence Index</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td class="mono">Claude Opus 5 (max)<span class="tag closed">fechado</span></td><td>Anthropic</td><td class="n"><strong>63</strong></td></tr>
+    <tr><td>2</td><td class="mono">Claude Opus 5 (xhigh)<span class="tag closed">fechado</span></td><td>Anthropic</td><td class="n"><strong>63</strong></td></tr>
+    <tr><td>3</td><td class="mono">Claude Fable 5 (fallback)<span class="tag closed">fechado</span></td><td>Anthropic</td><td class="n"><strong>62</strong></td></tr>
+    <tr><td>4</td><td class="mono">Claude Opus 5 (high)<span class="tag closed">fechado</span></td><td>Anthropic</td><td class="n"><strong>61</strong></td></tr>
+    <tr><td>5</td><td class="mono">GPT-5.6 Sol (max)<span class="tag closed">fechado</span></td><td>OpenAI</td><td class="n"><strong>61</strong></td></tr>
+    <tr><td>—</td><td colspan="3" style="border-bottom:none;padding:2px"></td></tr>
+    <tr><td>6</td><td class="mono">Kimi K3 (max)<span class="tag open">aberto</span></td><td>Moonshot</td><td class="n"><strong>60</strong></td></tr>
+    <tr><td>7</td><td class="mono">GLM-5.3 (max)<span class="tag open">aberto</span></td><td>Z.ai</td><td class="n"><strong>60</strong></td></tr>
+    <tr><td>8</td><td class="mono">Qwen3.8 2.4T A95B<span class="tag open">aberto</span></td><td>Alibaba</td><td class="n"><strong>58</strong></td></tr>
+  </tbody>
+</table>
+<p class="note">Intelligence Index v4.1.1 — média ponderada de 9 avaliações independentes. Nota máxima de referência, não percentual. Fonte: Artificial Analysis.</p>
+<p>Um detalhe salta aos olhos: <strong>quatro das cinco primeiras posições são da Anthropic</strong>, com o mesmo modelo escalado em diferentes níveis de esforço computacional — estratégia de "vazamento de produtos" que infla o topo da tabela. No ranking real de famílias, são duas empresas fechadas (Anthropic, OpenAI) contra três chinesas de pesos abertos (Moonshot, Z.ai, Alibaba) nos oito primeiros lugares.</p>
+
+<h2><span class="num">02</span>O que entra na nota: os 9 benchmarks do índice</h2>
+<p>O Intelligence Index v4.1.1 não é um teste único, e sim a média ponderada de nove avaliações independentes — todas executadas pela própria equipe do Artificial Analysis, sem depender de números declarados pelos fabricantes:</p>
+<table>
+  <thead><tr><th>Avaliação</th><th>O que mede</th></tr></thead>
+  <tbody>
+    <tr><td class="mono">GDPval-AA v2</td><td>Tarefas reais de trabalho profissional (agêntico)</td></tr>
+    <tr><td class="mono">τ³-Banking</td><td>Uso de ferramentas em cenários bancários</td></tr>
+    <tr><td class="mono">Terminal-Bench v2.1</td><td>Código e operação de terminal (agêntico)</td></tr>
+    <tr><td class="mono">SciCode</td><td>Ciência computacional via código</td></tr>
+    <tr><td class="mono">Humanity's Last Exam</td><td>Raciocínio e conhecimento de fronteira</td></tr>
+    <tr><td class="mono">GPQA Diamond</td><td>Raciocínio científico pós-graduação</td></tr>
+    <tr><td class="mono">CritPt</td><td>Raciocínio em física</td></tr>
+    <tr><td class="mono">AA-Omniscience</td><td>Conhecimento confiável (com taxa de alucinação)</td></tr>
+    <tr><td class="mono">AA-LCR</td><td>Raciocínio em contexto longo</td></tr>
+  </tbody>
+</table>
+<p class="note">A composição do índice virou referência do setor justamente por incluir tarefas agênticas (terminal, ferramentas, trabalho profissional) — o teste que separa modelos de 2026 dos modelos de chat de 2023.</p>
+
+<h2><span class="num">03</span>Onde os fechados ainda vencem</h2>
+<ul>
+  <li><strong>Inteligência de fronteira:</strong> as cinco primeiras posições do índice são todas fechadas. Para tarefas de raciocínio extremo (física, ciência, agentes de longa duração), o estado da arte segue proprietário.</li>
+  <li><strong>Raciocínio profundo:</strong> entre 143 modelos de raciocínio avaliados, o líder é o Claude Opus 5 (max). A API fechada permite queimar computação de inferência sem se preocupar com quem paga a conta.</li>
+  <li><strong>Integração vertical:</strong> ecossistema, memória, multimodalidade de produção — vantagem comercial, não técnica, mas vantagem ao fim do dia.</li>
+</ul>
+
+<h2><span class="num">04</span>Onde os abertos vencem — às vezes atropelando</h2>
+<p>Fora do topo de inteligência bruta, os dados contam outra história. Em <strong>preço</strong>, o modelo mais barato do mercado é aberto: Llama 3.1 8B e Granite 4.2 3B a US$ 0,02 por milhão de tokens blended — mil vezes menos que um modelo de fronteira fechado. Em <strong>velocidade</strong>, os recordes são de modelos abertos de arquitetura de difusão: Celeris-1 a 1.537 tokens/s e Mercury 2 a 928 tokens/s (o fechado mais rápido, Gemini 3.5 Flash-Lite, fica atrás de ambos). Em <strong>latência</strong>, o pódio é fechado (Gemini 2.5 Flash-Lite, 0,28s até o primeiro token), mas por margem mínima.</p>
+<p>E há o dado que costuma surpreender: <strong>o maior contexto do mercado é aberto</strong> — Llama 4 Scout, com 10 milhões de tokens, à frente de qualquer Grok ou Gemini no quesito.</p>
+<table>
+  <thead><tr><th>Dimensão</th><th>Líder</th><th>Classificação</th><th class="n">Marca</th></tr></thead>
+  <tbody>
+    <tr><td>Inteligência</td><td class="mono">Claude Opus 5 (max)</td><td><span class="tag closed">fechado</span></td><td class="n">63 pts</td></tr>
+    <tr><td>Velocidade</td><td class="mono">Celeris-1</td><td><span class="tag open">aberto</span></td><td class="n">1.537 t/s</td></tr>
+    <tr><td>Velocidade (2º)</td><td class="mono">Mercury 2</td><td><span class="tag open">aberto</span></td><td class="n">928 t/s</td></tr>
+    <tr><td>Latência</td><td class="mono">Gemini 2.5 Flash-Lite</td><td><span class="tag closed">fechado</span></td><td class="n">0,28 s</td></tr>
+    <tr><td>Preço mínimo</td><td class="mono">Llama 3.1 8B / Granite 4.2 3B</td><td><span class="tag open">aberto</span></td><td class="n">$0,02 / 1M tk</td></tr>
+    <tr><td>Contexto</td><td class="mono">Llama 4 Scout</td><td><span class="tag open">aberto</span></td><td class="n">10 mi tokens</td></tr>
+  </tbody>
+</table>
+<p class="note">Recordes por dimensão segundo Artificial Analysis (624 modelos monitorados). Preço blended por milhão de tokens.</p>
+
+<h2><span class="num">05</span>Cética de plantão: como ler esses benchmarks</h2>
+<ul>
+  <li><strong>Contaminação de dados:</strong> modelos fechados são treinados após os benchmarks existirem; scores em provas públicas (MMLU etc.) devem ser lidos com desconfiança. Por isso o índice em questão roda avaliações privativas e agênticas.</li>
+  <li><strong>Benchmark não é produto:</strong> nota 60 ou 63 no índice se traduz em diferença imperceptível na maioria das tarefas reais. A diferença de 3 pontos é menor que o intervalo de erro de vários testes.</li>
+  <li><strong>O árbitro independente:</strong> os números acima são medidos por terceiros, não declarados por fabricantes — mas ainda assim refletem tarefas selecionadas por humanos. Nenhum índice captura "qualidade percebida".</li>
+  <li><strong>O custo escondido do aberto:</strong> o modelo aberto é "grátis", mas exigir infraestrutura própria (GPU, operação, engenharia). Para volume baixo, a API fechada continua sendo a mais barata em custo total.</li>
+</ul>
+
+<div class="callout"><strong>Síntese:</strong> em agosto de 2026, a fronteira da inteligência artificial ainda é território fechado — Anthropic e OpenAI detêm o topo. Mas a base aberta consolidou-se a três pontos da fronteira, com metade dos modelos avaliados sendo de pesos abertos, e domina absolutamente nas dimensões de custo, velocidade e contexto. A pergunta econômica deixou de ser "aberto alcança fechado?" e virou "vale pagar o prêmio de 1 a 3 pontos de inteligência?". Para 9 entre 10 casos de uso corporativo, a resposta que os dados sugerem é não.</div>
+
+<div class="foot">
+  <p><strong>Metodologia e fontes:</strong> Intelligence Index v4.1.1 (9 avaliações: GDPval-AA v2, τ³-Banking, Terminal-Bench v2.1, SciCode, Humanity's Last Exam, GPQA Diamond, CritPt, AA-Omniscience, AA-LCR), velocidade, latência, preço e contexto conforme Artificial Analysis (artificialanalysis.ai), coletados em 29/08/2026. AA mede 624 modelos; o índice detalhado cobre 177. "Aberto" segue a classificação de pesos abertos do próprio AA, incluindo licenças com restrição comercial.</p>
+  <p>Este material é informativo e não constitui recomendação de investimento.</p>
+</div>
+
+</div>
+</body>
+</html>

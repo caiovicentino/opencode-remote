@@ -29,6 +29,41 @@ export default function App() {
   const [filesView, setFilesView] = useState(false);
   const [share, setShare] = useState<{ title?: string; text?: string; url?: string } | null>(null);
   const [tick, setTick] = useState(0);
+  const [unread, setUnread] = useState<Record<string, number>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("ocr_unread") ?? "{}") as Record<string, number>;
+    } catch {
+      return {};
+    }
+  });
+  const activeSessionRef = useRef<string | null>(null);
+
+  // keep the ref in sync for the event handler (which captures it once)
+  useEffect(() => {
+    activeSessionRef.current = session;
+    if (session) setUnread((prev) => (prev[session] ? { ...prev, [session]: 0 } : prev));
+  }, [session]);
+
+  useEffect(() => {
+    localStorage.setItem("ocr_unread", JSON.stringify(unread));
+  }, [unread]);
+
+  // WhatsApp-style unread: count turn-completions, errors and permission asks
+  // for sessions that are not currently open on screen
+  function bumpUnread(evt: EventEnvelope) {
+    const p = (evt.properties ?? {}) as {
+      sessionID?: string;
+      info?: { sessionID?: string };
+    };
+    const sid = p.sessionID ?? p.info?.sessionID;
+    if (!sid || sid === activeSessionRef.current) return;
+    const worthy =
+      evt.type === "session.idle" ||
+      evt.type === "session.error" ||
+      evt.type.toLowerCase().includes("permission");
+    if (!worthy) return;
+    setUnread((prev) => ({ ...prev, [sid]: (prev[sid] ?? 0) + 1 }));
+  }
 
   useEffect(() => {
     applyTheme();
@@ -53,6 +88,7 @@ export default function App() {
       setPhase("paired");
       client.onEvent((evt) => {
         setEvents((prev) => [...prev.slice(-500), evt]);
+        bumpUnread(evt);
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -200,6 +236,7 @@ export default function App() {
       request={request}
       machineName={machineName}
       events={events}
+      unread={unread}
       onOpen={setSession}
       onDisconnect={disconnect}
       onEnablePush={async () => {

@@ -10,6 +10,7 @@ interface Session {
 interface Props {
   machineName: string;
   events: EventEnvelope[];
+  unread: Record<string, number>;
   request: (
     method: string,
     path: string,
@@ -27,6 +28,7 @@ interface Props {
 export default function SessionsView({
   machineName,
   events,
+  unread,
   request,
   onOpen,
   onDisconnect,
@@ -159,9 +161,15 @@ export default function SessionsView({
         {!loading && filtered.length === 0 && <p className="muted">No sessions yet.</p>}
         {filtered.map((s) => (
           <div key={s.id} className="card session-card">
-            <div onClick={() => onOpen(s.id)} style={{ flex: 1 }}>
-              <h3>{s.title || s.id.slice(0, 12)}</h3>
-              {s.updatedAt && <span className="muted">{String(s.updatedAt)}</span>}
+            <div
+              onClick={() => onOpen(s.id)}
+              style={{ flex: 1, display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}
+            >
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <h3>{s.title || s.id.slice(0, 12)}</h3>
+                {s.updatedAt && <span className="muted">{String(s.updatedAt)}</span>}
+              </div>
+              {(unread[s.id] ?? 0) > 0 && <span className="unread-badge">{unread[s.id]}</span>}
             </div>
             <button aria-label="Rename" onClick={() => void renameSession(s.id, s.title)}>
               ✎

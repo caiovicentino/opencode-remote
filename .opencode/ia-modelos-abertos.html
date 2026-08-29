@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IA e modelos abertos — notas de mercado</title>
+<style>
+  :root{
+    --ink:#1a1d21; --paper:#fbfaf7; --line:#d8d5cc; --soft:#efede6;
+    --accent:#0e5a3c; --accent2:#8a4b12; --muted:#6b675e; --neg:#a33a2a;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:var(--paper);color:var(--ink);font-family:Georgia,'Times New Roman',serif;line-height:1.55}
+  .wrap{max-width:860px;margin:0 auto;padding:48px 28px 80px}
+  .kicker{font-family:ui-monospace,'SF Mono',Menlo,monospace;font-size:.72rem;letter-spacing:.18em;text-transform:uppercase;color:var(--accent2)}
+  h1{font-size:2.1rem;font-weight:700;line-height:1.15;margin:6px 0 10px}
+  .standfirst{font-size:1.06rem;color:var(--muted);max-width:60ch;font-style:italic}
+  .byline{display:flex;gap:14px;align-items:center;margin:22px 0 8px;font-family:ui-monospace,Menlo,monospace;font-size:.75rem;color:var(--muted)}
+  .byline .dot{width:5px;height:5px;background:var(--accent2);border-radius:50%}
+  hr.rule{border:none;border-top:2px solid var(--ink);margin:26px 0}
+  h2{font-size:1.15rem;margin:38px 0 12px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+  h2 .num{color:var(--accent2);font-family:ui-monospace,Menlo,monospace;font-size:.85rem;margin-right:8px}
+  p{margin-bottom:12px}
+  .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:0;border:1px solid var(--line);margin:20px 0}
+  .kpi{padding:14px 16px;border-right:1px solid var(--line)}
+  .kpi:last-child{border-right:none}
+  .kpi .v{font-family:ui-monospace,Menlo,monospace;font-size:1.15rem;font-weight:600}
+  .kpi .l{font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-top:2px}
+  .pos{color:var(--accent)} .neg{color:var(--neg)}
+  table{width:100%;border-collapse:collapse;font-size:.92rem;margin:10px 0 6px}
+  th{font-family:ui-monospace,Menlo,monospace;font-size:.68rem;text-transform:uppercase;letter-spacing:.1em;text-align:left;color:var(--muted);padding:8px 10px;border-bottom:2px solid var(--ink)}
+  td{padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  td.n,th.n{text-align:right;font-family:ui-monospace,Menlo,monospace;font-variant-numeric:tabular-nums;white-space:nowrap}
+  tr:hover td{background:var(--soft)}
+  .mono{font-family:ui-monospace,Menlo,monospace;font-size:.82rem}
+  .note{font-size:.8rem;color:var(--muted);margin-top:6px}
+  .bars{margin:14px 0}
+  .bar-row{display:grid;grid-template-columns:190px 1fr 90px;gap:12px;align-items:center;margin-bottom:8px;font-size:.85rem}
+  .bar-row .lab{text-align:right;color:var(--ink)}
+  .bar-row .track{background:var(--soft);border-radius:2px;height:16px;position:relative}
+  .bar-row .fill{background:var(--accent);height:100%;border-radius:2px}
+  .bar-row .val{font-family:ui-monospace,Menlo,monospace;font-size:.78rem;color:var(--muted)}
+  .callout{border-left:3px solid var(--accent2);background:var(--soft);padding:14px 18px;margin:18px 0;font-size:.95rem}
+  .foot{margin-top:56px;border-top:1px solid var(--line);padding-top:14px;font-size:.78rem;color:var(--muted)}
+  .foot p{margin-bottom:4px}
+  @media(max-width:640px){.kpis{grid-template-columns:repeat(2,1fr)}.kpi:nth-child(2){border-right:none}.kpi:nth-child(-n+2){border-bottom:1px solid var(--line)}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<div class="kicker">Notas de Mercado · IA &amp; Modelos Abertos</div>
+<h1>IA aberta: a guerra silenciosa dos embeddings, a dinastia Qwen e o que o mundo baixa quando ninguém está olhando</h1>
+<p class="standfirst">Levantamento com dados públicos do Hugging Face e do Ollama: os modelos mais baixados do planeta raramente aparecem no noticiário — e o "open source" de IA tem muito mais nuance do que os comunicados de imprensa sugerem.</p>
+
+<div class="byline"><span class="dot"></span><span>Dados coletados via API em 29/08/2026</span><span class="dot"></span><span>Fontes: Hugging Face Hub · Ollama</span></div>
+
+<hr class="rule">
+
+<div class="kpis">
+  <div class="kpi"><div class="v">247,7 mi</div><div class="l">downloads/mês — modelo nº 1 (MiniLM)</div></div>
+  <div class="kpi"><div class="v">118,9 mi</div><div class="l">pulls do Llama 3.1 no Ollama</div></div>
+  <div class="kpi"><div class="v">Qwen3.8</div><div class="l">modelo em alta do momento</div></div>
+  <div class="kpi"><div class="v">92,1 mi</div><div class="l">pulls do DeepSeek-R1 (raciocínio aberto)</div></div>
+</div>
+
+<h2><span class="num">01</span>A conclusão que os números impõem</h2>
+<p>Se você perguntar ao público geral qual é o modelo aberto mais usado do mundo, a resposta provável é "algum ChatGPT aberto" ou o Llama. A resposta real, segundo os dados do Hugging Face, é constrangedora de tão sem graça: <strong>all-MiniLM-L6-v2</strong>, um modelo de embeddings de 22 milhões de parâmetros lançado em 2021, com <strong>247,7 milhões de downloads por mês</strong> — dez vezes mais que qualquer LLM de conversação. A IA aberta que sustenta a internet é invisível: buscas semânticas, RAG, sistemas anti-fraude, recomendação. O espetáculo fica com os chatbots; a infraestrutura, com os embeddings.</p>
+
+<h2><span class="num">02</span>Os mais baixados: o pódio não é o que se imagina</h2>
+<div class="bars">
+  <div class="bar-row"><span class="lab">all-MiniLM-L6-v2 (embeddings)</span><div class="track"><div class="fill" style="width:100%"></div></div><span class="val">247,7 mi</span></div>
+  <div class="bar-row"><span class="lab">ms-marco-MiniLM (reranker)</span><div class="track"><div class="fill" style="width:34%"></div></div><span class="val">84,4 mi</span></div>
+  <div class="bar-row"><span class="lab">bert-base-uncased</span><div class="track"><div class="fill" style="width:32%"></div></div><span class="val">79,6 mi</span></div>
+  <div class="bar-row"><span class="lab">bge-small-en (embeddings)</span><div class="track"><div class="fill" style="width:27%"></div></div><span class="val">67,4 mi</span></div>
+  <div class="bar-row"><span class="lab">bge-m3 (embeddings)</span><div class="track"><div class="fill" style="width:15%"></div></div><span class="val">36,0 mi</span></div>
+  <div class="bar-row"><span class="lab">Chronos-2 (séries temporais)</span><div class="track"><div class="fill" style="width:12%"></div></div><span class="val">29,8 mi</span></div>
+  <div class="bar-row"><span class="lab">Qwen3-0.6B (LLM)</span><div class="track"><div class="fill" style="width:9%"></div></div><span class="val">22,4 mi</span></div>
+  <div class="bar-row"><span class="lab">Qwen3-8B (LLM)</span><div class="track"><div class="fill" style="width:5.5%"></div></div><span class="val">13,7 mi</span></div>
+</div>
+<p class="note">Downloads no último mês, Hugging Face Hub, 29/08/2026. Nenhum LLM conversacional chega perto do topo — o pódio é de busca e recuperação de informação.</p>
+<p>Entre os LLMs propriamente ditos, o domínio é da <strong>Qwen</strong> (Alibaba): três dos dez modelos mais baixados do Hub são seus, do nano Qwen3-0.6B (22,4 mi/mês) ao multimodal Qwen3.6-35B. A leitura é direta: a estratégia chinesa de saturar todas as faixas de tamanho com pesos abertos e licenças permissivas funcionou. O segundo destaque estranho é o <strong>Chronos-2</strong> da Amazon, com 29,8 mi de downloads — um modelo de <em>previsão de séries temporais</em> batendo em LLMs de bilhões de dólares.</p>
+
+<h2><span class="num">03</span>O que está em alta agora</h2>
+<table>
+  <thead><tr><th>Modelo</th><th>Org.</th><th>Tarefa</th><th class="n">Curtidas</th></tr></thead>
+  <tbody>
+    <tr><td class="mono">Qwen3.8-Flash-Next</td><td>Qwen (Alibaba)</td><td>Multimodal</td><td class="n">4.280</td></tr>
+    <tr><td class="mono">GLM-5.3-Flash</td><td>Z.ai</td><td>Texto</td><td class="n">1.613</td></tr>
+    <tr><td class="mono">GLM-5.3</td><td>Z.ai</td><td>Texto</td><td class="n">1.261</td></tr>
+    <tr><td class="mono">Qwen3.8-27B</td><td>Qwen (Alibaba)</td><td>Multimodal</td><td class="n">13.246</td></tr>
+    <tr><td class="mono">LTX-2.5</td><td>Lightricks</td><td>Vídeo</td><td class="n">2.117</td></tr>
+    <tr><td class="mono">MiniMax-H3</td><td>MiniMax</td><td>Vídeo + texto</td><td class="n">4.617</td></tr>
+    <tr><td class="mono">Breeze-TTS-2</td><td>Comunidade</td><td>Síntese de voz</td><td class="n">188</td></tr>
+  </tbody>
+</table>
+<p>Três sinais claros na lista de trending: <strong>(1)</strong> a dupla Qwen3.8-27B e GLM-5.3 concentra a atenção da comunidade — é a corrida sino-americana em miniatura, com modelos de 20–30B otimizados para agentes; <strong>(2)</strong> vídeo aberto chegou ao mainstream (LTX-2.5, MiniMax-H3); <strong>(3)</strong> a cultura de forks "uncensored" segue viva e bem — versões não censuradas do Qwen3.8-27B aparecem no trending com mais curtidas que muitos modelos oficiais.</p>
+
+<h2><span class="num">04</span>O que roda de verdade nas máquinas das pessoas</h2>
+<p>O Hugging Face mede curiosidade; o Ollama mede uso local real. Os números acumulados desde o lançamento:</p>
+<table>
+  <thead><tr><th>Modelo</th><th>Origem</th><th class="n">Pulls</th></tr></thead>
+  <tbody>
+    <tr><td>llama3.1</td><td>Meta</td><td class="n">118,9 mi</td></tr>
+    <tr><td>deepseek-r1</td><td>DeepSeek</td><td class="n">92,1 mi</td></tr>
+    <tr><td>nomic-embed-text</td><td>Nomic</td><td class="n">83,9 mi</td></tr>
+    <tr><td>llama3.2</td><td>Meta</td><td class="n">81,7 mi</td></tr>
+    <tr><td>gemma3</td><td>Google</td><td class="n">39,9 mi</td></tr>
+    <tr><td>qwen2.5</td><td>Alibaba</td><td class="n">38,8 mi</td></tr>
+    <tr><td>qwen3</td><td>Alibaba</td><td class="n">35,8 mi</td></tr>
+    <tr><td>gpt-oss</td><td>OpenAI</td><td class="n">12,4 mi</td></tr>
+  </tbody>
+</table>
+<p>Detalhes que contam a história: o <strong>DeepSeek-R1</strong> (92,1 mi de pulls) provou que o público local quer raciocínio, não só chat; o <strong>gpt-oss</strong> da OpenAI, os pesos abertos que ninguém esperava, já soma 12,4 mi de pulls; e o <strong>Gemma 4</strong> do Google atualizou há dois dias com 23,7 mi de pulls acumulados — velocidade rara para uma família recém-lançada.</p>
+
+<h2><span class="num">05</span>"Modelo aberto" não é o que o marketing diz</h2>
+<p>Aqui é preciso precisão terminológica, porque o mercado consegue confundir até conceito de dois bits. Existem hoje três categorias de abertura, e os dados mostram todas em operação:</p>
+<ul>
+  <li><strong>Open-weight (pesos abertos)</strong> — você baixa o modelo, mas o treinamento é caixa-preta e a licença tem letras miúdas. É o caso do Llama (proibição de uso para concorrentes da Meta), do Gemma e do Qwen. É a categoria dominante.</li>
+  <li><strong>Open-source de verdade</strong> — pesos <em>e</em> dados de treinamento <em>e</em> receita completos. Quase extinto em escala LLM; os sobreviventes são projetos como OLMo (AI2) e modelos europeus de pesquisa.</li>
+  <li><strong>Open-weight com distilação comunitária</strong> — o modelo oficial é fechado, mas a comunidade quantiza, adapta e redistribui (GGUF, MLX, FP8). A Unsloth sozinha mantém versões otimizadas que somam dezenas de milhões de downloads.</li>
+</ul>
+<p>Quando um executivo anuncia "abrimos nosso modelo", ele quase sempre quer dizer a primeira categoria. A abertura que interessa juridicamente — dados, receita, regime de licença — segue fechada na esmagadora maioria dos casos.</p>
+
+<h2><span class="num">06</span>Os padrões da temporada</h2>
+<p>Olhando os dados lado a lado, três arquiteturas e formatos venceram o ciclo:</p>
+<ul>
+  <li><strong>MoE enxuto</strong> — modelos como Qwen3.6-35B-A3B (35B totais, 3B ativos) e Nemotron-3-Super (120B/12B ativos) entregam qualidade de modelo grande com custo de inferência pequeno. É o formato que o Ollama descreve como "para aplicações multiagente".</li>
+  <li><strong>Quantização como cidadã de primeira classe</strong> — FP8 no nome do modelo oficial, GGUF e MLX dominando os trending. A pergunta "qual sua GPU?" virou "quanto de RAM você tem?".</li>
+  <li><strong>Multimodal por padrão</strong> — os lançamentos novos (Qwen3.8, Gemma 4, Qwen3.5) já nascem com visão, e boa parte com áudio. LLM de texto puro virou caso de legado.</li>
+</ul>
+
+<h2><span class="num">07</span>Recém-lançados: agosto foi da Qwen e da Z.ai</h2>
+<p>Levantamento direto nos repositórios das organizações relevantes (o feed bruto de "recém-chegados" do Hub é dominado por spam e espelhos). Nos últimos 30 dias, o ritmo de lançamentos relevantes:</p>
+<table>
+  <thead><tr><th>Data</th><th>Modelo</th><th>Organização</th><th class="n">Tração</th></tr></thead>
+  <tbody>
+    <tr><td>27/08</td><td class="mono">Hy4-preview</td><td>Tencent</td><td class="n">280 ⭐</td></tr>
+    <tr><td>25/08</td><td class="mono">GLM-5.3 / GLM-5.3-Flash</td><td>Z.ai</td><td class="n">1.261 / 1.613 ⭐</td></tr>
+    <tr><td>24/08</td><td class="mono">Qwen3.8-Flash-Next</td><td>Qwen</td><td class="n">4.280 ⭐ · nº 1 em alta</td></tr>
+    <tr><td>24/08</td><td class="mono">TimesFM 3.0</td><td>Google</td><td class="n">séries temporais</td></tr>
+    <tr><td>13/08</td><td class="mono">DeepSeek-V4-Pro-0813</td><td>DeepSeek</td><td class="n">782 ⭐ · 111 mil dl</td></tr>
+    <tr><td>13/08</td><td class="mono">Qwen3.8-27B-FP8</td><td>Qwen</td><td class="n">4,6 mi dl em 2 semanas</td></tr>
+    <tr><td>08/08</td><td class="mono">Qwen3.8-2.4T-A95B</td><td>Qwen</td><td class="n">1.182 ⭐ · MoE 2,4 tri</td></tr>
+    <tr><td>07/08</td><td class="mono">MiniMax-Music3</td><td>MiniMax</td><td class="n">1.295 ⭐ · texto→áudio</td></tr>
+    <tr><td>28/07</td><td class="mono">MiniMax-H3</td><td>MiniMax</td><td class="n">4.617 ⭐ · 5 mi dl</td></tr>
+    <tr><td>25/07</td><td class="mono">Mage-VL</td><td>Microsoft</td><td class="n">497 mil dl</td></tr>
+  </tbody>
+</table>
+<p>Três observações sobre a tabela: o <strong>Qwen3.8-2.4T-A95B</strong> marca um marco arquitetônico — 2,4 trilhões de parâmetros totais com apenas 95B ativos por token, a fronteira do que se considera executável; a <strong>DeepSeek respondeu</strong> com o V4-Pro em menos de duas semanas; e, em contraste, a <strong>Meta segue em silêncio</strong> — seu último lançamento relevante no Hub data dos Llama-Guard de 2025. No Ocidente, os destaques do mês são apenas a Microsoft (Mage-VL) e a Mistral (Shieldstral, Leanstral), ambas em nichos específicos.</p>
+
+<div class="callout"><strong>O que acompanhar:</strong> (1) se a Qwen sustenta o domínio de downloads após o hype do Qwen3.8 — e quem responde no Ocidente; (2) o amadurecimento dos modelos de vídeo abertos, que em 12 meses fizeram o caminho que os de imagem levaram em 3; (3) a pressão regulatória sobre "distilação" — forks comunitários de modelos proprietários são a zona cinzenta mais quente do setor; (4) gpt-oss: se a OpenAI mantiver o ritmo de atualizações, o duelo Meta vs. OpenAI no desktop muda o jogo.</div>
+
+<div class="foot">
+  <p><strong>Metodologia e fontes:</strong> downloads e trending extraídos da API pública do Hugging Face Hub (huggingface.co/api/models, ordenação por downloads/mês e trending score), consultas por organização para lançamentos recentes e pulls acumulados da biblioteca do Ollama (ollama.com/library), em 29/08/2026. Downloads no HF incluem uso em produção, protótipos e CI/CD — não são usuários únicos.</p>
+  <p>Este material é informativo e não constitui recomendação de investimento.</p>
+</div>
+
+</div>
+</body>
+</html>
