@@ -18,7 +18,7 @@ export interface Pairing {
   name?: string;
 }
 
-export type Status = "connecting" | "paired" | "closed";
+export type Status = "connecting" | "paired" | "rejected" | "closed";
 
 interface StoredState {
   pairing: Pairing;
@@ -108,19 +108,32 @@ export function parsePairingUri(uri: string): Pairing | null {
   try {
     const url = new URL(uri.trim());
     if (url.protocol !== "opencode-remote:") return null;
-    const relay = url.searchParams.get("relay");
-    const room = url.searchParams.get("room");
-    const k = url.searchParams.get("k");
+    // manual parse: URLSearchParams treats "+" as space, corrupting base64
+    const q = new Map<string, string>();
+    for (const part of url.search.replace(/^\?/, "").split("&")) {
+      if (!part) continue;
+      const eq = part.indexOf("=");
+      const key = decodeURIComponent(eq === -1 ? part : part.slice(0, eq));
+      const val = decodeURIComponent(eq === -1 ? "" : part.slice(eq + 1));
+      q.set(key, val);
+    }
+    const get = (key: string) => {
+      const val = q.get(key);
+      return val === undefined ? null : val;
+    };
+    const relay = get("relay");
+    const room = get("room");
+    const k = get("k");
     if (!relay || !room || !k) return null;
-    const v = Number(url.searchParams.get("v") ?? "2");
+    const v = Number(get("v") ?? "2");
     if (v !== 2) throw new Error("unsupported protocol version; update the daemon");
     return {
       v: 2,
       relay,
       room,
       k,
-      vapid: url.searchParams.get("vapid") ?? undefined,
-      name: url.searchParams.get("name") ?? undefined,
+      vapid: get("vapid") ?? undefined,
+      name: get("name") ?? undefined,
     };
   } catch (err) {
     if (err instanceof Error && err.message.includes("unsupported")) throw err;
@@ -135,6 +148,7 @@ export class OcrClient {
   status: Status = "connecting";
   machineName: string;
   vapidKey?: string;
+  caps: { transcribe?: boolean } = {};
   onStatus: ((s: Status) => void) | null = null;
 
   private ws: WebSocket;
@@ -143,7 +157,21 @@ export class OcrClient {
   private from: string;
   private sendSeq = 0;
   private daemonLastSeq = 0;
-  private pending = new Map<string, { resolve: (r: OpResponse) => void; timer: number }>();
+  private pending = new Map<
+    string,
+    {
+      resolve: (r: OpResponse) => void;
+      reject: (e: Error) => void;
+      timer: number;
+      args: {
+        method: OpRequestMethod;
+        path: string;
+        body?: unknown;
+        query?: Record<string, string>;
+        timeoutMs: number;
+      };
+    }
+  >();
   private listeners = new Set<Handler>();
 
   private constructor(
@@ -153,6 +181,7 @@ export class OcrClient {
     machineName: string,
     from: string,
     vapid?: string,
+    daemonSpki = "",
   ) {
     this.ws = ws;
     this.key = key;
@@ -160,10 +189,78 @@ export class OcrClient {
     this.machineName = machineName;
     this.from = from;
     this.vapidKey = vapid;
+    this.daemonSpki = daemonSpki;
 
     ws.onmessage = (e) => void this.onMessage(e.data as string);
     ws.onclose = () => this.setStatus("closed");
     ws.onerror = () => this.setStatus("closed");
+  }
+
+  private daemonSpki: string;
+  private rehandshaking = false;
+
+  /** Transparently re-run the handshake after a daemon restart and replay in-flight ops. */
+  private async rehandshake() {
+    if (this.rehandshaking) return;
+    this.rehandshaking = true;
+    try {
+      const identity = await getOrCreateIdentity();
+      const { hello, sessionKey } = await clientHello(this.daemonSpki, identity);
+      const retrying = [...this.pending.values()];
+      this.pending.clear();
+      this.key = sessionKey;
+      this.daemonLastSeq = 0;
+      this.setStatus("connecting");
+      this.ws.send(
+        JSON.stringify({
+          room: this.room,
+          from: this.from,
+          payload: b64(new TextEncoder().encode(JSON.stringify({ type: "hello", hello }))),
+        }),
+      );
+      // frames reach the daemon after the hello (same socket, FIFO), so replay is safe
+      for (const p of retrying) this.replay(p);
+    } catch (err) {
+      for (const p of this.pending.values()) {
+        clearTimeout(p.timer);
+        p.reject(err instanceof Error ? err : new Error(String(err)));
+      }
+      this.pending.clear();
+      this.setStatus("closed");
+      throw err;
+    } finally {
+      this.rehandshaking = false;
+    }
+  }
+
+  /** Re-issue a pending op on the fresh session, keeping the caller's promise. */
+  private replay(p: {
+    resolve: (r: OpResponse) => void;
+    reject: (e: Error) => void;
+    args: {
+      method: OpRequestMethod;
+      path: string;
+      body?: unknown;
+      query?: Record<string, string>;
+      timeoutMs: number;
+    };
+  }) {
+    const req: OpRequest = {
+      id: crypto.randomUUID(),
+      method: p.args.method,
+      path: p.args.path,
+      body: p.args.body,
+      query: p.args.query,
+    };
+    const timer = window.setTimeout(() => {
+      this.pending.delete(req.id);
+      p.reject(new Error("request timeout"));
+    }, p.args.timeoutMs);
+    this.pending.set(req.id, { resolve: p.resolve, reject: p.reject, timer, args: p.args });
+    const seq = ++this.sendSeq;
+    void seal({ type: "op", req }, this.key, seqAad(this.from, seq)).then((payload) =>
+      this.sendFrame({ from: this.from, seq, payload }),
+    );
   }
 
   private setStatus(s: Status) {
@@ -184,20 +281,43 @@ export class OcrClient {
     }
     if (!frame.from || frame.from === this.from || !frame.payload) return;
 
+    // daemon asks for a fresh handshake (e.g. it restarted while we stayed up)
+    if (this.status === "paired") {
+      try {
+        const ctl = JSON.parse(atob(frame.payload)) as { type?: string };
+        if (ctl?.type === "reconnect") {
+          void this.rehandshake();
+          return;
+        }
+      } catch {
+        // not a control frame; fall through to the sealed path
+      }
+    }
+
     // first message from the daemon is the handshake confirmation
     if (this.status !== "paired") {
       try {
         const confirm = JSON.parse(atob(frame.payload)) as {
           ok?: boolean;
           confirm?: string;
+          reject?: string;
         };
-        if (confirm.ok && confirm.confirm) {
-          const check = await openSealed<{ ok: boolean }>(
-            confirm.confirm,
+        if (confirm.ok === false && confirm.reject) {
+          const check = await openSealed<{ reason: string }>(
+            confirm.reject,
             this.key,
-            new TextEncoder().encode("ocr-confirm"),
+            new TextEncoder().encode("ocr-reject"),
           );
-          if (check?.ok) this.setStatus("paired");
+          if (check?.reason === "not-allowed") this.setStatus("rejected");
+        } else if (confirm.ok && confirm.confirm) {
+          const check = await openSealed<{
+            ok: boolean;
+            caps?: { transcribe?: boolean };
+          }>(confirm.confirm, this.key, new TextEncoder().encode("ocr-confirm"));
+          if (check?.ok) {
+            this.caps = check.caps ?? {};
+            this.setStatus("paired");
+          }
         }
       } catch {
         // not a confirmation; ignore until paired
@@ -231,14 +351,20 @@ export class OcrClient {
     path: string,
     body?: unknown,
     query?: Record<string, string>,
+    timeoutMs = 60_000,
   ): Promise<OpResponse> {
     const req: OpRequest = { id: crypto.randomUUID(), method, path, body, query };
     return new Promise((resolve, reject) => {
       const timer = window.setTimeout(() => {
         this.pending.delete(req.id);
         reject(new Error("request timeout"));
-      }, 60_000);
-      this.pending.set(req.id, { resolve, timer });
+      }, timeoutMs);
+      this.pending.set(req.id, {
+        resolve,
+        reject,
+        timer,
+        args: { method, path, body, query, timeoutMs },
+      });
       const seq = ++this.sendSeq;
       void seal({ type: "op", req }, this.key, seqAad(this.from, seq)).then((payload) =>
         this.sendFrame({ from: this.from, seq, payload }),
@@ -287,11 +413,19 @@ export class OcrClient {
         pairing.name ?? "",
         from,
         pairing.vapid,
+        pairing.k,
       );
       client.onStatus = (s) => {
         if (s === "paired") {
           clearTimeout(timeout);
           resolve(client);
+        } else if (s === "rejected") {
+          clearTimeout(timeout);
+          reject(
+            new Error(
+              "rejected by daemon: this client is not in the allowlist — clear it with `manage.ts revoke-all` and pair again",
+            ),
+          );
         } else if (s === "closed") {
           clearTimeout(timeout);
           reject(new Error("connection closed before pairing"));
