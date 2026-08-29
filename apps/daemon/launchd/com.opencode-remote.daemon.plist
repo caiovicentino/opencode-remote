@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!--
+  macOS launchd service for the OpenCode Remote daemon.
+
+  1. Edit the three ABSOLUTE PATHS below (node binary, repo dir, daemon dir).
+     - Find node:  which node
+  2. Optional: set RELAY_URL / OPENCODE_URL / OCR_MACHINE_NAME in EnvironmentVariables.
+  3. Install:
+     cp apps/daemon/launchd/com.opencode-remote.daemon.plist ~/Library/LaunchAgents/
+     launchctl load ~/Library/LaunchAgents/com.opencode-remote.daemon.plist
+  4. Logs: ~/.opencode-remote/daemon.log
+-->
+<dict>
+  <key>Label</key>
+  <string>com.opencode-remote.daemon</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/node</string>
+    <string>/ABSOLUTE/PATH/TO/opencode-remote/node_modules/tsx/dist/cli.mjs</string>
+    <string>/ABSOLUTE/PATH/TO/opencode-remote/apps/daemon/src/index.ts</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/ABSOLUTE/PATH/TO/opencode-remote</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>RELAY_URL</key>
+    <string>wss://your-relay.example.com</string>
+    <!-- <key>OPENCODE_SERVER_PASSWORD</key><string>secret</string> -->
+    <!-- <key>OCR_MACHINE_NAME</key><string>studio-desktop</string> -->
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/YOU/.opencode-remote/daemon.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/YOU/.opencode-remote/daemon.log</string>
+</dict>

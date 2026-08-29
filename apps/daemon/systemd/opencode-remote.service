@@ -1,0 +1,29 @@
+# systemd service for the OpenCode Remote daemon (Linux, 24/7 machines).
+#
+# 1. Edit the three paths below (ExecStart node, WorkingDirectory, User).
+# 2. Install:
+#    sudo cp apps/daemon/systemd/opencode-remote.service /etc/systemd/system/
+#    sudo systemctl daemon-reload
+#    sudo systemctl enable --now opencode-remote
+# 3. Logs: journalctl -u opencode-remote -f
+
+[Unit]
+Description=OpenCode Remote daemon (E2E tunnel to opencode serve)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=YOUR_USER
+WorkingDirectory=/ABSOLUTE/PATH/TO/opencode-remote
+ExecStart=/usr/bin/node node_modules/tsx/dist/cli.mjs apps/daemon/src/index.ts
+Restart=always
+RestartSec=5
+
+Environment=RELAY_URL=wss://your-relay.example.com
+# Environment=OPENCODE_URL=http://127.0.0.1:4096
+# Environment=OPENCODE_SERVER_PASSWORD=secret
+# Environment=OCR_MACHINE_NAME=build-server
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,21 @@
+{
+  "name": "opencode-remote",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Secure remote control for opencode from anywhere. Your machine, your code, end-to-end encrypted.",
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:web": "npm run dev --workspace apps/web",
+    "dev:relay": "npm run dev --workspace apps/relay",
+    "dev:daemon": "npm run dev --workspace apps/daemon",
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

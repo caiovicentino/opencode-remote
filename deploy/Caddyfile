@@ -1,0 +1,4 @@
+# replace with your relay domain
+relay.example.com {
+	reverse_proxy relay:8787
+}

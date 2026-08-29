@@ -1,0 +1,56 @@
+# OpenCode Remote — deploy do relay (e do daemon, opcional) com Docker.
+#
+# Relay público com TLS:
+#   1. Edite docker/Caddyfile com o seu domínio
+#   2. docker compose up -d relay caddy        # relay em wss://dominio
+#
+# Homelab (tudo em Docker, opencode na própria máquina):
+#   RELAY_URL=wss://seu.dominio.com docker compose up -d relay daemon
+#
+# Só relay, sem TLS (rede confiável / VPN):
+#   docker compose up -d relay
+
+services:
+  relay:
+    build:
+      context: .
+      dockerfile: Dockerfile.relay
+    ports:
+      - "8787:8787"
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["tls"]
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - relay
+    restart: unless-stopped
+
+  daemon:
+    build:
+      context: .
+      dockerfile: Dockerfile.daemon
+    profiles: ["daemon"]
+    environment:
+      RELAY_URL: ${RELAY_URL:-ws://relay:8787}
+      OPENCODE_URL: ${OPENCODE_URL:-http://host.docker.internal:4096}
+      OPENCODE_SERVER_PASSWORD: ${OPENCODE_SERVER_PASSWORD:-}
+      OCR_MACHINE_NAME: ${OCR_MACHINE_NAME:-docker-host}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ${HOME}/.opencode-remote:/root/.opencode-remote
+    depends_on:
+      - relay
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

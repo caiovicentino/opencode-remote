@@ -1,0 +1,32 @@
+# Public relay for OpenCode Remote, with automatic TLS (wss://).
+#
+# 1. Point your domain (e.g. relay.example.com) at this VPS.
+# 2. Put the domain in Caddyfile (A/AAAA record first).
+# 3. docker compose up -d
+#
+# The relay is a blind router: it cannot read relayed traffic (E2E between
+# PWA and daemon). Still, terminate TLS at Caddy so enterprise clients can
+# keep wss:// only policies.
+
+services:
+  relay:
+    build: ../apps/relay
+    restart: unless-stopped
+    networks: [edge]
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [edge]
+
+volumes:
+  caddy_data: {}
+  caddy_config: {}
+
+networks:
+  edge: {}

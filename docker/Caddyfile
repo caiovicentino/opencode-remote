@@ -1,0 +1,5 @@
+# TLS automático (Let's Encrypt) na frente do relay.
+# Troque pelo seu domínio apontando o DNS para este servidor:
+relay.seudominio.com {
+	reverse_proxy relay:8787
+}

@@ -1,0 +1,26 @@
+{
+  "name": "@ocr/daemon",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@ocr/protocol": "*",
+    "qrcode": "^1.5.4",
+    "tsx": "^4.19.0",
+    "tweetnacl": "^1.0.3",
+    "web-push": "^3.6.7",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/qrcode": "^1.5.5",
+    "@types/web-push": "^3.6.4",
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.6.0"
+  },
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit"
+  }
+}
