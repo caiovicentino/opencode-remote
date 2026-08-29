@@ -40,18 +40,33 @@ function which(bin: string): string | null {
   }
 }
 
+function buildCppTool(bin: string): WhisperTool | null {
+  const model = resolveModel();
+  if (!model) {
+    log("warn", "whisper.cpp found but no ggml model found; run scripts/setup-whisper.sh", {
+      expected: MODEL_PATH(),
+    });
+    return null;
+  }
+  return { kind: "whisper-cpp", bin, model };
+}
+
 export async function detectWhisper(): Promise<WhisperTool | null> {
+  // launchd/CI environments have a minimal PATH — probe common absolute
+  // locations before falling back to PATH lookup
+  const abs = ["/opt/homebrew/bin", "/usr/local/bin"];
+  for (const bin of ["whisper-cli", "whisper-cpp"]) {
+    for (const dir of abs) {
+      const candidate = join(dir, bin);
+      if (existsSync(candidate)) {
+        return buildCppTool(candidate);
+      }
+    }
+  }
   for (const bin of ["whisper-cli", "whisper-cpp"]) {
     const p = which(bin);
     if (p) {
-      const model = resolveModel();
-      if (!model) {
-        log("warn", "whisper.cpp found but no ggml model found; run scripts/setup-whisper.sh", {
-          expected: MODEL_PATH(),
-        });
-        return null;
-      }
-      return { kind: "whisper-cpp", bin: p, model };
+      return buildCppTool(p);
     }
   }
   const mlx = which("mlx_whisper");

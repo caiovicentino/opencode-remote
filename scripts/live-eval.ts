@@ -120,6 +120,7 @@ ws.send(
     ws.on("message", onMsg);
   });
   report("handshake (sealed confirm)", ok);
+  await new Promise((r) => setTimeout(r, 100)); // caps arrive in the async confirm open
   if (caps) report("capabilities advertised", caps.transcribe === true, JSON.stringify(caps));
 }
 

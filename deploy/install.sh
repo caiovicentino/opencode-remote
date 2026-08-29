@@ -57,7 +57,8 @@ RELAY_ENV="    <key>RELAY_PORT</key><string>8788</string>
 
 DAEMON_ENV="    <key>RELAY_URL</key><string>$RELAY_URL</string>
     <key>OCR_METRICS_PORT</key><string>8792</string>
-    <key>OCR_LOG_LEVEL</key><string>info</string>"
+    <key>OCR_LOG_LEVEL</key><string>info</string>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>"
 
 write_plist com.ocr.relay "$LOGS/relay.log" "$LOGS/relay.err.log" "apps/relay/src/index.ts" "$RELAY_ENV"
 write_plist com.ocr.daemon "$LOGS/daemon.log" "$LOGS/daemon.err.log" "apps/daemon/src/index.ts" "$DAEMON_ENV"
