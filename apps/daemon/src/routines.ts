@@ -10,6 +10,8 @@ export interface Routine {
   minute: number;
   lastRun?: string; // local YYYY-MM-DD of the last fire
   lastSessionID?: string; // session awaiting result persistence
+  lastStatus?: "ok" | "error";
+  lastError?: string;
 }
 
 const FILE = () => join(homedir(), ".opencode-remote", "routines.json");

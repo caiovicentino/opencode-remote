@@ -46,6 +46,7 @@ self.addEventListener("push", (event) => {
       badge: "/icon.svg",
       data: { url: abs },
       tag: "opencode-remote",
+      actions: payload.actions ?? [],
     }),
   );
 });

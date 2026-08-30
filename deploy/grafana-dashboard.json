@@ -1,0 +1,89 @@
+{
+  "title": "OpenCode Remote",
+  "uid": "opencode-remote",
+  "schemaVersion": 39,
+  "editable": true,
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "job",
+        "label": "scrape job",
+        "type": "datasource",
+        "query": "prometheus"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Relay connected",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "targets": [{ "expr": "max(ocr_relay_connected)" }]
+    },
+    {
+      "type": "stat",
+      "title": "Active sessions",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "targets": [{ "expr": "max(ocr_sessions_active)" }]
+    },
+    {
+      "type": "stat",
+      "title": "Ops (5m rate)",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "targets": [{ "expr": "sum(rate(ocr_ops_total[5m]))" }]
+    },
+    {
+      "type": "stat",
+      "title": "Op errors (5m rate)",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "targets": [{ "expr": "sum(rate(ocr_ops_errors_total[5m]))" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Tunnel frames per second",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "targets": [
+        { "expr": "sum(rate(ocr_res_frames_total[5m]))", "legendFormat": "responses" },
+        { "expr": "sum(rate(ocr_event_frames_total[5m]))", "legendFormat": "events" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Sealed bytes per second",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "targets": [{ "expr": "sum(rate(ocr_sealed_bytes_total[5m]))", "legendFormat": "bytes/s" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Handshakes & rehandshakes",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "targets": [
+        { "expr": "sum(rate(ocr_handshakes_total[5m]))", "legendFormat": "handshakes" },
+        { "expr": "sum(rate(ocr_reconnects_asked_total[5m]))", "legendFormat": "rehandshakes asked" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Media & files",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "targets": [
+        { "expr": "sum(rate(ocr_uploads_completed_total[5m]))", "legendFormat": "uploads" },
+        { "expr": "sum(rate(ocr_downloads_total[5m]))", "legendFormat": "downloads" },
+        { "expr": "sum(rate(ocr_transcriptions_total[5m]))", "legendFormat": "transcriptions" },
+        { "expr": "sum(rate(ocr_files_persisted_total[5m]))", "legendFormat": "files persisted" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Relay (blind pipe)",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 20 },
+      "targets": [
+        { "expr": "max(relay_connections_active)", "legendFormat": "connections" },
+        { "expr": "sum(rate(relay_frames_routed[5m]))", "legendFormat": "frames/s" },
+        { "expr": "sum(rate(relay_bytes_routed[5m]))", "legendFormat": "bytes/s" },
+        { "expr": "sum(rate(relay_rejects[5m]))", "legendFormat": "rejects" }
+      ]
+    }
+  ]
+}

@@ -24,7 +24,6 @@ interface StoredState {
   pairing: Pairing;
 }
 
-const STATE_KEY = "ocr.pairing.v2";
 const IDB_NAME = "ocr-identity";
 const IDB_STORE = "keys";
 
@@ -84,12 +83,54 @@ export async function setCredentialId(rawId: ArrayBuffer): Promise<void> {
 // pairing state (localStorage holds no secrets since v2)
 // ---------------------------------------------------------------------------
 
+const STATE_KEY = "ocr.pairing.v2";
+const PAIRINGS_KEY = "ocr.pairings.v2";
+const ACTIVE_KEY = "ocr.active.room";
+
+export function loadPairings(): Pairing[] {
+  try {
+    const list = JSON.parse(localStorage.getItem(PAIRINGS_KEY) ?? "[]") as Pairing[];
+    if (Array.isArray(list)) return list;
+  } catch {}
+  return [];
+}
+
+export function upsertPairing(p: Pairing): Pairing[] {
+  const list = loadPairings().filter((x) => x.room !== p.room);
+  list.push(p);
+  localStorage.setItem(PAIRINGS_KEY, JSON.stringify(list));
+  return list;
+}
+
+export function removePairing(room: string): Pairing[] {
+  const list = loadPairings().filter((x) => x.room !== room);
+  localStorage.setItem(PAIRINGS_KEY, JSON.stringify(list));
+  return list;
+}
+
+export function getActiveRoom(): string | null {
+  return localStorage.getItem(ACTIVE_KEY);
+}
+
+export function setActiveRoom(room: string | null) {
+  if (room) localStorage.setItem(ACTIVE_KEY, room);
+  else localStorage.removeItem(ACTIVE_KEY);
+}
+
 export function loadState(): StoredState | null {
+  const list = loadPairings();
+  const active = getActiveRoom();
+  const found = active ? list.find((p) => p.room === active) : list.length === 1 ? list[0] : null;
+  if (found) return { pairing: found };
+  // legacy single-pairing storage (pre multi-machine)
   try {
     const raw = localStorage.getItem(STATE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as StoredState;
-    if (parsed.pairing?.v !== 2) return null; // stale v1 pairing
+    if (parsed.pairing?.v !== 2) return null;
+    upsertPairing(parsed.pairing);
+    setActiveRoom(parsed.pairing.room);
+    localStorage.removeItem(STATE_KEY);
     return parsed;
   } catch {
     return null;
@@ -97,11 +138,13 @@ export function loadState(): StoredState | null {
 }
 
 export function saveState(pairing: Pairing) {
-  localStorage.setItem(STATE_KEY, JSON.stringify({ pairing } satisfies StoredState));
+  upsertPairing(pairing);
+  setActiveRoom(pairing.room);
 }
 
+/** Disconnects the active machine but keeps every pairing for later switching. */
 export function clearState() {
-  localStorage.removeItem(STATE_KEY);
+  setActiveRoom(null);
 }
 
 export function parsePairingUri(uri: string): Pairing | null {

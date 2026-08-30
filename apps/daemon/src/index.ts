@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, statSync, readdirSync, openSync, readSync, closeSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, statSync, readdirSync, openSync, readSync, closeSync, appendFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -88,6 +88,18 @@ function assertPrivateMode(file: string) {
     chmodSync(file, 0o600);
     log("warn", "state file permissions tightened to 0600", { file, previousMode: mode.toString(8) });
   }
+}
+
+/** security-relevant events, append-only JSONL the user can review in the app */
+function audit(event: string, data?: Record<string, unknown>) {
+  try {
+    const line = JSON.stringify({
+      ts: new Date().toISOString(),
+      event,
+      ...(data ? { data } : {}),
+    });
+    appendFileSync(join(STATE_DIR, "audit.log"), line + "\n");
+  } catch {}
 }
 
 async function loadIdentity(): Promise<DaemonIdentity> {
@@ -317,6 +329,17 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
   if (req.path === "/__ocr/devices" && req.method === "GET") {
     return { id: req.id, status: 200, body: { devices: readAllowlist() } };
   }
+  if (req.path === "/__ocr/audit" && req.method === "GET") {
+    try {
+      const lines = readFileSync(join(STATE_DIR, "audit.log"), "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .slice(-100);
+      return { id: req.id, status: 200, body: { entries: lines.map((l) => JSON.parse(l)) } };
+    } catch {
+      return { id: req.id, status: 200, body: { entries: [] } };
+    }
+  }
   if (req.path === "/__ocr/devices" && req.method === "DELETE") {
     const { pub } = req.body as { pub?: string };
     if (!pub) return { id: req.id, status: 400, body: { error: "pub required" } };
@@ -328,6 +351,7 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
       }
     }
     log("info", "device revoked via app", { pub: pub.slice(0, 16) });
+    audit("client.revoked", { pub: pub.slice(0, 16) });
     return { id: req.id, status: 200, body: { ok: true } };
   }
   if (req.path === "/__ocr/settings" && req.method === "GET") {
@@ -688,21 +712,44 @@ async function completeRoutine(routineId: string, sessionID: string) {
       .filter((p) => p.type === "text")
       .map((p) => p.text)
       .join("\n");
-    if (!text) return;
+    if (!text) throw new Error("no assistant text produced");
     const dir = join(STATE_DIR, "uploads");
     mkdirSync(dir, { recursive: true });
     const slug = r.name.toLowerCase().replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").slice(0, 30);
     const path = join(dir, `${new Date().toISOString().slice(0, 10)}-${slug || "routine"}.md`);
     writeFileSync(path, text);
     r.lastSessionID = undefined;
+    r.lastStatus = "ok";
+    r.lastError = undefined;
     saveRoutines(routines);
     void pushToSubscribers(`⏰ ${r.name} pronto`, "Rotina concluída — toque para ver/salvar o arquivo", {
       url: "#/files",
     });
     log("info", "routine completed", { routine: r.name, path, bytes: text.length });
   } catch (err) {
+    r.lastSessionID = undefined;
+    r.lastStatus = "error";
+    r.lastError = (err as Error).message.slice(0, 200);
+    saveRoutines(routines);
+    void pushToSubscribers(
+      `⏰ ${r.name} falhou`,
+      `Rotina com erro: ${r.lastError} — roda de novo amanhã ou recria a rotina`,
+      { url: "#/" },
+    );
     log("warn", "routine completion failed", { error: (err as Error).message });
   }
+}
+
+async function failRoutine(routineId: string, sessionID: string, why: string) {
+  const r = routines.find((x) => x.id === routineId);
+  if (!r || !pendingRuns.has(sessionID)) return;
+  pendingRuns.delete(sessionID);
+  r.lastSessionID = undefined;
+  r.lastStatus = "error";
+  r.lastError = why.slice(0, 200);
+  saveRoutines(routines);
+  void pushToSubscribers(`⏰ ${r.name} falhou`, `Erro do agent: ${why.slice(0, 120)}`, { url: "#/" });
+  log("warn", "routine run errored", { routine: r.name, why });
 }
 
 function checkRoutines() {
@@ -818,8 +865,21 @@ async function forwardEvents() {
               void pushToSubscribers(
                 "Approve needed",
                 `opencode wants to ${p.type ?? "perform an action"} on ${machineName}`,
-                { url: sessionID ? `#/session/${sessionID}` : "#/", evt },
+                {
+                  url: sessionID ? `#/session/${sessionID}` : "#/",
+                  evt,
+                  actions: [
+                    { action: "open", title: "Review" },
+                  ],
+                },
               );
+            } else if (evt.type === "session.error") {
+              const rid = pendingRuns.get(sessionID);
+              if (rid) {
+                const errObj = ((evt.properties ?? {}) as { error?: { message?: string; name?: string } })
+                  .error;
+                void failRoutine(rid, sessionID, errObj?.message ?? errObj?.name ?? "unknown error");
+              }
             } else if (evt.type === "session.idle") {
               const rid = pendingRuns.get(sessionID);
               if (rid) void completeRoutine(rid, sessionID);
@@ -952,9 +1012,11 @@ async function handleMessage(data: WebSocket.RawData, ws: WebSocket) {
         client = { pub: accepted.clientPub, addedAt: new Date().toISOString(), label: "first" };
         allowlist.push(client);
         saveAllowlist(allowlist);
+        audit("client.paired", { pub: accepted.clientPub.slice(0, 16), bootstrap: true });
         log("info", "bootstrap client persisted", { pub: accepted.clientPub.slice(0, 16) });
       }
       if (!client) {
+        audit("client.rejected", { pub: accepted.clientPub.slice(0, 16) });
         log("warn", "client rejected: not in allowlist", {
           pub: accepted.clientPub.slice(0, 16),
         });
@@ -982,6 +1044,7 @@ async function handleMessage(data: WebSocket.RawData, ws: WebSocket) {
         pub: accepted.clientPub.slice(0, 16),
         activeSessions: sessions.size,
       });
+      audit("client.connected", { pub: accepted.clientPub.slice(0, 16) });
       metrics.inc("ocr_handshakes_total");
       metrics.gauge("ocr_sessions_active", sessions.size);
       const confirm = await acceptPayload(accepted.sessionKey, { transcribe: !!whisperTool });

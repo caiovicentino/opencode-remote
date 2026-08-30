@@ -3,7 +3,10 @@ import {
   OcrClient,
   loadState,
   saveState,
-  clearState,
+  setActiveRoom,
+  getActiveRoom,
+  removePairing,
+  loadPairings,
   parsePairingUri,
   type Pairing,
 } from "./lib/client";
@@ -29,6 +32,8 @@ export default function App() {
   const [filesView, setFilesView] = useState(false);
   const [share, setShare] = useState<{ title?: string; text?: string; url?: string } | null>(null);
   const [tick, setTick] = useState(0);
+  const [machines, setMachines] = useState<Pairing[]>(() => loadPairings());
+  const [addingMachine, setAddingMachine] = useState(false);
   const [unread, setUnread] = useState<Record<string, number>>(() => {
     try {
       return JSON.parse(localStorage.getItem("ocr_unread") ?? "{}") as Record<string, number>;
@@ -80,6 +85,7 @@ export default function App() {
       const client = await OcrClient.connect(pairing);
       if (persist) {
         saveState(pairing);
+        setMachines(loadPairings());
         void gateEnroll(); // best effort: offer Face ID lock on first pair
       }
       (window as unknown as { __ocrClient?: OcrClient }).__ocrClient = client;
@@ -159,11 +165,25 @@ export default function App() {
   function disconnect() {
     clientRef.current?.close();
     clientRef.current = null;
-    clearState();
+    setActiveRoom(null);
     setPhase("unpaired");
     setSession(null);
     setEvents([]);
     setTick((t) => t + 1);
+  }
+
+  function forgetMachine(p: Pairing) {
+    setMachines(removePairing(p.room));
+    if (getActiveRoom() === p.room) disconnect();
+  }
+
+  async function switchMachine(p: Pairing) {
+    clientRef.current?.close();
+    clientRef.current = null;
+    setSession(null);
+    setEvents([]);
+    setActiveRoom(p.room);
+    await connect(p, false);
   }
 
   async function request(
@@ -175,6 +195,26 @@ export default function App() {
     const client = clientRef.current;
     if (!client) throw new Error("not connected");
     return client.request(method as "GET", path, body, query);
+  }
+
+  if (addingMachine) {
+    return (
+      <PairingView
+        phase="unpaired"
+        error={error}
+        onPair={(uri) => {
+          setAddingMachine(false);
+          const pairing = parsePairingUri(uri);
+          if (!pairing) {
+            setError("Invalid pairing code");
+            setPhase("error");
+            return;
+          }
+          void connect(pairing, true);
+        }}
+        onRetry={() => setAddingMachine(false)}
+      />
+    );
   }
 
   if (phase !== "paired") {
@@ -237,6 +277,11 @@ export default function App() {
       machineName={machineName}
       events={events}
       unread={unread}
+      machines={machines}
+      activeRoom={getActiveRoom()}
+      onSwitch={(p) => void switchMachine(p)}
+      onForget={(p) => forgetMachine(p)}
+      onAddMachine={() => setAddingMachine(true)}
       onOpen={setSession}
       onDisconnect={disconnect}
       onEnablePush={async () => {

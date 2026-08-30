@@ -31,27 +31,46 @@ const METRICS_PORT = Number(process.env.RELAY_METRICS_PORT ?? 0);
 const m = { connectionsTotal: 0, framesRouted: 0, bytesRouted: 0, rejects: 0, startedAt: Date.now() };
 if (METRICS_PORT) {
   createHttpServer((req, res) => {
-      if (req.url?.startsWith("/metrics")) {
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(
-          JSON.stringify(
-            {
-              uptime_s: Math.round((Date.now() - m.startedAt) / 1000),
-              connections_total: m.connectionsTotal,
-              connections_active: wss.clients.size,
-              frames_routed: m.framesRouted,
-              bytes_routed: m.bytesRouted,
-              rejects: m.rejects,
-              rooms_active: rooms.size,
-            },
-            null,
-            2,
-          ),
-        );
+    if (req.url?.startsWith("/metrics")) {
+      if (req.url.includes("format=prom")) {
+        const lines = [
+          "# TYPE relay_connections_total counter",
+          `relay_connections_total ${m.connectionsTotal}`,
+          "# TYPE relay_connections_active gauge",
+          `relay_connections_active ${wss.clients.size}`,
+          "# TYPE relay_frames_routed counter",
+          `relay_frames_routed ${m.framesRouted}`,
+          "# TYPE relay_bytes_routed counter",
+          `relay_bytes_routed ${m.bytesRouted}`,
+          "# TYPE relay_rejects counter",
+          `relay_rejects ${m.rejects}`,
+          "# TYPE relay_rooms_active gauge",
+          `relay_rooms_active ${rooms.size}`,
+        ];
+        res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+        res.end(lines.join("\n") + "\n");
         return;
       }
-      res.writeHead(404).end();
-    })
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify(
+          {
+            uptime_s: Math.round((Date.now() - m.startedAt) / 1000),
+            connections_total: m.connectionsTotal,
+            connections_active: wss.clients.size,
+            frames_routed: m.framesRouted,
+            bytes_routed: m.bytesRouted,
+            rejects: m.rejects,
+            rooms_active: rooms.size,
+          },
+          null,
+          2,
+        ),
+      );
+      return;
+    }
+    res.writeHead(404).end();
+  })
     .listen(METRICS_PORT, "127.0.0.1", () =>
       ev("info", "metrics listening", { port: METRICS_PORT, bind: "127.0.0.1" }),
     );

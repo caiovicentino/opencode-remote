@@ -112,7 +112,13 @@ Também dá pra revogar direto do celular: ⚙ Settings → Paired devices.
 
 ## Roadmap
 
-- [ ] Rotinas e triggers no daemon (cron + webhooks)
-- [ ] Skills/commands do opencode como botões de 1-tap
-- [ ] Multi-máquina no mesmo app
+- [x] Rotinas agendadas com retry, status de erro e push de falha
+- [x] Skills 1-tap (prompts salvos, chips no composer, edição no Settings)
+- [x] Multi-máquina no mesmo app (switcher no header, pairing por QR)
+- [x] Diff preview nas aprovações de permissão
+- [x] Preview de arquivos no app (imagem, vídeo, áudio, texto, HTML, PDF)
+- [x] Heartbeat + auto-reconnect (socket zombie do iOS)
+- [x] Respostas gigantes em chunks (túnel sem limite prático)
 - [ ] Wake hints + bufferização de eventos quando a máquina dorme
+- [ ] Terminal PTY real (hoje o feed de tools é read-only)
+- [ ] Approve/Deny dentro da notificação (hoje a action abre a sessão)

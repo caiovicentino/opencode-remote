@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { EventEnvelope } from "@ocr/protocol";
+import type { Pairing } from "../lib/client";
 
 interface Session {
   id: string;
@@ -11,6 +12,11 @@ interface Props {
   machineName: string;
   events: EventEnvelope[];
   unread: Record<string, number>;
+  machines: Pairing[];
+  activeRoom?: string | null;
+  onSwitch: (p: Pairing) => void;
+  onForget: (p: Pairing) => void;
+  onAddMachine: () => void;
   request: (
     method: string,
     path: string,
@@ -29,6 +35,11 @@ export default function SessionsView({
   machineName,
   events,
   unread,
+  machines,
+  activeRoom,
+  onSwitch,
+  onForget,
+  onAddMachine,
   request,
   onOpen,
   onDisconnect,
@@ -42,6 +53,7 @@ export default function SessionsView({
   const [error, setError] = useState("");
   const [pushState, setPushState] = useState<"idle" | "enabling" | "enabled">("idle");
   const [query, setQuery] = useState("");
+  const [switching, setSwitching] = useState(false);
 
   // silent restore: a device that already granted permission never re-authorizes
   useEffect(() => {
@@ -117,7 +129,13 @@ export default function SessionsView({
   return (
     <div className="screen">
       <header>
-        <h1 style={{ fontSize: "1rem", margin: 0 }}>{machineName}</h1>
+        <h1
+          onClick={() => setSwitching(true)}
+          style={{ fontSize: "1rem", margin: 0, cursor: "pointer" }}
+          title="Switch machine"
+        >
+          {machineName} ⌄
+        </h1>
         <div style={{ display: "flex", gap: 8 }}>
           <button onClick={onOpenFiles} aria-label="Files">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
@@ -195,6 +213,55 @@ export default function SessionsView({
           ))}
         </div>
       </details>
+
+      {switching && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.94)",
+            zIndex: 70,
+            display: "flex",
+            flexDirection: "column",
+            padding: 12,
+            gap: 8,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button onClick={() => setSwitching(false)} aria-label="Close machine picker">
+              ✕
+            </button>
+            <div style={{ flex: 1, fontWeight: 600, fontSize: "0.9rem" }}>Machines</div>
+          </div>
+          <div className="list" style={{ overflow: "auto" }}>
+            {machines.map((m) => (
+              <div key={m.room} className="card" style={{ display: "flex", gap: 8, alignItems: "center", padding: "10px 12px" }}>
+                <div
+                  style={{ flex: 1, minWidth: 0, cursor: "pointer" }}
+                  onClick={() => {
+                    setSwitching(false);
+                    if (m.room !== activeRoom) onSwitch(m);
+                  }}
+                >
+                  <div>
+                    {m.name ?? m.room.slice(0, 8)}
+                    {m.room === activeRoom && <b> · active</b>}
+                  </div>
+                  <div className="muted" style={{ fontSize: "0.72rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {m.relay}
+                  </div>
+                </div>
+                <button className="danger" onClick={() => onForget(m)}>
+                  Forget
+                </button>
+              </div>
+            ))}
+            <button className="primary" onClick={() => { setSwitching(false); onAddMachine(); }}>
+              + Pair new machine
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
