@@ -681,7 +681,7 @@ setTimeout(checkRoutines, 10_000);
 const SAFE_PAYLOAD = 900_000;
 // oversized bodies travel split across several sealed frames
 const CHUNK_BODY = 600_000;
-const MAX_CHUNKS = 64;
+const MAX_CHUNKS = 512; // ~300MB ceiling on a single response
 
 async function sealAndSend(session: ClientSession, env: DaemonEnvelope) {
   metrics.inc(env.type === "event" ? "ocr_event_frames_total" : "ocr_res_frames_total");
