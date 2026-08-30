@@ -93,7 +93,7 @@ export default function SessionsView({
     setCreating(true);
     setError("");
     try {
-      const res = await request("POST", "/session", { title: "Remote session" });
+      const res = await request("POST", "/session", {});
       const created = res.body as { id?: string };
       if (res.status === 200 && created.id) {
         onOpen(created.id);
@@ -258,7 +258,7 @@ export default function SessionsView({
                       opacity: st ? 1 : 0.5,
                     }}
                   />
-                  <div style={{ flex: 1, minWidth: 0, fontWeight: 600, fontSize: "0.85rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  <div style={{ flex: 1, minWidth: 0, fontWeight: 600, fontSize: "0.85rem", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", whiteSpace: "normal", lineHeight: 1.2 }}>
                     {s.title || s.id.slice(0, 12)}
                   </div>
                   {(unread[s.id] ?? 0) > 0 && <span className="unread-badge">{unread[s.id]}</span>}

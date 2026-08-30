@@ -650,6 +650,21 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
       }
       if (res.status !== 200) {
         setError(`opencode responded ${res.status}: ${JSON.stringify(res.body).slice(0, 200)}`);
+      } else if (text) {
+        // first prompt names the conversation (once per session)
+        const flag = `ocr.titled.${sessionId}`;
+        if (!localStorage.getItem(flag)) {
+          localStorage.setItem(flag, "1");
+          void (async () => {
+            try {
+              const s = await request("GET", `/session/${sessionId}`);
+              const cur = (s.body as { title?: string }).title ?? "";
+              if (cur && cur !== "New session" && cur !== "Remote session") return;
+              const t = text.replace(/\s+/g, " ").trim().slice(0, 60);
+              if (t) await request("PATCH", `/session/${sessionId}`, { title: t });
+            } catch {}
+          })();
+        }
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
