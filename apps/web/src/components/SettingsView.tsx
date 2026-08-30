@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { APP_VERSION } from "../version";
 
 interface Props {
   request: (
@@ -46,7 +47,6 @@ interface Skill {
   prompt: string;
 }
 
-declare const __APP_VERSION__: string;
 
 const VOICE_KEY = "ocr_voice";
 const THEME_KEY = "ocr_theme";
@@ -161,8 +161,8 @@ export default function SettingsView({ request, onBack }: Props) {
         <div className="card">
           <h3>About</h3>
           <p className="muted" style={{ margin: 0 }}>
-            app {__APP_VERSION__} · daemon {daemonVersion || "?"}
-            {daemonVersion && daemonVersion !== __APP_VERSION__ && (
+            app {APP_VERSION} · daemon {daemonVersion || "?"}
+            {daemonVersion && daemonVersion !== APP_VERSION && (
               <span style={{ color: "var(--danger)" }}>
                 {" "}
                 — version mismatch: refresh the PWA (pull-to-refresh) or update the daemon

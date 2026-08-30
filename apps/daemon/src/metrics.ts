@@ -1,4 +1,5 @@
 import { createServer as createHttpServer } from "node:http";
+import { readFileSync } from "node:fs";
 import { log } from "./log";
 
 export interface MetricDef {
@@ -31,7 +32,11 @@ export const metrics = {
 };
 
 const startedAt = Date.now();
-export const VERSION = "0.2.0";
+export const VERSION = (
+  JSON.parse(readFileSync(new URL("../../../package.json", import.meta.url), "utf8")) as {
+    version: string;
+  }
+).version;
 
 /** text/plain exposition format (Prometheus-compatible) */
 function promText(): string {

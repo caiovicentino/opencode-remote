@@ -1,6 +1,14 @@
 # opencode-remote
 
 Remote control for this opencode instance: mobile PWA -> relay -> daemon -> local opencode.
+
+## Memória do projeto (LER PRIMEIRO)
+
+Histórico completo de trabalho, regras do usuário, avaliação de maturidade e backlog:
+`~/.opencode-remote/memory.md` — leia antes de qualquer tarefa neste repo.
+Regras rápidas: memórias (`~/.opencode-remote/memory.md`) NUNCA são comitadas;
+fuso GMT-3; só reiniciar daemon/relay se o Caio pedir; checar `git log`
+antes de assumir HEAD (um agente in-chat também commita neste repo).
 This machine also runs a media pipeline for social clips. When the user sends a video and asks
 to clip/edit it for social media, follow the pipeline below — everything runs locally.
 
