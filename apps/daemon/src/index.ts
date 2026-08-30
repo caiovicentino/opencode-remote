@@ -1029,6 +1029,11 @@ async function forwardEvents() {
                   ],
                 },
               );
+            } else if (evt.type === "question.asked" && appSettings.notify.permission) {
+              void pushToSubscribers("Question from agent", `The agent has a question on ${machineName}`, {
+                url: sessionID ? `#/session/${sessionID}` : "#/",
+                actions: [{ action: "open", title: "Answer" }],
+              });
             } else if (evt.type === "session.error") {
               const rid = pendingRuns.get(sessionID);
               if (rid) {

@@ -31,6 +31,18 @@ interface PermissionAsk {
   messageID?: string;
 }
 
+interface QuestionInfo {
+  question: string;
+  header: string;
+  options: { label: string; description?: string }[];
+  multiple?: boolean;
+  custom?: boolean;
+}
+interface QuestionReq {
+  requestID: string;
+  questions: QuestionInfo[];
+}
+
 interface DiffFile {
   file: string;
   patch: string;
@@ -129,6 +141,10 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
   const [tapToggle, setTapToggle] = useState(false);
   const [responded, setResponded] = useState<Set<string>>(new Set());
   const [persistedAsks, setPersistedAsks] = useState<PermissionAsk[]>([]);
+  const [persistedQuestions, setPersistedQuestions] = useState<QuestionReq[]>([]);
+  const [qResponded, setQResponded] = useState<Set<string>>(new Set());
+  const [qSel, setQSel] = useState<Record<string, Record<number, string[]>>>({});
+  const [qCustom, setQCustom] = useState<Record<string, Record<number, string>>>({});
   const [showActivity, setShowActivity] = useState(false);
   const [historyTools, setHistoryTools] = useState<Map<string, ToolActivity>>(new Map());
 
@@ -188,6 +204,10 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
     rolesRef.current = {};
     setResponded(new Set());
     setPersistedAsks([]); // never leak another session's pending asks on switch
+    setPersistedQuestions([]);
+    setQResponded(new Set());
+    setQSel({});
+    setQCustom({});
     // events that arrived before this view opened are covered by the message
     // fetch below — streaming starts from the next event
     lastEventId.current = events[events.length - 1]?.id ?? null;
@@ -205,6 +225,19 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
           list
             .filter((x) => x.sessionID === sessionId)
             .map((x) => ({ permissionID: x.id, label: x.permission ?? "action" })),
+        );
+      } catch {}
+      try {
+        const q = await request("GET", "/question");
+        const list = (Array.isArray(q.body) ? q.body : []) as {
+          id: string;
+          sessionID?: string;
+          questions?: QuestionInfo[];
+        }[];
+        setPersistedQuestions(
+          list
+            .filter((x) => x.sessionID === sessionId)
+            .map((x) => ({ requestID: x.id, questions: x.questions ?? [] })),
         );
       } catch {}
     })();
@@ -362,6 +395,31 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
       pending.push(pa);
   }
 
+  // agent questions (question.asked / replied / rejected) — live events win,
+  // persisted list (GET /question) covers asks that predate the view
+  const questions: QuestionReq[] = (() => {
+    const answered = new Set(qResponded);
+    const live = new Map<string, QuestionReq>();
+    for (const evt of events.slice(-50)) {
+      if (evt.type === "question.asked") {
+        const p = evt.properties as { sessionID?: string; id?: string; questions?: QuestionInfo[] };
+        if (p?.sessionID === sessionId && p?.id)
+          live.set(p.id, { requestID: p.id, questions: p.questions ?? [] });
+      } else if (evt.type === "question.replied" || evt.type === "question.rejected") {
+        const p = evt.properties as { requestID?: string };
+        if (p?.requestID) {
+          answered.add(p.requestID);
+          live.delete(p.requestID);
+        }
+      }
+    }
+    const out = [...live.values()];
+    for (const pq of persistedQuestions) {
+      if (!answered.has(pq.requestID) && !live.has(pq.requestID)) out.push(pq);
+    }
+    return out.filter((q) => !answered.has(q.requestID));
+  })();
+
   async function showDiff(ask: PermissionAsk) {
     setDiff({ ask, loading: true, files: [] });
     try {
@@ -424,8 +482,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
     })();
   }, [connStatus, queue.length, sessionId]);
 
-  async function respond(permissionID: string, response: "approve" | "reject") {
-    setResponded((prev) => new Set(prev).add(permissionID));
+  async function respond(permissionID: string, response: "approve" | "reject") {    setResponded((prev) => new Set(prev).add(permissionID));
     try {
       const res = await request("POST", `/session/${sessionId}/permissions/${permissionID}`, {
         response: response === "approve" ? "once" : "reject",
@@ -447,6 +504,74 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
         return next;
       });
       setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  function toggleOption(requestID: string, qi: number, label: string, multiple?: boolean) {
+    setQSel((prev) => {
+      const req = prev[requestID] ?? {};
+      const cur = req[qi] ?? [];
+      const next = multiple
+        ? cur.includes(label)
+          ? cur.filter((l) => l !== label)
+          : [...cur, label]
+        : cur.includes(label)
+          ? []
+          : [label];
+      return { ...prev, [requestID]: { ...req, [qi]: next } };
+    });
+  }
+
+  async function answerQuestion(requestID: string, qs: QuestionInfo[]) {
+    const perQ = qSel[requestID] ?? {};
+    const perC = qCustom[requestID] ?? {};
+    const answers = qs.map((q, i) => {
+      const sel = perQ[i] ?? [];
+      if (sel.length === 0 && q.custom && (perC[i] ?? "").trim()) return [(perC[i] ?? "").trim()];
+      return sel;
+    });
+    setQResponded((prev) => new Set(prev).add(requestID));
+    try {
+      const res = await request("POST", `/question/${requestID}/reply`, { answers });
+      if (res.status !== 200) {
+        setQResponded((prev) => {
+          const next = new Set(prev);
+          next.delete(requestID);
+          return next;
+        });
+        setError(`answer failed (${res.status}): ${JSON.stringify(res.body).slice(0, 140)}`);
+      } else {
+        setPersistedQuestions((prev) => prev.filter((q) => q.requestID !== requestID));
+      }
+    } catch (err) {
+      setQResponded((prev) => {
+        const next = new Set(prev);
+        next.delete(requestID);
+        return next;
+      });
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function rejectQuestion(requestID: string) {
+    setQResponded((prev) => new Set(prev).add(requestID));
+    try {
+      const res = await request("POST", `/question/${requestID}/reject`, {});
+      if (res.status !== 200) {
+        setQResponded((prev) => {
+          const next = new Set(prev);
+          next.delete(requestID);
+          return next;
+        });
+      } else {
+        setPersistedQuestions((prev) => prev.filter((q) => q.requestID !== requestID));
+      }
+    } catch {
+      setQResponded((prev) => {
+        const next = new Set(prev);
+        next.delete(requestID);
+        return next;
+      });
     }
   }
 
@@ -854,6 +979,73 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
           )}
           <div ref={bottomRef} />
         </div>
+
+        {questions.length > 0 && (
+          <div className="card">
+            {questions.map((qr) => {
+              const perQ = qSel[qr.requestID] ?? {};
+              const perC = qCustom[qr.requestID] ?? {};
+              const allAnswered = qr.questions.every(
+                (q, i) =>
+                  (perQ[i]?.length ?? 0) > 0 || (q.custom && (perC[i] ?? "").trim() !== ""),
+              );
+              return (
+                <div key={qr.requestID} style={{ marginBottom: 12 }}>
+                  {qr.questions.map((q, qi) => {
+                    const sel = perQ[qi] ?? [];
+                    return (
+                      <div key={qi} style={{ marginBottom: 10 }}>
+                        <p style={{ margin: "0 0 2px" }}>
+                          <b>{q.header}</b>
+                        </p>
+                        <p style={{ margin: "0 0 6px" }}>{q.question}</p>
+                        {q.options.map((o) => (
+                          <label key={o.label} style={{ display: "block" }}>
+                            <input
+                              type={q.multiple ? "checkbox" : "radio"}
+                              name={`${qr.requestID}-${qi}`}
+                              checked={sel.includes(o.label)}
+                              onChange={() => toggleOption(qr.requestID, qi, o.label, q.multiple)}
+                            />{" "}
+                            {o.label}
+                            {o.description && (
+                              <span className="muted"> — {o.description}</span>
+                            )}
+                          </label>
+                        ))}
+                        {q.custom && (
+                          <input
+                            style={{ marginTop: 4 }}
+                            placeholder="or type your own answer…"
+                            value={perC[qi] ?? ""}
+                            onChange={(e) =>
+                              setQCustom((prev) => ({
+                                ...prev,
+                                [qr.requestID]: { ...(prev[qr.requestID] ?? {}), [qi]: e.target.value },
+                              }))
+                            }
+                          />
+                        )}
+                      </div>
+                    );
+                  })}
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button
+                      className="primary"
+                      disabled={!allAnswered}
+                      onClick={() => void answerQuestion(qr.requestID, qr.questions)}
+                    >
+                      Answer
+                    </button>
+                    <button className="danger" onClick={() => void rejectQuestion(qr.requestID)}>
+                      Skip
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
 
         {pending.length > 0 && (
           <div className="card">
