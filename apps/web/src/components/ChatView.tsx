@@ -76,6 +76,7 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
   const [responded, setResponded] = useState<Set<string>>(new Set());
   const [persistedAsks, setPersistedAsks] = useState<PermissionAsk[]>([]);
   const rolesRef = useRef<Record<string, string>>({});
+  const lastEventId = useRef<string | null>(null);
   const [pendingVideo, setPendingVideo] = useState<{ file: File; dur: number } | null>(null);
   const [trimStart, setTrimStart] = useState("");
   const [trimEnd, setTrimEnd] = useState("");
@@ -107,6 +108,9 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
   useEffect(() => {
     rolesRef.current = {};
     setResponded(new Set());
+    // events that arrived before this view opened are covered by the message
+    // fetch below — streaming starts from the next event
+    lastEventId.current = events[events.length - 1]?.id ?? null;
     // ask the daemon for pending permissions on this session — covers asks that
     // happened before the app was open (otherwise the agent stays stuck invisibly)
     void (async () => {
@@ -156,7 +160,13 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
     let text = "";
     let idle = false;
     let errored = "";
-    for (const evt of events) {
+    let start = 0;
+    if (lastEventId.current) {
+      const idx = events.findIndex((e) => e.id === lastEventId.current);
+      if (idx >= 0) start = idx + 1;
+    }
+    lastEventId.current = events[events.length - 1]?.id ?? null;
+    for (const evt of events.slice(start)) {
       const p = evt.properties as {
         sessionID?: string;
         status?: { type?: string };
