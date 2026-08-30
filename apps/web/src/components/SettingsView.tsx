@@ -22,6 +22,8 @@ interface Routine {
   prompt: string;
   hour: number;
   minute: number;
+  lastStatus?: "ok" | "error";
+  lastError?: string;
 }
 
 interface Skill {
@@ -420,6 +422,12 @@ export default function SettingsView({ request, onBack }: Props) {
                 <div className="muted" style={{ fontSize: "0.72rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                   {r.prompt}
                 </div>
+              </span>
+              <span
+                title={r.lastError ? `last error: ${r.lastError}` : r.lastStatus === "ok" ? "last run: ok" : "never ran"}
+                style={{ fontSize: "0.85rem" }}
+              >
+                {r.lastStatus === "ok" ? "🟢" : r.lastStatus === "error" ? "🔴" : "⚪"}
               </span>
               <button
                 className="danger"
