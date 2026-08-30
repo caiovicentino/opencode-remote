@@ -12,7 +12,7 @@ your hardware; the relay is a blind pipe that cannot read the traffic.
 ```
 
 <p align="center">
-  <video src="https://raw.githubusercontent.com/caiovicentino/opencode-remote/main/assets/demo.mp4" width="300" controls muted loop playsinline></video>
+  <a href="assets/demo.mp4"><img src="assets/demo-poster.jpg" width="300" alt="OpenCode Remote demo — tap to watch"></a>
 </p>
 
 ## Why this exists

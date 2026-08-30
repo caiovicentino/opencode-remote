@@ -12,7 +12,7 @@ hardware; o relay é um tubo cego que não consegue ler o tráfego.
 ```
 
 <p align="center">
-  <video src="https://raw.githubusercontent.com/caiovicentino/opencode-remote/main/assets/demo.mp4" width="300" controls muted loop playsinline></video>
+  <a href="assets/demo.mp4"><img src="assets/demo-poster.jpg" width="300" alt="Demo do OpenCode Remote — clique pra assistir"></a>
 </p>
 
 ## Por que existe
