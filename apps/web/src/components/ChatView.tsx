@@ -24,6 +24,7 @@ interface Bubble {
   role: "user" | "assistant";
   text: string;
   images?: string[];
+  messageID?: string;
 }
 
 interface PermissionAsk {
@@ -60,7 +61,7 @@ interface ToolActivity {
 }
 
 interface HistoryRow {
-  info: { role?: string };
+  info: { id?: string; role?: string };
   parts: {
     type: string;
     text?: string;
@@ -273,31 +274,38 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
   }, [sessionId]);
 
   useEffect(() => {
-    void (async () => {
-      try {
-        const res = await request("GET", `/session/${sessionId}/message`);
-        if (res.status !== 200) throw new Error(`GET messages -> ${res.status}`);
-        const rows = (res.body as HistoryRow[]) ?? [];
-        const out: Bubble[] = [];
-        for (const row of rows) {
-          const text = row.parts
-            .filter((p) => p.type === "text" && p.text)
-            .map((p) => p.text)
-            .join("\n");
-          const images = row.parts
-            .filter((p) => p.type === "file" && typeof p.url === "string" && p.url.startsWith("data:image/"))
-            .map((p) => p.url as string);
-          if (text || images.length) {
-            out.push({ role: row.info.role === "user" ? "user" : "assistant", text, images });
-          }
-        }
-        setBubbles(out);
-        setHistoryTools(toolsFromRows(rows));
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-      }
-    })();
+    void loadHistory();
   }, [sessionId]);
+
+  async function loadHistory() {
+    try {
+      const res = await request("GET", `/session/${sessionId}/message`);
+      if (res.status !== 200) throw new Error(`GET messages -> ${res.status}`);
+      const rows = (res.body as HistoryRow[]) ?? [];
+      const out: Bubble[] = [];
+      for (const row of rows) {
+        const text = row.parts
+          .filter((p) => p.type === "text" && p.text)
+          .map((p) => p.text)
+          .join("\n");
+        const images = row.parts
+          .filter((p) => p.type === "file" && typeof p.url === "string" && p.url.startsWith("data:image/"))
+          .map((p) => p.url as string);
+        if (text || images.length) {
+          out.push({
+            role: row.info.role === "user" ? "user" : "assistant",
+            text,
+            images,
+            messageID: row.info.id,
+          });
+        }
+      }
+      setBubbles(out);
+      setHistoryTools(toolsFromRows(rows));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
 
   // stream: rebuild the tail of the conversation from live part events.
   // user messages echo as parts too — track message roles and only stream
@@ -325,6 +333,25 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
       if (p?.sessionID !== sessionId) continue;
       if (evt.type === "message.updated" && p.info?.id) {
         rolesRef.current[p.info.id] = p.info.role ?? "assistant";
+        const infoId = p.info.id;
+        if (p.info.role === "user") {
+          // tag the freshly sent user bubble so it becomes rewindable
+          setBubbles((b) => {
+            let idx = -1;
+            for (let i = b.length - 1; i >= 0; i--) {
+              const cur = b[i];
+              if (cur?.role === "user" && !cur.messageID) {
+                idx = i;
+                break;
+              }
+            }
+            if (idx < 0) return b;
+            const next = [...b];
+            const target = next[idx]!;
+            next[idx] = { ...target, messageID: infoId };
+            return next;
+          });
+        }
         continue;
       }
       if (evt.type === "session.status") idle = p.status?.type === "idle" || idle;
@@ -536,8 +563,44 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
     }
   }
 
-  function toggleOption(requestID: string, qi: number, label: string, multiple?: boolean) {
-    setQSel((prev) => {
+  const [canUnrevert, setCanUnrevert] = useState(false);
+  async function revertTo(messageID: string) {
+    if (
+      !window.confirm(
+        "Voltar a conversa pra este ponto? Tudo o que veio depois é desfeito — inclusive as mudanças no código. Dá pra refazer depois.",
+      )
+    )
+      return;
+    try {
+      const res = await request("POST", `/session/${sessionId}/revert`, { messageID });
+      if (res.status !== 200) {
+        setError(`revert failed (${res.status}): ${JSON.stringify(res.body).slice(0, 140)}`);
+        return;
+      }
+      setCanUnrevert(true);
+      setAutoNote("Conversa voltou pra trás ⏪");
+      await loadHistory();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function unrevert() {
+    try {
+      const res = await request("POST", `/session/${sessionId}/unrevert`, {});
+      if (res.status !== 200) {
+        setError(`unrevert failed (${res.status})`);
+        return;
+      }
+      setCanUnrevert(false);
+      setAutoNote("De volta pro presente ↩️");
+      await loadHistory();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  function toggleOption(requestID: string, qi: number, label: string, multiple?: boolean) {    setQSel((prev) => {
       const req = prev[requestID] ?? {};
       const cur = req[qi] ?? [];
       const next = multiple
@@ -1017,6 +1080,15 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
                 </div>
               )}
               {renderBubbleText(b.text, request, setError)}
+              {b.role === "user" && b.messageID && (
+                <button
+                  className="muted"
+                  style={{ fontSize: "0.7rem", padding: "1px 6px", marginTop: 2, opacity: 0.7 }}
+                  onClick={() => void revertTo(b.messageID!)}
+                >
+                  ⏪ voltar pra cá
+                </button>
+              )}
             </div>
           ))}
           {liveText && (
@@ -1127,6 +1199,11 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
         {error && <p style={{ color: "var(--danger)", margin: 0 }}>{error}</p>}
         {autoNote && (
           <p style={{ color: "var(--muted, #8a8f98)", margin: 0 }}>✔ {autoNote}</p>
+        )}
+        {canUnrevert && (
+          <button style={{ margin: "2px 0" }} onClick={() => void unrevert()}>
+            ↩️ Refazer (desfazer o voltar)
+          </button>
         )}
         {queue.length > 0 && (
           <p className="muted" style={{ margin: 0 }}>
