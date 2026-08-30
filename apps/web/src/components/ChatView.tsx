@@ -261,20 +261,35 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
       },
     ]);
     try {
-      const fileParts = images.map((img) => ({
-        type: "file",
-        mime: img.mime,
-        filename: img.filename,
-        url: `ocr-upload://${img.id}`,
-      }));
-      const parts: unknown[] = [...fileParts];
-      if (text) parts.push({ type: "text", text });
+      const attached = [...images];
+      const buildBody = (): Record<string, unknown> => {
+        const fileParts = attached.map((img) => ({
+          type: "file",
+          mime: img.mime,
+          filename: img.filename,
+          url: `ocr-upload://${img.id}`,
+        }));
+        const parts: unknown[] = [...fileParts];
+        if (text) parts.push({ type: "text", text });
+        const sel = model ? models.find((m) => `${m.providerID}/${m.modelID}` === model) : null;
+        const body: Record<string, unknown> = { parts };
+        if (sel) body.model = { providerID: sel.providerID, modelID: sel.modelID };
+        if (agent) body.agent = agent;
+        return body;
+      };
       setImages([]);
-      const sel = model ? models.find((m) => `${m.providerID}/${m.modelID}` === model) : null;
-      const body: Record<string, unknown> = { parts };
-      if (sel) body.model = { providerID: sel.providerID, modelID: sel.modelID };
-      if (agent) body.agent = agent;
-      const res = await request("POST", `/session/${sessionId}/message`, body);
+      let body = buildBody();
+      let res = await request("POST", `/session/${sessionId}/message`, body);
+      // attachments age out of the daemon (30min TTL, or a daemon restart):
+      // re-upload whatever we still hold in memory and retry once
+      if (res.status === 410 && attached.some((img) => img.raw)) {
+        for (const img of attached) {
+          if (!img.raw) continue;
+          img.id = await uploadBytes(img.raw, img.mime, img.filename);
+        }
+        body = buildBody();
+        res = await request("POST", `/session/${sessionId}/message`, body);
+      }
       if (res.status !== 200) {
         setError(`opencode responded ${res.status}: ${JSON.stringify(res.body).slice(0, 200)}`);
       }
@@ -460,7 +475,7 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
       const id = await uploadBytes(bytes, mime, filename);
       setImages((prev) => [
         ...prev.slice(-3),
-        { id, mime, filename, thumb: URL.createObjectURL(file) },
+        { id, mime, filename, thumb: URL.createObjectURL(file), raw: bytes },
       ]);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

@@ -398,7 +398,7 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
     uploads.set(id!, { buf, mime: mime ?? "image/jpeg", filename: filename ?? "image.jpg", at: Date.now() });
     metrics.inc("ocr_uploads_completed_total");
     for (const [k, v] of uploads) {
-      if (Date.now() - v.at > 5 * 60_000) uploads.delete(k);
+      if (Date.now() - v.at > 30 * 60_000) uploads.delete(k);
     }
     return { id: req.id, status: 200, body: { url: `ocr-upload://${id}` } };
   }
