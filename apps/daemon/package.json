@@ -5,6 +5,7 @@
   "type": "module",
   "dependencies": {
     "@ocr/protocol": "*",
+    "json5": "^2.2.3",
     "qrcode": "^1.5.4",
     "tsx": "^4.19.0",
     "tweetnacl": "^1.0.3",

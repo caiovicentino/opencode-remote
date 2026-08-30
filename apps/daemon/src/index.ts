@@ -1,8 +1,10 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, statSync, readdirSync, openSync, readSync, closeSync, appendFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, statSync, readdirSync, openSync, readSync, closeSync, appendFileSync, copyFileSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, dirname } from "node:path";
+import JSON5 from "json5";
 import { randomUUID } from "node:crypto";
 import QRCode from "qrcode";
 import WebSocket from "ws";
@@ -407,6 +409,49 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
     audit("settings.updated", { autoMode: s.autoMode });
     return { id: req.id, status: 200, body: s };
   }
+  // --- MCP manager: read/write the mcp section of the opencode config -------
+  if (req.path === "/__ocr/mcp" && req.method === "GET") {
+    const { servers, configFile } = readMcpConfig();
+    return { id: req.id, status: 200, body: { servers, configFile } };
+  }
+  if (req.path === "/__ocr/mcp" && req.method === "PUT") {
+    const b = req.body as {
+      name?: string;
+      remove?: boolean;
+      config?: { type?: string; command?: string[]; url?: string; enabled?: boolean };
+    };
+    if (!b.name || !/^[a-zA-Z0-9_-]+$/.test(b.name)) {
+      return { id: req.id, status: 400, body: { error: "valid name required" } };
+    }
+    try {
+      const { file } = mcpConfigPaths();
+      const parsed = readMcpConfigJson(file);
+      const mcp = (parsed.mcp ?? {}) as Record<string, unknown>;
+      if (b.remove) delete mcp[b.name];
+      else {
+        const cfg = b.config ?? {};
+        if (cfg.type === "remote" && !cfg.url) {
+          return { id: req.id, status: 400, body: { error: "url required for remote servers" } };
+        }
+        if (cfg.type === "local" && (!cfg.command || cfg.command.length === 0)) {
+          return { id: req.id, status: 400, body: { error: "command required for local servers" } };
+        }
+        mcp[b.name] = { enabled: true, ...cfg };
+      }
+      parsed.mcp = mcp;
+      if (existsSync(file)) {
+        copyFileSync(file, `${file}.bak-mcp-${Date.now()}`);
+      }
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, JSON.stringify(parsed, null, 2));
+      audit("mcp.updated", { name: b.name, remove: b.remove === true });
+      const { servers } = readMcpConfig();
+      return { id: req.id, status: 200, body: { ok: true, servers } };
+    } catch (err) {
+      return { id: req.id, status: 500, body: { error: err instanceof Error ? err.message : String(err) } };
+    }
+  }
+
   // --- export a session as a markdown file the phone can save ----------------
   if (req.path === "/__ocr/export" && req.method === "POST") {
     const { sessionId } = req.body as { sessionId?: string };
@@ -1341,6 +1386,150 @@ function connectRelay() {
 // main
 // ---------------------------------------------------------------------------
 
+// --- MCP config (opencode.jsonc/json in ~/.config/opencode) -----------------
+
+function mcpConfigPaths() {
+  const dir = join(homedir(), ".config", "opencode");
+  return { dir, file: join(dir, "opencode.jsonc"), jsonFile: join(dir, "opencode.json") };
+}
+
+function readMcpConfigJson(file: string): Record<string, unknown> {
+  if (!existsSync(file)) return {};
+  try {
+    return JSON5.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+  } catch {
+    return {}; // unparseable config — report empty rather than crash
+  }
+}
+
+function readMcpConfig() {
+  const { file, jsonFile } = mcpConfigPaths();
+  const configFile = existsSync(file) ? file : jsonFile;
+  const parsed = readMcpConfigJson(configFile);
+  const servers = Object.entries((parsed.mcp as Record<string, Record<string, unknown>>) ?? {}).map(
+    ([name, cfg]) => ({
+      name,
+      type: (cfg.type as string) ?? "local",
+      command: cfg.command as string[] | undefined,
+      url: cfg.url as string | undefined,
+      enabled: cfg.enabled !== false,
+    }),
+  );
+  return { servers, configFile };
+}
+
+// ---------------------------------------------------------------------------
+// local HTTP API (127.0.0.1 only) — the public SDK talks to this
+// ---------------------------------------------------------------------------
+
+function apiToken(): string {
+  const raw = JSON.parse(readFileSync(STATE_FILE, "utf8")) as { apiToken?: string };
+  if (raw.apiToken) return raw.apiToken;
+  const token = randomUUID().replace(/-/g, "") + randomUUID().replace(/-/g, "");
+  raw.apiToken = token;
+  writeFileSync(STATE_FILE, JSON.stringify(raw, null, 2));
+  chmodSync(STATE_FILE, 0o600);
+  log("info", "api token generated (see apiToken in daemon.json)");
+  return token;
+}
+
+function readBody(req: IncomingMessage): Promise<string> {
+  return new Promise((resolve) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => resolve(body));
+  });
+}
+
+function send401(res: ServerResponse) {
+  res.writeHead(401, { "content-type": "application/json" });
+  res.end(JSON.stringify({ error: "unauthorized — Authorization: Bearer <apiToken from daemon.json>" }));
+}
+
+async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
+  if (!url.pathname.startsWith("/api/")) return false;
+  const expected = `Bearer ${apiToken()}`;
+  if (req.headers.authorization !== expected) {
+    send401(res);
+    return true;
+  }
+  const op = async (method: string, path: string, body?: unknown) =>
+    proxy({ id: randomUUID(), method, path, body } as OpRequest);
+  const seg = url.pathname.split("/").filter(Boolean); // ["api", "session", ...]
+  const send = (status: number, body: unknown) => {
+    res.writeHead(status, { "content-type": "application/json" });
+    res.end(JSON.stringify(body));
+  };  try {
+    // GET /api/health
+    if (req.method === "GET" && seg[1] === "health") {
+      send(200, {
+        healthy: true,
+        version: VERSION,
+        machine: machineName,
+        opencodeHealthy: metrics.get("ocr_opencode_healthy") === 1,
+        relayConnected: metrics.get("ocr_relay_connected") === 1,
+      });
+      return true;
+    }
+    // /api/session…
+    if (seg[1] === "mcp" && (req.method === "GET" || req.method === "PUT")) {
+      const body = req.method === "PUT" ? JSON.parse((await readBody(req)) || "{}") : undefined;
+      const r = await op(req.method, "/__ocr/mcp", body);
+      send(r.status, r.body);
+      return true;
+    }
+    if (seg[1] !== "session") {
+      send(404, { error: "unknown route" });
+      return true;
+    }
+    if (req.method === "GET" && !seg[2]) {
+      send(200, (await op("GET", "/session")).body);
+      return true;
+    }
+    if (req.method === "POST" && !seg[2]) {
+      const body = JSON.parse((await readBody(req)) || "{}") as { title?: string };
+      send(200, (await op("POST", "/session", { title: body.title })).body);
+      return true;
+    }
+    const sessionId = seg[2] ?? "";
+    if (!sessionId.startsWith("ses")) {
+      send(400, { error: "bad session id" });
+      return true;
+    }
+    if (req.method === "GET" && !seg[3]) {
+      send(200, (await op("GET", `/session/${sessionId}`)).body);
+      return true;
+    }
+    if (req.method === "DELETE" && !seg[3]) {
+      send(200, (await op("DELETE", `/session/${sessionId}`)).body);
+      return true;
+    }
+    if (req.method === "GET" && seg[3] === "messages") {
+      const limit = Number(url.searchParams.get("limit") ?? 200);
+      const rows = ((await op("GET", `/session/${sessionId}/message`)).body ?? []) as unknown[];
+      send(200, rows.slice(-limit));
+      return true;
+    }
+    if (req.method === "POST" && seg[3] === "message") {
+      const body = JSON.parse((await readBody(req)) || "{}") as { text?: string };
+      if (!body.text) {
+        send(400, { error: "text required" });
+        return true;
+      }
+      const r = await op("POST", `/session/${sessionId}/message`, {
+        parts: [{ type: "text", text: body.text }],
+      });
+      send(r.status === 200 ? 202 : r.status, { accepted: r.status === 200, opencode: r.body });
+      return true;
+    }
+    send(404, { error: "unknown route" });
+    return true;
+  } catch (err) {
+    send(500, { error: err instanceof Error ? err.message : String(err) });
+    return true;
+  }
+}
+
 async function main() {
   log("info", "daemon starting (protocol v2)", {
     machine: machineName,
@@ -1350,7 +1539,7 @@ async function main() {
   });
 
   const metricsPort = Number(process.env.OCR_METRICS_PORT);
-  if (metricsPort) startMetricsServer(metricsPort);
+  if (metricsPort) startMetricsServer(metricsPort, handleApi);
 
   // boot healthcheck: fail loudly early if opencode is unreachable
   try {

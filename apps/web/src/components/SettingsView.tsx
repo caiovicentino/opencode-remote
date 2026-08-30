@@ -48,6 +48,14 @@ interface Skill {
 }
 
 
+interface McpServer {
+  name: string;
+  type: string;
+  command?: string[];
+  url?: string;
+  enabled: boolean;
+}
+
 const VOICE_KEY = "ocr_voice";
 const THEME_KEY = "ocr_theme";
 const FONT_KEY = "ocr_font";
@@ -72,6 +80,9 @@ export default function SettingsView({ request, onBack }: Props) {
   const [name, setName] = useState("");
   const [notify, setNotify] = useState({ permission: true, idle: true });
   const [autoMode, setAutoMode] = useState(false);
+  const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
+  const [configFile, setConfigFile] = useState("");
+  const [newMcp, setNewMcp] = useState({ name: "", type: "local", value: "" });
   const [voice, setVoice] = useState(getVoiceSettings());
   const [style, setStyle] = useState<Record<string, unknown>>({});
   const [theme, setTheme] = useState(localStorage.getItem(THEME_KEY) ?? "dark");
@@ -115,6 +126,11 @@ export default function SettingsView({ request, onBack }: Props) {
       }
       const cs = await request("GET", "/__ocr/clip-style");
       if (cs.status === 200) setStyle((cs.body as Record<string, unknown>) ?? {});
+      const m = await request("GET", "/__ocr/mcp");
+      if (m.status === 200) {
+        setMcpServers((m.body as { servers?: McpServer[] }).servers ?? []);
+        setConfigFile((m.body as { configFile?: string }).configFile ?? "");
+      }
       const al = await request("GET", "/__ocr/audit");
       if (al.status === 200) setAuditEntries((al.body as { entries?: typeof auditEntries }).entries ?? []);
     })();
@@ -123,6 +139,16 @@ export default function SettingsView({ request, onBack }: Props) {
   async function saveSettings(patch: { name?: string; notify?: { permission?: boolean; idle?: boolean }; autoMode?: boolean }) {
     const res = await request("PATCH", "/__ocr/settings", patch);
     if (res.status === 200) setMsg("saved");
+  }
+
+  async function saveMcp(name: string, config?: Partial<McpServer>, remove = false) {
+    const res = await request("PUT", "/__ocr/mcp", remove ? { name, remove: true } : { name, config });
+    if (res.status === 200) {
+      setMsg("salvo");
+      setMcpServers((res.body as { servers?: McpServer[] }).servers ?? []);
+    } else {
+      setMsg(`erro: ${JSON.stringify(res.body).slice(0, 100)}`);
+    }
   }
 
   function saveVoice(v: { autoSend: boolean; lang: string }) {
@@ -213,6 +239,64 @@ export default function SettingsView({ request, onBack }: Props) {
             />{" "}
             Agent finished
           </label>
+        </div>
+
+        <div className="card">
+          <h3>MCP</h3>
+          <p className="muted" style={{ margin: "0 0 6px" }}>
+            Conectores de ferramentas ({configFile.split("/").pop()}).
+            Mudanças valem para novas conversas.
+          </p>
+          {mcpServers.length === 0 && <p className="muted" style={{ margin: 0 }}>Nenhum conector.</p>}
+          {mcpServers.map((s) => (
+            <div key={s.name} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+              <input
+                type="checkbox"
+                checked={s.enabled}
+                onChange={(e) => void saveMcp(s.name, { ...s, enabled: e.target.checked })}
+              />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <b style={{ fontSize: "0.85rem" }}>{s.name}</b>{" "}
+                <span className="muted" style={{ fontSize: "0.75rem" }}>
+                  {s.type === "remote" ? s.url : (s.command ?? []).join(" ")}
+                </span>
+              </div>
+              <button className="danger" aria-label="Remove" onClick={() => void saveMcp(s.name, undefined, true)}>
+                ✕
+              </button>
+            </div>
+          ))}
+          <details style={{ marginTop: 6 }}>
+            <summary className="muted">+ Adicionar conector</summary>
+            <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+              <input style={{ flex: 1 }} placeholder="nome" value={newMcp.name} onChange={(e) => setNewMcp({ ...newMcp, name: e.target.value })} />
+              <select value={newMcp.type} onChange={(e) => setNewMcp({ ...newMcp, type: e.target.value })}>
+                <option value="local">local</option>
+                <option value="remote">remote</option>
+              </select>
+            </div>
+            <input
+              style={{ width: "100%", marginTop: 6 }}
+              placeholder={newMcp.type === "remote" ? "https://url-do-servidor" : "comando (ex: npx -y servidor-mcp)"}
+              value={newMcp.value}
+              onChange={(e) => setNewMcp({ ...newMcp, value: e.target.value })}
+            />
+            <button
+              className="primary"
+              style={{ marginTop: 6 }}
+              disabled={!newMcp.name.trim() || !newMcp.value.trim()}
+              onClick={() => {
+                const cfg =
+                  newMcp.type === "remote"
+                    ? { type: "remote", url: newMcp.value.trim(), enabled: true }
+                    : { type: "local", command: newMcp.value.trim().split(/\s+/), enabled: true };
+                void saveMcp(newMcp.name.trim(), cfg);
+                setNewMcp({ name: "", type: "local", value: "" });
+              }}
+            >
+              Adicionar
+            </button>
+          </details>
         </div>
 
         <div className="card">

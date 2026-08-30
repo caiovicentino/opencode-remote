@@ -162,10 +162,53 @@ async function setup() {
   await qr();
 }
 
+async function update(args) {
+  const force = args.includes("--force");
+  const isRepo =
+    sh(`git -C ${JSON.stringify(ROOT)} rev-parse --is-inside-work-tree 2>/dev/null`).stdout?.trim() ===
+    "true";
+  if (!isRepo) {
+    return bad("not a git checkout — update via `brew upgrade opencode-remote` or reinstall");
+  }
+  const dirty = sh(`git -C ${JSON.stringify(ROOT)} status --porcelain`).stdout?.trim();
+  if (dirty && !force) {
+    warn("local changes detected — commit/stash or run with --force:");
+    console.log(dirty.split("\n").map((l) => `    ${l}`).join("\n"));
+    return;
+  }
+  info("fetching…");
+  const f = sh(`git -C ${JSON.stringify(ROOT)} fetch origin`);
+  if (f.status !== 0) return bad("git fetch failed");
+  const behind = sh(`git -C ${JSON.stringify(ROOT)} rev-list --count HEAD..origin/main`).stdout?.trim();
+  if (behind === "0") return ok("already up to date");
+  const log = sh(`git -C ${JSON.stringify(ROOT)} log --oneline HEAD..origin/main`).stdout ?? "";
+  console.log("  incoming:");
+  console.log(log.split("\n").map((l) => `    ${l}`).join("\n"));
+  if (force) {
+    sh(`git -C ${JSON.stringify(ROOT)} reset --hard origin/main`);
+  } else {
+    const pull = sh(`git -C ${JSON.stringify(ROOT)} pull --ff-only origin main`);
+    if (pull.status !== 0) return bad("pull failed (diverged?) — use --force to hard-reset");
+  }
+  info("installing deps…");
+  sh("npm ci --silent", { cwd: ROOT });
+  info("restarting services…");
+  start();
+  await new Promise((r) => setTimeout(r, 2500));
+  (await portOpen(8792)) ? ok("daemon back up — update complete") : bad("daemon not responding — run: opencode-remote doctor");
+}
+
+function token() {
+  if (!existsSync(STATE_FILE)) return bad("no daemon state — run: opencode-remote setup");
+  const st = JSON.parse(readFileSync(STATE_FILE, "utf8"));
+  if (!st.apiToken) return bad("no api token yet — restart the daemon once to generate it");
+  console.log(st.apiToken);
+}
+
 const cmd = process.argv[2] ?? "status";
-const commands = { doctor, qr, start, stop, status, setup };
+const commands = { doctor, qr, start, stop, status, setup, update, token };
 if (commands[cmd]) await commands[cmd]();
 else {
-  console.log("usage: opencode-remote <setup|doctor|qr|start|stop|status>");
+  console.log("usage: opencode-remote <setup|doctor|qr|start|stop|status|update|token>");
   process.exit(1);
 }

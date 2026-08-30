@@ -1,4 +1,4 @@
-import { createServer as createHttpServer } from "node:http";
+import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFileSync } from "node:fs";
 import { log } from "./log";
 
@@ -60,14 +60,15 @@ function snapshot() {
   };
 }
 
-export function startMetricsServer(port: number) {
-  const server = createHttpServer((req, res) => {
+export function startMetricsServer(port: number, api?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>) {
+  const server = createHttpServer(async (req, res) => {
     if (req.url?.startsWith("/metrics")) {
       const body = req.url.includes("format=prom") ? promText() : JSON.stringify(snapshot(), null, 2);
       res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
       res.end(body);
       return;
     }
+    if (api && req.url && (await api(req, res, new URL(req.url, "http://127.0.0.1")))) return;
     res.writeHead(404).end();
   });
   server.listen(port, "127.0.0.1", () => {
