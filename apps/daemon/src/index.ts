@@ -1,4 +1,6 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, statSync, readdirSync, openSync, readSync, closeSync, appendFileSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -404,6 +406,88 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
     machineName = s.name || MACHINE_NAME;
     audit("settings.updated", { autoMode: s.autoMode });
     return { id: req.id, status: 200, body: s };
+  }
+  // --- export a session as a markdown file the phone can save ----------------
+  if (req.path === "/__ocr/export" && req.method === "POST") {
+    const { sessionId } = req.body as { sessionId?: string };
+    if (!sessionId || !sessionId.startsWith("ses")) {
+      return { id: req.id, status: 400, body: { error: "sessionId required" } };
+    }
+    try {
+      const res = await fetch(new URL(`/session/${sessionId}/message`, OPENCODE_URL), {
+        headers: authHeader ? { authorization: authHeader } : {},
+      });
+      if (!res.ok) return { id: req.id, status: 502, body: { error: `opencode ${res.status}` } };
+      const rows = (await res.json()) as {
+        info?: { role?: string };
+        parts?: {
+          type: string;
+          text?: string;
+          tool?: string;
+          state?: { title?: string; output?: string };
+        }[];
+      }[];
+      const lines: string[] = [];
+      let title = "";
+      for (const row of rows) {
+        for (const part of row.parts ?? []) {
+          if (part.type === "text" && part.text?.trim()) {
+            const role = row.info?.role === "user" ? "👤 Você" : "🤖 Agente";
+            if (row.info?.role === "user" && !title) title = part.text.trim().slice(0, 60);
+            lines.push(`## ${role}`, "", part.text.trim(), "");
+          } else if (part.type === "tool" && part.tool) {
+            const out = (part.state?.output ?? "").replace(/\s+/g, " ").slice(0, 300);
+            lines.push(`> 🔧 **${part.tool}**${part.state?.title ? ` — ${part.state.title}` : ""}${out ? `\n> \`${out}\`` : ""}`, "");
+          }
+        }
+      }
+      if (!title) title = "Conversa";
+      const when = new Date().toLocaleString("pt-BR", { timeZone: "America/Bahia" });
+      const md = [`# ${title}`, "", `_${when} (GMT-3)_`, "", ...lines].join("\n");
+      const dir = join(STATE_DIR, "uploads");
+      mkdirSync(dir, { recursive: true });
+      const name = `conversa-${sessionId.slice(-8)}.md`;
+      const path = join(dir, name);
+      writeFileSync(path, md);
+      audit("session.exported", { sessionId });
+      return { id: req.id, status: 200, body: { path, name } };
+    } catch (err) {
+      return {
+        id: req.id,
+        status: 500,
+        body: { error: err instanceof Error ? err.message : String(err) },
+      };
+    }
+  }
+  // --- handoff: open this session in Terminal on the Mac ---------------------
+  if (req.path === "/__ocr/handoff" && req.method === "POST") {
+    const { sessionId } = req.body as { sessionId?: string };
+    if (!sessionId || !sessionId.startsWith("ses")) {
+      return { id: req.id, status: 400, body: { error: "sessionId required" } };
+    }
+    try {
+      const res = await fetch(new URL(`/session/${sessionId}`, OPENCODE_URL), {
+        headers: authHeader ? { authorization: authHeader } : {},
+      });
+      if (!res.ok) return { id: req.id, status: 502, body: { error: `opencode ${res.status}` } };
+      const info = (await res.json()) as { directory?: string; path?: string };
+      const dir = info.directory || info.path;
+      if (!dir) return { id: req.id, status: 404, body: { error: "session directory unknown" } };
+      const script = `tell application "Terminal"
+  activate
+  do script "cd ${dir.replace(/"/g, '\\"')} && opencode -s ${sessionId}"
+end tell`;
+      await promisify(execFile)("osascript", ["-e", script]);
+      log("info", "session handed off to desktop", { sessionId, dir });
+      audit("session.handoff", { sessionId, dir });
+      return { id: req.id, status: 200, body: { ok: true, dir } };
+    } catch (err) {
+      return {
+        id: req.id,
+        status: 500,
+        body: { error: err instanceof Error ? err.message : String(err) },
+      };
+    }
   }
   if (req.path === "/__ocr/transcribe/chunk" && req.method === "POST") {
     const { id, idx, data } = req.body as { id?: string; idx?: number; data?: string };

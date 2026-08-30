@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { EventEnvelope } from "@ocr/protocol";
 import { WavRecorder, encodeWav } from "../lib/recorder";
+import { saveFile } from "../lib/files";
 import { getVoiceSettings } from "./SettingsView";
 import { renderBubbleText } from "./FileCard";
 
@@ -148,6 +149,34 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
   const [showActivity, setShowActivity] = useState(false);
   const [historyTools, setHistoryTools] = useState<Map<string, ToolActivity>>(new Map());
 
+  const [exporting, setExporting] = useState(false);
+  async function handoffToDesktop() {
+    try {
+      const res = await request("POST", "/__ocr/handoff", { sessionId });
+      if (res.status === 200) setAutoNote("Aberto no Mac 💻 — a conversa continua lá");
+      else setError(`handoff failed: ${JSON.stringify(res.body).slice(0, 140)}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+  async function exportChat() {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const res = await request("POST", "/__ocr/export", { sessionId });
+      if (res.status !== 200) {
+        setError(`export failed: ${JSON.stringify(res.body).slice(0, 140)}`);
+        return;
+      }
+      const { path } = res.body as { path: string };
+      await saveFile(request, path);
+      setAutoNote("Conversa exportada ✔");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setExporting(false);
+    }
+  }
   async function loadToolHistory() {
     try {
       const res = await request("GET", `/session/${sessionId}/message`);
@@ -553,8 +582,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
     }
   }
 
-  async function rejectQuestion(requestID: string) {
-    setQResponded((prev) => new Set(prev).add(requestID));
+  async function rejectQuestion(requestID: string) {    setQResponded((prev) => new Set(prev).add(requestID));
     try {
       const res = await request("POST", `/question/${requestID}/reject`, {});
       if (res.status !== 200) {
@@ -916,6 +944,21 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
           }}
         />
         <h1 style={{ fontSize: "0.9rem", margin: 0, flex: 1 }}>session</h1>
+        <button
+          onClick={() => void handoffToDesktop()}
+          aria-label="Continue on the Mac"
+          title="Continue on the Mac"
+        >
+          💻
+        </button>
+        <button
+          onClick={() => void exportChat()}
+          disabled={exporting}
+          aria-label="Export conversation"
+          title="Export conversation"
+        >
+          {exporting ? "…" : "⤓"}
+        </button>
         <button
           onClick={() => {
             setShowActivity((v) => !v);

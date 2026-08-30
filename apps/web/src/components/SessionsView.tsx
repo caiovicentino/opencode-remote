@@ -109,14 +109,14 @@ export default function SessionsView({
   }
 
   async function renameSession(id: string, current?: string) {
-    const title = window.prompt("New name:", current ?? "");
+    const title = window.prompt("Novo nome:", current ?? "");
     if (!title) return;
     await request("PATCH", `/session/${id}`, { title });
     void load();
   }
 
   async function deleteSession(id: string) {
-    if (!window.confirm("Delete this session?")) return;
+    if (!window.confirm("Apagar esta conversa?")) return;
     await request("DELETE", `/session/${id}`);
     void load();
   }
@@ -127,6 +127,42 @@ export default function SessionsView({
       (s.title ?? "").toLowerCase().includes(query.toLowerCase()) ||
       s.id.toLowerCase().includes(query.toLowerCase()),
   );
+
+  // live status per session, derived from the last relevant event of each one
+  const statusOf = (() => {
+    const map = new Map<string, { label: string; tone: string; snippet: string }>();
+    for (const e of events.slice(-150)) {
+      const sid = (e.properties as { sessionID?: string } | undefined)?.sessionID;
+      if (!sid) continue;
+      if (e.type === "message.part.updated") {
+        const text =
+          (e.properties as { part?: { text?: string; state?: { title?: string } } }).part?.text ??
+          (e.properties as { part?: { state?: { title?: string } } }).part?.state?.title ??
+          "";
+        map.set(sid, {
+          label: "trabalhando…",
+          tone: "work",
+          snippet: text.replace(/\s+/g, " ").slice(0, 90),
+        });
+      } else if (e.type.includes("permission")) {
+        map.set(sid, { label: "esperando sua aprovação", tone: "wait", snippet: "" });
+      } else if (e.type === "question.asked") {
+        map.set(sid, { label: "fez uma pergunta", tone: "wait", snippet: "" });
+      } else if (e.type === "session.error") {
+        map.set(sid, { label: "deu erro", tone: "err", snippet: "" });
+      } else if (e.type === "session.idle") {
+        map.set(sid, { label: "pronto", tone: "done", snippet: "" });
+      }
+    }
+    return map;
+  })();
+
+  const toneColor: Record<string, string> = {
+    work: "#3b82f6",
+    wait: "#f59e0b",
+    err: "var(--danger)",
+    done: "#9ca3af",
+  };
 
   return (
     <div className="screen">
@@ -177,7 +213,7 @@ export default function SessionsView({
               }
             }}
           >
-            {pushState === "enabled" ? "Push ✓" : pushState === "enabling" ? "…" : "Enable push"}
+            {pushState === "enabled" ? "Notificações ✓" : pushState === "enabling" ? "…" : "Ativar notificações"}
           </button>
           <button className="danger" onClick={onDisconnect}>
             Unpair
@@ -194,31 +230,61 @@ export default function SessionsView({
         />
         {loading && <p className="muted">Loading sessions…</p>}
         {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
-        {!loading && filtered.length === 0 && <p className="muted">No sessions yet.</p>}
-        {filtered.map((s) => (
-          <div key={s.id} className="card session-card">
-            <div
-              onClick={() => onOpen(s.id)}
-              style={{ flex: 1, display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}
-            >
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <h3>{s.title || s.id.slice(0, 12)}</h3>
-                {s.updatedAt && <span className="muted">{String(s.updatedAt)}</span>}
+        {!loading && filtered.length === 0 && <p className="muted">Nenhuma conversa ainda.</p>}
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fill, minmax(165px, 1fr))",
+            gap: 8,
+          }}
+        >
+          {filtered.map((s) => {
+            const st = statusOf.get(s.id);
+            return (
+              <div
+                key={s.id}
+                className="card session-card"
+                onClick={() => onOpen(s.id)}
+                style={{ cursor: "pointer", display: "flex", flexDirection: "column", gap: 4, minHeight: 84 }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <span
+                    style={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: 4,
+                      flexShrink: 0,
+                      background: st ? toneColor[st.tone] : "#9ca3af",
+                      opacity: st ? 1 : 0.5,
+                    }}
+                  />
+                  <div style={{ flex: 1, minWidth: 0, fontWeight: 600, fontSize: "0.85rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {s.title || s.id.slice(0, 12)}
+                  </div>
+                  {(unread[s.id] ?? 0) > 0 && <span className="unread-badge">{unread[s.id]}</span>}
+                </div>
+                <div style={{ flex: 1, fontSize: "0.75rem", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }} className="muted">
+                  {st?.snippet || "\u00a0"}
+                </div>
+                <div style={{ fontSize: "0.72rem", color: st ? toneColor[st.tone] : "#9ca3af" }}>
+                  {st?.label ?? "pronto"}
+                </div>
+                <div style={{ display: "flex", gap: 4 }} onClick={(e) => e.stopPropagation()}>
+                  <button aria-label="Rename" style={{ padding: "2px 8px" }} onClick={() => void renameSession(s.id, s.title)}>
+                    ✎
+                  </button>
+                  <button className="danger" aria-label="Delete" style={{ padding: "2px 8px" }} onClick={() => void deleteSession(s.id)}>
+                    ✕
+                  </button>
+                </div>
               </div>
-              {(unread[s.id] ?? 0) > 0 && <span className="unread-badge">{unread[s.id]}</span>}
-            </div>
-            <button aria-label="Rename" onClick={() => void renameSession(s.id, s.title)}>
-              ✎
-            </button>
-            <button className="danger" aria-label="Delete" onClick={() => void deleteSession(s.id)}>
-              ✕
-            </button>
-          </div>
-        ))}
+            );
+          })}
+        </div>
       </div>
 
       <button className="primary" disabled={creating} onClick={createSession}>
-        {creating ? "Creating…" : "New session"}
+        {creating ? "Criando…" : "+ Nova conversa"}
       </button>
 
       <details className="card">
