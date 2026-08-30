@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { APP_VERSION } from "../version";
+import { useT, setLang, getLang, type Lang } from "../lib/i18n";
 
 interface Props {
   request: (
@@ -80,6 +81,8 @@ export default function SettingsView({ request, onBack }: Props) {
   const [name, setName] = useState("");
   const [notify, setNotify] = useState({ permission: true, idle: true });
   const [autoMode, setAutoMode] = useState(false);
+  const [lang, setLangState] = useState<Lang>(getLang());
+  const t = useT();
   const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
   const [configFile, setConfigFile] = useState("");
   const [newMcp, setNewMcp] = useState({ name: "", type: "local", value: "" });
@@ -138,7 +141,7 @@ export default function SettingsView({ request, onBack }: Props) {
 
   async function saveSettings(patch: { name?: string; notify?: { permission?: boolean; idle?: boolean }; autoMode?: boolean }) {
     const res = await request("PATCH", "/__ocr/settings", patch);
-    if (res.status === 200) setMsg("saved");
+    if (res.status === 200) setMsg(t("saved"));
   }
 
   async function saveMcp(name: string, config?: Partial<McpServer>, remove = false) {
@@ -147,7 +150,7 @@ export default function SettingsView({ request, onBack }: Props) {
       setMsg("salvo");
       setMcpServers((res.body as { servers?: McpServer[] }).servers ?? []);
     } else {
-      setMsg(`erro: ${JSON.stringify(res.body).slice(0, 100)}`);
+      setMsg(t("saveError", { msg: JSON.stringify(res.body).slice(0, 100) }));
     }
   }
 
@@ -193,14 +196,29 @@ export default function SettingsView({ request, onBack }: Props) {
             {daemonVersion && daemonVersion !== APP_VERSION && (
               <span style={{ color: "var(--danger)" }}>
                 {" "}
-                — version mismatch: refresh the PWA (pull-to-refresh) or update the daemon
+                {t("versionMismatch")}
               </span>
             )}
           </p>
         </div>
 
         <div className="card">
-          <h3>Machine</h3>
+          <h3>{t("language")}</h3>
+          <select
+            value={lang}
+            onChange={(e) => {
+              const next = e.target.value as Lang;
+              setLang(next);
+              setLangState(next);
+            }}
+          >
+            <option value="en">English</option>
+            <option value="pt">Português</option>
+          </select>
+        </div>
+
+        <div className="card">
+          <h3>{t("settingsMachine")}</h3>
           <div style={{ display: "flex", gap: 8 }}>
             <input
               style={{ flex: 1 }}
@@ -225,7 +243,7 @@ export default function SettingsView({ request, onBack }: Props) {
                 void saveSettings({ notify: n });
               }}
             />{" "}
-            Permission requests
+            {t("notifPermission")}
           </label>
           <label style={{ display: "block" }}>
             <input
@@ -237,17 +255,16 @@ export default function SettingsView({ request, onBack }: Props) {
                 void saveSettings({ notify: n });
               }}
             />{" "}
-            Agent finished
+            {t("notifIdle")}
           </label>
         </div>
 
         <div className="card">
           <h3>MCP</h3>
           <p className="muted" style={{ margin: "0 0 6px" }}>
-            Conectores de ferramentas ({configFile.split("/").pop()}).
-            Mudanças valem para novas conversas.
+            {t("mcpHint", { file: configFile.split("/").pop() ?? "" })}
           </p>
-          {mcpServers.length === 0 && <p className="muted" style={{ margin: 0 }}>Nenhum conector.</p>}
+          {mcpServers.length === 0 && <p className="muted" style={{ margin: 0 }}>{t("mcpNone")}</p>}
           {mcpServers.map((s) => (
             <div key={s.name} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
               <input
@@ -267,9 +284,9 @@ export default function SettingsView({ request, onBack }: Props) {
             </div>
           ))}
           <details style={{ marginTop: 6 }}>
-            <summary className="muted">+ Adicionar conector</summary>
+            <summary className="muted">{t("mcpAdd")}</summary>
             <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-              <input style={{ flex: 1 }} placeholder="nome" value={newMcp.name} onChange={(e) => setNewMcp({ ...newMcp, name: e.target.value })} />
+              <input style={{ flex: 1 }} placeholder={t("mcpName")} value={newMcp.name} onChange={(e) => setNewMcp({ ...newMcp, name: e.target.value })} />
               <select value={newMcp.type} onChange={(e) => setNewMcp({ ...newMcp, type: e.target.value })}>
                 <option value="local">local</option>
                 <option value="remote">remote</option>
@@ -277,7 +294,7 @@ export default function SettingsView({ request, onBack }: Props) {
             </div>
             <input
               style={{ width: "100%", marginTop: 6 }}
-              placeholder={newMcp.type === "remote" ? "https://url-do-servidor" : "comando (ex: npx -y servidor-mcp)"}
+              placeholder={newMcp.type === "remote" ? t("mcpUrl") : t("mcpCommand")}
               value={newMcp.value}
               onChange={(e) => setNewMcp({ ...newMcp, value: e.target.value })}
             />
@@ -294,7 +311,7 @@ export default function SettingsView({ request, onBack }: Props) {
                 setNewMcp({ name: "", type: "local", value: "" });
               }}
             >
-              Adicionar
+              {t("mcpAddBtn")}
             </button>
           </details>
         </div>
@@ -310,23 +327,22 @@ export default function SettingsView({ request, onBack }: Props) {
                 void saveSettings({ autoMode: e.target.checked });
               }}
             />{" "}
-            Approve everything automatically
+            {t("autoModeLabel")}
           </label>
           <p className="muted" style={{ marginBottom: 0 }}>
-            The agent runs without approval prompts on this machine. Every auto-approved
-            action is recorded in the audit log and (if enabled) pushed as a notification.
+            {t("autoModeHint")}
           </p>
         </div>
 
         <div className="card">
-          <h3>Voice</h3>
+          <h3>{t("voice")}</h3>
           <label style={{ display: "block" }}>
             <input
               type="checkbox"
               checked={voice.autoSend}
               onChange={(e) => saveVoice({ ...voice, autoSend: e.target.checked })}
             />{" "}
-            Auto-send after transcription
+            {t("voiceAutoSend")}
           </label>
           <label style={{ display: "block", marginTop: 8 }}>
             Language:{" "}
@@ -656,7 +672,7 @@ export default function SettingsView({ request, onBack }: Props) {
         </div>
 
         <div className="card">
-          <h3>Paired devices ({devices.length})</h3>
+          <h3>{t("pairedDevices", { n: devices.length })}</h3>
           {devices.map((d) => (
             <div key={d.pub} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
               <span style={{ flex: 1 }}>
@@ -671,7 +687,7 @@ export default function SettingsView({ request, onBack }: Props) {
 
         <div className="card">
           <h3>Security log</h3>
-          {auditEntries.length === 0 && <p className="muted" style={{ margin: 0 }}>no events yet</p>}
+          {auditEntries.length === 0 && <p className="muted" style={{ margin: 0 }}>{t("noAudit")}</p>}
           {auditEntries.map((e, i) => (
             <div key={i} className="muted" style={{ fontSize: "0.72rem", marginBottom: 4 }}>
               {new Date(e.ts).toLocaleString()} · {e.event}

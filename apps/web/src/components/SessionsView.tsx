@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useT } from "../lib/i18n";
 import type { EventEnvelope } from "@ocr/protocol";
 import type { Pairing } from "../lib/client";
 
@@ -51,6 +52,7 @@ export default function SessionsView({
   tick,
 }: Props) {
   const [sessions, setSessions] = useState<Session[]>([]);
+  const t = useT();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [pushState, setPushState] = useState<"idle" | "enabling" | "enabled">("idle");
@@ -109,14 +111,14 @@ export default function SessionsView({
   }
 
   async function renameSession(id: string, current?: string) {
-    const title = window.prompt("Novo nome:", current ?? "");
+    const title = window.prompt(t("renamePrompt"), current ?? "");
     if (!title) return;
     await request("PATCH", `/session/${id}`, { title });
     void load();
   }
 
   async function deleteSession(id: string) {
-    if (!window.confirm("Apagar esta conversa?")) return;
+    if (!window.confirm(t("deleteConfirm"))) return;
     await request("DELETE", `/session/${id}`);
     void load();
   }
@@ -140,18 +142,18 @@ export default function SessionsView({
           (e.properties as { part?: { state?: { title?: string } } }).part?.state?.title ??
           "";
         map.set(sid, {
-          label: "trabalhando…",
+          label: t("working"),
           tone: "work",
           snippet: text.replace(/\s+/g, " ").slice(0, 90),
         });
       } else if (e.type.includes("permission")) {
-        map.set(sid, { label: "esperando sua aprovação", tone: "wait", snippet: "" });
+        map.set(sid, { label: t("waitingApproval"), tone: "wait", snippet: "" });
       } else if (e.type === "question.asked") {
-        map.set(sid, { label: "fez uma pergunta", tone: "wait", snippet: "" });
+        map.set(sid, { label: t("askedQuestion"), tone: "wait", snippet: "" });
       } else if (e.type === "session.error") {
-        map.set(sid, { label: "deu erro", tone: "err", snippet: "" });
+        map.set(sid, { label: t("errored"), tone: "err", snippet: "" });
       } else if (e.type === "session.idle") {
-        map.set(sid, { label: "pronto", tone: "done", snippet: "" });
+        map.set(sid, { label: t("ready"), tone: "done", snippet: "" });
       }
     }
     return map;
@@ -213,10 +215,10 @@ export default function SessionsView({
               }
             }}
           >
-            {pushState === "enabled" ? "Notificações ✓" : pushState === "enabling" ? "…" : "Ativar notificações"}
+            {pushState === "enabled" ? t("pushOn") : pushState === "enabling" ? "…" : t("pushEnable")}
           </button>
           <button className="danger" onClick={onDisconnect}>
-            Unpair
+            {t("unpair")}
           </button>
         </div>
       </header>
@@ -224,13 +226,13 @@ export default function SessionsView({
       <div className="list">
         <input
           style={{ width: "100%", marginBottom: 8 }}
-          placeholder="Search sessions…"
+          placeholder={t("search")}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
         {loading && <p className="muted">Loading sessions…</p>}
         {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
-        {!loading && filtered.length === 0 && <p className="muted">Nenhuma conversa ainda.</p>}
+        {!loading && filtered.length === 0 && <p className="muted">{t("noSessions")}</p>}
         <div
           style={{
             display: "grid",
@@ -267,7 +269,7 @@ export default function SessionsView({
                   {st?.snippet || "\u00a0"}
                 </div>
                 <div style={{ fontSize: "0.72rem", color: st ? toneColor[st.tone] : "#9ca3af" }}>
-                  {st?.label ?? "pronto"}
+                  {st?.label ?? t("ready")}
                 </div>
                 <div style={{ display: "flex", gap: 4 }} onClick={(e) => e.stopPropagation()}>
                   <button aria-label="Rename" style={{ padding: "2px 8px" }} onClick={() => void renameSession(s.id, s.title)}>
@@ -284,11 +286,11 @@ export default function SessionsView({
       </div>
 
       <button className="primary" disabled={creating} onClick={createSession}>
-        {creating ? "Criando…" : "+ Nova conversa"}
+        {creating ? t("creating") : t("newConversation")}
       </button>
 
       <details className="card">
-        <summary className="muted">Activity ({events.length})</summary>
+        <summary className="muted">{t("activity")} ({events.length})</summary>
         <div className="events">
           {events.slice(-30).map((e) => (
             <div key={e.id}>
@@ -315,7 +317,7 @@ export default function SessionsView({
             <button onClick={() => setSwitching(false)} aria-label="Close machine picker">
               ✕
             </button>
-            <div style={{ flex: 1, fontWeight: 600, fontSize: "0.9rem" }}>Machines</div>
+            <div style={{ flex: 1, fontWeight: 600, fontSize: "0.9rem" }}>{t("machines")}</div>
           </div>
           <div className="list" style={{ overflow: "auto" }}>
             {machines.map((m) => (
@@ -336,7 +338,7 @@ export default function SessionsView({
                   </div>
                 </div>
                 <button className="danger" onClick={() => onForget(m)}>
-                  Forget
+                  {t("forget")}
                 </button>
               </div>
             ))}

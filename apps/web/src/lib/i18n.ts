@@ -1,0 +1,183 @@
+// tiny i18n: localStorage-backed language, module-level store with listeners.
+// usage: const t = useT(); t("search") — components re-render on change.
+
+import { useSyncExternalStore } from "react";
+
+export type Lang = "en" | "pt";
+
+const KEY = "ocr_lang";
+
+function detect(): Lang {
+  try {
+    const saved = localStorage.getItem(KEY) as Lang | null;
+    if (saved === "en" || saved === "pt") return saved;
+    return navigator.language.toLowerCase().startsWith("pt") ? "pt" : "en";
+  } catch {
+    return "en";
+  }
+}
+
+let lang: Lang = detect();
+const listeners = new Set<() => void>();
+
+export function getLang(): Lang {
+  return lang;
+}
+
+export function setLang(l: Lang) {
+  lang = l;
+  try {
+    localStorage.setItem(KEY, l);
+  } catch {}
+  listeners.forEach((fn) => fn());
+}
+
+function subscribe(fn: () => void) {
+  listeners.add(fn);
+  return () => listeners.delete(fn);
+}
+
+export function useT() {
+  useSyncExternalStore(subscribe, getLang);
+  return (key: string, vars?: Record<string, string | number>) => {
+    let s = (dict[lang] as Record<string, string>)[key] ?? (dict.en as Record<string, string>)[key] ?? key;
+    if (vars) for (const [k, v] of Object.entries(vars)) s = s.replace(`{${k}}`, String(v));
+    return s;
+  };
+}
+
+const dict = {
+  en: {
+    // sessions board
+    search: "Search conversations…",
+    loadingSessions: "Loading conversations…",
+    noSessions: "No conversations yet.",
+    ready: "ready",
+    working: "working…",
+    waitingApproval: "waiting for your approval",
+    askedQuestion: "asked a question",
+    errored: "errored",
+    newConversation: "+ New conversation",
+    creating: "Creating…",
+    unpair: "Unpair",
+    pushOn: "Push ✓",
+    pushEnable: "Enable push",
+    renamePrompt: "New name:",
+    deleteConfirm: "Delete this conversation?",
+    machines: "Machines",
+    forget: "Forget",
+    activity: "Activity",
+    // chat
+    stop: "Stop",
+    agentWorking: "agent is working…",
+    queued: "{n} message(s) queued — will send when reconnected",
+    exported: "Conversation exported ✔",
+    openedOnMac: "Opened on your Mac 💻 — the conversation continues there",
+    rewindBtn: "⏪ back to here",
+    rewindConfirm:
+      "Take the conversation back to this point? Everything after it is undone — including code changes. You can redo later.",
+    rewound: "Conversation rewound ⏪",
+    unrevert: "♻️ Redo (undo the rewind)",
+    unreverted: "Back to the present ↩️",
+    autoApproved: "AutoMode approved: {action}",
+    exportBtn: "Export conversation",
+    handoffBtn: "Continue on the Mac",
+    answer: "Answer",
+    skip: "Skip",
+    customAnswer: "or type your own answer…",
+    approve: "Approve",
+    deny: "Deny",
+    // settings
+    settingsMachine: "Machine",
+    settingsNotifications: "Notifications",
+    notifPermission: "Permission requests",
+    notifIdle: "Agent finished",
+    autoMode: "AutoMode",
+    autoModeLabel: "Approve everything automatically",
+    autoModeHint:
+      "The agent runs without approval prompts on this machine. Every auto-approved action is recorded in the audit log and (if enabled) pushed as a notification.",
+    language: "Language",
+    mcp: "MCP",
+    mcpHint: "Tool connectors ({file}). Changes apply to new conversations.",
+    mcpNone: "No connectors.",
+    mcpAdd: "+ Add connector",
+    mcpName: "name",
+    mcpCommand: "command (e.g. npx -y some-mcp-server)",
+    mcpUrl: "https://your-server-url",
+    mcpAddBtn: "Add",
+    saved: "saved",
+    saveError: "error: {msg}",
+    pairedDevices: "Paired devices ({n})",
+    audit: "Audit",
+    noAudit: "no events yet",
+    voice: "Voice",
+    voiceAutoSend: "Auto-send after transcription",
+    versionMismatch:
+      " — version mismatch: refresh the PWA (pull-to-refresh) or update the daemon",
+  },
+  pt: {
+    search: "Buscar conversas…",
+    loadingSessions: "Carregando conversas…",
+    noSessions: "Nenhuma conversa ainda.",
+    ready: "pronto",
+    working: "trabalhando…",
+    waitingApproval: "esperando sua aprovação",
+    askedQuestion: "fez uma pergunta",
+    errored: "deu erro",
+    newConversation: "+ Nova conversa",
+    creating: "Criando…",
+    unpair: "Desconectar",
+    pushOn: "Notificações ✓",
+    pushEnable: "Ativar notificações",
+    renamePrompt: "Novo nome:",
+    deleteConfirm: "Apagar esta conversa?",
+    machines: "Máquinas",
+    forget: "Esquecer",
+    activity: "Atividade",
+    stop: "Parar",
+    agentWorking: "agente trabalhando…",
+    queued: "{n} mensagem(s) na fila — enviam ao reconectar",
+    exported: "Conversa exportada ✔",
+    openedOnMac: "Aberto no Mac 💻 — a conversa continua lá",
+    rewindBtn: "⏪ voltar pra cá",
+    rewindConfirm:
+      "Voltar a conversa pra este ponto? Tudo o que veio depois é desfeito — inclusive as mudanças no código. Dá pra refazer depois.",
+    rewound: "Conversa voltou pra trás ⏪",
+    unrevert: "↳ Refazer (desfazer o voltar)",
+    unreverted: "De volta pro presente ↝",
+    autoApproved: "AutoMode aprovou: {action}",
+    exportBtn: "Exportar conversa",
+    handoffBtn: "Continuar no Mac",
+    answer: "Responder",
+    skip: "Pular",
+    customAnswer: "ou escreva sua resposta…",
+    approve: "Aprovar",
+    deny: "Negar",
+    settingsMachine: "Máquina",
+    settingsNotifications: "Notificações",
+    notifPermission: "Pedidos de permissão",
+    notifIdle: "Agente terminou",
+    autoMode: "AutoMode",
+    autoModeLabel: "Aprovar tudo automaticamente",
+    autoModeHint:
+      "O agente roda sem pedir aprovação nesta máquina. Tudo fica registrado no audit log e (se ativado) vira notificação.",
+    language: "Idioma",
+    mcp: "MCP",
+    mcpHint: "Conectores de ferramentas ({file}). Mudanças valem para novas conversas.",
+    mcpNone: "Nenhum conector.",
+    mcpAdd: "+ Adicionar conector",
+    mcpName: "nome",
+    mcpCommand: "comando (ex: npx -y servidor-mcp)",
+    mcpUrl: "https://url-do-servidor",
+    mcpAddBtn: "Adicionar",
+    saved: "salvo",
+    saveError: "erro: {msg}",
+    pairedDevices: "Dispositivos pareados ({n})",
+    audit: "Auditoria",
+    noAudit: "nenhum evento ainda",
+    voice: "Voz",
+    voiceAutoSend: "Enviar sozinho após transcrição",
+    versionMismatch:
+      " — versões diferentes: atualize o PWA (puxe pra recarregar) ou o daemon",
+  },
+} satisfies Record<Lang, Record<string, string>>;

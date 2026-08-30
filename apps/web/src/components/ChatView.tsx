@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { EventEnvelope } from "@ocr/protocol";
 import { WavRecorder, encodeWav } from "../lib/recorder";
 import { saveFile } from "../lib/files";
+import { useT } from "../lib/i18n";
 import { getVoiceSettings } from "./SettingsView";
 import { renderBubbleText } from "./FileCard";
 
@@ -149,12 +150,13 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
   const [qCustom, setQCustom] = useState<Record<string, Record<number, string>>>({});
   const [showActivity, setShowActivity] = useState(false);
   const [historyTools, setHistoryTools] = useState<Map<string, ToolActivity>>(new Map());
+  const t = useT();
 
   const [exporting, setExporting] = useState(false);
   async function handoffToDesktop() {
     try {
       const res = await request("POST", "/__ocr/handoff", { sessionId });
-      if (res.status === 200) setAutoNote("Aberto no Mac 💻 — a conversa continua lá");
+      if (res.status === 200) setAutoNote(t("openedOnMac"));
       else setError(`handoff failed: ${JSON.stringify(res.body).slice(0, 140)}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -171,7 +173,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
       }
       const { path } = res.body as { path: string };
       await saveFile(request, path);
-      setAutoNote("Conversa exportada ✔");
+      setAutoNote(t("exported"));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -401,7 +403,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
       autoSeenRef.current.add(p.permissionID);
       setResponded((prev) => new Set(prev).add(p.permissionID!));
       setPersistedAsks((prev) => prev.filter((x) => x.permissionID !== p.permissionID));
-      setAutoNote(`AutoMode approved: ${p.action ?? "action"}`);
+      setAutoNote(t("autoApproved", { action: p.action ?? "action" }));
     }
   }, [events, sessionId]);
   useEffect(() => {
@@ -565,12 +567,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
 
   const [canUnrevert, setCanUnrevert] = useState(false);
   async function revertTo(messageID: string) {
-    if (
-      !window.confirm(
-        "Voltar a conversa pra este ponto? Tudo o que veio depois é desfeito — inclusive as mudanças no código. Dá pra refazer depois.",
-      )
-    )
-      return;
+    if (!window.confirm(t("rewindConfirm"))) return;
     try {
       const res = await request("POST", `/session/${sessionId}/revert`, { messageID });
       if (res.status !== 200) {
@@ -578,7 +575,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
         return;
       }
       setCanUnrevert(true);
-      setAutoNote("Conversa voltou pra trás ⏪");
+      setAutoNote(t("rewound"));
       await loadHistory();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -1024,16 +1021,16 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
         <h1 style={{ fontSize: "0.9rem", margin: 0, flex: 1 }}>session</h1>
         <button
           onClick={() => void handoffToDesktop()}
-          aria-label="Continue on the Mac"
-          title="Continue on the Mac"
+          aria-label={t("handoffBtn")}
+          title={t("handoffBtn")}
         >
           💻
         </button>
         <button
           onClick={() => void exportChat()}
           disabled={exporting}
-          aria-label="Export conversation"
-          title="Export conversation"
+          aria-label={t("exportBtn")}
+          title={t("exportBtn")}
         >
           {exporting ? "…" : "⤓"}
         </button>
@@ -1086,7 +1083,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
                   style={{ fontSize: "0.7rem", padding: "1px 6px", marginTop: 2, opacity: 0.7 }}
                   onClick={() => void revertTo(b.messageID!)}
                 >
-                  ⏪ voltar pra cá
+                  {t("rewindBtn")}
                 </button>
               )}
             </div>
@@ -1104,7 +1101,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
               style={{ margin: "4px auto", display: "block" }}
               onClick={() => void request("POST", `/session/${sessionId}/abort`)}
             >
-              Stop
+              {t("stop")}
             </button>
           )}
           <div ref={bottomRef} />
@@ -1146,7 +1143,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
                         {q.custom && (
                           <input
                             style={{ marginTop: 4 }}
-                            placeholder="or type your own answer…"
+                            placeholder={t("customAnswer")}
                             value={perC[qi] ?? ""}
                             onChange={(e) =>
                               setQCustom((prev) => ({
@@ -1165,10 +1162,10 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
                       disabled={!allAnswered}
                       onClick={() => void answerQuestion(qr.requestID, qr.questions)}
                     >
-                      Answer
+                      {t("answer")}
                     </button>
                     <button className="danger" onClick={() => void rejectQuestion(qr.requestID)}>
-                      Skip
+                      {t("skip")}
                     </button>
                   </div>
                 </div>
@@ -1182,14 +1179,14 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
         {pending.map((p) => (
           <div key={p.permissionID} className="approval" style={{ marginBottom: 8 }}>
             <span style={{ flex: 1 }}>
-              Approve <b>{p.label}</b>?
+              {t("approve")} <b>{p.label}</b>?
             </span>
             <button onClick={() => void showDiff(p)}>diff</button>
             <button className="primary" onClick={() => void respond(p.permissionID, "approve")}>
-              Approve
+              {t("approve")}
             </button>
             <button className="danger" onClick={() => void respond(p.permissionID, "reject")}>
-              Deny
+              {t("deny")}
             </button>
           </div>
         ))}
@@ -1202,7 +1199,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
         )}
         {canUnrevert && (
           <button style={{ margin: "2px 0" }} onClick={() => void unrevert()}>
-            ↩️ Refazer (desfazer o voltar)
+            {t("unrevert")}
           </button>
         )}
         {queue.length > 0 && (
