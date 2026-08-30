@@ -162,23 +162,66 @@ export default function FileCard({
 
 const FILE_MARKER = /^\[file: (.+)\]$/;
 
-/** minimal safe inline markdown: **bold**, *italic*, `code` */
+/** only http(s)/mailto — blocks javascript:, data:, vbscript: etc. */
+function safeUrl(href: string): boolean {
+  try {
+    const u = new URL(href);
+    return u.protocol === "http:" || u.protocol === "https:" || u.protocol === "mailto:";
+  } catch {
+    return false;
+  }
+}
+
+const MD_LINK = /^\[([^\]]+)\]\(([^)\s]+)\)$/;
+
+/** minimal safe inline markdown: **bold**, *italic*, `code`, [label](url), bare URLs */
 function inline(text: string, keyBase: string): ReactNode[] {
   const parts: ReactNode[] = [];
-  const regex = /(\*\*[^*]+\*\*|\*[^*\s][^*]*\*|`[^`]+`)/g;
+  const regex =
+    /(\[[^\]]+\]\([^)\s]+\)|\*\*[^*]+\*\*|\*[^*\s][^*]*\*|`[^`]+`|https?:\/\/[^\s<>"]+)/g;
   let last = 0;
   let i = 0;
   let m: RegExpExecArray | null;
   while ((m = regex.exec(text))) {
     if (m.index > last) parts.push(text.slice(last, m.index));
     const tok = m[0];
-    if (tok.startsWith("**")) parts.push(<b key={`${keyBase}b${i}`}>{tok.slice(2, -2)}</b>);
+    const md = MD_LINK.exec(tok);
+    if (md && safeUrl(md[2] ?? "")) {
+      parts.push(
+        <a
+          key={`${keyBase}a${i}`}
+          href={md[2]}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ color: "var(--accent)", wordBreak: "break-all" }}
+        >
+          {md[1]}
+        </a>,
+      );
+    } else if (tok.startsWith("**")) parts.push(<b key={`${keyBase}b${i}`}>{tok.slice(2, -2)}</b>);
     else if (tok.startsWith("`"))
       parts.push(
         <code key={`${keyBase}c${i}`} style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>
           {tok.slice(1, -1)}
         </code>,
       );
+    else if (/^https?:\/\//.test(tok)) {
+      // bare URL: don't swallow sentence punctuation or surrounding parens
+      const url = tok.replace(/[.,;:!?)\]]+$/, "");
+      const tail = tok.slice(url.length);
+      parts.push(
+        <a
+          key={`${keyBase}u${i}`}
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ color: "var(--accent)", wordBreak: "break-all" }}
+        >
+          {url}
+        </a>,
+      );
+      if (tail) parts.push(tail);
+    } else if (tok.startsWith("[")) parts.push(tok); // md link with unsafe scheme — plain text
     else parts.push(<i key={`${keyBase}i${i}`}>{tok.slice(1, -1)}</i>);
     last = m.index + tok.length;
     i++;
