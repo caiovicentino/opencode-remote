@@ -38,6 +38,42 @@ interface DiffFile {
   status: string;
 }
 
+interface ToolActivity {
+  tool: string;
+  status: string;
+  title: string;
+  output: string;
+}
+
+interface HistoryRow {
+  info: { role?: string };
+  parts: {
+    type: string;
+    text?: string;
+    url?: string;
+    callID?: string;
+    tool?: string;
+    state?: { status?: string; title?: string; output?: string };
+  }[];
+}
+
+function toolsFromRows(rows: HistoryRow[]): Map<string, ToolActivity> {
+  const map = new Map<string, ToolActivity>();
+  for (const row of rows) {
+    for (const part of row.parts ?? []) {
+      if (part.type === "tool" && part.callID) {
+        map.set(part.callID, {
+          tool: part.tool ?? "tool",
+          status: part.state?.status ?? "",
+          title: part.state?.title ?? "",
+          output: part.state?.output ?? "",
+        });
+      }
+    }
+  }
+  return map;
+}
+
 interface Skill {
   id: string;
   label: string;
@@ -92,6 +128,15 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
   const [tapToggle, setTapToggle] = useState(false);
   const [responded, setResponded] = useState<Set<string>>(new Set());
   const [persistedAsks, setPersistedAsks] = useState<PermissionAsk[]>([]);
+  const [showActivity, setShowActivity] = useState(false);
+  const [historyTools, setHistoryTools] = useState<Map<string, ToolActivity>>(new Map());
+
+  async function loadToolHistory() {
+    try {
+      const res = await request("GET", `/session/${sessionId}/message`);
+      if (res.status === 200) setHistoryTools(toolsFromRows((res.body as HistoryRow[]) ?? []));
+    } catch {}
+  }
   const [diff, setDiff] = useState<{
     ask: PermissionAsk | null;
     loading: boolean;
@@ -169,7 +214,7 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
       try {
         const res = await request("GET", `/session/${sessionId}/message`);
         if (res.status !== 200) throw new Error(`GET messages -> ${res.status}`);
-        const rows = (res.body as { info: { role?: string }; parts: { type: string; text?: string; url?: string }[] }[]) ?? [];
+        const rows = (res.body as HistoryRow[]) ?? [];
         const out: Bubble[] = [];
         for (const row of rows) {
           const text = row.parts
@@ -184,6 +229,7 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
           }
         }
         setBubbles(out);
+        setHistoryTools(toolsFromRows(rows));
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
@@ -256,8 +302,34 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [bubbles, sending, liveText]);
 
-  const pending: PermissionAsk[] = [];
-  for (const evt of events.slice(-50)) {
+  const activity = (() => {
+    if (!showActivity) return [];
+    const map = new Map<string, ToolActivity>();
+    for (const [id, t] of historyTools) map.set(id, t);
+    for (const evt of events) {
+      const p = evt.properties as {
+        sessionID?: string;
+        part?: {
+          type?: string;
+          callID?: string;
+          tool?: string;
+          state?: { status?: string; title?: string; output?: string };
+        };
+      };
+      if (p?.sessionID !== sessionId) continue;
+      const part = p.part;
+      if (part?.type !== "tool" || !part.callID) continue;
+      map.set(part.callID, {
+        tool: part.tool ?? "tool",
+        status: part.state?.status ?? "",
+        title: part.state?.title ?? "",
+        output: part.state?.output ?? "",
+      });
+    }
+    return [...map.entries()].reverse();
+  })();
+
+  const pending: PermissionAsk[] = [];  for (const evt of events.slice(-50)) {
     const ask = extractPermission(evt, sessionId);
     if (ask && !responded.has(ask.permissionID)) pending.push(ask);
   }
@@ -633,6 +705,16 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
       <header>
         <button onClick={onBack}>←</button>
         <h1 style={{ fontSize: "0.9rem", margin: 0, flex: 1 }}>session</h1>
+        <button
+          onClick={() => {
+            setShowActivity((v) => !v);
+            void loadToolHistory();
+          }}
+          aria-label="Tool activity"
+          style={showActivity ? { borderColor: "var(--accent)" } : undefined}
+        >
+          ⚒
+        </button>
         <select
           value={agent}
           onChange={(e) => {
@@ -924,6 +1006,82 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
           </button>
         </div>
       </div>
+
+      {showActivity && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.94)",
+            zIndex: 55,
+            display: "flex",
+            flexDirection: "column",
+            padding: 12,
+            gap: 8,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button onClick={() => setShowActivity(false)} aria-label="Close activity">
+              ✕
+            </button>
+            <div style={{ flex: 1, fontWeight: 600, fontSize: "0.9rem" }}>tool activity</div>
+            <button onClick={() => void loadToolHistory()} aria-label="Refresh tool history">
+              ↻
+            </button>
+          </div>
+          <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
+            {activity.length === 0 && <p className="muted">no tool calls observed yet</p>}
+            {activity.map(([callID, a]) => (
+              <div key={callID} className="card" style={{ padding: "8px 10px", marginBottom: 8 }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <span
+                    style={{
+                      fontSize: "0.72rem",
+                      color:
+                        a.status === "error"
+                          ? "var(--danger)"
+                          : a.status === "completed"
+                            ? "var(--accent)"
+                            : "inherit",
+                    }}
+                  >
+                    {a.status === "completed" ? "✓" : a.status === "error" ? "✗" : "⏳"} {a.tool}
+                  </span>
+                  <span
+                    className="muted"
+                    style={{
+                      flex: 1,
+                      fontSize: "0.72rem",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {a.title}
+                  </span>
+                </div>
+                {a.output && (
+                  <pre
+                    style={{
+                      marginTop: 6,
+                      marginBottom: 0,
+                      fontSize: "0.68rem",
+                      lineHeight: 1.4,
+                      overflow: "auto",
+                      maxHeight: 120,
+                      whiteSpace: "pre-wrap",
+                      wordBreak: "break-word",
+                      color: "var(--text-muted, #aaa)",
+                    }}
+                  >
+                    {a.output.length > 400 ? `…${a.output.slice(-400)}` : a.output}
+                  </pre>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {diff && (
         <div
