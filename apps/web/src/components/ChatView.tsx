@@ -368,7 +368,7 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
       throw new Error(String((res.body as { error?: string }).error ?? "upload failed"));
     }
     const body = res.body as { url?: string; path?: string };
-    return kind === "file" ? body.path! : body.url!;
+    return kind === "file" ? body.path! : body.url!.replace(/^ocr-upload:\/\/+/, "");
   }
 
   async function extractFrames(file: File, start: number, end: number): Promise<PendingImage[]> {

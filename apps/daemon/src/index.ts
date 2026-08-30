@@ -397,6 +397,7 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
     }
     uploads.set(id!, { buf, mime: mime ?? "image/jpeg", filename: filename ?? "image.jpg", at: Date.now() });
     metrics.inc("ocr_uploads_completed_total");
+    log("info", "attachment registered", { id: id!.slice(0, 8), bytes: buf.length, kind: kind ?? "inline" });
     for (const [k, v] of uploads) {
       if (Date.now() - v.at > 30 * 60_000) uploads.delete(k);
     }
@@ -408,10 +409,11 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
     const body = req.body as { parts?: { url?: string; mime?: string; filename?: string }[] };
     if (Array.isArray(body?.parts)) {
       for (const p of body.parts) {
-        const m = typeof p?.url === "string" ? /^ocr-upload:\/\/(.+)$/.exec(p.url) : null;
+          const m = typeof p?.url === "string" ? /^(?:ocr-upload:\/\/)+(.+)$/.exec(p.url) : null;
         if (!m) continue;
         const up = uploads.get(m[1]!);
         if (!up) {
+          log("warn", "attachment expired on send", { uploadId: m[1]!.slice(0, 8) });
           return { id: req.id, status: 410, body: { error: "attachment expired; attach again" } };
         }
         p.url = `data:${up.mime};base64,${up.buf.toString("base64")}`;
