@@ -64,6 +64,7 @@ interface IdentityFile {
   clients?: PairedClient[];
   name?: string;
   notify?: { permission?: boolean; idle?: boolean };
+  autoMode?: boolean;
 }
 
 const STATE_DIR = join(homedir(), ".opencode-remote");
@@ -167,17 +168,23 @@ interface NotifySettings {
 interface AppSettings {
   name?: string;
   notify: NotifySettings;
+  autoMode: boolean;
 }
 
 function readSettings(): AppSettings {
   const raw = JSON.parse(readFileSync(STATE_FILE, "utf8")) as Partial<IdentityFile>;
-  return { name: raw.name, notify: { permission: true, idle: true, ...(raw.notify ?? {}) } };
+  return {
+    name: raw.name,
+    notify: { permission: true, idle: true, ...(raw.notify ?? {}) },
+    autoMode: raw.autoMode === true,
+  };
 }
 
 function writeSettings(s: AppSettings) {
   const raw = JSON.parse(readFileSync(STATE_FILE, "utf8")) as Partial<IdentityFile>;
   raw.name = s.name;
   raw.notify = s.notify;
+  raw.autoMode = s.autoMode;
   writeFileSync(STATE_FILE, JSON.stringify(raw, null, 2));
   chmodSync(STATE_FILE, 0o600);
 }
@@ -387,13 +394,15 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
     return { id: req.id, status: 200, body: { ...readSettings(), version: VERSION } };
   }
   if (req.path === "/__ocr/settings" && req.method === "PATCH") {
-    const b = req.body as { name?: string; notify?: Partial<NotifySettings> };
+    const b = req.body as { name?: string; notify?: Partial<NotifySettings>; autoMode?: boolean };
     const s = readSettings();
     if (typeof b.name === "string" && b.name.trim()) s.name = b.name.trim().slice(0, 40);
     if (b.notify) s.notify = { ...s.notify, ...b.notify };
+    if (typeof b.autoMode === "boolean") s.autoMode = b.autoMode;
     writeSettings(s);
     appSettings = s;
     machineName = s.name || MACHINE_NAME;
+    audit("settings.updated", { autoMode: s.autoMode });
     return { id: req.id, status: 200, body: s };
   }
   if (req.path === "/__ocr/transcribe/chunk" && req.method === "POST") {
@@ -915,6 +924,57 @@ function broadcast(env: DaemonEnvelope) {
   for (const session of sessions.values()) sendToSession(session, env);
 }
 
+const autoApproved = new Map<string, number>();
+
+/**
+ * AutoMode: answer an opencode permission ask with "once" on the user's behalf,
+ * tell connected clients (synthetic event so the PWA clears its ask UI) and
+ * optionally push a notification. Best-effort: failures just keep the ask
+ * pending so the user can still approve manually.
+ */
+async function autoApprove(sessionID: string, permissionID: string, action: string) {
+  const now = Date.now();
+  if (now - (autoApproved.get(permissionID) ?? 0) < 120_000) return;
+  autoApproved.set(permissionID, now);
+  for (const [k, v] of autoApproved) if (now - v > 600_000) autoApproved.delete(k);
+  try {
+    const res = await fetch(
+      new URL(`/session/${sessionID}/permissions/${permissionID}`, OPENCODE_URL),
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(authHeader ? { authorization: authHeader } : {}),
+        },
+        body: JSON.stringify({ response: "once" }),
+      },
+    );
+    if (!res.ok) {
+      autoApproved.delete(permissionID);
+      log("warn", "auto-approve rejected by opencode", { status: res.status, action });
+      return;
+    }
+    log("info", "permission auto-approved", { sessionID, permissionID, action });
+    audit("permission.auto", { sessionID, permissionID, action });
+    broadcast({
+      type: "event",
+      event: {
+        id: randomUUID(),
+        type: "ocr.permission.auto",
+        properties: { sessionID, permissionID, action },
+      },
+    });
+    if (appSettings.notify.permission) {
+      void pushToSubscribers("Auto-approved", `${action} on ${machineName} (AutoMode)`, {
+        url: `#/session/${sessionID}`,
+      });
+    }
+  } catch (err) {
+    autoApproved.delete(permissionID);
+    log("warn", "auto-approve error", { err: err instanceof Error ? err.message : String(err) });
+  }
+}
+
 async function forwardEvents() {
   let attempt = 0;
   for (;;) {
@@ -948,11 +1008,19 @@ async function forwardEvents() {
             // notable events become push notifications
             const t = evt.type.toLowerCase();
             const sessionID = ((evt.properties ?? {}) as { sessionID?: string }).sessionID ?? "";
-            if (t.includes("permission") && appSettings.notify.permission) {
-              const p = (evt.properties ?? {}) as { type?: string };
+            const permProps = (evt.properties ?? {}) as {
+              type?: string;
+              id?: string;
+              permissionID?: string;
+            };
+            const permId = permProps.permissionID ?? permProps.id ?? "";
+            const isAsk = t.includes("permission") && !t.includes("response") && !t.includes("revoke");
+            if (isAsk && sessionID && permId && appSettings.autoMode) {
+              void autoApprove(sessionID, permId, permProps.type ?? "action");
+            } else if (t.includes("permission") && appSettings.notify.permission) {
               void pushToSubscribers(
                 "Approve needed",
-                `opencode wants to ${p.type ?? "perform an action"} on ${machineName}`,
+                `opencode wants to ${permProps.type ?? "perform an action"} on ${machineName}`,
                 {
                   url: sessionID ? `#/session/${sessionID}` : "#/",
                   evt,

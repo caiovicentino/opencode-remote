@@ -71,6 +71,7 @@ export default function SettingsView({ request, onBack }: Props) {
   const [devices, setDevices] = useState<Device[]>([]);
   const [name, setName] = useState("");
   const [notify, setNotify] = useState({ permission: true, idle: true });
+  const [autoMode, setAutoMode] = useState(false);
   const [voice, setVoice] = useState(getVoiceSettings());
   const [style, setStyle] = useState<Record<string, unknown>>({});
   const [theme, setTheme] = useState(localStorage.getItem(THEME_KEY) ?? "dark");
@@ -109,6 +110,7 @@ export default function SettingsView({ request, onBack }: Props) {
       if (s.status === 200) {
         setName((s.body as { name?: string }).name ?? "");
         setNotify((s.body as { notify?: { permission: boolean; idle: boolean } }).notify ?? { permission: true, idle: true });
+        setAutoMode((s.body as { autoMode?: boolean }).autoMode === true);
         setDaemonVersion((s.body as { version?: string }).version ?? "");
       }
       const cs = await request("GET", "/__ocr/clip-style");
@@ -118,7 +120,7 @@ export default function SettingsView({ request, onBack }: Props) {
     })();
   }, []);
 
-  async function saveSettings(patch: { name?: string; notify?: { permission?: boolean; idle?: boolean } }) {
+  async function saveSettings(patch: { name?: string; notify?: { permission?: boolean; idle?: boolean }; autoMode?: boolean }) {
     const res = await request("PATCH", "/__ocr/settings", patch);
     if (res.status === 200) setMsg("saved");
   }
@@ -211,6 +213,25 @@ export default function SettingsView({ request, onBack }: Props) {
             />{" "}
             Agent finished
           </label>
+        </div>
+
+        <div className="card">
+          <h3>AutoMode</h3>
+          <label style={{ display: "block" }}>
+            <input
+              type="checkbox"
+              checked={autoMode}
+              onChange={(e) => {
+                setAutoMode(e.target.checked);
+                void saveSettings({ autoMode: e.target.checked });
+              }}
+            />{" "}
+            Approve everything automatically
+          </label>
+          <p className="muted" style={{ marginBottom: 0 }}>
+            The agent runs without approval prompts on this machine. Every auto-approved
+            action is recorded in the audit log and (if enabled) pushed as a notification.
+          </p>
         </div>
 
         <div className="card">

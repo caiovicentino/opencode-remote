@@ -299,6 +299,28 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
     }
   }, [events, sessionId]);
 
+  // AutoMode: the daemon answered a permission ask on the user's behalf —
+  // clear the local ask UI and surface a transient note.
+  const autoSeenRef = useRef<Set<string>>(new Set());
+  const [autoNote, setAutoNote] = useState("");
+  useEffect(() => {
+    for (const evt of events.slice(-20)) {
+      if (evt.type !== "ocr.permission.auto") continue;
+      const p = evt.properties as { sessionID?: string; permissionID?: string; action?: string };
+      if (p?.sessionID !== sessionId || !p?.permissionID) continue;
+      if (autoSeenRef.current.has(p.permissionID)) continue;
+      autoSeenRef.current.add(p.permissionID);
+      setResponded((prev) => new Set(prev).add(p.permissionID!));
+      setPersistedAsks((prev) => prev.filter((x) => x.permissionID !== p.permissionID));
+      setAutoNote(`AutoMode approved: ${p.action ?? "action"}`);
+    }
+  }, [events, sessionId]);
+  useEffect(() => {
+    if (!autoNote) return;
+    const t = setTimeout(() => setAutoNote(""), 8_000);
+    return () => clearTimeout(t);
+  }, [autoNote]);
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [bubbles, sending, liveText]);
@@ -853,6 +875,9 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
         )}
 
         {error && <p style={{ color: "var(--danger)", margin: 0 }}>{error}</p>}
+        {autoNote && (
+          <p style={{ color: "var(--muted, #8a8f98)", margin: 0 }}>✔ {autoNote}</p>
+        )}
         {queue.length > 0 && (
           <p className="muted" style={{ margin: 0 }}>
             {queue.length} message(s) queued — will send when reconnected
