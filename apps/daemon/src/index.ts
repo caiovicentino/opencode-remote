@@ -593,7 +593,7 @@ end tell`;
     uploadChunks.delete(id ?? "");
     if (!entry) return { id: req.id, status: 404, body: { error: "upload not found" } };
     const buf = Buffer.concat(entry.parts.filter(Boolean).map((b) => Buffer.from(b, "base64")));
-    const maxBytes = (Number(process.env.OCR_UPLOAD_MAX_MB) || 20) * 1_000_000;
+    const maxBytes = (Number(process.env.OCR_UPLOAD_MAX_MB) || 200) * 1_000_000;
     if (buf.length > maxBytes) {
       return { id: req.id, status: 413, body: { error: `file too large (${maxBytes / 1e6}MB limit)` } };
     }
