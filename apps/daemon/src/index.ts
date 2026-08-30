@@ -679,36 +679,55 @@ setTimeout(checkRoutines, 10_000);
 
 // relay frames are capped at 1MB; keep a safety margin for the sealed payload
 const SAFE_PAYLOAD = 900_000;
+// oversized bodies travel split across several sealed frames
+const CHUNK_BODY = 600_000;
+const MAX_CHUNKS = 64;
 
-function sendToSession(session: ClientSession, env: DaemonEnvelope) {
+async function sealAndSend(session: ClientSession, env: DaemonEnvelope) {
+  metrics.inc(env.type === "event" ? "ocr_event_frames_total" : "ocr_res_frames_total");
+  const seq = ++session.sendSeq;
+  let payload: string;
+  try {
+    payload = await seal(env, session.key, seqAad(daemon.room, seq));
+  } catch (err) {
+    metrics.inc("ocr_seal_failures_total");
+    log("error", "seal failed", { error: (err as Error).message });
+    return;
+  }
+  metrics.inc("ocr_sealed_bytes_total", payload.length);
+  if (session.socket.readyState === WebSocket.OPEN) {
+    session.socket.send(
+      JSON.stringify({ room: daemon.room, from: daemon.room, seq, payload } satisfies RelayFrame),
+    );
+  }
+}
+
+async function sendToSession(session: ClientSession, env: DaemonEnvelope) {
   if (env.type === "res") {
-    const size = JSON.stringify(env.res.body ?? null).length;
-    if (size > SAFE_PAYLOAD) {
-      env = {
-        type: "res",
-        res: {
-          id: env.res.id,
-          status: 413,
-          body: { error: `response too large (${size} bytes) for the tunnel` },
-        },
-      };
+    const serialized = JSON.stringify(env.res.body ?? null);
+    if (serialized.length > SAFE_PAYLOAD) {
+      const of = Math.ceil(serialized.length / CHUNK_BODY);
+      if (of > MAX_CHUNKS) {
+        await sealAndSend(session, {
+          type: "res",
+          res: {
+            id: env.res.id,
+            status: 413,
+            body: { error: `response too large (${serialized.length} bytes) for the tunnel` },
+          },
+        });
+        return;
+      }
+      for (let i = 0; i < of; i++) {
+        await sealAndSend(session, {
+          type: "res-chunk",
+          chunk: { id: env.res.id, status: env.res.status, i, of, part: serialized.slice(i * CHUNK_BODY, (i + 1) * CHUNK_BODY) },
+        });
+      }
+      return;
     }
   }
-  metrics.inc(env.type === "res" ? "ocr_res_frames_total" : "ocr_event_frames_total");
-  const seq = ++session.sendSeq;
-  void seal(env, session.key, seqAad(daemon.room, seq))
-    .then((payload) => {
-      metrics.inc("ocr_sealed_bytes_total", payload.length);
-      if (session.socket.readyState === WebSocket.OPEN) {
-        session.socket.send(
-          JSON.stringify({ room: daemon.room, from: daemon.room, seq, payload } satisfies RelayFrame),
-        );
-      }
-    })
-    .catch((err) => {
-      metrics.inc("ocr_seal_failures_total");
-      log("error", "seal failed", { error: (err as Error).message });
-    });
+  await sealAndSend(session, env);
 }
 
 function broadcast(env: DaemonEnvelope) {

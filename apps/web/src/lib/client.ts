@@ -7,7 +7,7 @@ import {
   newIdentity,
   type Identity,
 } from "@ocr/protocol";
-import type { OpResponse, EventEnvelope, OpRequest } from "@ocr/protocol";
+import type { OpResponse, EventEnvelope, OpRequest, ResChunk } from "@ocr/protocol";
 
 export interface Pairing {
   v: 2;
@@ -446,7 +446,7 @@ export class OcrClient {
     if (seq <= this.daemonLastSeq) return;
 
     const env = await openSealed<
-      { type: "res"; res: OpResponse } | { type: "event"; event: EventEnvelope }
+      { type: "res"; res: OpResponse } | { type: "res-chunk"; chunk: ResChunk } | { type: "event"; event: EventEnvelope }
     >(frame.payload, this.key, seqAad(frame.from, seq));
     if (!env) return;
     this.daemonLastSeq = seq;
@@ -457,8 +457,38 @@ export class OcrClient {
         clearTimeout(p.timer);
         p.resolve(env.res);
       }
+    } else if (env.type === "res-chunk") {
+      this.onChunk(env.chunk);
     } else {
       for (const h of this.listeners) h(env.event);
+    }
+  }
+
+  private chunkBuf = new Map<string, { of: number; got: number; status: number; parts: string[] }>();
+
+  /** Reassemble chunked oversized responses and resolve the pending op. */
+  private onChunk(c: ResChunk) {
+    if (this.chunkBuf.size > 20) this.chunkBuf.clear();
+    let e = this.chunkBuf.get(c.id);
+    if (!e) {
+      e = { of: c.of, got: 0, status: c.status, parts: [] };
+      this.chunkBuf.set(c.id, e);
+    }
+    if (e.parts[c.i] === undefined) e.got++;
+    e.parts[c.i] = c.part;
+    if (e.got < e.of) return;
+    this.chunkBuf.delete(c.id);
+    let body: unknown;
+    try {
+      body = JSON.parse(e.parts.join(""));
+    } catch {
+      return;
+    }
+    const p = this.pending.get(c.id);
+    if (p) {
+      this.pending.delete(c.id);
+      clearTimeout(p.timer);
+      p.resolve({ id: c.id, status: e.status, body });
     }
   }
 

@@ -42,7 +42,22 @@ export interface ClientEnvelope {
 /** Encrypted message from daemon -> PWA (opens into OpResponse or EventEnvelope). */
 export type DaemonEnvelope =
   | { type: "res"; res: OpResponse }
-  | { type: "event"; event: EventEnvelope };
+  | { type: "event"; event: EventEnvelope }
+  | { type: "res-chunk"; chunk: ResChunk };
+
+/**
+ * Oversized response bodies travel split across several frames: `part` slices
+ * of the JSON-serialized body, reassembled by the client before resolving the
+ * pending op. Each frame is sealed with its own seq, so the relay cannot
+ * reorder or replay them.
+ */
+export interface ResChunk {
+  id: string;
+  status: number;
+  i: number;
+  of: number;
+  part: string;
+}
 
 /** HTTP-shaped tunnel request over the encrypted channel. */
 export interface OpRequest {
