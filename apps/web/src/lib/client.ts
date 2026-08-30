@@ -182,6 +182,8 @@ export class OcrClient {
     from: string,
     vapid?: string,
     daemonSpki = "",
+    pairing?: Pairing,
+    identity?: Identity,
   ) {
     this.ws = ws;
     this.key = key;
@@ -190,44 +192,149 @@ export class OcrClient {
     this.from = from;
     this.vapidKey = vapid;
     this.daemonSpki = daemonSpki;
+    if (pairing) this.pairing = pairing;
+    if (identity) this.identity = identity;
 
-    ws.onmessage = (e) => void this.onMessage(e.data as string);
-    ws.onclose = () => this.setStatus("closed");
-    ws.onerror = () => this.setStatus("closed");
+    this.attach(ws);
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState !== "visible" || this.status !== "paired") return;
+        if (Date.now() - this.lastSeen > 30_000) this.forceReconnect();
+        else {
+          this.awaitingPong = true;
+          this.sendControl({ type: "ping" });
+        }
+      });
+    }
   }
 
-  private daemonSpki: string;
+  private pairing!: Pairing;
+  private identity!: Identity;
+  private daemonSpki!: string;
   private rehandshaking = false;
+  private gen = 0;
+  private intentionalClose = false;
+  private lastSeen = Date.now();
+  private awaitingPong = false;
+  private hbTimer: number | null = null;
+  private reconnectTimer: number | null = null;
+  private reconnectAttempt = 0;
 
-  /** Transparently re-run the handshake after a daemon restart and replay in-flight ops. */
-  private async rehandshake() {
-    if (this.rehandshaking) return;
-    this.rehandshaking = true;
+  private attach(ws: WebSocket) {
+    const gen = ++this.gen;
+    ws.onmessage = (e) => {
+      if (gen !== this.gen) return;
+      void this.onMessage(e.data as string);
+    };
+    ws.onclose = () => {
+      if (gen !== this.gen || this.ws !== ws || this.intentionalClose) return;
+      this.scheduleReconnect();
+    };
+    ws.onerror = () => {};
+  }
+
+  private sendControl(ctl: { type: string }) {
     try {
-      const identity = await getOrCreateIdentity();
-      const { hello, sessionKey } = await clientHello(this.daemonSpki, identity);
-      const retrying = [...this.pending.values()];
-      this.pending.clear();
-      this.key = sessionKey;
-      this.daemonLastSeq = 0;
-      this.setStatus("connecting");
       this.ws.send(
         JSON.stringify({
           room: this.room,
           from: this.from,
-          payload: b64(new TextEncoder().encode(JSON.stringify({ type: "hello", hello }))),
+          payload: b64(new TextEncoder().encode(JSON.stringify(ctl))),
         }),
       );
-      // frames reach the daemon after the hello (same socket, FIFO), so replay is safe
-      for (const p of retrying) this.replay(p);
+    } catch {
+      // socket wedged — the heartbeat/reconnect path will replace it
+    }
+  }
+
+  private startHeartbeat() {
+    this.stopHeartbeat();
+    this.lastSeen = Date.now();
+    this.awaitingPong = false;
+    this.hbTimer = window.setInterval(() => {
+      if (this.status !== "paired" || this.intentionalClose) return;
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      if (this.awaitingPong || Date.now() - this.lastSeen > 60_000) {
+        this.forceReconnect();
+        return;
+      }
+      this.awaitingPong = true;
+      this.sendControl({ type: "ping" });
+    }, 20_000);
+  }
+
+  private stopHeartbeat() {
+    if (this.hbTimer !== null) {
+      clearInterval(this.hbTimer);
+      this.hbTimer = null;
+    }
+  }
+
+  private forceReconnect() {
+    const dead = this.ws;
+    this.awaitingPong = false;
+    this.scheduleReconnect();
+    try {
+      dead.close();
+    } catch {}
+  }
+
+  private scheduleReconnect() {
+    this.stopHeartbeat();
+    if (this.reconnectTimer !== null || this.intentionalClose) return;
+    this.setStatus("connecting");
+    const delay = Math.min(15_000, 1000 * 2 ** this.reconnectAttempt++);
+    this.reconnectTimer = window.setTimeout(() => {
+      this.reconnectTimer = null;
+      void this.reconnect();
+    }, delay);
+  }
+
+  private async reconnect() {
+    if (this.intentionalClose || !this.pairing) return;
+    try {
+      const ws = new WebSocket(this.pairing.relay);
+      this.ws = ws;
+      this.attach(ws);
+      ws.onopen = () => void this.sendHello(ws);
+    } catch {
+      this.scheduleReconnect();
+    }
+  }
+
+  /** Fresh handshake on the given socket, then replay ops that never got a response. */
+  private async sendHello(ws: WebSocket) {
+    const identity = this.identity ?? (await getOrCreateIdentity());
+    const { hello, sessionKey } = await clientHello(this.daemonSpki, identity);
+    this.key = sessionKey;
+    this.daemonLastSeq = 0;
+    const retrying = [...this.pending.values()];
+    this.pending.clear();
+    for (const p of retrying) clearTimeout(p.timer);
+    ws.send(
+      JSON.stringify({
+        room: this.room,
+        from: this.from,
+        payload: b64(new TextEncoder().encode(JSON.stringify({ type: "hello", hello }))),
+      }),
+    );
+    for (const p of retrying) this.replay(p);
+  }
+
+  /** Re-run the handshake after a daemon restart and replay in-flight ops. */
+  private async rehandshake() {
+    if (this.rehandshaking) return;
+    this.rehandshaking = true;
+    try {
+      this.setStatus("connecting");
+      await this.sendHello(this.ws);
     } catch (err) {
       for (const p of this.pending.values()) {
         clearTimeout(p.timer);
         p.reject(err instanceof Error ? err : new Error(String(err)));
       }
       this.pending.clear();
-      this.setStatus("closed");
-      throw err;
+      this.scheduleReconnect();
     } finally {
       this.rehandshaking = false;
     }
@@ -265,6 +372,12 @@ export class OcrClient {
 
   private setStatus(s: Status) {
     this.status = s;
+    if (s === "paired") {
+      this.reconnectAttempt = 0;
+      this.startHeartbeat();
+    } else if (s !== "connecting") {
+      this.stopHeartbeat();
+    }
     this.onStatus?.(s);
   }
 
@@ -273,6 +386,8 @@ export class OcrClient {
   }
 
   private async onMessage(data: string) {
+    this.lastSeen = Date.now();
+    this.awaitingPong = false;
     let frame: { from?: string; seq?: number; payload?: string };
     try {
       frame = JSON.parse(data);
@@ -289,6 +404,7 @@ export class OcrClient {
           void this.rehandshake();
           return;
         }
+        if (ctl?.type === "pong") return;
       } catch {
         // not a control frame; fall through to the sealed path
       }
@@ -378,6 +494,12 @@ export class OcrClient {
   }
 
   close() {
+    this.intentionalClose = true;
+    this.stopHeartbeat();
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this.ws.close();
     this.setStatus("closed");
   }
@@ -414,6 +536,8 @@ export class OcrClient {
         from,
         pairing.vapid,
         pairing.k,
+        pairing,
+        identity,
       );
       client.onStatus = (s) => {
         if (s === "paired") {

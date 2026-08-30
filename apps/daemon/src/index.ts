@@ -835,7 +835,7 @@ async function handleSealedFrame(frame: RelayFrame, ws: WebSocket) {
 }
 
 interface HelloMsg {
-  type: "hello";
+  type: "hello" | "ping" | "pong";
   hello: Parameters<typeof serverAccept>[0];
 }
 
@@ -855,6 +855,20 @@ async function handleMessage(data: WebSocket.RawData, ws: WebSocket) {
     const maybeControl = JSON.parse(
       Buffer.from(frame.payload, "base64").toString("utf8"),
     ) as Partial<HelloMsg>;
+    if (maybeControl?.type === "ping") {
+      isControl = true;
+      // liveness probe: pong when the session is known, otherwise ask for a
+      // fresh handshake (daemon restarted while the client stayed up)
+      const reply = sessions.has(frame.from) ? { type: "pong" } : { type: "reconnect" };
+      ws.send(
+        JSON.stringify({
+          room: daemon.room,
+          from: daemon.room,
+          payload: b64(Buffer.from(JSON.stringify(reply))),
+        } satisfies RelayFrame),
+      );
+      return;
+    }
     if (maybeControl?.type === "hello" && maybeControl.hello) {
       isControl = true;
       const accepted = await serverAccept(maybeControl.hello, daemon.identity);
