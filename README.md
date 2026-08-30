@@ -85,12 +85,23 @@ See [docs/api.md](docs/api.md).
 
 ## Roadmap
 
-Language toggle (EN/pt-BR) ships in Settings. Next: hosted relay option,
+Next up: hosted relay option,
 onboarding wizard, skills sharing, native iOS push.
 
 ## License
 
-See [LICENSE](LICENSE).
+Open core, chosen so the community gets the client and the business gets the
+service:
+
+| Part | License | Why |
+|---|---|---|
+| `apps/relay` (the hosted side) | **AGPL-3.0-only** | anyone hosting it for others must ship their source — no parasitic SaaS |
+| `apps/daemon`, `apps/web`, `cli.mjs`, `tools/` | **AGPL-3.0-only** | the product stays open and self-hostable, forever |
+| `packages/sdk`, `packages/protocol` | **MIT** | build integrations and products on top, no strings |
+
+Your own deployments, forks and internal use are unrestricted either way —
+AGPL only bites if you offer the software as a network service to third
+parties and withhold the source.
 
 ---
 

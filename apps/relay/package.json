@@ -17,5 +17,6 @@
     "dev": "tsx src/index.ts",
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit"
-  }
+  },
+  "license": "AGPL-3.0-only"
 }

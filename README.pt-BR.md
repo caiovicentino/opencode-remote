@@ -83,12 +83,22 @@ Veja [docs/api.md](docs/api.md).
 
 ## Roadmap
 
-Seletor de idioma (EN/pt-BR) já saiu no Settings. Próximos: relay hospedado
+Próximos: relay hospedado
 opcional, wizard de onboarding, compartilhamento de skills, push nativo iOS.
 
 ## Licença
 
-Veja [LICENSE](LICENSE).
+Open core, escolhido pra comunidade ficar com o cliente e o negócio com o
+serviço:
+
+| Parte | Licença | Por quê |
+|---|---|---|
+| `apps/relay` (o lado hospedado) | **AGPL-3.0-only** | quem hospedar pra terceiros precisa publicar o fonte — sem SaaS parasita |
+| `apps/daemon`, `apps/web`, `cli.mjs`, `tools/` | **AGPL-3.0-only** | o produto segue aberto e self-hosted, para sempre |
+| `packages/sdk`, `packages/protocol` | **MIT** | construa integrações em cima, sem amarras |
+
+Deploy próprio, fork e uso interno seguem livres — a AGPL só mordem se você
+oferecer o software como serviço pra terceiros e esconder o fonte.
 
 ---
 

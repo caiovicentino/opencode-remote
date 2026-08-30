@@ -24,5 +24,6 @@
     "manage": "tsx src/manage.ts",
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit"
-  }
+  },
+  "license": "AGPL-3.0-only"
 }

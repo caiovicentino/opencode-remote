@@ -29,5 +29,6 @@
     "typecheck": "tsc --noEmit",
     "ios:sync": "vite build && cap sync ios",
     "ios:open": "cap open ios"
-  }
+  },
+  "license": "AGPL-3.0-only"
 }
