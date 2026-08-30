@@ -205,6 +205,9 @@ export default function SessionsView({
           </button>
           <button
             disabled={pushState !== "idle"}
+            aria-label={pushState === "enabled" ? t("pushOn") : t("pushEnable")}
+            title={pushState === "enabled" ? t("pushOn") : t("pushEnable")}
+            style={pushState === "enabled" ? { color: "#2ecc71", borderColor: "#2ecc71" } : undefined}
             onClick={async () => {
               setPushState("enabling");
               try {
@@ -215,10 +218,20 @@ export default function SessionsView({
               }
             }}
           >
-            {pushState === "enabled" ? t("pushOn") : pushState === "enabling" ? "…" : t("pushEnable")}
+            {pushState === "enabling" ? (
+              "…"
+            ) : (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 2a7 7 0 0 0-7 7v4.2l-1.9 3.6A1 1 0 0 0 4 18.3h16a1 1 0 0 0 .9-1.5L19 13.2V9a7 7 0 0 0-7-7Zm-2 17a2 2 0 1 0 4 0h-4Z" />
+              </svg>
+            )}
           </button>
-          <button className="danger" onClick={onDisconnect}>
-            {t("unpair")}
+          <button className="danger" onClick={onDisconnect} aria-label={t("unpair")} title={t("unpair")}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M18.84 12.25l1.72-1.71a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+              <path d="M5.17 11.75l-1.71 1.71a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+              <line x1="2" y1="2" x2="22" y2="22" />
+            </svg>
           </button>
         </div>
       </header>
