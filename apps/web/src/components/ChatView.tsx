@@ -108,6 +108,7 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
   useEffect(() => {
     rolesRef.current = {};
     setResponded(new Set());
+    setPersistedAsks([]); // never leak another session's pending asks on switch
     // events that arrived before this view opened are covered by the message
     // fetch below — streaming starts from the next event
     lastEventId.current = events[events.length - 1]?.id ?? null;
