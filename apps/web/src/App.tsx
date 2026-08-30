@@ -9,6 +9,7 @@ import {
   loadPairings,
   parsePairingUri,
   type Pairing,
+  type Status,
 } from "./lib/client";
 import type { OpResponse, EventEnvelope } from "@ocr/protocol";
 import { gateVerify, gateEnroll } from "./lib/gate";
@@ -32,6 +33,7 @@ export default function App() {
   const [filesView, setFilesView] = useState(false);
   const [share, setShare] = useState<{ title?: string; text?: string; url?: string } | null>(null);
   const [tick, setTick] = useState(0);
+  const [connStatus, setConnStatus] = useState<Status>("connecting");
   const [machines, setMachines] = useState<Pairing[]>(() => loadPairings());
   const [addingMachine, setAddingMachine] = useState(false);
   const [unread, setUnread] = useState<Record<string, number>>(() => {
@@ -83,6 +85,7 @@ export default function App() {
         throw new Error("Biometric unlock failed");
       }
       const client = await OcrClient.connect(pairing);
+      client.onStatus = (s) => setConnStatus(s);
       if (persist) {
         saveState(pairing);
         setMachines(loadPairings());
@@ -245,6 +248,7 @@ export default function App() {
       sessionId={session}
       request={request}
       events={events}
+      connStatus={connStatus}
       voice={clientRef.current?.caps?.transcribe === true}
       onBack={() => {
         setSession(null);
@@ -277,6 +281,7 @@ export default function App() {
       machineName={machineName}
       events={events}
       unread={unread}
+      connStatus={connStatus}
       machines={machines}
       activeRoom={getActiveRoom()}
       onSwitch={(p) => void switchMachine(p)}

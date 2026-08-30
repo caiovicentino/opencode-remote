@@ -28,7 +28,7 @@ import type {
 } from "@ocr/protocol";
 import { log } from "./log.js";
 import { detectWhisper, transcribeAudio, type WhisperTool } from "./whisper.js";
-import { metrics, startMetricsServer } from "./metrics.js";
+import { metrics, startMetricsServer, VERSION } from "./metrics.js";
 import { loadRoutines, saveRoutines, type Routine } from "./routines.js";
 
 const RELAY_URL = process.env.RELAY_URL ?? "ws://127.0.0.1:8787";
@@ -355,7 +355,7 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
     return { id: req.id, status: 200, body: { ok: true } };
   }
   if (req.path === "/__ocr/settings" && req.method === "GET") {
-    return { id: req.id, status: 200, body: readSettings() };
+    return { id: req.id, status: 200, body: { ...readSettings(), version: VERSION } };
   }
   if (req.path === "/__ocr/settings" && req.method === "PATCH") {
     const b = req.body as { name?: string; notify?: Partial<NotifySettings> };
@@ -660,6 +660,7 @@ interface ClientSession {
   socket: WebSocket;
   lastSeq: number; // highest seq accepted from this client (replay guard)
   sendSeq: number; // monotonically increasing per daemon->client frame
+  lastSeen: number; // last sealed frame received (stale sweep)
 }
 
 const sessions = new Map<string, ClientSession>();
@@ -769,6 +770,48 @@ for (const r of loadRoutines()) {
 }
 setInterval(checkRoutines, 30_000);
 setTimeout(checkRoutines, 10_000);
+
+// watchdog: tell the phone when the agent server goes down (and back up)
+let opencodeHealthy = true;
+metrics.gauge("ocr_opencode_healthy", 1);
+setInterval(() => {
+  void (async () => {
+    let healthy: boolean;
+    try {
+      const res = await fetch(new URL("/global/health", OPENCODE_URL), {
+        headers: authHeader ? { authorization: authHeader } : {},
+      });
+      const body = (await res.json().catch(() => ({}))) as { healthy?: boolean };
+      healthy = res.ok && body.healthy !== false;
+    } catch {
+      healthy = false;
+    }
+    metrics.gauge("ocr_opencode_healthy", healthy ? 1 : 0);
+    if (healthy !== opencodeHealthy) {
+      opencodeHealthy = healthy;
+      void pushToSubscribers(
+        healthy ? "opencode is back ✅" : "opencode is DOWN ⛔",
+        healthy
+          ? `Agent server reachable again on ${machineName}`
+          : `Agent server unreachable on ${machineName} — chats will fail until it's back`,
+        { url: "#/" },
+      );
+      log("warn", "opencode health flipped", { healthy });
+    }
+  })();
+}, 60_000);
+
+// stale client sessions (phone reloaded, new `from` id) get swept
+setInterval(() => {
+  const cutoff = Date.now() - 3_600_000;
+  for (const [from, s] of sessions) {
+    if (s.lastSeen < cutoff) {
+      sessions.delete(from);
+      metrics.gauge("ocr_sessions_active", sessions.size);
+      audit("client.session.expired", { pub: s.pub.slice(0, 16) });
+    }
+  }
+}, 300_000);
 
 // relay frames are capped at 1MB; keep a safety margin for the sealed payload
 const SAFE_PAYLOAD = 900_000;
@@ -944,6 +987,7 @@ async function handleSealedFrame(frame: RelayFrame, ws: WebSocket) {
     return;
   }
   session.lastSeq = seq;
+  session.lastSeen = Date.now();
   metrics.inc("ocr_ops_total");
   await proxy(envelope.req)
     .then((res) => {
@@ -1039,6 +1083,7 @@ async function handleMessage(data: WebSocket.RawData, ws: WebSocket) {
         socket: ws,
         lastSeq: 0,
         sendSeq: 0,
+        lastSeen: Date.now(),
       });
       log("info", "client paired", {
         pub: accepted.clientPub.slice(0, 16),

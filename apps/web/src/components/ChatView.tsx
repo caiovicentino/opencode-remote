@@ -7,6 +7,7 @@ import { renderBubbleText } from "./FileCard";
 interface Props {
   sessionId: string;
   events: EventEnvelope[];
+  connStatus: string;
   voice?: boolean;
   request: (
     method: string,
@@ -107,7 +108,7 @@ interface PendingImage {
   raw?: Uint8Array;
 }
 
-export default function ChatView({ sessionId, events, voice, request, onBack }: Props) {
+export default function ChatView({ sessionId, events, connStatus, voice, request, onBack }: Props) {
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -360,6 +361,47 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
     }
   }
 
+  const queueKey = `ocr.queue.${sessionId}`;
+  const [queue, setQueue] = useState<string[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem(queueKey) ?? "[]") as string[];
+    } catch {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    try {
+      setQueue(JSON.parse(localStorage.getItem(queueKey) ?? "[]") as string[]);
+    } catch {
+      setQueue([]);
+    }
+  }, [sessionId, queueKey]);
+
+  const enqueue = (text: string) => {
+    setQueue((prev) => {
+      const q = [...prev, text];
+      localStorage.setItem(queueKey, JSON.stringify(q));
+      return q;
+    });
+  };
+
+  const flushingRef = useRef(false);
+  useEffect(() => {
+    if (connStatus !== "paired" || queue.length === 0 || flushingRef.current) return;
+    flushingRef.current = true;
+    const next = [...queue];
+    localStorage.setItem(queueKey, JSON.stringify([]));
+    setQueue([]);
+    void (async () => {
+      for (const text of next) {
+        await new Promise((r) => setTimeout(r, 300));
+        await send(text);
+      }
+      flushingRef.current = false;
+    })();
+  }, [connStatus, queue.length, sessionId]);
+
   async function respond(permissionID: string, response: "approve" | "reject") {
     setResponded((prev) => new Set(prev).add(permissionID));
     try {
@@ -435,7 +477,13 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
         setError(`opencode responded ${res.status}: ${JSON.stringify(res.body).slice(0, 200)}`);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      if (text) {
+        enqueue(text);
+        setError(`offline — message queued (${msg})`);
+      } else {
+        setError(msg);
+      }
     } finally {
       setSending(false);
     }
@@ -704,6 +752,22 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
     <div className="screen">
       <header>
         <button onClick={onBack}>←</button>
+        <span
+          title={`connection: ${connStatus}`}
+          style={{
+            width: 9,
+            height: 9,
+            borderRadius: 5,
+            flexShrink: 0,
+            display: "inline-block",
+            background:
+              connStatus === "paired"
+                ? "#2ecc71"
+                : connStatus === "connecting"
+                  ? "#f1c40f"
+                  : "var(--danger)",
+          }}
+        />
         <h1 style={{ fontSize: "0.9rem", margin: 0, flex: 1 }}>session</h1>
         <button
           onClick={() => {
@@ -789,6 +853,11 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
         )}
 
         {error && <p style={{ color: "var(--danger)", margin: 0 }}>{error}</p>}
+        {queue.length > 0 && (
+          <p className="muted" style={{ margin: 0 }}>
+            {queue.length} message(s) queued — will send when reconnected
+          </p>
+        )}
 
         <input
           ref={fileRef}

@@ -30,6 +30,8 @@ interface Skill {
   prompt: string;
 }
 
+declare const __APP_VERSION__: string;
+
 const VOICE_KEY = "ocr_voice";
 const THEME_KEY = "ocr_theme";
 const FONT_KEY = "ocr_font";
@@ -68,6 +70,8 @@ export default function SettingsView({ request, onBack }: Props) {
   const [skills, setSkills] = useState<Skill[]>([]);
   const [nsLabel, setNsLabel] = useState("");
   const [nsPrompt, setNsPrompt] = useState("");
+  const [auditEntries, setAuditEntries] = useState<{ ts: string; event: string; data?: Record<string, unknown> }[]>([]);
+  const [daemonVersion, setDaemonVersion] = useState("");
 
   useEffect(() => {
     void (async () => {
@@ -86,9 +90,12 @@ export default function SettingsView({ request, onBack }: Props) {
       if (s.status === 200) {
         setName((s.body as { name?: string }).name ?? "");
         setNotify((s.body as { notify?: { permission: boolean; idle: boolean } }).notify ?? { permission: true, idle: true });
+        setDaemonVersion((s.body as { version?: string }).version ?? "");
       }
       const cs = await request("GET", "/__ocr/clip-style");
       if (cs.status === 200) setStyle((cs.body as Record<string, unknown>) ?? {});
+      const al = await request("GET", "/__ocr/audit");
+      if (al.status === 200) setAuditEntries((al.body as { entries?: typeof auditEntries }).entries ?? []);
     })();
   }, []);
 
@@ -131,6 +138,19 @@ export default function SettingsView({ request, onBack }: Props) {
 
       <div className="list">
         {msg && <p className="muted">{msg}</p>}
+
+        <div className="card">
+          <h3>About</h3>
+          <p className="muted" style={{ margin: 0 }}>
+            app {__APP_VERSION__} · daemon {daemonVersion || "?"}
+            {daemonVersion && daemonVersion !== __APP_VERSION__ && (
+              <span style={{ color: "var(--danger)" }}>
+                {" "}
+                — version mismatch: refresh the PWA (pull-to-refresh) or update the daemon
+              </span>
+            )}
+          </p>
+        </div>
 
         <div className="card">
           <h3>Machine</h3>
@@ -462,6 +482,17 @@ export default function SettingsView({ request, onBack }: Props) {
               <button className="danger" onClick={() => void revoke(d.pub)}>
                 Revoke
               </button>
+            </div>
+          ))}
+        </div>
+
+        <div className="card">
+          <h3>Security log</h3>
+          {auditEntries.length === 0 && <p className="muted" style={{ margin: 0 }}>no events yet</p>}
+          {auditEntries.map((e, i) => (
+            <div key={i} className="muted" style={{ fontSize: "0.72rem", marginBottom: 4 }}>
+              {new Date(e.ts).toLocaleString()} · {e.event}
+              {e.data?.pub ? ` · …${String(e.data.pub).slice(-6)}` : ""}
             </div>
           ))}
         </div>

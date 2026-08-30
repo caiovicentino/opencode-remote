@@ -12,6 +12,7 @@ interface Props {
   machineName: string;
   events: EventEnvelope[];
   unread: Record<string, number>;
+  connStatus: string;
   machines: Pairing[];
   activeRoom?: string | null;
   onSwitch: (p: Pairing) => void;
@@ -35,6 +36,7 @@ export default function SessionsView({
   machineName,
   events,
   unread,
+  connStatus,
   machines,
   activeRoom,
   onSwitch,
@@ -129,6 +131,22 @@ export default function SessionsView({
   return (
     <div className="screen">
       <header>
+        <span
+          title={`connection: ${connStatus}`}
+          style={{
+            width: 9,
+            height: 9,
+            borderRadius: 5,
+            flexShrink: 0,
+            display: "inline-block",
+            background:
+              connStatus === "paired"
+                ? "#2ecc71"
+                : connStatus === "connecting"
+                  ? "#f1c40f"
+                  : "var(--danger)",
+          }}
+        />
         <h1
           onClick={() => setSwitching(true)}
           style={{ fontSize: "1rem", margin: 0, cursor: "pointer" }}

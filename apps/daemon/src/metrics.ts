@@ -31,7 +31,7 @@ export const metrics = {
 };
 
 const startedAt = Date.now();
-const VERSION = "0.2.0";
+export const VERSION = "0.2.0";
 
 /** text/plain exposition format (Prometheus-compatible) */
 function promText(): string {

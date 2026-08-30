@@ -13,9 +13,16 @@
     "dev:relay": "npm run dev --workspace apps/relay",
     "dev:daemon": "npm run dev --workspace apps/daemon",
     "build": "npm run build --workspaces --if-present",
-    "typecheck": "npm run typecheck --workspaces --if-present"
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "eslint apps packages scripts --quiet",
+    "test:unit": "tsx scripts/unit.test.ts",
+    "test:e2e": "tsx scripts/reconnect.test.ts && tsx scripts/chunk.test.ts"
   },
   "engines": {
     "node": ">=20"
+  },
+  "devDependencies": {
+    "eslint": "^10.9.1",
+    "typescript-eslint": "^8.68.0"
   }
 }

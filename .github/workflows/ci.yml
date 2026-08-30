@@ -19,8 +19,14 @@ jobs:
       - name: Install
         run: npm ci
 
+      - name: Lint
+        run: npx eslint apps packages scripts --quiet
+
       - name: Typecheck
         run: npm run typecheck
+
+      - name: Unit tests
+        run: npx tsx scripts/unit.test.ts
 
       - name: Build
         run: npm run build
