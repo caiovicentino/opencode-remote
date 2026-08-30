@@ -11,6 +11,10 @@ your hardware; the relay is a blind pipe that cannot read the traffic.
    passkey+QR      blind       E2E          localhost
 ```
 
+<p align="center">
+  <a href="assets/demo.mp4"><img src="assets/demo-poster.jpg" width="300" alt="OpenCode Remote demo — tap to watch"></a>
+</p>
+
 ## Why this exists
 
 Claude Code, Codex and friends run your agent in *their* cloud. OpenCode

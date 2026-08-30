@@ -11,6 +11,10 @@ hardware; o relay é um tubo cego que não consegue ler o tráfego.
    passkey+QR      cego       E2E          localhost
 ```
 
+<p align="center">
+  <a href="assets/demo.mp4"><img src="assets/demo-poster.jpg" width="300" alt="Demo do OpenCode Remote — clique pra assistir"></a>
+</p>
+
 ## Por que existe
 
 Claude Code, Codex e companhia rodam o agente no cloud *deles*. O OpenCode
