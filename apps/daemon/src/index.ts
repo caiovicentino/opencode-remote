@@ -252,15 +252,44 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
   if (req.path === "/__ocr/routines" && req.method === "GET") {
     return { id: req.id, status: 200, body: { routines } };
   }  if (req.path === "/__ocr/routines" && req.method === "POST") {
-    const b = (req.body ?? {}) as { name?: string; prompt?: string; hour?: number; minute?: number };
+    const b = (req.body ?? {}) as {
+      name?: string;
+      prompt?: string;
+      hour?: number;
+      minute?: number;
+      mode?: string;
+      days?: number[];
+      intervalMinutes?: number;
+    };
     const name = (b.name ?? "").trim().slice(0, 40);
     const prompt = (b.prompt ?? "").trim();
-    const hour = Number(b.hour);
-    const minute = Number(b.minute);
-    if (!name || !prompt || !Number.isInteger(hour) || hour < 0 || hour > 23 || !Number.isInteger(minute) || minute < 0 || minute > 59) {
-      return { id: req.id, status: 400, body: { error: "name, prompt and valid hour/minute required" } };
+    const mode = b.mode === "days" || b.mode === "interval" ? b.mode : "daily";
+    if (!name || !prompt) {
+      return { id: req.id, status: 400, body: { error: "name and prompt required" } };
     }
-    const routine: Routine = { id: randomUUID(), name, prompt, hour, minute };
+    let hour = Number(b.hour);
+    let minute = Number(b.minute);
+    let days: number[] | undefined;
+    let intervalMinutes: number | undefined;
+    if (mode === "interval") {
+      intervalMinutes = Number(b.intervalMinutes);
+      if (!Number.isInteger(intervalMinutes) || intervalMinutes < 5 || intervalMinutes > 10080) {
+        return { id: req.id, status: 400, body: { error: "intervalMinutes must be 5..10080" } };
+      }
+      hour = Number.isInteger(hour) ? hour : 0;
+      minute = Number.isInteger(minute) ? minute : 0;
+    } else {
+      if (!Number.isInteger(hour) || hour < 0 || hour > 23 || !Number.isInteger(minute) || minute < 0 || minute > 59) {
+        return { id: req.id, status: 400, body: { error: "valid hour/minute required" } };
+      }
+      if (mode === "days") {
+        days = Array.isArray(b.days)
+          ? [...new Set(b.days.map(Number).filter((n) => Number.isInteger(n) && n >= 0 && n <= 6))].sort()
+          : [];
+        if (!days.length) return { id: req.id, status: 400, body: { error: "days required for mode=days" } };
+      }
+    }
+    const routine: Routine = { id: randomUUID(), name, prompt, hour, minute, mode, days, intervalMinutes };
     routines.push(routine);
     saveRoutines(routines);
     return { id: req.id, status: 200, body: { routine } };
@@ -669,7 +698,7 @@ const sessions = new Map<string, ClientSession>();
 let routines = loadRoutines();
 const pendingRuns = new Map<string, string>(); // sessionID -> routineID
 
-async function fireRoutine(r: Routine, today: string) {
+async function fireRoutine(r: Routine) {
   try {
     const headers = { "content-type": "application/json", ...(authHeader ? { authorization: authHeader } : {}) };
     const created = (await (
@@ -680,7 +709,6 @@ async function fireRoutine(r: Routine, today: string) {
       })
     ).json()) as { id?: string };
     if (!created.id) throw new Error("session create failed");
-    r.lastRun = today;
     r.lastSessionID = created.id;
     saveRoutines(routines);
     pendingRuns.set(created.id, r.id);
@@ -691,6 +719,9 @@ async function fireRoutine(r: Routine, today: string) {
     });
     log("info", "routine fired", { routine: r.name, session: created.id });
   } catch (err) {
+    r.lastRun = undefined;
+    r.lastFiredAt = undefined;
+    saveRoutines(routines);
     log("warn", "routine fire failed", { routine: r.name, error: (err as Error).message });
   }
 }
@@ -757,10 +788,24 @@ function checkRoutines() {
   const now = new Date();
   const today = now.toLocaleDateString("sv"); // local YYYY-MM-DD
   const nowMin = now.getHours() * 60 + now.getMinutes();
+  const dow = now.getDay();
   for (const r of routines) {
+    if (r.lastSessionID) continue; // a run is already in flight
+    const mode = r.mode ?? "daily";
+    if (mode === "interval") {
+      const every = Math.max(5, r.intervalMinutes ?? 60) * 60_000;
+      if (r.lastFiredAt && Date.now() - r.lastFiredAt < every) continue;
+      r.lastFiredAt = Date.now();
+      saveRoutines(routines);
+      void fireRoutine(r);
+      continue;
+    }
     if (r.lastRun === today) continue;
+    if (mode === "days" && !(r.days ?? []).includes(dow)) continue;
     if (nowMin < r.hour * 60 + r.minute) continue;
-    void fireRoutine(r, today);
+    r.lastRun = today;
+    saveRoutines(routines);
+    void fireRoutine(r);
   }
 }
 

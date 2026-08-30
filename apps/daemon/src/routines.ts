@@ -6,9 +6,13 @@ export interface Routine {
   id: string;
   name: string;
   prompt: string;
-  hour: number; // machine-local time
+  hour: number; // machine-local time (daily/days modes)
   minute: number;
-  lastRun?: string; // local YYYY-MM-DD of the last fire
+  mode?: "daily" | "days" | "interval";
+  days?: number[]; // 0=Sun..6=Sat, for mode "days"
+  intervalMinutes?: number; // for mode "interval"
+  lastRun?: string; // local YYYY-MM-DD of the last fire (daily/days)
+  lastFiredAt?: number; // epoch ms of the last fire (interval pacing)
   lastSessionID?: string; // session awaiting result persistence
   lastStatus?: "ok" | "error";
   lastError?: string;

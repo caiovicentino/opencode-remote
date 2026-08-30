@@ -22,8 +22,22 @@ interface Routine {
   prompt: string;
   hour: number;
   minute: number;
+  mode?: "daily" | "days" | "interval";
+  days?: number[];
+  intervalMinutes?: number;
   lastStatus?: "ok" | "error";
   lastError?: string;
+}
+
+const DAY_LABELS = ["S", "M", "T", "W", "T", "F", "S"];
+const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+function scheduleLabel(r: Routine): string {
+  const hm = `${String(r.hour).padStart(2, "0")}:${String(r.minute).padStart(2, "0")}`;
+  if (r.mode === "interval") return `every ${r.intervalMinutes}m`;
+  if (r.mode === "days")
+    return `${(r.days ?? []).map((d) => DAY_NAMES[d]).join(" ")} · ${hm}`;
+  return `daily ${hm}`;
 }
 
 interface Skill {
@@ -74,6 +88,9 @@ export default function SettingsView({ request, onBack }: Props) {
   const [nsPrompt, setNsPrompt] = useState("");
   const [auditEntries, setAuditEntries] = useState<{ ts: string; event: string; data?: Record<string, unknown> }[]>([]);
   const [daemonVersion, setDaemonVersion] = useState("");
+  const [nrMode, setNrMode] = useState<"daily" | "days" | "interval">("daily");
+  const [nrDays, setNrDays] = useState<number[]>([1, 2, 3, 4, 5]);
+  const [nrInterval, setNrInterval] = useState(60);
 
   useEffect(() => {
     void (async () => {
@@ -418,7 +435,7 @@ export default function SettingsView({ request, onBack }: Props) {
           {routines.map((r) => (
             <div key={r.id} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
               <span style={{ flex: 1, minWidth: 0 }}>
-                <b>{String(r.hour).padStart(2, "0")}:{String(r.minute).padStart(2, "0")}</b> · {r.name}
+                <b>{scheduleLabel(r)}</b> · {r.name}
                 <div className="muted" style={{ fontSize: "0.72rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                   {r.prompt}
                 </div>
@@ -443,9 +460,59 @@ export default function SettingsView({ request, onBack }: Props) {
             </div>
           ))}
           <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+            <select
+              value={nrMode}
+              onChange={(e) => setNrMode(e.target.value as typeof nrMode)}
+              aria-label="Schedule mode"
+            >
+              <option value="daily">Every day</option>
+              <option value="days">Specific days</option>
+              <option value="interval">Loop every N min</option>
+            </select>
+            {nrMode !== "interval" ? (
+              <input style={{ width: 90 }} type="time" value={nrTime} onChange={(e) => setNrTime(e.target.value)} />
+            ) : (
+              <input
+                style={{ width: 110 }}
+                type="number"
+                min={5}
+                max={10080}
+                value={nrInterval}
+                onChange={(e) => setNrInterval(Number(e.target.value))}
+                aria-label="Interval in minutes"
+              />
+            )}
             <input style={{ width: 90, flexGrow: 1 }} placeholder="name" value={nrName} onChange={(e) => setNrName(e.target.value)} />
-            <input style={{ width: 90 }} type="time" value={nrTime} onChange={(e) => setNrTime(e.target.value)} />
           </div>
+          {nrMode === "days" && (
+            <div style={{ display: "flex", gap: 4, marginTop: 6 }}>
+              {DAY_LABELS.map((d, i) => (
+                <button
+                  key={i}
+                  onClick={() =>
+                    setNrDays((prev) => (prev.includes(i) ? prev.filter((x) => x !== i) : [...prev, i].sort()))
+                  }
+                  style={{
+                    width: 32,
+                    height: 32,
+                    borderRadius: 16,
+                    padding: 0,
+                    border: nrDays.includes(i) ? "1px solid var(--accent)" : "1px solid var(--border)",
+                    background: nrDays.includes(i) ? "var(--accent)" : "transparent",
+                    color: nrDays.includes(i) ? "#fff" : "inherit",
+                  }}
+                  aria-label={DAY_NAMES[i]}
+                >
+                  {d}
+                </button>
+              ))}
+            </div>
+          )}
+          {nrMode === "interval" && (
+            <p className="muted" style={{ margin: "6px 0 0", fontSize: "0.72rem" }}>
+              runs immediately, then every N minutes while the daemon is up (min 5)
+            </p>
+          )}
           <textarea
             rows={2}
             placeholder="prompt for the agent (e.g. summarize crypto news and save a report)"
@@ -463,6 +530,9 @@ export default function SettingsView({ request, onBack }: Props) {
                   prompt: nrPrompt,
                   hour: h,
                   minute: m,
+                  mode: nrMode,
+                  days: nrMode === "days" ? nrDays : undefined,
+                  intervalMinutes: nrMode === "interval" ? nrInterval : undefined,
                 });
                 if (res.status === 200) {
                   const { routine } = res.body as { routine: Routine };
