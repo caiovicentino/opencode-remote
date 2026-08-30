@@ -22,11 +22,34 @@ hardware; o relay é um tubo cego que não consegue ler o tráfego.
 
 ```bash
 git clone https://github.com/caiovicentino/opencode-remote.git
-cd opencode-remote
-./scripts/setup.sh            # confere node, opencode, whisper, ffmpeg
+cd opencode-remote && npm ci
 opencode serve --port 4096    # se ainda não estiver rodando
-./scripts/dev-iphone.sh       # sobe relay + daemon + PWA e imprime o QR
+node cli.mjs setup --relay=wss://seu-host.ts.net:8788
 ```
+
+O wizard confere node/opencode/whisper/ffmpeg, instala os serviços launchd
+com KeepAlive e imprime o QR de pareamento.
+
+## CLI
+
+```bash
+node cli.mjs doctor   # diagnóstico completo: binários, saúde, serviços, devices
+node cli.mjs qr       # reimprime o QR de pareamento
+node cli.mjs status   # estado dos serviços launchd + devices pareados
+node cli.mjs start    # restart dos serviços (relay + daemon)
+```
+
+Com a tag `v0.2.0+` no GitHub, dá pra instalar via Homebrew:
+
+```bash
+brew install --build-from-source Formula/opencode-remote.rb
+opencode-remote doctor
+```
+
+## Docs
+
+[Arquitetura](docs/architecture.md) · [Modelo de segurança](docs/security.md) ·
+[Troubleshooting](docs/troubleshooting.md) · [Shell nativo (Capacitor)](docs/capacitor.md)
 
 No iPhone (o script imprime a URL e o QR):
 

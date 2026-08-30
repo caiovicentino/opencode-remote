@@ -1,9 +1,12 @@
 {
   "name": "opencode-remote",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Secure remote control for opencode from anywhere. Your machine, your code, end-to-end encrypted.",
   "type": "module",
+  "bin": {
+    "opencode-remote": "cli.mjs"
+  },
   "workspaces": [
     "apps/*",
     "packages/*"
