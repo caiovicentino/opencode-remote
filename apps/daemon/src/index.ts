@@ -213,11 +213,33 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
     return { id: req.id, status: 200, body: { results } };
   }
 
+  // --- one-tap skills: saved prompts rendered as chips in the composer -------
+  if (req.path === "/__ocr/skills" && req.method === "GET") {
+    return { id: req.id, status: 200, body: { skills: loadSkills() } };
+  }
+  if (req.path === "/__ocr/skills" && req.method === "POST") {
+    const b = (req.body ?? {}) as { label?: string; prompt?: string };
+    const label = (b.label ?? "").trim().slice(0, 40);
+    const prompt = (b.prompt ?? "").trim().slice(0, 4000);
+    if (!label || !prompt) {
+      return { id: req.id, status: 400, body: { error: "label and prompt required" } };
+    }
+    const skill: Skill = { id: randomUUID(), label, prompt };
+    const skills = loadSkills();
+    skills.push(skill);
+    saveSkills(skills);
+    return { id: req.id, status: 200, body: { skill } };
+  }
+  if (req.path === "/__ocr/skills" && req.method === "DELETE") {
+    const { id } = (req.body ?? {}) as { id?: string };
+    saveSkills(loadSkills().filter((s) => s.id !== id));
+    return { id: req.id, status: 200, body: { ok: true } };
+  }
+
   // --- scheduled routines -----------------------------------------------------
   if (req.path === "/__ocr/routines" && req.method === "GET") {
     return { id: req.id, status: 200, body: { routines } };
-  }
-  if (req.path === "/__ocr/routines" && req.method === "POST") {
+  }  if (req.path === "/__ocr/routines" && req.method === "POST") {
     const b = (req.body ?? {}) as { name?: string; prompt?: string; hour?: number; minute?: number };
     const name = (b.name ?? "").trim().slice(0, 40);
     const prompt = (b.prompt ?? "").trim();
@@ -496,6 +518,30 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
 // ---------------------------------------------------------------------------
 // web push: subscriptions arrive through the E2E tunnel (never plaintext)
 // ---------------------------------------------------------------------------
+
+// --- one-tap skills: saved prompts rendered as chips in the composer --------
+interface Skill {
+  id: string;
+  label: string;
+  prompt: string;
+}
+
+function skillsFile(): string {
+  return join(STATE_DIR, "skills.json");
+}
+
+function loadSkills(): Skill[] {
+  try {
+    return JSON.parse(readFileSync(skillsFile(), "utf8")) as Skill[];
+  } catch {
+    return [];
+  }
+}
+
+function saveSkills(s: Skill[]) {
+  writeFileSync(skillsFile(), JSON.stringify(s, null, 2));
+  chmodSync(skillsFile(), 0o600);
+}
 
 interface PushSub {
   endpoint: string;

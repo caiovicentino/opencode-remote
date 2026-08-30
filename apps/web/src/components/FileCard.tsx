@@ -161,6 +161,42 @@ export default function FileCard({
 }
 
 const FILE_MARKER = /^\[file: (.+)\]$/;
+const FENCE = /^```\w*\s*$/;
+
+function codeBlock(code: string, lang: string, key: string): ReactElement {
+  return (
+    <pre
+      key={key}
+      style={{
+        background: "var(--surface)",
+        border: "1px solid var(--border, rgba(255,255,255,0.1))",
+        borderRadius: 8,
+        padding: "8px 10px",
+        overflowX: "auto",
+        fontSize: "0.78rem",
+        lineHeight: 1.45,
+        margin: "4px 0",
+      }}
+    >
+      {lang && (
+        <div
+          style={{
+            color: "var(--text-muted, #888)",
+            fontSize: "0.62rem",
+            letterSpacing: "0.08em",
+            textTransform: "uppercase",
+            marginBottom: 4,
+          }}
+        >
+          {lang}
+        </div>
+      )}
+      <code style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", whiteSpace: "pre" }}>
+        {code}
+      </code>
+    </pre>
+  );
+}
 
 /** only http(s)/mailto — blocks javascript:, data:, vbscript: etc. */
 function safeUrl(href: string): boolean {
@@ -230,39 +266,67 @@ function inline(text: string, keyBase: string): ReactNode[] {
   return parts;
 }
 
-/** Renders a bubble: file-marker lines become cards, the rest gets markdown. */
+/** Renders a bubble: file-marker lines become cards, fenced code becomes blocks, the rest gets markdown. */
 export function renderBubbleText(
   text: string,
   request: OcrRequest,
   onError?: (msg: string) => void,
 ): (string | ReactElement)[] {
-  return text.split("\n").map((line, i) => {
+  const out: (string | ReactElement)[] = [];
+  const lines = text.split("\n");
+  let i = 0;
+  let k = 0;
+  while (i < lines.length) {
+    const line = lines[i] ?? "";
+    const fence = /^```(\w*)\s*$/.exec(line.trim());
+    if (fence) {
+      const lang = fence[1] ?? "";
+      const buf: string[] = [];
+      i++;
+      while (i < lines.length && !FENCE.test((lines[i] ?? "").trim())) {
+        buf.push(lines[i] ?? "");
+        i++;
+      }
+      i++;
+      out.push(codeBlock(buf.join("\n"), lang, `k${k++}`));
+      continue;
+    }
     const m = FILE_MARKER.exec(line.trim());
     const p = m?.[1];
-    if (p) return <FileCard key={i} path={p} request={request} onError={onError} />;
+    if (p) {
+      out.push(<FileCard key={`f${k++}`} path={p} request={request} onError={onError} />);
+      i++;
+      continue;
+    }
     const h = /^(#{1,3})\s+(.*)$/.exec(line);
     if (h) {
       const heading = h[2] ?? "";
-      return (
-        <div key={i} style={{ fontWeight: 700, marginTop: 6 }}>
-          {inline(heading, String(i))}
-        </div>
+      out.push(
+        <div key={`h${k++}`} style={{ fontWeight: 700, marginTop: 6 }}>
+          {inline(heading, String(k))}
+        </div>,
       );
+      i++;
+      continue;
     }
     const li = /^\s*(?:[-*]|\d+\.)\s+(.*)$/.exec(line);
     if (li) {
       const item = li[1] ?? "";
-      return (
-        <div key={i} style={{ paddingLeft: 12 }}>
-          • {inline(item, String(i))}
-        </div>
+      out.push(
+        <div key={`l${k++}`} style={{ paddingLeft: 12 }}>
+          • {inline(item, String(k))}
+        </div>,
       );
+      i++;
+      continue;
     }
-    return (
-      <span key={i}>
-        {inline(line, String(i))}
+    out.push(
+      <span key={`t${k++}`}>
+        {inline(line, String(k))}
         <br />
-      </span>
+      </span>,
     );
-  });
+    i++;
+  }
+  return out;
 }

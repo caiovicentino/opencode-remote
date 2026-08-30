@@ -24,6 +24,12 @@ interface Routine {
   minute: number;
 }
 
+interface Skill {
+  id: string;
+  label: string;
+  prompt: string;
+}
+
 const VOICE_KEY = "ocr_voice";
 const THEME_KEY = "ocr_theme";
 const FONT_KEY = "ocr_font";
@@ -59,11 +65,16 @@ export default function SettingsView({ request, onBack }: Props) {
   const [nrName, setNrName] = useState("");
   const [nrTime, setNrTime] = useState("07:00");
   const [nrPrompt, setNrPrompt] = useState("");
+  const [skills, setSkills] = useState<Skill[]>([]);
+  const [nsLabel, setNsLabel] = useState("");
+  const [nsPrompt, setNsPrompt] = useState("");
 
   useEffect(() => {
     void (async () => {
       const r = await request("GET", "/__ocr/routines");
       if (r.status === 200) setRoutines((r.body as { routines?: Routine[] }).routines ?? []);
+      const sk = await request("GET", "/__ocr/skills");
+      if (sk.status === 200) setSkills((sk.body as { skills?: Skill[] }).skills ?? []);
     })();
   }, []);
 
@@ -307,6 +318,77 @@ export default function SettingsView({ request, onBack }: Props) {
             add your instruction and send. Or create a Shortcut (Shortcuts app) that copies the
             shared text and opens "OpenCode Remote".
           </p>
+        </div>
+
+        <div className="card">
+          <h3>Skills (1-tap prompts)</h3>
+          {skills.map((s) => (
+            <div key={s.id} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
+              <span style={{ flex: 1, minWidth: 0 }}>
+                <b>{s.label}</b>
+                <div
+                  className="muted"
+                  style={{
+                    fontSize: "0.72rem",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {s.prompt}
+                </div>
+              </span>
+              <button
+                className="danger"
+                onClick={() =>
+                  void (async () => {
+                    await request("DELETE", "/__ocr/skills", { id: s.id });
+                    setSkills((prev) => prev.filter((x) => x.id !== s.id));
+                  })()
+                }
+              >
+                Delete
+              </button>
+            </div>
+          ))}
+          <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+            <input
+              style={{ flex: 1, minWidth: 0 }}
+              placeholder="label (e.g. Daily report)"
+              value={nsLabel}
+              onChange={(e) => setNsLabel(e.target.value)}
+              maxLength={40}
+            />
+          </div>
+          <textarea
+            rows={2}
+            placeholder="prompt sent to the agent on tap"
+            style={{ width: "100%", marginTop: 6 }}
+            value={nsPrompt}
+            onChange={(e) => setNsPrompt(e.target.value)}
+          />
+          <button
+            className="primary"
+            onClick={() =>
+              void (async () => {
+                const res = await request("POST", "/__ocr/skills", {
+                  label: nsLabel,
+                  prompt: nsPrompt,
+                });
+                if (res.status === 200) {
+                  const { skill } = res.body as { skill: Skill };
+                  setSkills((prev) => [...prev, skill]);
+                  setNsLabel("");
+                  setNsPrompt("");
+                  setMsg("skill added");
+                } else {
+                  setMsg("skill rejected — label and prompt required");
+                }
+              })()
+            }
+          >
+            Add skill
+          </button>
         </div>
 
         <div className="card">

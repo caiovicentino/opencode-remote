@@ -21,11 +21,27 @@ interface Props {
 interface Bubble {
   role: "user" | "assistant";
   text: string;
+  images?: string[];
 }
 
 interface PermissionAsk {
   permissionID: string;
   label: string;
+  messageID?: string;
+}
+
+interface DiffFile {
+  file: string;
+  patch: string;
+  additions: number;
+  deletions: number;
+  status: string;
+}
+
+interface Skill {
+  id: string;
+  label: string;
+  prompt: string;
 }
 
 function extractPermission(
@@ -38,10 +54,11 @@ function extractPermission(
     id?: string;
     permissionID?: string;
     type?: string;
+    messageID?: string;
   };
   const id = p?.permissionID ?? p?.id;
   if (p?.sessionID && id && p.sessionID === sessionId) {
-    return { permissionID: id, label: p.type ?? "action" };
+    return { permissionID: id, label: p.type ?? "action", messageID: p.messageID };
   }
   return null;
 }
@@ -75,8 +92,15 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
   const [tapToggle, setTapToggle] = useState(false);
   const [responded, setResponded] = useState<Set<string>>(new Set());
   const [persistedAsks, setPersistedAsks] = useState<PermissionAsk[]>([]);
+  const [diff, setDiff] = useState<{
+    ask: PermissionAsk | null;
+    loading: boolean;
+    files: DiffFile[];
+    err?: string;
+  } | null>(null);
   const rolesRef = useRef<Record<string, string>>({});
   const lastEventId = useRef<string | null>(null);
+  const [skills, setSkills] = useState<Skill[]>([]);
   const [pendingVideo, setPendingVideo] = useState<{ file: File; dur: number } | null>(null);
   const [trimStart, setTrimStart] = useState("");
   const [trimEnd, setTrimEnd] = useState("");
@@ -102,6 +126,15 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
       } catch {
         // model list is optional
       }
+    })();
+  }, []);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const res = await request("GET", "/__ocr/skills");
+        if (res.status === 200) setSkills((res.body as { skills?: Skill[] }).skills ?? []);
+      } catch {}
     })();
   }, []);
 
@@ -136,14 +169,19 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
       try {
         const res = await request("GET", `/session/${sessionId}/message`);
         if (res.status !== 200) throw new Error(`GET messages -> ${res.status}`);
-        const rows = (res.body as { info: { role?: string }; parts: { type: string; text?: string }[] }[]) ?? [];
+        const rows = (res.body as { info: { role?: string }; parts: { type: string; text?: string; url?: string }[] }[]) ?? [];
         const out: Bubble[] = [];
         for (const row of rows) {
           const text = row.parts
             .filter((p) => p.type === "text" && p.text)
             .map((p) => p.text)
             .join("\n");
-          if (text) out.push({ role: row.info.role === "user" ? "user" : "assistant", text });
+          const images = row.parts
+            .filter((p) => p.type === "file" && typeof p.url === "string" && p.url.startsWith("data:image/"))
+            .map((p) => p.url as string);
+          if (text || images.length) {
+            out.push({ role: row.info.role === "user" ? "user" : "assistant", text, images });
+          }
         }
         setBubbles(out);
       } catch (err) {
@@ -229,8 +267,28 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
       pending.push(pa);
   }
 
+  async function showDiff(ask: PermissionAsk) {
+    setDiff({ ask, loading: true, files: [] });
+    try {
+      const res = await request(
+        "GET",
+        `/session/${sessionId}/diff`,
+        undefined,
+        ask.messageID ? { messageID: ask.messageID } : undefined,
+      );
+      const files = res.body as DiffFile[];
+      setDiff({
+        ask,
+        loading: false,
+        files: Array.isArray(files) ? files : [],
+        err: Array.isArray(files) ? undefined : "diff unavailable",
+      });
+    } catch (err) {
+      setDiff({ ask, loading: false, files: [], err: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
   async function respond(permissionID: string, response: "approve" | "reject") {
-    // opencode's enum is once|always|reject — "approve" is rejected with 400
     setResponded((prev) => new Set(prev).add(permissionID));
     try {
       const res = await request("POST", `/session/${sessionId}/permissions/${permissionID}`, {
@@ -594,6 +652,19 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
         <div className="messages">
           {bubbles.map((b, i) => (
             <div key={i} className={`msg ${b.role}`}>
+              {b.images && b.images.length > 0 && (
+                <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: b.text ? 4 : 0 }}>
+                  {b.images.map((u, j) => (
+                    <img
+                      key={j}
+                      src={u}
+                      alt=""
+                      loading="lazy"
+                      style={{ width: 64, height: 64, objectFit: "cover", borderRadius: 6 }}
+                    />
+                  ))}
+                </div>
+              )}
               {renderBubbleText(b.text, request, setError)}
             </div>
           ))}
@@ -618,19 +689,20 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
 
         {pending.length > 0 && (
           <div className="card">
-            {pending.map((p) => (
-              <div key={p.permissionID} className="approval" style={{ marginBottom: 8 }}>
-                <span style={{ flex: 1 }}>
-                  Approve <b>{p.label}</b>?
-                </span>
-                <button className="primary" onClick={() => void respond(p.permissionID, "approve")}>
-                  Approve
-                </button>
-                <button className="danger" onClick={() => void respond(p.permissionID, "reject")}>
-                  Deny
-                </button>
-              </div>
-            ))}
+        {pending.map((p) => (
+          <div key={p.permissionID} className="approval" style={{ marginBottom: 8 }}>
+            <span style={{ flex: 1 }}>
+              Approve <b>{p.label}</b>?
+            </span>
+            <button onClick={() => void showDiff(p)}>diff</button>
+            <button className="primary" onClick={() => void respond(p.permissionID, "approve")}>
+              Approve
+            </button>
+            <button className="danger" onClick={() => void respond(p.permissionID, "reject")}>
+              Deny
+            </button>
+          </div>
+        ))}
           </div>
         )}
 
@@ -753,6 +825,27 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
           </select>
         )}
 
+        {skills.length > 0 && (
+          <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 2 }}>
+            {skills.map((s) => (
+              <button
+                key={s.id}
+                style={{
+                  whiteSpace: "nowrap",
+                  fontSize: "0.78rem",
+                  padding: "6px 12px",
+                  borderRadius: 16,
+                  flexShrink: 0,
+                }}
+                disabled={sending || !!liveText}
+                onClick={() => void send(s.prompt)}
+              >
+                {s.label}
+              </button>
+            ))}
+          </div>
+        )}
+
         <div className="composer">
           <button
             onClick={() => fileRef.current?.click()}
@@ -831,6 +924,110 @@ export default function ChatView({ sessionId, events, voice, request, onBack }: 
           </button>
         </div>
       </div>
+
+      {diff && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.94)",
+            zIndex: 60,
+            display: "flex",
+            flexDirection: "column",
+            padding: 12,
+            gap: 8,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button onClick={() => setDiff(null)} aria-label="Close diff">
+              ✕
+            </button>
+            <div style={{ flex: 1, fontWeight: 600, fontSize: "0.9rem" }}>
+              {diff.loading ? "loading diff…" : `changes for ${diff.ask?.label ?? "action"}`}
+            </div>
+            {diff.ask && !diff.loading && (
+              <>
+                <button
+                  className="primary"
+                  onClick={() => {
+                    const id = diff.ask!.permissionID;
+                    setDiff(null);
+                    void respond(id, "approve");
+                  }}
+                >
+                  Approve
+                </button>
+                <button
+                  className="danger"
+                  onClick={() => {
+                    const id = diff.ask!.permissionID;
+                    setDiff(null);
+                    void respond(id, "reject");
+                  }}
+                >
+                  Deny
+                </button>
+              </>
+            )}
+          </div>
+          <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
+            {diff.err && <p style={{ color: "var(--danger)" }}>{diff.err}</p>}
+            {!diff.loading && !diff.err && diff.files.length === 0 && (
+              <p className="muted">no file changes yet for this request</p>
+            )}
+            {diff.files.map((f) => (
+              <div key={f.file} style={{ marginBottom: 10 }}>
+                <div
+                  style={{
+                    fontSize: "0.75rem",
+                    marginBottom: 4,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  <b>{f.status}</b> · {f.file}{" "}
+                  <span className="muted">
+                    (+{f.additions} −{f.deletions})
+                  </span>
+                </div>
+                <pre
+                  style={{
+                    background: "var(--surface)",
+                    border: "1px solid var(--border, rgba(255,255,255,0.1))",
+                    borderRadius: 8,
+                    padding: "8px 10px",
+                    overflowX: "auto",
+                    fontSize: "0.72rem",
+                    lineHeight: 1.45,
+                    margin: 0,
+                  }}
+                >
+                  {f.patch.split("\n").map((l, i) => {
+                    const bg = l.startsWith("+")
+                      ? "rgba(46,160,67,0.18)"
+                      : l.startsWith("-")
+                        ? "rgba(248,81,73,0.18)"
+                        : undefined;
+                    return (
+                      <div
+                        key={i}
+                        style={{
+                          background: bg,
+                          whiteSpace: "pre",
+                          fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+                        }}
+                      >
+                        {l}
+                      </div>
+                    );
+                  })}
+                </pre>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
