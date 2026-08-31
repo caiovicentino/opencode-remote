@@ -4,7 +4,6 @@ import { homedir } from "node:os";
 import { exec, runAgent } from "./runner";
 import { nowLocalISO } from "./log";
 import { markDone, type Task } from "./backlog";
-import { nowLocalISO } from "./log";
 import { emit } from "./events";
 import { touchHeartbeat, type PilotConfig, type PilotState } from "./state";
 

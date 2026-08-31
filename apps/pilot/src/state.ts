@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { nowLocalISO } from "./log";
 import { homedir } from "node:os";
 
 export interface PilotConfig {
