@@ -73,8 +73,13 @@ try {
       /SIGTERM/.test(desktopSidecar) &&
       // the child must run plain Node, not a second Electron runtime
       /ELECTRON_RUN_AS_NODE:\s*"1"/.test(desktopSidecar) &&
-      // health gate: only an authenticated 200 proves identity (no 401 leniency)
-      /res\.status === 200/.test(desktopSidecar),
+      // health gate: only an authenticated 200 proves identity (no 401 leniency);
+      // a null token is rejected outright and the reuse short-circuit is blocked
+      // when there is no token (round-3 fix; behavioral coverage in
+      // scripts/desktop-sidecar.test.ts "200-anywhere" assertions)
+      /res\.status === 200/.test(desktopSidecar) &&
+      /token === null\) return false/.test(desktopSidecar) &&
+      /sidecar\.token !== null/.test(desktopSidecar),
   );
 
   // no committed secrets

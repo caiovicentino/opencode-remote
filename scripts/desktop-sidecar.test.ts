@@ -51,12 +51,19 @@ process.on("exit", () => {
 });
 
 // Health server on a free port, bound BEFORE importing the module so the
-// sidecar's single source of truth picks it up.
+// sidecar's single source of truth picks it up. The 401 shape mirrors the
+// daemon's send401 (status 401 + JSON body) — healthOnce challenges with an
+// unauthenticated request and only sends the bearer token to responders that
+// reproduce this signature.
 const TOKEN = "tok-test";
 const server = createServer((req, res) => {
   const ok = req.headers.authorization === `Bearer ${TOKEN}`;
   res.writeHead(ok ? 200 : 401, { "content-type": "application/json" });
-  res.end(ok ? JSON.stringify({ healthy: true }) : JSON.stringify({ error: "unauthorized" }));
+  res.end(
+    ok
+      ? JSON.stringify({ healthy: true })
+      : JSON.stringify({ error: "unauthorized — Authorization: Bearer <apiToken from daemon.json>" }),
+  );
 });
 await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
 const port = (server.address() as { port: number }).port;
@@ -92,6 +99,30 @@ check(
   (await waitForDaemonHealth({ timeoutMs: 3000 })) === true,
 );
 
+// --- round-3 hardening: a 200-anywhere squatter is never "healthy" -----------
+// Simulates the classic local squatter: answers 200 to everything, checks no
+// auth. It must never be counted as the daemon — with no token, and even with
+// the right token (the challenge requires the daemon's 401 signature first).
+const wideOpen = createServer((req, res) => {
+  res.writeHead(200, { "content-type": "application/json" });
+  res.end(JSON.stringify({ healthy: true }));
+});
+await new Promise<void>((r) => wideOpen.listen(0, "127.0.0.1", r));
+const wideOpenPort = (wideOpen.address() as { port: number }).port;
+check("healthOnce: 200-anywhere server with no token is NOT healthy", (await healthOnce(wideOpenPort, null)) === false);
+check(
+  "healthOnce: 200-anywhere server is NOT healthy even with the token (challenge fails, token withheld)",
+  (await healthOnce(wideOpenPort, TOKEN)) === false,
+);
+check(
+  "waitForDaemonHealth: 200-anywhere server never becomes healthy",
+  (await waitForDaemonHealth({ port: wideOpenPort, timeoutMs: 1500 })) === false,
+);
+await new Promise<void>((r) => {
+  wideOpen.closeAllConnections();
+  wideOpen.close(() => r());
+});
+
 // --- resolveEntry ------------------------------------------------------------
 const override = fixture("override.cjs", "process.exit(0);");
 process.env.OCR_DAEMON_ENTRY = override;
@@ -114,6 +145,25 @@ check(
   "startDaemonSidecar reuses a healthy daemon (no spawn)",
   (await startDaemonSidecar(tmp, undefined)) === true,
 );
+// Null-token state file: an alive responder cannot be proven to be ours, so
+// reuse must be blocked and the sidecar must spawn its own daemon instead.
+const tokenlessState = join(tmp, "tokenless-daemon.json");
+writeFileSync(tokenlessState, JSON.stringify({ room: "tokenless" }));
+process.env.OCR_DAEMON_STATE_FILE = tokenlessState;
+const nullTokenEntry = fixture("nulltoken.cjs", "setInterval(() => {}, 1000);");
+process.env.OCR_DAEMON_ENTRY = nullTokenEntry;
+check(
+  "startDaemonSidecar with null token does NOT reuse the responder",
+  (await startDaemonSidecar(tmp, undefined)) === true,
+);
+check("null-token reuse blocked: sidecar spawned its own daemon", await until(() => existsSync(nullTokenEntry + ".pid")));
+await stopDaemonSidecar();
+check(
+  "null-token spawned child is stopped",
+  await until(() => !pidAlive(Number(readFileSync(nullTokenEntry + ".pid", "utf8")))),
+);
+process.env.OCR_DAEMON_STATE_FILE = fakeState;
+delete process.env.OCR_DAEMON_ENTRY;
 await new Promise<void>((r) => {
   server.closeAllConnections();
   server.close(() => r());

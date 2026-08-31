@@ -1,6 +1,7 @@
 // Daemon sidecar: the desktop shell owns a local daemon process so the app
-// works without a terminal. If a daemon is already healthy on the metrics
-// port (launchd/CLI install), we reuse it and never spawn a second one.
+// works without a terminal. If a daemon already on the metrics port proves its
+// identity (authenticated 200 with the token from the 0600 state file), we
+// reuse it and never spawn a second one; an anonymous responder is never trusted.
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -14,6 +15,8 @@ export const DAEMON_METRICS_PORT =
   Number(process.env.OCR_DAEMON_METRICS_PORT) || Number(process.env.OCR_METRICS_PORT) || 8792;
 const HEALTH_TIMEOUT_MS = 30_000;
 const HEALTH_POLL_MS = 500;
+/** Per-request fetch timeout for the challenge + authenticated health probes. */
+const PROBE_TIMEOUT_MS = 1500;
 
 interface SidecarState {
   child: ChildProcess | null;
@@ -34,8 +37,11 @@ interface DaemonEntry {
 }
 
 function stateFile(): string {
-  // OCR_DAEMON_STATE_FILE exists for tests/multi-home setups; production
-  // always uses the 0600 file under ~/.opencode-remote.
+  // Test-only escape hatch (scripts/desktop-sidecar.test.ts points it at a
+  // throwaway file). The daemon itself IGNORES this variable and always reads
+  // the 0600 file under ~/.opencode-remote (apps/daemon/src/index.ts), so in
+  // production the two processes agree by construction — never set it outside
+  // tests, or the desktop would read a token the spawned daemon doesn't serve.
   return process.env.OCR_DAEMON_STATE_FILE ?? join(homedir(), ".opencode-remote", "daemon.json");
 }
 
@@ -50,15 +56,34 @@ function readApiToken(): string | null {
 }
 
 /**
- * A responder only counts as healthy when it answers 200 *with our bearer
- * token* — a bare 401 can come from any local process that squatted on the
- * port, so it is never accepted as proof of identity.
+ * Local-squatter token exposure (threat model, documented per round-3 review):
+ *
+ * Before the bearer token ever leaves this process, the responder must first
+ * reproduce the daemon's exact unauthenticated behavior on /api/health — a 401
+ * with a JSON body (see `send401` in apps/daemon). A generic "200 for
+ * anything" server squatting on the port therefore never receives the token.
+ *
+ * This is a filter, not a proof: a deliberately malicious local process could
+ * mimic the 401 signature and still harvest the token, and any process running
+ * as the same user could simply read the 0600 state file instead. The
+ * challenge closes the accidental-squatter hole only; that residual risk is
+ * accepted because the token grants access to an API that is loopback-bound
+ * anyway.
  */
 export async function healthOnce(port: number, token: string | null): Promise<boolean> {
+  // No token, no identity check: a bare 200 proves nothing about who answers.
+  // Callers keep polling until the 0600 state file yields one.
+  if (token === null) return false;
+  const url = `http://127.0.0.1:${port}/api/health`;
   try {
-    const res = await fetch(`http://127.0.0.1:${port}/api/health`, {
-      headers: token ? { authorization: `Bearer ${token}` } : {},
-      signal: AbortSignal.timeout(1500),
+    // Unauthenticated challenge — deliberately sent WITHOUT the token.
+    const probe = await fetch(url, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
+    if (probe.status !== 401 || !probe.headers.get("content-type")?.startsWith("application/json")) {
+      return false;
+    }
+    const res = await fetch(url, {
+      headers: { authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
     });
     return res.status === 200;
   } catch {
@@ -137,7 +162,10 @@ export async function startDaemonSidecar(
   // One token read shared by the reuse check and (via sidecar.token) the
   // post-spawn health wait — no TOCTOU on a token rotated between the two.
   sidecar.token = readApiToken();
-  if (await healthOnce(DAEMON_METRICS_PORT, sidecar.token)) {
+  // Reuse only on proven identity: with a null token we cannot authenticate
+  // the responder at all, so short-circuiting would "adopt" whatever process
+  // squats on the port and never spawn the real daemon.
+  if (sidecar.token !== null && (await healthOnce(DAEMON_METRICS_PORT, sidecar.token))) {
     console.log(`[desktop] daemon already running on :${DAEMON_METRICS_PORT} — reusing it`);
     return true;
   }
