@@ -6,6 +6,7 @@ import { useT } from "../lib/i18n";
 import { humanizeError } from "../lib/errors";
 import { getVoiceSettings } from "./SettingsView";
 import { renderBubbleText } from "./FileCard";
+import { sessionTitleOf } from "../lib/title";
 
 interface Props {
   sessionId: string;
@@ -162,6 +163,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
   const [qCustom, setQCustom] = useState<Record<string, Record<number, string>>>({});
   const [showActivity, setShowActivity] = useState(false);
   const [historyTools, setHistoryTools] = useState<Map<string, ToolActivity>>(new Map());
+  const [sessionTitle, setSessionTitle] = useState("");
   const t = useT();
 
   const [exporting, setExporting] = useState(false);
@@ -214,6 +216,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
   const recorder = useRef<WavRecorder | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const sessionIdRef = useRef(sessionId);
 
   useEffect(() => {
     void (async () => {
@@ -243,6 +246,22 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
       } catch {}
     })();
   }, []);
+
+  useEffect(() => {
+    let alive = true;
+    sessionIdRef.current = sessionId;
+    setSessionTitle("");
+    void (async () => {
+      try {
+        const res = await request("GET", `/session/${sessionId}`);
+        // a response from a previous session must not overwrite this header
+        if (alive && res.status === 200) setSessionTitle(sessionTitleOf(res.body));
+      } catch {}
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [sessionId]);
 
   useEffect(() => {
     rolesRef.current = {};
@@ -780,10 +799,14 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
             void (async () => {
               try {
                 const s = await request("GET", `/session/${sessionId}`);
-                const cur = (s.body as { title?: string }).title ?? "";
+                const cur = sessionTitleOf(s.body);
                 if (cur && cur !== "New session" && cur !== "Remote session") return;
                 const t = text.replace(/\s+/g, " ").trim().slice(0, 60);
-                if (t) await request("PATCH", `/session/${sessionId}`, { title: t });
+                if (t) {
+                  await request("PATCH", `/session/${sessionId}`, { title: t });
+                  // refresh the header, unless the user already switched sessions
+                  if (sessionIdRef.current === sessionId) setSessionTitle(t);
+                }
               } catch {}
             })();
           }
@@ -1083,7 +1106,19 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
                   : "var(--danger)",
           }}
         />
-        <h1 style={{ fontSize: "0.9rem", margin: 0, flex: 1 }}>session</h1>
+        <h1
+          title={sessionTitle}
+          style={{
+            fontSize: "0.9rem",
+            margin: 0,
+            flex: 1,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {sessionTitle || "session"}
+        </h1>
         <button
           onClick={() => void handoffToDesktop()}
           aria-label={t("handoffBtn")}
