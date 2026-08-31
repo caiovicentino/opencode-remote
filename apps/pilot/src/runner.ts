@@ -56,7 +56,7 @@ export function exec(
     const e = err as { stdout?: Buffer; stderr?: Buffer; status?: number };
     const output = `${e.stdout?.toString() ?? ""}${e.stderr?.toString() ?? ""}`;
     if (opts.allowFail) return { ok: false, output };
-    throw new Error(`exec failed: ${cmd}\n${output.slice(-4000)}`);
+    throw new Error(`exec failed (status ${e.status}): ${cmd}\n${output.slice(-4000)}`);
   }
 }
 

@@ -37,6 +37,27 @@ async function main() {
     // nightly redteam (03:xx) + weekly maintenance (Sunday) — best effort
     await maybeNightly(cfg, state);
 
+    // pending deploy: production is behind origin/main (e.g. after a rollback)
+    if (state.deploys < cfg.maxDeploysPerDay) {
+      const prodSha = exec("git rev-parse HEAD", { cwd: cfg.repo, allowFail: true }).output.trim();
+      const originSha = exec("git rev-parse origin/main", { cwd: cfg.repo, allowFail: true }).output.trim();
+      if (prodSha && originSha && prodSha !== originSha) {
+        log("info", "pending deploy: prod behind origin/main", { prod: prodSha.slice(0, 7), origin: originSha.slice(0, 7) });
+        state.deploys++;
+        saveState(state);
+        const dep = await deploy(cfg, originSha);
+        log("info", "deploy result", { ok: dep.ok, rolledBack: dep.rolledBack, detail: dep.detail.slice(0, 200) });
+        if (!dep.ok) {
+          state.failures++;
+          saveState(state);
+        }
+        if (cfg.digest) await digest(dep.ok ? "⬆️ Pilot: deploy" : "⚠️ Pilot rollback", dep.detail.slice(0, 120), "#/");
+        if (once) return;
+        await sleep(30_000);
+        continue;
+      }
+    }
+
     const tasks = loadBacklog(cfg.workspace);
     const task = tasks[0];
     if (!task) {

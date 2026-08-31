@@ -21,7 +21,7 @@ export async function deploy(cfg: PilotConfig, sha: string): Promise<DeployResul
     exec(`git fetch origin`, { cwd: cfg.repo });
     exec("git checkout -q main", { cwd: cfg.repo, allowFail: true });
     exec(`git reset -q --hard ${sha}`, { cwd: cfg.repo });
-    exec("npm ci --silent", { cwd: cfg.repo, timeoutMin: 15 });
+    npmInstall(cfg);
     exec("npm run build --silent", { cwd: cfg.repo, timeoutMin: 15 });
     kickstart(cfg, "com.ocr.relay");
     kickstart(cfg, "com.ocr.daemon");
@@ -52,6 +52,14 @@ export async function deploy(cfg: PilotConfig, sha: string): Promise<DeployResul
     } else fails = 0;
   }
   return { ok: true, rolledBack: false, detail: `deployed ${sha.slice(0, 7)} (prev ${prev.slice(0, 7)})` };
+}
+
+/** npm ci with visible errors and one retry (transient cache/lock races happen). */
+function npmInstall(cfg: PilotConfig) {
+  const r = exec("npm ci --no-audit --no-fund --loglevel=error", { cwd: cfg.repo, timeoutMin: 15, allowFail: true });
+  if (r.ok) return;
+  console.log(JSON.stringify({ ts: new Date().toISOString(), level: "warn", msg: "npm ci retry", data: r.output.slice(-300) }));
+  exec("npm ci --no-audit --no-fund --loglevel=error", { cwd: cfg.repo, timeoutMin: 15 });
 }
 
 async function rollback(cfg: PilotConfig, prevSha: string, why: string) {
