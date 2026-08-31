@@ -30,10 +30,9 @@ export function markDone(repoDir: string, id: string, note: string) {
   const line = re.exec(md)?.[1];
   if (!line) return;
   const done = md.replace(re, "").replace(/\n{3,}/g, "\n\n");
-  const doneHeader = "## Done";
   const updated = done.replace(
-    doneHeader,
-    `${doneHeader}\n- [x] (${id}) ${line.replace(/^- \[ \] \([^)]+\) /, "")} — ${note}`,
+    /^## Done$/m,
+    `## Done\n- [x] (${id}) ${line.replace(/^- \[ \] \([^)]+\) /, "")} — ${note}`,
   );
   writeFileSync(p, updated);
 }
