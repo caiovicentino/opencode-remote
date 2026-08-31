@@ -140,7 +140,16 @@ export async function waitForDaemonHealth(opts: HealthWaitOptions = {}): Promise
  * stage 3.1) through the same code path as paste-pairing.
  */
 export function getPairUrl(): string | null {
-  return sidecar.pairUrl;
+  if (sidecar.pairUrl) return sidecar.pairUrl;
+  // Reuse path: a daemon we didn't spawn has no stdout to scan — but it logs
+  // the pairing URI at boot. Recover it from the daemon log (same machine).
+  try {
+    const log = readFileSync(join(homedir(), ".opencode-remote", "logs", "daemon.log"), "utf8");
+    const m = log.match(PAIR_URL_RE);
+    return m ? m[0] : null;
+  } catch {
+    return null;
+  }
 }
 
 function nodeBinary(): string {

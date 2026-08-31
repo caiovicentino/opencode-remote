@@ -8,6 +8,7 @@ import {
   removePairing,
   loadPairings,
   parsePairingUri,
+  getOrCreateIdentity,
   type Pairing,
   type Status,
 } from "./lib/client";
@@ -28,6 +29,7 @@ type TabId = "sessions" | "files" | "settings";
 /** Electron bridge from apps/desktop/src/preload.ts (absent in the browser). */
 interface DesktopBridge {
   getPairUrl?: () => Promise<string | null>;
+  approveClient?: (pub: string) => Promise<boolean>;
 }
 
 function desktopBridge(): DesktopBridge | null {
@@ -233,10 +235,18 @@ export default function App() {
     if (!bridge?.getPairUrl) return;
     bridge
       .getPairUrl()
-      .then((uri) => {
+      .then(async (uri) => {
         if (!uri) return;
         const pairing = parsePairingUri(uri);
-        if (pairing) void connect(pairing, true);
+        if (!pairing) return;
+        // Host self-approval: register our (sticky) client identity pubkey in
+        // the daemon allowlist before the handshake — the desktop owns the
+        // state file, and the daemon re-reads it on every handshake.
+        if (bridge.approveClient) {
+          const identity = await getOrCreateIdentity();
+          await bridge.approveClient(identity.publicKey);
+        }
+        void connect(pairing, true);
       })
       .catch(() => {
         /* no URI or unparsable URI → PairingView fallback */

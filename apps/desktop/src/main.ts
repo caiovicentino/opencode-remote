@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain, Menu, nativeImage, Tray, shell } from "electron";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   DAEMON_METRICS_PORT,
@@ -40,6 +41,29 @@ async function onReady(): Promise<void> {
   // Boot pairing URI captured from the daemon sidecar's stdout (null when the
   // daemon was reused or hasn't printed it yet) — lets the renderer auto-pair.
   ipcMain.handle("app:pairUrl", () => getPairUrl());
+  // Host self-approval: the desktop shell runs on the same machine that owns
+  // daemon.json, so it may add its own client identity to the allowlist. The
+  // daemon re-reads the allowlist file on every handshake (fresh read), so
+  // this takes effect on the next connect without a daemon restart.
+  ipcMain.handle("app:approveClient", (_e, pub: string) => {
+    if (typeof pub !== "string" || pub.length < 40 || !/^[A-Za-z0-9+/=]+$/.test(pub)) {
+      return false;
+    }
+    try {
+      const file = join(homedir(), ".opencode-remote", "daemon.json");
+      const raw = JSON.parse(readFileSync(file, "utf8")) as {
+        clients?: { pub: string; label?: string; addedAt: string }[];
+      };
+      raw.clients ??= [];
+      if (raw.clients.some((c) => c.pub === pub)) return true;
+      raw.clients.push({ pub, label: "desktop-host", addedAt: new Date().toISOString() });
+      writeFileSync(file, JSON.stringify(raw, null, 2), { mode: 0o600 });
+      return true;
+    } catch (err) {
+      console.error("[desktop] approveClient failed:", err);
+      return false;
+    }
+  });
 
   // Sidecar: boot a local daemon (unless one is already healthy), wait for
   // /api/health before showing the UI. On timeout we still show the UI —
