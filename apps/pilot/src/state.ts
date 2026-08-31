@@ -48,11 +48,11 @@ export interface PilotState {
 export function loadState(): PilotState {
   try {
     const s = JSON.parse(readFileSync(STATE_FILE, "utf8")) as PilotState;
-    const today = new Date().toISOString().slice(0, 10);
+    const today = nowLocalISO().slice(0, 10);
     if (s.date === today) return s;
     return { date: today, tasks: 0, deploys: 0, failures: 0 };
   } catch {
-    return { date: new Date().toISOString().slice(0, 10), tasks: 0, deploys: 0, failures: 0 };
+    return { date: nowLocalISO().slice(0, 10), tasks: 0, deploys: 0, failures: 0 };
   }
 }
 
@@ -81,7 +81,7 @@ export function startWatchdog(maxSilenceMin = 30) {
       const last = Number(readFileSync(HEARTBEAT, "utf8"));
       const silentMin = (Date.now() - last) / 60_000;
       if (silentMin > maxSilenceMin) {
-        console.log(JSON.stringify({ ts: new Date().toISOString(), level: "warn", msg: "watchdog: heartbeat stale, exiting for KeepAlive restart", data: { silentMin } }));
+        console.log(JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "watchdog: heartbeat stale, exiting for KeepAlive restart", data: { silentMin } }));
         process.exit(1);
       }
     } catch {}

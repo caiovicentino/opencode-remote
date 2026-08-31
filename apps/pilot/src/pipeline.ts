@@ -2,7 +2,9 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { exec, runAgent } from "./runner";
+import { nowLocalISO } from "./log";
 import { markDone, type Task } from "./backlog";
+import { nowLocalISO } from "./log";
 import { emit } from "./events";
 import { touchHeartbeat, type PilotConfig, type PilotState } from "./state";
 
@@ -98,20 +100,20 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
     if (line) {
       emit("agent", { task: t.id, detail: line.trim() });
       console.log(
-        JSON.stringify({ ts: new Date().toISOString(), level: "info", msg: "agent", data: line.trim().slice(0, 160) }),
+        JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "agent", data: line.trim().slice(0, 160) }),
       );
     }
   };
   for (let round = 1; round <= cfg.maxReviewRounds && !merged; round++) {
     emit("phase", { task: t.id, phase: "builder", detail: `round ${round}` });
-    console.log(JSON.stringify({ ts: new Date().toISOString(), level: "info", msg: "builder round", data: { task: t.id, round } }));
+    console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "builder round", data: { task: t.id, round } }));
     const build = await runAgent(builderPrompt(t, round, findings), {
       cwd: ws,
       timeoutMin: cfg.taskTimeoutMin,
       label: `builder-${t.id}-r${round}`,
       onStdout: stream,
     });
-    console.log(JSON.stringify({ ts: new Date().toISOString(), level: "info", msg: "builder done", data: { task: t.id, round } }));
+    console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "builder done", data: { task: t.id, round } }));
     writeFileSync(join(homedir(), ".opencode-remote/pilot", "last-builder-output.log"), build.output);
     emit("phase", { task: t.id, phase: "builder-done", ok: build.output.includes("PILOT:TASK-DONE") });
     if (!build.output.includes("PILOT:TASK-DONE")) {
@@ -122,7 +124,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
 
     // two adversarial reviewers in parallel, isolated contexts
     emit("phase", { task: t.id, phase: "reviewers" });
-    console.log(JSON.stringify({ ts: new Date().toISOString(), level: "info", msg: "reviewers start", data: { task: t.id, round } }));
+    console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "reviewers start", data: { task: t.id, round } }));
     const [sec, qual] = await Promise.all([
       runAgent(reviewerPrompt("SECURITY", "crypto, auth, injection, secrets, permission surface", t, diff), {
         cwd: ws,
@@ -139,7 +141,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
     ]);
     console.log(
       JSON.stringify({
-        ts: new Date().toISOString(),
+        ts: nowLocalISO(),
         level: "info",
         msg: "reviewers done",
         data: { task: t.id, round, secOk: /VERDICT:\s*APPROVE/i.test(sec.output), qualOk: /VERDICT:\s*APPROVE/i.test(qual.output) },
@@ -191,7 +193,7 @@ async function gatekeeper(cfg: PilotConfig, ws: string, t: Task, state: PilotSta
   for (const [name, cmd] of steps) {
     const r = exec(cmd, { cwd: ws, timeoutMin: 20, allowFail: true });
     if (!r.ok) {
-      console.log(JSON.stringify({ ts: new Date().toISOString(), level: "warn", msg: "gatekeeper fail", data: { task: t.id, step: name, tail: r.output.slice(-300) } }));
+      console.log(JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "gatekeeper fail", data: { task: t.id, step: name, tail: r.output.slice(-300) } }));
       state.failures++;
       return false;
     }
@@ -218,7 +220,7 @@ async function gatekeeper(cfg: PilotConfig, ws: string, t: Task, state: PilotSta
   // bring workspace main up to date with the merge, then mark the task done
   exec("git checkout -q main", { cwd: ws, allowFail: true });
   exec("git pull -q origin main", { cwd: ws, allowFail: true });
-  markDone(ws, t.id, `merged by pilot ${new Date().toISOString().slice(0, 10)}`);
+  markDone(ws, t.id, `merged by pilot ${nowLocalISO().slice(0, 10)}`);
   exec(`git add BACKLOG.md && git commit -qm "pilot(${t.id}): mark done" && git push -q origin main`, {
     cwd: ws,
     allowFail: true,

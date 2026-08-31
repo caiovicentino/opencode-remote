@@ -1452,7 +1452,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     try {
       const html = readFileSync(new URL("../../../apps/pilot/dashboard/index.html", import.meta.url), "utf8")
         .replace("__APITOKEN__", apiToken());
-      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
       res.end(html);
     } catch {
       res.writeHead(500, { "content-type": "text/plain" });

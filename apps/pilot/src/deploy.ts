@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { exec } from "./runner";
 import { emit } from "./events";
+import { nowLocalISO } from "./log";
 import { touchHeartbeat, type PilotConfig } from "./state";
 
 export interface DeployResult {
@@ -29,7 +30,7 @@ export async function deploy(cfg: PilotConfig, sha: string): Promise<DeployResul
     if (newLock !== prevLock) {
       npmInstall(cfg);
     } else {
-      console.log(JSON.stringify({ ts: new Date().toISOString(), level: "info", msg: "lock unchanged — skipping npm ci" }));
+      console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "lock unchanged — skipping npm ci" }));
     }
     exec("npm run build --silent", { cwd: cfg.repo, timeoutMin: 15 });
     kickstart(cfg, "com.ocr.relay");
@@ -61,7 +62,7 @@ export async function deploy(cfg: PilotConfig, sha: string): Promise<DeployResul
     await sleep(soakEverySec * 1000);
     touchHeartbeat();
     const healthyNow = await isHealthy(cfg);
-    console.log(JSON.stringify({ ts: new Date().toISOString(), level: "info", msg: "soak", data: { check: i + 1, of: checks, healthy: healthyNow } }));
+    console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "soak", data: { check: i + 1, of: checks, healthy: healthyNow } }));
     emit("deploy", { phase: `soak ${i + 1}/${checks}`, ok: healthyNow });
     if (!healthyNow) {
       fails++;
@@ -80,7 +81,7 @@ export async function deploy(cfg: PilotConfig, sha: string): Promise<DeployResul
 function npmInstall(cfg: PilotConfig) {
   const r = exec("npm ci --no-audit --no-fund --loglevel=error", { cwd: cfg.repo, timeoutMin: 15, allowFail: true });
   if (r.ok) return;
-  console.log(JSON.stringify({ ts: new Date().toISOString(), level: "warn", msg: "npm ci retry", data: r.output.slice(-300) }));
+  console.log(JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "npm ci retry", data: r.output.slice(-300) }));
   exec("npm ci --no-audit --no-fund --loglevel=error", { cwd: cfg.repo, timeoutMin: 15 });
 }
 
@@ -91,7 +92,7 @@ async function rollback(cfg: PilotConfig, prevSha: string, why: string) {
   exec("npm run build --silent", { cwd: cfg.repo, timeoutMin: 15, allowFail: true });
   kickstart(cfg, "com.ocr.relay");
   kickstart(cfg, "com.ocr.daemon");
-  console.log(JSON.stringify({ ts: new Date().toISOString(), level: "warn", msg: "rollback", data: { prevSha, why } }));
+  console.log(JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "rollback", data: { prevSha, why } }));
   await sleep(15_000);
 }
 

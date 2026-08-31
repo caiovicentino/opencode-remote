@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { emit } from "./events";
 import { exec, runAgent } from "./runner";
+import { nowLocalISO } from "./log";
 import { runPipeline } from "./pipeline";
 import { deploy } from "./deploy";
 import { digest } from "./push";
@@ -10,7 +11,7 @@ import { addTask, loadBacklog, nextId } from "./backlog";
 import { frozen, loadConfig, loadState, saveState, startWatchdog, touchHeartbeat, type PilotConfig } from "./state";
 
 const log = (level: string, msg: string, data?: unknown) =>
-  console.log(JSON.stringify({ ts: new Date().toISOString(), level, msg, data }));
+  console.log(JSON.stringify({ ts: nowLocalISO(), level, msg, data }));
 
 async function main() {
   const cfg = loadConfig();
@@ -118,7 +119,7 @@ async function main() {
 
 /** One-shot validation mode used by the eval battery. */
 async function maybeNightly(cfg: PilotConfig, state: ReturnType<typeof loadState>) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = nowLocalISO().slice(0, 10);
   const hour = new Date().getHours();
   if (state.redteamLast === today || hour !== 3) return;
   state.redteamLast = today;
