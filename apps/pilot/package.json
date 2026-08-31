@@ -1,0 +1,11 @@
+{
+  "name": "@ocr/pilot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "start": "tsx src/index.ts",
+    "once": "tsx src/index.ts --once"
+  }
+}

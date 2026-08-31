@@ -1,0 +1,65 @@
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
+
+export interface PilotConfig {
+  repo: string; // production checkout (runs the services)
+  workspace: string; // pilot clone where agents work
+  maxTasksPerDay: number;
+  maxDeploysPerDay: number;
+  maxReviewRounds: number;
+  taskTimeoutMin: number;
+  reviewTimeoutMin: number;
+  monitorMin: number;
+  digest: boolean;
+}
+
+export const DEFAULTS: PilotConfig = {
+  repo: process.env.OCR_PILOT_REPO ?? "/Volumes/SSD Major/Major/opencode-remote",
+  workspace: join(homedir(), ".opencode-remote/pilot/repo"),
+  maxTasksPerDay: 6,
+  maxDeploysPerDay: 6,
+  maxReviewRounds: 3,
+  taskTimeoutMin: 45,
+  reviewTimeoutMin: 20,
+  monitorMin: 10,
+  digest: true,
+};
+
+export function loadConfig(): PilotConfig {
+  const p = join(homedir(), ".opencode-remote", "pilot.json");
+  try {
+    if (existsSync(p)) return { ...DEFAULTS, ...JSON.parse(readFileSync(p, "utf8")) };
+  } catch {}
+  return DEFAULTS;
+}
+
+// ── runtime state (counters) ──────────────────────────────────────────────────
+const STATE_FILE = join(homedir(), ".opencode-remote", "pilot", "state.json");
+
+export interface PilotState {
+  date: string; // YYYY-MM-DD
+  tasks: number;
+  deploys: number;
+  failures: number;
+  redteamLast?: string;
+}
+
+export function loadState(): PilotState {
+  try {
+    const s = JSON.parse(readFileSync(STATE_FILE, "utf8")) as PilotState;
+    const today = new Date().toISOString().slice(0, 10);
+    if (s.date === today) return s;
+    return { date: today, tasks: 0, deploys: 0, failures: 0 };
+  } catch {
+    return { date: new Date().toISOString().slice(0, 10), tasks: 0, deploys: 0, failures: 0 };
+  }
+}
+
+export function saveState(s: PilotState) {
+  writeFileSync(STATE_FILE, JSON.stringify(s, null, 2));
+}
+
+export function frozen(): boolean {
+  return existsSync(join(homedir(), ".opencode-remote", "pilot.lock"));
+}

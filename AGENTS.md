@@ -2,6 +2,15 @@
 
 Remote control for this opencode instance: mobile PWA -> relay -> daemon -> local opencode.
 
+## Pilot (autonomous development loop)
+
+This repo evolves autonomously via the Pilot service (`apps/pilot`, docs in `docs/PILOT.md`):
+agents implement tasks from `BACKLOG.md`, adversarial reviewers check them, a deterministic
+gatekeeper runs the eval battery + `scripts/invariants.ts` (see `docs/CONSTITUTION.md`), and
+deploys are staged with automatic rollback. If you are asked to change anything that the
+constitution protects (crypto, allowlist, replay protection, deploy/), flag it explicitly in
+the commit message. Never commit secrets. Always document user-visible changes.
+
 ## Memória do projeto (LER PRIMEIRO)
 
 Histórico completo de trabalho, regras do usuário, avaliação de maturidade e backlog:

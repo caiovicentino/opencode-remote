@@ -1479,6 +1479,21 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       return true;
     }
     if (seg[1] !== "session") {
+      // POST /api/push — authenticated digest push (used by the pilot loop)
+      if (seg[1] === "push" && req.method === "POST") {
+        const body = JSON.parse((await readBody(req)) || "{}") as {
+          title?: string;
+          body?: string;
+          url?: string;
+        };
+        if (!body.title || !body.body) {
+          send(400, { error: "title and body required" });
+          return true;
+        }
+        await pushToSubscribers(body.title, body.body, { url: body.url ?? "#/" });
+        send(200, { ok: true, delivered: loadSubscriptions().length });
+        return true;
+      }
       send(404, { error: "unknown route" });
       return true;
     }
