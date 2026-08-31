@@ -16,6 +16,7 @@ export async function digest(title: string, body: string, url = "#/"): Promise<b
         authorization: `Bearer ${state.apiToken}`,
       },
       body: JSON.stringify({ title, body, url }),
+      signal: AbortSignal.timeout(10_000),
     });
     return res.ok;
   } catch {
