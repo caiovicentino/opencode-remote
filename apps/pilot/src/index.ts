@@ -217,6 +217,7 @@ Your LAST line must be exactly: STRATEGIST:DONE`,
       allowFail: true,
     });
     log("info", "strategist refilled queue");
+    emit("phase", { task: "strategist", phase: "refill", ok: true, detail: "queue refill pushed" });
   } else {
     log("warn", "strategist did not finish", { tail: r.output.slice(-200) });
   }

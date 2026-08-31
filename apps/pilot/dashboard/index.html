@@ -170,13 +170,16 @@ addEventListener("resize", resize);
 
 // ─── pipeline layout (2D) ─────────────────────────────────────────────────────
 const NODES = [
-  { id:"backlog",    label:"BACKLOG",    fx:0.09, fy:0.50, color:"#8fa3b8" },
+  { id:"researcher", label:"RESEARCHER", fx:0.05, fy:0.16, color:"#c084fc", small:true },
+  { id:"strategist", label:"STRATEGIST", fx:0.05, fy:0.84, color:"#f472b6", small:true },
+  { id:"backlog",    label:"BACKLOG",    fx:0.14, fy:0.50, color:"#8fa3b8" },
   { id:"builder",    label:"BUILDER",    fx:0.24, fy:0.50, color:"#22d3ee" },
   { id:"security",   label:"SEC REVIEW", fx:0.40, fy:0.34, color:"#818cf8" },
   { id:"quality",    label:"QUALITY",    fx:0.40, fy:0.66, color:"#38bdf8" },
   { id:"gatekeeper", label:"GATEKEEPER", fx:0.56, fy:0.50, color:"#fbbf24" },
   { id:"deploy",     label:"DEPLOY",     fx:0.72, fy:0.50, color:"#4ade80" },
   { id:"core",       label:"MAC · PROD", fx:0.88, fy:0.50, color:"#e8edf2", big:true },
+  { id:"supervisor", label:"SUPERVISOR", fx:0.88, fy:0.84, color:"#22d3ee", small:true },
 ];
 const nodeMap = {};
 function layout() {
@@ -185,7 +188,7 @@ function layout() {
   const usable = Math.max(W - padR, 400);
   for (const n of NODES) {
     n.x = n.fx * usable + 30;
-    n.y = n.fy * H; n.r = n.big ? 34 : 26;
+    n.y = n.fy * H; n.r = n.big ? 34 : n.small ? 20 : 26;
     nodeMap[n.id] = n;
   }
 }
@@ -246,7 +249,7 @@ function draw(time) {
 
   // connection rails
   ctx.lineWidth = 1;
-  for (const [a, b] of [["backlog","builder"],["builder","security"],["builder","quality"],["security","gatekeeper"],["quality","gatekeeper"],["gatekeeper","deploy"],["deploy","core"]]) {
+  for (const [a, b] of [["researcher","backlog"],["strategist","backlog"],["backlog","builder"],["builder","security"],["builder","quality"],["security","gatekeeper"],["quality","gatekeeper"],["gatekeeper","deploy"],["deploy","core"],["core","supervisor"]]) {
     const f = nodeMap[a], t = nodeMap[b];
     ctx.strokeStyle = "rgba(34,211,238,.10)";
     ctx.beginPath(); ctx.moveTo(f.x, f.y); ctx.lineTo(t.x, t.y); ctx.stroke();
@@ -288,7 +291,7 @@ function draw(time) {
     ctx.fillStyle = bodyG; ctx.fill();
     ctx.lineWidth = 2.2; ctx.strokeStyle = hexA(glowColor, working ? 1 : .55); ctx.stroke();
     // icon glyph
-    const glyphs = { backlog:"☰", builder:"B", security:"S", quality:"Q", gatekeeper:"⛑", deploy:"➤", core:"⊙" };
+    const glyphs = { researcher:"🌐", strategist:"🧭", backlog:"☰", builder:"B", security:"S", quality:"Q", gatekeeper:"⛑", deploy:"➤", core:"⊙", supervisor:"👁" };
     ctx.font = `700 ${r*0.9}px -apple-system,system-ui,sans-serif`;
     ctx.fillStyle = hexA(glowColor, .9);
     ctx.fillText(glyphs[n.id] || "●", n.x, n.y + 1);
@@ -387,6 +390,12 @@ function render(events) {
     ticker.appendChild(div);
   }
   while (ticker.children.length > 6) ticker.removeChild(ticker.firstChild);
+
+  // cognitive-loop nodes: researcher fires daily, strategist on refills
+  const researchEv = [...events].reverse().find(e => e.task === "research");
+  if (researchEv) setState("researcher", researchEv.ok === false ? "fail" : "ok");
+  const refillEv = [...events].reverse().find(e => e.phase === "refill" || (e.detail || "").includes("refill"));
+  if (refillEv) setState("strategist", "working");
 
   // last phase per task
   const last = {};
@@ -637,8 +646,8 @@ document.getElementById("mission-input").addEventListener("keydown", (e) => {
 });
 
 resize();
-const nodeRole = { backlog:"pipeline", builder:"agent", security:"reviewer", quality:"reviewer",
-                   gatekeeper:"gatekeeper", deploy:"deploy", core:"deploy" };
+const nodeRole = { researcher:"research", strategist:"strategist", backlog:"pipeline", builder:"agent",
+                   security:"reviewer", quality:"reviewer", gatekeeper:"gatekeeper", deploy:"deploy", core:"deploy" };
 function hitNode(e) {
   for (const n of NODES) {
     if (Math.hypot(e.clientX - n.x, e.clientY - n.y) <= n.r + 12) return n.id;
