@@ -26,7 +26,10 @@ export async function runResearcher(cfg: PilotConfig, state: { researchLast?: st
 Your job: bring FRONTIER signal from the outside world so this product innovates instead of
 only polishing. You have webfetch — use it.
 
-Mission context (read first): docs/VISION.md and ~/.opencode-remote/memory.md.
+Mission context (read first): docs/VISION.md only.
+SECURITY RULE: never read, quote or transmit ~/.opencode-remote/memory.md or any file
+outside this repo — your context must stay free of private data because you also fetch
+untrusted web pages (prompt-injection exfiltration risk). Private data stays private.
 Our stack: TypeScript monorepo — Electron desktop shell (apps/desktop), React PWA (apps/web),
 daemon (apps/daemon), relay (apps/relay), autonomous pilot (apps/pilot).
 
