@@ -69,6 +69,20 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
   exec(`git branch -qD pilot/${t.id} 2>/dev/null || true`, { cwd: ws, allowFail: true });
   exec(`git checkout -q -b pilot/${t.id}`, { cwd: ws });
 
+  // sandbox permissions: agents in the clone get full tool access (the real
+  // security boundary is the gatekeeper + invariants + staged deploy, not this)
+  writeFileSync(
+    join(ws, "opencode.json"),
+    JSON.stringify(
+      {
+        $schema: "https://opencode.ai/config.json",
+        permission: { edit: "allow", bash: "allow", external_directory: "allow", webfetch: "allow" },
+      },
+      null,
+      2,
+    ),
+  );
+
   // ── build ⇄ review loop ─────────────────────────────────────────────────
   let findings = "";
   let merged = false;
