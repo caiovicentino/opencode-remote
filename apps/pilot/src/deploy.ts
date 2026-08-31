@@ -37,6 +37,13 @@ export async function deploy(cfg: PilotConfig, sha: string): Promise<DeployResul
     return { ok: false, rolledBack: true, detail: "health check failed" };
   }
 
+  // live invariants against production (replay, tunnel, state perms)
+  const inv = exec("npx tsx scripts/invariants.ts --live", { cwd: cfg.repo, timeoutMin: 5, allowFail: true });
+  if (!inv.ok) {
+    await rollback(cfg, prev, `live invariants failed: ${inv.output.slice(-200)}`);
+    return { ok: false, rolledBack: true, detail: "live invariants failed" };
+  }
+
   // soak: keep watching for the monitor window; 3 consecutive failures = rollback
   const soakEverySec = 60;
   const checks = Math.floor((cfg.monitorMin * 60) / soakEverySec);

@@ -6,7 +6,7 @@ import { runPipeline } from "./pipeline";
 import { deploy } from "./deploy";
 import { digest } from "./push";
 import { addTask, loadBacklog, nextId } from "./backlog";
-import { frozen, loadConfig, loadState, saveState, type PilotConfig } from "./state";
+import { frozen, loadConfig, loadState, saveState, startWatchdog, touchHeartbeat, type PilotConfig } from "./state";
 
 const log = (level: string, msg: string, data?: unknown) =>
   console.log(JSON.stringify({ ts: new Date().toISOString(), level, msg, data }));
@@ -14,11 +14,13 @@ const log = (level: string, msg: string, data?: unknown) =>
 async function main() {
   const cfg = loadConfig();
   ensureWorkspace(cfg);
+  startWatchdog();
 
   const once = process.argv.includes("--once");
   log("info", "pilot started", { once, repo: cfg.repo, workspace: cfg.workspace });
 
   for (;;) {
+    touchHeartbeat();
     if (frozen()) {
       log("info", "frozen — pilot.lock present, sleeping 10 min");
       await sleep(10 * 60_000);

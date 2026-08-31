@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { exec, runAgent } from "./runner";
 import { markDone, type Task } from "./backlog";
-import type { PilotConfig, PilotState } from "./state";
+import { touchHeartbeat, type PilotConfig, type PilotState } from "./state";
 
 export const CONSTITUTION = `CONSTITUTION (never violate):
 1. E2E crypto stays E2E: the relay must remain a blind router; never log plaintext frames.
@@ -88,6 +88,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
   let merged = false;
   let lastStream = 0;
   const stream = (chunk: string) => {
+    touchHeartbeat();
     const now = Date.now();
     if (now - lastStream < 10_000) return;
     lastStream = now;
@@ -170,6 +171,7 @@ async function gatekeeper(cfg: PilotConfig, ws: string, t: Task, state: PilotSta
   const steps: Array<[string, string]> = [
     ["typecheck", "npm run typecheck --silent"],
     ["build", "npm run build --silent"],
+    ["lock-sync", "npm ci --dry-run --no-audit --no-fund --loglevel=error"],
     ["reconnect", "npx tsx scripts/reconnect.test.ts"],
     ["integration", "npx tsx scripts/integration.ts"],
     ["invariants", "npx tsx scripts/invariants.ts"],
