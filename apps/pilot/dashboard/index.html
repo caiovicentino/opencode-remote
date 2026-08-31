@@ -180,8 +180,12 @@ const NODES = [
 ];
 const nodeMap = {};
 function layout() {
+  // reserve room for the stats panel on the right so nodes never slide under it
+  const padR = W > 900 ? 300 : 20;
+  const usable = Math.max(W - padR, 400);
   for (const n of NODES) {
-    n.x = n.fx * W; n.y = n.fy * H; n.r = n.big ? 34 : 26;
+    n.x = n.fx * usable + 30;
+    n.y = n.fy * H; n.r = n.big ? 34 : 26;
     nodeMap[n.id] = n;
   }
 }
