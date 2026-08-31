@@ -47,6 +47,21 @@ aborto quando o filho morre, e o caso "servidor 200-para-tudo na porta não é
 saudável" — sem token e mesmo com token, o challenge do healthOnce reprova). Empacotamento (DMG/notarização,
 `npm run dist`) fica fora do gate — é etapa de distribuição.
 
+Quando o diff da task toca `apps/desktop/` **ou `apps/web/`** (a UI que o smoke
+valida), o gate também roda o **render smoke** (`npm run test:desktop-render`):
+além do boot do processo, o driver (`scripts/desktop-render-driver.cjs`) sobe o
+Electron de verdade com as mesmas `webPreferences` sandboxed, carrega o build da UI
+(`apps/web/dist/index.html`) via `file://`, espera `did-finish-load`, captura erros
+de console do renderer (`webContents.on("console-message")`) e confere que o `#root`
+ganhou conteúdo — **janela branca reprova** (ex.: asset 404 em `file://`). A captura
+de console é verificada com um **canário**: o driver injeta um `console.error`
+conhecido logo após o load e exige que o listener o tenha visto — um bump do Electron
+que mude a assinatura do evento reprova alto em vez de passar vazio. Falha de
+ServiceWorker em `file://` é ruído conhecido (registrada por `apps/web/src/main.tsx`;
+será removida em P3-005) e não reprova. O trigger é **fail-closed**: se `git diff`
+falhar, o smoke roda de qualquer jeito. O teste roda sem tocar no daemon de
+produção: `userData` do Electron é temporário e nenhum sidecar é spawnado.
+
 ## Deploy staged + rollback
 
 1. `git reset --hard <sha>` no repo de produção + `npm ci` + `npm run build`
