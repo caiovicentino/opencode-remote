@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { exec, runAgent } from "./runner";
@@ -21,6 +21,7 @@ Work inside this repository (your cwd is a dedicated clone; production runs else
 TASK (${t.id}) [${t.priority}]: ${t.title}
 spec: ${t.spec || "(no extra spec — use judgement, keep the change small and shippable)"}
 ${findings ? `\nREVIEWER FINDINGS TO ADDRESS:\n${findings}\n` : ""}
+
 Rules:
 - ${CONSTITUTION}
 - Create/keep working on branch pilot/${t.id}. Commit your work with a conventional message "pilot(${t.id}): ...".
@@ -28,6 +29,7 @@ Rules:
 - Document user-visible changes in the relevant docs (README.md / AGENTS.md / docs/).
 - Do NOT push, do NOT touch production services, do NOT modify BACKLOG.md.
 - Keep the diff focused: one task, no drive-by refactors.
+${round > 1 ? `- Rounds 1..${round - 1} already committed work on this branch. Inspect it first with \`git diff main...pilot/${t.id}\` and fix the findings INCREMENTALLY — do not restart from scratch or re-read files you already understand.` : ""}
 
 When finished, your LAST line of output must be exactly: PILOT:TASK-DONE`;
 }
@@ -99,6 +101,13 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
 
   // ── build ⇄ review loop ─────────────────────────────────────────────────
   let findings = "";
+  // carry over the last gatekeeper failure for this task, so the builder can
+  // fix the exact failing step instead of rediscovering it
+  const failFile = join(homedir(), ".opencode-remote/pilot/last-gate-fail.json");
+  try {
+    const prev = JSON.parse(readFileSync(failFile, "utf8")) as { task?: string; tail?: string };
+    if (prev.task === t.id && prev.tail) findings += `[previous gatekeeper failure]\n${prev.tail}\n`;
+  } catch {}
   let merged = false;
   let lastStream = 0;
   const stream = (chunk: string) => {
@@ -171,6 +180,15 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
             ? `task ${t.id} already merged on main — marked done (empty-diff self-heal)`
             : `task ${t.id} already merged but BACKLOG update failed`,
       };
+    }
+
+    // preflight: a broken build must never reach the reviewers (they cost LLM
+    // tokens and would only re-report the same typecheck errors)
+    const pre = exec("npm run typecheck --silent", { cwd: ws, timeoutMin: 10, allowFail: true });
+    if (!pre.ok) {
+      findings = `${findings}\n[typecheck still failing — fix these first]\n${pre.output.slice(-1500)}`;
+      emit("phase", { task: t.id, phase: "builder", detail: "preflight typecheck failed → next round", ok: false });
+      continue;
     }
 
     // two adversarial reviewers in parallel, isolated contexts
@@ -262,6 +280,12 @@ async function gatekeeper(cfg: PilotConfig, ws: string, t: Task, state: PilotSta
     const r = exec(cmd, { cwd: ws, timeoutMin: 20, allowFail: true });
     if (!r.ok) {
       console.log(JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "gatekeeper fail", data: { task: t.id, step: name, tail: r.output.slice(-300) } }));
+      try {
+        writeFileSync(
+          join(homedir(), ".opencode-remote/pilot/last-gate-fail.json"),
+          JSON.stringify({ task: t.id, step: name, tail: r.output.slice(-1200), at: nowLocalISO() }, null, 2),
+        );
+      } catch {}
       state.failures++;
       return false;
     }

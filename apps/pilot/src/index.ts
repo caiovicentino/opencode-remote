@@ -11,6 +11,7 @@ import { digest } from "./push";
 import { addTask, loadBacklog, nextId } from "./backlog";
 import { frozen, loadConfig, loadState, saveState, startWatchdog, touchHeartbeat, type PilotConfig } from "./state";
 
+let deployBusy = false;
 const log = (level: string, msg: string, data?: unknown) =>
   console.log(JSON.stringify({ ts: nowLocalISO(), level, msg, data }));
 
@@ -86,21 +87,35 @@ async function main() {
       emit("result", { task: task.id, ok: result.ok, detail: result.detail.slice(0, 200) });
       void notifySupervisor(task.id, result.ok, result.detail.slice(0, 300)).catch(() => {});
       if (result.ok && result.sha) {
-        if (state.deploys >= cfg.maxDeploysPerDay) {
+        if (deployBusy) {
+          log("info", "deploy in flight — merge queued on main, next deploy will pick it up", { task: task.id });
+        } else if (state.deploys >= cfg.maxDeploysPerDay) {
           log("info", "deploy budget reached — merge left on main for manual deploy", { deploys: state.deploys });
         } else {
           state.deploys++;
           saveState(state);
-          const dep = await deploy(cfg, result.sha);
-          log("info", "deploy result", { task: task.id, ...dep });
-          if (!dep.ok) state.failures++;
-          if (cfg.digest) {
-            await digest(
-              dep.ok ? `🛠 Pilot: ${task.title}` : `⚠️ Pilot rollback: ${task.title}`,
-              dep.ok ? dep.detail : dep.detail,
-              dep.ok ? "#/" : "#/",
-            );
-          }
+          // fire-and-forget: the deploy (npm ci/build/soak) runs in the prod
+          // repo while the builder works in the workspace clone — independent
+          // file systems, so the next task starts immediately
+          deployBusy = true;
+          const sha = result.sha;
+          void deploy(cfg, sha)
+            .then((dep) => {
+              log("info", "deploy result", { task: task.id, ...dep });
+              if (!dep.ok) state.failures++;
+              if (cfg.digest) {
+                return digest(
+                  dep.ok ? `🛠 Pilot: ${task.title}` : `⚠️ Pilot rollback: ${task.title}`,
+                  dep.detail,
+                  "#/",
+                );
+              }
+            })
+            .catch(() => {})
+            .finally(() => {
+              deployBusy = false;
+              saveState(state);
+            });
         }
       } else if (!result.ok) {
         if (cfg.digest) await digest(`🧪 Pilot falhou: ${task.id}`, result.detail.slice(0, 120), "#/");

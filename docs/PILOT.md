@@ -109,3 +109,17 @@ Formato das tasks (seção `## Ready`):
 ```
 
 O pilot pega a primeira task `Ready`, em ordem. Red team insere `(RT-###)` P0 no topo.
+
+
+## Round efficiency + async deploy (31/08, v1.1)
+
+- **Preflight typecheck**: after each builder round, a fast `tsc --noEmit` runs
+  before the reviewers — broken code bounces straight back to the builder with
+  the error tail instead of burning reviewer tokens.
+- **Gate-fail carryover**: the gatekeeper writes `last-gate-fail.json`; the
+  retry pipeline seeds the builder prompt with the exact failing step + output.
+- **Incremental rounds**: builder prompt for round ≥ 2 instructs inspecting the
+  existing branch diff and fixing findings incrementally.
+- **Async deploy**: deploys run fire-and-forget (prod repo vs workspace clone
+  are independent); the next task starts immediately. `deployBusy` prevents
+  concurrent deploys; pending-deploy self-heal covers a crashed deploy.
