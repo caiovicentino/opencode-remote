@@ -7,6 +7,7 @@ import { parsePairingUri } from "../apps/web/src/lib/client";
 import { mimeFor } from "../apps/web/src/lib/files";
 import { timeAgo, sessionUpdatedTs } from "../apps/web/src/lib/time";
 import { sessionTitleOf } from "../apps/web/src/lib/title";
+import { permissionPreview } from "../apps/web/src/lib/permission";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -80,6 +81,16 @@ check("sessionTitleOf trimmed title", sessionTitleOf({ title: "  fix login bug  
 check("sessionTitleOf empty title", sessionTitleOf({ title: "" }) === "" && sessionTitleOf({ title: "   " }) === "");
 check("sessionTitleOf missing body", sessionTitleOf(null) === "" && sessionTitleOf(undefined) === "");
 check("sessionTitleOf non-string title", sessionTitleOf({ title: 42 }) === "" && sessionTitleOf({}) === "");
+
+// --- approval card preview (P2-004) ------------------------------------------
+check("preview from metadata.command", permissionPreview({ metadata: { command: "git status\nnpm test\nls\nrm -rf /" } }) === "git status\nnpm test\nls");
+check("preview from metadata.diff", permissionPreview({ metadata: { diff: "--- a\n+++ b\n@@ -1\nmore" } }) === "--- a\n+++ b\n@@ -1");
+check("preview from pattern string", permissionPreview({ pattern: "src/*.ts" }) === "src/*.ts");
+check("preview from patterns array", permissionPreview({ patterns: ["a.ts", "b.ts", "c.ts", "d.ts"] }) === "a.ts\nb.ts\nc.ts");
+check("preview command wins over pattern", permissionPreview({ metadata: { command: "ls" }, pattern: "x" }) === "ls");
+check("preview caps long lines", (permissionPreview({ metadata: { command: "x".repeat(200) } }) ?? "").length <= 120);
+check("preview empty payload", permissionPreview({ metadata: {} }) === undefined);
+check("preview null/undefined payload", permissionPreview(null) === undefined && permissionPreview(undefined) === undefined);
 
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);

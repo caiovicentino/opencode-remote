@@ -7,6 +7,7 @@ import { humanizeError } from "../lib/errors";
 import { getVoiceSettings } from "./SettingsView";
 import { renderBubbleText } from "./FileCard";
 import { sessionTitleOf } from "../lib/title";
+import { permissionPreview } from "../lib/permission";
 
 interface Props {
   sessionId: string;
@@ -36,6 +37,8 @@ interface PermissionAsk {
   permissionID: string;
   label: string;
   messageID?: string;
+  /** first lines of the requested command/patch, shown before Approve/Deny */
+  preview?: string;
 }
 
 interface QuestionInfo {
@@ -114,7 +117,12 @@ function extractPermission(
   };
   const id = p?.permissionID ?? p?.id;
   if (p?.sessionID && id && p.sessionID === sessionId) {
-    return { permissionID: id, label: p.type ?? "action", messageID: p.messageID };
+    return {
+      permissionID: id,
+      label: p.type ?? "action",
+      messageID: p.messageID,
+      preview: permissionPreview(p),
+    };
   }
   return null;
 }
@@ -287,7 +295,11 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
         setPersistedAsks(
           list
             .filter((x) => x.sessionID === sessionId)
-            .map((x) => ({ permissionID: x.id, label: x.permission ?? "action" })),
+            .map((x) => ({
+              permissionID: x.id,
+              label: x.permission ?? "action",
+              preview: permissionPreview(x),
+            })),
         );
       } catch {}
       try {
@@ -1302,17 +1314,38 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
         {pending.length > 0 && (
           <div className="card">
         {pending.map((p) => (
-          <div key={p.permissionID} className="approval" style={{ marginBottom: 8 }}>
-            <span style={{ flex: 1 }}>
-              {t("approve")} <b>{p.label}</b>?
-            </span>
-            <button onClick={() => void showDiff(p)}>diff</button>
-            <button className="primary" onClick={() => void respond(p.permissionID, "approve")}>
-              {t("approve")}
-            </button>
-            <button className="danger" onClick={() => void respond(p.permissionID, "reject")}>
-              {t("deny")}
-            </button>
+          <div key={p.permissionID} style={{ marginBottom: 8 }}>
+            {p.preview && (
+              <pre
+                style={{
+                  margin: "0 0 6px",
+                  padding: "6px 8px",
+                  background: "var(--surface)",
+                  border: "1px solid var(--border)",
+                  borderRadius: 8,
+                  fontSize: "0.72rem",
+                  lineHeight: 1.45,
+                  overflowX: "auto",
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-word",
+                  color: "var(--muted)",
+                }}
+              >
+                {p.preview}
+              </pre>
+            )}
+            <div className="approval">
+              <span style={{ flex: 1 }}>
+                {t("approve")} <b>{p.label}</b>?
+              </span>
+              <button onClick={() => void showDiff(p)}>diff</button>
+              <button className="primary" onClick={() => void respond(p.permissionID, "approve")}>
+                {t("approve")}
+              </button>
+              <button className="danger" onClick={() => void respond(p.permissionID, "reject")}>
+                {t("deny")}
+              </button>
+            </div>
           </div>
         ))}
           </div>
