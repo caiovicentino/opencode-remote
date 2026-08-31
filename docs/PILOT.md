@@ -10,7 +10,7 @@ rollback automático**. Nenhum humano no loop.
 
 ```
 BACKLOG.md ──> BUILDER ────┬──> SECURITY REVIEWER ─┬──> GATEKEEPER (determinístico)
-  (fila)                   │   (contexto isolado)   │    typecheck · build ·
+  (fila)                   │   (contexto isolado)   │    typecheck · build · unit ·
                            └──> QUALITY REVIEWER ───┘    reconnect · integration ·
                                 (contexto isolado)       invariants · download
                                    │                     │
@@ -74,7 +74,7 @@ saudável" — sem token e mesmo com token, o challenge do healthOnce reprova). 
 ## Self-healing (3 níveis)
 
 1. **Agent**: retry de npm ci, re-upload de attachments, rounds de review
-2. **Pipeline**: rollback automático de deploy (health + soak + invariants live); diff vazio do builder + task já presente no histórico de merge de `origin/main` (grep fixo por `pilot(<id>)`) → `markDone` no BACKLOG.md e ciclo encerrado com sucesso em vez de falhar para sempre na mesma task
+2. **Pipeline**: rollback automático de deploy (health + soak + invariants live); diff vazio do builder + task já presente no histórico de merge de `origin/main` (grep ancorado no formato de sujeito `^pilot(<id>):`, com ID validado) → `markDone` no BACKLOG.md e ciclo encerrado com sucesso em vez de falhar para sempre na mesma task
 3. **Serviço**: heartbeat + watchdog — 30min sem sinal → exit → KeepAlive ressozinho
 
 ## Rodar manualmente
