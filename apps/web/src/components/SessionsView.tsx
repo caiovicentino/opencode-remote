@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useT } from "../lib/i18n";
+import { humanizeError } from "../lib/errors";
 import type { EventEnvelope } from "@ocr/protocol";
 import type { Pairing } from "../lib/client";
 
@@ -7,6 +8,7 @@ interface Session {
   id: string;
   title?: string;
   updatedAt?: string | number;
+  time?: { created?: string; updated?: string };
 }
 
 interface Props {
@@ -129,6 +131,26 @@ export default function SessionsView({
       (s.title ?? "").toLowerCase().includes(query.toLowerCase()) ||
       s.id.toLowerCase().includes(query.toLowerCase()),
   );
+
+  // most recently touched first when the API gives us timestamps
+  function updatedOf(s: Session): number {
+    const v = s.updatedAt ?? s.time?.updated;
+    if (!v) return 0;
+    const d = typeof v === "number" ? v : Date.parse(v);
+    return Number.isNaN(d) ? 0 : d;
+  }
+  const sorted = filtered.sort((a, b) => updatedOf(b) - updatedOf(a));
+
+  function relTime(s: Session): string {
+    const ts = updatedOf(s);
+    if (!ts) return "";
+    const mins = Math.round((Date.now() - ts) / 60_000);
+    if (mins < 1) return t("justNow");
+    if (mins < 60) return `${mins}m`;
+    const h = Math.round(mins / 60);
+    if (h < 24) return `${h}h`;
+    return `${Math.round(h / 24)}d`;
+  }
 
   // live status per session, derived from the last relevant event of each one
   const statusOf = (() => {
@@ -256,7 +278,14 @@ export default function SessionsView({
             ))}
           </div>
         )}
-        {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
+        {error && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <p style={{ color: "var(--danger)", margin: 0, flex: 1 }}>{humanizeError(error, t)}</p>
+            <button style={{ padding: "6px 10px", flexShrink: 0 }} onClick={() => void load()}>
+              {t("retry")}
+            </button>
+          </div>
+        )}
         {!loading && filtered.length === 0 && <p className="muted">{t("noSessions")}</p>}
         <div
           style={{
@@ -265,8 +294,9 @@ export default function SessionsView({
             gap: 8,
           }}
         >
-          {filtered.map((s) => {
+          {sorted.map((s) => {
             const st = statusOf.get(s.id);
+            const when = relTime(s);
             return (
               <div
                 key={s.id}
@@ -289,6 +319,11 @@ export default function SessionsView({
                     {s.title || s.id.slice(0, 12)}
                   </div>
                   {(unread[s.id] ?? 0) > 0 && <span className="unread-badge">{unread[s.id]}</span>}
+                  {when && (
+                    <span style={{ fontSize: "0.68rem", color: "var(--muted)", flexShrink: 0 }}>
+                      {when}
+                    </span>
+                  )}
                 </div>
                 <div style={{ flex: 1, fontSize: "0.75rem", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }} className="muted">
                   {st?.snippet || "\u00a0"}

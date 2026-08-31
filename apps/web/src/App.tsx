@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   OcrClient,
   loadState,
@@ -13,6 +13,7 @@ import {
 } from "./lib/client";
 import type { OpResponse, EventEnvelope } from "@ocr/protocol";
 import { gateVerify, gateEnroll } from "./lib/gate";
+import { useT } from "./lib/i18n";
 import PairingView from "./components/PairingView";
 import SessionsView from "./components/SessionsView";
 import ChatView from "./components/ChatView";
@@ -22,7 +23,77 @@ import SendToAgentView from "./components/SendToAgentView";
 
 type Phase = "unpaired" | "connecting" | "paired" | "error";
 
+type TabId = "sessions" | "files" | "settings";
+
+function TabBar({
+  active,
+  onSelect,
+  t,
+}: {
+  active: TabId;
+  onSelect: (id: TabId) => void;
+  t: (k: string) => string;
+}) {
+  const tabs: { id: TabId; label: string; icon: ReactNode }[] = [
+    {
+      id: "sessions",
+      label: t("tabSessions"),
+      icon: (
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden>
+          <path d="M4 3h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H8l-4 4V5a2 2 0 0 1 2-2z" />
+        </svg>
+      ),
+    },
+    {
+      id: "files",
+      label: t("tabFiles"),
+      icon: (
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden>
+          <path d="M3 5h6l2 2h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z" />
+        </svg>
+      ),
+    },
+    {
+      id: "settings",
+      label: t("tabSettings"),
+      icon: (
+        <svg
+          viewBox="0 0 24 24"
+          width="22"
+          height="22"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          aria-hidden
+        >
+          <path d="M4 6h16M4 12h16M4 18h16" />
+          <circle cx="9" cy="6" r="2" fill="currentColor" stroke="none" />
+          <circle cx="15" cy="12" r="2" fill="currentColor" stroke="none" />
+          <circle cx="7" cy="18" r="2" fill="currentColor" stroke="none" />
+        </svg>
+      ),
+    },
+  ];
+  return (
+    <nav className="tabbar">
+      {tabs.map((tb) => (
+        <button
+          key={tb.id}
+          className={active === tb.id ? "active" : ""}
+          onClick={() => onSelect(tb.id)}
+          aria-label={tb.label}
+        >
+          {tb.icon}
+          <span>{tb.label}</span>
+        </button>
+      ))}
+    </nav>
+  );
+}
+
 export default function App() {
+  const t = useT();
   const [phase, setPhase] = useState<Phase>("unpaired");
   const [error, setError] = useState("");
   const [machineName, setMachineName] = useState("");
@@ -305,7 +376,7 @@ export default function App() {
   return (
     <div
       ref={appRootRef}
-      className="app-root"
+      className={`app-root${session ? "" : " has-tabbar"}`}
       data-nav={navDir}
       onTouchStart={onTouchStart}
       onTouchMove={onTouchMove}
@@ -365,6 +436,27 @@ export default function App() {
             setFilesView(true);
           }}
           tick={tick}
+        />
+      )}
+      {!session && (
+        <TabBar
+          active={settings ? "settings" : filesView ? "files" : "sessions"}
+          t={t}
+          onSelect={(id) => {
+            if (id === "sessions") {
+              if (settings || filesView) {
+                setNavDir("back");
+                setSettings(false);
+                setFilesView(false);
+                setTick((t) => t + 1);
+              }
+              return;
+            }
+            setNavDir("fwd");
+            setSettings(id === "settings");
+            setFilesView(id === "files");
+            if (id === "settings") setTick((t) => t + 1);
+          }}
         />
       )}
     </div>

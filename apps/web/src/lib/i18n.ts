@@ -114,6 +114,21 @@ const dict = {
     voiceAutoSend: "Auto-send after transcription",
     versionMismatch:
       " — version mismatch: refresh the PWA (pull-to-refresh) or update the daemon",
+    // tab bar
+    tabSessions: "Chats",
+    tabFiles: "Files",
+    tabSettings: "Settings",
+    // errors
+    retry: "Retry",
+    errAgentCrashed: "The agent crashed mid-answer — it usually comes back on retry.",
+    errAttachmentExpired: "Attachment expired — reattach it and send again.",
+    errConversationGone: "This conversation no longer exists on the machine.",
+    errRefused: "The agent refused the request (HTTP {status}).",
+    errConnectionLost: "Connection lost — your message is queued and will go out automatically.",
+    errNotPaired: "Not paired yet — reopen the app or pair again.",
+    errCreateFailed: "Could not create the conversation — try again.",
+    // session cards
+    justNow: "now",
   },
   pt: {
     search: "Buscar conversas…",
@@ -179,5 +194,20 @@ const dict = {
     voiceAutoSend: "Enviar sozinho após transcrição",
     versionMismatch:
       " — versões diferentes: atualize o PWA (puxe pra recarregar) ou o daemon",
+    // tab bar
+    tabSessions: "Chats",
+    tabFiles: "Arquivos",
+    tabSettings: "Config",
+    // errors
+    retry: "Tentar de novo",
+    errAgentCrashed: "O agente caiu no meio da resposta — geralmente volta ao tentar de novo.",
+    errAttachmentExpired: "O anexo expirou — anexe de novo e envie.",
+    errConversationGone: "Essa conversa não existe mais na máquina.",
+    errRefused: "O agente recusou o pedido (HTTP {status}).",
+    errConnectionLost: "Conexão caiu — sua mensagem tá na fila e sai sozinha quando voltar.",
+    errNotPaired: "Sem pareamento ativo — reabra o app ou pareie de novo.",
+    errCreateFailed: "Não deu pra criar a conversa — tenta de novo.",
+    // session cards
+    justNow: "agora",
   },
 } satisfies Record<Lang, Record<string, string>>;

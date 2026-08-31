@@ -139,6 +139,42 @@ textarea {
   transform: scale(0.97);
 }
 
+/* bottom tab bar: thumb-first navigation on root screens */
+.has-tabbar .screen {
+  padding-bottom: calc(78px + env(safe-area-inset-bottom));
+}
+.tabbar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: space-around;
+  background: color-mix(in srgb, var(--bg) 86%, transparent);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border-top: 1px solid var(--border);
+  padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
+  z-index: 50;
+  max-width: 720px;
+  margin: 0 auto;
+}
+.tabbar button {
+  background: none;
+  border: none;
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  font-size: 0.62rem;
+  color: var(--muted);
+  padding: 4px 14px;
+}
+.tabbar button.active {
+  color: var(--accent);
+}
+
 .screen > header {
   display: flex;
   align-items: center;

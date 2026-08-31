@@ -3,6 +3,7 @@ import type { EventEnvelope } from "@ocr/protocol";
 import { WavRecorder, encodeWav } from "../lib/recorder";
 import { saveFile } from "../lib/files";
 import { useT } from "../lib/i18n";
+import { humanizeError } from "../lib/errors";
 import { getVoiceSettings } from "./SettingsView";
 import { renderBubbleText } from "./FileCard";
 
@@ -137,6 +138,8 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
+  // text of the last failed send, so the error banner can offer one-tap retry
+  const [retryText, setRetryText] = useState("");
 
   // transient errors: red text should not stick around forever
   useEffect(() => {
@@ -765,8 +768,10 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
       if (res.status !== 200) {
         setError(`opencode responded ${res.status}: ${JSON.stringify(res.body).slice(0, 200)}`);
         markPending(false);
+        if (text && res.status >= 500) setRetryText(text);
       } else {
         markPending(false);
+        setRetryText("");
         if (text) {
           // first prompt names the conversation (once per session)
           const flag = `ocr.titled.${sessionId}`;
@@ -1278,7 +1283,25 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
           </div>
         )}
 
-        {error && <p style={{ color: "var(--danger)", margin: 0 }}>{error}</p>}
+        {error && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <p style={{ color: "var(--danger)", margin: 0, flex: 1 }}>{humanizeError(error, t)}</p>
+            {retryText && (
+              <button
+                className="danger"
+                style={{ padding: "6px 10px", flexShrink: 0 }}
+                onClick={() => {
+                  const text = retryText;
+                  setRetryText("");
+                  setError("");
+                  void send(text);
+                }}
+              >
+                {t("retry")}
+              </button>
+            )}
+          </div>
+        )}
         {autoNote && (
           <p style={{ color: "var(--muted, #8a8f98)", margin: 0 }}>✔ {autoNote}</p>
         )}
