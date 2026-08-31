@@ -101,6 +101,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
 
   // ── build ⇄ review loop ─────────────────────────────────────────────────
   let findings = "";
+  let builderSession: string | undefined;
   // carry over the last gatekeeper failure for this task, so the builder can
   // fix the exact failing step instead of rediscovering it
   const failFile = join(homedir(), ".opencode-remote/pilot/last-gate-fail.json");
@@ -131,8 +132,11 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
       cwd: ws,
       timeoutMin: cfg.taskTimeoutMin,
       label: `builder-${t.id}-r${round}`,
+      sessionId: builderSession, // context cache: resume the same session across rounds
+      printLogs: true,
       onStdout: stream,
     });
+    if (build.sessionId) builderSession = build.sessionId;
     console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "builder done", data: { task: t.id, round } }));
     writeFileSync(join(homedir(), ".opencode-remote/pilot", "last-builder-output.log"), build.output);
     emit("phase", { task: t.id, phase: "builder-done", ok: build.output.includes("PILOT:TASK-DONE") });
