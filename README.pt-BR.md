@@ -26,7 +26,9 @@ remoto, zero confiança**.
 
 ## O que você ganha
 
-- **Chat completo** com streaming, markdown, imagens e histórico de ferramentas
+- **Chat completo** com streaming, markdown, imagens e histórico de ferramentas;
+  o header do chat mostra o título da conversa (o genérico "session" até o
+  agente nomear)
 - **AutoMode** — o agente roda solto; toda aprovação automática vira auditoria
   (e notificação, se você quiser)
 - **Perguntas interativas** — o modelo pergunta, você toca na opção

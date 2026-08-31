@@ -6,6 +6,7 @@ import { b64, fromB64, seal, openSealed, seqAad } from "@ocr/protocol";
 import { parsePairingUri } from "../apps/web/src/lib/client";
 import { mimeFor } from "../apps/web/src/lib/files";
 import { timeAgo, sessionUpdatedTs } from "../apps/web/src/lib/time";
+import { sessionTitleOf } from "../apps/web/src/lib/title";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -73,6 +74,12 @@ check("sessionUpdatedTs unknown last", desc[3].id === "d" && desc[4].id === "e")
 check("sessionUpdatedTs epoch millis", sessionUpdatedTs({ updatedAt: now }) === now);
 check("sessionUpdatedTs time.updated fallback", sessionUpdatedTs(s3) === Date.parse("2026-08-31T10:00:00Z"));
 check("sessionUpdatedTs missing/invalid -> 0", sessionUpdatedTs(s4) === 0 && sessionUpdatedTs(s5) === 0 && sessionUpdatedTs(undefined) === 0);
+
+// --- chat header title (P3-001) ---------------------------------------------
+check("sessionTitleOf trimmed title", sessionTitleOf({ title: "  fix login bug  " }) === "fix login bug");
+check("sessionTitleOf empty title", sessionTitleOf({ title: "" }) === "" && sessionTitleOf({ title: "   " }) === "");
+check("sessionTitleOf missing body", sessionTitleOf(null) === "" && sessionTitleOf(undefined) === "");
+check("sessionTitleOf non-string title", sessionTitleOf({ title: 42 }) === "" && sessionTitleOf({}) === "");
 
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);
