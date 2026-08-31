@@ -37,7 +37,8 @@ private. That is the product: **local power, remote control, zero trust**.
 - **Rewind** — go back to any point of the conversation *and* the code, one tap
 - **Voice** — hold to talk, local whisper transcription, no cloud
 - **Files** — upload from the phone, preview anything, export a conversation
-  as markdown with one tap
+  as markdown with one tap; every file card has a ⧉ button that copies the
+  file's full path (Clipboard API with an execCommand fallback)
 - **Handoff** — continue the exact session on your Mac (💻 button)
 - **Live board** — every session's state at a glance: working, waiting for
   your approval, asked a question, done, errored; cards show relative

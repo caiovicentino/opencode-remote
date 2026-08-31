@@ -38,7 +38,8 @@ remoto, zero confiança**.
 - **Rewind** — volte a conversa *e o código* pra qualquer ponto, num toque
 - **Voz** — segure e fale, transcrição local com whisper, sem nuvem
 - **Arquivos** — envie do celular, dê preview de tudo, exporte a conversa
-  em markdown
+  em markdown; todo card de arquivo tem um botão ⧉ que copia o caminho
+  completo do arquivo (Clipboard API com fallback execCommand)
 - **Handoff** — continue a sessão exata no Mac (botão 💻)
 - **Painel ao vivo** — estado de cada sessão: trabalhando, esperando aprovação,
   fez pergunta, pronto, erro; cards mostram o tempo relativo da última

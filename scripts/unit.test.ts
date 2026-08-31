@@ -4,6 +4,7 @@
  */
 import { b64, fromB64, seal, openSealed, seqAad } from "@ocr/protocol";
 import { parsePairingUri } from "../apps/web/src/lib/client";
+import { copyText, hasClipboardApi, legacyCopy } from "../apps/web/src/lib/clipboard";
 import { mimeFor } from "../apps/web/src/lib/files";
 import { timeAgo, sessionUpdatedTs } from "../apps/web/src/lib/time";
 import { sessionTitleOf } from "../apps/web/src/lib/title";
@@ -111,6 +112,36 @@ check("search query still matches title case-insensitive", fQuery.length === 1 &
 const fBoth = applySessionFilters(all, funread, "fix", "without");
 check("badge filter and query compose", fBoth.length === 0);
 check("empty query string passes all", applySessionFilters(all, funread, "   ", "all").length === 3);
+
+// --- file card copy path (P3-002) --------------------------------------------
+check("hasClipboardApi present", hasClipboardApi({ clipboard: { writeText: () => {} } }));
+check("hasClipboardApi absent", !hasClipboardApi({}) && !hasClipboardApi(undefined));
+let captured = "";
+const fakeNav = { clipboard: { writeText: async (t: string) => { captured = t; } } };
+check("copyText via clipboard api", (await copyText("/a/b.txt", fakeNav)) === true && captured === "/a/b.txt");
+const deniedNav = { clipboard: { writeText: async () => { throw new Error("denied"); } } };
+function makeFakeDoc(execOk: boolean) {
+  const appended: unknown[] = [];
+  const removed: unknown[] = [];
+  const created: string[] = [];
+  const doc = {
+    createElement(tag: string) {
+      created.push(tag);
+      return { value: "", setAttribute() {}, style: {} as Record<string, string>, select() {} };
+    },
+    body: { appendChild(node: unknown) { appended.push(node); }, removeChild(node: unknown) { removed.push(node); } },
+    execCommand(cmd: string) {
+      return execOk && cmd === "copy";
+    },
+  };
+  return { doc, created, appended, removed };
+}
+const okDoc = makeFakeDoc(true);
+const denyDoc = makeFakeDoc(false);
+check("copyText denied + no document -> false (Node has no document; legacyCopy covered above)", (await copyText("x", deniedNav)) === false);
+check("legacyCopy writes and cleans up the textarea", legacyCopy("/a/b.txt", okDoc.doc) === true && okDoc.created[0] === "textarea" && okDoc.removed.length === 1 && (okDoc.appended[0] as { value: string }).value === "/a/b.txt");
+check("legacyCopy reports execCommand failure", legacyCopy("x", denyDoc.doc) === false);
+check("legacyCopy without document fails", legacyCopy("x", undefined) === false);
 
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);
