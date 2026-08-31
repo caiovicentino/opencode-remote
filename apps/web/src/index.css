@@ -406,3 +406,86 @@ select {
   font-size: 0.72rem;
   color: var(--muted);
 }
+
+/* ── Desktop two-pane shell (≥1024px): Claude-style sidebar + main pane ── */
+.desk {
+  display: flex;
+  height: 100%;
+  width: 100%;
+}
+.desk-side {
+  display: flex;
+  flex-direction: column;
+  width: 340px;
+  min-width: 340px;
+  height: 100%;
+  border-right: 1px solid var(--border);
+  background: var(--panel, #101014);
+}
+.desk-side-scroll {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+/* the sessions list was built as a mobile "screen" — flatten it inside the sidebar */
+.desk-side .screen {
+  max-width: none;
+  padding: 10px;
+  height: auto;
+  min-height: 0;
+}
+.desk-nav {
+  display: flex;
+  gap: 6px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--panel, #101014);
+}
+.desk-nav button {
+  flex: 1;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--muted, #888);
+  font-size: 1.1rem;
+  padding: 6px 0;
+  cursor: pointer;
+}
+.desk-nav button.active {
+  color: var(--fg, #eee);
+  border-color: var(--border, #333);
+  background: var(--bg2, #1a1a20);
+}
+.desk-main {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  position: relative;
+  overflow: hidden;
+}
+/* keep the reading column pleasant inside the wide pane, like Claude Desktop */
+.desk-main .screen {
+  max-width: 860px;
+  margin: 0 auto;
+  height: 100%;
+}
+.desk-empty {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  color: var(--muted, #888);
+}
+.desk-empty h2 {
+  color: var(--fg, #eee);
+  margin: 0 0 6px;
+}
+.desk-empty p {
+  margin: 0;
+}
+/* mobile chrome never shows inside the desktop shell */
+.desk .tabbar,
+.desk .has-tabbar {
+  display: none;
+}

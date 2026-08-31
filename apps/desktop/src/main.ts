@@ -100,10 +100,10 @@ async function onReady(): Promise<void> {
 
 function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
-    width: 430,
-    height: 900,
-    minWidth: 360,
-    minHeight: 480,
+    width: 1280,
+    height: 820,
+    minWidth: 1024,
+    minHeight: 640,
     title: "OpenCode Remote",
     show: false,
     webPreferences: {

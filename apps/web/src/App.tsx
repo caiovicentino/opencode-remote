@@ -104,8 +104,20 @@ function TabBar({
   );
 }
 
+function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(query);
+    const onChange = () => setMatches(mq.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, [query]);
+  return matches;
+}
+
 export default function App() {
   const t = useT();
+  const isDesktop = useMediaQuery("(min-width: 1024px)");
   const [phase, setPhase] = useState<Phase>("unpaired");
   const [error, setError] = useState("");
   const [machineName, setMachineName] = useState("");
@@ -412,91 +424,155 @@ export default function App() {
     );
   }
 
+  const chatNode = (
+    <ChatView
+      sessionId={session!}
+      request={request}
+      events={events}
+      connStatus={connStatus}
+      voice={clientRef.current?.caps?.transcribe === true}
+      onBack={goBack}
+    />
+  );
+  const settingsNode = <SettingsView request={request} onBack={goBack} />;
+  const filesNode = <FilesView request={request} onBack={goBack} />;
+  const shareNode = (
+    <SendToAgentView
+      request={request}
+      payload={share!}
+      onBack={goBack}
+      onOpenSession={(id) => {
+        setShare(null);
+        setSession(id);
+      }}
+    />
+  );
+  const sessionsNode = (
+    <SessionsView
+      request={request}
+      machineName={machineName}
+      events={events}
+      unread={unread}
+      connStatus={connStatus}
+      machines={machines}
+      activeRoom={getActiveRoom()}
+      onSwitch={(p) => void switchMachine(p)}
+      onForget={(p) => forgetMachine(p)}
+      onAddMachine={() => setAddingMachine(true)}
+      onOpen={(id) => {
+        setNavDir("fwd");
+        setSession(id);
+      }}
+      onDisconnect={disconnect}
+      onEnablePush={async () => {
+        const { enablePush } = await import("./lib/push");
+        await enablePush(request);
+      }}
+      onOpenSettings={() => {
+        setNavDir("fwd");
+        setSettings(true);
+      }}
+      onOpenFiles={() => {
+        setNavDir("fwd");
+        setFilesView(true);
+      }}
+      tick={tick}
+    />
+  );
+  const mainContent = session
+    ? chatNode
+    : settings
+      ? settingsNode
+      : filesView
+        ? filesNode
+        : share
+          ? shareNode
+          : null;
+
   return (
     <div
       ref={appRootRef}
       className={`app-root${session ? "" : " has-tabbar"}`}
       data-nav={navDir}
-      onTouchStart={onTouchStart}
-      onTouchMove={onTouchMove}
-      onTouchEnd={onTouchEnd}
+      onTouchStart={isDesktop ? undefined : onTouchStart}
+      onTouchMove={isDesktop ? undefined : onTouchMove}
+      onTouchEnd={isDesktop ? undefined : onTouchEnd}
       style={{ height: "100%" }}
     >
-      {session ? (
-        <ChatView
-          sessionId={session}
-          request={request}
-          events={events}
-          connStatus={connStatus}
-          voice={clientRef.current?.caps?.transcribe === true}
-          onBack={goBack}
-        />
-      ) : settings ? (
-        <SettingsView request={request} onBack={goBack} />
-      ) : filesView ? (
-        <FilesView request={request} onBack={goBack} />
-      ) : share ? (
-        <SendToAgentView
-          request={request}
-          payload={share}
-          onBack={goBack}
-          onOpenSession={(id) => {
-            setShare(null);
-            setSession(id);
-          }}
-        />
+      {isDesktop ? (
+        <div className="desk">
+          <aside className="desk-side">
+            <div className="desk-side-scroll">{sessionsNode}</div>
+            <div className="desk-nav">
+              <button
+                className={!settings && !filesView ? "active" : ""}
+                onClick={() => {
+                  setSettings(false);
+                  setFilesView(false);
+                  setSession(null);
+                }}
+                title="Chats"
+              >
+                💬
+              </button>
+              <button
+                className={filesView ? "active" : ""}
+                onClick={() => {
+                  setNavDir("fwd");
+                  setFilesView(true);
+                }}
+                title="Arquivos"
+              >
+                📁
+              </button>
+              <button
+                className={settings ? "active" : ""}
+                onClick={() => {
+                  setNavDir("fwd");
+                  setSettings(true);
+                }}
+                title="Config"
+              >
+                ⚙️
+              </button>
+            </div>
+          </aside>
+          <main className="desk-main">
+            {mainContent ?? (
+              <div className="desk-empty">
+                <div>
+                  <h2>opencode-remote</h2>
+                  <p>Selecione uma conversa na barra lateral</p>
+                </div>
+              </div>
+            )}
+          </main>
+        </div>
       ) : (
-        <SessionsView
-          request={request}
-          machineName={machineName}
-          events={events}
-          unread={unread}
-          connStatus={connStatus}
-          machines={machines}
-          activeRoom={getActiveRoom()}
-          onSwitch={(p) => void switchMachine(p)}
-          onForget={(p) => forgetMachine(p)}
-          onAddMachine={() => setAddingMachine(true)}
-          onOpen={(id) => {
-            setNavDir("fwd");
-            setSession(id);
-          }}
-          onDisconnect={disconnect}
-          onEnablePush={async () => {
-            const { enablePush } = await import("./lib/push");
-            await enablePush(request);
-          }}
-          onOpenSettings={() => {
-            setNavDir("fwd");
-            setSettings(true);
-          }}
-          onOpenFiles={() => {
-            setNavDir("fwd");
-            setFilesView(true);
-          }}
-          tick={tick}
-        />
-      )}
-      {!session && (
-        <TabBar
-          active={settings ? "settings" : filesView ? "files" : "sessions"}
-          t={t}
-          onSelect={(id) => {
-            if (id === "sessions") {
-              if (settings || filesView) {
-                setNavDir("back");
-                setSettings(false);
-                setFilesView(false);
-                setTick((t) => t + 1);
-              }
-              return;
-            }
-            setNavDir("fwd");
-            setSettings(id === "settings");
-            setFilesView(id === "files");
-            if (id === "settings") setTick((t) => t + 1);
-          }}
-        />
+        <>
+          {mainContent ?? sessionsNode}
+          {!session && (
+            <TabBar
+              active={settings ? "settings" : filesView ? "files" : "sessions"}
+              t={t}
+              onSelect={(id) => {
+                if (id === "sessions") {
+                  if (settings || filesView) {
+                    setNavDir("back");
+                    setSettings(false);
+                    setFilesView(false);
+                    setTick((t) => t + 1);
+                  }
+                  return;
+                }
+                setNavDir("fwd");
+                setSettings(id === "settings");
+                setFilesView(id === "files");
+                if (id === "settings") setTick((t) => t + 1);
+              }}
+            />
+          )}
+        </>
       )}
     </div>
   );
