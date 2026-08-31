@@ -4,6 +4,7 @@ import { humanizeError } from "../lib/errors";
 import { timeAgo, sessionUpdatedTs } from "../lib/time";
 import type { EventEnvelope } from "@ocr/protocol";
 import type { Pairing } from "../lib/client";
+import { applySessionFilters, type BadgeFilter } from "../lib/sessionFilter";
 
 interface Session {
   id: string;
@@ -60,6 +61,7 @@ export default function SessionsView({
   const [error, setError] = useState("");
   const [pushState, setPushState] = useState<"idle" | "enabling" | "enabled">("idle");
   const [query, setQuery] = useState("");
+  const [badgeFilter, setBadgeFilter] = useState<BadgeFilter>("all");
   const [switching, setSwitching] = useState(false);
 
   // silent restore: a device that already granted permission never re-authorizes
@@ -126,12 +128,7 @@ export default function SessionsView({
     void load();
   }
 
-  const filtered = sessions.filter(
-    (s) =>
-      !query.trim() ||
-      (s.title ?? "").toLowerCase().includes(query.toLowerCase()) ||
-      s.id.toLowerCase().includes(query.toLowerCase()),
-  );
+  const filtered = applySessionFilters(sessions, unread, query, badgeFilter);
 
   // most recently touched first when the API gives us timestamps
   const sorted = filtered.sort((a, b) => sessionUpdatedTs(b) - sessionUpdatedTs(a));
@@ -243,6 +240,18 @@ export default function SessionsView({
       </header>
 
       <div className="list">
+        <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+          {(["all", "with", "without"] as BadgeFilter[]).map((f) => (
+            <button
+              key={f}
+              className="chip"
+              aria-pressed={badgeFilter === f}
+              onClick={() => setBadgeFilter(f)}
+            >
+              {f === "all" ? t("filterAll") : f === "with" ? t("filterWithBadge") : t("filterNoBadge")}
+            </button>
+          ))}
+        </div>
         <input
           style={{ width: "100%", marginBottom: 8 }}
           placeholder={t("search")}

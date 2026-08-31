@@ -363,6 +363,20 @@ select {
   text-align: center;
   flex-shrink: 0;
 }
+
+/* filter chips above the session search (P2-005) */
+.chip {
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.chip[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
 .msg.user {
   align-self: flex-end;
   background: var(--user-bubble);

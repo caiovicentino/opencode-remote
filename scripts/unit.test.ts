@@ -8,6 +8,7 @@ import { mimeFor } from "../apps/web/src/lib/files";
 import { timeAgo, sessionUpdatedTs } from "../apps/web/src/lib/time";
 import { sessionTitleOf } from "../apps/web/src/lib/title";
 import { permissionPreview } from "../apps/web/src/lib/permission";
+import { applySessionFilters } from "../apps/web/src/lib/sessionFilter";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -91,6 +92,25 @@ check("preview command wins over pattern", permissionPreview({ metadata: { comma
 check("preview caps long lines", (permissionPreview({ metadata: { command: "x".repeat(200) } }) ?? "").length <= 120);
 check("preview empty payload", permissionPreview({ metadata: {} }) === undefined);
 check("preview null/undefined payload", permissionPreview(null) === undefined && permissionPreview(undefined) === undefined);
+
+// --- session badge filter chips (P2-005) -------------------------------------
+type FS = { id: string; title?: string };
+const fs1: FS = { id: "a", title: "Fix login" };
+const fs2: FS = { id: "b", title: "Ship api" };
+const fs3: FS = { id: "c" };
+const funread = { a: 3, b: 0 };
+const all = [fs1, fs2, fs3];
+const fAll = applySessionFilters(all, funread, "", "all");
+check("badge filter all keeps everything", fAll.length === 3);
+const fWith = applySessionFilters(all, funread, "", "with");
+check("badge filter with keeps only unread", fWith.length === 1 && fWith[0].id === "a");
+const fWithout = applySessionFilters(all, funread, "", "without");
+check("badge filter without keeps zero/missing badge", fWithout.length === 2 && fWithout[0].id === "b" && fWithout[1].id === "c");
+const fQuery = applySessionFilters(all, funread, "SHIP", "all");
+check("search query still matches title case-insensitive", fQuery.length === 1 && fQuery[0].id === "b");
+const fBoth = applySessionFilters(all, funread, "fix", "without");
+check("badge filter and query compose", fBoth.length === 0);
+check("empty query string passes all", applySessionFilters(all, funread, "   ", "all").length === 3);
 
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);
