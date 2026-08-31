@@ -20,3 +20,19 @@ lugar, sem terminal, sem TLS, sem tailscale.
 - Toda task do STRATEGIST deve, direta ou indiretamente, aproximar o produto dos estágios 3-5
 - Tasks de manutenção/UX mobile são bem-vindas, mas no máximo 1 a cada 3 (prioridade pro desktop)
 - Nada de dependências pesadas sem justificativa no commit (bundle size importa pra distribuição)
+
+
+## Stage 3.1 — Local-first desktop mode (31/08)
+
+The desktop app runs ON the machine that hosts the daemon. Pairing (QR, relay,
+ECDH handshake) is phone-oriented friction — a desktop user is already home.
+
+Design: the desktop is a first-class local client.
+1. The daemon already prints its `opencode-remote://pair?v=2&...` URL at boot.
+   The desktop sidecar captures that line from the child's stdout.
+2. `main.ts` keeps it; `preload.ts` exposes it via contextBridge IPC.
+3. `App.tsx`: when running inside the desktop shell (bridge present) and no
+   stored pairing exists, auto-connect using the captured pair URL — the same
+   code path as paste-pairing. No relay changes, no crypto changes.
+4. The QR/paste screen is never shown on desktop (manual pair stays in
+   Settings as a fallback). User-visible change: zero-friction first run.

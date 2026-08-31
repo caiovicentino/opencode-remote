@@ -6,6 +6,7 @@ Tasks feitas vão para `## Done` automaticamente.
 
 ## Ready
 
+- [ ] (P0-003) [P0] Desktop local-first: zero pairing na máquina host — spec: (1) apps/desktop/src/daemon.ts: capturar do stdout do daemon a primeira linha `opencode-remote://pair?v=2&...` e expor via SidecarState/getPairUrl; (2) preload.ts: expor `ocrDesktop.getPairUrl()` via ipcRenderer.invoke; (3) App.tsx: se `window.ocrDesktop` existir e não houver pairing em localStorage, buscar a URL e conectar pelo MESMO caminho do paste-pairing (connect+saveState), pulando PairingView; (4) PairingView só como fallback em Settings; critério: app desktop abre já conectado sem QR, typecheck/build verdes, sem mudanças no relay.
 - [ ] (P3-004) [P3] Pular registro de ServiceWorker no desktop — spec: em apps/web (src), não registrar o SW quando location.protocol for file: ( Electron/desktop); evita uncaught rejection no app desktop; critério: sem erros de SW no console do desktop, typecheck/build verdes.
 - [ ] (P0-002) [P0] Desktop smoke test deve validar renderização — spec: no gate/pipeline, quando a task tocar em apps/desktop, o smoke test deve além do boot do processo: aguardar event did-finish-load, capturar erros de console do renderer (webContents.on console-message) e falhar se houver uncaught error (exceto falha de ServiceWorker em file://, ruído conhecido) ; critério: gate reprova janela branca (ex.: asset 404 em file://); typecheck/build verdes.
 
