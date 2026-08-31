@@ -1491,6 +1491,19 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       send(r.status, r.body);
       return true;
     }
+    // GET /api/pilot-log?n=300 — tail of the raw pilot.log (JSONL) for the log viewer
+    if (seg[1] === "pilot-log") {
+      const n = Math.min(Number(new URL(req.url || "/", "http://x").searchParams.get("n") || 400), 2000);
+      let lines: string[] = [];
+      try {
+        lines = readFileSync(join(homedir(), ".opencode-remote", "logs", "pilot.log"), "utf8")
+          .split("\n")
+          .filter(Boolean)
+          .slice(-n);
+      } catch {}
+      send(200, { lines });
+      return true;
+    }
     // GET /api/pilot-events — dashboard feed: state, heartbeat freshness, event tail
     if (seg[1] === "pilot-events") {
       const dir = join(homedir(), ".opencode-remote", "pilot");
@@ -1510,7 +1523,11 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       try {
         heartbeatMs = Date.now() - Number(readFileSync(join(dir, "heartbeat"), "utf8"));
       } catch {}
-      send(200, { state, heartbeatMs, events });
+      let cfg: unknown = {};
+      try {
+        cfg = JSON.parse(readFileSync(join(homedir(), ".opencode-remote", "pilot.json"), "utf8"));
+      } catch {}
+      send(200, { state, heartbeatMs, events, cfg });
       return true;
     }
     if (seg[1] !== "session") {

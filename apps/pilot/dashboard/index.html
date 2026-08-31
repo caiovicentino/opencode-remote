@@ -41,6 +41,42 @@
   #tokenbox h3 { font-size:13px; margin-bottom:10px; letter-spacing:.08em; }
   #tokenbox input { width:100%; padding:9px 12px; background:#0b111a; border:1px solid #2a3947; color:var(--text); border-radius:8px; font-size:12px; }
   #tokenbox button { margin-top:10px; width:100%; padding:9px; background:var(--cyan); border:none; color:#04121a; font-weight:700; border-radius:8px; cursor:pointer; }
+  /* ── budget meters ── */
+  .meter { margin:7px 0 2px; }
+  .meter .bar { height:4px; border-radius:2px; background:rgba(143,163,184,.15); overflow:hidden; margin-top:3px; }
+  .meter .bar i { display:block; height:100%; border-radius:2px; background:linear-gradient(90deg,var(--cyan),var(--green)); transition:width .8s ease; }
+  .meter span { font-size:10px; letter-spacing:.12em; color:var(--muted); }
+  .meter b { font-variant-numeric:tabular-nums; font-size:12px; }
+  #logs-btn { pointer-events:auto; margin-top:10px; width:100%; padding:7px; background:rgba(34,211,238,.12); border:1px solid rgba(34,211,238,.35);
+              color:var(--cyan); font-weight:700; letter-spacing:.14em; font-size:11px; border-radius:8px; cursor:pointer; text-align:center; transition:background .2s; }
+  #logs-btn:hover { background:rgba(34,211,238,.25); }
+  /* ── log drawer ── */
+  #logdrawer { position:fixed; z-index:30; left:0; right:0; bottom:0; height:62vh; display:none; flex-direction:column;
+               background:rgba(5,9,14,.97); border-top:1px solid rgba(34,211,238,.35); box-shadow:0 -18px 60px rgba(0,0,0,.6);
+               backdrop-filter:blur(14px); }
+  #logdrawer.open { display:flex; animation:slideup .25s ease; }
+  @keyframes slideup { from { transform:translateY(40px); opacity:0; } to { transform:none; opacity:1; } }
+  #logbar { display:flex; align-items:center; gap:10px; padding:10px 18px; border-bottom:1px solid rgba(34,211,238,.14); flex-wrap:wrap; }
+  #logbar h2 { font-size:12px; letter-spacing:.2em; color:var(--cyan); margin-right:auto; }
+  #logbar input[type=text] { background:#0b111a; border:1px solid #2a3947; color:var(--text); border-radius:7px; padding:6px 11px; font-size:12px; width:210px; }
+  #logbar .chip { background:#0e1824; border:1px solid #2a3947; color:#9db2c6; font:11px ui-monospace,monospace;
+                  padding:4px 10px; border-radius:999px; cursor:pointer; }
+  #logbar .chip.on { border-color:var(--cyan); color:var(--cyan); box-shadow:0 0 10px rgba(34,211,238,.35); }
+  #logbar .chip.role.on { border-color:var(--gold); color:var(--gold); }
+  #logclose { background:none; border:none; color:var(--muted); font-size:18px; cursor:pointer; padding:2px 8px; }
+  #logclose:hover { color:var(--red); }
+  #logview { flex:1; overflow-y:auto; padding:10px 18px 16px; font:11.5px/1.75 ui-monospace,Menlo,monospace; }
+  #logview .ln { display:flex; gap:12px; white-space:pre-wrap; word-break:break-word; padding:1px 0; }
+  #logview .ln:hover { background:rgba(34,211,238,.05); }
+  #logview .ts { color:#5b6f84; flex-shrink:0; }
+  #logview .tag { flex-shrink:0; font-weight:700; width:96px; }
+  #logview .tx { color:#b9c9da; }
+  .lv-warn { color:var(--gold); } .lv-error { color:var(--red); }
+  .rg-agent { color:var(--cyan); } .rg-reviewer { color:#818cf8; } .rg-quality { color:#38bdf8; }
+  .rg-gatekeeper { color:var(--gold); } .rg-deploy { color:var(--green); } .rg-strategist { color:#c084fc; }
+  .rg-redteam { color:var(--red); } .rg-pipeline { color:#e8edf2; } .rg-info { color:#7d90a5; }
+  #followhint { position:absolute; right:22px; bottom:12px; background:var(--cyan); color:#04121a; font-weight:700;
+                font-size:10px; padding:4px 10px; border-radius:999px; cursor:pointer; display:none; }
 </style>
 </head>
 <body>
@@ -57,10 +93,13 @@
 
 <div class="overlay" id="stats">
   <div class="row"><span>TASKS HOJE</span><b id="s-tasks">0</b></div>
-  <div class="row"><span>DEPLOYS</span><b id="s-deploys" class="ok">0</b></div>
+  <div class="meter"><span>TASKS / DIA</span><b id="m-tasks-t" style="float:right">0/15</b><div class="bar"><i id="m-tasks"></i></div></div>
+  <div class="meter"><span>DEPLOYS / DIA</span><b id="m-dep-t" style="float:right">0/12</b><div class="bar"><i id="m-dep"></i></div></div>
+  <div class="row" style="margin-top:8px"><span>DEPLOYS</span><b id="s-deploys" class="ok">0</b></div>
   <div class="row"><span>FALHAS</span><b id="s-fails" class="bad">0</b></div>
   <div class="row"><span>MERGES</span><b id="s-prs">0</b></div>
   <div class="row"><span>HEARTBEAT</span><b id="s-hb">—</b></div>
+  <div id="logs-btn" onclick="openLogs()">⌘ LOGS AO VIVO</div>
 </div>
 
 <div class="overlay" id="task"><span id="progress"><i></i></span><span class="phase" id="task-phase">IDLE</span><span id="task-title">aguardando backlog…</span></div>
@@ -70,6 +109,23 @@
   <h3>API TOKEN (daemon.json → apiToken)</h3>
   <input id="token" placeholder="cole o apiToken" />
   <button onclick="saveToken()">Conectar</button>
+</div>
+
+<div id="logdrawer">
+  <div id="logbar">
+    <h2>LOGS · PILOT</h2>
+    <input type="text" id="logsearch" placeholder="buscar…" oninput="renderLogs()" />
+    <span class="chip role" data-role="agent" onclick="toggleRole(this)">BUILDER</span>
+    <span class="chip role" data-role="reviewer" onclick="toggleRole(this)">REVIEW</span>
+    <span class="chip role" data-role="gatekeeper" onclick="toggleRole(this)">GATE</span>
+    <span class="chip role" data-role="deploy" onclick="toggleRole(this)">DEPLOY</span>
+    <span class="chip role" data-role="strategist" onclick="toggleRole(this)">STRATEGIST</span>
+    <span class="chip role" data-role="redteam" onclick="toggleRole(this)">REDTEAM</span>
+    <span class="chip on" id="followbtn" onclick="toggleFollow()">FOLLOW ▼</span>
+    <button id="logclose" onclick="closeLogs()">✕</button>
+  </div>
+  <div id="logview"></div>
+  <div id="followhint" onclick="toggleFollow()">↓ SEGUIR</div>
 </div>
 
 <script>
@@ -106,6 +162,7 @@ function layout() {
 
 // visual state per node: idle | working | ok | fail
 const states = {};
+let hoverNode = null;
 function setState(id, s) { if (nodeMap[id]) states[id] = s; }
 function resetStates() { for (const n of NODES) states[n.id] = "idle"; }
 
@@ -216,6 +273,11 @@ function draw(time) {
     // status dot
     ctx.beginPath(); ctx.arc(n.x + r*0.75, n.y - r*0.75, 4, 0, Math.PI*2);
     ctx.fillStyle = hexA(glowColor, 1); ctx.fill();
+    // hover highlight
+    if (n.id === hoverNode) {
+      ctx.beginPath(); ctx.arc(n.x, n.y, r + 14, 0, Math.PI*2);
+      ctx.strokeStyle = hexA(glowColor, .85); ctx.lineWidth = 1.2; ctx.stroke();
+    }
   }
 
   // bursts
@@ -270,6 +332,12 @@ async function poll() {
     document.getElementById("s-tasks").textContent = data.state?.tasks ?? 0;
     document.getElementById("s-deploys").textContent = data.state?.deploys ?? 0;
     document.getElementById("s-fails").textContent = data.state?.failures ?? 0;
+    // budget meters
+    const maxT = data.cfg?.maxTasksPerDay || 15, maxD = data.cfg?.maxDeploysPerDay || 12;
+    document.getElementById("m-tasks").style.width = `${Math.min((data.state?.tasks ?? 0) / maxT * 100, 100)}%`;
+    document.getElementById("m-dep").style.width = `${Math.min((data.state?.deploys ?? 0) / maxD * 100, 100)}%`;
+    document.getElementById("m-tasks-t").textContent = `${data.state?.tasks ?? 0}/${maxT}`;
+    document.getElementById("m-dep-t").textContent = `${data.state?.deploys ?? 0}/${maxD}`;
     render(data.events || []);
   } catch {
     document.getElementById("live").className = "stale";
@@ -336,6 +404,125 @@ function render(events) {
   document.getElementById("s-prs").textContent = events.filter(e => e.phase === "merge" && e.ok).length;
 }
 function escapeHtml(s) { return s.replace(/</g, "&lt;"); }
+
+// ─── log drawer ───────────────────────────────────────────────────────────────
+let logLines = [], roleFilters = new Set(), follow = true, logsOpen = false;
+const ROLES = ["agent","reviewer","gatekeeper","deploy","strategist","redteam","pipeline","info"];
+function roleOf(msg) {
+  if (/strategist/.test(msg)) return "strategist";
+  if (/redteam/.test(msg)) return "redteam";
+  if (/reviewer/.test(msg)) return "reviewer";
+  if (/gatekeeper|invariant/.test(msg)) return "gatekeeper";
+  if (/deploy|rollback|soak|npm/.test(msg)) return "deploy";
+  if (/^agent|builder/.test(msg)) return "agent";
+  if (/pipeline|pilot started|frozen|watchdog|queue/.test(msg)) return "pipeline";
+  return "info";
+}
+function openLogs(role) {
+  logsOpen = true;
+  document.getElementById("logdrawer").classList.add("open");
+  if (role) {
+    roleFilters = new Set([role]);
+    document.querySelectorAll("#logbar .chip.role").forEach(c =>
+      c.classList.toggle("on", c.dataset.role === role));
+  }
+  pollLogs();
+}
+function closeLogs() { logsOpen = false; document.getElementById("logdrawer").classList.remove("open"); }
+window.openLogs = openLogs; window.closeLogs = closeLogs;
+function toggleRole(el) {
+  const r = el.dataset.role;
+  roleFilters.has(r) ? roleFilters.delete(r) : roleFilters.add(r);
+  el.classList.toggle("on", roleFilters.has(r));
+  renderLogs();
+}
+window.toggleRole = toggleRole;
+function toggleFollow() {
+  follow = !follow;
+  document.getElementById("followbtn").classList.toggle("on", follow);
+  document.getElementById("followbtn").textContent = follow ? "FOLLOW ▼" : "PAUSED ⏸";
+  if (follow) scrollLogs();
+}
+window.toggleFollow = toggleFollow;
+function scrollLogs() {
+  const v = document.getElementById("logview");
+  v.scrollTop = v.scrollHeight;
+  document.getElementById("followhint").style.display = "none";
+}
+document.getElementById("logview").addEventListener("scroll", function () {
+  const atBottom = this.scrollTop + this.clientHeight > this.scrollHeight - 30;
+  if (!atBottom && follow) { follow = false; document.getElementById("followbtn").click(); }
+});
+async function pollLogs() {
+  if (!logsOpen) return;
+  try {
+    const res = await fetch("/api/pilot-log?n=400", { headers: { authorization: `Bearer ${token}` } });
+    if (!res.ok) throw new Error(res.status);
+    const data = await res.json();
+    logLines = (data.lines || []).map((l) => {
+      try { return JSON.parse(l); } catch { return { msg: "raw", data: l }; }
+    });
+    renderLogs();
+  } catch {}
+  setTimeout(pollLogs, 2000);
+}
+function renderLogs() {
+  const view = document.getElementById("logview");
+  const q = (document.getElementById("logsearch").value || "").toLowerCase();
+  const frag = document.createDocumentFragment();
+  const tasksSeen = new Map();
+  for (const e of logLines) {
+    const role = roleOf(e.msg || "");
+    if (roleFilters.size && !roleFilters.has(role)) continue;
+    const dataStr = typeof e.data === "string" ? e.data
+      : e.data ? Object.entries(e.data).map(([k, v]) => `${k}:${String(v).slice(0, 90)}`).join("  ") : "";
+    const task = (e.data && e.data.task) || (dataStr.match(/\((P[\d]-[\w-]+)\)/) || [])[1] || "";
+    if (task) tasksSeen.set(task, (tasksSeen.get(task) || 0) + 1);
+    if (q && !(`${task} ${e.msg} ${dataStr}`.toLowerCase().includes(q))) continue;
+    const time = e.ts ? new Date(e.ts).toLocaleTimeString("pt-BR", { hour12: false }) : "";
+    const ln = document.createElement("div");
+    ln.className = "ln";
+    const lv = e.level === "warn" ? "lv-warn" : e.level === "error" ? "lv-error" : "";
+    ln.innerHTML = `<span class="ts">${time}</span>` +
+      `<span class="tag rg-${role} ${lv}">${escapeHtml(e.msg || "")}</span>` +
+      `<span class="tx ${lv}">${task ? `<b style="color:#8fa3b8">[${task}]</b> ` : ""}${escapeHtml(dataStr)}</span>`;
+    frag.appendChild(ln);
+  }
+  view.innerHTML = "";
+  view.appendChild(frag);
+  // dynamic task chips (top 4)
+  document.querySelectorAll("#logbar .chip.task").forEach((c) => c.remove());
+  let lastChip = document.getElementById("followbtn");
+  for (const [t] of [...tasksSeen.entries()].sort((a, b) => b[1] - a[1]).slice(-4)) {
+    const c = document.createElement("span");
+    c.className = "chip task"; c.textContent = t;
+    c.onclick = () => { document.getElementById("logsearch").value = t; renderLogs(); };
+    lastChip.after(c); lastChip = c;
+  }
+  if (follow) scrollLogs();
+}
+addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeLogs();
+  if (e.key === "l" && !logsOpen && !/input|textarea/i.test(document.activeElement.tagName)) openLogs();
+});
+
+// canvas nodes: hover cursor + click → filtered logs
+const nodeRole = { backlog:"pipeline", builder:"agent", security:"reviewer", quality:"reviewer",
+                   gatekeeper:"gatekeeper", deploy:"deploy", core:"deploy" };
+function hitNode(e) {
+  for (const n of NODES) {
+    if (Math.hypot(e.clientX - n.x, e.clientY - n.y) <= n.r + 12) return n.id;
+  }
+  return null;
+}
+canvas.addEventListener("mousemove", (e) => {
+  hoverNode = hitNode(e);
+  canvas.style.cursor = hoverNode ? "pointer" : "default";
+});
+canvas.addEventListener("click", (e) => {
+  const id = hitNode(e);
+  if (id) openLogs(nodeRole[id]);
+});
 
 resize();
 </script>

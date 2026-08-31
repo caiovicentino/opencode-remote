@@ -111,7 +111,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
     if (line) {
       emit("agent", { task: t.id, detail: line.trim() });
       console.log(
-        JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "agent", data: line.trim().slice(0, 160) }),
+        JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "agent", data: line.trim().slice(0, 400) }),
       );
     }
   };
