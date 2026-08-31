@@ -450,8 +450,16 @@ function scrollLogs() {
   document.getElementById("followhint").style.display = "none";
 }
 document.getElementById("logview").addEventListener("scroll", function () {
-  const atBottom = this.scrollTop + this.clientHeight > this.scrollHeight - 30;
-  if (!atBottom && follow) { follow = false; document.getElementById("followbtn").click(); }
+  const atBottom = this.scrollTop + this.clientHeight > this.scrollHeight - 40;
+  if (!atBottom && follow) {
+    follow = false;
+    document.getElementById("followbtn").classList.remove("on");
+    document.getElementById("followbtn").textContent = "PAUSED ⏸";
+  } else if (atBottom && !follow) {
+    follow = true;
+    document.getElementById("followbtn").classList.add("on");
+    document.getElementById("followbtn").textContent = "FOLLOW ▼";
+  }
 });
 async function pollLogs() {
   if (!logsOpen) return;
@@ -466,19 +474,30 @@ async function pollLogs() {
   } catch {}
   setTimeout(pollLogs, 2000);
 }
+let lastSig = "";
 function renderLogs() {
   const view = document.getElementById("logview");
   const q = (document.getElementById("logsearch").value || "").toLowerCase();
-  const frag = document.createDocumentFragment();
-  const tasksSeen = new Map();
+  const filtered = [];
   for (const e of logLines) {
     const role = roleOf(e.msg || "");
     if (roleFilters.size && !roleFilters.has(role)) continue;
     const dataStr = typeof e.data === "string" ? e.data
       : e.data ? Object.entries(e.data).map(([k, v]) => `${k}:${String(v).slice(0, 90)}`).join("  ") : "";
     const task = (e.data && e.data.task) || (dataStr.match(/\((P[\d]-[\w-]+)\)/) || [])[1] || "";
-    if (task) tasksSeen.set(task, (tasksSeen.get(task) || 0) + 1);
     if (q && !(`${task} ${e.msg} ${dataStr}`.toLowerCase().includes(q))) continue;
+    filtered.push({ e, role, dataStr, task });
+  }
+  // skip DOM rebuild entirely when nothing changed — keeps scroll position stable
+  const lastE = filtered[filtered.length - 1]?.e;
+  const sig = `${filtered.length}|${lastE?.ts}|${lastE?.msg}|${q}|${[...roleFilters].join()}`;
+  if (sig === lastSig) return;
+  const wasFollowing = follow;
+  const prevH = view.scrollHeight, prevTop = view.scrollTop;
+  const frag = document.createDocumentFragment();
+  const tasksSeen = new Map();
+  for (const { e, role, dataStr, task } of filtered) {
+    if (task) tasksSeen.set(task, (tasksSeen.get(task) || 0) + 1);
     const time = e.ts ? new Date(e.ts).toLocaleTimeString("pt-BR", { hour12: false }) : "";
     const ln = document.createElement("div");
     ln.className = "ln";
@@ -499,7 +518,9 @@ function renderLogs() {
     c.onclick = () => { document.getElementById("logsearch").value = t; renderLogs(); };
     lastChip.after(c); lastChip = c;
   }
-  if (follow) scrollLogs();
+  if (wasFollowing) scrollLogs();
+  else view.scrollTop = view.scrollHeight - prevH + prevTop; // keep reading position
+  lastSig = sig;
 }
 addEventListener("keydown", (e) => {
   if (e.key === "Escape") closeLogs();
