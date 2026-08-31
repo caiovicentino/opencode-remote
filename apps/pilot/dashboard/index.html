@@ -170,8 +170,8 @@ addEventListener("resize", resize);
 
 // ─── pipeline layout (2D) ─────────────────────────────────────────────────────
 const NODES = [
-  { id:"researcher", label:"RESEARCHER", fx:0.05, fy:0.16, color:"#c084fc", small:true },
-  { id:"strategist", label:"STRATEGIST", fx:0.05, fy:0.84, color:"#f472b6", small:true },
+  { id:"researcher", label:"RESEARCHER", fx:0.05, fy:0.28, color:"#c084fc", small:true },
+  { id:"strategist", label:"STRATEGIST", fx:0.05, fy:0.72, color:"#f472b6", small:true },
   { id:"backlog",    label:"BACKLOG",    fx:0.14, fy:0.50, color:"#8fa3b8" },
   { id:"builder",    label:"BUILDER",    fx:0.24, fy:0.50, color:"#22d3ee" },
   { id:"security",   label:"SEC REVIEW", fx:0.40, fy:0.34, color:"#818cf8" },
@@ -179,7 +179,7 @@ const NODES = [
   { id:"gatekeeper", label:"GATEKEEPER", fx:0.56, fy:0.50, color:"#fbbf24" },
   { id:"deploy",     label:"DEPLOY",     fx:0.72, fy:0.50, color:"#4ade80" },
   { id:"core",       label:"MAC · PROD", fx:0.88, fy:0.50, color:"#e8edf2", big:true },
-  { id:"supervisor", label:"SUPERVISOR", fx:0.88, fy:0.84, color:"#22d3ee", small:true },
+  { id:"supervisor", label:"SUPERVISOR", fx:0.88, fy:0.72, color:"#22d3ee", small:true },
 ];
 const nodeMap = {};
 function layout() {
