@@ -55,7 +55,7 @@ o checkout de produção só é tocado no deploy.
 ## Observabilidade
 
 - **Dashboard 3D em tempo real**: `http://127.0.0.1:8792/dashboard?token=<apiToken>`
-  (Three.js, cenas: nodes do pipeline, partículas de trabalho, bursts de merge, rollback vermelho)
+  (Canvas 2D sem dependências: nodes do pipeline, partículas de trabalho, bursts de merge, rollback vermelho)
 - Logs JSONL: `~/.opencode-remote/logs/pilot.log`
 - Feed bruto: `GET 127.0.0.1:8792/api/pilot-events` (Bearer apiToken) — eventos + contadores + heartbeat
 - Digest a cada pipeline: push no seu telefone (via `POST /api/push` autenticado no daemon)

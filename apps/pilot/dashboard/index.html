@@ -5,41 +5,41 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Pilot — Mission Control</title>
 <style>
-  :root { --cyan:#22d3ee; --green:#4ade80; --red:#f87171; --gold:#fbbf24; --bg:#04060a; }
+  :root { --cyan:#22d3ee; --green:#4ade80; --red:#f87171; --gold:#fbbf24; --bg:#04060a; --text:#e8edf2; --muted:#8fa3b8; }
   * { margin:0; padding:0; box-sizing:border-box; }
-  html,body { height:100%; overflow:hidden; background:var(--bg); font-family:'SF Pro Text',-apple-system,system-ui,sans-serif; color:#e8edf2; }
+  html,body { height:100%; overflow:hidden; background:var(--bg); font-family:-apple-system,'SF Pro Text',system-ui,sans-serif; color:var(--text); }
   #scene { position:fixed; inset:0; }
   .overlay { position:fixed; z-index:10; pointer-events:none; }
   #header { top:0; left:0; right:0; padding:18px 24px; display:flex; align-items:center; gap:14px;
-            background:linear-gradient(to bottom, rgba(4,6,10,.85), transparent); }
+            background:linear-gradient(to bottom, rgba(4,6,10,.88), transparent); }
   #header h1 { font-size:15px; letter-spacing:.22em; text-transform:uppercase; font-weight:700; }
-  #header .sub { font-size:11px; color:#8fa3b8; letter-spacing:.08em; }
-  #live { width:10px; height:10px; border-radius:50%; background:#555; box-shadow:0 0 0 rgba(0,0,0,0); }
+  #header .sub { font-size:11px; color:var(--muted); letter-spacing:.08em; }
+  #live { width:10px; height:10px; border-radius:50%; background:#555; }
   #live.on { background:var(--green); animation:pulse 1.6s infinite; }
-  #live.stale { background:var(--red); }
+  #live.stale { background:var(--red); animation:none; }
   @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(74,222,128,.7)} 70%{box-shadow:0 0 0 12px rgba(74,222,128,0)} 100%{box-shadow:0 0 0 0 rgba(74,222,128,0)} }
   #stats { top:70px; right:20px; width:230px; background:rgba(10,16,24,.72); border:1px solid rgba(34,211,238,.18);
            border-radius:14px; padding:14px 16px; backdrop-filter:blur(8px); }
   #stats .row { display:flex; justify-content:space-between; font-size:12px; padding:4px 0; color:#c9d6e3; }
   #stats .row b { font-variant-numeric:tabular-nums; }
   #stats .row b.ok { color:var(--green); } #stats .row b.bad { color:var(--red); }
-  #task { bottom:86px; left:50%; transform:translateX(-50%); max-width:70vw; text-align:center;
+  #task { bottom:86px; left:50%; transform:translateX(-50%); max-width:80vw; text-align:center;
           background:rgba(10,16,24,.72); border:1px solid rgba(34,211,238,.25); border-radius:999px;
-          padding:10px 22px; font-size:13px; letter-spacing:.03em; backdrop-filter:blur(8px); }
+          padding:10px 22px; font-size:13px; backdrop-filter:blur(8px); }
   #task .phase { color:var(--cyan); font-weight:700; margin-right:8px; text-transform:uppercase; font-size:11px; letter-spacing:.14em; }
   #ticker { bottom:0; left:0; right:0; padding:10px 24px 14px; font:11px/1.7 ui-monospace,Menlo,monospace;
-            color:#7d90a5; background:linear-gradient(to top, rgba(4,6,10,.9), transparent); height:110px; overflow:hidden; }
+            color:#7d90a5; background:linear-gradient(to top, rgba(4,6,10,.92), transparent); height:112px; overflow:hidden; }
   #ticker div { white-space:nowrap; text-overflow:ellipsis; overflow:hidden; }
   #ticker .t { color:var(--cyan); } #ticker .ok { color:var(--green); } #ticker .bad { color:var(--red); } #ticker .gold { color:var(--gold); }
-  #tokenbox { top:50%; left:50%; transform:translate(-50%,-50%); pointer-events:auto; background:rgba(10,16,24,.9);
+  #tokenbox { top:50%; left:50%; transform:translate(-50%,-50%); pointer-events:auto; background:rgba(10,16,24,.92);
               border:1px solid rgba(34,211,238,.3); border-radius:16px; padding:24px; width:340px; display:none; }
   #tokenbox h3 { font-size:13px; margin-bottom:10px; letter-spacing:.08em; }
-  #tokenbox input { width:100%; padding:9px 12px; background:#0b111a; border:1px solid #2a3947; color:#e8edf2; border-radius:8px; font-size:12px; }
+  #tokenbox input { width:100%; padding:9px 12px; background:#0b111a; border:1px solid #2a3947; color:var(--text); border-radius:8px; font-size:12px; }
   #tokenbox button { margin-top:10px; width:100%; padding:9px; background:var(--cyan); border:none; color:#04121a; font-weight:700; border-radius:8px; cursor:pointer; }
 </style>
 </head>
 <body>
-<div id="scene"></div>
+<canvas id="scene"></canvas>
 
 <div class="overlay" id="header">
   <div id="live"></div>
@@ -53,7 +53,7 @@
   <div class="row"><span>TASKS HOJE</span><b id="s-tasks">0</b></div>
   <div class="row"><span>DEPLOYS</span><b id="s-deploys" class="ok">0</b></div>
   <div class="row"><span>FALHAS</span><b id="s-fails" class="bad">0</b></div>
-  <div class="row"><span>PRs</span><b id="s-prs">—</b></div>
+  <div class="row"><span>MERGES</span><b id="s-prs">0</b></div>
   <div class="row"><span>HEARTBEAT</span><b id="s-hb">—</b></div>
 </div>
 
@@ -66,283 +66,242 @@
   <button onclick="saveToken()">Conectar</button>
 </div>
 
-<script type="importmap">
-{ "imports": {
-    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
-    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
-} }
-</script>
-<script type="module">
-import * as THREE from "three";
-import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-
-// ─── scene basics ─────────────────────────────────────────────────────────────
-const scene = new THREE.Scene();
-scene.fog = new THREE.FogExp2(0x04060a, 0.028);
-const camera = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 0.1, 200);
-camera.position.set(0, 7.5, 17);
-const renderer = new THREE.WebGLRenderer({ antialias:true, alpha:true });
-renderer.setSize(innerWidth, innerHeight);
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-document.getElementById("scene").appendChild(renderer.domElement);
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.autoRotate = true; controls.autoRotateSpeed = 0.7;
-controls.enableDamping = true; controls.dampingFactor = 0.06;
-controls.minDistance = 8; controls.maxDistance = 40; controls.maxPolarAngle = Math.PI/2.1;
-addEventListener("resize", () => {
-  camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
-  renderer.setSize(innerWidth, innerHeight);
-});
-
-// starfield
-{
-  const g = new THREE.BufferGeometry();
-  const n = 900, pos = new Float32Array(n*3);
-  for (let i=0;i<n;i++){ pos[3*i]=(Math.random()-.5)*120; pos[3*i+1]=Math.random()*40-5; pos[3*i+2]=(Math.random()-.5)*120; }
-  g.setAttribute("position", new THREE.BufferAttribute(pos,3));
-  scene.add(new THREE.Points(g, new THREE.PointsMaterial({ color:0x3a4a5c, size:0.08, transparent:true, opacity:0.8 })));
+<script>
+// ─── canvas setup ─────────────────────────────────────────────────────────────
+const canvas = document.getElementById("scene");
+const ctx = canvas.getContext("2d");
+let W = 0, H = 0, DPR = Math.min(devicePixelRatio || 1, 2);
+function resize() {
+  W = innerWidth; H = innerHeight;
+  canvas.width = W * DPR; canvas.height = H * DPR;
+  canvas.style.width = W + "px"; canvas.style.height = H + "px";
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  layout();
 }
-// grid floor
-{
-  const grid = new THREE.GridHelper(80, 80, 0x123a44, 0x0a1420);
-  grid.position.y = -3.2; scene.add(grid);
-}
+addEventListener("resize", resize);
 
-// ─── pipeline nodes ───────────────────────────────────────────────────────────
+// ─── pipeline layout (2D) ─────────────────────────────────────────────────────
 const NODES = [
-  { id:"backlog",     label:"BACKLOG",     x:-11, color:0x8fa3b8 },
-  { id:"builder",     label:"BUILDER",     x:-5.5,color:0x22d3ee },
-  { id:"security",    label:"SEC REVIEW",  x:0,   y: 1.6, color:0x818cf8 },
-  { id:"quality",     label:"QUALITY",     x:0,   y:-1.6, color:0x38bdf8 },
-  { id:"gatekeeper",  label:"GATEKEEPER",  x: 5.5, color:0xfbbf24 },
-  { id:"deploy",      label:"DEPLOY",      x: 11,  color:0x4ade80 },
-  { id:"core",        label:"MAC · PROD",  x: 16.5,color:0xe8edf2, big:true },
+  { id:"backlog",    label:"BACKLOG",    fx:0.09, fy:0.50, color:"#8fa3b8" },
+  { id:"builder",    label:"BUILDER",    fx:0.24, fy:0.50, color:"#22d3ee" },
+  { id:"security",   label:"SEC REVIEW", fx:0.40, fy:0.34, color:"#818cf8" },
+  { id:"quality",    label:"QUALITY",    fx:0.40, fy:0.66, color:"#38bdf8" },
+  { id:"gatekeeper", label:"GATEKEEPER", fx:0.56, fy:0.50, color:"#fbbf24" },
+  { id:"deploy",     label:"DEPLOY",     fx:0.72, fy:0.50, color:"#4ade80" },
+  { id:"core",       label:"MAC · PROD", fx:0.88, fy:0.50, color:"#e8edf2", big:true },
 ];
 const nodeMap = {};
-for (const n of NODES) {
-  const g = new THREE.Group();
-  const geo = new THREE.IcosahedronGeometry(n.big ? 1.15 : 0.85, 1);
-  const mat = new THREE.MeshStandardMaterial({
-    color: n.color, emissive: n.color, emissiveIntensity: 0.12,
-    metalness: 0.6, roughness: 0.25, wireframe: false,
-  });
-  const mesh = new THREE.Mesh(geo, mat);
-  g.add(mesh);
-  const halo = new THREE.Mesh(
-    new THREE.IcosahedronGeometry(n.big ? 1.5 : 1.15, 1),
-    new THREE.MeshBasicMaterial({ color:n.color, wireframe:true, transparent:true, opacity:0.14 })
-  );
-  g.add(halo);
-  // glow sprite
-  const glow = new THREE.Sprite(new THREE.SpriteMaterial({
-    map: glowTexture(n.color), transparent:true, opacity:0.35, blending:THREE.AdditiveBlending, depthWrite:false
-  }));
-  glow.scale.setScalar(n.big ? 5.5 : 4);
-  g.add(glow);
-  // label
-  const label = new THREE.Sprite(new THREE.SpriteMaterial({ map: labelText(n.label, n.color), transparent:true, depthWrite:false }));
-  label.scale.set(4.6, 1.15, 1);
-  label.position.y = n.big ? 2.4 : 2.0;
-  g.add(label);
-  g.position.set(n.x, n.y ?? 0, 0);
-  scene.add(g);
-  nodeMap[n.id] = { group:g, mesh, halo, glow, base:new THREE.Color(n.color), label:n.label, burst:0, state:"idle" };
+function layout() {
+  for (const n of NODES) {
+    n.x = n.fx * W; n.y = n.fy * H; n.r = n.big ? 34 : 26;
+    nodeMap[n.id] = n;
+  }
 }
-function glowTexture(color) {
-  const c = document.createElement("canvas"); c.width = c.height = 128;
-  const x = c.getContext("2d");
-  const grd = x.createRadialGradient(64,64,0,64,64,64);
-  grd.addColorStop(0, "rgba(255,255,255,.9)");
-  grd.addColorStop(0.25, hexRgba(color, .35));
-  grd.addColorStop(1, hexRgba(color, 0));
-  x.fillStyle = grd; x.fillRect(0,0,128,128);
-  return new THREE.CanvasTexture(c);
+
+// visual state per node: idle | working | ok | fail
+const states = {};
+function setState(id, s) { if (nodeMap[id]) states[id] = s; }
+function resetStates() { for (const n of NODES) states[n.id] = "idle"; }
+
+// particles flowing between nodes
+const particles = []; // {from,to,color,t,speed}
+function flow(from, to, color, count = 14) {
+  const f = nodeMap[from], t = nodeMap[to]; if (!f || !t) return;
+  for (let i = 0; i < count; i++) {
+    particles.push({ fx:f.x, fy:f.y, tx:t.x, ty:t.y, color, t:-i*0.06, speed:0.008 + Math.random()*0.006, mid:(Math.random()-.5)*60 });
+  }
 }
-function hexRgba(hex, a) {
-  const r=(hex>>16)&255, g=(hex>>8)&255, b=hex&255;
+// burst (merge / rollback celebration)
+const bursts = []; // {x,y,color,t,parts:[{a,v}]}
+function burst(x, y, color) {
+  const parts = [];
+  for (let i = 0; i < 36; i++) parts.push({ a: Math.random()*Math.PI*2, v: 1.5 + Math.random()*3 });
+  bursts.push({ x, y, color, t: 0, parts });
+}
+
+// ─── drawing ──────────────────────────────────────────────────────────────────
+function draw(time) {
+  ctx.clearRect(0, 0, W, H);
+  // background vignette
+  const bg = ctx.createRadialGradient(W/2, H/2, 0, W/2, H/2, Math.max(W,H)*0.7);
+  bg.addColorStop(0, "#071019"); bg.addColorStop(1, "#04060a");
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+  // dotted grid
+  ctx.fillStyle = "rgba(56,130,160,.07)";
+  for (let gx = 20; gx < W; gx += 46) for (let gy = 20; gy < H; gy += 46) ctx.fillRect(gx, gy, 2, 2);
+
+  // connection rails
+  ctx.lineWidth = 1;
+  for (const [a, b] of [["backlog","builder"],["builder","security"],["builder","quality"],["security","gatekeeper"],["quality","gatekeeper"],["gatekeeper","deploy"],["deploy","core"]]) {
+    const f = nodeMap[a], t = nodeMap[b];
+    ctx.strokeStyle = "rgba(34,211,238,.10)";
+    ctx.beginPath(); ctx.moveTo(f.x, f.y); ctx.lineTo(t.x, t.y); ctx.stroke();
+  }
+
+  // particles
+  for (let i = particles.length-1; i >= 0; i--) {
+    const p = particles[i];
+    p.t += p.speed;
+    if (p.t > 1) { particles.splice(i, 1); continue; }
+    if (p.t < 0) continue;
+    const mx = (p.fx+p.tx)/2, my = (p.fy+p.ty)/2 + p.mid;
+    const u = p.t, iu = 1-u;
+    const x = iu*iu*p.fx + 2*iu*u*mx + u*u*p.tx;
+    const y = iu*iu*p.fy + 2*iu*u*my + u*u*p.ty;
+    const alpha = Math.sin(u * Math.PI);
+    ctx.beginPath(); ctx.arc(x, y, 2.4, 0, Math.PI*2);
+    ctx.fillStyle = hexA(p.color, alpha * 0.95);
+    ctx.shadowColor = p.color; ctx.shadowBlur = 12;
+    ctx.fill(); ctx.shadowBlur = 0;
+  }
+
+  // nodes
+  for (const n of NODES) {
+    const st = states[n.id] || "idle";
+    const working = st === "working";
+    const pulse = working ? 1 + Math.sin(time*5)*0.10 : 1;
+    const r = n.r * pulse;
+    // glow
+    const glowColor = st === "fail" ? "#f87171" : st === "ok" ? "#4ade80" : working ? "#22d3ee" : n.color;
+    const g = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, r*3);
+    g.addColorStop(0, hexA(glowColor, working ? .5 : .22));
+    g.addColorStop(1, hexA(glowColor, 0));
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(n.x, n.y, r*3, 0, Math.PI*2); ctx.fill();
+    // body
+    ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, Math.PI*2);
+    ctx.fillStyle = "#0a1420"; ctx.fill();
+    ctx.lineWidth = 2.2; ctx.strokeStyle = hexA(glowColor, working ? 1 : .55); ctx.stroke();
+    // ring
+    ctx.beginPath(); ctx.arc(n.x, n.y, r + 7, time * (working ? 2.2 : 0.6), time * (working ? 2.2 : 0.6) + Math.PI*1.4);
+    ctx.strokeStyle = hexA(glowColor, .5); ctx.lineWidth = 1.4; ctx.stroke();
+    // label
+    ctx.font = "700 12px -apple-system,system-ui,sans-serif";
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillStyle = hexA(glowColor, .95);
+    ctx.fillText(n.label, n.x, n.y - r - 16);
+    // status dot
+    ctx.beginPath(); ctx.arc(n.x + r*0.75, n.y - r*0.75, 4, 0, Math.PI*2);
+    ctx.fillStyle = hexA(glowColor, 1); ctx.fill();
+  }
+
+  // bursts
+  for (let i = bursts.length-1; i >= 0; i--) {
+    const b = bursts[i]; b.t += 0.02;
+    if (b.t > 1) { bursts.splice(i, 1); continue; }
+    for (const p of b.parts) {
+      const d = b.t * p.v * 40, x = b.x + Math.cos(p.a)*d, y = b.y + Math.sin(p.a)*d;
+      ctx.beginPath(); ctx.arc(x, y, 2.6*(1-b.t), 0, Math.PI*2);
+      ctx.fillStyle = hexA(b.color, (1-b.t)*0.9); ctx.fill();
+    }
+    // shockwave ring
+    ctx.beginPath(); ctx.arc(b.x, b.y, b.t*120, 0, Math.PI*2);
+    ctx.strokeStyle = hexA(b.color, (1-b.t)*0.5); ctx.lineWidth = 2; ctx.stroke();
+  }
+}
+function hexA(hex, a) {
+  const c = hex.replace("#","");
+  const r = parseInt(c.slice(0,2),16), g = parseInt(c.slice(2,4),16), b = parseInt(c.slice(4,6),16);
   return `rgba(${r},${g},${b},${a})`;
 }
-function labelText(text, color) {
-  const c = document.createElement("canvas"); c.width = 512; c.height = 128;
-  const x = c.getContext("2d");
-  x.font = "700 44px 'SF Pro Text',system-ui,sans-serif";
-  x.textAlign = "center"; x.textBaseline = "middle";
-  x.fillStyle = "#"+color.toString(16).padStart(6,"0");
-  x.shadowColor = "#"+color.toString(16).padStart(6,"0"); x.shadowBlur = 18;
-  x.fillText(text, 256, 64);
-  return new THREE.CanvasTexture(c);
+
+let last = 0;
+function loop(time) {
+  const dt = Math.min((time - last)/1000, 0.1); last = time;
+  draw(time/1000);
+  requestAnimationFrame(loop);
 }
-
-// ─── particle streams ─────────────────────────────────────────────────────────
-const streams = []; // {from,to,color,alive,pts:[THREE.Sprite]}
-function stream(fromId, toId, color, count = 26) {
-  const f = nodeMap[fromId]?.group.position, t = nodeMap[toId]?.group.position;
-  if (!f || !t) return;
-  const mid = f.clone().add(t).multiplyScalar(0.5); mid.y += 1.1;
-  const curve = new THREE.QuadraticBezierCurve3(f.clone(), mid, t.clone());
-  for (let i=0;i<count;i++) {
-    const s = new THREE.Sprite(new THREE.SpriteMaterial({
-      map: glowTexture(color), color, transparent:true, opacity:0.9, blending:THREE.AdditiveBlending, depthWrite:false
-    }));
-    s.scale.setScalar(0.34);
-    s.userData = { t: -i*0.045, curve, speed: 0.014 + Math.random()*0.01 };
-    scene.add(s);
-    streams.push({ sprite:s, alive:true });
-  }
-}
-
-// burst (merge celebration)
-function burst(pos, color = 0xfbbf24) {
-  for (let i=0;i<40;i++) {
-    const s = new THREE.Sprite(new THREE.SpriteMaterial({ map:glowTexture(color), color, transparent:true, blending:THREE.AdditiveBlending, depthWrite:false }));
-    s.position.copy(pos);
-    s.scale.setScalar(0.4);
-    s.userData = {
-      t:0, burst:true,
-      vel: new THREE.Vector3((Math.random()-.5)*0.22, Math.random()*0.22, (Math.random()-.5)*0.22),
-    };
-    scene.add(s);
-    streams.push({ sprite:s, alive:true });
-  }
-}
-
-// ─── state → visuals ──────────────────────────────────────────────────────────
-function setNode(id, state) {
-  const n = nodeMap[id]; if (!n) return;
-  n.state = state;
-  if (state === "working") { n.mesh.material.emissiveIntensity = 0.9; n.glow.material.opacity = 0.8; n.glow.material.color = new THREE.Color(0x22d3ee); }
-  else if (state === "ok") { n.mesh.material.emissiveIntensity = 0.7; n.glow.material.opacity = 0.7; n.glow.material.color = new THREE.Color(0x4ade80); }
-  else if (state === "fail") { n.mesh.material.emissiveIntensity = 1.0; n.glow.material.opacity = 0.85; n.glow.material.color = new THREE.Color(0xf87171); }
-  else { n.mesh.material.emissiveIntensity = 0.12; n.glow.material.opacity = 0.3; n.glow.material.color = new THREE.Color(n.base); }
-}
-function flow(from, to, color) { stream(from, to, color); }
-function resetNodes() { for (const id of Object.keys(nodeMap)) setNode(id, "idle"); }
-
-function renderEvents(events) {
-  // derive UI from the event tail
-  resetNodes();
-  const ticker = document.getElementById("ticker");
-  ticker.innerHTML = "";
-  let currentTask = null, lastPhase = "";
-  for (const e of events.slice(-120)) {
-    const time = (e.ts || "").slice(11,19);
-    const div = document.createElement("div");
-    const cls = e.type === "result" ? (e.ok ? "ok" : "bad") : e.type === "deploy" ? (e.ok === false ? "bad" : "gold") : "t";
-    div.innerHTML = `<span class="${cls}">${time}</span> [${(e.task||e.type).slice(0,10)}] ${e.phase||e.type} ${escapeHtml(e.detail||"").slice(0,110)}`;
-    ticker.appendChild(div);
-    if (e.type === "loop" && e.phase === "picked") currentTask = e;
-  }
-  while (ticker.children.length > 7) ticker.removeChild(ticker.firstChild);
-
-  // replay phases for node states (last occurrence wins)
-  const ph = events.filter(e => e.type === "phase");
-  const last = {};
-  for (const e of ph) if (e.task) last[e.task] = e;
-  const tasks = Object.keys(last);
-  const cur = tasks[tasks.length-1];
-  if (cur) {
-    const e = last[cur];
-    currentTask = { task: cur, ...e };
-    const seq = ["builder","builder-done","reviewers","reviewers-done","gatekeeper","merge"];
-    const idx = seq.indexOf(e.phase);
-    document.getElementById("task-phase").textContent = (e.phase || "").toUpperCase();
-    document.getElementById("task-phase").style.color =
-      e.ok === false ? "var(--red)" : "var(--cyan)";
-    // light up nodes up to current phase
-    if (idx >= 0) {
-      const order = ["backlog","builder","security","quality","gatekeeper","deploy"];
-      for (let i=0;i<order.length;i++) setNode(order[i], i <= Math.min(idx, 5) ? "ok" : "idle");
-      setNode("builder", e.phase.startsWith("builder") ? (e.phase.endsWith("-done") ? "ok" : "working") : (idx>0?"ok":"idle"));
-      if (e.phase === "reviewers") { setNode("security","working"); setNode("quality","working"); }
-      if (e.phase === "reviewers-done") { setNode("security", e.ok?"ok":"fail"); setNode("quality", e.ok?"ok":"fail"); }
-      if (e.phase === "gatekeeper") setNode("gatekeeper","working");
-      if (e.phase === "merge") setNode("gatekeeper", e.ok ? "ok" : "fail");
-      if (e.phase === "merge" && e.ok) {
-        setNode("deploy","working");
-        flow("gatekeeper","deploy",0xfbbf24);
-        burst(nodeMap.gatekeeper.group.position);
-      }
-      if (e.phase !== "builder") flow("backlog","builder",0x22d3ee);
-      if (idx >= 2) { flow("builder","security",0x818cf8); flow("builder","quality",0x38bdf8); }
-      if (e.phase === "merge" && e.ok) flow("gatekeeper","deploy",0xfbbf24);
-    }
-    document.getElementById("task-title").textContent = `(${cur}) — ${e.detail || ""}`;
-  }
-
-  // deploy events → core node
-  const dep = [...events].reverse().find(e => e.type === "deploy");
-  if (dep) {
-    setNode("core", dep.phase === "done" ? "ok" : dep.phase === "rollback" ? "fail" : "working");
-    if (dep.phase === "start") flow("deploy","core",0x4ade80);
-    if (dep.phase === "rollback") { setNode("deploy","fail"); burst(nodeMap.core.group.position, 0xf87171); }
-    if (dep.phase === "done") burst(nodeMap.core.group.position, 0x4ade80);
-  }
-  document.getElementById("s-prs").textContent = events.filter(e => e.phase === "merge" && e.ok).length;
-}
-function escapeHtml(s){ return s.replace(/</g,"&lt;"); }
+requestAnimationFrame(loop);
 
 // ─── polling ──────────────────────────────────────────────────────────────────
 let token = localStorage.getItem("ocr_dash_token");
 const params = new URLSearchParams(location.search);
 if (params.get("token")) { token = params.get("token"); localStorage.setItem("ocr_dash_token", token); history.replaceState(null,"","/dashboard"); }
 if (token) startPolling(); else document.getElementById("tokenbox").style.display = "block";
-window.saveToken = function () {
+function saveToken() {
   token = document.getElementById("token").value.trim();
   localStorage.setItem("ocr_dash_token", token);
   document.getElementById("tokenbox").style.display = "none";
   startPolling();
-};
+}
+window.saveToken = saveToken;
+
 async function poll() {
   try {
     const res = await fetch("/api/pilot-events", { headers: { authorization: `Bearer ${token}` } });
     if (!res.ok) throw new Error(res.status);
     const data = await res.json();
-    document.getElementById("live").className = "on";
     const hb = data.heartbeatMs ?? Infinity;
     document.getElementById("live").className = hb < 90_000 ? "on" : "stale";
     document.getElementById("s-hb").textContent = hb === Infinity ? "—" : `${Math.round(hb/1000)}s`;
     document.getElementById("s-tasks").textContent = data.state?.tasks ?? 0;
     document.getElementById("s-deploys").textContent = data.state?.deploys ?? 0;
     document.getElementById("s-fails").textContent = data.state?.failures ?? 0;
-    renderEvents(data.events || []);
+    render(data.events || []);
   } catch {
     document.getElementById("live").className = "stale";
   }
 }
 function startPolling() { poll(); setInterval(poll, 2000); }
 
-// ─── animation loop ───────────────────────────────────────────────────────────
-const clock = new THREE.Clock();
-function animate() {
-  requestAnimationFrame(animate);
-  const dt = clock.getDelta(), t = clock.elapsedTime;
-  for (const id of Object.keys(nodeMap)) {
-    const n = nodeMap[id];
-    n.group.rotation.y += dt * (n.state === "working" ? 0.9 : 0.25);
-    const pulse = n.state === "working" ? 1 + Math.sin(t*6)*0.08 : 1;
-    n.mesh.scale.setScalar(pulse);
-    n.halo.rotation.x += dt*0.4; n.halo.rotation.z += dt*0.3;
-    n.glow.material.opacity = (n.state === "working" ? 0.55 + Math.sin(t*5)*0.25 : n.glow.material.opacity);
+function render(events) {
+  resetStates();
+  const ticker = document.getElementById("ticker");
+  ticker.innerHTML = "";
+  for (const e of events.slice(-120)) {
+    const time = (e.ts || "").slice(11, 19);
+    const div = document.createElement("div");
+    const cls = e.type === "result" ? (e.ok ? "ok" : "bad") : e.type === "deploy" ? (e.ok === false ? "bad" : "gold") : "t";
+    div.innerHTML = `<span class="${cls}">${time}</span> [${(e.task || e.type).slice(0, 10)}] ${e.phase || e.type} ${escapeHtml(e.detail || "").slice(0, 110)}`;
+    ticker.appendChild(div);
   }
-  // particles
-  for (let i = streams.length-1; i >= 0; i--) {
-    const s = streams[i], u = s.sprite.userData;
-    if (u.burst) {
-      u.t += dt;
-      s.sprite.position.addScaledVector(u.vel, dt*60*0.2);
-      s.sprite.material.opacity = Math.max(0, 0.9 - u.t*0.7);
-      if (u.t > 1.6) { scene.remove(s.sprite); streams.splice(i,1); }
-    } else {
-      u.t += u.speed;
-      if (u.t > 1.1) { scene.remove(s.sprite); streams.splice(i,1); continue; }
-      s.sprite.position.copy(u.curve.getPoint(Math.min(u.t, 1)));
-      s.sprite.material.opacity = Math.sin(Math.min(u.t,1) * Math.PI) * 0.95;
+  while (ticker.children.length > 6) ticker.removeChild(ticker.firstChild);
+
+  // last phase per task
+  const last = {};
+  for (const e of events.filter(x => x.type === "phase")) if (e.task) last[e.task] = e;
+  const tasks = Object.keys(last);
+  const cur = tasks[tasks.length - 1];
+  if (cur) {
+    const e = last[cur];
+    const seq = ["builder","builder-done","reviewers","reviewers-done","gatekeeper","merge"];
+    const idx = seq.indexOf(e.phase);
+    const phaseEl = document.getElementById("task-phase");
+    phaseEl.textContent = (e.phase || "").toUpperCase();
+    phaseEl.style.color = e.ok === false ? "var(--red)" : "var(--cyan)";
+    document.getElementById("task-title").textContent = `(${cur}) — ${e.detail || ""}`;
+
+    if (idx >= 0) {
+      const order = ["backlog","builder","security","quality","gatekeeper","deploy"];
+      for (let i = 0; i < order.length; i++) setState(order[i], i <= Math.min(idx, 5) ? "ok" : "idle");
+      setState("builder", e.phase === "builder" ? "working" : idx > 0 ? "ok" : "idle");
+      if (e.phase === "reviewers") { setState("security","working"); setState("quality","working"); }
+      if (e.phase === "reviewers-done") { setState("security", e.ok ? "ok" : "fail"); setState("quality", e.ok ? "ok" : "fail"); }
+      if (e.phase === "gatekeeper") setState("gatekeeper","working");
+      if (e.phase === "merge") setState("gatekeeper", e.ok ? "ok" : "fail");
+      if (e.phase === "merge" && e.ok) {
+        setState("deploy","working");
+        flow("gatekeeper","deploy","#fbbf24");
+        burst(nodeMap.gatekeeper.x, nodeMap.gatekeeper.y, "#fbbf24");
+      }
+      if (e.phase !== "builder") flow("backlog","builder","#22d3ee");
+      if (idx >= 2) { flow("builder","security","#818cf8"); flow("builder","quality","#38bdf8"); }
+      if (e.phase === "builder") flow("backlog","builder","#22d3ee");
     }
   }
-  controls.update();
-  renderer.render(scene, camera);
+
+  // deploy events → core
+  const dep = [...events].reverse().find(e => e.type === "deploy");
+  if (dep) {
+    setState("core", dep.phase === "done" ? "ok" : dep.phase === "rollback" ? "fail" : "working");
+    if (dep.phase === "start") flow("deploy","core","#4ade80");
+    if (dep.phase === "rollback") { setState("deploy","fail"); burst(nodeMap.core.x, nodeMap.core.y, "#f87171"); }
+    if (dep.phase === "done") burst(nodeMap.core.x, nodeMap.core.y, "#4ade80");
+  }
+  document.getElementById("s-prs").textContent = events.filter(e => e.phase === "merge" && e.ok).length;
 }
-animate();
+function escapeHtml(s) { return s.replace(/</g, "&lt;"); }
+
+resize();
 </script>
 </body>
 </html>
