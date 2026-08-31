@@ -67,7 +67,7 @@ async function main() {
 
     const tasks = loadBacklog(cfg.workspace);
     // self-sustaining evolution: never let the queue run dry
-    if (tasks.length < 2) {
+    if (tasks.length < 2 && Date.now() - lastStrategistRun > 10 * 60_000) {
       log("info", "queue low — strategist drafting next tasks", { ready: tasks.length });
       await runStrategist(cfg);
       continue; // re-read backlog fresh in the next cycle
@@ -182,7 +182,10 @@ Output: either "REDTEAM: CLEAN" if you found nothing actionable, or
  * shippable tasks into BACKLOG.md. This is what makes the loop 24/7 without
  * a human feeding work.
  */
+let lastStrategistRun = 0;
+
 async function runStrategist(cfg: PilotConfig) {
+  lastStrategistRun = Date.now();
   writeSandboxConfig(cfg.workspace); // headless runs abort without sandbox perms
   const r = await runAgent(
     `You are the STRATEGIST agent of the opencode-remote autonomous pipeline.
@@ -194,9 +197,12 @@ stage 3 (desktop app shell) is the priority, then hosted relay, then distributio
 
 First, ground yourself in context:
 1. Read docs/VISION.md, AGENTS.md and docs/PILOT.md.
-2. Read ~/.opencode-remote/memory.md (project memory: user rules, competitive research, past decisions).
-3. Skim the code: apps/web/src/components (mobile PWA UX), apps/daemon/src (ops surface), BACKLOG.md (## Done shows what shipped recently).
-4. Check git log --oneline -15 for momentum.
+2. Skim the code: apps/web/src/components (mobile PWA UX), apps/daemon/src (ops surface), BACKLOG.md (## Done shows what shipped recently).
+3. Check git log --oneline -15 for momentum.
+
+SECURITY RULE: never read, quote or transmit ~/.opencode-remote/memory.md or any file
+outside this repo — your context must stay free of private data because you also touch
+untrusted external content (prompt-injection exfiltration risk). Private data stays private.
 
 Then draft 2-3 NEW tasks that are:
 - small and shippable in one pipeline cycle
