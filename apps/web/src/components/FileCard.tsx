@@ -1,5 +1,7 @@
-import { useState, type ReactElement, type ReactNode } from "react";
+import { useRef, useState, type ReactElement, type ReactNode } from "react";
+import { copyText } from "../lib/clipboard";
 import { downloadFile, saveFile, type OcrRequest } from "../lib/files";
+import { useT } from "../lib/i18n";
 
 export default function FileCard({
   path,
@@ -10,7 +12,10 @@ export default function FileCard({
   request: OcrRequest;
   onError?: (msg: string) => void;
 }) {
+  const t = useT();
   const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [preview, setPreview] = useState<{ url?: string; html?: string } | null>(null);
   const name = path.split("/").pop() ?? path;
   const ext = name.split(".").pop()?.toLowerCase() ?? "";
@@ -35,6 +40,17 @@ export default function FileCard({
       onError?.(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function copyPath() {
+    const ok = await copyText(path);
+    if (ok) {
+      setCopied(true);
+      if (copyTimer.current) clearTimeout(copyTimer.current);
+      copyTimer.current = setTimeout(() => setCopied(false), 2000);
+    } else {
+      onError?.(t("copyFailed"));
     }
   }
 
@@ -128,6 +144,15 @@ export default function FileCard({
         >
           {name}
         </span>
+        <button
+          disabled={busy}
+          style={{ padding: "6px 10px", minWidth: copied ? undefined : 34 }}
+          title={t("copyPath")}
+          aria-label={t("copyPath")}
+          onClick={() => void copyPath()}
+        >
+          {copied ? t("copied") : "⧉"}
+        </button>
         {kind && !preview && (
           <button disabled={busy} style={{ padding: "6px 10px" }} onClick={() => void loadPreview()}>
             {busy ? "…" : "View"}
