@@ -282,7 +282,7 @@ function render(events) {
   const ticker = document.getElementById("ticker");
   ticker.innerHTML = "";
   for (const e of events.slice(-120)) {
-    const time = (e.ts || "").slice(11, 19);
+    const time = e.ts ? new Date(e.ts).toLocaleTimeString("pt-BR", { hour12: false }) : "";
     const div = document.createElement("div");
     const cls = e.type === "result" ? (e.ok ? "ok" : "bad") : e.type === "deploy" ? (e.ok === false ? "bad" : "gold") : "t";
     div.innerHTML = `<span class="${cls}">${time}</span> [${(e.task || e.type).slice(0, 10)}] ${e.phase || e.type} ${escapeHtml(e.detail || "").slice(0, 110)}`;
