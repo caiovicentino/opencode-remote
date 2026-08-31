@@ -5,6 +5,7 @@ import { emit } from "./events";
 import { exec, runAgent } from "./runner";
 import { nowLocalISO } from "./log";
 import { notifySupervisor } from "./notify";
+import { runResearcher } from "./researcher";
 import { runPipeline, writeSandboxConfig } from "./pipeline";
 import { deploy } from "./deploy";
 import { digest } from "./push";
@@ -71,6 +72,13 @@ async function main() {
       await runStrategist(cfg);
       continue; // re-read backlog fresh in the next cycle
     }
+    // RESEARCHER: daily frontier scan (web signal → [spike] tasks)
+    const today = nowLocalISO().slice(0, 10);
+    if (state.researchLast !== today) {
+      await runResearcher(cfg, state);
+      saveState(state);
+    }
+
     const task = tasks[0];
     if (!task) {
       await sleep(20_000); // queue empty — strategist runs above when low

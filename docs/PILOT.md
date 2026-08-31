@@ -123,3 +123,12 @@ O pilot pega a primeira task `Ready`, em ordem. Red team insere `(RT-###)` P0 no
 - **Async deploy**: deploys run fire-and-forget (prod repo vs workspace clone
   are independent); the next task starts immediately. `deployBusy` prevents
   concurrent deploys; pending-deploy self-heal covers a crashed deploy.
+
+## RESEARCHER role (daily frontier scan)
+
+Once per day, before picking tasks, the pilot wakes a RESEARCHER agent with webfetch.
+It scans Electron releases, opencode releases, competing desktop-agent product pages
+and HN front page, compares against docs/VISION.md, and appends 1-2 `[spike]` tasks to
+BACKLOG.md ## Ready (citing the source URL in the spec). The scan commit stays on main;
+the summary is pushed to the supervisor session for review. Spike budget rule: at least
+1 in 4 tasks may be an experiment — cheap failures are signal.

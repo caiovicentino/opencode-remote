@@ -44,6 +44,7 @@ export interface PilotState {
   deploys: number;
   failures: number;
   redteamLast?: string;
+  researchLast?: string;
 }
 
 export function loadState(): PilotState {
