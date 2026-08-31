@@ -60,7 +60,8 @@ Your LAST line of output must be exactly: RESEARCHER:DONE`;
     log("warn", "researcher did not finish", { tail: r.output.slice(-200) });
     return;
   }
-  exec(`git add BACKLOG.md && git commit -qm "pilot(researcher): frontier scan ${today}" && git push -q origin main`, {
+  // push com retry: deploy concorrente pode mover origin/main e rejeitar o push
+  exec(`for i in 1 2 3; do git push -q origin main && break || sleep 3; done; git add BACKLOG.md && git commit -qm "pilot(researcher): frontier scan ${today}" && for i in 1 2 3; do git push -q origin main && break || sleep 3; done`, {
     cwd: cfg.workspace,
     allowFail: true,
   });
