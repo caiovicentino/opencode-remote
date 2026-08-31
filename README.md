@@ -125,9 +125,11 @@ Packaging (DMG, notarization) comes with the distribution stage.
 The desktop shell boots the daemon as a **sidecar**: on launch it spawns the
 daemon (via the workspace `tsx` install; `OCR_DAEMON_ENTRY` points to a compiled
 entry for packaged builds), waits for `GET 127.0.0.1:8792/api/health` to answer
-before showing the UI, and terminates the child on quit. If a daemon is already
-healthy on that port (launchd/CLI install), it is reused — never duplicated.
-Override the port with `OCR_DAEMON_METRICS_PORT`.
+**with an authenticated 200** before showing the UI, and terminates the child on
+quit. If a daemon is already healthy on that port (launchd/CLI install), it is
+reused — never duplicated. Override the port with `OCR_DAEMON_METRICS_PORT`
+(falls back to `OCR_METRICS_PORT`); the spawned child binds exactly the port the
+shell polls.
 
 ## Roadmap
 

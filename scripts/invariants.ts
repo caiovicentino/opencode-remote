@@ -60,7 +60,8 @@ try {
       /sandbox:\s*true/.test(desktopMain),
   );
 
-  // desktop: daemon sidecar wired (added by P1-D02; additive check)
+  // desktop: daemon sidecar wired (added by P1-D02; additive check —
+  // justification lives in the pilot(P1-D02) commit message per rule #3)
   const desktopSidecar = readFileSync(join(ROOT, "apps/desktop/src/daemon.ts"), "utf8");
   check(
     "desktop: daemon sidecar (spawn, /api/health wait, quit cleanup)",
@@ -69,7 +70,11 @@ try {
       /will-quit/.test(desktopMain) &&
       /stopDaemonSidecar/.test(desktopMain) &&
       /\/api\/health/.test(desktopSidecar) &&
-      /SIGTERM/.test(desktopSidecar),
+      /SIGTERM/.test(desktopSidecar) &&
+      // the child must run plain Node, not a second Electron runtime
+      /ELECTRON_RUN_AS_NODE:\s*"1"/.test(desktopSidecar) &&
+      // health gate: only an authenticated 200 proves identity (no 401 leniency)
+      /res\.status === 200/.test(desktopSidecar),
   );
 
   // no committed secrets

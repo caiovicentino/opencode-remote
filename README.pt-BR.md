@@ -115,9 +115,11 @@ Empacotamento (DMG, notarização) vem com a etapa de distribuição.
 O shell desktop sobe o daemon como **sidecar**: ao abrir, ele faz spawn do
 daemon (via o `tsx` do workspace; `OCR_DAEMON_ENTRY` aponta pra entrada
 compilada nos builds empacotados), espera `GET 127.0.0.1:8792/api/health`
-responder antes de mostrar a UI e encerra o filho no quit. Se já existe um
-daemon saudável nessa porta (instalação launchd/CLI), ele é reaproveitado —
-nunca duplicado. Para trocar a porta: `OCR_DAEMON_METRICS_PORT`.
+responder **com um 200 autenticado** antes de mostrar a UI e encerra o filho no
+quit. Se já existe um daemon saudável nessa porta (instalação launchd/CLI), ele
+é reaproveitado — nunca duplicado. Para trocar a porta: `OCR_DAEMON_METRICS_PORT`
+(com fallback pro `OCR_METRICS_PORT`); o filho faz bind exatamente na porta que
+o shell verifica.
 
 ## Roadmap
 

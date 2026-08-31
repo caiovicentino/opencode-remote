@@ -22,7 +22,13 @@ if (!gotLock) {
   app.quit();
 } else {
   app.on("second-instance", () => showMainWindow());
-  app.whenReady().then(() => onReady());
+  app
+    .whenReady()
+    .then(() => onReady())
+    .catch((err) => {
+      console.error("[desktop] startup failed:", err);
+      app.quit();
+    });
 }
 
 async function onReady(): Promise<void> {
@@ -33,12 +39,13 @@ async function onReady(): Promise<void> {
 
   // Sidecar: boot a local daemon (unless one is already healthy), wait for
   // /api/health before showing the UI. On timeout we still show the UI —
-  // it renders its own disconnected state.
-  const spawned = await startDaemonSidecar(
+  // it renders its own disconnected state. waitForDaemonHealth reuses the
+  // token captured by startDaemonSidecar and aborts early if the child died.
+  const daemonReady = await startDaemonSidecar(
     app.getAppPath(),
     app.isPackaged ? process.resourcesPath : undefined,
   );
-  if (!spawned || !(await waitForDaemonHealth())) {
+  if (!daemonReady || !(await waitForDaemonHealth())) {
     console.error(`[desktop] daemon health not confirmed on :${DAEMON_METRICS_PORT} — continuing`);
   }
 

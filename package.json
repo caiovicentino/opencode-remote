@@ -20,6 +20,7 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "eslint apps packages scripts --quiet",
     "test:unit": "tsx scripts/unit.test.ts",
+    "test:desktop": "tsx scripts/desktop-sidecar.test.ts",
     "test:e2e": "tsx scripts/reconnect.test.ts && tsx scripts/chunk.test.ts"
   },
   "engines": {
