@@ -25,6 +25,7 @@ async function main() {
       continue;
     }
     const state = loadState();
+    syncWorkspace(cfg);
 
     // daily budget guard
     if (state.tasks >= cfg.maxTasksPerDay) {
@@ -123,6 +124,14 @@ function ensureWorkspace(cfg: PilotConfig) {
     cwd: cfg.repo,
     timeoutMin: 5,
   });
+}
+
+/** Workspace must mirror origin/main before we read the backlog or spawn agents. */
+function syncWorkspace(cfg: PilotConfig) {
+  exec("git fetch origin", { cwd: cfg.workspace, allowFail: true });
+  exec("git checkout -q main", { cwd: cfg.workspace, allowFail: true });
+  exec("git reset -q --hard origin/main", { cwd: cfg.workspace });
+  exec("git clean -qfd", { cwd: cfg.workspace });
 }
 
 const CONSTITUTION_REF = "see docs/CONSTITUTION.md — E2E stays E2E, allowlist/replay/0600 untouchable, no secrets, documented changes only.";

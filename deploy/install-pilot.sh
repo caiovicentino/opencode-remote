@@ -32,7 +32,7 @@ cat > "$PLIST" <<EOF
   <key>StandardOutPath</key><string>$LOGS/pilot.log</string>
   <key>StandardErrorPath</key><string>$LOGS/pilot.log</string>
   <key>EnvironmentVariables</key><dict>
-    <key>PATH</key><string>$(dirname $(which node)):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>PATH</key><string>$HOME/.opencode/bin:$(dirname $(which node)):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     <key>HOME</key><string>$HOME</string>
   </dict>
 </dict></plist>

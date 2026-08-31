@@ -87,6 +87,14 @@ See [docs/api.md](docs/api.md).
 - [docs/troubleshooting.md](docs/troubleshooting.md)
 - [docs/capacitor.md](docs/capacitor.md) — native iOS shell recipe
 
+## Pilot — autonomous development (24/7)
+
+This repo evolves itself: the Pilot service ([docs/PILOT.md](docs/PILOT.md)) picks tasks from
+[BACKLOG.md](BACKLOG.md), implements them with agents, has them reviewed by two independent
+adversarial reviewer agents, and only merges when the deterministic gatekeeper (eval battery +
+[executable constitution](docs/CONSTITUTION.md)) is fully green. Deploys are staged with health
+watch and automatic rollback. Freezing: `touch ~/.opencode-remote/pilot.lock`.
+
 ## Roadmap
 
 Next up: hosted relay option,

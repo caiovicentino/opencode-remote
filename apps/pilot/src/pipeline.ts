@@ -69,12 +69,27 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
   // ── build ⇄ review loop ─────────────────────────────────────────────────
   let findings = "";
   let merged = false;
+  let lastStream = 0;
+  const stream = (chunk: string) => {
+    const now = Date.now();
+    if (now - lastStream < 10_000) return;
+    lastStream = now;
+    const lines = chunk.split("\n").filter((l) => l.trim());
+    const line = lines[lines.length - 1];
+    if (line)
+      console.log(
+        JSON.stringify({ ts: new Date().toISOString(), level: "info", msg: "agent", data: line.trim().slice(0, 160) }),
+      );
+  };
   for (let round = 1; round <= cfg.maxReviewRounds && !merged; round++) {
+    console.log(JSON.stringify({ ts: new Date().toISOString(), level: "info", msg: "builder round", data: { task: t.id, round } }));
     const build = await runAgent(builderPrompt(t, round, findings), {
       cwd: ws,
       timeoutMin: cfg.taskTimeoutMin,
       label: `builder-${t.id}-r${round}`,
+      onStdout: stream,
     });
+    console.log(JSON.stringify({ ts: new Date().toISOString(), level: "info", msg: "builder done", data: { task: t.id, round } }));
     if (!build.output.includes("PILOT:TASK-DONE")) {
       return { ok: false, detail: `builder did not finish (round ${round}): ${build.output.slice(-300)}` };
     }
@@ -82,18 +97,29 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
     if (!diff.trim()) return { ok: false, detail: "builder produced an empty diff" };
 
     // two adversarial reviewers in parallel, isolated contexts
+    console.log(JSON.stringify({ ts: new Date().toISOString(), level: "info", msg: "reviewers start", data: { task: t.id, round } }));
     const [sec, qual] = await Promise.all([
       runAgent(reviewerPrompt("SECURITY", "crypto, auth, injection, secrets, permission surface", t, diff), {
         cwd: ws,
         timeoutMin: cfg.reviewTimeoutMin,
         label: `sec-${t.id}-r${round}`,
+        onStdout: stream,
       }),
       runAgent(reviewerPrompt("QUALITY", "regressions, UX, docs, test coverage, complexity", t, diff), {
         cwd: ws,
         timeoutMin: cfg.reviewTimeoutMin,
         label: `qual-${t.id}-r${round}`,
+        onStdout: stream,
       }),
     ]);
+    console.log(
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        level: "info",
+        msg: "reviewers done",
+        data: { task: t.id, round, secOk: /VERDICT:\s*APPROVE/i.test(sec.output), qualOk: /VERDICT:\s*APPROVE/i.test(qual.output) },
+      }),
+    );
     const secOk = /VERDICT:\s*APPROVE/i.test(sec.output);
     const qualOk = /VERDICT:\s*APPROVE/i.test(qual.output);
     if (secOk && qualOk) {

@@ -18,6 +18,7 @@ export function runAgent(
     const child = spawn("opencode", ["run", prompt], {
       cwd: opts.cwd,
       env: process.env,
+      stdio: ["ignore", "pipe", "pipe"], // stdin MUST be closed: opencode waits for EOF
     });
     let output = "";
     let timedOut = false;
