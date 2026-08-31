@@ -35,6 +35,8 @@ interface Props {
   onOpenSettings: () => void;
   onOpenFiles: () => void;
   tick: number;
+  /** "grid" (mobile cards) | "rows" (desktop flat Claude-style list) */
+  variant?: "grid" | "rows";
 }
 
 export default function SessionsView({
@@ -54,6 +56,7 @@ export default function SessionsView({
   onOpenSettings,
   onOpenFiles,
   tick,
+  variant = "grid",
 }: Props) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const t = useT();
@@ -280,6 +283,33 @@ export default function SessionsView({
           </div>
         )}
         {!loading && filtered.length === 0 && <p className="muted">{t("noSessions")}</p>}
+        {variant === "rows" && (
+          <div className="sess-rows">
+            {sorted.map((s) => {
+              const st = statusOf.get(s.id);
+              const when = timeAgo(s.updatedAt ?? s.time?.updated, t("justNow"));
+              const n = unread[s.id] ?? 0;
+              return (
+                <div key={s.id} className="sess-row" onClick={() => onOpen(s.id)}>
+                  <span
+                    style={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: 4,
+                      flexShrink: 0,
+                      background: st ? toneColor[st.tone] : "#9ca3af",
+                      opacity: st ? 1 : 0.5,
+                    }}
+                  />
+                  <span className="sess-title">{s.title || s.id.slice(0, 12)}</span>
+                  {n > 0 && <span className="unread-badge">{n}</span>}
+                  {when && <span className="sess-when">{when}</span>}
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {variant !== "rows" && (
         <div
           style={{
             display: "grid",
@@ -336,6 +366,7 @@ export default function SessionsView({
             );
           })}
         </div>
+        )}
       </div>
 
       <button className="primary" disabled={creating} onClick={createSession}>

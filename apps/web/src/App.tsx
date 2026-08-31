@@ -477,6 +477,7 @@ export default function App() {
         setFilesView(true);
       }}
       tick={tick}
+      variant={isDesktop ? "rows" : "grid"}
     />
   );
   const mainContent = session
@@ -511,9 +512,10 @@ export default function App() {
                   setFilesView(false);
                   setSession(null);
                 }}
-                title="Chats"
+                title="Conversas"
               >
-                💬
+                <span>💬</span>
+                <span>Conversas</span>
               </button>
               <button
                 className={filesView ? "active" : ""}
@@ -523,7 +525,8 @@ export default function App() {
                 }}
                 title="Arquivos"
               >
-                📁
+                <span>📁</span>
+                <span>Arquivos</span>
               </button>
               <button
                 className={settings ? "active" : ""}
@@ -533,7 +536,8 @@ export default function App() {
                 }}
                 title="Config"
               >
-                ⚙️
+                <span>⚙️</span>
+                <span>Configurações</span>
               </button>
             </div>
           </aside>
@@ -541,7 +545,8 @@ export default function App() {
             {mainContent ?? (
               <div className="desk-empty">
                 <div>
-                  <h2>opencode-remote</h2>
+                  <div className="desk-greet-mark">✻</div>
+                  <h2>olá{machineName ? `, ${machineName.toLowerCase()}` : ""}!</h2>
                   <p>Selecione uma conversa na barra lateral</p>
                 </div>
               </div>

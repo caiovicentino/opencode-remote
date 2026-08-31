@@ -489,3 +489,143 @@ select {
 .desk .has-tabbar {
   display: none;
 }
+
+/* ── Claude-clean desktop polish: flat sidebar rows, no boxes ── */
+/* sessions grid → single flat column of rows */
+.desk-side .list > div:last-child {
+  display: flex !important;
+  flex-direction: column;
+  gap: 0 !important;
+}
+.desk-side .card.session-card > div:first-child {
+  overflow: hidden;
+}
+.desk-side .card.session-card {
+  overflow: hidden;
+  background: transparent !important;
+  border: none !important;
+  border-radius: 8px;
+  padding: 8px 10px !important;
+  min-height: 0 !important;
+  gap: 2px !important;
+}
+.desk-side .card.session-card:hover {
+  background: var(--bg2, #1a1a20) !important;
+}
+/* status label ("pronto") and edit/delete row hidden — status lives in the dot */
+.desk-side .card.session-card > div:nth-child(3),
+.desk-side .card.session-card > div:nth-child(4) {
+  display: none !important;
+}
+/* title: lighter weight, single line */
+.desk-side .card.session-card > div:first-child > div:nth-child(2) {
+  font-weight: 450 !important;
+  font-size: 0.92rem !important;
+  display: block !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+/* snippet: one muted line, ellipsis */
+.desk-side .card.session-card > div:nth-child(2) {
+  display: block !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  font-size: 0.78rem !important;
+  color: var(--muted, #888) !important;
+}
+/* search: borderless with underline, subtle */
+.desk-side .list input {
+  background: transparent !important;
+  border: none !important;
+  border-bottom: 1px solid var(--border, #2a2a30) !important;
+  border-radius: 0 !important;
+  padding: 6px 2px !important;
+  font-size: 0.9rem !important;
+}
+/* filter chips: tiny ghost pills */
+.desk-side .chip {
+  background: transparent !important;
+  border: 1px solid var(--border, #2a2a30) !important;
+  border-radius: 999px !important;
+  font-size: 0.7rem !important;
+  padding: 2px 10px !important;
+  color: var(--muted, #888) !important;
+}
+.desk-side .chip[aria-pressed="true"] {
+  color: var(--fg, #eee) !important;
+  border-color: var(--fg, #eee) !important;
+}
+/* nav: Claude-like text rows instead of icon squares */
+.desk-nav {
+  flex-direction: column !important;
+  gap: 1px !important;
+  padding: 8px !important;
+}
+.desk-nav button {
+  display: flex !important;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  padding: 8px 10px !important;
+  font-size: 0.9rem !important;
+  color: var(--fg, #ddd) !important;
+  background: transparent !important;
+  border: none !important;
+  border-radius: 8px !important;
+}
+.desk-nav button:hover,
+.desk-nav button.active {
+  background: var(--bg2, #1a1a20) !important;
+}
+/* greeting like the reference: serif, centered, warm mark */
+.desk-empty h2 {
+  font-family: ui-serif, Georgia, "Times New Roman", serif;
+  font-size: 2.4rem;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+.desk-greet-mark {
+  font-size: 2.6rem;
+  color: var(--accent, #d97757);
+  margin-bottom: 10px;
+}
+.desk-empty p {
+  margin-top: 8px;
+  font-size: 0.95rem;
+}
+
+/* desktop flat session rows (variant="rows") */
+.sess-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.sess-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  min-width: 0;
+}
+.sess-row:hover {
+  background: var(--bg2, #1a1a20);
+}
+.sess-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.92rem;
+  font-weight: 450;
+  color: var(--fg, #ddd);
+}
+.sess-when {
+  flex-shrink: 0;
+  font-size: 0.68rem;
+  color: var(--muted, #888);
+}
