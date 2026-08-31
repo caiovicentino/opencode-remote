@@ -24,8 +24,8 @@ async function main() {
   for (;;) {
     touchHeartbeat();
     if (frozen()) {
-      log("info", "frozen — pilot.lock present, sleeping 10 min");
-      await sleep(10 * 60_000);
+      log("info", "frozen — pilot.lock present, rechecking in 5s");
+      await sleep(5_000);
       continue;
     }
     const state = loadState();
@@ -34,7 +34,7 @@ async function main() {
     // daily budget guard
     if (state.tasks >= cfg.maxTasksPerDay) {
       log("info", "daily task budget reached", { tasks: state.tasks });
-      await sleep(30 * 60_000);
+      await sleep(30_000);
       continue;
     }
 
@@ -57,7 +57,7 @@ async function main() {
         }
         if (cfg.digest) await digest(dep.ok ? "⬆️ Pilot: deploy" : "⚠️ Pilot rollback", dep.detail.slice(0, 120), "#/");
         if (once) return;
-        await sleep(30_000);
+        await sleep(5_000);
         continue;
       }
     }
@@ -71,7 +71,7 @@ async function main() {
     }
     const task = tasks[0];
     if (!task) {
-      await sleep(15 * 60_000);
+      await sleep(20_000); // queue empty — strategist runs above when low
       continue;
     }
 
@@ -102,18 +102,18 @@ async function main() {
         }
       } else if (!result.ok) {
         if (cfg.digest) await digest(`🧪 Pilot falhou: ${task.id}`, result.detail.slice(0, 120), "#/");
-        await sleep(60_000); // short cool-down; full output saved for diagnosis
+        await sleep(10_000); // short cool-down; full output saved for diagnosis
       }
       saveState(state);
     } catch (err) {
       state.failures++;
       saveState(state);
       log("error", "pipeline crashed", { task: task.id, err: String(err).slice(0, 300) });
-      await sleep(10 * 60_000);
+      await sleep(30_000);
     }
 
     if (once) break;
-    await sleep(2 * 60_000);
+    await sleep(5_000);
   }
 }
 
