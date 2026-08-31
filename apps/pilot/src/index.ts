@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { emit } from "./events";
 import { exec, runAgent } from "./runner";
 import { nowLocalISO } from "./log";
+import { notifySupervisor } from "./notify";
 import { runPipeline, writeSandboxConfig } from "./pipeline";
 import { deploy } from "./deploy";
 import { digest } from "./push";
@@ -83,6 +84,7 @@ async function main() {
       saveState(state);
       log("info", "pipeline result", { task: task.id, ok: result.ok, detail: result.detail.slice(0, 200) });
       emit("result", { task: task.id, ok: result.ok, detail: result.detail.slice(0, 200) });
+      void notifySupervisor(task.id, result.ok, result.detail.slice(0, 300)).catch(() => {});
       if (result.ok && result.sha) {
         if (state.deploys >= cfg.maxDeploysPerDay) {
           log("info", "deploy budget reached — merge left on main for manual deploy", { deploys: state.deploys });

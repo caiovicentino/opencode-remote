@@ -1508,6 +1508,68 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       send(200, { lines });
       return true;
     }
+    // GET /api/pilot-done — completed tasks from BACKLOG.md (## Done section)
+    if (seg[1] === "pilot-done") {
+      let done: { id: string; title: string }[] = [];
+      try {
+        const md = readFileSync(new URL("../../../BACKLOG.md", import.meta.url), "utf8");
+        const section = md.split("## Done")[1] ?? "";
+        done = section
+          .split("\n")
+          .filter((l) => l.startsWith("- [x]"))
+          .map((l) => {
+            const m = l.match(/\(([P\d][\w.-]*)\)\s*\[.*?\]\s*([^—]+)/);
+            return { id: m?.[1] ?? "?", title: (m?.[2] ?? l).trim() };
+          });
+      } catch {}
+      send(200, { done });
+      return true;
+    }
+    // POST /api/pilot-budget — edit daily budgets from the dashboard
+    if (seg[1] === "pilot-budget" && req.method === "POST") {
+      const body = JSON.parse((await readBody(req)) || "{}") as {
+        maxTasksPerDay?: number;
+        maxDeploysPerDay?: number;
+      };
+      const file = join(homedir(), ".opencode-remote", "pilot.json");
+      try {
+        const cfg = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+        if (Number.isFinite(body.maxTasksPerDay) && (body.maxTasksPerDay as number) > 0)
+          cfg.maxTasksPerDay = body.maxTasksPerDay;
+        if (Number.isFinite(body.maxDeploysPerDay) && (body.maxDeploysPerDay as number) > 0)
+          cfg.maxDeploysPerDay = body.maxDeploysPerDay;
+        writeFileSync(file, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+        send(200, { cfg });
+      } catch (err) {
+        send(500, { error: String(err) });
+      }
+      return true;
+    }
+    // POST /api/pilot-notify — wake the supervisor session after a pipeline result
+    if (seg[1] === "pilot-notify" && req.method === "POST") {
+      const body = JSON.parse((await readBody(req)) || "{}") as { text?: string };
+      let delivered = false;
+      try {
+        const sup = (
+          JSON.parse(readFileSync(join(homedir(), ".opencode-remote", "pilot.json"), "utf8")) as {
+            supervisorSession?: string;
+          }
+        ).supervisorSession;
+        if (sup && body.text) {
+          const res = await fetch(new URL(`/session/${sup}/message`, OPENCODE_URL), {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              ...(authHeader ? { authorization: authHeader } : {}),
+            },
+            body: JSON.stringify({ parts: [{ type: "text", text: body.text }] }),
+          });
+          delivered = res.ok;
+        }
+      } catch {}
+      send(200, { delivered });
+      return true;
+    }
     // GET /api/pilot-events — dashboard feed: state, heartbeat freshness, event tail
     if (seg[1] === "pilot-events") {
       const dir = join(homedir(), ".opencode-remote", "pilot");
