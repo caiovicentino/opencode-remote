@@ -629,3 +629,20 @@ select {
   font-size: 0.68rem;
   color: var(--muted, #888);
 }
+
+/* desktop-only chrome: hide mobile-only controls, style sidebar top action */
+@media (min-width: 1024px) {
+  .chat-back,
+  .chat-handoff {
+    display: none;
+  }
+  .sess-new {
+    width: 100%;
+    flex-shrink: 0;
+    margin: 0 0 10px;
+  }
+  .desk-side .list {
+    display: flex;
+    flex-direction: column;
+  }
+}

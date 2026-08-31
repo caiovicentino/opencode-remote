@@ -1101,7 +1101,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
   return (
     <div className="screen">
       <header>
-        <button onClick={onBack}>←</button>
+        <button className="chat-back" onClick={onBack}>←</button>
         <span
           title={`connection: ${connStatus}`}
           style={{
@@ -1132,6 +1132,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
           {sessionTitle || "session"}
         </h1>
         <button
+          className="chat-handoff"
           onClick={() => void handoffToDesktop()}
           aria-label={t("handoffBtn")}
           title={t("handoffBtn")}

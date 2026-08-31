@@ -198,7 +198,7 @@ export default function SessionsView({
         >
           {machineName} ⌄
         </h1>
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: variant === "rows" ? "none" : "flex", gap: 8 }}>
           <button onClick={onOpenFiles} aria-label="Files">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
               <path d="M4 5a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-8.6L9.6 5.2A2 2 0 0 0 8.2 4.6H4Z" />
@@ -243,6 +243,11 @@ export default function SessionsView({
       </header>
 
       <div className="list">
+        {variant === "rows" && (
+          <button className="primary sess-new" disabled={creating} onClick={createSession}>
+            {creating ? t("creating") : t("newConversation")}
+          </button>
+        )}
         <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
           {(["all", "with", "without"] as BadgeFilter[]).map((f) => (
             <button
@@ -369,7 +374,7 @@ export default function SessionsView({
         )}
       </div>
 
-      <button className="primary" disabled={creating} onClick={createSession}>
+      <button className="primary" style={variant === "rows" ? { display: "none" } : undefined} disabled={creating} onClick={createSession}>
         {creating ? t("creating") : t("newConversation")}
       </button>
 
