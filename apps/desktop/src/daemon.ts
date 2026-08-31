@@ -17,6 +17,11 @@ const HEALTH_TIMEOUT_MS = 30_000;
 const HEALTH_POLL_MS = 500;
 /** Per-request fetch timeout for the challenge + authenticated health probes. */
 const PROBE_TIMEOUT_MS = 1500;
+/** The daemon prints its pairing URI at boot (apps/daemon/src/index.ts); the
+ * URI itself never contains whitespace, so \S* captures it whole. */
+const PAIR_URL_RE = /opencode-remote:\/\/pair\?v=2\S*/;
+/** Bound on the stdout tail kept around while scanning for the pairing URI. */
+const STDOUT_TAIL_MAX = 8192;
 
 interface SidecarState {
   child: ChildProcess | null;
@@ -25,9 +30,21 @@ interface SidecarState {
   exited: boolean;
   /** Token captured once at sidecar start; shared by reuse check + health wait. */
   token: string | null;
+  /** First `opencode-remote://pair?v=2&…` URI the child printed on stdout. */
+  pairUrl: string | null;
+  /** Rolling stdout tail (bounded) scanned for the pairing URI. */
+  stdoutTail: string;
 }
 
-const sidecar: SidecarState = { child: null, spawned: false, stopping: false, exited: false, token: null };
+const sidecar: SidecarState = {
+  child: null,
+  spawned: false,
+  stopping: false,
+  exited: false,
+  token: null,
+  pairUrl: null,
+  stdoutTail: "",
+};
 
 interface DaemonEntry {
   node: string;
@@ -115,6 +132,17 @@ export async function waitForDaemonHealth(opts: HealthWaitOptions = {}): Promise
   return false;
 }
 
+/**
+ * The `opencode-remote://pair?v=2&…` URI the spawned daemon printed at boot
+ * (captured from its stdout), or null when the daemon was reused instead of
+ * spawned (no stdout to read) or nothing was printed yet. Lets the desktop
+ * UI pair itself with zero friction on the host machine (docs/VISION.md
+ * stage 3.1) through the same code path as paste-pairing.
+ */
+export function getPairUrl(): string | null {
+  return sidecar.pairUrl;
+}
+
 function nodeBinary(): string {
   // The Electron binary doubles as the Node runtime (via ELECTRON_RUN_AS_NODE
   // in the spawn env), so no system node install is required.
@@ -188,11 +216,27 @@ export async function startDaemonSidecar(
       // Must match the port waitForDaemonHealth() polls (single source above).
       OCR_METRICS_PORT: String(DAEMON_METRICS_PORT),
     },
-    stdio: ["ignore", "inherit", "inherit"],
+    // stdout is piped (not inherited) so we can capture the boot pairing URI;
+    // each chunk is forwarded to our own stdout, preserving the old behavior.
+    stdio: ["ignore", "pipe", "inherit"],
   });
   sidecar.child = child;
   sidecar.spawned = true;
   sidecar.exited = false;
+  // Fresh spawn → fresh capture: the previous URI belongs to a dead daemon.
+  sidecar.pairUrl = null;
+  sidecar.stdoutTail = "";
+  child.stdout?.setEncoding("utf8");
+  child.stdout?.on("data", (chunk: string) => {
+    try {
+      process.stdout.write(chunk);
+    } catch {
+      /* packaged headless runs may have no stdout attached */
+    }
+    if (sidecar.pairUrl) return;
+    sidecar.stdoutTail = (sidecar.stdoutTail + chunk).slice(-STDOUT_TAIL_MAX);
+    sidecar.pairUrl = PAIR_URL_RE.exec(sidecar.stdoutTail)?.[0] ?? null;
+  });
   child.on("exit", () => {
     sidecar.exited = true;
     if (!sidecar.stopping) {

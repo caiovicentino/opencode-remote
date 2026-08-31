@@ -145,6 +145,13 @@ shell spawns its own. Override the port with `OCR_DAEMON_METRICS_PORT` (falls
 back to `OCR_METRICS_PORT`); the spawned child binds exactly the port the shell
 polls.
 
+**Zero pairing on the host machine**: on the desktop, the sidecar also captures
+the `opencode-remote://pair?v=2&…` URI the daemon prints at boot and the UI
+pairs itself automatically — on the machine that hosts the daemon there is no
+QR scan on first run. The manual QR/paste screen remains as a fallback
+(machines switcher → add machine), for example when an already-running daemon
+was reused and never printed a URI to capture.
+
 ## Roadmap
 
 Next up: hosted relay option,
