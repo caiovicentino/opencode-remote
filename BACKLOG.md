@@ -6,7 +6,8 @@ Tasks feitas vão para `## Done` automaticamente.
 
 ## Ready
 
-- [ ] (P3-002) [P3] Copiar path do arquivo — spec: no FileCard.tsx adicionar botão de copiar o path absoluto do arquivo (navigator.clipboard.writeText com fallback); critério: botão copia e mostra feedback visual, typecheck/build verdes.
+- [ ] (P0-001) [P0] Empty diff deve completar a task — spec: no pipeline.ts, quando o builder produzir diff vazio, checar se o ID da task já existe no histórico de merges (git log --grep) e, se sim, chamar markDone em vez de falhar; previne loop infinito de retry em tasks já implementadas; typecheck/build verdes.
+- [x] (P3-002) [P3] Copiar path do arquivo — spec: no FileCard.tsx adicionar botão de copiar o path absoluto do arquivo (navigator.clipboard.writeText com fallback); critério: botão copia e mostra feedback visual, typecheck/build verdes.
 - [ ] (P3-003) [P3] Empty state do chat — spec: em ChatView.tsx quando não há bubbles mostrar mensagem de boas-vindas com dicas (ex: "mande um áudio, foto ou texto"); critério: empty state renderiza, typecheck/build verdes.
 
 ## Done
