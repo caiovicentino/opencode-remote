@@ -65,6 +65,23 @@ export interface PipelineResult {
 /** Task IDs come from BACKLOG.md; only this charset ever reaches a shell command. */
 export const TASK_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
+/** Sandbox permissions: agents in the clone get full tool access. Must exist for
+ * EVERY headless run (builder, reviewers, strategist) or opencode aborts on the
+ * first permission-requiring action — `git clean` removes it after each sync. */
+export function writeSandboxConfig(ws: string) {
+  writeFileSync(
+    join(ws, "opencode.json"),
+    JSON.stringify(
+      {
+        $schema: "https://opencode.ai/config.json",
+        permission: { edit: "allow", bash: "allow", external_directory: "allow", webfetch: "allow" },
+      },
+      null,
+      2,
+    ),
+  );
+}
+
 export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState): Promise<PipelineResult> {
   const ws = cfg.workspace;
   // central injection guard: t.id is interpolated into shell commands below
@@ -78,17 +95,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
 
   // sandbox permissions: agents in the clone get full tool access (the real
   // security boundary is the gatekeeper + invariants + staged deploy, not this)
-  writeFileSync(
-    join(ws, "opencode.json"),
-    JSON.stringify(
-      {
-        $schema: "https://opencode.ai/config.json",
-        permission: { edit: "allow", bash: "allow", external_directory: "allow", webfetch: "allow" },
-      },
-      null,
-      2,
-    ),
-  );
+  writeSandboxConfig(ws);
 
   // ── build ⇄ review loop ─────────────────────────────────────────────────
   let findings = "";

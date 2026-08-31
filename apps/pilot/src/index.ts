@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { emit } from "./events";
 import { exec, runAgent } from "./runner";
 import { nowLocalISO } from "./log";
-import { runPipeline } from "./pipeline";
+import { runPipeline, writeSandboxConfig } from "./pipeline";
 import { deploy } from "./deploy";
 import { digest } from "./push";
 import { addTask, loadBacklog, nextId } from "./backlog";
@@ -158,6 +158,7 @@ Output: either "REDTEAM: CLEAN" if you found nothing actionable, or
  * a human feeding work.
  */
 async function runStrategist(cfg: PilotConfig) {
+  writeSandboxConfig(cfg.workspace); // headless runs abort without sandbox perms
   const r = await runAgent(
     `You are the STRATEGIST agent of the opencode-remote autonomous pipeline.
 Your job: keep the product evolving without any human feeding tasks.
