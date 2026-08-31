@@ -60,6 +60,18 @@ try {
       /sandbox:\s*true/.test(desktopMain),
   );
 
+  // desktop: daemon sidecar wired (added by P1-D02; additive check)
+  const desktopSidecar = readFileSync(join(ROOT, "apps/desktop/src/daemon.ts"), "utf8");
+  check(
+    "desktop: daemon sidecar (spawn, /api/health wait, quit cleanup)",
+    /startDaemonSidecar/.test(desktopMain) &&
+      /waitForDaemonHealth/.test(desktopMain) &&
+      /will-quit/.test(desktopMain) &&
+      /stopDaemonSidecar/.test(desktopMain) &&
+      /\/api\/health/.test(desktopSidecar) &&
+      /SIGTERM/.test(desktopSidecar),
+  );
+
   // no committed secrets
   const secretPatterns = [/BEGIN [A-Z ]*PRIVATE KEY/, /ghp_[A-Za-z0-9]{20,}/, /AKIA[0-9A-Z]{16}/, /sk-[A-Za-z0-9]{20,}/];
   const gitFiles = exec("git -C . ls-files");

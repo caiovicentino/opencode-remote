@@ -1,6 +1,12 @@
 import { app, BrowserWindow, ipcMain, Menu, nativeImage, Tray, shell } from "electron";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import {
+  DAEMON_METRICS_PORT,
+  startDaemonSidecar,
+  stopDaemonSidecar,
+  waitForDaemonHealth,
+} from "./daemon";
 
 // Data-URL PNG keeps the repo free of binary assets; replace with a proper
 // .png/.icns asset when the distribution stage lands (docs/VISION.md stage 5).
@@ -9,21 +15,34 @@ const TRAY_ICON_PNG =
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
+let daemonStopped = false;
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
 } else {
   app.on("second-instance", () => showMainWindow());
-  app.whenReady().then(onReady);
+  app.whenReady().then(() => onReady());
 }
 
-function onReady(): void {
+async function onReady(): Promise<void> {
   buildMenu();
   buildTray();
-  createWindow();
 
   ipcMain.handle("app:version", () => app.getVersion());
+
+  // Sidecar: boot a local daemon (unless one is already healthy), wait for
+  // /api/health before showing the UI. On timeout we still show the UI —
+  // it renders its own disconnected state.
+  const spawned = await startDaemonSidecar(
+    app.getAppPath(),
+    app.isPackaged ? process.resourcesPath : undefined,
+  );
+  if (!spawned || !(await waitForDaemonHealth())) {
+    console.error(`[desktop] daemon health not confirmed on :${DAEMON_METRICS_PORT} — continuing`);
+  }
+
+  createWindow();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -32,6 +51,15 @@ function onReady(): void {
   app.on("window-all-closed", () => {
     // Keep the tray alive on macOS (convention); quit elsewhere.
     if (process.platform !== "darwin") app.quit();
+  });
+  app.on("will-quit", (event) => {
+    // Encerra o daemon que subimos antes de sair (idempotente).
+    if (daemonStopped) return;
+    event.preventDefault();
+    void stopDaemonSidecar().then(() => {
+      daemonStopped = true;
+      app.quit();
+    });
   });
 }
 
