@@ -31,6 +31,9 @@ remoto, zero confiança**.
   a sessão ainda não tem título)
 - **AutoMode** — o agente roda solto; toda aprovação automática vira auditoria
   (e notificação, se você quiser)
+- **Preview de aprovação** — o card de permissão mostra as primeiras linhas
+  do comando/patch pedido (direto do evento de permissão) antes de aprovar
+  ou negar, pra você sempre saber o que está liberando
 - **Perguntas interativas** — o modelo pergunta, você toca na opção
 - **Rewind** — volte a conversa *e o código* pra qualquer ponto, num toque
 - **Voz** — segure e fale, transcrição local com whisper, sem nuvem

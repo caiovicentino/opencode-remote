@@ -37,8 +37,9 @@ identity servers, no accounts.
   canvas before reaching the daemon; session history is rendered as text
   with sandboxed iframes for HTML previews.
 - The daemon executes whatever opencode's permission system allows. The
-  remote adds a biometric gate on top — approvals should still be read
-  (use the diff preview).
+  remote adds a biometric gate on top — approvals should still be read:
+  the approval card previews the first lines of the requested
+  command/patch, and the diff button opens the full file changes.
 
 ## Key rotation
 

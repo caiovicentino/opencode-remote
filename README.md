@@ -30,6 +30,9 @@ private. That is the product: **local power, remote control, zero trust**.
   session has no title yet)
 - **AutoMode** — the agent runs hands-free; every auto-approved action is
   audited and pushable
+- **Approval preview** — permission cards show the first lines of the
+  command/patch being requested (from the permission event payload) before
+  you Approve/Deny, so you always know what you're green-lighting
 - **Interactive questions** — the model asks, you tap an option from the beach
 - **Rewind** — go back to any point of the conversation *and* the code, one tap
 - **Voice** — hold to talk, local whisper transcription, no cloud
