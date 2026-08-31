@@ -25,7 +25,7 @@
     "predev": "node ../../scripts/gen-version.mjs",
     "prebuild": "node ../../scripts/gen-version.mjs",
     "dev": "vite",
-    "build": "vite build",
+    "build": "vite build --base=./",
     "typecheck": "tsc --noEmit",
     "ios:sync": "vite build && cap sync ios",
     "ios:open": "cap open ios"

@@ -8,9 +8,9 @@ const key = process.env.VITE_TLS_KEY;
 
 export default defineConfig({
   plugins: [react()],
-  // relative base: the desktop shell loads dist/index.html via file://,
-  // where absolute /assets/... paths 404 and render a blank window
-  base: "./",
+  // VITE_BASE=./ for the desktop shell (file:// can't load absolute
+  // /assets paths); default "/" for the phone/dev server
+  base: process.env.VITE_BASE ?? "/",
   // non-TLS mode still binds 127.0.0.1 (IPv4) so tailscale serve / proxies
   // that target 127.0.0.1 can reach it — localhost alone binds ::1.
   // allowedHosts: dev-only, the tailnet hostname is not in vite's allowlist.
