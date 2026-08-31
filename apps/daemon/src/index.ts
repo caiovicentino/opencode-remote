@@ -1450,7 +1450,8 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
   // GET /dashboard — pilot three.js mission control (static file, no secrets inside)
   if (req.method === "GET" && url.pathname === "/dashboard") {
     try {
-      const html = readFileSync(new URL("../../../apps/pilot/dashboard/index.html", import.meta.url), "utf8");
+      const html = readFileSync(new URL("../../../apps/pilot/dashboard/index.html", import.meta.url), "utf8")
+        .replace("__APITOKEN__", apiToken());
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(html);
     } catch {

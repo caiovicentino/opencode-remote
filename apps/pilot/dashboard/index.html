@@ -44,6 +44,7 @@
 </style>
 </head>
 <body>
+<script>window.__OCR_TOKEN__ = "__APITOKEN__";</script>
 <canvas id="scene"></canvas>
 
 <div class="overlay" id="header">
@@ -246,7 +247,7 @@ function loop(time) {
 requestAnimationFrame(loop);
 
 // ─── polling ──────────────────────────────────────────────────────────────────
-let token = localStorage.getItem("ocr_dash_token");
+let token = window.__OCR_TOKEN__ || localStorage.getItem("ocr_dash_token");
 const params = new URLSearchParams(location.search);
 if (params.get("token")) { token = params.get("token"); localStorage.setItem("ocr_dash_token", token); history.replaceState(null,"","/dashboard"); }
 if (token) startPolling(); else document.getElementById("tokenbox").style.display = "block";
