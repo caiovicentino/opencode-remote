@@ -62,6 +62,12 @@ async function main() {
     }
 
     const tasks = loadBacklog(cfg.workspace);
+    // self-sustaining evolution: never let the queue run dry
+    if (tasks.length < 2) {
+      log("info", "queue low — strategist drafting next tasks", { ready: tasks.length });
+      await runStrategist(cfg);
+      continue; // re-read backlog fresh in the next cycle
+    }
     const task = tasks[0];
     if (!task) {
       await sleep(15 * 60_000);
@@ -141,6 +147,46 @@ Output: either "REDTEAM: CLEAN" if you found nothing actionable, or
       allowFail: true,
     });
     await digest("🚨 Pilot redteam: achado", summary.slice(0, 120), "#/");
+  }
+}
+
+/**
+ * STRATEGIST role — the product brain that keeps evolution constant.
+ * Reads the repo (code, docs, metrics, project memory) and drafts the next
+ * shippable tasks into BACKLOG.md. This is what makes the loop 24/7 without
+ * a human feeding work.
+ */
+async function runStrategist(cfg: PilotConfig) {
+  const r = await runAgent(
+    `You are the STRATEGIST agent of the opencode-remote autonomous pipeline.
+Your job: keep the product evolving without any human feeding tasks.
+
+First, ground yourself in context:
+1. Read AGENTS.md and docs/PILOT.md (how the system works).
+2. Read ~/.opencode-remote/memory.md (project memory: user rules, competitive research, past decisions).
+3. Skim the code: apps/web/src/components (mobile PWA UX), apps/daemon/src (ops surface), BACKLOG.md (## Done shows what shipped recently).
+4. Check git log --oneline -15 for momentum.
+
+Then draft 2-3 NEW tasks that are:
+- small and shippable in one pipeline cycle (a focused UI improvement, a quality-of-life fix, a docs/eval gap, a robustness improvement)
+- grounded in real user value for the mobile remote-control product (Caio controls this Mac from his phone; content creators use the clips pipeline)
+- NOT duplicates of anything in ## Ready or ## Done
+
+Append them to BACKLOG.md under ## Ready using EXACTLY the existing line format:
+- [ ] (ID) [Pn] Title — spec: what to do, where, and acceptance criteria
+IDs continue the sequence (P2-00X / P3-00X). Do not touch other sections, do not commit.
+
+Your LAST line must be exactly: STRATEGIST:DONE`,
+    { cwd: cfg.workspace, timeoutMin: 25, label: "strategist" },
+  );
+  if (r.output.includes("STRATEGIST:DONE")) {
+    exec(`git add BACKLOG.md && git commit -qm "pilot(strategist): queue refill $(date -u +%H:%M)" && git push -q origin main`, {
+      cwd: cfg.workspace,
+      allowFail: true,
+    });
+    log("info", "strategist refilled queue");
+  } else {
+    log("warn", "strategist did not finish", { tail: r.output.slice(-200) });
   }
 }
 
