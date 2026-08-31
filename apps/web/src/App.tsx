@@ -25,6 +25,16 @@ type Phase = "unpaired" | "connecting" | "paired" | "error";
 
 type TabId = "sessions" | "files" | "settings";
 
+/** Electron bridge from apps/desktop/src/preload.ts (absent in the browser). */
+interface DesktopBridge {
+  getPairUrl?: () => Promise<string | null>;
+}
+
+function desktopBridge(): DesktopBridge | null {
+  const bridge = (window as unknown as { ocrDesktop?: DesktopBridge }).ocrDesktop;
+  return bridge && typeof bridge.getPairUrl === "function" ? bridge : null;
+}
+
 function TabBar({
   active,
   onSelect,
@@ -211,7 +221,26 @@ export default function App() {
 
   useEffect(() => {
     const stored = loadState();
-    if (stored) void connect(stored.pairing, false);
+    if (stored) {
+      void connect(stored.pairing, false);
+      return;
+    }
+    // Desktop shell, no stored pairing: pair with the local daemon sidecar
+    // automatically (docs/VISION.md stage 3.1). The captured boot URI flows
+    // through the exact same path as paste-pairing — parsePairingUri +
+    // connect(persist=true) — so the manual screen only appears as fallback.
+    const bridge = desktopBridge();
+    if (!bridge?.getPairUrl) return;
+    bridge
+      .getPairUrl()
+      .then((uri) => {
+        if (!uri) return;
+        const pairing = parsePairingUri(uri);
+        if (pairing) void connect(pairing, true);
+      })
+      .catch(() => {
+        /* no URI or unparsable URI → PairingView fallback */
+      });
   }, []);
 
   // Web Share Target (Android/desktop Chrome): shared content arrives as query params

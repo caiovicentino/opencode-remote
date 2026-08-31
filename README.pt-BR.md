@@ -127,6 +127,13 @@ ele é reaproveitado — nunca duplicado. Para trocar a porta:
 `OCR_DAEMON_METRICS_PORT` (com fallback pro `OCR_METRICS_PORT`); o filho faz
 bind exatamente na porta que o shell verifica.
 
+**Zero pairing na máquina host**: no desktop, o sidecar também captura o URI
+`opencode-remote://pair?v=2&…` que o daemon imprime no boot e a UI se pareia
+sozinha — na máquina que hospeda o daemon não existe scan de QR na primeira
+execução. A tela manual de QR/colar continua disponível como fallback
+(troca de máquinas → add machine), por exemplo quando um daemon já rodando foi
+reaproveitado e nenhum URI foi capturado.
+
 ## Roadmap
 
 Próximos: relay hospedado

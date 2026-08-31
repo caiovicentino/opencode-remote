@@ -78,6 +78,7 @@ delete process.env.OCR_DAEMON_ENTRY;
 
 const {
   DAEMON_METRICS_PORT,
+  getPairUrl,
   healthOnce,
   resolveEntry,
   startDaemonSidecar,
@@ -184,6 +185,33 @@ const pid1 = Number(readFileSync(pidFile, "utf8"));
 check("spawned child is alive", pidAlive(pid1));
 await stopDaemonSidecar();
 check("stopDaemonSidecar SIGTERM kills the child", !pidAlive(pid1));
+
+// --- stdout capture: boot pairing URI (P0-003) --------------------------------
+// Mirrors the daemon's boot banner (apps/daemon/src/index.ts): QR art first,
+// then the "or paste:" line carrying the opencode-remote://pair URI.
+const PAIR_URI =
+  "opencode-remote://pair?v=2&relay=ws%3A%2F%2Frelay.example.com&room=abc123&k=dGVzdA%3D%3D&vapid=abc&name=Mac%20mini";
+const pairingEntry = fixture(
+  "pairing.cjs",
+  `console.log("  (terminal QR art)");\nconsole.log("  or paste: ${PAIR_URI}\\n");\nsetInterval(() => {}, 1000);`,
+);
+process.env.OCR_DAEMON_ENTRY = pairingEntry;
+check("pairing-uri child spawns", (await startDaemonSidecar(tmp, undefined)) === true);
+check("pairing URI captured from stdout", await until(() => getPairUrl() === PAIR_URI));
+await stopDaemonSidecar();
+
+// A fresh spawn resets the capture — a silent child must not report the
+// previous daemon's URI (each spawn owns exactly one URI).
+const silentEntry = fixture("silent.cjs", "setInterval(() => {}, 1000);");
+process.env.OCR_DAEMON_ENTRY = silentEntry;
+check("silent child spawns", (await startDaemonSidecar(tmp, undefined)) === true);
+check("silent child starts", await until(() => existsSync(silentEntry + ".pid")));
+check("pairing URI reset on fresh spawn (null until printed)", getPairUrl() === null);
+await stopDaemonSidecar();
+check(
+  "silent child is stopped",
+  await until(() => !pidAlive(Number(readFileSync(silentEntry + ".pid", "utf8")))),
+);
 
 // --- stubborn child → SIGKILL after the 3s grace -----------------------------
 const stubbornEntry = fixture("stubborn.cjs", 'process.on("SIGTERM", () => {});setInterval(() => {}, 1000);');

@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
   DAEMON_METRICS_PORT,
+  getPairUrl,
   startDaemonSidecar,
   stopDaemonSidecar,
   waitForDaemonHealth,
@@ -36,6 +37,9 @@ async function onReady(): Promise<void> {
   buildTray();
 
   ipcMain.handle("app:version", () => app.getVersion());
+  // Boot pairing URI captured from the daemon sidecar's stdout (null when the
+  // daemon was reused or hasn't printed it yet) — lets the renderer auto-pair.
+  ipcMain.handle("app:pairUrl", () => getPairUrl());
 
   // Sidecar: boot a local daemon (unless one is already healthy), wait for
   // /api/health before showing the UI. On timeout we still show the UI —
