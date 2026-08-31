@@ -5,7 +5,7 @@
 import { b64, fromB64, seal, openSealed, seqAad } from "@ocr/protocol";
 import { parsePairingUri } from "../apps/web/src/lib/client";
 import { mimeFor } from "../apps/web/src/lib/files";
-import { timeAgo } from "../apps/web/src/lib/time";
+import { timeAgo, sessionUpdatedTs } from "../apps/web/src/lib/time";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -59,6 +59,20 @@ check("timeAgo days", timeAgo(now - 3 * 86_400_000, "now", now) === "3d");
 check("timeAgo ISO string", timeAgo("2026-08-31T11:00:00Z", "now", now) === "1h");
 check("timeAgo invalid", timeAgo("garbage", "now", now) === "");
 check("timeAgo missing", timeAgo(undefined, "now", now) === "");
+
+// --- session list ordering (P2-003) ----------------------------------------
+type S = { id: string; updatedAt?: string | number; time?: { updated?: string } };
+const s1: S = { id: "a", updatedAt: "2026-08-31T12:00:00Z" }; // newest (now)
+const s2: S = { id: "b", updatedAt: now - 60_000 };
+const s3: S = { id: "c", time: { updated: "2026-08-31T10:00:00Z" } };
+const s4: S = { id: "d" }; // unknown -> last
+const s5: S = { id: "e", updatedAt: "garbage" }; // invalid -> last
+const desc = [s1, s2, s3, s4, s5].sort((a, b) => sessionUpdatedTs(b) - sessionUpdatedTs(a));
+check("sessionUpdatedTs sorts desc by recent activity", desc.slice(0, 3).map((s) => s.id).join("") === "abc");
+check("sessionUpdatedTs unknown last", desc[3].id === "d" && desc[4].id === "e");
+check("sessionUpdatedTs epoch millis", sessionUpdatedTs({ updatedAt: now }) === now);
+check("sessionUpdatedTs time.updated fallback", sessionUpdatedTs(s3) === Date.parse("2026-08-31T10:00:00Z"));
+check("sessionUpdatedTs missing/invalid -> 0", sessionUpdatedTs(s4) === 0 && sessionUpdatedTs(s5) === 0 && sessionUpdatedTs(undefined) === 0);
 
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);
