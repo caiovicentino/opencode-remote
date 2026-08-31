@@ -243,7 +243,19 @@ export default function SessionsView({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
-        {loading && <p className="muted">Loading sessions…</p>}
+        {loading && (
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(165px, 1fr))",
+              gap: 8,
+            }}
+          >
+            {[0, 1, 2, 3, 4, 5].map((i) => (
+              <div key={i} className="skel" style={{ height: 72 }} />
+            ))}
+          </div>
+        )}
         {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
         {!loading && filtered.length === 0 && <p className="muted">{t("noSessions")}</p>}
         <div

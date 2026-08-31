@@ -36,6 +36,10 @@ export default function App() {
   const [connStatus, setConnStatus] = useState<Status>("connecting");
   const [machines, setMachines] = useState<Pairing[]>(() => loadPairings());
   const [addingMachine, setAddingMachine] = useState(false);
+  // navigation direction drives the slide-in animation of the next screen
+  const [navDir, setNavDir] = useState<"fwd" | "back">("fwd");
+  const appRootRef = useRef<HTMLDivElement>(null);
+  const swipe = useRef({ x: 0, y: 0, dx: 0, active: false });
   const [unread, setUnread] = useState<Record<string, number>>(() => {
     try {
       return JSON.parse(localStorage.getItem("ocr_unread") ?? "{}") as Record<string, number>;
@@ -200,6 +204,61 @@ export default function App() {
     return client.request(method as "GET", path, body, query);
   }
 
+  function goBack() {
+    setNavDir("back");
+    if (session) {
+      setSession(null);
+      history.replaceState(null, "", "#/");
+    } else if (settings) {
+      setSettings(false);
+      setTick((t) => t + 1);
+    } else if (filesView) {
+      setFilesView(false);
+    } else if (share) {
+      setShare(null);
+    }
+  }
+
+  // iOS-style swipe-back: drag from the right edge slides the current screen;
+  // releasing past the threshold pops the view.
+  function onTouchStart(e: React.TouchEvent) {
+    const t = e.touches[0];
+    if (!t || e.touches.length !== 1) return;
+    if (!session && !settings && !filesView && !share) return;
+    swipe.current = { x: t.clientX, y: t.clientY, dx: 0, active: t.clientX > window.innerWidth - 28 };
+  }
+  function onTouchMove(e: React.TouchEvent) {
+    if (!swipe.current.active) return;
+    const t = e.touches[0];
+    if (!t) return;
+    const dx = t.clientX - swipe.current.x;
+    const dy = t.clientY - swipe.current.y;
+    if (Math.abs(dy) > Math.abs(dx)) {
+      // vertical scroll wins — abort the gesture
+      swipe.current.active = false;
+      const el = appRootRef.current;
+      if (el) el.classList.remove("dragging");
+      return;
+    }
+    swipe.current.dx = Math.max(0, dx);
+    const el = appRootRef.current;
+    if (el) {
+      el.style.setProperty("--drag-x", `${Math.min(swipe.current.dx, 80)}px`);
+      el.classList.add("dragging");
+    }
+  }
+  function onTouchEnd() {
+    if (!swipe.current.active) return;
+    swipe.current.active = false;
+    const el = appRootRef.current;
+    const went = swipe.current.dx;
+    if (el) {
+      el.classList.remove("dragging");
+      el.style.removeProperty("--drag-x");
+    }
+    if (went > 72) goBack();
+  }
+
   if (addingMachine) {
     return (
       <PairingView
@@ -243,59 +302,71 @@ export default function App() {
     );
   }
 
-  return session ? (
-    <ChatView
-      sessionId={session}
-      request={request}
-      events={events}
-      connStatus={connStatus}
-      voice={clientRef.current?.caps?.transcribe === true}
-      onBack={() => {
-        setSession(null);
-        history.replaceState(null, "", "#/");
-      }}
-    />
-  ) : settings ? (
-    <SettingsView
-      request={request}
-      onBack={() => {
-        setSettings(false);
-        setTick((t) => t + 1); // re-fetch machine name after settings edits
-      }}
-    />
-  ) : filesView ? (
-    <FilesView request={request} onBack={() => setFilesView(false)} />
-  ) : share ? (
-    <SendToAgentView
-      request={request}
-      payload={share}
-      onBack={() => setShare(null)}
-      onOpenSession={(id) => {
-        setShare(null);
-        setSession(id);
-      }}
-    />
-  ) : (
-    <SessionsView
-      request={request}
-      machineName={machineName}
-      events={events}
-      unread={unread}
-      connStatus={connStatus}
-      machines={machines}
-      activeRoom={getActiveRoom()}
-      onSwitch={(p) => void switchMachine(p)}
-      onForget={(p) => forgetMachine(p)}
-      onAddMachine={() => setAddingMachine(true)}
-      onOpen={setSession}
-      onDisconnect={disconnect}
-      onEnablePush={async () => {
-        const { enablePush } = await import("./lib/push");
-        await enablePush(request);
-      }}
-      onOpenSettings={() => setSettings(true)}
-      onOpenFiles={() => setFilesView(true)}
-      tick={tick}
-    />
+  return (
+    <div
+      ref={appRootRef}
+      className="app-root"
+      data-nav={navDir}
+      onTouchStart={onTouchStart}
+      onTouchMove={onTouchMove}
+      onTouchEnd={onTouchEnd}
+      style={{ height: "100%" }}
+    >
+      {session ? (
+        <ChatView
+          sessionId={session}
+          request={request}
+          events={events}
+          connStatus={connStatus}
+          voice={clientRef.current?.caps?.transcribe === true}
+          onBack={goBack}
+        />
+      ) : settings ? (
+        <SettingsView request={request} onBack={goBack} />
+      ) : filesView ? (
+        <FilesView request={request} onBack={goBack} />
+      ) : share ? (
+        <SendToAgentView
+          request={request}
+          payload={share}
+          onBack={goBack}
+          onOpenSession={(id) => {
+            setShare(null);
+            setSession(id);
+          }}
+        />
+      ) : (
+        <SessionsView
+          request={request}
+          machineName={machineName}
+          events={events}
+          unread={unread}
+          connStatus={connStatus}
+          machines={machines}
+          activeRoom={getActiveRoom()}
+          onSwitch={(p) => void switchMachine(p)}
+          onForget={(p) => forgetMachine(p)}
+          onAddMachine={() => setAddingMachine(true)}
+          onOpen={(id) => {
+            setNavDir("fwd");
+            setSession(id);
+          }}
+          onDisconnect={disconnect}
+          onEnablePush={async () => {
+            const { enablePush } = await import("./lib/push");
+            await enablePush(request);
+          }}
+          onOpenSettings={() => {
+            setNavDir("fwd");
+            setSettings(true);
+          }}
+          onOpenFiles={() => {
+            setNavDir("fwd");
+            setFilesView(true);
+          }}
+          tick={tick}
+        />
+      )}
+    </div>
   );
 }

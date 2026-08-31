@@ -26,6 +26,8 @@ interface Bubble {
   text: string;
   images?: string[];
   messageID?: string;
+  /** true while the relay round-trip is in flight; "queued" when offline */
+  pending?: boolean | "queued";
 }
 
 interface PermissionAsk {
@@ -125,6 +127,13 @@ interface PendingImage {
 
 export default function ChatView({ sessionId, events, connStatus, voice, request, onBack }: Props) {
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
+  const [loadingHistory, setLoadingHistory] = useState(true);
+  // message windowing: render only the tail of long conversations and page in
+  // older bubbles on scroll-top, so huge sessions stay smooth on low-end phones
+  const MSG_WINDOW = 200;
+  const [winStart, setWinStart] = useState(0);
+  const listRef = useRef<HTMLDivElement>(null);
+  const prePagingHeight = useRef(0);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
@@ -276,6 +285,8 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
   }, [sessionId]);
 
   useEffect(() => {
+    setLoadingHistory(true);
+    setWinStart(0);
     void loadHistory();
   }, [sessionId]);
 
@@ -303,9 +314,12 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
         }
       }
       setBubbles(out);
+      setWinStart(Math.max(0, out.length - MSG_WINDOW));
       setHistoryTools(toolsFromRows(rows));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoadingHistory(false);
     }
   }
 
@@ -415,6 +429,30 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [bubbles, sending, liveText]);
+
+  // keep the render window bounded on very long conversations
+  useEffect(() => {
+    if (bubbles.length - winStart > MSG_WINDOW + 60) {
+      setWinStart(Math.max(0, bubbles.length - MSG_WINDOW));
+    }
+  }, [bubbles.length, winStart]);
+
+  // after paging in older bubbles, restore the scroll position the user was at
+  useEffect(() => {
+    if (prePagingHeight.current && listRef.current) {
+      listRef.current.scrollTop = listRef.current.scrollHeight - prePagingHeight.current;
+      prePagingHeight.current = 0;
+    }
+  }, [winStart]);
+
+  function pageOlder() {
+    const el = listRef.current;
+    if (!el || winStart === 0) return;
+    if (el.scrollTop < 40) {
+      prePagingHeight.current = el.scrollHeight;
+      setWinStart(Math.max(0, winStart - 100));
+    }
+  }
 
   const activity = (() => {
     if (!showActivity) return [];
@@ -663,6 +701,21 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
     }
   }
 
+  // flip the newest in-flight user bubble to delivered / queued
+  function markPending(v: boolean | "queued") {
+    setBubbles((bs) => {
+      let idx = -1;
+      for (let i = bs.length - 1; i >= 0; i--) {
+        if (bs[i]?.pending) {
+          idx = i;
+          break;
+        }
+      }
+      if (idx === -1) return bs;
+      return bs.map((b, i) => (i === idx ? { ...b, pending: v } : b));
+    });
+  }
+
   async function send(override?: string) {
     const text = (override ?? input).trim();
     if ((!text && images.length === 0) || sending || liveText) return;
@@ -676,6 +729,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
         text:
           text ||
           (images.length ? `[image${images.length > 1 ? `s x${images.length}` : ""}]` : ""),
+        pending: true,
       },
     ]);
     try {
@@ -710,28 +764,34 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
       }
       if (res.status !== 200) {
         setError(`opencode responded ${res.status}: ${JSON.stringify(res.body).slice(0, 200)}`);
-      } else if (text) {
-        // first prompt names the conversation (once per session)
-        const flag = `ocr.titled.${sessionId}`;
-        if (!localStorage.getItem(flag)) {
-          localStorage.setItem(flag, "1");
-          void (async () => {
-            try {
-              const s = await request("GET", `/session/${sessionId}`);
-              const cur = (s.body as { title?: string }).title ?? "";
-              if (cur && cur !== "New session" && cur !== "Remote session") return;
-              const t = text.replace(/\s+/g, " ").trim().slice(0, 60);
-              if (t) await request("PATCH", `/session/${sessionId}`, { title: t });
-            } catch {}
-          })();
+        markPending(false);
+      } else {
+        markPending(false);
+        if (text) {
+          // first prompt names the conversation (once per session)
+          const flag = `ocr.titled.${sessionId}`;
+          if (!localStorage.getItem(flag)) {
+            localStorage.setItem(flag, "1");
+            void (async () => {
+              try {
+                const s = await request("GET", `/session/${sessionId}`);
+                const cur = (s.body as { title?: string }).title ?? "";
+                if (cur && cur !== "New session" && cur !== "Remote session") return;
+                const t = text.replace(/\s+/g, " ").trim().slice(0, 60);
+                if (t) await request("PATCH", `/session/${sessionId}`, { title: t });
+              } catch {}
+            })();
+          }
         }
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (text) {
         enqueue(text);
+        markPending("queued");
         setError(`offline — message queued (${msg})`);
       } else {
+        markPending(false);
         setError(msg);
       }
     } finally {
@@ -1060,9 +1120,26 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
       </header>
 
       <div className="chat">
-        <div className="messages">
-          {bubbles.map((b, i) => (
-            <div key={i} className={`msg ${b.role}`}>
+        <div className="messages" ref={listRef} onScroll={pageOlder}>
+          {loadingHistory && bubbles.length === 0 && (
+            <>
+              <div className="skel" style={{ width: "55%", height: 40, alignSelf: "flex-end" }} />
+              <div className="skel" style={{ width: "80%", height: 64 }} />
+              <div className="skel" style={{ width: "45%", height: 40 }} />
+              <div className="skel" style={{ width: "70%", height: 64 }} />
+            </>
+          )}
+          {winStart > 0 && (
+            <div className="muted" style={{ textAlign: "center", fontSize: "0.75rem" }}>
+              ↑ {winStart} mensagens anteriores
+            </div>
+          )}
+          {bubbles.slice(winStart).map((b, i) => (
+            <div
+              key={i}
+              className={`msg ${b.role}${b.pending ? " pending" : ""}`}
+              title={b.pending === "queued" ? "queued — will send when back online" : undefined}
+            >
               {b.images && b.images.length > 0 && (
                 <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: b.text ? 4 : 0 }}>
                   {b.images.map((u, j) => (
@@ -1091,10 +1168,18 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
           {liveText && (
             <div className="msg assistant">
               {renderBubbleText(liveText, request, setError)}
-              <span>▍</span>
+              <span className="caret" />
             </div>
           )}
-          {sending && <div className="muted">agent is working…</div>}
+          {sending && !liveText && (
+            <div className="msg assistant">
+              <div className="typing">
+                <span />
+                <span />
+                <span />
+              </div>
+            </div>
+          )}
           {(sending || liveText) && (
             <button
               className="danger"
