@@ -10,6 +10,11 @@ import { timeAgo, sessionUpdatedTs } from "../apps/web/src/lib/time";
 import { sessionTitleOf } from "../apps/web/src/lib/title";
 import { permissionPreview } from "../apps/web/src/lib/permission";
 import { applySessionFilters } from "../apps/web/src/lib/sessionFilter";
+import { taskMergedIn } from "../apps/pilot/src/pipeline";
+import { mkdtempSync } from "node:fs";
+import { execSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -142,6 +147,22 @@ check("copyText denied + no document -> false (Node has no document; legacyCopy 
 check("legacyCopy writes and cleans up the textarea", legacyCopy("/a/b.txt", okDoc.doc) === true && okDoc.created[0] === "textarea" && okDoc.removed.length === 1 && (okDoc.appended[0] as { value: string }).value === "/a/b.txt");
 check("legacyCopy reports execCommand failure", legacyCopy("x", denyDoc.doc) === false);
 check("legacyCopy without document fails", legacyCopy("x", undefined) === false);
+
+// --- empty-diff self-heal: task merge detection (P0-001) ----------------------
+try {
+  const repo = mkdtempSync(join(tmpdir(), "pilot-unit-"));
+  const g = (cmd: string) => execSync(cmd, { cwd: repo, encoding: "utf8" });
+  g("git init -q");
+  g("git config user.email pilot@test.local");
+  g("git config user.name pilot");
+  g("git commit -q --allow-empty -m 'pilot(P0-001): empty diff deve completar a task'");
+  g("git update-ref refs/remotes/origin/main HEAD");
+  check("taskMergedIn finds merged task id", taskMergedIn(repo, "P0-001") === true);
+  check("taskMergedIn rejects unknown task id", taskMergedIn(repo, "P9-999") === false);
+  check("taskMergedIn is fixed-string (no regex leak)", taskMergedIn(repo, "P0-00.") === false);
+} catch (e) {
+  check(`taskMergedIn test env failed: ${String(e)}`, false);
+}
 
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);

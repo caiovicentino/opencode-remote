@@ -74,7 +74,7 @@ saudável" — sem token e mesmo com token, o challenge do healthOnce reprova). 
 ## Self-healing (3 níveis)
 
 1. **Agent**: retry de npm ci, re-upload de attachments, rounds de review
-2. **Pipeline**: rollback automático de deploy (health + soak + invariants live)
+2. **Pipeline**: rollback automático de deploy (health + soak + invariants live); diff vazio do builder + task já presente no histórico de merge de `origin/main` (grep fixo por `pilot(<id>)`) → `markDone` no BACKLOG.md e ciclo encerrado com sucesso em vez de falhar para sempre na mesma task
 3. **Serviço**: heartbeat + watchdog — 30min sem sinal → exit → KeepAlive ressozinho
 
 ## Rodar manualmente

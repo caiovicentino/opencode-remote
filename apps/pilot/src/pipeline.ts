@@ -119,7 +119,27 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
       return { ok: false, detail: `builder did not finish (round ${round}): ${build.output.slice(-300)}` };
     }
     const diff = exec(`git diff main...pilot/${t.id}`, { cwd: ws }).output;
-    if (!diff.trim()) return { ok: false, detail: "builder produced an empty diff" };
+    if (!diff.trim()) {
+      if (!taskMergedIn(ws, t.id)) return { ok: false, detail: "builder produced an empty diff" };
+      emit("phase", { task: t.id, phase: "already-merged" });
+      console.log(
+        JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "empty diff but task already merged, self-healing", data: { task: t.id } }),
+      );
+      const co = exec("git checkout -q -B main origin/main", { cwd: ws, allowFail: true });
+      markDone(ws, t.id, `already merged — empty-diff self-heal ${nowLocalISO().slice(0, 10)}`);
+      const push = co.ok
+        ? exec(
+            `git add BACKLOG.md && git commit -qm "pilot(${t.id}): mark done (empty-diff self-heal)" && git push -q origin main`,
+            { cwd: ws, allowFail: true },
+          )
+        : { ok: false, output: "" };
+      return {
+        ok: push.ok,
+        detail: push.ok
+          ? `task ${t.id} already merged on main — marked done (empty-diff self-heal)`
+          : `task ${t.id} already merged but BACKLOG update failed`,
+      };
+    }
 
     // two adversarial reviewers in parallel, isolated contexts
     emit("phase", { task: t.id, phase: "reviewers" });
@@ -229,4 +249,13 @@ async function gatekeeper(cfg: PilotConfig, ws: string, t: Task, state: PilotSta
 
 function headSha(ws: string): string {
   return exec("git rev-parse HEAD", { cwd: ws }).output.trim();
+}
+
+export function taskMergedIn(ws: string, id: string): boolean {
+  const pat = `pilot(${id})`;
+  const r = exec(`git log origin/main --fixed-strings --grep=${JSON.stringify(pat)} --oneline`, {
+    cwd: ws,
+    allowFail: true,
+  });
+  return r.ok && r.output.trim().length > 0;
 }
