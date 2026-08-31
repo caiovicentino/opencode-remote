@@ -50,6 +50,7 @@ private. That is the product: **local power, remote control, zero trust**.
   replay protection, device allowlist, audit log, biometric unlock
 - **BYOM** — opencode supports any provider; pick the model per session
 - **API + SDK** — drive sessions from code (`packages/sdk`)
+- **Desktop shell (early)** — Electron app wrapping the same UI, with tray and native menu
 
 ## Quick Start (Mac → iPhone, ~5 min)
 
@@ -103,6 +104,23 @@ This repo evolves itself: the Pilot service ([docs/PILOT.md](docs/PILOT.md)) pic
 adversarial reviewer agents, and only merges when the deterministic gatekeeper (eval battery +
 [executable constitution](docs/CONSTITUTION.md)) is fully green. Deploys are staged with health
 watch and automatic rollback. Freezing: `touch ~/.opencode-remote/pilot.lock`.
+
+## Desktop app (early)
+
+The first stage of the [desktop vision](docs/VISION.md): an Electron shell
+([`apps/desktop`](apps/desktop)) that opens the cockpit in a native window,
+with a tray icon, native menus and a sandboxed renderer — no terminal, no
+Tailscale. It loads the same `@ocr/web` build as the phone.
+
+```bash
+npm run build --workspace @ocr/web       # build the UI once
+npm run build --workspace @ocr/desktop   # compile the shell (TypeScript main process)
+npm start  --workspace @ocr/desktop      # open the window
+```
+
+During web development, point the shell at the Vite dev server:
+`OCR_WEB_URL=http://localhost:5173 npm start --workspace @ocr/desktop`.
+Packaging (DMG, notarization) comes with the distribution stage.
 
 ## Roadmap
 

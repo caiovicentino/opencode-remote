@@ -38,6 +38,11 @@ BACKLOG.md ──> BUILDER ────┬──> SECURITY REVIEWER ─┬──
 Builders e reviewers rodam em **clone isolado** (`~/.opencode-remote/pilot/repo`);
 o checkout de produção só é tocado no deploy.
 
+O gatekeeper roda typecheck + build em **todos os workspaces**, incluindo o shell
+desktop (`apps/desktop`), e `scripts/invariants.ts` verifica que o renderer Electron
+nasce sandboxed (contextIsolation on, nodeIntegration off). Empacotamento
+(DMG/notarização, `npm run dist`) fica fora do gate — é etapa de distribuição.
+
 ## Deploy staged + rollback
 
 1. `git reset --hard <sha>` no repo de produção + `npm ci` + `npm run build`

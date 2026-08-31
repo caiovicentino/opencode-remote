@@ -51,6 +51,7 @@ remoto, zero confiança**.
   AES-256-GCM, anti-replay, allowlist de dispositivos, audit log, biometria
 - **BYOM** — opencode suporta qualquer provider; escolha o modelo por sessão
 - **API + SDK** — dirija sessões por código (`packages/sdk`)
+- **App desktop (inicial)** — shell Electron com a mesma UI, com tray e menu nativo
 
 ## Quick Start (Mac → iPhone, ~5 min)
 
@@ -93,6 +94,23 @@ Veja [docs/api.md](docs/api.md).
 - [docs/security.md](docs/security.md)
 - [docs/troubleshooting.md](docs/troubleshooting.md)
 - [docs/capacitor.md](docs/capacitor.md) — shell nativo iOS
+
+## App desktop (inicial)
+
+O primeiro estágio da [visão desktop](docs/VISION.md): um shell Electron
+([`apps/desktop`](apps/desktop)) que abre o cockpit numa janela nativa, com
+ícone de tray, menus nativos e renderer sandboxed — sem terminal, sem
+Tailscale. Ele carrega o mesmo build de `@ocr/web` usado no telefone.
+
+```bash
+npm run build --workspace @ocr/web       # gere a UI uma vez
+npm run build --workspace @ocr/desktop   # compila o shell (main process em TypeScript)
+npm start  --workspace @ocr/desktop      # abre a janela
+```
+
+Durante o desenvolvimento do web, aponte o shell pro dev server do Vite:
+`OCR_WEB_URL=http://localhost:5173 npm start --workspace @ocr/desktop`.
+Empacotamento (DMG, notarização) vem com a etapa de distribuição.
 
 ## Roadmap
 

@@ -1,0 +1,21 @@
+# electron-builder config for @ocr/desktop.
+# Packaging (DMG/notarization) is stage 5 of docs/VISION.md — this scaffold
+# only guarantees a working `--dir` build of the current shell.
+appId: com.culturabuilder.opencode-remote
+productName: OpenCode Remote
+files:
+  - dist-electron/**
+  - package.json
+extraResources:
+  # Bundle the web UI so the packaged app can load it from resources/web-dist
+  - from: ../web/dist
+    to: web-dist
+    filter:
+      - "**/*"
+mac:
+  target: dir
+  category: public.app-category.developer-tools
+win:
+  target: dir
+linux:
+  target: dir

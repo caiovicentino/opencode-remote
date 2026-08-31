@@ -15,6 +15,7 @@
     "dev:web": "npm run dev --workspace apps/web",
     "dev:relay": "npm run dev --workspace apps/relay",
     "dev:daemon": "npm run dev --workspace apps/daemon",
+    "start:desktop": "npm run start --workspace apps/desktop",
     "build": "npm run build --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "eslint apps packages scripts --quiet",
