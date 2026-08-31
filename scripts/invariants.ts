@@ -51,6 +51,15 @@ try {
   const joined = webFiles.map((f) => readFileSync(join(ROOT, f), "utf8")).join("\n");
   check("web: no dangerouslySetInnerHTML", !joined.includes("dangerouslySetInnerHTML"));
 
+  // desktop: Electron shell must be sandboxed (added by P1-D01; additive check)
+  const desktopMain = readFileSync(join(ROOT, "apps/desktop/src/main.ts"), "utf8");
+  check(
+    "desktop: sandboxed webPreferences (contextIsolation, no nodeIntegration)",
+    /contextIsolation:\s*true/.test(desktopMain) &&
+      /nodeIntegration:\s*false/.test(desktopMain) &&
+      /sandbox:\s*true/.test(desktopMain),
+  );
+
   // no committed secrets
   const secretPatterns = [/BEGIN [A-Z ]*PRIVATE KEY/, /ghp_[A-Za-z0-9]{20,}/, /AKIA[0-9A-Z]{16}/, /sk-[A-Za-z0-9]{20,}/];
   const gitFiles = exec("git -C . ls-files");

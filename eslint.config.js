@@ -1,7 +1,7 @@
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  { ignores: ["**/node_modules/**", "**/dist/**", "tools/**", "apps/web/ios/**"] },
+  { ignores: ["**/node_modules/**", "**/dist/**", "tools/**", "apps/web/ios/**", "apps/desktop/dist-electron/**"] },
   ...tseslint.configs.recommended,
   {
     rules: {
