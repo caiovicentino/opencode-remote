@@ -2,10 +2,13 @@
 
 Formato: `- [ ] (ID) [Pn] Título — spec: ...`
 O Pilot consome a primeira task `## Ready` em ordem. P0 > P1 > P2 > P3.
-Tasks feitas vão para `## Done` automaticamente.
+Tasks feitas vão para `## Blocked
+
+## Done` automaticamente.
 
 ## Ready
 
+- [ ] (P1-014) [P1] Stop-loss por task (circuit breaker de retries) — spec: P1-006 falhou 4x em max review rounds queimando orçamento; em apps/pilot/src/state.ts adicionar `taskAttempts: Record<string, number>` ao PilotState; em index.ts/pipeline.ts incrementar a cada falha de pipeline da task; quando atingir `maxAttemptsPerTask` (novo campo em pilot.json, default 4): mover a linha da task de `## Ready` para nova seção `## Blocked` do BACKLOG.md com um resumo do último findings, notifySupervisor único "task blocked after N attempts" e não re-agendar (cooldown infinito até humano/redteam mover de volta); reset do contador quando a task passa no gate; critério: task simulada-falha 4x vai pra Blocked e não volta sozinha, typecheck/build/unit verdes.
 - [ ] (P0-004) [P0] Pilot singleton via pidfile — spec: duas instâncias do pilot rodando em paralelo (self-reload órfão sob `npm exec tsx`) causou double-deploy e falhas "empty diff" hoje; em apps/pilot/src/index.ts ao iniciar: gravar `~/.opencode-remote/pilot/pilot.pid` com o pid atual; se o arquivo existir e o pid estiver vivo (process.kill(pid,0)), derrubar o antigo (SIGTERM, espera 2s, SIGKILL) e logar "stale pilot instance killed"; em apps/pilot/src/deploy.ts trocar o `setTimeout(() => process.exit(0), 500)` por `process.exit(0)` imediato (o log já foi flushado) — o KeepAlive reinicia; critério: iniciar segunda instância mata a primeira (1 pilot vivo no final), self-reload não deixa órfão, typecheck/build/test:unit verdes.
 - [ ] (P1-006) [P1] Paralelismo com workspaces múltiplos — spec: pilot.json ganha "slots" (default 1, deploy continua serial); index.ts vira scheduler: um workspace clone por slot (pilot/repo-1, repo-2…) criado via git clone --shared na primeira vez; cada slot roda runPipeline concorrente sobre task de área diferente (strategist passa a taggear `area: ui|daemon|desktop|infra|relay` no fim da linha de cada task; scheduler não roda 2 tasks da mesma área em paralelo); budgets de task/deploy globais; deployBusy continua serializando deploys; critério: slots=2 processa 2 tasks simultâneas em áreas distintas sem corrida, typecheck/build/test:unit verdes.
 - [ ] (P1-010) [P1] Pane Artifacts no desktop — spec: apps/desktop ganha rota/pane "Artifacts": agentes escrevem artifacts (html, md, csv, pdf) em ~/.opencode-remote/artifacts/<sessionId>/ e o daemon lista via /api/artifacts; pane web renderiza html em iframe sandboxed, md/tabelas com renderer leve, pdf/binary com link abrir-salvar; ChatView ganha card anexado quando a mensagem referencia artifact; critério: agente produz html no ciclo, artifact aparece no pane clicável sem sair do app, typecheck/build verdes.
