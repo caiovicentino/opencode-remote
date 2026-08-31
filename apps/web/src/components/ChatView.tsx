@@ -216,6 +216,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
   const recorder = useRef<WavRecorder | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const sessionIdRef = useRef(sessionId);
 
   useEffect(() => {
     void (async () => {
@@ -247,13 +248,19 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
   }, []);
 
   useEffect(() => {
+    let alive = true;
+    sessionIdRef.current = sessionId;
     setSessionTitle("");
     void (async () => {
       try {
         const res = await request("GET", `/session/${sessionId}`);
-        if (res.status === 200) setSessionTitle(sessionTitleOf(res.body));
+        // a response from a previous session must not overwrite this header
+        if (alive && res.status === 200) setSessionTitle(sessionTitleOf(res.body));
       } catch {}
     })();
+    return () => {
+      alive = false;
+    };
   }, [sessionId]);
 
   useEffect(() => {
@@ -792,10 +799,14 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
             void (async () => {
               try {
                 const s = await request("GET", `/session/${sessionId}`);
-                const cur = (s.body as { title?: string }).title ?? "";
+                const cur = sessionTitleOf(s.body);
                 if (cur && cur !== "New session" && cur !== "Remote session") return;
                 const t = text.replace(/\s+/g, " ").trim().slice(0, 60);
-                if (t) await request("PATCH", `/session/${sessionId}`, { title: t });
+                if (t) {
+                  await request("PATCH", `/session/${sessionId}`, { title: t });
+                  // refresh the header, unless the user already switched sessions
+                  if (sessionIdRef.current === sessionId) setSessionTitle(t);
+                }
               } catch {}
             })();
           }

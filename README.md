@@ -26,8 +26,8 @@ private. That is the product: **local power, remote control, zero trust**.
 ## What you get
 
 - **Full chat** with streaming, markdown, images and tool-activity history;
-  the chat header shows the conversation's title (generic "session" until the
-  agent names it)
+  the chat header shows the conversation's title (generic "session" while the
+  session has no title yet)
 - **AutoMode** — the agent runs hands-free; every auto-approved action is
   audited and pushable
 - **Interactive questions** — the model asks, you tap an option from the beach
