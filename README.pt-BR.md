@@ -36,7 +36,8 @@ remoto, zero confiança**.
   em markdown
 - **Handoff** — continue a sessão exata no Mac (botão 💻)
 - **Painel ao vivo** — estado de cada sessão: trabalhando, esperando aprovação,
-  fez pergunta, pronto, erro
+  fez pergunta, pronto, erro; cards mostram o tempo relativo da última
+  atividade (`5m`, `2h`, `3d`)
 - **Rotinas** — cron de verdade: diário, dias da semana ou loop por intervalo
 - **Seguro por construção** — gate com passkey (WebAuthn), ECDH P-256 +
   AES-256-GCM, anti-replay, allowlist de dispositivos, audit log, biometria

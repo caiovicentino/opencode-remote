@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useT } from "../lib/i18n";
 import { humanizeError } from "../lib/errors";
+import { timeAgo } from "../lib/time";
 import type { EventEnvelope } from "@ocr/protocol";
 import type { Pairing } from "../lib/client";
 
@@ -140,17 +141,6 @@ export default function SessionsView({
     return Number.isNaN(d) ? 0 : d;
   }
   const sorted = filtered.sort((a, b) => updatedOf(b) - updatedOf(a));
-
-  function relTime(s: Session): string {
-    const ts = updatedOf(s);
-    if (!ts) return "";
-    const mins = Math.round((Date.now() - ts) / 60_000);
-    if (mins < 1) return t("justNow");
-    if (mins < 60) return `${mins}m`;
-    const h = Math.round(mins / 60);
-    if (h < 24) return `${h}h`;
-    return `${Math.round(h / 24)}d`;
-  }
 
   // live status per session, derived from the last relevant event of each one
   const statusOf = (() => {
@@ -296,7 +286,7 @@ export default function SessionsView({
         >
           {sorted.map((s) => {
             const st = statusOf.get(s.id);
-            const when = relTime(s);
+            const when = timeAgo(s.updatedAt ?? s.time?.updated, t("justNow"));
             return (
               <div
                 key={s.id}

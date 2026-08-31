@@ -5,6 +5,7 @@
 import { b64, fromB64, seal, openSealed, seqAad } from "@ocr/protocol";
 import { parsePairingUri } from "../apps/web/src/lib/client";
 import { mimeFor } from "../apps/web/src/lib/files";
+import { timeAgo } from "../apps/web/src/lib/time";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -48,6 +49,16 @@ check("parsePairingUri rejects v1", threw);
 // --- mime map ---------------------------------------------------------------
 check("mimeFor pdf", mimeFor("report.pdf") === "application/pdf");
 check("mimeFor unknown", mimeFor("blob.bin") === "application/octet-stream");
+
+// --- relative time ----------------------------------------------------------
+const now = Date.parse("2026-08-31T12:00:00Z");
+check("timeAgo just now", timeAgo(now - 30_000, "now", now) === "now");
+check("timeAgo minutes", timeAgo(now - 5 * 60_000, "now", now) === "5m");
+check("timeAgo hours", timeAgo(now - 2 * 3_600_000, "now", now) === "2h");
+check("timeAgo days", timeAgo(now - 3 * 86_400_000, "now", now) === "3d");
+check("timeAgo ISO string", timeAgo("2026-08-31T11:00:00Z", "now", now) === "1h");
+check("timeAgo invalid", timeAgo("garbage", "now", now) === "");
+check("timeAgo missing", timeAgo(undefined, "now", now) === "");
 
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);
