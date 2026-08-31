@@ -15,6 +15,12 @@
   #header h1 { font-size:15px; letter-spacing:.22em; text-transform:uppercase; font-weight:700;
                background:linear-gradient(90deg,#22d3ee,#4ade80,#fbbf24); -webkit-background-clip:text; background-clip:text; color:transparent; }
   #header .sub { font-size:11px; color:var(--muted); letter-spacing:.08em; }
+  #mission { pointer-events:auto; margin-top:8px; max-width:760px; background:rgba(10,16,24,.72); border:1px solid rgba(74,222,128,.25);
+             border-radius:10px; padding:8px 12px; font-size:12px; color:#c9d6e3; cursor:pointer; }
+  #mission b { color:var(--green); letter-spacing:.1em; font-size:10px; margin-right:8px; }
+  #mission:hover { border-color:var(--green); }
+  #mission input { width:95%; background:#0b111a; border:1px solid #2a3947; color:var(--text); border-radius:6px;
+                   font-size:12px; padding:4px 8px; display:none; margin-top:4px; }
   #progress { display:inline-block; width:120px; height:4px; border-radius:2px; background:rgba(34,211,238,.15);
               vertical-align:middle; margin-right:10px; overflow:hidden; }
   #progress i { display:block; height:100%; width:0; background:linear-gradient(90deg,var(--cyan),var(--green));
@@ -100,9 +106,10 @@
 
 <div class="overlay" id="header">
   <div id="live"></div>
-  <div>
+  <div style="min-width:0">
     <h1>Pilot · Mission Control</h1>
     <div class="sub">opencode-remote — autonomous workflow, live</div>
+    <div id="mission" onclick="editMission(event)"><b>MISSÃO</b><span id="mission-text">…</span><input id="mission-input" placeholder="missão final do projeto" /></div>
   </div>
 </div>
 
@@ -362,7 +369,7 @@ async function poll() {
     document.getElementById("live").className = "stale";
   }
 }
-function startPolling() { poll(); setInterval(poll, 2000); }
+function startPolling() { poll(); setInterval(poll, 2000); loadMission(); }
 
 function render(events) {
   resetStates();
@@ -592,6 +599,38 @@ async function renderDone() {
     el.innerHTML = `<div class="drow">erro ao carregar</div>`;
   }
 }
+
+// mission banner — read once, click to edit, POST to save
+async function loadMission() {
+  try {
+    const res = await fetch("/api/pilot-mission", { headers: { authorization: `Bearer ${token}` } });
+    const { mission } = await res.json();
+    document.getElementById("mission-text").textContent = mission || "clique para definir a missão final";
+  } catch {}
+}
+function editMission(ev) {
+  if (ev.target.tagName === "INPUT") return;
+  const input = document.getElementById("mission-input");
+  input.style.display = "block";
+  input.value = document.getElementById("mission-text").textContent.startsWith("clique")
+    ? ""
+    : document.getElementById("mission-text").textContent;
+  input.focus();
+}
+window.editMission = editMission;
+document.getElementById("mission-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === "Escape") {
+    const input = document.getElementById("mission-input");
+    input.style.display = "none";
+    if (e.key === "Enter" && input.value.trim()) {
+      fetch("/api/pilot-mission", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+        body: JSON.stringify({ mission: input.value.trim() }),
+      }).then(loadMission);
+    }
+  }
+});
 
 resize();
 const nodeRole = { backlog:"pipeline", builder:"agent", security:"reviewer", quality:"reviewer",

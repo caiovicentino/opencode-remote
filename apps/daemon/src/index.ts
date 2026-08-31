@@ -1513,7 +1513,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       let done: { id: string; title: string }[] = [];
       try {
         const md = readFileSync(new URL("../../../BACKLOG.md", import.meta.url), "utf8");
-        const section = md.split("## Done")[1] ?? "";
+        const section = md.split("\n## Done\n")[1] ?? "";
         done = section
           .split("\n")
           .filter((l) => l.startsWith("- [x]"))
@@ -1568,6 +1568,29 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
         }
       } catch {}
       send(200, { delivered });
+      return true;
+    }
+    // GET/POST /api/pilot-mission — the north-star statement shown on the dash
+    if (seg[1] === "pilot-mission") {
+      const file = join(homedir(), ".opencode-remote", "pilot.json");
+      if (req.method === "POST") {
+        const body = JSON.parse((await readBody(req)) || "{}") as { mission?: string };
+        try {
+          const cfg = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+          cfg.mission = String(body.mission ?? "").slice(0, 500);
+          writeFileSync(file, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+          send(200, { mission: cfg.mission });
+        } catch (err) {
+          send(500, { error: String(err) });
+        }
+        return true;
+      }
+      try {
+        const cfg = JSON.parse(readFileSync(file, "utf8")) as { mission?: string };
+        send(200, { mission: cfg.mission ?? "" });
+      } catch {
+        send(200, { mission: "" });
+      }
       return true;
     }
     // GET /api/pilot-events — dashboard feed: state, heartbeat freshness, event tail
