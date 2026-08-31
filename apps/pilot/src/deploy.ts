@@ -20,10 +20,17 @@ export async function deploy(cfg: PilotConfig, sha: string): Promise<DeployResul
   emit("deploy", { phase: "start", detail: `sha ${sha.slice(0, 7)}` });
   const prev = exec("git rev-parse HEAD", { cwd: cfg.repo }).output.trim();
   try {
+    const prevLock = exec("git show HEAD:package-lock.json | shasum -a 256 | cut -d' ' -f1", { cwd: cfg.repo }).output.trim();
     exec(`git fetch origin`, { cwd: cfg.repo });
     exec("git checkout -q main", { cwd: cfg.repo, allowFail: true });
     exec(`git reset -q --hard ${sha}`, { cwd: cfg.repo });
-    npmInstall(cfg);
+    // npm ci wipes node_modules — skip when the lock didn't change (services boot from it)
+    const newLock = exec("git show HEAD:package-lock.json | shasum -a 256 | cut -d' ' -f1", { cwd: cfg.repo }).output.trim();
+    if (newLock !== prevLock) {
+      npmInstall(cfg);
+    } else {
+      console.log(JSON.stringify({ ts: new Date().toISOString(), level: "info", msg: "lock unchanged — skipping npm ci" }));
+    }
     exec("npm run build --silent", { cwd: cfg.repo, timeoutMin: 15 });
     kickstart(cfg, "com.ocr.relay");
     kickstart(cfg, "com.ocr.daemon");
