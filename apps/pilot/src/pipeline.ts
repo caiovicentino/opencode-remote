@@ -242,6 +242,13 @@ async function gatekeeper(cfg: PilotConfig, ws: string, t: Task, state: PilotSta
     // NOTE: live tests (download/push/smoke/live-eval) run post-deploy via
     // `invariants --live` + health checks — they need RELAY_URL + prod pairing.
   ];
+  // Desktop render smoke (P0-002): when the diff touches the desktop shell, go
+  // beyond process boot — did-finish-load + renderer console capture + #root
+  // mounted content — so a white window (e.g. asset 404 on file://) is rejected.
+  const touched = exec(`git diff --name-only main...pilot/${t.id}`, { cwd: ws, allowFail: true }).output;
+  if (touched.split("\n").some((l) => l.trim().startsWith("apps/desktop/"))) {
+    steps.push(["desktop-render", "npx tsx scripts/desktop-render.test.ts"]);
+  }
   for (const [name, cmd] of steps) {
     const r = exec(cmd, { cwd: ws, timeoutMin: 20, allowFail: true });
     if (!r.ok) {

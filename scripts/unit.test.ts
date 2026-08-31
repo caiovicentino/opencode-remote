@@ -14,6 +14,7 @@ import { taskMergedIn } from "../apps/pilot/src/pipeline";
 import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { tmpdir } from "node:os";
+import { createRequire } from "node:module";
 import { join } from "node:path";
 
 let failures = 0;
@@ -174,6 +175,29 @@ try {
 } finally {
   if (pilotRepo) rmSync(pilotRepo, { recursive: true, force: true });
 }
+
+// --- desktop render smoke: ServiceWorker-on-file:// noise filter (P0-002) ----
+const requireCjs = createRequire(import.meta.url);
+const { isKnownNoise } = requireCjs("../scripts/desktop-render-driver.cjs") as {
+  isKnownNoise: (message: string, sourceUrl: string | undefined) => boolean;
+};
+check(
+  "noise filter: SW registration failure on file:// is noise",
+  isKnownNoise(
+    "Uncaught (in promise) TypeError: Failed to register a ServiceWorker: The URL protocol of the script (file:///sw.js) is not supported.",
+    "file:///repo/apps/web/dist/index.html",
+  ) === true,
+);
+check("noise filter: SW failure without source URL is noise", isKnownNoise("ServiceWorker registration failed", "") === true);
+check(
+  "noise filter: SW failure on http(s) is NOT noise",
+  isKnownNoise("ServiceWorker registration failed", "https://ui.example/index.html") === false,
+);
+check(
+  "noise filter: renderer TypeError on file:// is NOT noise",
+  isKnownNoise("Uncaught TypeError: x is undefined", "file:///repo/apps/web/dist/assets/index.js") === false,
+);
+check("noise filter: empty message is noise-free", isKnownNoise("", "file:///x") === false);
 
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);
