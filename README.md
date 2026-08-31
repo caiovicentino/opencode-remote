@@ -36,7 +36,8 @@ private. That is the product: **local power, remote control, zero trust**.
 - **Handoff** — continue the exact session on your Mac (💻 button)
 - **Live board** — every session's state at a glance: working, waiting for
   your approval, asked a question, done, errored; cards show relative
-  last-activity time (`5m`, `2h`, `3d`)
+  last-activity time (`5m`, `2h`, `3d`); sessions are sorted by most recent
+  activity first
 - **Routines** — real cron: daily, specific weekdays, or interval loop
 - **Secure by construction** — passkey (WebAuthn) gate, ECDH P-256 + AES-256-GCM,
   replay protection, device allowlist, audit log, biometric unlock

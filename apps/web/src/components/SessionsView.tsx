@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useT } from "../lib/i18n";
 import { humanizeError } from "../lib/errors";
-import { timeAgo } from "../lib/time";
+import { timeAgo, sessionUpdatedTs } from "../lib/time";
 import type { EventEnvelope } from "@ocr/protocol";
 import type { Pairing } from "../lib/client";
 
@@ -134,13 +134,7 @@ export default function SessionsView({
   );
 
   // most recently touched first when the API gives us timestamps
-  function updatedOf(s: Session): number {
-    const v = s.updatedAt ?? s.time?.updated;
-    if (!v) return 0;
-    const d = typeof v === "number" ? v : Date.parse(v);
-    return Number.isNaN(d) ? 0 : d;
-  }
-  const sorted = filtered.sort((a, b) => updatedOf(b) - updatedOf(a));
+  const sorted = filtered.sort((a, b) => sessionUpdatedTs(b) - sessionUpdatedTs(a));
 
   // live status per session, derived from the last relevant event of each one
   const statusOf = (() => {
