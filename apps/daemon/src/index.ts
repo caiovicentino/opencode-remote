@@ -139,16 +139,16 @@ async function loadIdentity(): Promise<DaemonIdentity> {
   };
 }
 
-const daemon = await loadIdentity();
+// Initialized at the top of main() before any handler registers (top-level
+// await is unavailable: the desktop sidecar bundles this file to single-file
+// CJS, apps/desktop/scripts/bundle-daemon.mjs).
+let daemon: DaemonIdentity;
 
 // user-editable settings (name, notifications) persisted in the state file
-let appSettings = readSettings();
-machineName = appSettings.name || MACHINE_NAME;
+let appSettings: AppSettings;
 
 // local whisper transcription (optional; scripts/setup-whisper.sh installs it)
-const whisperTool: WhisperTool | null = await detectWhisper();
-if (whisperTool) log("info", "voice transcription available", { kind: whisperTool.kind });
-else log("info", "voice transcription unavailable (optional feature)");
+let whisperTool: WhisperTool | null = null;
 
 interface UploadEntry {
   parts: string[];
@@ -757,12 +757,6 @@ function saveSubscriptions(subs: PushSub[]) {
   writeFileSync(subscriptionsFile(), JSON.stringify(subs, null, 2));
   chmodSync(subscriptionsFile(), 0o600);
 }
-
-webpush.setVapidDetails(
-  process.env.OCR_VAPID_SUBJECT ?? "https://github.com/caiovicentino/opencode-remote",
-  daemon.vapid.publicKey,
-  daemon.vapid.privateKey,
-);
 
 interface PushAttempt {
   endpoint: string;
@@ -1581,6 +1575,23 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
 }
 
 async function main() {
+  // Async module state first (see note at the declarations): identity, settings
+  // and whisper detection must be ready before anything is served or sent.
+  daemon = await loadIdentity();
+
+  webpush.setVapidDetails(
+    process.env.OCR_VAPID_SUBJECT ?? "https://github.com/caiovicentino/opencode-remote",
+    daemon.vapid.publicKey,
+    daemon.vapid.privateKey,
+  );
+
+  appSettings = readSettings();
+  machineName = appSettings.name || MACHINE_NAME;
+
+  whisperTool = await detectWhisper();
+  if (whisperTool) log("info", "voice transcription available", { kind: whisperTool.kind });
+  else log("info", "voice transcription unavailable (optional feature)");
+
   log("info", "daemon starting (protocol v2)", {
     machine: machineName,
     opencode: OPENCODE_URL,

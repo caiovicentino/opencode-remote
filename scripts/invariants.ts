@@ -82,6 +82,21 @@ try {
       /sidecar\.token !== null/.test(desktopSidecar),
   );
 
+  // desktop: packaged app ships the daemon bundle (added by P2-006; additive
+  // check — justification lives in the pilot(P2-006) commit message per rule #3)
+  const builderYml = readFileSync(join(ROOT, "apps/desktop/electron-builder.yml"), "utf8");
+  const bundleScript = readFileSync(join(ROOT, "apps/desktop/scripts/bundle-daemon.mjs"), "utf8");
+  check(
+    "desktop: packaged app ships daemon bundle (extraResources → daemon/index.js)",
+    /from:\s*dist-daemon/.test(builderYml) &&
+        /to:\s*daemon/.test(builderYml) &&
+        /bundle:\s*true/.test(bundleScript) &&
+        /format:\s*"cjs"/.test(bundleScript) &&
+        /dist-daemon/.test(bundleScript) &&
+        // resolveEntry must keep looking where electron-builder ships the bundle
+        /"daemon",\s*"index\.js"/.test(desktopSidecar),
+  );
+
   // no committed secrets
   const secretPatterns = [/BEGIN [A-Z ]*PRIVATE KEY/, /ghp_[A-Za-z0-9]{20,}/, /AKIA[0-9A-Z]{16}/, /sk-[A-Za-z0-9]{20,}/];
   const gitFiles = exec("git -C . ls-files");

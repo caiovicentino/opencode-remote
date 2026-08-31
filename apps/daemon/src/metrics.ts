@@ -32,11 +32,19 @@ export const metrics = {
 };
 
 const startedAt = Date.now();
-export const VERSION = (
-  JSON.parse(readFileSync(new URL("../../../package.json", import.meta.url), "utf8")) as {
-    version: string;
-  }
-).version;
+// Bundled builds (desktop sidecar, apps/desktop/scripts/bundle-daemon.mjs)
+// bake the version in via esbuild --define: there is no package.json next to
+// the single-file bundle. Source checkouts keep reading it from the monorepo.
+declare const OCR_DAEMON_VERSION: string | undefined;
+
+export const VERSION =
+  typeof OCR_DAEMON_VERSION !== "undefined"
+    ? OCR_DAEMON_VERSION
+    : (
+        JSON.parse(readFileSync(new URL("../../../package.json", import.meta.url), "utf8")) as {
+          version: string;
+        }
+      ).version;
 
 /** text/plain exposition format (Prometheus-compatible) */
 function promText(): string {

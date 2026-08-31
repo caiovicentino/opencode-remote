@@ -12,6 +12,12 @@ extraResources:
     to: web-dist
     filter:
       - "**/*"
+  # Daemon sidecar bundle (apps/desktop/scripts/bundle-daemon.mjs →
+  # dist-daemon/index.js), shipped where resolveEntry() looks for it.
+  - from: dist-daemon
+    to: daemon
+    filter:
+      - "index.js"
 mac:
   target: dir
   category: public.app-category.developer-tools
