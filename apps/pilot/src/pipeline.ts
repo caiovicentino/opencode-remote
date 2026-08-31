@@ -62,8 +62,13 @@ export interface PipelineResult {
   sha?: string;
 }
 
+/** Task IDs come from BACKLOG.md; only this charset ever reaches a shell command. */
+export const TASK_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
 export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState): Promise<PipelineResult> {
   const ws = cfg.workspace;
+  // central injection guard: t.id is interpolated into shell commands below
+  if (!TASK_ID_RE.test(t.id)) return { ok: false, detail: `invalid task id: ${t.id}` };
   // fresh workspace at origin/main
   exec("git fetch origin", { cwd: ws });
   exec("git reset -q --hard origin/main", { cwd: ws });
@@ -119,7 +124,47 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
       return { ok: false, detail: `builder did not finish (round ${round}): ${build.output.slice(-300)}` };
     }
     const diff = exec(`git diff main...pilot/${t.id}`, { cwd: ws }).output;
-    if (!diff.trim()) return { ok: false, detail: "builder produced an empty diff" };
+    if (!diff.trim()) {
+      // empty-diff self-heal: builder ran after the task was already merged.
+      // Refresh origin/main first so the merge check below isn't fooled by a
+      // stale local ref (transient network failure → best-effort check).
+      exec("git fetch -q origin main", { cwd: ws, allowFail: true });
+      if (!taskMergedIn(ws, t.id)) return { ok: false, detail: "builder produced an empty diff" };
+      emit("phase", { task: t.id, phase: "already-merged" });
+      console.log(
+        JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "empty diff but task already merged, self-healing", data: { task: t.id } }),
+      );
+      // clean worktree BEFORE moving to main: a dirty empty-diff workspace
+      // would otherwise dirty the wrong branch or block the checkout
+      exec("git reset -q --hard HEAD", { cwd: ws, allowFail: true });
+      exec("git clean -qfd", { cwd: ws, allowFail: true });
+      const co = exec("git checkout -q -B main origin/main", { cwd: ws, allowFail: true });
+      let push = { ok: false, output: "" };
+      if (co.ok) {
+        markDone(ws, t.id, `already merged — empty-diff self-heal ${nowLocalISO().slice(0, 10)}`);
+        exec("git add BACKLOG.md", { cwd: ws, allowFail: true });
+        // idempotent: if markDone was a no-op (task already marked), skip the
+        // commit instead of failing on an empty commit
+        const staged = exec("git diff --cached --quiet", { cwd: ws, allowFail: true });
+        if (!staged.ok) {
+          exec(`git commit -qm "pilot(${t.id}): mark done (empty-diff self-heal)"`, { cwd: ws, allowFail: true });
+          // PERMISSION-SURFACE NOTE (constitution #3 spirit): direct push to
+          // origin/main outside the reviewer/gatekeeper path — kept restricted
+          // to this bookkeeping path (only BACKLOG.md staged, fixed message).
+          push = exec("git push -q origin main", { cwd: ws, allowFail: true });
+        } else {
+          push = { ok: true, output: "" };
+        }
+      }
+      return {
+        ok: co.ok && push.ok,
+        detail: !co.ok
+          ? `task ${t.id} already merged on main but workspace checkout failed`
+          : push.ok
+            ? `task ${t.id} already merged on main — marked done (empty-diff self-heal)`
+            : `task ${t.id} already merged but BACKLOG update failed`,
+      };
+    }
 
     // two adversarial reviewers in parallel, isolated contexts
     emit("phase", { task: t.id, phase: "reviewers" });
@@ -181,6 +226,7 @@ async function gatekeeper(cfg: PilotConfig, ws: string, t: Task, state: PilotSta
   const steps: Array<[string, string]> = [
     ["typecheck", "npm run typecheck --silent"],
     ["build", "npm run build --silent"],
+    ["unit", "npm run test:unit --silent"],
     ["lock-sync", "npm ci --dry-run --no-audit --no-fund --loglevel=error"],
     ["reconnect", "npx tsx scripts/reconnect.test.ts"],
     ["integration", "npx tsx scripts/integration.ts"],
@@ -229,4 +275,20 @@ async function gatekeeper(cfg: PilotConfig, ws: string, t: Task, state: PilotSta
 
 function headSha(ws: string): string {
   return exec("git rev-parse HEAD", { cwd: ws }).output.trim();
+}
+
+/**
+ * True when a commit on origin/main has the canonical subject `pilot(<id>): ...`.
+ * The id is validated against TASK_ID_RE (never reaches a shell unchecked) and
+ * regex-escaped, then matched as a line-anchored ERE — so body/revert references
+ * to the id don't count as "merged".
+ */
+export function taskMergedIn(ws: string, id: string): boolean {
+  if (!TASK_ID_RE.test(id)) return false;
+  const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const r = exec(`git log origin/main --extended-regexp --grep='^pilot\\(${escaped}\\):' --oneline`, {
+    cwd: ws,
+    allowFail: true,
+  });
+  return r.ok && r.output.trim().length > 0;
 }
