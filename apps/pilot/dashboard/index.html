@@ -12,8 +12,13 @@
   .overlay { position:fixed; z-index:10; pointer-events:none; }
   #header { top:0; left:0; right:0; padding:18px 24px; display:flex; align-items:center; gap:14px;
             background:linear-gradient(to bottom, rgba(4,6,10,.88), transparent); }
-  #header h1 { font-size:15px; letter-spacing:.22em; text-transform:uppercase; font-weight:700; }
+  #header h1 { font-size:15px; letter-spacing:.22em; text-transform:uppercase; font-weight:700;
+               background:linear-gradient(90deg,#22d3ee,#4ade80,#fbbf24); -webkit-background-clip:text; background-clip:text; color:transparent; }
   #header .sub { font-size:11px; color:var(--muted); letter-spacing:.08em; }
+  #progress { display:inline-block; width:120px; height:4px; border-radius:2px; background:rgba(34,211,238,.15);
+              vertical-align:middle; margin-right:10px; overflow:hidden; }
+  #progress i { display:block; height:100%; width:0; background:linear-gradient(90deg,var(--cyan),var(--green));
+                border-radius:2px; transition:width .6s ease; box-shadow:0 0 8px rgba(34,211,238,.6); }
   #live { width:10px; height:10px; border-radius:50%; background:#555; }
   #live.on { background:var(--green); animation:pulse 1.6s infinite; }
   #live.stale { background:var(--red); animation:none; }
@@ -57,7 +62,7 @@
   <div class="row"><span>HEARTBEAT</span><b id="s-hb">—</b></div>
 </div>
 
-<div class="overlay" id="task"><span class="phase" id="task-phase">IDLE</span><span id="task-title">aguardando backlog…</span></div>
+<div class="overlay" id="task"><span id="progress"><i></i></span><span class="phase" id="task-phase">IDLE</span><span id="task-title">aguardando backlog…</span></div>
 <div class="overlay" id="ticker"></div>
 
 <div class="overlay" id="tokenbox">
@@ -126,6 +131,27 @@ function draw(time) {
   const bg = ctx.createRadialGradient(W/2, H/2, 0, W/2, H/2, Math.max(W,H)*0.7);
   bg.addColorStop(0, "#071019"); bg.addColorStop(1, "#04060a");
   ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+
+  // animated diagonal grid (parallax waves)
+  ctx.save();
+  ctx.lineWidth = 1;
+  const drift = (time * 12) % 46;
+  for (let gx = -46 + drift; gx < W + 46; gx += 46) {
+    ctx.strokeStyle = "rgba(34,211,238,.045)";
+    ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx + 60, H); ctx.stroke();
+  }
+  for (let gy = -46 + (time * 8) % 46; gy < H + 46; gy += 46) {
+    ctx.strokeStyle = "rgba(34,211,238,.035)";
+    ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(W, gy); ctx.stroke();
+  }
+  // slow sine wave across the middle
+  ctx.beginPath();
+  for (let x = 0; x <= W; x += 8) {
+    const y = H/2 + Math.sin(x*0.008 + time*0.9) * 26 * Math.sin(time*0.23);
+    x === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.strokeStyle = "rgba(34,211,238,.06)"; ctx.lineWidth = 2; ctx.stroke();
+  ctx.restore();
   // dotted grid
   ctx.fillStyle = "rgba(56,130,160,.07)";
   for (let gx = 20; gx < W; gx += 46) for (let gy = 20; gy < H; gy += 46) ctx.fillRect(gx, gy, 2, 2);
@@ -167,10 +193,17 @@ function draw(time) {
     g.addColorStop(0, hexA(glowColor, working ? .5 : .22));
     g.addColorStop(1, hexA(glowColor, 0));
     ctx.fillStyle = g; ctx.beginPath(); ctx.arc(n.x, n.y, r*3, 0, Math.PI*2); ctx.fill();
-    // body
+    // body with radial gradient (3D-ish sphere feel)
+    const bodyG = ctx.createRadialGradient(n.x - r*0.3, n.y - r*0.35, r*0.1, n.x, n.y, r);
+    bodyG.addColorStop(0, "#12202e"); bodyG.addColorStop(1, "#0a1420");
     ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, Math.PI*2);
-    ctx.fillStyle = "#0a1420"; ctx.fill();
+    ctx.fillStyle = bodyG; ctx.fill();
     ctx.lineWidth = 2.2; ctx.strokeStyle = hexA(glowColor, working ? 1 : .55); ctx.stroke();
+    // icon glyph
+    const glyphs = { backlog:"☰", builder:"B", security:"S", quality:"Q", gatekeeper:"⛑", deploy:"➤", core:"⊙" };
+    ctx.font = `700 ${r*0.9}px -apple-system,system-ui,sans-serif`;
+    ctx.fillStyle = hexA(glowColor, .9);
+    ctx.fillText(glyphs[n.id] || "●", n.x, n.y + 1);
     // ring
     ctx.beginPath(); ctx.arc(n.x, n.y, r + 7, time * (working ? 2.2 : 0.6), time * (working ? 2.2 : 0.6) + Math.PI*1.4);
     ctx.strokeStyle = hexA(glowColor, .5); ctx.lineWidth = 1.4; ctx.stroke();
@@ -269,6 +302,8 @@ function render(events) {
     phaseEl.textContent = (e.phase || "").toUpperCase();
     phaseEl.style.color = e.ok === false ? "var(--red)" : "var(--cyan)";
     document.getElementById("task-title").textContent = `(${cur}) — ${e.detail || ""}`;
+    const bar = document.querySelector("#progress i");
+    if (bar) bar.style.width = `${Math.min((idx + 1) / 6, 1) * 100}%`;
 
     if (idx >= 0) {
       const order = ["backlog","builder","security","quality","gatekeeper","deploy"];
