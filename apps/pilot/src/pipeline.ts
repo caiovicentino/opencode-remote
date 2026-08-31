@@ -183,6 +183,7 @@ async function gatekeeper(cfg: PilotConfig, ws: string, t: Task, state: PilotSta
     ["lock-sync", "npm ci --dry-run --no-audit --no-fund --loglevel=error"],
     ["reconnect", "npx tsx scripts/reconnect.test.ts"],
     ["integration", "npx tsx scripts/integration.ts"],
+    ["desktop-sidecar", "npx tsx scripts/desktop-sidecar.test.ts"],
     ["invariants", "npx tsx scripts/invariants.ts"],
     // NOTE: live tests (download/push/smoke/live-eval) run post-deploy via
     // `invariants --live` + health checks — they need RELAY_URL + prod pairing.

@@ -40,8 +40,12 @@ o checkout de produção só é tocado no deploy.
 
 O gatekeeper roda typecheck + build em **todos os workspaces**, incluindo o shell
 desktop (`apps/desktop`), e `scripts/invariants.ts` verifica que o renderer Electron
-nasce sandboxed (contextIsolation on, nodeIntegration off). Empacotamento
-(DMG/notarização, `npm run dist`) fica fora do gate — é etapa de distribuição.
+nasce sandboxed (contextIsolation on, nodeIntegration off) e que o sidecar do daemon
+está wired (spawn com `ELECTRON_RUN_AS_NODE`, espera `/api/health` com 200 autenticado,
+cleanup no quit). O gate também roda `scripts/desktop-sidecar.test.ts` (spawn/reuse, SIGTERM→SIGKILL,
+aborto quando o filho morre, e o caso "servidor 200-para-tudo na porta não é
+saudável" — sem token e mesmo com token, o challenge do healthOnce reprova). Empacotamento (DMG/notarização,
+`npm run dist`) fica fora do gate — é etapa de distribuição.
 
 ## Deploy staged + rollback
 

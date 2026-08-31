@@ -122,6 +122,19 @@ During web development, point the shell at the Vite dev server:
 `OCR_WEB_URL=http://localhost:5173 npm start --workspace @ocr/desktop`.
 Packaging (DMG, notarization) comes with the distribution stage.
 
+The desktop shell boots the daemon as a **sidecar**: on launch it spawns the
+daemon (via the workspace `tsx` install; `OCR_DAEMON_ENTRY` points to a compiled
+entry for packaged builds), waits for `GET 127.0.0.1:8792/api/health` to answer
+**with an authenticated 200** before showing the UI, and terminates the child on
+quit. The health probe challenges the responder unauthenticated first and only
+sends the bearer token to something reproducing the daemon's 401 signature, so a
+generic 200-anywhere process squatting on the port is never trusted nor fed the
+token. A daemon already on the port (launchd/CLI install) is reused only when
+the 0600 state file yields the token that proves its identity — otherwise the
+shell spawns its own. Override the port with `OCR_DAEMON_METRICS_PORT` (falls
+back to `OCR_METRICS_PORT`); the spawned child binds exactly the port the shell
+polls.
+
 ## Roadmap
 
 Next up: hosted relay option,

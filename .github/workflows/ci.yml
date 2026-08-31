@@ -41,6 +41,9 @@ jobs:
       - name: Daemon restart resilience
         run: npx tsx scripts/reconnect.test.ts
 
+      - name: Desktop sidecar
+        run: npx tsx scripts/desktop-sidecar.test.ts
+
       - name: Integration (real opencode)
         run: |
           curl -fsSL https://opencode.ai/install | bash

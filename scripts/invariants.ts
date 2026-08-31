@@ -60,6 +60,28 @@ try {
       /sandbox:\s*true/.test(desktopMain),
   );
 
+  // desktop: daemon sidecar wired (added by P1-D02; additive check —
+  // justification lives in the pilot(P1-D02) commit message per rule #3)
+  const desktopSidecar = readFileSync(join(ROOT, "apps/desktop/src/daemon.ts"), "utf8");
+  check(
+    "desktop: daemon sidecar (spawn, /api/health wait, quit cleanup)",
+    /startDaemonSidecar/.test(desktopMain) &&
+      /waitForDaemonHealth/.test(desktopMain) &&
+      /will-quit/.test(desktopMain) &&
+      /stopDaemonSidecar/.test(desktopMain) &&
+      /\/api\/health/.test(desktopSidecar) &&
+      /SIGTERM/.test(desktopSidecar) &&
+      // the child must run plain Node, not a second Electron runtime
+      /ELECTRON_RUN_AS_NODE:\s*"1"/.test(desktopSidecar) &&
+      // health gate: only an authenticated 200 proves identity (no 401 leniency);
+      // a null token is rejected outright and the reuse short-circuit is blocked
+      // when there is no token (round-3 fix; behavioral coverage in
+      // scripts/desktop-sidecar.test.ts "200-anywhere" assertions)
+      /res\.status === 200/.test(desktopSidecar) &&
+      /token === null\) return false/.test(desktopSidecar) &&
+      /sidecar\.token !== null/.test(desktopSidecar),
+  );
+
   // no committed secrets
   const secretPatterns = [/BEGIN [A-Z ]*PRIVATE KEY/, /ghp_[A-Za-z0-9]{20,}/, /AKIA[0-9A-Z]{16}/, /sk-[A-Za-z0-9]{20,}/];
   const gitFiles = exec("git -C . ls-files");
