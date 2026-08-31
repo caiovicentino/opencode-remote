@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { emit } from "./events";
 import { exec, runAgent } from "./runner";
 import { runPipeline } from "./pipeline";
 import { deploy } from "./deploy";
@@ -68,11 +69,13 @@ async function main() {
     }
 
     log("info", "pipeline start", { task: task.id, title: task.title });
+    emit("loop", { task: task.id, phase: "picked", detail: task.title });
     try {
       const result = await runPipeline(cfg, task, state);
       state.tasks++;
       saveState(state);
       log("info", "pipeline result", { task: task.id, ok: result.ok, detail: result.detail.slice(0, 200) });
+      emit("result", { task: task.id, ok: result.ok, detail: result.detail.slice(0, 200) });
       if (result.ok && result.sha) {
         if (state.deploys >= cfg.maxDeploysPerDay) {
           log("info", "deploy budget reached — merge left on main for manual deploy", { deploys: state.deploys });

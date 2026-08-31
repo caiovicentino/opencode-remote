@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { exec } from "./runner";
+import { emit } from "./events";
 import type { PilotConfig } from "./state";
 
 export interface DeployResult {
@@ -16,6 +17,7 @@ export interface DeployResult {
  * Any failure rolls back to the previous SHA automatically.
  */
 export async function deploy(cfg: PilotConfig, sha: string): Promise<DeployResult> {
+  emit("deploy", { phase: "start", detail: `sha ${sha.slice(0, 7)}` });
   const prev = exec("git rev-parse HEAD", { cwd: cfg.repo }).output.trim();
   try {
     exec(`git fetch origin`, { cwd: cfg.repo });
@@ -53,11 +55,13 @@ export async function deploy(cfg: PilotConfig, sha: string): Promise<DeployResul
     if (!(await isHealthy(cfg))) {
       fails++;
       if (fails >= 3) {
+        emit("deploy", { phase: "rollback", ok: false, detail: "soak failed" });
         await rollback(cfg, prev, `soak failed after ${i + 1} checks`);
         return { ok: false, rolledBack: true, detail: "soak failed" };
       }
     } else fails = 0;
   }
+  emit("deploy", { phase: "done", ok: true, detail: `sha ${sha.slice(0, 7)} live` });
   return { ok: true, rolledBack: false, detail: `deployed ${sha.slice(0, 7)} (prev ${prev.slice(0, 7)})` };
 }
 

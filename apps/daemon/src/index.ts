@@ -1447,6 +1447,18 @@ function send401(res: ServerResponse) {
 }
 
 async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
+  // GET /dashboard — pilot three.js mission control (static file, no secrets inside)
+  if (req.method === "GET" && url.pathname === "/dashboard") {
+    try {
+      const html = readFileSync(new URL("../../../apps/pilot/dashboard/index.html", import.meta.url), "utf8");
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(html);
+    } catch {
+      res.writeHead(500, { "content-type": "text/plain" });
+      res.end("dashboard file missing");
+    }
+    return true;
+  }
   if (!url.pathname.startsWith("/api/")) return false;
   const expected = `Bearer ${apiToken()}`;
   if (req.headers.authorization !== expected) {
@@ -1476,6 +1488,28 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       const body = req.method === "PUT" ? JSON.parse((await readBody(req)) || "{}") : undefined;
       const r = await op(req.method, "/__ocr/mcp", body);
       send(r.status, r.body);
+      return true;
+    }
+    // GET /api/pilot-events — dashboard feed: state, heartbeat freshness, event tail
+    if (seg[1] === "pilot-events") {
+      const dir = join(homedir(), ".opencode-remote", "pilot");
+      let events: unknown[] = [];
+      try {
+        events = readFileSync(join(dir, "events.jsonl"), "utf8")
+          .split("\n")
+          .filter(Boolean)
+          .slice(-200)
+          .map((l) => JSON.parse(l));
+      } catch {}
+      let state: unknown = {};
+      let heartbeatMs: number | null = null;
+      try {
+        state = JSON.parse(readFileSync(join(dir, "state.json"), "utf8"));
+      } catch {}
+      try {
+        heartbeatMs = Date.now() - Number(readFileSync(join(dir, "heartbeat"), "utf8"));
+      } catch {}
+      send(200, { state, heartbeatMs, events });
       return true;
     }
     if (seg[1] !== "session") {

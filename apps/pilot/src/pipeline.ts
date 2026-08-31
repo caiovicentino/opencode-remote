@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { exec, runAgent } from "./runner";
 import { markDone, type Task } from "./backlog";
+import { emit } from "./events";
 import { touchHeartbeat, type PilotConfig, type PilotState } from "./state";
 
 export const CONSTITUTION = `CONSTITUTION (never violate):
@@ -94,12 +95,15 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
     lastStream = now;
     const lines = chunk.split("\n").filter((l) => l.trim());
     const line = lines[lines.length - 1];
-    if (line)
+    if (line) {
+      emit("agent", { task: t.id, detail: line.trim() });
       console.log(
         JSON.stringify({ ts: new Date().toISOString(), level: "info", msg: "agent", data: line.trim().slice(0, 160) }),
       );
+    }
   };
   for (let round = 1; round <= cfg.maxReviewRounds && !merged; round++) {
+    emit("phase", { task: t.id, phase: "builder", detail: `round ${round}` });
     console.log(JSON.stringify({ ts: new Date().toISOString(), level: "info", msg: "builder round", data: { task: t.id, round } }));
     const build = await runAgent(builderPrompt(t, round, findings), {
       cwd: ws,
@@ -109,6 +113,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
     });
     console.log(JSON.stringify({ ts: new Date().toISOString(), level: "info", msg: "builder done", data: { task: t.id, round } }));
     writeFileSync(join(homedir(), ".opencode-remote/pilot", "last-builder-output.log"), build.output);
+    emit("phase", { task: t.id, phase: "builder-done", ok: build.output.includes("PILOT:TASK-DONE") });
     if (!build.output.includes("PILOT:TASK-DONE")) {
       return { ok: false, detail: `builder did not finish (round ${round}): ${build.output.slice(-300)}` };
     }
@@ -116,6 +121,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
     if (!diff.trim()) return { ok: false, detail: "builder produced an empty diff" };
 
     // two adversarial reviewers in parallel, isolated contexts
+    emit("phase", { task: t.id, phase: "reviewers" });
     console.log(JSON.stringify({ ts: new Date().toISOString(), level: "info", msg: "reviewers start", data: { task: t.id, round } }));
     const [sec, qual] = await Promise.all([
       runAgent(reviewerPrompt("SECURITY", "crypto, auth, injection, secrets, permission surface", t, diff), {
@@ -141,8 +147,11 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
     );
     const secOk = /VERDICT:\s*APPROVE/i.test(sec.output);
     const qualOk = /VERDICT:\s*APPROVE/i.test(qual.output);
+    emit("phase", { task: t.id, phase: "reviewers-done", ok: secOk && qualOk });
     if (secOk && qualOk) {
+      emit("phase", { task: t.id, phase: "gatekeeper" });
       merged = await gatekeeper(cfg, ws, t, state);
+      emit("phase", { task: t.id, phase: "merge", ok: merged });
       if (!merged) return { ok: false, detail: "gatekeeper rejected: eval battery or invariants failed" };
     } else {
       findings = [
