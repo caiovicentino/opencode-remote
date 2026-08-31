@@ -31,6 +31,7 @@ BACKLOG.md ──> BUILDER ────┬──> SECURITY REVIEWER ─┬──
 | `builder` | implementa a task em branch `pilot/<id>`, commita | 45 min |
 | `security reviewer` | foco: crypto, auth, injection, secrets | 20 min |
 | `quality reviewer` | foco: regressão, UX, docs, testes | 20 min |
+| `strategist` | quando a fila tem <2 tasks: lê código/memória/métricas e redige as próximas tasks no BACKLOG.md | 25 min |
 | `red team` (03:00/dia) | tenta quebrar segurança/robustez; achados viram task P0 | 30 min |
 | gatekeeper | **não é LLM** — roda scripts, decide por exit codes | — |
 
