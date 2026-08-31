@@ -50,6 +50,9 @@ const dict = {
   en: {
     // sessions board
     search: "Search conversations…",
+    filterAll: "All",
+    filterWithBadge: "With badge",
+    filterNoBadge: "No badge",
     loadingSessions: "Loading conversations…",
     noSessions: "No conversations yet.",
     ready: "ready",
@@ -132,6 +135,9 @@ const dict = {
   },
   pt: {
     search: "Buscar conversas…",
+    filterAll: "Todas",
+    filterWithBadge: "Com badge",
+    filterNoBadge: "Sem badge",
     loadingSessions: "Carregando conversas…",
     noSessions: "Nenhuma conversa ainda.",
     ready: "pronto",

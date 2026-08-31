@@ -43,6 +43,8 @@ private. That is the product: **local power, remote control, zero trust**.
   your approval, asked a question, done, errored; cards show relative
   last-activity time (`5m`, `2h`, `3d`); sessions are sorted by most recent
   activity first
+- **Session filters** — chips above the search (All / With badge / No badge)
+  narrow the board to sessions with or without an unread badge
 - **Routines** — real cron: daily, specific weekdays, or interval loop
 - **Secure by construction** — passkey (WebAuthn) gate, ECDH P-256 + AES-256-GCM,
   replay protection, device allowlist, audit log, biometric unlock

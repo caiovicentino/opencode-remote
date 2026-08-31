@@ -44,6 +44,8 @@ remoto, zero confiança**.
   fez pergunta, pronto, erro; cards mostram o tempo relativo da última
   atividade (`5m`, `2h`, `3d`); sessões ficam ordenadas da mais recente
   para a mais antiga
+- **Filtro de sessões** — chips acima da busca (Todas / Com badge / Sem badge)
+  filtram o painel pelas conversas com ou sem badge de não-lidas
 - **Rotinas** — cron de verdade: diário, dias da semana ou loop por intervalo
 - **Seguro por construção** — gate com passkey (WebAuthn), ECDH P-256 +
   AES-256-GCM, anti-replay, allowlist de dispositivos, audit log, biometria
