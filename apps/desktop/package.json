@@ -10,7 +10,7 @@
     "build:daemon": "node scripts/bundle-daemon.mjs",
     "typecheck": "tsc --noEmit",
     "start": "electron .",
-    "dist": "electron-builder"
+    "dist": "npm run build --prefix ../web && npm run build && electron-builder"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

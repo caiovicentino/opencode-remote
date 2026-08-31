@@ -83,16 +83,20 @@ try {
   );
 
   // desktop: packaged app ships the daemon bundle (added by P2-006; additive
-  // check — justification lives in the pilot(P2-006) commit message per rule #3)
+  // check — justification lives in the pilot(P2-006) commit message per rule #3.
+  // Behavioral coverage (the gate executes the bundled artifact and probes
+  // /api/health + /dashboard through it) lives in scripts/desktop-sidecar.test.ts)
   const builderYml = readFileSync(join(ROOT, "apps/desktop/electron-builder.yml"), "utf8");
   const bundleScript = readFileSync(join(ROOT, "apps/desktop/scripts/bundle-daemon.mjs"), "utf8");
   check(
     "desktop: packaged app ships daemon bundle (extraResources → daemon/index.js)",
     /from:\s*dist-daemon/.test(builderYml) &&
         /to:\s*daemon/.test(builderYml) &&
+        /dashboard\.html/.test(builderYml) &&
         /bundle:\s*true/.test(bundleScript) &&
         /format:\s*"cjs"/.test(bundleScript) &&
         /dist-daemon/.test(bundleScript) &&
+        /dashboard\.html/.test(bundleScript) &&
         // resolveEntry must keep looking where electron-builder ships the bundle
         /"daemon",\s*"index\.js"/.test(desktopSidecar),
   );

@@ -114,13 +114,18 @@ Durante o desenvolvimento do web, aponte o shell pro dev server do Vite:
 Empacotamento (DMG, notarização) vem com a etapa de distribuição.
 
 O shell desktop sobe o daemon como **sidecar**: ao abrir, ele faz spawn do
-daemon (via o `tsx` do workspace; `OCR_DAEMON_ENTRY` aponta pra entrada
-compilada nos builds empacotados), espera `GET 127.0.0.1:8792/api/health`
-responder **com um 200 autenticado** antes de mostrar a UI e encerra o filho no
-quit. Se já existe um daemon saudável nessa porta (instalação launchd/CLI), ele
-é reaproveitado — nunca duplicado. Para trocar a porta: `OCR_DAEMON_METRICS_PORT`
-(com fallback pro `OCR_METRICS_PORT`); o filho faz bind exatamente na porta que
-o shell verifica.
+daemon — em apps empacotados, um bundle CJS single-file embarcado em
+`resources/daemon/index.js` (gerado com esbuild no `npm run build`; a rota
+`/dashboard` é servida de um `dashboard.html` embarcado ao lado, já que o
+bundle CJS não tem `import.meta`; em checkout de dev roda o código TypeScript
+via o `tsx` do workspace, e `OCR_DAEMON_ENTRY` sobrepõe ambos) — espera
+`GET 127.0.0.1:8792/api/health` responder **com um 200 autenticado** antes de
+mostrar a UI e encerra o filho no quit. `npm run dist --workspace @ocr/desktop
+-- --dir` empacota web UI + daemon juntos (o script `dist` faz o build da web e
+do shell antes de empacotar). Se já existe um daemon saudável nessa porta (instalação launchd/CLI),
+ele é reaproveitado — nunca duplicado. Para trocar a porta:
+`OCR_DAEMON_METRICS_PORT` (com fallback pro `OCR_METRICS_PORT`); o filho faz
+bind exatamente na porta que o shell verifica.
 
 ## Roadmap
 
