@@ -54,9 +54,18 @@ o checkout de produção só é tocado no deploy.
 
 ## Observabilidade
 
+- **Dashboard 3D em tempo real**: `http://127.0.0.1:8792/dashboard?token=<apiToken>`
+  (Three.js, cenas: nodes do pipeline, partículas de trabalho, bursts de merge, rollback vermelho)
 - Logs JSONL: `~/.opencode-remote/logs/pilot.log`
+- Feed bruto: `GET 127.0.0.1:8792/api/pilot-events` (Bearer apiToken) — eventos + contadores + heartbeat
 - Digest a cada pipeline: push no seu telefone (via `POST /api/push` autenticado no daemon)
 - Sucessos, falhas, rollbacks e achados do red team aparecem como notificação.
+
+## Self-healing (3 níveis)
+
+1. **Agent**: retry de npm ci, re-upload de attachments, rounds de review
+2. **Pipeline**: rollback automático de deploy (health + soak + invariants live)
+3. **Serviço**: heartbeat + watchdog — 30min sem sinal → exit → KeepAlive ressozinho
 
 ## Rodar manualmente
 
