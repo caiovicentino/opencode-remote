@@ -7,6 +7,7 @@
 import { createServer } from "node:http";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { spawn, spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -215,6 +216,82 @@ check("stopDaemonSidecar skips 3s grace for dead child", Date.now() - t2 < 1000)
 const t3 = Date.now();
 await stopDaemonSidecar();
 check("stopDaemonSidecar is idempotent", Date.now() - t3 < 1000);
+
+// --- bundled artifact smoke (P2-006) -----------------------------------------
+// The packaged app runs dist-daemon/index.js (shipped as resources/daemon/
+// index.js), so the eval battery must execute the actual bundle — regex checks
+// on source can't catch bundling breakage (e.g. esbuild emptying import.meta
+// in CJS output). Builds the bundle if missing (the gate's `npm run build`
+// already produces it) and probes it exactly like the packaged app would:
+// 401 challenge → authenticated 200 on /api/health → dashboard served.
+const bundle = join(repoRoot, "apps", "desktop", "dist-daemon", "index.js");
+if (!existsSync(bundle)) {
+  const built = spawnSync(process.execPath, ["scripts/bundle-daemon.mjs"], {
+    cwd: join(repoRoot, "apps", "desktop"),
+    stdio: "inherit",
+  });
+  check("bundle smoke: dist-daemon bundle built", built.status === 0);
+}
+if (existsSync(bundle)) {
+  const smokeHome = mkdtempSync(join(tmpdir(), "ocr-bundle-"));
+  const smokeServer = createServer(() => {});
+  await new Promise<void>((r) => smokeServer.listen(0, "127.0.0.1", r));
+  const smokePort = (smokeServer.address() as { port: number }).port;
+  await new Promise<void>((r) => smokeServer.close(r));
+  const child = spawn(process.execPath, [bundle], {
+    env: { ...process.env, HOME: smokeHome, RELAY_URL: "ws://127.0.0.1:1", OCR_METRICS_PORT: String(smokePort) },
+    stdio: "ignore",
+  });
+  process.on("exit", () => {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      /* already gone */
+    }
+  });
+
+  // wait for the metrics/API server: the unauthenticated request must get the
+  // daemon's 401 challenge (same signature healthOnce demands)
+  let challenged = false;
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline && !challenged) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${smokePort}/api/health`);
+      challenged = res.status === 401;
+    } catch {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+  check("bundle smoke: unauthenticated /api/health gets the 401 challenge", challenged);
+
+  const stateFile = join(smokeHome, ".opencode-remote", "daemon.json");
+  let token = "";
+  for (let i = 0; i < 50 && !token; i++) {
+    await new Promise((r) => setTimeout(r, 100));
+    try {
+      token = (JSON.parse(readFileSync(stateFile, "utf8")) as { apiToken?: string }).apiToken ?? "";
+    } catch {
+      /* identity not persisted yet */
+    }
+  }
+  const authRes = await fetch(`http://127.0.0.1:${smokePort}/api/health`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  const authBody = (await authRes.json()) as { healthy?: boolean; version?: string };
+  check(
+    "bundle smoke: authenticated /api/health is 200 healthy",
+    authRes.status === 200 && authBody.healthy === true && typeof authBody.version === "string",
+  );
+  check(
+    "bundle smoke: GET /dashboard is 200 (import.meta survives CJS bundling)",
+    (await fetch(`http://127.0.0.1:${smokePort}/dashboard`)).status === 200,
+  );
+
+  child.kill("SIGTERM");
+  check("bundle smoke: child exits on SIGTERM", await until(() => !pidAlive(child.pid ?? -1)));
+} else {
+  check("bundle smoke: dist-daemon bundle exists", false);
+}
 
 console.log(failures === 0 ? "\ndesktop sidecar tests: all green" : `\nFAILURES: ${failures}`);
 process.exit(failures === 0 ? 0 : 1);

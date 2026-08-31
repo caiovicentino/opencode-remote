@@ -117,17 +117,26 @@ Tailscale. It loads the same `@ocr/web` build as the phone.
 npm run build --workspace @ocr/web       # build the UI once
 npm run build --workspace @ocr/desktop   # compile the shell (TypeScript main process)
 npm start  --workspace @ocr/desktop      # open the window
+npm run dist --workspace @ocr/desktop -- --dir  # package web UI + daemon sidecar
 ```
 
 During web development, point the shell at the Vite dev server:
 `OCR_WEB_URL=http://localhost:5173 npm start --workspace @ocr/desktop`.
 Packaging (DMG, notarization) comes with the distribution stage.
 
+`npm run dist` is self-sufficient: it builds the web UI and the shell
+(TypeScript + daemon bundle) before packaging, so the command also works on a
+clean checkout.
+
 The desktop shell boots the daemon as a **sidecar**: on launch it spawns the
-daemon (via the workspace `tsx` install; `OCR_DAEMON_ENTRY` points to a compiled
-entry for packaged builds), waits for `GET 127.0.0.1:8792/api/health` to answer
-**with an authenticated 200** before showing the UI, and terminates the child on
-quit. The health probe challenges the responder unauthenticated first and only
+daemon — in packaged apps a single-file CJS bundle shipped at
+`resources/daemon/index.js` (built with esbuild during `npm run build`; the
+`/dashboard` route is served from a `dashboard.html` shipped next to it, since
+the CJS bundle has no `import.meta`; dev checkouts run the TypeScript source
+via the workspace `tsx` install, and `OCR_DAEMON_ENTRY` overrides both) — waits
+for `GET 127.0.0.1:8792/api/health`
+to answer **with an authenticated 200** before showing the UI, and terminates
+the child on quit. The health probe challenges the responder unauthenticated first and only
 sends the bearer token to something reproducing the daemon's 401 signature, so a
 generic 200-anywhere process squatting on the port is never trusted nor fed the
 token. A daemon already on the port (launchd/CLI install) is reused only when

@@ -139,16 +139,16 @@ async function loadIdentity(): Promise<DaemonIdentity> {
   };
 }
 
-const daemon = await loadIdentity();
+// Initialized at the top of main() before any handler registers (top-level
+// await is unavailable: the desktop sidecar bundles this file to single-file
+// CJS, apps/desktop/scripts/bundle-daemon.mjs).
+let daemon: DaemonIdentity;
 
 // user-editable settings (name, notifications) persisted in the state file
-let appSettings = readSettings();
-machineName = appSettings.name || MACHINE_NAME;
+let appSettings: AppSettings;
 
 // local whisper transcription (optional; scripts/setup-whisper.sh installs it)
-const whisperTool: WhisperTool | null = await detectWhisper();
-if (whisperTool) log("info", "voice transcription available", { kind: whisperTool.kind });
-else log("info", "voice transcription unavailable (optional feature)");
+let whisperTool: WhisperTool | null = null;
 
 interface UploadEntry {
   parts: string[];
@@ -757,12 +757,6 @@ function saveSubscriptions(subs: PushSub[]) {
   writeFileSync(subscriptionsFile(), JSON.stringify(subs, null, 2));
   chmodSync(subscriptionsFile(), 0o600);
 }
-
-webpush.setVapidDetails(
-  process.env.OCR_VAPID_SUBJECT ?? "https://github.com/caiovicentino/opencode-remote",
-  daemon.vapid.publicKey,
-  daemon.vapid.privateKey,
-);
 
 interface PushAttempt {
   endpoint: string;
@@ -1446,12 +1440,22 @@ function send401(res: ServerResponse) {
   res.end(JSON.stringify({ error: "unauthorized — Authorization: Bearer <apiToken from daemon.json>" }));
 }
 
+// Dashboard static file. The packaged desktop sidecar runs a single-file CJS
+// bundle where esbuild empties `import.meta` (CJS has no import.meta), so the
+// source-relative URL below would throw and /dashboard would answer 500. The
+// bundler (apps/desktop/scripts/bundle-daemon.mjs) therefore ships
+// dashboard.html next to the bundle and the bundle resolves it via __dirname;
+// source checkouts (ESM, no __dirname) keep the repo-relative URL.
+function dashboardFile(): string | URL {
+  if (typeof __dirname !== "undefined") return join(__dirname, "dashboard.html");
+  return new URL("../../../apps/pilot/dashboard/index.html", import.meta.url);
+}
+
 async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
   // GET /dashboard — pilot three.js mission control (static file, no secrets inside)
   if (req.method === "GET" && url.pathname === "/dashboard") {
     try {
-      const html = readFileSync(new URL("../../../apps/pilot/dashboard/index.html", import.meta.url), "utf8")
-        .replace("__APITOKEN__", apiToken());
+      const html = readFileSync(dashboardFile(), "utf8").replace("__APITOKEN__", apiToken());
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
       res.end(html);
     } catch {
@@ -1598,6 +1602,23 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
 }
 
 async function main() {
+  // Async module state first (see note at the declarations): identity, settings
+  // and whisper detection must be ready before anything is served or sent.
+  daemon = await loadIdentity();
+
+  webpush.setVapidDetails(
+    process.env.OCR_VAPID_SUBJECT ?? "https://github.com/caiovicentino/opencode-remote",
+    daemon.vapid.publicKey,
+    daemon.vapid.privateKey,
+  );
+
+  appSettings = readSettings();
+  machineName = appSettings.name || MACHINE_NAME;
+
+  whisperTool = await detectWhisper();
+  if (whisperTool) log("info", "voice transcription available", { kind: whisperTool.kind });
+  else log("info", "voice transcription unavailable (optional feature)");
+
   log("info", "daemon starting (protocol v2)", {
     machine: machineName,
     opencode: OPENCODE_URL,
