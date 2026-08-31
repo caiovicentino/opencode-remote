@@ -34,6 +34,7 @@ cat > "$PLIST" <<EOF
   <key>EnvironmentVariables</key><dict>
     <key>PATH</key><string>$HOME/.opencode/bin:$(dirname $(which node)):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     <key>HOME</key><string>$HOME</string>
+    <key>RELAY_URL</key><string>${RELAY_URL:-wss://mac-mini-de-caio.tail0b645b.ts.net:8788}</string>
   </dict>
 </dict></plist>
 EOF

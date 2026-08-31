@@ -159,7 +159,8 @@ async function gatekeeper(cfg: PilotConfig, ws: string, t: Task, state: PilotSta
     ["reconnect", "npx tsx scripts/reconnect.test.ts"],
     ["integration", "npx tsx scripts/integration.ts"],
     ["invariants", "npx tsx scripts/invariants.ts"],
-    ["download", "npx tsx scripts/download.test.ts"],
+    // NOTE: live tests (download/push/smoke/live-eval) run post-deploy via
+    // `invariants --live` + health checks — they need RELAY_URL + prod pairing.
   ];
   for (const [name, cmd] of steps) {
     const r = exec(cmd, { cwd: ws, timeoutMin: 20, allowFail: true });
