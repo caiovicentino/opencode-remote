@@ -5,7 +5,6 @@ O Pilot consome a primeira task `## Ready` em ordem. P0 > P1 > P2 > P3.
 Tasks feitas vão para `## Done` automaticamente.
 
 ## Ready
-
 - [ ] (P1-D01) [P1] Scaffold do desktop app Electron — spec: criar apps/desktop (Electron + TypeScript, electron-builder): janela carregando o build do apps/web, menu/tray básico, main process em TypeScript compilando sem erros; critério: `npm run build --workspace @ocr/desktop` gera app que abre janela com a UI; typecheck verde; docs/PILOT e README atualizados.
 - [ ] (P1-D02) [P1] Daemon como sidecar do desktop — spec: no apps/desktop, main process sobe o daemon (spawn do node com tsx/esm ou binário compilado), espera /api/health responder antes de mostrar a UI, e encerra o filho no quit; critério: app desktop conecta ao relay local sem terminal, health 200.
 - [ ] (P2-005) [P2] Filtro de sessão ativa — spec: em SessionsView.tsx adicionar chips de filtro (Todas / Com badge / Sem badge) acima da busca; estado local, sem deps; critério: filtro funcional, typecheck/build verdes.
