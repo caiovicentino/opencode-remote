@@ -32,6 +32,8 @@ interface SidecarState {
   token: string | null;
   /** First `opencode-remote://pair?v=2&…` URI the child printed on stdout. */
   pairUrl: string | null;
+  /** True when an existing daemon was adopted instead of spawned. */
+  reused: boolean;
   /** Rolling stdout tail (bounded) scanned for the pairing URI. */
   stdoutTail: string;
 }
@@ -43,6 +45,7 @@ const sidecar: SidecarState = {
   exited: false,
   token: null,
   pairUrl: null,
+  reused: false,
   stdoutTail: "",
 };
 
@@ -141,6 +144,7 @@ export async function waitForDaemonHealth(opts: HealthWaitOptions = {}): Promise
  */
 export function getPairUrl(): string | null {
   if (sidecar.pairUrl) return sidecar.pairUrl;
+  if (!sidecar.reused) return null; // fresh spawn: URI arrives on stdout only
   // Reuse path: a daemon we didn't spawn has no stdout to scan — but it logs
   // the pairing URI at boot. Recover it from the daemon log (same machine).
   try {
@@ -204,6 +208,7 @@ export async function startDaemonSidecar(
   // squats on the port and never spawn the real daemon.
   if (sidecar.token !== null && (await healthOnce(DAEMON_METRICS_PORT, sidecar.token))) {
     console.log(`[desktop] daemon already running on :${DAEMON_METRICS_PORT} — reusing it`);
+    sidecar.reused = true; // enables the daemon.log pair-URI fallback
     return true;
   }
 
@@ -234,6 +239,7 @@ export async function startDaemonSidecar(
   sidecar.exited = false;
   // Fresh spawn → fresh capture: the previous URI belongs to a dead daemon.
   sidecar.pairUrl = null;
+  sidecar.reused = false;
   sidecar.stdoutTail = "";
   child.stdout?.setEncoding("utf8");
   child.stdout?.on("data", (chunk: string) => {
