@@ -95,6 +95,14 @@
   #donelist { flex:1; overflow-y:auto; padding:12px 18px 16px; font:12px/1.9 ui-monospace,Menlo,monospace; display:none; }
   #donelist .drow { padding:6px 10px; border-left:2px solid var(--green); background:rgba(74,222,128,.04); margin-bottom:8px; border-radius:0 8px 8px 0; }
   #donelist .drow b { color:var(--green); margin-right:8px; }
+  #ready-btn { pointer-events:auto; margin-top:6px; width:100%; padding:7px; background:rgba(139,92,246,.10); border:1px solid rgba(139,92,246,.3);
+              color:#c4b5fd; font-weight:700; letter-spacing:.14em; font-size:11px; border-radius:8px; cursor:pointer; text-align:center; transition:background .2s; }
+  #ready-btn:hover { background:rgba(139,92,246,.22); }
+  #readylist { flex:1; overflow-y:auto; padding:12px 18px 16px; font:12px/1.9 ui-monospace,Menlo,monospace; display:none; }
+  #readylist .drow { padding:6px 10px; border-left:2px solid #8b5cf6; background:rgba(139,92,246,.05); margin-bottom:8px; border-radius:0 8px 8px 0; }
+  #readylist .drow b { color:#a78bfa; margin-right:8px; }
+  #readylist .drow .area { color:#64748b; font-size:10px; margin-left:8px; text-transform:uppercase; letter-spacing:.06em; }
+  #readylist .drow.blocked { border-left-color:#ef4444; }
   #logbar .vtab { background:#0e1824; border:1px solid #2a3947; color:#9db2c6; font-weight:700; letter-spacing:.12em;
                   font-size:10px; padding:5px 12px; border-radius:999px; cursor:pointer; }
   #logbar .vtab.on { border-color:var(--cyan); color:var(--cyan); }
@@ -124,6 +132,7 @@
   <div class="row"><span>HEARTBEAT</span><b id="s-hb">—</b></div>
   <div id="logs-btn" onclick="openLogs()">⌘ LOGS AO VIVO</div>
   <div id="done-btn" onclick="openDone()">✓ CONCLUÍDAS</div>
+  <div id="ready-btn" onclick="openReady()">☰ FILA</div>
 </div>
 
 <div class="overlay" id="task"><span id="progress"><i></i></span><span class="phase" id="task-phase">IDLE</span><span id="task-title">aguardando backlog…</span></div>
@@ -139,6 +148,7 @@
   <div id="logbar">
     <span class="vtab on" id="vt-logs" onclick="viewLogs()">LOGS</span>
     <span class="vtab" id="vt-done" onclick="viewDone()">CONCLUÍDAS</span>
+    <span class="vtab" id="vt-ready" onclick="viewReady()">FILA</span>
     <input type="text" id="logsearch" placeholder="buscar…" oninput="renderLogs()" />
     <span class="chip role" data-role="agent" onclick="toggleRole(this)">BUILDER</span>
     <span class="chip role" data-role="reviewer" onclick="toggleRole(this)">REVIEW</span>
@@ -151,6 +161,7 @@
   </div>
   <div id="logview"></div>
   <div id="donelist"></div>
+  <div id="readylist"></div>
   <div id="followhint" onclick="toggleFollow()">↓ SEGUIR</div>
 </div>
 
@@ -570,17 +581,52 @@ addEventListener("keydown", (e) => {
 function viewLogs() {
   document.getElementById("logview").style.display = "block";
   document.getElementById("donelist").style.display = "none";
+  document.getElementById("readylist").style.display = "none";
   document.getElementById("logbar").querySelectorAll("input,.chip,.role").forEach((el) => (el.style.display = ""));
   document.getElementById("vt-logs").classList.add("on");
   document.getElementById("vt-done").classList.remove("on");
+  document.getElementById("vt-ready").classList.remove("on");
 }
 function viewDone() {
   document.getElementById("logview").style.display = "none";
   document.getElementById("donelist").style.display = "block";
+  document.getElementById("readylist").style.display = "none";
   document.getElementById("logbar").querySelectorAll("input,.chip").forEach((el) => (el.style.display = "none"));
   document.getElementById("vt-logs").classList.remove("on");
   document.getElementById("vt-done").classList.add("on");
+  document.getElementById("vt-ready").classList.remove("on");
   renderDone();
+}
+function viewReady() {
+  document.getElementById("logview").style.display = "none";
+  document.getElementById("donelist").style.display = "none";
+  document.getElementById("readylist").style.display = "block";
+  document.getElementById("logbar").querySelectorAll("input,.chip").forEach((el) => (el.style.display = "none"));
+  document.getElementById("vt-logs").classList.remove("on");
+  document.getElementById("vt-done").classList.remove("on");
+  document.getElementById("vt-ready").classList.add("on");
+  renderReady();
+}
+async function openReady() {
+  openLogs();
+  viewReady();
+}
+async function renderReady() {
+  const el = document.getElementById("readylist");
+  try {
+    const res = await fetch("/api/pilot-ready", { headers: { authorization: `Bearer ${token}` } });
+    const { ready, blocked } = await res.json();
+    const row = (t: { id: string; title: string; area: string }, cls = "") =>
+      `<div class="drow ${cls}"><b>${escapeHtml(t.id)}</b>${escapeHtml(t.title)}${t.area ? `<span class="area">${escapeHtml(t.area)}</span>` : ""}</div>`;
+    const blockedHtml = (blocked || []).length
+      ? `<div class="drow blocked"><b>BLOQUEADAS</b></div>` + (blocked || []).map((t) => row(t, "blocked")).join("")
+      : "";
+    el.innerHTML = (ready || []).length
+      ? (ready || []).map((t) => row(t)).join("") + blockedHtml
+      : `<div class="drow">fila vazia — strategist vai reabastecer</div>`;
+  } catch {
+    el.innerHTML = `<div class="drow">erro ao carregar</div>`;
+  }
 }
 async function openDone() {
   openLogs();

@@ -1525,6 +1525,27 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       send(200, { done });
       return true;
     }
+    // GET /api/pilot-ready — pending queue from BACKLOG.md (## Ready + ## Blocked)
+    if (seg[1] === "pilot-ready") {
+      let ready: { id: string; title: string; area: string }[] = [];
+      let blocked: { id: string; title: string; area: string }[] = [];
+      try {
+        const md = readFileSync(new URL("../../../BACKLOG.md", import.meta.url), "utf8");
+        const parse = (chunk: string) =>
+          chunk
+            .split("\n")
+            .filter((l) => l.startsWith("- [ ]"))
+            .map((l) => {
+              const m = l.match(/\(([P\d][\w.-]*)\)\s*\[.*?\]\s*([^—]+)/);
+              const area = (l.match(/\(area:\s*(\w+)\)/)?.[1] ?? "").toLowerCase();
+              return { id: m?.[1] ?? "?", title: (m?.[2] ?? l).trim(), area };
+            });
+        ready = parse(md.split("\n## Ready\n")[1] ?? md.split("## Ready\n")[1] ?? "");
+        blocked = parse(md.split("\n## Blocked\n")[1] ?? "");
+      } catch {}
+      send(200, { ready, blocked });
+      return true;
+    }
     // POST /api/pilot-budget — edit daily budgets from the dashboard
     if (seg[1] === "pilot-budget" && req.method === "POST") {
       const body = JSON.parse((await readBody(req)) || "{}") as {
