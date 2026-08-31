@@ -90,6 +90,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
       onStdout: stream,
     });
     console.log(JSON.stringify({ ts: new Date().toISOString(), level: "info", msg: "builder done", data: { task: t.id, round } }));
+    writeFileSync(join(homedir(), ".opencode-remote/pilot", "last-builder-output.log"), build.output);
     if (!build.output.includes("PILOT:TASK-DONE")) {
       return { ok: false, detail: `builder did not finish (round ${round}): ${build.output.slice(-300)}` };
     }

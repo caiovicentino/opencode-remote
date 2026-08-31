@@ -69,7 +69,7 @@ async function main() {
         }
       } else if (!result.ok) {
         if (cfg.digest) await digest(`🧪 Pilot falhou: ${task.id}`, result.detail.slice(0, 120), "#/");
-        await sleep(5 * 60_000); // cool down after failure
+        await sleep(60_000); // short cool-down; full output saved for diagnosis
       }
       saveState(state);
     } catch (err) {
