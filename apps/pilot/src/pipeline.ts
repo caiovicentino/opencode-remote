@@ -1,3 +1,6 @@
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
 import { exec, runAgent } from "./runner";
 import { markDone, type Task } from "./backlog";
 import type { PilotConfig, PilotState } from "./state";
