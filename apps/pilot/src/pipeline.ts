@@ -242,11 +242,20 @@ async function gatekeeper(cfg: PilotConfig, ws: string, t: Task, state: PilotSta
     // NOTE: live tests (download/push/smoke/live-eval) run post-deploy via
     // `invariants --live` + health checks — they need RELAY_URL + prod pairing.
   ];
-  // Desktop render smoke (P0-002): when the diff touches the desktop shell, go
-  // beyond process boot — did-finish-load + renderer console capture + #root
-  // mounted content — so a white window (e.g. asset 404 on file://) is rejected.
-  const touched = exec(`git diff --name-only main...pilot/${t.id}`, { cwd: ws, allowFail: true }).output;
-  if (touched.split("\n").some((l) => l.trim().startsWith("apps/desktop/"))) {
+  // Desktop render smoke (P0-002): when the diff touches the desktop shell or
+  // the web UI it renders, go beyond process boot — did-finish-load + renderer
+  // console capture + #root mounted content — so a white window (e.g. asset
+  // 404 on file://) is rejected. Most white-window regressions come from
+  // apps/web/-only changes, hence the second trigger. Fail closed: when the
+  // diff cannot be computed, run the smoke anyway instead of skipping it.
+  const diff = exec(`git diff --name-only main...pilot/${t.id}`, { cwd: ws, allowFail: true });
+  const renderTouched =
+    !diff.ok ||
+    diff.output.split("\n").some((l) => {
+      const p = l.trim();
+      return p.startsWith("apps/desktop/") || p.startsWith("apps/web/");
+    });
+  if (renderTouched) {
     steps.push(["desktop-render", "npx tsx scripts/desktop-render.test.ts"]);
   }
   for (const [name, cmd] of steps) {

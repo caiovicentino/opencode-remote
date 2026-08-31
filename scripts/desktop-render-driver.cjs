@@ -15,7 +15,9 @@
  *
  * Result is printed as a single stdout line:
  *   OCR_RENDER_SMOKE_RESULT {json}
- * and the process exits 0 (render OK) or 1 (render broken).
+ * and the process exits 0 (render OK) or 1 (render broken). The verdict also
+ * requires a driver-injected capture canary, so an Electron API change can
+ * never void console-error capture and pass vacuously.
  *
  * When required as a library (not run as main) it only exports the pure
  * helpers so scripts/unit.test.ts can cover them without booting Electron.
@@ -29,6 +31,9 @@ const NOISE_PATTERNS = [
   /service[-_ ]?worker/i,
 ];
 
+/** Known-good console error injected by the driver to verify capture works. */
+const CANARY = "ocr-render-smoke-canary";
+
 /**
  * True for renderer console errors that are expected noise in the desktop
  * shell and must not fail the render smoke: ServiceWorker failures when the
@@ -41,19 +46,39 @@ function isKnownNoise(message, sourceUrl) {
   return NOISE_PATTERNS.some((re) => re.test(String(message)));
 }
 
-/** Normalizes the two Electron console-message listener signatures. */
+const LEVEL_NAMES = ["verbose", "info", "warning", "error"];
+
+function normalizeLevel(level) {
+  // legacy listeners pass a numeric level (3 = error); the details object
+  // carries a string ("error"). Normalize to the string scheme.
+  if (typeof level === "number") return LEVEL_NAMES[level] ?? `level-${level}`;
+  return String(level ?? "");
+}
+
+/**
+ * Normalizes the console-message listener shapes Electron has shipped:
+ *  - current (verified at runtime on 38.8.6): (details, ...deprecatedTail)
+ *    where details is Event<WebContentsConsoleMessageEventParams> carrying
+ *    { message, level: "error"…, lineNumber, sourceId } — the positional tail
+ *    (level, message, line, sourceId) is deprecated and may be dropped.
+ *  - legacy: (event, level, message, line, sourceId) with a numeric level.
+ * Returns { level, message, sourceUrl, lineNumber } with level normalized to
+ * the string scheme ("error" for errors) so callers compare against "error".
+ */
 function readConsoleMessage(first, second, third, fourth, fifth) {
-  if (second && typeof second === "object") {
-    // Electron >= 35: (event, messageDetails)
+  // Sniff on the payload, not on position: the first arg is an object in BOTH
+  // shapes (plain Event in legacy, details-carrying Event in current), but
+  // only the current shape owns .message.
+  if (first && typeof first === "object" && typeof first.message === "string") {
     return {
-      level: second.level,
-      message: second.message,
-      sourceUrl: second.sourceUrl,
-      lineNumber: second.lineNumber,
+      level: normalizeLevel(first.level),
+      message: first.message,
+      sourceUrl: first.sourceId,
+      lineNumber: first.lineNumber,
     };
   }
   // legacy: (event, level, message, line, sourceId)
-  return { level: second, message: third, sourceUrl: fifth, lineNumber: fourth };
+  return { level: normalizeLevel(second), message: third, sourceUrl: fifth, lineNumber: fourth };
 }
 
 function runDriver() {
@@ -67,10 +92,12 @@ function runDriver() {
   const settleMs = Number(process.env.OCR_SMOKE_SETTLE_MS || 1500);
 
   function finish(result) {
-    // Verdict: page loaded, UI mounted, and nothing but known noise in the
-    // console. (For early/timeout finishes loadOk stays false → not ok.)
+    // Verdict: page loaded, console capture verified by the canary, and
+    // nothing but known noise in the console. (For early/timeout finishes
+    // loadOk/canarySeen stay false → not ok.)
     result.ok =
       result.loadOk === true &&
+      result.canarySeen === true &&
       result.rootChildren > 0 &&
       result.bodyTextLength > 0 &&
       result.consoleErrors.length === 0;
@@ -81,13 +108,13 @@ function runDriver() {
   }
 
   if (!html) {
-    finish({ ok: false, loadOk: false, rootChildren: 0, bodyTextLength: 0, consoleErrors: ["OCR_SMOKE_HTML not set"] });
+    finish({ ok: false, loadOk: false, canarySeen: false, rootChildren: 0, bodyTextLength: 0, consoleErrors: ["OCR_SMOKE_HTML not set"] });
     return;
   }
 
   // Global safety net: never hang the gate.
   setTimeout(() => {
-    finish({ ok: false, loadOk: false, rootChildren: 0, bodyTextLength: 0, consoleErrors: ["driver timeout"] });
+    finish({ ok: false, loadOk: false, canarySeen: false, rootChildren: 0, bodyTextLength: 0, consoleErrors: ["driver timeout"] });
   }, 60_000).unref();
 
   // Traceless run: throwaway userData dir so the smoke never reads nor writes
@@ -97,7 +124,7 @@ function runDriver() {
   app.disableHardwareAcceleration();
 
   const consoleErrors = [];
-  const result = { ok: false, loadOk: false, rootChildren: 0, bodyTextLength: 0, consoleErrors };
+  const result = { ok: false, loadOk: false, canarySeen: false, rootChildren: 0, bodyTextLength: 0, consoleErrors };
 
   app.whenReady().then(() => {
     // The production preload (apps/desktop/src/preload.ts) invokes these
@@ -123,9 +150,15 @@ function runDriver() {
     });
     const wc = win.webContents;
 
-    wc.on("console-message", (_event, ...rest) => {
-      const m = readConsoleMessage(_event, ...rest);
-      if (m.level === 3 && !isKnownNoise(m.message, m.sourceUrl)) {
+    wc.on("console-message", (...args) => {
+      const m = readConsoleMessage(...args);
+      if (m.message && m.message.includes(CANARY)) {
+        // Driver-injected canary (see did-finish-load): proof that console
+        // capture works with this Electron's listener shape, not app noise.
+        result.canarySeen = true;
+        return;
+      }
+      if (m.level === "error" && !isKnownNoise(m.message, m.sourceUrl)) {
         consoleErrors.push(`${m.message} (${m.sourceUrl || "?"}:${m.lineNumber ?? "?"})`);
       }
     });
@@ -136,6 +169,13 @@ function runDriver() {
     });
     wc.on("did-finish-load", () => {
       result.loadOk = true;
+      // Capture canary: inject one known console error right after load. The
+      // settle window below proves the console-message listener actually saw
+      // it — without this, an Electron API change could void error capture
+      // and the smoke would pass vacuously (no captured errors ≠ clean run).
+      wc.executeJavaScript(`console.error('${CANARY}')`).catch((err) => {
+        consoleErrors.push(`canary injection failed: ${err}`);
+      });
       // Settle so async failures (SW registration, unhandled rejections,
       // late asset 404s) land in the console before we judge.
       setTimeout(
@@ -166,7 +206,7 @@ function runDriver() {
   });
 }
 
-module.exports = { isKnownNoise };
+module.exports = { isKnownNoise, readConsoleMessage };
 
 // Electron does not set require.main for the entry script — detect the
 // Electron runtime instead (absent when required from node/tsx unit tests).

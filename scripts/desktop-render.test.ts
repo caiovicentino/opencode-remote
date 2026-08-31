@@ -33,6 +33,11 @@ try {
   electronBin = "";
 }
 check("electron binary resolved", typeof electronBin === "string" && existsSync(electronBin));
+if (!electronBin || !existsSync(electronBin)) {
+  // spawnSync("") throws synchronously — fail cleanly instead of crashing.
+  console.log(`\nFAILURES: ${failures}`);
+  process.exit(1);
+}
 
 // --- ensure build artifacts exist (the gate's npm run build produces both) ---
 const webIndex = join(repoRoot, "apps", "web", "dist", "index.html");
@@ -71,6 +76,7 @@ const line = (res.stdout ?? "")
 const result = line
   ? (JSON.parse(line.slice(MARKER.length)) as {
       loadOk?: boolean;
+      canarySeen?: boolean;
       rootChildren?: number;
       bodyTextLength?: number;
       consoleErrors?: string[];
@@ -83,6 +89,7 @@ if (!result) {
   check("render smoke driver ran", false);
 } else {
   check("did-finish-load fired", result.loadOk === true);
+  check("console capture verified (canary seen)", result.canarySeen === true);
   check("#root mounted content (no white window)", (result.rootChildren ?? 0) > 0 && (result.bodyTextLength ?? 0) > 0);
   check("no non-noise console errors", Array.isArray(result.consoleErrors) && result.consoleErrors.length === 0);
   if (result.consoleErrors?.length) {

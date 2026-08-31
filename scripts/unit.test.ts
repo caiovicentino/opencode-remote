@@ -178,8 +178,14 @@ try {
 
 // --- desktop render smoke: ServiceWorker-on-file:// noise filter (P0-002) ----
 const requireCjs = createRequire(import.meta.url);
-const { isKnownNoise } = requireCjs("../scripts/desktop-render-driver.cjs") as {
+const { isKnownNoise, readConsoleMessage } = requireCjs("../scripts/desktop-render-driver.cjs") as {
   isKnownNoise: (message: string, sourceUrl: string | undefined) => boolean;
+  readConsoleMessage: (...args: unknown[]) => {
+    level: string;
+    message?: string;
+    sourceUrl?: string;
+    lineNumber?: number;
+  };
 };
 check(
   "noise filter: SW registration failure on file:// is noise",
@@ -198,6 +204,34 @@ check(
   isKnownNoise("Uncaught TypeError: x is undefined", "file:///repo/apps/web/dist/assets/index.js") === false,
 );
 check("noise filter: empty message is noise-free", isKnownNoise("", "file:///x") === false);
+
+// --- desktop render smoke: console-message arg normalization (P0-002) --------
+// Shapes verified at runtime on Electron 38.8.6: (details, 3, msg, line, src)
+// with details = { message, level: "error", lineNumber, sourceId }.
+const details38 = { level: "error", message: "boom", lineNumber: 12, sourceId: "file:///x/y.js" };
+const m38 = readConsoleMessage(details38, 3, "boom", 12, "file:///x/y.js");
+check(
+  "console-message: Electron 38 details-object shape",
+  m38.level === "error" && m38.message === "boom" && m38.sourceUrl === "file:///x/y.js" && m38.lineNumber === 12,
+);
+const mTailless = readConsoleMessage(details38);
+check(
+  "console-message: details shape survives when the deprecated positional tail is dropped",
+  mTailless.message === "boom" && mTailless.sourceUrl === "file:///x/y.js" && mTailless.level === "error",
+);
+const mLegacy = readConsoleMessage({}, 3, "legacy-boom", 7, "file:///a.js");
+check(
+  "console-message: legacy numeric shape",
+  mLegacy.level === "error" &&
+    mLegacy.message === "legacy-boom" &&
+    mLegacy.sourceUrl === "file:///a.js" &&
+    mLegacy.lineNumber === 7,
+);
+check(
+  "console-message: legacy event object (no payload) is not mistaken for details",
+  readConsoleMessage({}, 2, "w", 1, "") .level === "warning" && readConsoleMessage({}, 0, "v", 1, "").level === "verbose",
+);
+check("console-message: undefined first arg falls back to legacy", readConsoleMessage(undefined, 3, "u", 1, "").message === "u");
 
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);
