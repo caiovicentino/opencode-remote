@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { exec } from "./runner";
 import { emit } from "./events";
-import { nowLocalISO } from "./log";
+import { log, nowLocalISO } from "./log";
 import { touchHeartbeat, type PilotConfig } from "./state";
 
 export interface DeployResult {
@@ -74,6 +74,12 @@ export async function deploy(cfg: PilotConfig, sha: string): Promise<DeployResul
     } else fails = 0;
   }
   emit("deploy", { phase: "done", ok: true, detail: `sha ${sha.slice(0, 7)} live` });
+  // self-update: if this deploy changed pilot code, reload ourselves (KeepAlive restarts)
+  const pilotChanged = exec(`git diff --name-only ${sha} HEAD -- apps/pilot`, { cwd: cfg.repo, allowFail: true });
+  if (String(pilotChanged.output || "").includes("apps/pilot")) {
+    log("warn", "deploy included pilot changes — self-reloading");
+    setTimeout(() => process.exit(0), 500);
+  }
   return { ok: true, rolledBack: false, detail: `deployed ${sha.slice(0, 7)} (prev ${prev.slice(0, 7)})` };
 }
 

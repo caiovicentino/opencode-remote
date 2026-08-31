@@ -75,7 +75,7 @@ export function touchHeartbeat() {
 }
 
 /** Self-watchdog: exits the process if the heartbeat went silent. KeepAlive restarts it. */
-export function startWatchdog(maxSilenceMin = 30) {
+export function startWatchdog(maxSilenceMin = 3) {
   touchHeartbeat();
   setInterval(() => {
     try {
