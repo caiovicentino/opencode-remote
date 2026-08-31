@@ -23,7 +23,7 @@
   #live.on { background:var(--green); animation:pulse 1.6s infinite; }
   #live.stale { background:var(--red); animation:none; }
   @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(74,222,128,.7)} 70%{box-shadow:0 0 0 12px rgba(74,222,128,0)} 100%{box-shadow:0 0 0 0 rgba(74,222,128,0)} }
-  #stats { top:70px; right:20px; width:230px; background:rgba(10,16,24,.72); border:1px solid rgba(34,211,238,.18);
+  #stats { pointer-events:auto; top:70px; right:20px; width:230px; background:rgba(10,16,24,.72); border:1px solid rgba(34,211,238,.18);
            border-radius:14px; padding:14px 16px; backdrop-filter:blur(8px); }
   #stats .row { display:flex; justify-content:space-between; font-size:12px; padding:4px 0; color:#c9d6e3; }
   #stats .row b { font-variant-numeric:tabular-nums; }
