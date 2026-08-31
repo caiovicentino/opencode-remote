@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { exec } from "./runner";
 import { emit } from "./events";
-import type { PilotConfig } from "./state";
+import { touchHeartbeat, type PilotConfig } from "./state";
 
 export interface DeployResult {
   ok: boolean;
@@ -59,7 +59,11 @@ export async function deploy(cfg: PilotConfig, sha: string): Promise<DeployResul
   let fails = 0;
   for (let i = 0; i < checks; i++) {
     await sleep(soakEverySec * 1000);
-    if (!(await isHealthy(cfg))) {
+    touchHeartbeat();
+    const healthyNow = await isHealthy(cfg);
+    console.log(JSON.stringify({ ts: new Date().toISOString(), level: "info", msg: "soak", data: { check: i + 1, of: checks, healthy: healthyNow } }));
+    emit("deploy", { phase: `soak ${i + 1}/${checks}`, ok: healthyNow });
+    if (!healthyNow) {
       fails++;
       if (fails >= 3) {
         emit("deploy", { phase: "rollback", ok: false, detail: "soak failed" });
