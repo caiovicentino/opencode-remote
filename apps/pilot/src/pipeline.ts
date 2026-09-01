@@ -206,7 +206,10 @@ MANDATORY EVIDENCE (P2-009): when finished, end your output with exactly this EV
 block — the deterministic gatekeeper parses it, re-executes every cited command and
 REJECTS the merge when the block is missing or the real output diverges from what you
 pasted. Only real output you produced this round; only "npm run typecheck --silent",
-"npm run test:unit --silent" and "npm run build --silent" may be cited. The gate also
+"npm run test:unit --silent" and "npm run build --silent" may be cited. Paste the FINAL
+lines of each output verbatim (the tail is what the gate compares) — NEVER summarize
+with "..." or add annotations like "(exit 0)": any line that the re-run does not print
+is treated as fabrication and rejects the merge. The gate also
 requires both screenshot lines whenever your diff touches apps/web/ or apps/desktop/ —
 even when this task is not tagged ui/desktop — so take them fresh this round and cite
 the fresh files:
@@ -599,11 +602,16 @@ export function normalizeEvidenceLine(s: string): string {
  * not pass on re-execution alone ("outputs reais colados").
  */
 export function evidenceMatches(pasted: string, actual: string): boolean {
+  // Truncation markers and exit-code annotations are builder summaries, not
+  // output — skipping them keeps an honest-but-lazy paste from failing while
+  // real fabrication (any line with a source-free claim) still rejects.
+  const skip = (l: string) => l === "..." || l === "…" || /^\(exit \d+\)$/.test(l);
   const actualLines = new Set(actual.split("\n").map(normalizeEvidenceLine).filter(Boolean));
   const pastedLines = pasted
     .split("\n")
     .map(normalizeEvidenceLine)
     .filter(Boolean)
+    .filter((l) => !skip(l))
     .slice(0, 600);
   if (pastedLines.length === 0) return actualLines.size === 0;
   return pastedLines.every((l) => actualLines.has(l));
