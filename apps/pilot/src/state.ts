@@ -88,6 +88,8 @@ export interface PilotState {
   taskAttempts: Record<string, number>;
   redteamLast?: string;
   researchLast?: string;
+  /** P3-052: last YYYY-MM-DD the nightly explorer ran (once per day). */
+  explorerLast?: string;
   /** P2-032: sliding window of recent pipeline outcomes (fever rate). */
   cycles?: CycleSample[];
   /** P2-032: epoch ms timestamps of blocks that landed on main (30min burst). */

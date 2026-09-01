@@ -6,6 +6,7 @@ import { agentStream, exec, runAgent } from "./runner";
 import { nowLocalISO } from "./log";
 import { notifySupervisor } from "./notify";
 import { runResearcher } from "./researcher";
+import { runExplorer } from "./explorer";
 import { runPipeline, TASK_ID_RE, writeSandboxConfig, lessonsBlock } from "./pipeline";
 import { deploy } from "./deploy";
 import { digest } from "./push";
@@ -326,20 +327,24 @@ function overCap(cfg: PilotConfig, task: Task): boolean {
 async function maybeNightly(cfg: PilotConfig, st: PilotState) {
   const today = nowLocalISO().slice(0, 10);
   const hour = new Date().getHours();
-  if (st.redteamLast === today || hour !== 3) return;
-  st.redteamLast = today;
-  saveState(st);
-  // sync so the red team reads a fresh docs/EXPERIENCE.md and the maintenance
-  // commit below lands on a clean main — a failing sync only skips the
-  // maintenance (the red team run itself stays best-effort)
+  if (hour !== 3) return;
+  if (st.redteamLast === today && st.explorerLast === today) return; // nightly passes already done
+  // sync so the nightly agents read a fresh main; a failing sync only skips
+  // the pass (best-effort by design — never blocks the loop)
   let wsReady = true;
   try {
     syncWorkspace(cfg.workspace);
   } catch {
     wsReady = false;
-    log("warn", "redteam workspace sync failed — experience maintenance skipped");
+    log("warn", "nightly workspace sync failed — nightly passes skipped");
   }
   writeSandboxConfig(cfg.workspace); // headless runs abort without sandbox perms
+  // P3-052: nightly computer-use explorer — strictly non-blocking, once per
+  // day (own guard in state.explorerLast), budget-capped for predictable cost
+  if (wsReady) await runExplorer(cfg, st);
+  if (st.redteamLast === today) return;
+  st.redteamLast = today;
+  saveState(st);
   log("info", "nightly redteam starting");
   const r = await runAgent(
     `You are the RED TEAM agent of the opencode-remote autonomous pipeline. Your job today:
