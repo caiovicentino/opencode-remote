@@ -317,6 +317,15 @@ function draw(time) {
     // status dot
     ctx.beginPath(); ctx.arc(n.x + r*0.75, n.y - r*0.75, 4, 0, Math.PI*2);
     ctx.fillStyle = hexA(glowColor, 1); ctx.fill();
+    // last-run caption (aux roles)
+    if (lastAuxData[n.id]) {
+      const d = new Date(lastAuxData[n.id]);
+      const when = d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" }) + " " +
+        d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+      ctx.font = "600 9px ui-monospace,Menlo,monospace";
+      ctx.fillStyle = hexA("#9db2c6", .75);
+      ctx.fillText("últ.: " + when, n.x, n.y + r + 14);
+    }
     // hover highlight
     if (n.id === hoverNode) {
       ctx.beginPath(); ctx.arc(n.x, n.y, r + 14, 0, Math.PI*2);
@@ -354,6 +363,7 @@ requestAnimationFrame(loop);
 
 // ─── polling ──────────────────────────────────────────────────────────────────
 let token = window.__OCR_TOKEN__ || localStorage.getItem("ocr_dash_token");
+let lastAuxData = {};
 const params = new URLSearchParams(location.search);
 if (params.get("token")) { token = params.get("token"); localStorage.setItem("ocr_dash_token", token); history.replaceState(null,"","/dashboard"); }
 if (token) startPolling(); else document.getElementById("tokenbox").style.display = "block";
@@ -377,8 +387,8 @@ async function poll() {
     document.getElementById("s-deploys").textContent = data.state?.deploys ?? 0;
     document.getElementById("s-fails").textContent = data.state?.failures ?? 0;
     // budget meters
-    const maxT = data.cfg?.maxTasksPerDay || 15, maxD = data.cfg?.maxDeploysPerDay || 12;
-    document.getElementById("m-tasks").style.width = `${Math.min((data.state?.tasks ?? 0) / maxT * 100, 100)}%`;
+    lastAuxData = data.lastAux || {};
+    const maxT = data.cfg?.maxTasksPerDay || 15, maxD = data.cfg?.maxDeploysPerDay || 12;    document.getElementById("m-tasks").style.width = `${Math.min((data.state?.tasks ?? 0) / maxT * 100, 100)}%`;
     document.getElementById("m-dep").style.width = `${Math.min((data.state?.deploys ?? 0) / maxD * 100, 100)}%`;
     document.getElementById("m-tasks-t").textContent = `${data.state?.tasks ?? 0}/${maxT}`;
     document.getElementById("m-dep-t").textContent = `${data.state?.deploys ?? 0}/${maxD}`;

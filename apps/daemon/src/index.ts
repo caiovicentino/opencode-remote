@@ -1637,7 +1637,23 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       try {
         cfg = JSON.parse(readFileSync(join(homedir(), ".opencode-remote", "pilot.json"), "utf8"));
       } catch {}
-      send(200, { state, heartbeatMs, events, cfg });
+      let lastAux: Record<string, string> = {};
+      try {
+        const tail = readFileSync(join(homedir(), ".opencode-remote", "logs", "pilot.log"), "utf8")
+          .split("\n")
+          .filter(Boolean)
+          .slice(-400);
+        for (const line of tail) {
+          if (!line.includes("researcher") && !line.includes("strategist")) continue;
+          try {
+            const j = JSON.parse(line) as { msg?: string; ts?: string };
+            if (typeof j.msg !== "string" || typeof j.ts !== "string") continue;
+            if (/researcher/i.test(j.msg)) lastAux.researcher = j.ts;
+            if (/strategist/i.test(j.msg)) lastAux.strategist = j.ts;
+          } catch {}
+        }
+      } catch {}
+      send(200, { state, heartbeatMs, events, cfg, lastAux });
       return true;
     }
     if (seg[1] !== "session") {
