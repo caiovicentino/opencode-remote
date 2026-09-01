@@ -22,6 +22,7 @@ function urlB64ToUint8Array(b64url: string): Uint8Array<ArrayBuffer> {
  * user gesture on iOS (installed PWA, 16.4+).
  */
 export async function enablePush(request: RequestFn): Promise<string> {
+  if (location.protocol === "file:") throw new Error("Web Push not supported in this browser");
   if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
     throw new Error("Web Push not supported in this browser");
   }
@@ -52,6 +53,7 @@ export async function enablePush(request: RequestFn): Promise<string> {
  * endpoint when restored, null when the user must tap "Enable push" first.
  */
 export async function restorePush(request: RequestFn): Promise<string | null> {
+  if (location.protocol === "file:") return null;
   try {
     if (!("serviceWorker" in navigator) || !("PushManager" in window)) return null;
     if (Notification.permission !== "granted") return null;

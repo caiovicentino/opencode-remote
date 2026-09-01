@@ -52,7 +52,9 @@ React PWA. Non-extractable ECDH key in IndexedDB (XSS can use it while the
 page lives, never exfiltrate it), WebAuthn biometric gate before use,
 offline queue for outbound messages, chunked-download file previews,
 multi-machine switcher. Service worker keeps an installable shell and routes
-notification taps to hash deep-links.
+notification taps to hash deep-links. On the desktop shell (served over
+`file://`) the service worker is not registered and Web Push stays
+unavailable — registration there can only reject.
 
 ## Data flow (one op)
 

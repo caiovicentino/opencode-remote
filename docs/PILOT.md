@@ -67,9 +67,9 @@ de console do renderer (`webContents.on("console-message")`) e confere que o `#r
 ganhou conteúdo — **janela branca reprova** (ex.: asset 404 em `file://`). A captura
 de console é verificada com um **canário**: o driver injeta um `console.error`
 conhecido logo após o load e exige que o listener o tenha visto — um bump do Electron
-que mude a assinatura do evento reprova alto em vez de passar vazio. Falha de
-ServiceWorker em `file://` é ruído conhecido (registrada por `apps/web/src/main.tsx`;
-será removida em P3-005) e não reprova. O trigger é **fail-closed**: se `git diff`
+que mude a assinatura do evento reprova alto em vez de passar vazio. Desde a P3-005
+a UI não registra ServiceWorker em `file://` (app desktop), então **qualquer** erro
+de console do renderer reprova. O trigger é **fail-closed**: se `git diff`
 falhar, o smoke roda de qualquer jeito. O teste roda sem tocar no daemon de
 produção: `userData` do Electron é temporário e nenhum sidecar é spawnado.
 

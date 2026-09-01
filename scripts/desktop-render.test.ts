@@ -5,7 +5,8 @@
  * Beyond booting, it waits for did-finish-load, captures renderer console
  * errors (webContents "console-message") and checks the app actually mounted
  * content into #root — so a white window (e.g. an asset 404 on file://) fails
- * the gate. ServiceWorker failures on file:// are known noise (P3-005).
+ * the gate. Since P3-005 the UI skips ServiceWorker registration on file://,
+ * so any renderer console error (SW or otherwise) fails the gate.
  *
  * Run: npx tsx scripts/desktop-render.test.ts
  */
