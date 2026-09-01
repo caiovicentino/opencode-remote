@@ -7,6 +7,6 @@ mais recentes primeiro); o red team noturno deduplica e poda acima de
 60 lições.
 
 ## Lessons
-- When touching Electron main-process modules, keep them free of `electron` imports and inject a structural fs/dir subset (the window-state.ts pattern) so the real logic runs under plain tsx tests instead of needing a packaged app to verify. (fonte: P3-012)
-- When rotating a log file with `rename`, unlink the destination (`.1`) first — rename cannot overwrite an existing file on Windows and the rotation would silently fail there. (fonte: P3-012)
-- When adding a side-channel sink (log file, telemetry), wrap every fs write in try/catch so failures degrade to the console mirror and never throw — a full disk or a logs dir deleted mid-run must not crash the shell; on ENOENT, recreate the… (fonte: P3-012)
+- When adding user-facing decision logic to an Electron main-process file, extract the pure decision function into a module with no electron imports (same pattern as tray.ts) so scripts/unit.test.ts can exercise all branches without booting… (fonte: P3-013)
+- When deriving one-shot events from a recurring health poll, track previous state starting at null and only fire on a real prev !== next change — the first observation after boot and stable states must both map to "none" or every 3s poll re… (fonte: P3-013)
+- When invoking platform APIs that can be unsupported, denied, or throw inside a long-lived poll loop, guard with isSupported() plus try/catch that logs and continues, so a notification failure can never kill the poller that other features (… (fonte: P3-013)
