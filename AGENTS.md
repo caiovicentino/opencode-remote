@@ -12,7 +12,10 @@ after `maxAttemptsPerTask` (default 4) attempts: moved to `## Blocked` in BACKLO
 findings and never re-scheduled until a human/red team moves them back (P1-014). With `slots` > 1
 in pilot.json the scheduler runs up to N pipelines concurrently, one workspace clone per slot
 (`~/.opencode-remote/pilot/repo-1`, `repo-2`…), always on tasks with distinct `area:` tags —
-two tasks of the same area never run in parallel, and deploys stay serial (P1-006). If you are asked to change anything that
+two tasks of the same area never run in parallel, and deploys stay serial (P1-006). After every
+successful merge a SCRIBE agent distills up to 3 engineering lessons into `docs/EXPERIENCE.md`
+(P1-007) — the top-5 keyword-matched lessons are injected into the builder and strategist prompts,
+and the nightly red-team pass dedupes/prunes the file above 60 lessons. If you are asked to change anything that
 the constitution protects (crypto, allowlist, replay protection, deploy/), flag it explicitly in
 the commit message. Never commit secrets. Always document user-visible changes.
 

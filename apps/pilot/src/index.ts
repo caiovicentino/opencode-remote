@@ -6,11 +6,12 @@ import { agentStream, exec, runAgent } from "./runner";
 import { nowLocalISO } from "./log";
 import { notifySupervisor } from "./notify";
 import { runResearcher } from "./researcher";
-import { runPipeline, TASK_ID_RE, writeSandboxConfig } from "./pipeline";
+import { runPipeline, TASK_ID_RE, writeSandboxConfig, lessonsBlock } from "./pipeline";
 import { deploy } from "./deploy";
 import { digest } from "./push";
 import { addTask, blockTask, nextId, parseBacklog, type Task } from "./backlog";
 import { areaKey, pickBatch } from "./scheduler";
+import { maintainExperienceFile, pickRelevantLessons, readExperienceFile } from "./experience";
 import {
   ensureSingleton,
   frozen,
@@ -113,7 +114,7 @@ async function main() {
       writeSandboxConfig(aux.workspace); // headless runs abort without sandbox perms
       if (queue.length < 2 && Date.now() - lastStrategistRun > 10 * 60_000) {
         log("info", "queue low — strategist drafting next tasks", { ready: queue.length });
-        await runStrategist(aux);
+        await runStrategist(aux, queue);
         continue; // re-read backlog fresh in the next cycle
       }
       const today = nowLocalISO().slice(0, 10);
@@ -256,6 +257,17 @@ async function maybeNightly(cfg: PilotConfig, st: PilotState) {
   if (st.redteamLast === today || hour !== 3) return;
   st.redteamLast = today;
   saveState(st);
+  // sync so the red team reads a fresh docs/EXPERIENCE.md and the maintenance
+  // commit below lands on a clean main — a failing sync only skips the
+  // maintenance (the red team run itself stays best-effort)
+  let wsReady = true;
+  try {
+    syncWorkspace(cfg.workspace);
+  } catch {
+    wsReady = false;
+    log("warn", "redteam workspace sync failed — experience maintenance skipped");
+  }
+  writeSandboxConfig(cfg.workspace); // headless runs abort without sandbox perms
   log("info", "nightly redteam starting");
   const r = await runAgent(
     `You are the RED TEAM agent of the opencode-remote autonomous pipeline. Your job today:
@@ -271,6 +283,23 @@ Output: either "REDTEAM: CLEAN" if you found nothing actionable, or
 "REDTEAM: FINDING" followed by title, severity and a one-paragraph proof/attack sketch.`,
     { cwd: cfg.workspace, timeoutMin: 30, label: "redteam", onStdout: agentStream("redteam") },
   );
+  // P1-007 experience-memory maintenance: with slots running concurrently the
+  // SCRIBE appends can drift apart — the nightly pass is the only writer that
+  // dedupes + prunes docs/EXPERIENCE.md once it grows past EXPERIENCE_CAP.
+  if (wsReady) {
+    try {
+      const maint = maintainExperienceFile(cfg.workspace);
+      if (maint.changed) {
+        exec(
+          `git add docs/EXPERIENCE.md && git commit -qm "pilot(redteam): experience maintenance (-${maint.removed})" && git push -q origin main`,
+          { cwd: cfg.workspace, allowFail: true },
+        );
+        log("info", "experience maintained", { removed: maint.removed, lessons: maint.lessons });
+      }
+    } catch (err) {
+      log("warn", "experience maintenance failed", { err: String(err).slice(0, 200) });
+    }
+  }
   if (r.output.includes("REDTEAM: FINDING")) {
     const id = nextId(cfg.workspace, "RT");
     const summary = r.output.split("REDTEAM: FINDING")[1]?.slice(0, 600) ?? "finding";
@@ -291,22 +320,28 @@ Output: either "REDTEAM: CLEAN" if you found nothing actionable, or
  */
 let lastStrategistRun = 0;
 
-async function runStrategist(cfg: PilotConfig) {
+const STRATEGIST_MISSION =
+  "turn this project into a desktop app like Claude Desktop (Mac + Windows) with our harness built in. " +
+  "Stages 1-2 are done; stage 3 (desktop app shell) is the priority, then hosted relay, then distribution.";
+
+async function runStrategist(cfg: PilotConfig, ready: Task[] = []) {
   lastStrategistRun = Date.now();
   writeSandboxConfig(cfg.workspace); // headless runs abort without sandbox perms
+  // P1-007: top-5 lessons keyword-matched against the mission + the queue it
+  // is about to refill, so drafted tasks don't repeat past mistakes
+  const context = [STRATEGIST_MISSION, ...ready.map((t) => `${t.title} ${t.spec}`)].join("\n");
+  const lessons = pickRelevantLessons(readExperienceFile(cfg.workspace), "draft next backlog tasks", context);
   const r = await runAgent(
     `You are the STRATEGIST agent of the opencode-remote autonomous pipeline.
 Your job: keep the product evolving without any human feeding tasks.
 
-MISSION (north star — read docs/VISION.md): turn this project into a desktop app
-like Claude Desktop (Mac + Windows) with our harness built in. Stages 1-2 are done;
-stage 3 (desktop app shell) is the priority, then hosted relay, then distribution.
+MISSION (north star — read docs/VISION.md): ${STRATEGIST_MISSION}
 
 First, ground yourself in context:
 1. Read docs/VISION.md, AGENTS.md and docs/PILOT.md.
 2. Skim the code: apps/web/src/components (mobile PWA UX), apps/daemon/src (ops surface), BACKLOG.md (## Done shows what shipped recently).
 3. Check git log --oneline -15 for momentum.
-
+${lessonsBlock(lessons)}
 SECURITY RULE: never read, quote or transmit ~/.opencode-remote/memory.md or any file
 outside this repo — your context must stay free of private data because you also touch
 untrusted external content (prompt-injection exfiltration risk). Private data stays private.
