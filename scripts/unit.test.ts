@@ -23,6 +23,7 @@ import { join } from "node:path";
 import { artifactMime, kindFor, listArtifacts, readArtifact, validSegment } from "../apps/daemon/src/artifacts";
 import { browseTarget, clickPoint, validSession, viewportFromParams } from "../apps/daemon/src/browse";
 import { touchedUiFromDiff, parseFindings, verifyFindings } from "../apps/pilot/src/pipeline";
+import { stdlibShadowHits } from "./stdlib-shadow";
 import { latestUiShot, pruneShots } from "../apps/pilot/src/shot";
 import { parseMarkdown, parseInline } from "../apps/web/src/lib/md";
 import { parseCsv } from "../apps/web/src/lib/csv";
@@ -557,6 +558,18 @@ check("touchedUi: prefixed lines rejected", !touchedUiFromDiff("+++ b/apps/web/s
 // lookalike prefixes must not match ("apps/web/" is a directory boundary)
 check("touchedUi: lookalike apps/webui rejected", !touchedUiFromDiff("apps/webui/src/x.ts"));
 check("touchedUi: lookalike apps/webs rejected", !touchedUiFromDiff("apps/webs/src/x.ts"));
+
+// --- module-shadowing invariant (P2-014) --------------------------------------
+// input is `git diff --name-status` output; only introduced (A/R/C) root files count
+check("stdlibShadow: clean diff passes", stdlibShadowHits("M\tapps/daemon/src/index.ts\nA\ttools/lib.py\nA\tREADME.md\n").length === 0);
+check("stdlibShadow: root struct.py fails", JSON.stringify(stdlibShadowHits("A\tstruct.py\n")) === JSON.stringify(["struct.py"]));
+check("stdlibShadow: subdir struct.py ok", stdlibShadowHits("A\tdir/struct.py\n").length === 0);
+check("stdlibShadow: rename into os.py fails", JSON.stringify(stdlibShadowHits("R100\tdocs/notes.txt\tos.py\n")) === JSON.stringify(["os.py"]));
+check("stdlibShadow: deleted json.py no hit", stdlibShadowHits("D\tjson.py\n").length === 0);
+check("stdlibShadow: modified types.py not an introduction", stdlibShadowHits("M\ttypes.py\n").length === 0);
+check("stdlibShadow: every hardcoded name is caught", stdlibShadowHits(["struct.py", "os.py", "base64.py", "json.py", "types.py", "random.py"].map((n) => `A\t${n}`).join("\n")).length === 6);
+check("stdlibShadow: case-insensitive on root file", stdlibShadowHits("A\tRANDOM.PY\n").length === 1);
+check("stdlibShadow: non-stdlib root file passes", stdlibShadowHits("A\tmain.py\nA\tstruct.ts\n").length === 0);
 
 // --- verifiable findings / anti-hallucination filter (P2-015) ----------------
 {
