@@ -159,6 +159,14 @@ e são validados contra os displays conectados no boot: janela esquecida num
 monitor desconectado (ou arquivo corrompido) cai no padrão 1280×820 em vez de
 abrir off-screen ou travar.
 
+**Log persistente do shell**: o app desktop grava tudo que o processo main
+emite (linhas `[desktop] …`: ciclo de vida do daemon, polls de pareamento,
+crashes do renderer, erros fatais) em `userData/logs/desktop.log` — assim o
+app empacotado, usado por alguém sem terminal, continua diagnosticável. O
+arquivo tem cap de ~1MB e rotaciona para `desktop.log.1` (só 2 arquivos); se
+o disco encher, o app segue rodando e apenas para de gravar. No macOS:
+`~/Library/Application Support/OpenCode Remote/logs/`.
+
 ## Roadmap
 
 Próximos: relay hospedado

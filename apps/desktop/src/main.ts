@@ -12,6 +12,7 @@ import {
   stopDaemonSidecar,
   waitForDaemonHealth,
 } from "./daemon";
+import { initDesktopLog, log, logError } from "./desktop-log";
 import { phonePaired, type PairingState } from "./pairing";
 import { daemonTooltip, loginItemSupported } from "./tray";
 import { checkForUpdatesOnBoot } from "./update";
@@ -33,10 +34,16 @@ let daemonStopped = false;
 // "app is shutting down" — close-to-tray on every platform.
 let quitting = false;
 
+// P3-012: file logging installed before anything can log — console.* in the
+// packaged app is invisible to the stage-5 user (no terminal), so every
+// main-process line now also lands in userData/logs/desktop.log (~1MB cap,
+// one rotated file kept). Write failures are log-only and never throw.
+initDesktopLog(app.getPath("userData"));
 // P3-011: a main-process exception used to crash Electron without will-quit,
 // killing the daemon sidecar with no cleanup. Installed before anything can
-// throw, so even boot-time failures quit through the graceful path.
-installFatalErrorHandlers(app);
+// throw, so even boot-time failures quit through the graceful path. Fatal
+// errors route through the file logger too (sink injection).
+installFatalErrorHandlers(app, { error: logError });
 // P3-011: shared crash-recovery budget — max 3 renderer reloads per 60s.
 const rendererReloadGuard = new ReloadGuard();
 
@@ -49,7 +56,7 @@ if (!gotLock) {
     .whenReady()
     .then(() => onReady())
     .catch((err) => {
-      console.error("[desktop] startup failed:", err);
+      logError("[desktop] startup failed:", err);
       app.quit();
     });
 }
@@ -105,7 +112,7 @@ async function onReady(): Promise<void> {
       if (raw.byteLength > 32 * 1024 * 1024) return null;
       return { status: res.status, contentType: res.headers.get("content-type") ?? "", body: Buffer.from(raw).toString("base64") };
     } catch (err) {
-      console.error("[desktop] daemonBrowse failed:", err);
+      logError("[desktop] daemonBrowse failed:", err);
       return null;
     }
   });
@@ -136,7 +143,7 @@ async function onReady(): Promise<void> {
       writeFileSync(file, JSON.stringify(raw, null, 2), { mode: 0o600 });
       return true;
     } catch (err) {
-      console.error("[desktop] approveClient failed:", err);
+      logError("[desktop] approveClient failed:", err);
       return false;
     }
   });
@@ -150,7 +157,7 @@ async function onReady(): Promise<void> {
     app.isPackaged ? process.resourcesPath : undefined,
   );
   if (!daemonReady || !(await waitForDaemonHealth())) {
-    console.error(`[desktop] daemon health not confirmed on :${DAEMON_METRICS_PORT} — continuing`);
+    logError(`[desktop] daemon health not confirmed on :${DAEMON_METRICS_PORT} — continuing`);
   }
 
   createWindow();
@@ -228,7 +235,7 @@ function setTrayHealthy(healthy: boolean): void {
   if (trayHealthy === healthy) return;
   trayHealthy = healthy;
   tray?.setToolTip(daemonTooltip(healthy));
-  console.log(`[desktop] tray tooltip: ${daemonTooltip(healthy)}`);
+  log(`[desktop] tray tooltip: ${daemonTooltip(healthy)}`);
 }
 
 async function refreshPairingState(): Promise<void> {
@@ -268,7 +275,7 @@ async function refreshPairingState(): Promise<void> {
     // a stale QR (old room/keys) is never shown. The next healthy tick
     // rebuilds everything from scratch. When the sidecar exhausted its
     // respawn budget (P2-017), tell the renderer instead of staying silent.
-    console.error(`[desktop] pairing poll failed: ${err instanceof Error ? err.message : err}`);
+    logError(`[desktop] pairing poll failed: ${err instanceof Error ? err.message : err}`);
     setTrayHealthy(false);
     if (isDaemonDown()) {
       setPairingState(daemonDownState());
@@ -345,7 +352,7 @@ function createWindow(): BrowserWindow {
   // P3-011: a dead renderer used to leave a white, unrecoverable window.
   // Log the crash reason and reload the page (bounded by the shared budget).
   win.webContents.on("render-process-gone", (_event, details) => {
-    onRendererGone(win, details, rendererReloadGuard);
+    onRendererGone(win, details, rendererReloadGuard, log, logError);
   });
   loadUi(win);
   return win;

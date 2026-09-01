@@ -6,6 +6,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { log, logError } from "./desktop-log";
 
 // Single source of truth for the daemon API port: the desktop polls the exact
 // port the spawned child binds. OCR_DAEMON_METRICS_PORT is the desktop-facing
@@ -228,14 +229,14 @@ export async function startDaemonSidecar(
   // the responder at all, so short-circuiting would "adopt" whatever process
   // squats on the port and never spawn the real daemon.
   if (sidecar.token !== null && (await healthOnce(DAEMON_METRICS_PORT, sidecar.token))) {
-    console.log(`[desktop] daemon already running on :${DAEMON_METRICS_PORT} — reusing it`);
+    log(`[desktop] daemon already running on :${DAEMON_METRICS_PORT} — reusing it`);
     sidecar.reused = true; // enables the daemon.log pair-URI fallback
     return true;
   }
 
   const entry = resolveEntry(appPath, resourcesPath);
   if (!entry) {
-    console.error(
+    logError(
       "[desktop] no daemon entry found — set OCR_DAEMON_ENTRY or run npm install at the repo root",
     );
     return false;
@@ -282,7 +283,7 @@ function spawnChild(entry: DaemonEntry): void {
   child.on("exit", () => {
     sidecar.exited = true;
     if (!sidecar.stopping) {
-      console.error(`[desktop] daemon sidecar exited (code=${child.exitCode} signal=${child.signalCode})`);
+      logError(`[desktop] daemon sidecar exited (code=${child.exitCode} signal=${child.signalCode})`);
       scheduleRespawn();
     }
   });
@@ -290,11 +291,11 @@ function spawnChild(entry: DaemonEntry): void {
   child.on("error", (err) => {
     sidecar.exited = true;
     if (!sidecar.stopping) {
-      console.error(`[desktop] daemon sidecar failed: ${err.message}`);
+      logError(`[desktop] daemon sidecar failed: ${err.message}`);
       scheduleRespawn();
     }
   });
-  console.log(`[desktop] daemon sidecar spawned (pid ${child.pid}, metrics :${DAEMON_METRICS_PORT})`);
+  log(`[desktop] daemon sidecar spawned (pid ${child.pid}, metrics :${DAEMON_METRICS_PORT})`);
 }
 
 /**
@@ -309,11 +310,11 @@ function scheduleRespawn(): void {
   sidecar.failures += 1;
   if (sidecar.failures > RESPAWN_MAX_ATTEMPTS) {
     sidecar.gaveUp = true;
-    console.error("[desktop] daemon sidecar gave up after 3 attempts");
+    logError("[desktop] daemon sidecar gave up after 3 attempts");
     return;
   }
   const delay = RESPAWN_DELAYS_MS[Math.min(sidecar.failures - 1, RESPAWN_DELAYS_MS.length - 1)] ?? 45_000;
-  console.log(
+  log(
     `[desktop] daemon sidecar respawn in ${Math.round(delay / 1000)}s (attempt ${sidecar.failures}/${RESPAWN_MAX_ATTEMPTS})`,
   );
   if (respawnTimer) clearTimeout(respawnTimer);
@@ -333,7 +334,7 @@ async function respawn(): Promise<void> {
   // started after the crash) counts as recovered — spawning on top of it
   // would just crash-loop on the busy port.
   if (sidecar.token !== null && (await healthOnce(DAEMON_METRICS_PORT, sidecar.token))) {
-    console.log(`[desktop] daemon already healthy again on :${DAEMON_METRICS_PORT} — no respawn needed`);
+    log(`[desktop] daemon already healthy again on :${DAEMON_METRICS_PORT} — no respawn needed`);
     sidecar.child = null;
     sidecar.spawned = false;
     sidecar.reused = true;
@@ -390,5 +391,5 @@ export async function stopDaemonSidecar(): Promise<void> {
   });
   sidecar.child = null;
   sidecar.stopping = false;
-  console.log("[desktop] daemon sidecar stopped");
+  log("[desktop] daemon sidecar stopped");
 }
