@@ -273,6 +273,12 @@ which downloads it in the background; yml feeds are parse-and-log only, since
 the built-in updater cannot read `latest-mac.yml` (spike finding). Feed or
 network failures are strictly log-only and never block or crash the window.
 
+When `OCR_UPDATE_FEED` is set, the tray menu also gains two items (P3-019):
+a disabled status line reflecting the latest check ("Update available —
+restart to install", "Up to date", or the failure reason) and a clickable
+"Check for updates" item that re-runs the check and refreshes the menu in
+place. Without the env var the tray stays exactly as before.
+
 ## Roadmap
 
 Next up: hosted relay option,
