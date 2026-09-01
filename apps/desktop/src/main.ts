@@ -18,7 +18,7 @@ import { phonePaired, type PairingState } from "./pairing";
 import { daemonNotify, NOTIFY_BACK_BODY, NOTIFY_DOWN_BODY, NOTIFY_TITLE, type DaemonHealth } from "./notify";
 import { deepLinkFromArgv, parseDeepLink } from "./deeplink";
 import { daemonTooltip, loginItemSupported, trayIconSource } from "./tray";
-import { checkForUpdatesOnBoot } from "./update";
+import { checkForUpdatesOnBoot, feedUrlFromEnv, updateMenuLabel, type UpdateStatus } from "./update";
 import { loadWindowBounds, saveWindowBounds, WINDOW_MIN, windowStateFile } from "./window-state";
 import { installFatalErrorHandlers, onRendererGone, ReloadGuard } from "./crash";
 
@@ -36,6 +36,9 @@ let daemonStopped = false;
 // the window's close handler can tell "user closed the window" apart from
 // "app is shutting down" — close-to-tray on every platform.
 let quitting = false;
+// P3-019: latest update-check decision (null = no check resolved yet). Kept in
+// the main process and surfaced only through the tray menu — no new IPC.
+let lastUpdateStatus: UpdateStatus | null = null;
 
 // P3-012: file logging installed before anything can log — console.* in the
 // packaged app is invisible to the stage-5 user (no terminal), so every
@@ -101,8 +104,14 @@ async function onReady(): Promise<void> {
   // P2-012: staged update feed spike. Runs once at boot, fire-and-forget (a
   // slow or dead feed must never delay window creation) and only acts when
   // OCR_UPDATE_FEED is set — otherwise it is a silent no-op. All failures are
-  // log-only (see src/update.ts).
-  void checkForUpdatesOnBoot();
+  // log-only (see src/update.ts). P3-019: the resolved status is stored and
+  // mirrored into the tray menu, so a lay user can see an available update.
+  void checkForUpdatesOnBoot()
+    .then((status) => {
+      lastUpdateStatus = status;
+      refreshTrayMenu();
+    })
+    .catch((err) => logError("[desktop] boot update check failed:", err));
 
   ipcMain.handle("app:version", () => app.getVersion());
   // P2-011: narrow HTTP bridge to the local daemon's /api/browse surface so
@@ -532,19 +541,55 @@ function buildTray(): void {
   // and is corrected by the first pairing-watcher poll (see setTrayHealthy).
   trayHealthy = false;
   tray.setToolTip(daemonTooltip(false));
+  tray.setContextMenu(Menu.buildFromTemplate(trayMenuItems()));
+  tray.on("click", showMainWindow);
+}
+
+// P3-019: rebuilds the context menu in place after the update status changes.
+// setContextMenu swaps the items on the live Tray instance, keeping the icon
+// and the click handler intact; a no-op when the tray is gone (Quit).
+function refreshTrayMenu(): void {
+  tray?.setContextMenu(Menu.buildFromTemplate(trayMenuItems()));
+}
+
+function trayMenuItems(): Electron.MenuItemConstructorOptions[] {
   const items: Electron.MenuItemConstructorOptions[] = [
     { label: "Open OpenCode Remote", click: showMainWindow },
-    {
-      // P3-017: always-present one-click recovery for a sidecar whose respawn
-      // budget is exhausted (P2-017) or an adopted daemon gone unstable.
-      label: "Restart daemon",
-      click: () => {
-        // Best-effort: restartDaemon is try/caught and log-only; the extra
-        // .catch keeps any unexpected rejection away from the shell.
-        void restartDaemon().catch((err) => logError("[desktop] tray restart daemon failed:", err));
-      },
-    },
   ];
+  // P3-019: update items exist only when a feed is configured — without
+  // OCR_UPDATE_FEED the tray is byte-for-byte identical to the pre-P3-019 menu.
+  if (feedUrlFromEnv() != null) {
+    const statusLabel = lastUpdateStatus === null ? null : updateMenuLabel(lastUpdateStatus);
+    if (statusLabel) {
+      // Informational-only: installing still happens on the next restart.
+      items.push({ label: statusLabel, enabled: false });
+    }
+    items.push({
+      label: "Check for updates",
+      click: () => {
+        // Same fire-and-forget shape as "Restart daemon" (P3-017): the check
+        // is log-only and never throws by design, but the extra .catch keeps
+        // an unexpected rejection away from the shell. The resolved status
+        // re-renders the menu so the new state becomes immediately visible.
+        void checkForUpdatesOnBoot()
+          .then((status) => {
+            lastUpdateStatus = status;
+            refreshTrayMenu();
+          })
+          .catch((err) => logError("[desktop] tray update check failed:", err));
+      },
+    });
+  }
+  items.push({
+    // P3-017: always-present one-click recovery for a sidecar whose respawn
+    // budget is exhausted (P2-017) or an adopted daemon gone unstable.
+    label: "Restart daemon",
+    click: () => {
+      // Best-effort: restartDaemon is try/caught and log-only; the extra
+      // .catch keeps any unexpected rejection away from the shell.
+      void restartDaemon().catch((err) => logError("[desktop] tray restart daemon failed:", err));
+    },
+  });
   // Login autostart is a no-op outside macOS/Windows — hide it elsewhere.
   if (loginItemSupported(process.platform)) {
     items.push({
@@ -570,6 +615,5 @@ function buildTray(): void {
       },
     },
   );
-  tray.setContextMenu(Menu.buildFromTemplate(items));
-  tray.on("click", showMainWindow);
+  return items;
 }

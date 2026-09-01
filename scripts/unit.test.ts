@@ -71,6 +71,7 @@ import { deploy } from "../apps/pilot/src/deploy";
 import type { PilotConfig } from "../apps/pilot/src/state";
 import { overlayVisible, phonePaired } from "../apps/desktop/src/pairing";
 import { daemonTooltip, loginItemSupported, trayIconSource } from "../apps/desktop/src/tray";
+import { updateMenuLabel } from "../apps/desktop/src/update";
 import { daemonNotify, NOTIFY_BACK_BODY, NOTIFY_DOWN_BODY } from "../apps/desktop/src/notify";
 import { DEEP_LINK_QUERY_MAX, deepLinkFromArgv, parseDeepLink } from "../apps/desktop/src/deeplink";
 import {
@@ -1297,6 +1298,32 @@ check(
   check("tray: template asset committed at 16px with 2x variant", pngSize(tray16)?.w === 16 && pngSize(tray16)?.h === 16 && pngSize(tray32)?.w === 32 && pngSize(tray32)?.h === 32);
   const builderYml = readFileSync(join(desktopRoot, "electron-builder.yml"), "utf8");
   check("tray: template assets packaged via electron-builder files", builderYml.includes("build/trayTemplate.png") && builderYml.includes("build/trayTemplate@2x.png"));
+}
+
+// --- desktop tray: update status item label (P3-019) ----------------------------
+{
+  // The disabled status item mirrors the latest check decision in the tray;
+  // the update-available string is the task-mandated label shown above
+  // "Restart daemon". All five UpdateStatus values must map to a stable,
+  // distinct label (disabled → null = no status item, tray unchanged).
+  check("tray: update-available label", updateMenuLabel("update-available") === "Update available — restart to install");
+  check("tray: update-not-available label", updateMenuLabel("update-not-available") === "Up to date");
+  check("tray: unrecognized-feed label", updateMenuLabel("unrecognized-feed") === "Update check failed — unrecognized feed");
+  check("tray: feed-unreachable label", updateMenuLabel("feed-unreachable") === "Update check failed — feed unreachable");
+  check("tray: disabled → no status item (null)", updateMenuLabel("disabled") === null);
+  const labels = [
+    updateMenuLabel("update-available"),
+    updateMenuLabel("update-not-available"),
+    updateMenuLabel("unrecognized-feed"),
+    updateMenuLabel("feed-unreachable"),
+    updateMenuLabel("disabled"),
+  ];
+  check("tray: the five status labels are distinct", new Set(labels).size === 5);
+  check(
+    "tray: update label keeps the mandated em-dash phrasing",
+    updateMenuLabel("update-available")?.includes("Update available") === true &&
+      updateMenuLabel("update-available")?.includes("restart to install") === true,
+  );
 }
 
 // --- desktop native daemon notifications (P3-013) -------------------------------

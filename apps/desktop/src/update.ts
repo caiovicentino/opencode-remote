@@ -44,6 +44,28 @@ export type UpdateStatus =
   | "unrecognized-feed"
   | "feed-unreachable";
 
+/**
+ * P3-019: tray label for the disabled status item that mirrors the latest
+ * update-check decision. Pure and electron-free like the helpers in tray.ts
+ * so the unit battery can exercise all five statuses. Returns null for
+ * "disabled" — with no feed configured the tray must stay exactly as it was
+ * before P3-019 (no status item at all).
+ */
+export function updateMenuLabel(status: UpdateStatus): string | null {
+  switch (status) {
+    case "update-available":
+      return "Update available — restart to install";
+    case "update-not-available":
+      return "Up to date";
+    case "unrecognized-feed":
+      return "Update check failed — unrecognized feed";
+    case "feed-unreachable":
+      return "Update check failed — feed unreachable";
+    case "disabled":
+      return null;
+  }
+}
+
 /** Single fetch timeout for the feed document. */
 const FEED_TIMEOUT_MS = 10_000;
 
