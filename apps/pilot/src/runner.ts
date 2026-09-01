@@ -17,7 +17,14 @@ export interface AgentIds {
   taskIds: string[];
 }
 
-const RESUMABLE_TASK_ID_RE = /task_[A-Za-z0-9]+/g;
+/**
+ * Real opencode ids are nanoid-length, so requiring a >=8-char suffix keeps
+ * prose echoing through stdout out of the capture ("the task_id is resumable",
+ * "task_ids"); the lookbehind keeps glued words out ("mytask_abc"). Verified
+ * against prose by negative unit tests.
+ */
+export const MIN_TASK_ID_SUFFIX = 8;
+const RESUMABLE_TASK_ID_RE = /(?<![A-Za-z0-9_-])task_[A-Za-z0-9]{8,}/g;
 
 /**
  * P2-013: opencode >=1.18.20 surfaces failed subagent tool calls with a

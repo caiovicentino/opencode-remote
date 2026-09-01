@@ -318,8 +318,11 @@ Since opencode ≥1.18.20, failed subagent tool calls surface a **resumable
 resumption of a failed builder round:
 
 - **Capture** (`apps/pilot/src/runner.ts`): `runAgent` scans stdout for both
-  `ses_[A-Za-z0-9]+` (session) and `task_[A-Za-z0-9]+` (resumable subagent
-  tasks) and returns them in `RunResult` (`sessionId`, `taskIds[]`). stdout and
+  `ses_[A-Za-z0-9]+` (session) and `task_` ids (resumable subagent tasks) and
+  returns them in `RunResult` (`sessionId`, `taskIds[]`). Task capture requires
+  a non-word left boundary and a ≥8-char id suffix (`MIN_TASK_ID_SUFFIX`), so
+  prose echoing through stdout — "the task_id is resumable", "mytask_abc" — is
+  never mistaken for resumable work. stdout and
   stderr each get their own streaming scanner (`idScanner` — dedupe in arrival
   order, 128-char tail buffer so an id split across two chunks is captured
   whole, edge matches committed by `flush()` at exit) merged by
@@ -336,19 +339,24 @@ resumption of a failed builder round:
 - **Failed rounds now retry**: a builder round that dies without
   `PILOT:TASK-DONE` (crash/timeout) continues to the next round within the
   existing `maxReviewRounds` budget instead of aborting the pipeline, so the
-  resume ids actually reach a round N+1 (pure `crashRoundDecision`). The final
-  round still fails as before and counts through the normal circuit-breaker
-  path (P1-014).
+  resume ids actually reach a round N+1 (pure `crashRoundDecision`; the
+  failure notice rides in the resume block, keeping the findings section
+  reviewer-only). The final round still fails as before and counts through
+  the normal circuit-breaker path (P1-014). **Cost bound**: worst case for a
+  task whose builder hangs every round is now `maxReviewRounds ×
+  taskTimeoutMin` of builder time per pipeline run (default 3 × 45 min) —
+  bounded by the loop and by the breaker counting the run as one failure.
 - **Prompt-only**: ids flow exclusively into the builder prompt text — never
   into a shell command — so captured output cannot become injection. A
   round with no captured ids renders no block (round 1 unchanged).
 
 Pinned by unit tests in `scripts/unit.test.ts`: canned output extracts `ses_`
-and `task_` correctly, split-across-chunks ids are recovered, duplicates
+and `task_` correctly, prose tokens (`task_id`, `task_ids`, glued words) are
+rejected, split-across-chunks ids are recovered, duplicates
 collapse, the round N+1 prompt contains the captured ids with the evidence
 block intact, `updateResumeState` resets on success (and only then keeps
-state), and `crashRoundDecision` retries on non-final rounds / aborts on the
-last one.
+state, first-N capped), and `crashRoundDecision` retries on non-final rounds /
+aborts on the last one.
 
 ## Experience memory (IER, P1-007)
 

@@ -110,13 +110,16 @@ export const RESUME_MAX_TASK_IDS = 10;
  * builder rounds. Only a round that actually failed (no PILOT:TASK-DONE in its
  * output) leaves resumable state — a successful round RESETS it, so a normal
  * review-fix round never gets a false "resume the crash" block. Failed rounds
- * merge their captured ids into the accumulated ones (dedupe, arrival order);
- * the session id always tracks the latest round (it is the one -s resumes).
+ * merge their captured ids into the accumulated ones (dedupe, arrival order,
+ * capped at the FIRST ${RESUME_MAX_TASK_IDS} so later garbage cannot evict
+ * real ids captured earlier); the session id always tracks the latest round
+ * (it is the one -s resumes).
  */
 export function updateResumeState(prev: AgentIds | null, roundFailed: boolean, round: AgentIds): AgentIds | null {
   if (!roundFailed) return null;
   const taskIds = [...(prev?.taskIds ?? [])];
   for (const id of round.taskIds) {
+    if (taskIds.length >= RESUME_MAX_TASK_IDS) break;
     if (!taskIds.includes(id)) taskIds.push(id);
   }
   return { sessionId: round.sessionId ?? prev?.sessionId, taskIds };
@@ -125,23 +128,15 @@ export function updateResumeState(prev: AgentIds | null, roundFailed: boolean, r
 /**
  * P2-013 (round 2): pure decision for a builder round that finished without
  * the PILOT:TASK-DONE marker (crash or timeout). Retry within the existing
- * round budget — returning the findings line that tells the next round to
- * resume — or abort on the final round, exactly like the pre-spike behavior.
+ * round budget or abort on the final round, exactly like the pre-spike
+ * behavior. The failure notice itself lives in the resume block (prompt
+ * hygiene round 3: findings stay reviewer-only).
  */
-export function crashRoundDecision(
-  round: number,
-  maxRounds: number,
-  taskId: string,
-  prevFindings: string,
-): { retry: boolean; findings: string; detail: string } {
+export function crashRoundDecision(round: number, maxRounds: number): { retry: boolean; detail: string } {
   if (round >= maxRounds) {
-    return { retry: false, findings: prevFindings, detail: `builder did not finish (round ${round})` };
+    return { retry: false, detail: `builder did not finish (round ${round})` };
   }
-  return {
-    retry: true,
-    findings: `[builder round ${round} did not finish (crash or timeout) — branch pilot/${taskId} may hold partial work; resume it instead of starting over]\n${prevFindings}`,
-    detail: "",
-  };
+  return { retry: true, detail: "" };
 }
 
 /**
@@ -149,14 +144,18 @@ export function crashRoundDecision(
  * caller only passes non-null resume state (`updateResumeState`) when the
  * previous round actually failed. opencode >=1.18.20 surfaces failed subagent
  * tool calls with a resumable task_id — handing the ids back lets the builder
- * inspect and resume partial work instead of paying for a cold restart. Empty
- * string when there is nothing resumable (round 1 or no ids captured).
+ * inspect and resume partial work instead of paying for a cold restart.
+ * `failedRound` (the caller's round - 1) names the crashed round; omit it for
+ * the generic wording. Empty string when there is nothing resumable (round 1
+ * or no ids captured).
  */
-export function resumeBlock(resume: AgentIds | null | undefined): string {
-  const tasks = [...new Set(resume?.taskIds ?? [])].slice(-RESUME_MAX_TASK_IDS);
+export function resumeBlock(resume: AgentIds | null | undefined, failedRound?: number): string {
+  const tasks = [...new Set(resume?.taskIds ?? [])].slice(0, RESUME_MAX_TASK_IDS);
   if (!resume?.sessionId && tasks.length === 0) return "";
   const lines = [
-    "RESUME PARTIAL WORK (P2-013): the previous round on this task failed mid-work and left recoverable state.",
+    failedRound !== undefined
+      ? `RESUME PARTIAL WORK (P2-013): round ${failedRound} failed mid-work (crash or timeout) and left recoverable state.`
+      : "RESUME PARTIAL WORK (P2-013): the previous round on this task failed mid-work and left recoverable state.",
   ];
   if (resume?.sessionId) {
     lines.push(`- Previous builder session: ${resume.sessionId} (this round continues it via -s — its context is intact).`);
@@ -188,7 +187,7 @@ Work inside this repository (your cwd is a dedicated clone; production runs else
 
 TASK (${t.id}) [${t.priority}]: ${t.title}
 spec: ${t.spec || "(no extra spec — use judgement, keep the change small and shippable)"}
-${specBlock}${resumeBlock(resume)}${findings ? `\nREVIEWER FINDINGS TO ADDRESS:\n${findings}\n` : ""}${lessonsBlock(lessons)}
+${specBlock}${resumeBlock(resume, round - 1)}${findings ? `\nREVIEWER FINDINGS TO ADDRESS:\n${findings}\n` : ""}${lessonsBlock(lessons)}
 Rules:
 - ${CONSTITUTION}
 - Create/keep working on branch pilot/${t.id}. Commit your work with a conventional message "pilot(${t.id}): ...".
@@ -802,13 +801,13 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
     emit("phase", { task: t.id, phase: "builder-done", ok: !roundFailed });
     if (roundFailed) {
       // P2-013: a failed round (crash/timeout) is exactly when partial work
-      // exists — retry within the round budget instead of aborting, handing
-      // back the captured session + task ids so the builder resumes cheaply.
-      const crash = crashRoundDecision(round, cfg.maxReviewRounds, t.id, findings);
+      // exists — retry within the round budget instead of aborting; the
+      // failure notice travels in the resume block, not under the reviewer
+      // findings header.
+      const crash = crashRoundDecision(round, cfg.maxReviewRounds);
       if (!crash.retry) {
         return { ok: false, detail: `${crash.detail}: ${build.output.slice(-300)}` };
       }
-      findings = crash.findings;
       continue;
     }
     // --name-only: unified diff lines are prefixed (a/, b/, diff --git) and

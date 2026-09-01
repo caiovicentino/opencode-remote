@@ -921,21 +921,33 @@ check("viewport: garbage rejected", viewportFromParams("x", "800") === null);
   const none = scanIds("all good here, nothing to resume");
   check("resume: plain output yields no ids", none.sessionId === undefined && none.taskIds.length === 0);
 
+  // round-3: prose echoing docs through stdout must not become "resumable work"
+  const prose = scanIds("the task_id is resumable; see task_ids and mytask_abc and my_task_abc too");
+  check(
+    "resume: prose tokens task_id/task_ids/glued words are not captured",
+    prose.sessionId === undefined && prose.taskIds.length === 0,
+  );
+  const mixed = scanIds("echoed task_id prose next to a real failed task_A1b2C3d4E5f6 here");
+  check(
+    "resume: prose tokens do not evict or distort real ids",
+    JSON.stringify(mixed.taskIds) === JSON.stringify(["task_A1b2C3d4E5f6"]),
+  );
+
   // streaming: an id split across two stdout chunks is captured whole via the
   // tail buffer; a match still growing at the chunk edge waits for flush()
   const scanner = idScanner();
   const r1 = scanner.scan("failed subagent task_");
   check("resume: split task id not committed while incomplete", r1.taskIds.length === 0);
-  const r2 = scanner.scan("Ab12Cd3 done; ses_9");
-  check("resume: split task id completed by the tail buffer", r2.taskIds.includes("task_Ab12Cd3"));
+  const r2 = scanner.scan("Ab12Cd3E4 done; ses_9");
+  check("resume: split task id completed by the tail buffer", r2.taskIds.includes("task_Ab12Cd3E4"));
   check("resume: session id stays pending while its match ends at the chunk edge", r2.sessionId === undefined);
   const r3 = scanner.scan("8z7Yy6 end");
   check("resume: split session id completed on the next chunk", r3.sessionId === "ses_98z7Yy6");
 
   const dup = idScanner();
-  dup.scan("task_R1 registered; ");
-  const dup2 = dup.scan("the tail repeats task_R1 verbatim");
-  check("resume: duplicate task ids collapse to one", dup2.taskIds.filter((t) => t === "task_R1").length === 1);
+  dup.scan("task_R1R2R3R4 registered; ");
+  const dup2 = dup.scan("the tail repeats task_R1R2R3R4 verbatim");
+  check("resume: duplicate task ids collapse to one", dup2.taskIds.filter((t) => t === "task_R1R2R3R4").length === 1);
 
   const RESUME_IDS = { sessionId: "ses_1a2B3c4D5e6F7g8h9i0JkL", taskIds: ["task_A1b2C3d4E5f6", "task_Zz9Yy8Xx7Ww6"] };
   const block = resumeBlock(RESUME_IDS);
@@ -984,6 +996,31 @@ check("viewport: garbage rejected", viewportFromParams("x", "800") === null);
     "resume: successful round resets resume state (no false crash claim on review-fix rounds)",
     updateResumeState(st2, false, { sessionId: "ses_bbb", taskIds: ["task_9"] }) === null,
   );
+  const flooded = updateResumeState(st1, true, {
+    sessionId: "ses_ccc",
+    taskIds: Array.from({ length: RESUME_MAX_TASK_IDS + 4 }, (_, i) => `task_new${i}`),
+  });
+  check(
+    "resume: state cap keeps the FIRST ids (later garbage cannot evict real ones)",
+    flooded !== null &&
+      flooded.taskIds.length === RESUME_MAX_TASK_IDS &&
+      flooded.taskIds[0] === "task_1" &&
+      flooded.taskIds[1] === "task_new0" &&
+      !flooded.taskIds.includes("task_new9"),
+  );
+
+  // round-3: the failure notice is part of the resume block, named by round
+  check(
+    "resume: block names the failed round",
+    resumeBlock({ sessionId: "ses_a", taskIds: ["task_1"] }, 2).includes("round 2 failed mid-work (crash or timeout)") &&
+      resumeBlock({ sessionId: "ses_a", taskIds: ["task_1"] }).includes("the previous round on this task failed"),
+  );
+  const prompt3 = builderPrompt(RESUME_TASK, 3, "finding A", [], null, RESUME_IDS);
+  check(
+    "resume: block sits before (not under) the reviewer findings header",
+    prompt3.indexOf("RESUME PARTIAL WORK") < prompt3.indexOf("REVIEWER FINDINGS TO ADDRESS") &&
+      prompt3.includes("round 2 failed mid-work"),
+  );
 
   const m = mergeAgentIds({ sessionId: undefined, taskIds: ["task_1"] }, { sessionId: "ses_a", taskIds: ["task_1", "task_2"] });
   check(
@@ -995,19 +1032,16 @@ check("viewport: garbage rejected", viewportFromParams("x", "800") === null);
     mergeAgentIds({ sessionId: "ses_x", taskIds: [] }, { sessionId: "ses_y", taskIds: [] }).sessionId === "ses_x",
   );
 
-  const retry = crashRoundDecision(1, 3, "P2-013", "prev");
+  const retry = crashRoundDecision(1, 3);
   check(
-    "resume: crash on a non-final round retries with a resume findings line",
-    retry.retry === true &&
-      retry.findings.includes("round 1 did not finish") &&
-      retry.findings.includes("pilot/P2-013") &&
-      retry.findings.endsWith("prev"),
+    "resume: crash on a non-final round retries (failure notice lives in the block, not findings)",
+    retry.retry === true && retry.detail === "",
   );
-  check("resume: crash retry boundary is round < maxRounds", crashRoundDecision(2, 3, "P2-013", "").retry === true);
-  const abort = crashRoundDecision(3, 3, "P2-013", "prev");
+  check("resume: crash retry boundary is round < maxRounds", crashRoundDecision(2, 3).retry === true);
+  const abort = crashRoundDecision(3, 3);
   check(
     "resume: crash on the final round aborts with the pre-spike detail",
-    abort.retry === false && abort.detail === "builder did not finish (round 3)" && abort.findings === "prev",
+    abort.retry === false && abort.detail === "builder did not finish (round 3)",
   );
 }
 
