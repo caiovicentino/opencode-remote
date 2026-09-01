@@ -166,10 +166,10 @@ export default function SessionsView({
   })();
 
   const toneColor: Record<string, string> = {
-    work: "#3b82f6",
-    wait: "#f59e0b",
+    work: "var(--status-work)",
+    wait: "var(--status-wait)",
     err: "var(--danger)",
-    done: "#9ca3af",
+    done: "var(--status-done)",
   };
 
   return (
@@ -177,19 +177,9 @@ export default function SessionsView({
       <header>
         <span
           title={`connection: ${connStatus}`}
-          style={{
-            width: 9,
-            height: 9,
-            borderRadius: 5,
-            flexShrink: 0,
-            display: "inline-block",
-            background:
-              connStatus === "paired"
-                ? "#2ecc71"
-                : connStatus === "connecting"
-                  ? "#f1c40f"
-                  : "var(--danger)",
-          }}
+          className={`status-dot${
+            connStatus === "paired" ? " ok" : connStatus === "connecting" ? " wait" : " err"
+          }`}
         />
         <h1
           onClick={() => setSwitching(true)}

@@ -10,6 +10,7 @@ import ArtifactViewer from "./ArtifactViewer";
 import { artifactMentions, listArtifacts, type ArtifactMeta } from "../lib/artifacts";
 import { sessionTitleOf } from "../lib/title";
 import { permissionPreview } from "../lib/permission";
+import { ArtifactIcon, IconChat, IconDownload, IconLaptop, IconWrench } from "./icons";
 
 interface Props {
   sessionId: string;
@@ -685,7 +686,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
         return;
       }
       setCanUnrevert(false);
-      setAutoNote("De volta pro presente ↩️");
+      setAutoNote("De volta pro presente");
       await loadHistory();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -1127,19 +1128,9 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
         <button className="chat-back" onClick={onBack}>←</button>
         <span
           title={`connection: ${connStatus}`}
-          style={{
-            width: 9,
-            height: 9,
-            borderRadius: 5,
-            flexShrink: 0,
-            display: "inline-block",
-            background:
-              connStatus === "paired"
-                ? "#2ecc71"
-                : connStatus === "connecting"
-                  ? "#f1c40f"
-                  : "var(--danger)",
-          }}
+          className={`status-dot${
+            connStatus === "paired" ? " ok" : connStatus === "connecting" ? " wait" : " err"
+          }`}
         />
         <h1
           title={sessionTitle}
@@ -1160,7 +1151,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
           aria-label={t("handoffBtn")}
           title={t("handoffBtn")}
         >
-          💻
+          <IconLaptop />
         </button>
         <button
           onClick={() => void exportChat()}
@@ -1168,7 +1159,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
           aria-label={t("exportBtn")}
           title={t("exportBtn")}
         >
-          {exporting ? "…" : "⤓"}
+          {exporting ? "…" : <IconDownload />}
         </button>
         <button
           onClick={() => {
@@ -1178,7 +1169,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
           aria-label="Tool activity"
           style={showActivity ? { borderColor: "var(--accent)" } : undefined}
         >
-          ⚒
+          <IconWrench />
         </button>
         <select
           value={agent}
@@ -1208,7 +1199,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
           {!loadingHistory && bubbles.length === 0 && !liveText && (
             <div className="chat-empty">
               <span className="chat-empty-icon" aria-hidden>
-                💬
+                <IconChat />
               </span>
               <p className="chat-empty-title">{t("emptyTitle")}</p>
               <p className="chat-empty-hint">{t("emptyHint")}</p>
@@ -1255,7 +1246,9 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
                     onClick={() => setArtifactView(a)}
                     title="Open artifact"
                   >
-                    <span aria-hidden>🗂️</span>
+                    <span aria-hidden className="artifact-icon">
+                      <ArtifactIcon kind={a.kind} />
+                    </span>
                     <span
                       style={{
                         flex: 1,

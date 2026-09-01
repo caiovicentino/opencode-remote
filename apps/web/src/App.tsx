@@ -24,6 +24,13 @@ import FilesView from "./components/FilesView";
 import ArtifactsView from "./components/ArtifactsView";
 import SendToAgentView from "./components/SendToAgentView";
 import BrowserView, { type BrowseFn } from "./components/BrowserView";
+import {
+  IconChat,
+  IconFolder,
+  IconGlobe,
+  IconLayers,
+  IconSettings,
+} from "./components/icons";
 
 type Phase = "unpaired" | "connecting" | "paired" | "error";
 
@@ -77,45 +84,9 @@ function TabBar({
   t: (k: string) => string;
 }) {
   const tabs: { id: TabId; label: string; icon: ReactNode }[] = [
-    {
-      id: "sessions",
-      label: t("tabSessions"),
-      icon: (
-        <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden>
-          <path d="M4 3h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H8l-4 4V5a2 2 0 0 1 2-2z" />
-        </svg>
-      ),
-    },
-    {
-      id: "files",
-      label: t("tabFiles"),
-      icon: (
-        <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden>
-          <path d="M3 5h6l2 2h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z" />
-        </svg>
-      ),
-    },
-    {
-      id: "settings",
-      label: t("tabSettings"),
-      icon: (
-        <svg
-          viewBox="0 0 24 24"
-          width="22"
-          height="22"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          aria-hidden
-        >
-          <path d="M4 6h16M4 12h16M4 18h16" />
-          <circle cx="9" cy="6" r="2" fill="currentColor" stroke="none" />
-          <circle cx="15" cy="12" r="2" fill="currentColor" stroke="none" />
-          <circle cx="7" cy="18" r="2" fill="currentColor" stroke="none" />
-        </svg>
-      ),
-    },
+    { id: "sessions", label: t("tabSessions"), icon: <IconChat size={20} /> },
+    { id: "files", label: t("tabFiles"), icon: <IconFolder size={20} /> },
+    { id: "settings", label: t("tabSettings"), icon: <IconSettings size={20} /> },
   ];
   return (
     <nav className="tabbar">
@@ -242,6 +213,10 @@ export default function App() {
       }
       const client = await OcrClient.connect(pairing);
       client.onStatus = (s) => setConnStatus(s);
+      // connect() resolves once already paired — the "paired" status event
+      // fired before this handler existed, so sync the current state (P2-055:
+      // the header dot otherwise stays yellow forever after a fresh pair)
+      setConnStatus(client.status);
       if (persist) {
         saveState(pairing);
         setMachines(loadPairings());
@@ -682,7 +657,7 @@ export default function App() {
                 }}
                 title="Conversas"
               >
-                <span>💬</span>
+                <IconChat />
                 <span>Conversas</span>
               </button>
               <button
@@ -697,7 +672,7 @@ export default function App() {
                 }}
                 title="Artifacts"
               >
-                <span>🗂️</span>
+                <IconLayers />
                 <span>Artifacts</span>
               </button>
               <button
@@ -712,7 +687,7 @@ export default function App() {
                 }}
                 title="Browser"
               >
-                <span>🌐</span>
+                <IconGlobe />
                 <span>Browser</span>
               </button>
               <button
@@ -724,7 +699,7 @@ export default function App() {
                 }}
                 title="Arquivos"
               >
-                <span>📁</span>
+                <IconFolder />
                 <span>Arquivos</span>
               </button>
               <button
@@ -736,7 +711,7 @@ export default function App() {
                 }}
                 title="Config"
               >
-                <span>⚙️</span>
+                <IconSettings />
                 <span>Configurações</span>
               </button>
             </div>

@@ -61,6 +61,10 @@ private. That is the product: **local power, remote control, zero trust**.
   includes a **Browser pane** that drives a headless Chromium on the host through the daemon
   (`/api/browse` — navigate, click, extract text, screenshot) so agents can visually validate
   their own UI output
+- **Consistent icon language** — every chrome icon (desktop nav rail, tab bar, chat header,
+  artifact cards, status dots) is the same inline-SVG stroke set on top of CSS design tokens;
+  no emoji as icons, and the missing `--panel`/`--bg2`/`--fg` tokens are now defined so the
+  light theme renders correctly in the desktop shell
 
 ## Quick Start (Mac → iPhone, ~5 min)
 

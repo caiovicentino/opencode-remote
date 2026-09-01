@@ -66,25 +66,6 @@ export function saveBlob(blob: Blob, name: string): void {
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 
-export function artifactIcon(kind: ArtifactKind): string {
-  switch (kind) {
-    case "html":
-      return "🌐";
-    case "md":
-      return "📝";
-    case "csv":
-      return "📊";
-    case "pdf":
-      return "📕";
-    case "image":
-      return "🖼";
-    case "text":
-      return "📄";
-    default:
-      return "🗄";
-  }
-}
-
 export function fmtBytes(n: number): string {
   if (!Number.isFinite(n) || n < 0) return "0 B";
   if (n < 1000) return `${Math.round(n)} B`;

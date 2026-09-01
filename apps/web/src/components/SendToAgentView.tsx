@@ -81,8 +81,12 @@ export default function SendToAgentView({
         <div className="card">
           <p className="muted" style={{ margin: "0 0 6px" }}>Shared content</p>
           <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: "0.8rem" }}>
-            {payload.title && <div>📌 {payload.title}</div>}
-            {payload.url && <div>🔗 {payload.url}</div>}
+            {payload.title && <div style={{ fontWeight: 600 }}>{payload.title}</div>}
+            {payload.url && (
+              <div className="muted" style={{ wordBreak: "break-all" }}>
+                {payload.url}
+              </div>
+            )}
             {payload.text && <div style={{ marginTop: 4 }}>{payload.text.slice(0, 400)}</div>}
             {!payload.title && !payload.url && !payload.text && <div>(empty)</div>}
           </div>

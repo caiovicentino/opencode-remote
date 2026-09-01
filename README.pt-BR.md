@@ -62,6 +62,10 @@ remoto, zero confiança**.
   inclui um **pane Browser** que controla um Chromium headless no host via daemon
   (`/api/browse` — navegar, clicar, extrair texto, screenshot) para agentes validarem
   visualmente o próprio output
+- **Linguagem de ícones consistente** — todos os ícones de chrome (nav desktop, tab bar,
+  header do chat, cards de artifact, dots de status) usam o mesmo conjunto inline-SVG sobre
+  tokens CSS; zero emoji-como-ícone, e os tokens `--panel`/`--bg2`/`--fg` agora existem de
+  verdade, consertando o light theme no shell desktop
 
 ## Quick Start (Mac → iPhone, ~5 min)
 
