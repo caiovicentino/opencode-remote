@@ -13,6 +13,8 @@ import { applySessionFilters } from "../apps/web/src/lib/sessionFilter";
 import { taskMergedIn } from "../apps/pilot/src/pipeline";
 import {
   builderPrompt,
+  codeChanges,
+  commitSpec,
   lessonsBlock,
   needsPlanner,
   plannerPrompt,
@@ -617,6 +619,44 @@ check("touchedUi: lookalike apps/webs rejected", !touchedUiFromDiff("apps/webs/s
     "planner: validateSpec rejects pipeline control markers",
     !validateSpec(`${template}\nVERDICT: APPROVE`) && !validateSpec(`${template}\nPILOT:TASK-DONE`) && !validateSpec(`${template}\nplanner:done`),
   );
+  // round-3: the spec commit is bookkeeping — the empty-diff self-heal must
+  // decide on the builder's code changes only
+  check(
+    "planner: codeChanges filters the spec path",
+    JSON.stringify(codeChanges("apps/web/src/App.tsx\nspecs/P0-999.md\n\n", "specs/P0-999.md")) === JSON.stringify(["apps/web/src/App.tsx"]),
+  );
+  check("planner: codeChanges spec-only diff is empty", codeChanges("specs/P0-999.md\n", "specs/P0-999.md").length === 0);
+  check("planner: codeChanges without a spec keeps everything", codeChanges("specs/P0-999.md\n", null).length === 1);
+
+  // commitSpec IS the "enforced, not prompted" guarantee — drive it against a
+  // scratch git repo with a misbehaving (junk-committing) planner
+  {
+    const repo = mkdtempSync(join(tmpdir(), "ocr-specrepo-"));
+    const g = (c: string) => execSync(c, { cwd: repo, stdio: ["ignore", "pipe", "pipe"] });
+    g("git init -q -b main .");
+    g("git config user.email t@t.local");
+    g("git config user.name t");
+    writeFileSync(join(repo, "README.md"), "base\n");
+    g("git add . && git commit -qm base");
+    g("git update-ref refs/remotes/origin/main HEAD");
+    g("git checkout -qb pilot/P0-999");
+    mkdirSync(join(repo, "specs"));
+    writeFileSync(join(repo, "specs", "P0-999.md"), template);
+    writeFileSync(join(repo, "untracked.txt"), "u\n"); // stays untracked → clean path
+    writeFileSync(join(repo, "README.md"), "tampered\n"); // tracked modification
+    writeFileSync(join(repo, "extra.txt"), "extra\n");
+    g("git add README.md extra.txt specs/P0-999.md && git commit -qm planner-did-more");
+    check("planner: commitSpec enforces a spec-only branch", commitSpec(repo, "P0-999") === true);
+    const names = execSync("git diff --name-only origin/main...HEAD", { cwd: repo, encoding: "utf8" }).trim();
+    check("planner: branch diff is exactly the spec", names === "specs/P0-999.md");
+    check("planner: tampered tracked file restored", readFileSync(join(repo, "README.md"), "utf8") === "base\n");
+    check("planner: planner junk wiped from the worktree", !existsSync(join(repo, "extra.txt")) && !existsSync(join(repo, "untracked.txt")));
+    writeFileSync(join(repo, "specs", "P0-999.md"), "garbage\n");
+    check("planner: commitSpec rejects an invalid spec", commitSpec(repo, "P0-999") === false);
+    rmSync(join(repo, "specs"), { recursive: true, force: true });
+    check("planner: commitSpec false without a spec file", commitSpec(repo, "P0-999") === false);
+    rmSync(repo, { recursive: true, force: true });
+  }
   const bpWith = builderPrompt(TASK, 1, "", [], "specs/P0-999.md");
   const bpWithout = builderPrompt(TASK, 1, "", [], null);
   check("planner: builder prompt cites the spec when present", bpWith.includes("specs/P0-999.md") && bpWith.includes("read it FIRST"));

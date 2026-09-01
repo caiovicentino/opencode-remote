@@ -289,6 +289,19 @@ export function touchedUiFromDiff(nameOnly: string): boolean {
 }
 
 /**
+ * P2-008: non-empty `git diff --name-only` lines minus the planner spec path.
+ * The spec commit is pipeline bookkeeping — deciding whether the BUILDER
+ * produced changes (empty-diff self-heal) must look at code changes only.
+ * Pure so the eval battery can pin the exclusion.
+ */
+export function codeChanges(nameOnly: string, specFile: string | null): string[] {
+  return nameOnly
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l && l !== specFile);
+}
+
+/**
  * P1-006: per-task gatekeeper failure file (path-safe: id is TASK_ID_RE-checked).
  * Concurrent slots must not overwrite each other's carryover findings.
  */
@@ -336,7 +349,7 @@ export function writeSandboxConfig(ws: string) {
  * read-only planner created or modified (tracked, untracked or committed) is
  * gone before the builder ever runs.
  */
-function commitSpec(ws: string, id: string): boolean {
+export function commitSpec(ws: string, id: string): boolean {
   const path = specPathFor(id);
   if (!path) return false;
   const abs = join(ws, path);
@@ -439,7 +452,11 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
         JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "planner attempt produced no valid spec", data: { task: t.id, attempt } }),
       );
     }
-    if (!specOk) return { ok: false, detail: `planner did not produce a valid ${specFile} after 2 attempt(s)` };
+    if (!specOk) {
+      // terminal ok:false so the dashboard doesn't hang on "working" (round-3)
+      emit("phase", { task: t.id, phase: "planner-done", ok: false, detail: "no valid spec" });
+      return { ok: false, detail: `planner did not produce a valid ${specFile} after 2 attempt(s)` };
+    }
     emit("phase", { task: t.id, phase: "planner-done", ok: true, detail: specFile });
   }
   for (let round = 1; round <= cfg.maxReviewRounds && !merged; round++) {
@@ -466,12 +483,18 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
     // --name-only: unified diff lines are prefixed (a/, b/, diff --git) and
     // would never match a bare path — round-2 review caught exactly that.
     const diff = exec(`git diff main...pilot/${t.id}`, { cwd: ws }).output;
-    touchedUi = touchedUiFromDiff(exec(`git diff --name-only main...pilot/${t.id}`, { cwd: ws }).output);
+    const nameOnly = exec(`git diff --name-only main...pilot/${t.id}`, { cwd: ws }).output;
+    touchedUi = touchedUiFromDiff(nameOnly);
     // P2-011: UI tasks get visual evidence — per-task, post-deploy shape only
     // (round-3 review: unscoped mtime pick could serve another task's stale
     // shot or a builder's pre-merge self-shot as "deployed UI" evidence).
     const uiShot = touchedUi ? latestUiShot(t.id) : null;
-    if (!diff.trim()) {
+    // P2-008: the planner spec commit is bookkeeping and must not mask an
+    // empty builder diff — the empty-diff/self-heal checks below decide on
+    // the builder's non-spec changes only (e.g. a task merged by another push
+    // while the builder ran still self-heals on P0/P1)
+    const code = codeChanges(nameOnly, specFile);
+    if (code.length === 0) {
       // empty-diff self-heal: builder ran after the task was already merged.
       // Refresh origin/main first so the merge check below isn't fooled by a
       // stale local ref (transient network failure → best-effort check).

@@ -204,6 +204,11 @@ sem spec.
   exatamente 1 commit tocando `specs/<ID>.md`; qualquer outro arquivo que o
   planner (read-only) tenha criado ou modificado é eliminado antes do builder
   rodar, e o diff da branch é verificado contra `specs/<ID>.md` no final.
+  Cobertura real: `scripts/unit.test.ts` roda `commitSpec` contra um repo git
+  temporário com um planner que commita lixo.
+- **Diff vazio ignora o spec**: o check de empty-diff/self-heal usa
+  `codeChanges` — o diff name-only da branch menos `specs/<ID>.md` — então um
+  diff só-de-spec ainda dispara o self-heal de task já mergeada em P0/P1.
 - **Spec é dado, não instrução**: `validateSpec` rejeita spec > 400 linhas /
   40k chars e qualquer corpo contendo markers de controle do pipeline
   (`VERDICT:`, `PILOT:TASK-DONE`, `PLANNER:DONE`, `SCRIBE:DONE`).

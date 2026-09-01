@@ -436,7 +436,9 @@ function render(events) {
     phaseEl.style.color = e.ok === false ? "var(--red)" : "var(--cyan)";
     document.getElementById("task-title").textContent = `(${cur}) — ${e.detail || ""}`;
     const bar = document.querySelector("#progress i");
-    if (bar) bar.style.width = `${Math.min((idx + 1) / 8, 1) * 100}%`;
+    // planner phases occupy the first quarter; the build itself stays on the
+    // original 6-step scale so P2 tasks (no planner) start at 16.7%, not 37.5%
+    if (bar) bar.style.width = `${buildIdx >= 0 ? ((buildIdx + 1) / 6) * 100 : ((idx + 1) / 8) * 50}%`;
 
     if (idx >= 0) {
       const order = ["backlog","builder","security","quality","gatekeeper","deploy"];
