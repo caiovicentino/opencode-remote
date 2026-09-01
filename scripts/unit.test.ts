@@ -11,6 +11,7 @@ import { sessionTitleOf } from "../apps/web/src/lib/title";
 import { permissionPreview } from "../apps/web/src/lib/permission";
 import { applySessionFilters } from "../apps/web/src/lib/sessionFilter";
 import { taskMergedIn } from "../apps/pilot/src/pipeline";
+import { CORPUS_COMMANDS, appendCorpusSample, captureGateCorpus, corpusSlug, loadGateCorpus, sanitizeForCorpus } from "../apps/pilot/src/gate-corpus";
 import {
   builderPrompt,
   codeChanges,
@@ -807,6 +808,122 @@ check("stdlibShadow: non-stdlib root file passes", stdlibShadowHits("A\tmain.py\
   check("evidence: fabricated line diverges", evidenceMatches("OK a\nFABRICATED 999", "OK a\nOK b") === false);
   check("evidence: whitespace/ANSI normalized", evidenceMatches("OK   \x1b[32ma\x1b[0m", "OK a") === true);
   check("evidence: line normalization is order/spacing insensitive", normalizeEvidenceLine("  OK   a  b  ") === "OK a b");
+
+  // P3-033 golden corpus: the matcher must keep accepting REAL gate outputs.
+  // Samples live in apps/pilot/src/__fixtures__/gate-corpus/<cmd>/<seq>-<label>.txt
+  // (label = commit-ish of the capture; cross-sample pairs are only compared
+  // within the same label, since different commits legitimately diverge).
+  {
+    const corpus = loadGateCorpus();
+    const byCmd = new Map<string, typeof corpus>();
+    for (const s of corpus) {
+      const list = byCmd.get(s.cmd) ?? [];
+      list.push(s);
+      byCmd.set(s.cmd, list);
+    }
+    check(
+      "corpus: >= 3 samples for every evidence command",
+      CORPUS_COMMANDS.every((c) => (byCmd.get(c)?.length ?? 0) >= 3),
+    );
+    let selfFail = 0,
+      noiseFail = 0,
+      truncFail = 0,
+      fabFail = 0,
+      crossFail = 0;
+    for (const s of corpus) {
+      if (!evidenceMatches(s.output, s.output)) selfFail++;
+      // real terminal noise: ANSI coloring, extra spacing, blank lines
+      const noisy = s.output
+        .split("\n")
+        .map((l, i) => (i % 3 === 0 ? `\x1b[2m${l}\x1b[0m   ` : i % 3 === 1 ? `  ${l} ` : l))
+        .join("\n");
+      if (!evidenceMatches(noisy, s.output)) noiseFail++;
+      // subset semantics: an honest truncated paste must match the full re-run
+      const half = s.output.split("\n").slice(0, Math.max(1, Math.floor(s.output.split("\n").length / 2))).join("\n");
+      if (!evidenceMatches(half, s.output)) truncFail++;
+      // anti-fabrication direction: a line with no source in the re-run fails
+      if (evidenceMatches(`${s.output}\nFABRICATED-CORPUS-LINE-31337`, s.output)) fabFail++;
+      // normalization is idempotent — a line survives repeated normalization
+      for (const l of s.output.split("\n")) {
+        if (normalizeEvidenceLine(normalizeEvidenceLine(l)) !== normalizeEvidenceLine(l)) {
+          selfFail++;
+          break;
+        }
+      }
+      // same-commit cross-pairs: an honest paste from run A must match the
+      // re-run output of run B — this is where false positives live
+      const peers = (byCmd.get(s.cmd) ?? []).filter((p) => p.label === s.label && p.file !== s.file);
+      for (const p of peers) {
+        if (!evidenceMatches(s.output, p.output)) {
+          crossFail++;
+          console.error(`corpus cross-pair fails: ${s.file} vs ${p.file}`);
+        }
+      }
+    }
+    if (selfFail + noiseFail + truncFail + fabFail + crossFail > 0) {
+      console.error(`corpus failures: self=${selfFail} noise=${noiseFail} trunc=${truncFail} fab=${fabFail} cross=${crossFail}`);
+    }
+    check("corpus: every real sample matches itself (and stays idempotent)", selfFail === 0);
+    check("corpus: ANSI/spacing noise on real outputs still matches", noiseFail === 0);
+    check("corpus: truncated real paste still matches", truncFail === 0);
+    check("corpus: fabricated line over real output still rejected", fabFail === 0);
+    check("corpus: same-commit cross-pairs match both ways (no false positives)", crossFail === 0);
+  }
+  // the exact false-positive shapes the corpus was seeded from (P1-030 class)
+  const ts1 = '{"ts":"2026-09-01T16:28:19.322Z","level":"info","msg":"daemon shutting down","data":{"signal":"SIGTERM","activeConnections":2,"uptimeS":65}}';
+  const ts2 = '{"ts":"2026-09-02T16:28:34.484Z","level":"info","msg":"daemon shutting down","data":{"signal":"SIGTERM","activeConnections":2,"uptimeS":65}}';
+  const tmpA = "[desktop] window-state unreadable (/var/folders/T/ocr-winstate-w9xFX1/window-state.json)";
+  const tmpB = "[desktop] window-state unreadable (/var/folders/T/ocr-winstate-OR30AT/window-state.json)";
+  check(
+    "evidence: ISO stamps, pids and random tempdirs never diverge two green runs",
+    evidenceMatches(ts1, ts2) && evidenceMatches(tmpA, tmpB),
+  );
+
+  // --- P3-033 gate-corpus module: sanitize, dedupe, capture ------------------
+  {
+    check("corpus: slug mirrors the command string", corpusSlug("npm run test:unit --silent") === "npm-run-test-unit-silent");
+    const home = process.env.HOME ?? "/home/x";
+    const dirty = `path ${home}/logs\n/Users/caio/x\n/home/joao/y\n aa1f0c2d3e4b5a6f7c8d9e0a1b2c3d4f tail`;
+    const clean = sanitizeForCorpus(dirty, home);
+    check("corpus: sanitizer masks home paths, user dirs and long hex", clean === "path ~/logs\n/Users/USER/x\n/home/USER/y\n HEX tail");
+    check("corpus: sanitizer no-ops with an empty home", sanitizeForCorpus("a/b", "").includes("a/b"));
+    const dir = mkdtempSync(join(tmpdir(), "p3-033-"));
+    try {
+      const first = appendCorpusSample(dir, "npm run typecheck --silent", "\n", "abc1234");
+      const dedup = appendCorpusSample(dir, "npm run typecheck --silent", "\n", "abc1234");
+      const second = appendCorpusSample(dir, "npm run typecheck --silent", "new output\n", "abc1234");
+      check("corpus: append writes, dedupes identical, seqs new files", first === "npm-run-typecheck-silent/1-abc1234.txt" && dedup === null && second === "npm-run-typecheck-silent/2-abc1234.txt");
+
+      // capture e2e: temp workspace + bare origin, same git flow as production
+      execSync(`git init -q --bare "${join(dir, "origin.git")}"`);
+      const ws = join(dir, "ws");
+      execSync(`git init -q -b main "${ws}"`);
+      writeFileSync(join(ws, "README.md"), "x\n");
+      execSync(`git -C "${ws}" add README.md && git -C "${ws}" commit -qm init`);
+      execSync(`git -C "${ws}" remote add origin "${join(dir, "origin.git")}" && git -C "${ws}" push -q -u origin main`);
+      const reruns = new Map([
+        ["npm run typecheck --silent", { ok: true, output: "" }],
+        ["npm run test:unit --silent", { ok: true, output: "OK   a\n" }],
+        ["npm run build --silent", { ok: true, output: "built in 1.2s\n" }],
+      ]);
+      const written = captureGateCorpus(ws, "P3-033", reruns);
+      check("corpus: capture records the gate re-runs and pushes to main", written.length === 3);
+      const pushed = execSync(`git -C "${ws}" ls-remote origin main`).toString().trim();
+      const head = execSync(`git -C "${ws}" rev-parse main`).toString().trim();
+      check("corpus: capture commit is on origin/main", pushed.includes(head));
+      const again = captureGateCorpus(ws, "P3-033", reruns);
+      check("corpus: identical re-capture dedupes away", again.length === 0);
+      const hostileReruns = new Map([["npm run build --silent", { ok: true, output: "hostile-id output\n" }]]);
+      const hFiles = captureGateCorpus(ws, 'x" ; rm -rf /; echo "', hostileReruns);
+      const subjects = execSync(`git -C "${ws}" log --format=%s -5 main`).toString();
+      check(
+        "corpus: hostile task id neutralized in the commit message",
+        hFiles.length === 1 && subjects.includes("pilot(corpus): 1 gate sample(s) from unknown-task") && !subjects.includes("rm -rf"),
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
 
   // PNG header parsing: hand-built IHDR for 1440x900 and 390x844
   const png = (w: number, h: number) => {

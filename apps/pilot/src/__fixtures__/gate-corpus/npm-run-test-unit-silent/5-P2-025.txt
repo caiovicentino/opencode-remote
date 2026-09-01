@@ -1,0 +1,51 @@
+UNIT TESTS PASSED
+OK   bucket: burst capacity fills (10 takes)
+OK   bucket: rejects when empty
+OK   bucket: partial refill after 12s
+OK   bucket: refills to full after 60s
+OK   bucket: rejects again after drain
+OK   bucket: legitimate rate never exhausts
+OK   relay: legitimate client passes and is routed
+OK   relay: legitimate client not disconnected
+OK   relay: flooded device disconnected with 4xxx
+OK   relay: self-declared owner is rate limited too
+OK   relay: join/empty frames accounted in the budget
+OK   metrics: rate_limited_total counted the floods
+OK   relay: default budget passes 900-frame chunk storm
+OK   relay: chunk-storm socket not disconnected
+relay-ratelimit: ALL OK
+OK   payload: ok is literal true
+OK   payload: version is the monorepo version
+OK   payload: uptimeS is whole seconds
+OK   payload: rooms is the live count
+OK   payload: exactly the four specified fields
+OK   payload: clamps negative uptime
+OK   handler: GET /healthz answers 200
+OK   handler: content-type application/json
+OK   handler: body shape {ok,version,uptimeS,rooms}
+OK   handler: rooms reflects live room count
+OK   handler: query string tolerated
+OK   handler: other paths get 404
+OK   handler: non-GET on probe path gets 404
+relay-healthz: ALL OK
+OK   ipcap: admits up to the cap
+OK   ipcap: cap+1 is refused
+OK   ipcap: other IPs unaffected
+OK   ipcap: counts reflects live slots
+OK   ipcap: release reopens a slot
+OK   ipcap: refused attempt adds no count
+OK   ipcap: last release drops the entry
+OK   ipcap: release of unknown IP is a no-op
+OK   ipcap: 0 disables — every admit passes
+OK   ipcap: 0 disables — no state kept
+OK   ipcap: 0 disables — release is a no-op
+OK   relay: connections under the cap are admitted
+OK   relay: cap+1 from the same IP is refused
+OK   relay: refusal closes with 1013 'too many connections'
+OK   relay: admitted peers unaffected by the refusal
+OK   relay: released slot is reusable (close handler)
+OK   relay: previously admitted peer still open
+OK   relay: disabled cap admits any number of connections
+OK   relay: disabled cap never closes a connection
+relay-ipcap: ALL OK
+desktop log tests: all green

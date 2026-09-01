@@ -1,0 +1,10 @@
+klog,branches in order
+OK   boot: all subcommands ok
+OK   boot: one doctor log line per subcommand
+OK   boot: absent slot skipped with note
+OK   isolation: backlog fails, state still runs
+OK   slots: repo-N paths derived
+{"ts":"2026-09-01T12:29:49-03:00","level":"info","msg":"doctor attempts: current circuit-breaker counters","data":{"attempts":{}}}
+OK   cmdAttempts: direct report works
+
+ALL PASS

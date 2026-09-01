@@ -8,6 +8,7 @@ import { emit } from "./events";
 import { latestUiShot } from "./shot";
 import { touchHeartbeat, type PilotConfig, type PilotState } from "./state";
 import { appendLessonsToWorkspace, pickRelevantLessons, readExperienceFile } from "./experience";
+import { captureGateCorpus } from "./gate-corpus";
 
 export const CONSTITUTION = `CONSTITUTION (never violate):
 1. E2E crypto stays E2E: the relay must remain a blind router; never log plaintext frames.
@@ -566,12 +567,20 @@ export function parseEvidenceBlock(output: string): EvidenceBlock | null {
 /** Whitespace/ANSI-insensitive line normalization for evidence comparison.
  * Also neutralizes tokens that legitimately differ between two SUCCESSFUL runs:
  * content-hashed asset names (index-BUzAmikJ.css), durations (694ms, duration_ms 12),
- * file sizes (0.65 kB) and clock stamps — a fabricated line has no source in the
- * re-run either way, so the anti-fabrication property is preserved. */
+ * file sizes (0.65 kB), clock stamps, ISO-8601 timestamps (with or without
+ * date/millis/offset — two green runs never share them), run-variant process
+ * counters (pid, uptimeS, activeConnections) and mkdtemp-style random directory
+ * suffixes (ocr-winstate-w9xFX1/). The golden corpus
+ * (apps/pilot/src/__fixtures__/gate-corpus/, P3-033) pins all of this against
+ * real captured gate outputs; a fabricated line has no source in the re-run
+ * either way, so the anti-fabrication property is preserved. */
 export function normalizeEvidenceLine(s: string): string {
   return s
     .replace(/\x1b\[[0-9;]*[A-Za-z]/g, "")
+    .replace(/\b\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?\b/g, "STAMP")
     .replace(/-[A-Za-z0-9_-]{8,}\.(css|js|mjs|cjs|map)\b/g, ".HASH")
+    .replace(/-[A-Za-z0-9_.-]{6,}\//g, "-HASH/")
+    .replace(/("(?:pid|uptimeS|activeConnections)"\s*:\s*)\d+/g, "$1N")
     .replace(/\b\d+(\.\d+)?\s?(kB|MB|GB)\b/g, "SIZE")
     .replace(/\b\d+(\.\d+)?(ms|min|h|s)\b/g, "TIME")
     .replace(/\b\d{2}:\d{2}(:\d{2})?\b/g, "TIME")
@@ -1187,6 +1196,26 @@ async function gatekeeper(
     cwd: ws,
     allowFail: true,
   });
+  // P3-033: grow the golden corpus every corpusEveryNMerges successful merges —
+  // the evidence gate's own re-run outputs are the real variation the matcher
+  // must keep accepting. Best-effort: a corpus problem never fails a green gate.
+  const mergesSinceCorpus = (state.mergesSinceCorpus ?? 0) + 1;
+  if (mergesSinceCorpus >= (cfg.corpusEveryNMerges ?? 5)) {
+    state.mergesSinceCorpus = 0;
+    try {
+      const files = captureGateCorpus(ws, t.id, rerunResults);
+      if (files.length) {
+        emit("phase", { task: t.id, phase: "corpus", ok: true, detail: `${files.length} sample(s)` });
+        exec("git pull -q origin main", { cwd: ws, allowFail: true });
+      }
+    } catch (err) {
+      console.log(
+        JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "corpus capture failed", data: { task: t.id, err: String(err).slice(0, 200) } }),
+      );
+    }
+  } else {
+    state.mergesSinceCorpus = mergesSinceCorpus;
+  }
   return true;
 }
 
