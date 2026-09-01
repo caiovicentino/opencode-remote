@@ -7,6 +7,6 @@ mais recentes primeiro); o red team noturno deduplica e poda acima de
 60 lições.
 
 ## Lessons
-- When creating a per-task branch with `git checkout -b pilot/<ID>`, first delete any stale branch of the same name (e.g. `git branch -D pilot/<ID>` if it exists) — aborted pipeline attempts leave the branch behind and every retry fails with… (fonte: P2-019)
-- When a server-side Map is keyed by client-supplied identifiers (room ids, channels, topics), enforce both a charset/length grammar and a per-connection cap on distinct keys — check the cap before the join but let re-joins of already-held k… (fonte: P2-019)
-- When a frame violates a soft protocol rule on a long-lived socket, drop the frame and increment a counter instead of closing the connection, exposing the counter on /metrics and /healthz with only id prefixes logged — this keeps legit clie… (fonte: P2-019)
+- When a task touches a desktop/UI feature but the diff also changes pipeline or gatekeeper code (evidence normalization, checks, scoring), strip those changes out and land them in their own dedicated task with explicit justification and tes… (fonte: P3-019)
+- When adding normalization or fuzzy-matching to an anti-fabrication/containment check, keep the neutralization rules narrow (only tokens that genuinely vary between runs) and add unit tests proving a fabricated line is still rejected — broa… (fonte: P3-019)
+- When a task completes or a task gets circuit-broken, do not edit BACKLOG.md (e.g. moving items to `## Blocked`) in the builder's feature branch — that bookkeeping belongs to the scheduler/pipeline path, and mixing it in pollutes the review… (fonte: P3-019)
