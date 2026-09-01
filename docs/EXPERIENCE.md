@@ -7,6 +7,6 @@ mais recentes primeiro); o red team noturno deduplica e poda acima de
 60 lições.
 
 ## Lessons
-- When failure state persists in a side file across pipeline attempts (e.g., a gate-fail JSON), every failure path that can end the task must also write or clear it before returning — otherwise downstream scribes read a stale step/tail from… (fonte: P2-031)
-- When a structured record carries both a summary field (findings) and a detail field (tail), never populate both from the same source string — derive the summary from higher-level info (e.g., the failing step name) so prompt renderings don'… (fonte: P2-031)
-- When documenting enum-like values (step names) in doc comments or docs, restrict them to what code paths actually produce — advertising values no writer emits (e.g., "review"/"crash") makes prompt semantics lie, so fix comments and docs in… (fonte: P2-031)
+- When adding rate-based circuit breakers with sliding windows, require the window to be full (e.g., cycles.length >= window size) before evaluating the failure rate, so a partial window can never trip the breaker on a tiny sample (fonte: P2-032)
+- When adding breaker/pause fields to persisted runtime state that resets on date rollover, explicitly carry those fields through the reset and normalize them on load (validate types, backfill legacy files, reject malformed values), or the m… (fonte: P2-032)
+- When counting failure evidence from multiple overlapping sources, record events only at the point of truth (e.g., after the push to main actually succeeds) and dedupe by entity key across sources, so retry cycles and double-recorded artifa… (fonte: P2-032)
