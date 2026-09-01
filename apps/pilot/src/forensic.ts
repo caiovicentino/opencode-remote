@@ -7,7 +7,7 @@
  * the loop, and its output is extracted from agent stdout — the agent itself
  * never gains access outside the workspace clone (anti-exfiltration rule).
  */
-import { readdirSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readdirSync, readFileSync, statSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { agentStream, exec, runAgentForRole } from "./runner";
@@ -41,7 +41,9 @@ export interface GateFailSummary {
   step: string;
 }
 
-/** One line per open gate-failure carryover file, capped to keep prompts sane. */
+/** One line per open gate-failure carryover file, newest first, capped to keep
+ * prompts sane — the sort by mtime descending happens BEFORE the cap so the
+ * forensic evidence always carries the most recent carryovers (round-2 review). */
 export function listGateFails(dir: string, max = 100): GateFailSummary[] {
   let files: string[];
   try {
@@ -49,8 +51,18 @@ export function listGateFails(dir: string, max = 100): GateFailSummary[] {
   } catch {
     return [];
   }
+  const byRecency = files
+    .map((f) => {
+      let mtime = 0;
+      try {
+        mtime = statSync(join(dir, f)).mtimeMs;
+      } catch {}
+      return { f, mtime };
+    })
+    .sort((a, b) => b.mtime - a.mtime)
+    .map((t) => t.f);
   const out: GateFailSummary[] = [];
-  for (const f of files.slice(0, max)) {
+  for (const f of byRecency.slice(0, max)) {
     const task = f.replace(/\.json$/, "");
     try {
       const j = JSON.parse(readFileSync(join(dir, f), "utf8")) as { task?: string; step?: string };

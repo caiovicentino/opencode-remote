@@ -2244,6 +2244,24 @@ check("p1-059 extractReport: body before marker, echo-safe", extractReport("REPO
 check("p1-059 extractReport: missing marker keeps everything", extractReport("just a report") === "just a report");
 check("p1-059 forensicPrompt carries the sections + marker", forensicPrompt("l1", [{ task: "P9-001", step: "unit" }], "abc1234 x").includes("## Patterns") && forensicPrompt("l1", [{ task: "P9-001", step: "unit" }], "abc1234 x").includes(FORENSIC_MARKER));
 check("p1-059 listGateFails: missing dir → []", listGateFails(join(tmpdir(), `no-such-dir-${Date.now()}`)).length === 0);
+{
+  const dir = mkdtempSync(join(tmpdir(), "gatefail-sort-"));
+  try {
+    for (const [i, name] of ["a.json", "b.json", "c.json"].entries()) {
+      writeFileSync(join(dir, name), JSON.stringify({ task: name.replace(".json", ""), step: `s-${i}` }));
+    }
+    // b.json newest, then c.json, then a.json (round-2 finding: newest first)
+    utimesSync(join(dir, "a.json"), new Date(1_000_000), new Date(1_000_000));
+    utimesSync(join(dir, "b.json"), new Date(3_000_000), new Date(3_000_000));
+    utimesSync(join(dir, "c.json"), new Date(2_000_000), new Date(2_000_000));
+    const fails = listGateFails(dir);
+    check("p1-059 listGateFails: sorted by mtime desc", fails.map((f) => f.task).join(",") === "b,c,a");
+    const capped = listGateFails(dir, 2);
+    check("p1-059 listGateFails: cap keeps most recent", capped.length === 2 && capped[0].task === "b" && capped[1].task === "c");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);

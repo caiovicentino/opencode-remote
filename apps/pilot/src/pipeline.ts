@@ -999,7 +999,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
             cwd: ws,
             timeoutMin: PLANNER_TIMEOUT_MIN,
             label: `planner-${t.id}-a${attempt}`,
-            sessionId: plannerSession, // retry resumes the planner's own context
+            sessionId: plannerSession, // tier A only: tier-B runs are context-less (no resume)
             printLogs: true,
             onStdout: stream,
             models: cfg.models,
@@ -1272,9 +1272,13 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
       }
       if (!merged) return { ok: false, detail: "gatekeeper rejected: eval battery or invariants failed" };
     } else {
-      // only verified findings reach the builder prompt (P2-015); when the
-      // escalation arbiter rejected, its own verified findings decide
-      findings = escalationFindings !== null ? escalationFindings.join("\n") : [...(secOk ? [] : secVerified.kept), ...(qualOk ? [] : qualVerified.kept)].join("\n");
+      // Only verified findings reach the builder prompt (P2-015). P1-059 round
+      // 2: on escalation rejection the arbiter ADDS its verified findings to
+      // the round-1 verified kept findings — it arbiters, it does not erase
+      // the reviewers' evidence (union, deduped line-wise).
+      const round1Kept = [...(secOk ? [] : secVerified.kept), ...(qualOk ? [] : qualVerified.kept)];
+      const allKept = escalationFindings !== null ? [...round1Kept, ...escalationFindings] : round1Kept;
+      findings = allKept.filter((f, i) => allKept.indexOf(f) === i).join("\n");
       if (round === cfg.maxReviewRounds) {
         // P2-031: the carryover file must reflect the REAL last failure — a task
         // burning out at review after an old gate failure would otherwise be

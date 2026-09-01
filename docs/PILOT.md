@@ -146,6 +146,11 @@ intacto). Bloco opcional:
   `tierB-fallback` — o pipeline nunca trava nem queima attempt por indisponibilidade
   do tier B. Sem tier B configurado, `runAgentForRole` === `runAgent`. Cada
   dispatch loga `agent-dispatch` com role/tier/model.
+- **Runs tier B são non-streaming e context-less**: `claude -p` imprime a
+  resposta final uma única vez — `onStdout` não é ligado ao output tier B e
+  não há session id para resume; `sessionId`/`onStdout` só valem quando o
+  papel roda (ou cai) no tier A. O watchdog é alimentado pelo timer interno
+  de heartbeat do `runTierB`.
 - **Papéis tier B**: planner de P0/P1 (o spec commitado passa pelo mesmo
   `validateSpec`/gate determinístico), strategist (refill de qualidade),
   **reviewer de escalada** e **forensic semanal** (abaixo). O gatekeeper e a
@@ -154,7 +159,9 @@ intacto). Bloco opcional:
 - **Escalada de review** (round 1): vereditos divergentes (1× APPROVE vs
   1× REQUEST_CHANGES) ou findings **todos** unverificados disparam **1** reviewer
   extra com o modelo `reviewerEscalation` (fase `review-escalation` no feed);
-  o veredito + findings verificados dele decidem. Máx. 1 escalada por round; sem
+  o veredito dele decide e, quando rejeita, os findings verificados dele se
+  **somam** (união, dedup) aos findings verificados do round 1 que seguem para
+  o builder. Máx. 1 escalada por round; sem
   `reviewerEscalation` configurado, divergência e `allDropped` seguem o fluxo
   atual.
 - **Forensic semanal**: na janela nightly 03:xx, um agente analisa as últimas

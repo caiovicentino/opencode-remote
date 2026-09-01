@@ -371,6 +371,13 @@ function logDispatch(level: string, msg: string, data: Record<string, unknown>) 
  * output, missing completion marker) the same prompt re-runs through tier A
  * (opencode run) so the pipeline never stalls on tier-B availability. Without
  * a configured tier-B model this is exactly runAgent.
+ *
+ * Tier-B runs are NON-STREAMING and CONTEXT-LESS (round-2 review): `claude -p`
+ * prints its final answer once at the end, so `opts.onStdout` is not wired to
+ * tier-B output and no session id is produced — `opts.sessionId` and
+ * `opts.onStdout` only take effect when the role dispatches to (or falls back
+ * to) tier A. The self-watchdog is fed by runTierB's internal heartbeat timer
+ * instead of stdout callbacks.
  */
 export async function runAgentForRole(
   role: TierBRole,
