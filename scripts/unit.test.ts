@@ -70,6 +70,7 @@ import { deploy } from "../apps/pilot/src/deploy";
 import type { PilotConfig } from "../apps/pilot/src/state";
 import { overlayVisible, phonePaired } from "../apps/desktop/src/pairing";
 import { daemonTooltip, loginItemSupported } from "../apps/desktop/src/tray";
+import { daemonNotify, NOTIFY_BACK_BODY, NOTIFY_DOWN_BODY } from "../apps/desktop/src/notify";
 import {
   DEFAULT_WINDOW_BOUNDS,
   loadWindowBounds,
@@ -1246,6 +1247,25 @@ check(
     daemonTooltip(true) !== daemonTooltip(false) &&
       daemonTooltip(true).endsWith("daemon ok") &&
       daemonTooltip(false).endsWith("daemon down"),
+  );
+}
+
+// --- desktop native daemon notifications (P3-013) -------------------------------
+{
+  // The 4 transitions: each real transition notifies exactly once, a stable
+  // state never re-notifies on every 3s poll (dedupe by transition).
+  check("notify: healthy→down fires 'down'", daemonNotify("healthy", "down").notify === "down");
+  check("notify: down→healthy fires 'back'", daemonNotify("down", "healthy").notify === "back");
+  check("notify: healthy→healthy is deduped", daemonNotify("healthy", "healthy").notify === "none");
+  check("notify: down→down is deduped", daemonNotify("down", "down").notify === "none");
+  // First observation after boot is not a transition — no notification.
+  check("notify: boot observation (null→down) stays silent", daemonNotify(null, "down").notify === "none");
+  check("notify: boot observation (null→healthy) stays silent", daemonNotify(null, "healthy").notify === "none");
+  // The bodies are wired into new Notification({body}) in main.ts; guard
+  // against accidental rewording that would orphan the strings.
+  check(
+    "notify: message strings are distinct and non-empty",
+    NOTIFY_DOWN_BODY.length > 0 && NOTIFY_BACK_BODY.length > 0 && NOTIFY_DOWN_BODY !== NOTIFY_BACK_BODY,
   );
 }
 

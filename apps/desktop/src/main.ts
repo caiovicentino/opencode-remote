@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, nativeImage, screen, Tray, shell } from "electron";
+import { app, BrowserWindow, ipcMain, Menu, nativeImage, Notification, screen, Tray, shell } from "electron";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +14,7 @@ import {
 } from "./daemon";
 import { initDesktopLog, log, logError } from "./desktop-log";
 import { phonePaired, type PairingState } from "./pairing";
+import { daemonNotify, NOTIFY_BACK_BODY, NOTIFY_DOWN_BODY, NOTIFY_TITLE, type DaemonHealth } from "./notify";
 import { daemonTooltip, loginItemSupported } from "./tray";
 import { checkForUpdatesOnBoot } from "./update";
 import { loadWindowBounds, saveWindowBounds, WINDOW_MIN, windowStateFile } from "./window-state";
@@ -238,11 +239,38 @@ function setTrayHealthy(healthy: boolean): void {
   log(`[desktop] tray tooltip: ${daemonTooltip(healthy)}`);
 }
 
+// --- native daemon notifications (P3-013) -------------------------------------
+// Fed by the same poll as the tray tooltip: when the sidecar's respawn budget
+// is exhausted (isDaemonDown() true) the window may be closed to the tray, and
+// a tray tooltip alone never reaches a non-technical user — so each real
+// transition fires a native notification instead. Decision logic is pure
+// (src/notify.ts) and tested in scripts/unit.test.ts.
+
+let daemonHealthObserved: DaemonHealth | null = null;
+
+function observeDaemonHealth(down: boolean): void {
+  const next: DaemonHealth = down ? "down" : "healthy";
+  const decision = daemonNotify(daemonHealthObserved, next);
+  daemonHealthObserved = next;
+  if (decision.notify === "none") return;
+  // Best-effort only: an unsupporting platform, a full disk or a denied
+  // permission must never take the shell down — the poll continues regardless.
+  try {
+    if (!Notification.isSupported()) return;
+    const body = decision.notify === "down" ? NOTIFY_DOWN_BODY : NOTIFY_BACK_BODY;
+    new Notification({ title: NOTIFY_TITLE, body, silent: false }).show();
+    log(`[desktop] notification: ${body}`);
+  } catch (err) {
+    logError("[desktop] daemon notification failed:", err);
+  }
+}
+
 async function refreshPairingState(): Promise<void> {
   const token = readApiToken();
   if (!token) {
     // Cannot prove health without the token — report down until proven ok.
     setTrayHealthy(false);
+    observeDaemonHealth(isDaemonDown());
     setPairingState(isDaemonDown() ? daemonDownState() : null);
     return;
   }
@@ -254,6 +282,8 @@ async function refreshPairingState(): Promise<void> {
     const { devices } = (await devRes.json()) as { devices?: { pub: string; label?: string }[] };
     if (!Array.isArray(devices)) throw new Error("malformed devices payload");
     setTrayHealthy(true);
+    // The daemon answers (adopted or sidecar) — control is back.
+    observeDaemonHealth(false);
 
     const paired = phonePaired(devices);
     let uri = pairingState?.uri ?? null;
@@ -277,6 +307,7 @@ async function refreshPairingState(): Promise<void> {
     // respawn budget (P2-017), tell the renderer instead of staying silent.
     logError(`[desktop] pairing poll failed: ${err instanceof Error ? err.message : err}`);
     setTrayHealthy(false);
+    observeDaemonHealth(isDaemonDown());
     if (isDaemonDown()) {
       setPairingState(daemonDownState());
     } else {

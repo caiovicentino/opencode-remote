@@ -190,6 +190,15 @@ pairing overlay. The context menu also has a **Start at login** checkbox
 (macOS/Windows) backed by `app.setLoginItemSettings`, so the toggle persists
 across app restarts and OS reboots.
 
+**Native notification when the daemon stops**: if the sidecar's respawn budget
+is exhausted, the shell fires a one-time macOS notification —
+`daemon parou — reabra o OpenCode Remote` — and `daemon de volta` when a
+healthy daemon answers again. Each transition notifies exactly once (deduped
+by the same 3s poll that feeds the tray tooltip) and the feature is
+best-effort: on platforms without notification support the shell keeps
+running silently, and with the window closed to the tray this is how a
+non-technical user finds out control was lost.
+
 **Close-to-tray keeps the daemon alive**: closing the window (red button,
 `Alt+F4`) no longer quits the app — on every platform the window hides and the
 daemon sidecar keeps running, so the phone never loses its connection just

@@ -163,9 +163,18 @@ abrir off-screen ou travar.
 emite (linhas `[desktop] …`: ciclo de vida do daemon, polls de pareamento,
 crashes do renderer, erros fatais) em `userData/logs/desktop.log` — assim o
 app empacotado, usado por alguém sem terminal, continua diagnosticável. O
-arquivo tem cap de ~1MB e rotaciona para `desktop.log.1` (só 2 arquivos); se
-o disco encher, o app segue rodando e apenas para de gravar. No macOS:
+arquivo tem cap de ~1MB e rotaciona para `desktop.log.1` (só 2 arquivos); se o
+disco encher, o app segue rodando e apenas para de gravar. No macOS:
 `~/Library/Application Support/OpenCode Remote/logs/`.
+
+**Notificação nativa quando o daemon para**: se o orçamento de respawn do
+sidecar se esgota, o shell dispara uma notificação nativa única —
+`daemon parou — reabra o OpenCode Remote` — e `daemon de volta` quando um
+daemon saudável responde de novo. Cada transição notifica exatamente uma vez
+(dedup pelo mesmo poll de 3s que alimenta o tooltip do tray) e a feature é
+best-effort: em plataformas sem suporte a notificação o shell segue rodando
+em silêncio — com a janela fechada no tray, é assim que o usuário leigo
+descobre que perdeu o controle.
 
 ## Roadmap
 
