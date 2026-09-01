@@ -14,6 +14,7 @@ import { taskMergedIn } from "../apps/pilot/src/pipeline";
 import { clampSlots, ensureSingleton, loadState, recordTaskFailure } from "../apps/pilot/src/state";
 import { areaKey, pickBatch, pickTasks } from "../apps/pilot/src/scheduler";
 import { blockTask, loadBacklog, parseBacklog, type Task } from "../apps/pilot/src/backlog";
+import { API_PREFLIGHT, apiHealthy, OPENCODE_URL, waitForApi } from "../apps/pilot/src/runner";
 import { mkdtempSync, mkdirSync, readdirSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync, utimesSync } from "node:fs";
 import { execSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -645,6 +646,52 @@ check("viewport: garbage rejected", viewportFromParams("x", "800") === null);
     rmSync(dir, { recursive: true, force: true });
     rmSync(dir2, { recursive: true, force: true });
   }
+}
+
+// --- P2-016 API preflight: wait for opencode instead of burning an attempt ------
+{
+  // minimal Response stand-in: apiHealthy only reads .ok and .json()
+  const res = (ok: boolean, healthy = true) => ({ ok, json: async () => ({ healthy }) }) as unknown as Response;
+  const fetchOf = (fn: () => Promise<Response>) => fn as unknown as typeof fetch;
+  const sleeper = () => {
+    const waits: number[] = [];
+    return { waits, sleepImpl: async (ms: number) => void waits.push(ms) };
+  };
+
+  check(
+    "preflight: defaults are 5s timeout / 15s wait x3 retries (~45s)",
+    API_PREFLIGHT.timeoutMs === 5_000 && API_PREFLIGHT.waitMs === 15_000 && API_PREFLIGHT.retries === 3,
+  );
+  check("preflight: default URL is the local opencode serve", OPENCODE_URL.includes("127.0.0.1:4096"));
+
+  const s1 = sleeper();
+  const up1 = await waitForApi({ fetchImpl: fetchOf(async () => res(true)), sleepImpl: s1.sleepImpl, timeoutMs: 50 });
+  check("preflight: healthy API is up with zero waits", up1 === true && s1.waits.length === 0);
+
+  let calls = 0;
+  const s2 = sleeper();
+  const up2 = await waitForApi({
+    fetchImpl: fetchOf(async () => res(++calls >= 3)),
+    sleepImpl: s2.sleepImpl,
+    timeoutMs: 50,
+    waitMs: 15_000,
+  });
+  check("preflight: transient outage waits 15s per retry and recovers", up2 === true && s2.waits.length === 2 && s2.waits.every((w) => w === 15_000));
+
+  const s3 = sleeper();
+  const up3 = await waitForApi({ fetchImpl: fetchOf(async () => res(false)), sleepImpl: s3.sleepImpl, timeoutMs: 50 });
+  check("preflight: API dead through all retries gives up after the wait window", up3 === false && s3.waits.length === 3 && s3.waits.every((w) => w === 15_000));
+
+  check("preflight: healthy:false body counts as down", (await apiHealthy("http://x", 50, fetchOf(async () => res(true, false)))) === false);
+  check(
+    "preflight: network error counts as down",
+    (await apiHealthy("http://x", 50, fetchOf(async () => { throw new Error("econnrefused"); }))) === false,
+  );
+  check("preflight: non-2xx counts as down", (await apiHealthy("http://x", 50, fetchOf(async () => res(false)))) === false);
+  check(
+    "preflight: non-JSON 200 body counts as up",
+    (await apiHealthy("http://x", 50, fetchOf(async () => ({ ok: true, json: async () => { throw new Error("not json"); } } as unknown as Response)))) === true,
+  );
 }
 
 if (failures > 0) {

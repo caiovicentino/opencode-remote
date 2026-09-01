@@ -173,6 +173,14 @@ O pilot pega a primeira task `Ready`, em ordem. Red team insere `(RT-###)` P0 no
 - **Preflight typecheck**: after each builder round, a fast `tsc --noEmit` runs
   before the reviewers — broken code bounces straight back to the builder with
   the error tail instead of burning reviewer tokens.
+- **API preflight (P2-016)**: before every agent spawn (`runAgent`), the runner
+  probes the opencode server (`GET $OPENCODE_URL/global/health`, 5s timeout —
+  same endpoint/contract as the CLI doctor). If the API is down — typically
+  during deploy churn, when `opencode serve` restarts — it waits 15s and
+  retries up to 3× (~45s) BEFORE the run counts as an attempt or failure; the
+  wait is logged as a warning and the circuit breaker is untouched. Only an
+  outage that outlasts the whole window fails the run (through the normal
+  failure path). Pinned by unit tests in `scripts/unit.test.ts`.
 - **Gate-fail carryover**: the gatekeeper writes `pilot/gate-fail/<ID>.json`
   (per-task since P1-006); the
   retry pipeline seeds the builder prompt with the exact failing step + output.
