@@ -10,7 +10,7 @@ import { runPipeline, TASK_ID_RE, writeSandboxConfig } from "./pipeline";
 import { deploy } from "./deploy";
 import { digest } from "./push";
 import { addTask, blockTask, nextId, parseBacklog, type Task } from "./backlog";
-import { areaKey, pickTasks } from "./scheduler";
+import { areaKey, pickBatch } from "./scheduler";
 import {
   ensureSingleton,
   frozen,
@@ -142,7 +142,9 @@ async function main() {
     }
 
     const busyAreas = new Set([...running.values()].map((r) => areaKey(r.task)));
-    const picked = pickTasks(queue.filter((t) => !overCap(cfg, t)), once ? 1 : free.length, busyAreas);
+    // budget-aware batch: freeSlots AND the remaining daily task budget
+    const remainingBudget = cfg.maxTasksPerDay - state.tasks - running.size;
+    const picked = pickBatch(queue.filter((t) => !overCap(cfg, t)), once ? 1 : free.length, busyAreas, remainingBudget);
     for (const task of picked) {
       const slot = free.find((s) => !running.has(s))!;
       const wscfg = slotCfg.get(slot)!;
@@ -381,28 +383,40 @@ function blockAndPush(cfg: PilotConfig, st: PilotState, task: Task, attempts: nu
   }
 }
 
-/** Last gatekeeper failure tail for a task (written by pipeline.gatekeeper). */
+/** Last gatekeeper failure tail for a task (per-task file written by pipeline.gatekeeper). */
 function lastGateFail(taskId: string): string | undefined {
+  if (!TASK_ID_RE.test(taskId)) return undefined;
   try {
     const prev = JSON.parse(
-      readFileSync(join(homedir(), ".opencode-remote/pilot/last-gate-fail.json"), "utf8"),
-    ) as { task?: string; tail?: string };
-    return prev.task === taskId ? prev.tail : undefined;
+      readFileSync(join(homedir(), ".opencode-remote/pilot/gate-fail", `${taskId}.json`), "utf8"),
+    ) as { tail?: string };
+    return prev.tail;
   } catch {}
   return undefined;
+}
+
+/**
+ * POSIX single-quote shell escape. JSON.stringify is NOT shell quoting —
+ * `$`, backticks and `"` survive it and enable command substitution.
+ */
+function shq(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
 /**
  * P1-006: the slot workspace lives at pilot/repo-<slot> and is created once
  * via `git clone --shared` from the production checkout (shared objects, cheap).
  * The origin remote is restored to the real origin so fetches/pushes do not
- * depend on the prod checkout's state.
+ * depend on the prod checkout's state, and dependencies are bootstrapped
+ * (npm ci) before the slot is usable — a half-ready slot must never exist.
  */
 function ensureSlotWorkspace(base: PilotConfig, slot: number): PilotConfig {
   const ws = join(homedir(), ".opencode-remote", "pilot", `repo-${slot}`);
   if (!existsSync(join(ws, ".git"))) {
     const originUrl = exec("git remote get-url origin", { cwd: base.repo, allowFail: true }).output.trim();
-    const clone = exec(`git clone --shared ${JSON.stringify(base.repo)} ${JSON.stringify(ws)}`, {
+    // without the real origin, pushes would target the prod checkout (non-bare) — refuse
+    if (!originUrl) throw new Error(`slot workspace: prod checkout ${base.repo} has no origin remote`);
+    const clone = exec(`git clone --shared ${shq(base.repo)} ${shq(ws)}`, {
       cwd: base.repo,
       timeoutMin: 5,
       allowFail: true,
@@ -411,11 +425,19 @@ function ensureSlotWorkspace(base: PilotConfig, slot: number): PilotConfig {
       rmSync(ws, { recursive: true, force: true }); // partial clone would block the retry
       throw new Error(`slot workspace clone failed (${ws}): ${clone.output.slice(-300)}`);
     }
-    if (originUrl) {
-      exec(`git remote set-url origin ${JSON.stringify(originUrl)}`, { cwd: ws, allowFail: true });
+    const setUrl = exec(`git remote set-url origin ${shq(originUrl)}`, { cwd: ws, allowFail: true });
+    if (!setUrl.ok) {
+      rmSync(ws, { recursive: true, force: true });
+      throw new Error(`slot workspace set-url failed (${ws}): ${setUrl.output.slice(-300)}`);
     }
     exec("git fetch -q origin", { cwd: ws, allowFail: true });
     exec("git checkout -q -B main origin/main", { cwd: ws, allowFail: true });
+    // fresh clone has no node_modules — the gate cannot run without deps
+    const ci = exec("npm ci --no-audit --no-fund --loglevel=error", { cwd: ws, timeoutMin: 15, allowFail: true });
+    if (!ci.ok) {
+      rmSync(ws, { recursive: true, force: true });
+      throw new Error(`slot workspace npm ci failed (${ws}): ${ci.output.slice(-300)}`);
+    }
     log("info", "slot workspace created", { slot, ws });
   }
   return { ...base, workspace: ws };

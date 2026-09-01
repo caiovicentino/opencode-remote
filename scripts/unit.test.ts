@@ -12,8 +12,8 @@ import { permissionPreview } from "../apps/web/src/lib/permission";
 import { applySessionFilters } from "../apps/web/src/lib/sessionFilter";
 import { taskMergedIn } from "../apps/pilot/src/pipeline";
 import { clampSlots, ensureSingleton, loadState, recordTaskFailure } from "../apps/pilot/src/state";
-import { areaKey, pickTasks } from "../apps/pilot/src/scheduler";
-import { blockTask, loadBacklog, parseBacklog } from "../apps/pilot/src/backlog";
+import { areaKey, pickBatch, pickTasks } from "../apps/pilot/src/scheduler";
+import { blockTask, loadBacklog, parseBacklog, type Task } from "../apps/pilot/src/backlog";
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { execSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -353,6 +353,17 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
   check("parseBacklog: only the trailing tag counts", byId("T-105").area === "relay" && byId("T-105").spec === "mentions (area: ui) mid-spec");
   check("parseBacklog: tagged task stays in the Ready queue", tasks.length === 5);
 
+  const md2 = [
+    "## Ready",
+    "",
+    "- [ ] (T-201) [P1] Bogus area — spec: x (area: bogus)",
+    "- [ ] (T-202) [P1] Good area — spec: x (area: daemon)",
+    "- [ ] (T-203) [P1] Injection-ish area — spec: x (area: ui; rm -rf)",
+  ].join("\n");
+  const tasks2 = parseBacklog(md2);
+  check("parseBacklog: unknown area tag falls back to serial (empty)", tasks2[0]!.area === "" && tasks2[2]!.area === "");
+  check("parseBacklog: known area tag accepted", tasks2[1]!.area === "daemon");
+
   check("clampSlots: default/invalid go to 1", clampSlots(undefined) === 1 && clampSlots(0) === 1 && clampSlots(-2) === 1 && clampSlots(2.5) === 1);
   check("clampSlots: accepts ints up to the hard cap", clampSlots(2) === 2 && clampSlots(99) === 8);
 
@@ -364,6 +375,55 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
   const untaggedPair = [byId("T-103"), { ...byId("T-103"), id: "T-106" }];
   check("pickTasks: untagged tasks never run in parallel (safe default)", pickTasks(untaggedPair, 2, new Set()).map((t) => t.id).join(",") === "T-103");
   check("pickTasks: queue order (priority) respected", pickTasks(queue, 3, new Set())[0].id === "T-101");
+
+  check("pickBatch: remaining budget caps the batch (in-flight counted)", pickBatch(queue, 2, new Set(), 1).length === 1);
+  check("pickBatch: exhausted budget picks nothing", pickBatch(queue, 2, new Set(), 0).length === 0 && pickBatch(queue, 2, new Set(), -1).length === 0);
+  check("pickBatch: slots cap still applies with budget to spare", pickBatch(queue, 3, new Set(), 99).length === 3);
+
+  // --- P1-006 slots=2 scheduler loop simulation (real pickBatch + worker pattern) ---
+  {
+    const simQueue = parseBacklog(
+      [
+        "## Ready",
+        "",
+        "- [ ] (S-001) [P1] UI one — spec: x (area: ui)",
+        "- [ ] (S-002) [P1] Daemon one — spec: x (area: daemon)",
+        "- [ ] (S-003) [P1] UI two — spec: x (area: ui)",
+        "- [ ] (S-004) [P1] Daemon two — spec: x (area: daemon)",
+      ].join("\n"),
+    );
+    const maxTasks = 3; // budget smaller than the queue: the cap must hold
+    let tasksDone = 0;
+    let areaViolations = 0;
+    let concurrentBatches = 0;
+    const running = new Map<number, { task: Task }>();
+    const doneIds = new Set<string>();
+    const freeSlots = [1, 2]; // slots=2
+    for (let tick = 0; tick < 4; tick++) {
+      const free = freeSlots.filter((s) => !running.has(s));
+      const busy = new Set([...running.values()].map((r) => areaKey(r.task)));
+      const pending = simQueue.filter((t) => !doneIds.has(t.id));
+      const picked = pickBatch(pending, free.length, busy, maxTasks - tasksDone - running.size);
+      for (const t of picked) {
+        const slot = free.find((s) => !running.has(s))!;
+        if ([...running.values()].some((r) => areaKey(r.task) === areaKey(t))) areaViolations++;
+        running.set(slot, { task: t });
+      }
+      if (running.size === 2) concurrentBatches++;
+      // workers finish out of order, like real pipelines
+      await Promise.all(
+        [...running.entries()].map(async ([slot, r]) => {
+          await new Promise((resolve) => setTimeout(resolve, 5 + ((slot * 7) % 11)));
+          running.delete(slot);
+          doneIds.add(r.task.id);
+          tasksDone++;
+        }),
+      );
+    }
+    check("slots=2 simulation: same-area tasks never run concurrently", areaViolations === 0);
+    check("slots=2 simulation: daily task budget is a hard cap", tasksDone === maxTasks);
+    check("slots=2 simulation: two tasks of distinct areas ran simultaneously", concurrentBatches > 0);
+  }
 }
 
 if (failures > 0) {

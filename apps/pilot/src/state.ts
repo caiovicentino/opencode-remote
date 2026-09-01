@@ -20,7 +20,10 @@ export interface PilotConfig {
 
 export const DEFAULTS: PilotConfig = {
   repo: process.env.OCR_PILOT_REPO ?? "/Volumes/SSD Major/Major/opencode-remote",
-  workspace: join(homedir(), ".opencode-remote/pilot/repo"),
+  // P1-006: legacy key — the scheduler derives per-slot paths (pilot/repo-1,
+  // repo-2…) and overwrites `workspace` in every PilotConfig it hands out.
+  // A `workspace` set in pilot.json is ignored.
+  workspace: join(homedir(), ".opencode-remote/pilot/repo-1"),
   slots: 1,
   maxTasksPerDay: 6,
   maxDeploysPerDay: 6,

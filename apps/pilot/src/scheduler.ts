@@ -27,3 +27,12 @@ export function pickTasks(queue: Task[], freeSlots: number, busy: Set<string>): 
   }
   return picked;
 }
+
+/**
+ * Batch pick for one scheduler cycle: never exceeds the remaining daily task
+ * budget (in-flight pipelines included) and never schedules over `freeSlots`.
+ */
+export function pickBatch(queue: Task[], freeSlots: number, busy: Set<string>, remainingBudget: number): Task[] {
+  const cap = Math.min(Math.max(0, freeSlots), Math.max(0, remainingBudget));
+  return pickTasks(queue, cap, busy);
+}

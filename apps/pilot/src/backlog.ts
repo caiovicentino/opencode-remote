@@ -16,6 +16,9 @@ const BACKLOG = "BACKLOG.md";
 /** Trailing area tag appended by the strategist: `... (area: ui)`. */
 const AREA_RE = /\(area:\s*([A-Za-z][A-Za-z0-9_-]*)\)\s*$/;
 
+/** P1-006: documented area vocabulary; unknown tags fall back to serial "". */
+export const KNOWN_AREAS = new Set(["ui", "daemon", "desktop", "infra", "relay"]);
+
 export function parseBacklog(md: string): Task[] {
   const ready = md.split(/^## /m).find((s) => s.startsWith("Ready")) ?? "";
   const tasks: Task[] = [];
@@ -25,7 +28,7 @@ export function parseBacklog(md: string): Task[] {
     let area = "";
     const am = AREA_RE.exec(body);
     if (am) {
-      area = am[1] ?? "";
+      area = KNOWN_AREAS.has(am[1] ?? "") ? am[1]! : "";
       body = body.slice(0, am.index).trimEnd();
     }
     const m = /^- \[ \] \(([^)]+)\) \[(P\d)\] (.+?)(?: — spec: (.+))?$/.exec(body);

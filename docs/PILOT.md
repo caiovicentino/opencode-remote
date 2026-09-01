@@ -83,7 +83,10 @@ produção: `userData` do Electron é temporário e nenhum sidecar é spawnado.
 
 - Cada slot tem um **workspace clone próprio**: `~/.opencode-remote/pilot/repo-1`,
   `repo-2`… criado na primeira vez via `git clone --shared` do checkout de produção
-  (objetos compartilhados, clone barato) com o remote `origin` apontando pro GitHub.
+  (objetos compartilhados, clone barato) com o remote `origin` apontando pro GitHub
+  e **deps bootstrapadas com npm ci** antes do slot ficar utilizável. A chave
+  `workspace` do pilot.json virou legada e é ignorada — os paths dos slots são
+  derivados do número do slot.
 - O scheduler (`apps/pilot/src/index.ts`) lê a fila direto de `origin/main`
   (`git show origin/main:BACKLOG.md`) — worktrees de slots ocupados nunca são
   fontes de verdade. Tasks de **áreas diferentes** rodam em paralelo; **duas
@@ -93,6 +96,13 @@ produção: `userData` do Electron é temporário e nenhum sidecar é spawnado.
 - **Área da task**: o strategist/researcher taggeia o **fim da linha** com
   `(area: ui|daemon|desktop|infra|relay)`. A ui = apps/web, daemon = apps/daemon,
   desktop = apps/desktop, infra = build/scripts/deploy/pilot, relay = apps/relay.
+  Tag fora desse vocabulário vira serial (sem área).
+- **Gate serializado entre slots**: a bateria de eval usa portas fixas
+  (reconnect/integration) e o merge empurra pra main — o gatekeeper roda em
+  exclusão mútua; builders/reviewers continuam paralelos.
+- **Arquivos de diagnóstico por task**: `pilot/gate-fail/<ID>.json` (carryover
+  de falha do gate) e `pilot/builder-<ID>.log` (output do builder) — sem
+  last-writer-wins entre slots.
 - **Deploys continuam seriais**: `deployBusy` garante um deploy por vez; merge
   concorrente fica na fila na main e o próximo deploy pega.
 
@@ -163,7 +173,8 @@ O pilot pega a primeira task `Ready`, em ordem. Red team insere `(RT-###)` P0 no
 - **Preflight typecheck**: after each builder round, a fast `tsc --noEmit` runs
   before the reviewers — broken code bounces straight back to the builder with
   the error tail instead of burning reviewer tokens.
-- **Gate-fail carryover**: the gatekeeper writes `last-gate-fail.json`; the
+- **Gate-fail carryover**: the gatekeeper writes `pilot/gate-fail/<ID>.json`
+  (per-task since P1-006); the
   retry pipeline seeds the builder prompt with the exact failing step + output.
 - **Incremental rounds**: builder prompt for round ≥ 2 instructs inspecting the
   existing branch diff and fixing findings incrementally.
