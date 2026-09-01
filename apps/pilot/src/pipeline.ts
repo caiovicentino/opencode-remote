@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { agentStream, exec, runAgent } from "./runner";
@@ -90,6 +90,16 @@ export function validateSpec(content: string): boolean {
   return SPEC_SECTIONS.every((s) => headings.some((h) => h.startsWith(s.toLowerCase())));
 }
 
+/**
+ * P2-009 (round 2): single predicate for "UI evidence required", shared by the
+ * builder prompt and the gatekeeper so the builder is always asked for exactly
+ * what the gate will demand. The diff half (renderTouched) is only known at
+ * gate time — at prompt time the conditional wording covers it.
+ */
+export function needsUiEvidence(area: string | undefined, renderTouched: boolean): boolean {
+  return renderTouched || area === "ui" || area === "desktop";
+}
+
 export function builderPrompt(
   t: Task,
   round: number,
@@ -97,7 +107,7 @@ export function builderPrompt(
   lessons: string[] = [],
   specFile: string | null = null,
 ): string {
-  const uiTask = t.area === "ui" || t.area === "desktop";
+  const uiTask = needsUiEvidence(t.area, false);
   // P2-008: when a planner spec exists on the branch, the builder must follow it
   const specBlock = specFile
     ? `\nPLANNER SPEC: ${specFile} exists on this branch — read it FIRST. It holds the agreed problem analysis, approach, touched files, edge cases, acceptance criteria and out-of-scope. Follow it; if you must deviate, justify the deviation in the commit message. Do not delete or rewrite the spec.\n`
@@ -125,7 +135,10 @@ MANDATORY EVIDENCE (P2-009): when finished, end your output with exactly this EV
 block — the deterministic gatekeeper parses it, re-executes every cited command and
 REJECTS the merge when the block is missing or the real output diverges from what you
 pasted. Only real output you produced this round; only "npm run typecheck --silent",
-"npm run test:unit --silent" and "npm run build --silent" may be cited:
+"npm run test:unit --silent" and "npm run build --silent" may be cited. The gate also
+requires both screenshot lines whenever your diff touches apps/web/ or apps/desktop/ —
+even when this task is not tagged ui/desktop — so take them fresh this round and cite
+the fresh files:
 
 EVIDENCE:
 $ npm run typecheck --silent
@@ -426,6 +439,13 @@ export interface EvidenceBlock {
  * screenshot files. Only the LAST marker counts (prose earlier in the output
  * may quote it); the block ends at the task-done marker when present. Returns
  * null when the block is missing or pathologically padded.
+ *
+ * Round 2: only ALLOWLISTED `$ ` lines open a command entry — a prompt-looking
+ * line inside a real command's pasted output (or a transcript echo like
+ * `$ npm run typecheck` without --silent) must not become a spurious command
+ * and reject an honest block. Non-allowlisted `$ ` lines are dropped entirely:
+ * never executed, never counted as output (the allowlist in verifyEvidence
+ * stays as a defensive second layer).
  */
 export function parseEvidenceBlock(output: string): EvidenceBlock | null {
   const lines = output.split("\n");
@@ -451,7 +471,9 @@ export function parseEvidenceBlock(output: string): EvidenceBlock | null {
   for (const line of body) {
     const t = line.trim();
     if (t.startsWith("$ ")) {
-      current = { cmd: t.slice(2).trim(), output: "" };
+      const cmd = t.slice(2).trim();
+      if (!EVIDENCE_COMMANDS.includes(cmd)) continue;
+      current = { cmd, output: "" };
       block.commands.push(current);
       continue;
     }
@@ -521,13 +543,22 @@ export interface EvidenceResult {
  * P2-009 deterministic gate step: parse the builder's EVIDENCE block, then
  * re-execute every cited command in the workspace and require the pasted
  * output to be reproducible. Static checks (block present, commands allowlisted,
- * required commands cited, screenshot paths/dimensions) run BEFORE any
- * re-execution so hostile or malformed blocks fail fast without touching npm.
+ * required commands cited, screenshot paths/dimensions/freshness) run BEFORE
+ * any re-execution so hostile or malformed blocks fail fast without touching
+ * npm.
+ *
+ * Round 2: screenshots must be fresh — `minShotMtimeMs` (the pipeline start)
+ * bounds their mtime, so a stale PNG from an earlier task/round cannot pass
+ * as this round's UI evidence. `run` is injectable for the eval battery; the
+ * gatekeeper injects a caching runner so re-executed commands double as the
+ * gate battery's typecheck/build/unit results (no double execution while
+ * holding the cross-slot gate lock).
  */
 export function verifyEvidence(
   ws: string,
   builderOutput: string,
   requireShots: boolean,
+  minShotMtimeMs = 0,
   run?: (cmd: string, cwd: string) => { ok: boolean; output: string },
 ): EvidenceResult {
   const runCmd =
@@ -553,6 +584,15 @@ export function verifyEvidence(
       if (!evidenceShotDimsOk(key, size)) {
         return { ok: false, detail: `${key}: wrong PNG dimensions ${size.w}x${size.h}: ${p}` };
       }
+      if (minShotMtimeMs > 0) {
+        let mtime = 0;
+        try {
+          mtime = statSync(abs).mtimeMs;
+        } catch {}
+        if (mtime < minShotMtimeMs) {
+          return { ok: false, detail: `${key}: stale screenshot (predates this round): ${p}` };
+        }
+      }
     }
   }
   for (const c of block.commands) {
@@ -572,6 +612,8 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
   const ws = cfg.workspace;
   // central injection guard: t.id is interpolated into shell commands below
   if (!TASK_ID_RE.test(t.id)) return { ok: false, detail: `invalid task id: ${t.id}` };
+  // P2-009: pipeline (branch) start — cited UI evidence must be newer than this
+  const startedAtMs = Date.now();
   // fresh workspace at origin/main
   exec("git fetch origin", { cwd: ws });
   exec("git reset -q --hard origin/main", { cwd: ws });
@@ -788,7 +830,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
     if (secOk && qualOk) {
       emit("phase", { task: t.id, phase: "gatekeeper" });
       // serialized across slots: fixed battery ports + main push (P1-006)
-      merged = await runGateExclusive(() => gatekeeper(cfg, ws, t, state, build.output));
+      merged = await runGateExclusive(() => gatekeeper(cfg, ws, t, state, build.output, startedAtMs));
       emit("phase", { task: t.id, phase: "merge", ok: merged });
       if (merged) {
         // gate passed — the per-task carryover file has no reason to linger
@@ -923,7 +965,14 @@ function recordGateFail(state: PilotState, taskId: string, step: string, tail: s
 }
 
 /** Deterministic gate: evidence, typecheck, build, test battery, invariants. No judgement. */
-async function gatekeeper(cfg: PilotConfig, ws: string, t: Task, state: PilotState, builderOutput: string): Promise<boolean> {
+async function gatekeeper(
+  cfg: PilotConfig,
+  ws: string,
+  t: Task,
+  state: PilotState,
+  builderOutput: string,
+  startedAtMs: number,
+): Promise<boolean> {
   const steps: Array<[string, string]> = [
     ["typecheck", "npm run typecheck --silent"],
     ["build", "npm run build --silent"],
@@ -956,13 +1005,29 @@ async function gatekeeper(cfg: PilotConfig, ws: string, t: Task, state: PilotSta
   // command, missing screenshot) then re-execution of every cited command —
   // pasted output that diverges from the real one rejects the merge here,
   // before the expensive battery burns time on fabricated work.
-  const evidence = verifyEvidence(ws, builderOutput, renderTouched);
+  // Round 2: shots are demanded under the SAME predicate the prompt used
+  // (needsUiEvidence) — a non-UI-tagged task whose diff touches apps/web or
+  // apps/desktop is instructed to bring shots and the gate enforces it.
+  // Round 2: re-run results are cached — the typecheck/build/unit steps below
+  // reuse them instead of re-executing the same commands while holding the
+  // cross-slot gate lock (P1-006).
+  const rerunResults = new Map<string, { ok: boolean; output: string }>();
+  const requireShots = needsUiEvidence(t.area, renderTouched);
+  const evidence = verifyEvidence(ws, builderOutput, requireShots, startedAtMs, (cmd, cwd) => {
+    const cached = rerunResults.get(cmd);
+    if (cached) return cached;
+    const r = exec(cmd, { cwd, timeoutMin: 20, allowFail: true });
+    rerunResults.set(cmd, r);
+    return r;
+  });
   if (!evidence.ok) {
     recordGateFail(state, t.id, "evidence", evidence.detail);
     return false;
   }
   for (const [name, cmd] of steps) {
-    const r = exec(cmd, { cwd: ws, timeoutMin: 20, allowFail: true });
+    // evidence already re-executed this exact command in this workspace — keep
+    // its result; the step list uses the same canonical command strings
+    const r = rerunResults.get(cmd) ?? exec(cmd, { cwd: ws, timeoutMin: 20, allowFail: true });
     if (!r.ok) {
       recordGateFail(state, t.id, name, r.output);
       return false;

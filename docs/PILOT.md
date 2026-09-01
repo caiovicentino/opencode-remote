@@ -228,24 +228,38 @@ o que fez e o gate **re-executa** a prova:
   (`$ <comando>` + output colado), e — para tasks de UI — os paths de dois
   screenshots reais: `shot-1440x900:` (desktop) e `shot-390:` (phone), produzidos
   via `tools/browse.mjs shot <path>.png --w 390 --h 844` ou `screencapture -x`.
+  Um único predicado (`needsUiEvidence`) comanda **prompt e gate**: task taggada
+  `ui`/`desktop` recebe o bloco de shots explicitamente, e todo builder é avisado
+  de que diff que toque `apps/web/`/`apps/desktop/` exige os dois shots mesmo
+  sem tag de UI — impossível cair num round perdido por desalinhamento
+  prompt/gate.
 - **Gatekeeper determinístico**: novo primeiro step do gate (`evidence`) que
   parseia o bloco do output do builder e (1) reprova bloco ausente, (2) reprova
   comando fora da allowlist — só `npm run {typecheck,test:unit,build} --silent`
   podem ser citados, o que também fecha injeção de shell via output de LLM —
-  (3) reprova comando obrigatório faltando, (4) reprova screenshot inexistente
-  ou com dimensões erradas (aceita 1x e 2x Retina: 1440x900/2880x1800 e
-  largura 390/780 — o tamanho é lido direto do header PNG) e (5) **re-executa**
-  cada comando citado no workspace: toda linha colada tem que existir no output
-  real (semântica de contenção, normalizada contra ANSI/whitespace) — output
-  fabricado diverge e reprova.
+  (3) reprova comando obrigatório faltando, (4) reprova screenshot inexistente,
+  com dimensões erradas (aceita 1x e 2x Retina: 1440x900/2880x1800 e largura
+  390/780 — o tamanho é lido direto do header PNG) ou **velho** (mtime anterior
+  ao início do pipeline — PNG de task/round anterior não serve de evidência) e
+  (5) **re-executa** cada comando citado no workspace: toda linha colada tem que
+  existir no output real (semântica de contenção, normalizada contra
+  ANSI/whitespace) — output fabricado diverge e reprova. Linhas de output real
+  que começam com `$ ` sem ser comandos allowlisted são descartadas no parse
+  (nunca executadas, nunca poluem a contenção) — transcript colado com `$
+  npm run ...` a mais não rejeita bloco honesto.
+- **Sem execução dupla**: os resultados das re-execuções da evidência são
+  reusados como os steps `typecheck`/`build`/`unit` do próprio gate (os comandos
+  canônicos são idênticos), então o gate não roda os mesmos comandos duas vezes
+  segurando o lock de exclusão mútua entre slots (P1-006).
 - **Self-heal**: falha de evidência escreve o carryover padrão
   `pilot/gate-fail/<ID>.json` (step `evidence`), então a próxima rodada do
-  builder recebe o detalhe exato (ex.: "wrong PNG dimensions 1280x800") e corrige
-  sem redescobrir o problema.
+  builder recebe o detalhe exato (ex.: "stale screenshot (predates this round)")
+  e corrige sem redescobrir o problema.
 - **Barato por design**: os checks estáticos rodam antes de qualquer re-execução;
   blocos patológicos (>400 linhas) são rejeitados no parse. Cobertura:
-  `scripts/unit.test.ts` testa parse, contenção, allowlist, dimensões PNG e o
-  caminho fim-a-fim com re-execução real (scripts `echo` num workspace temp).
+  `scripts/unit.test.ts` testa parse, contenção, allowlist, dimensões PNG,
+  freshness por mtime, o predicado compartilhado prompt/gate e o caminho
+  fim-a-fim com re-execução real (scripts `echo` num workspace temp).
 
 ## Round efficiency + async deploy (31/08, v1.1)
 

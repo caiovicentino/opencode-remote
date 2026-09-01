@@ -19,6 +19,7 @@ import {
   evidenceShotDimsOk,
   lessonsBlock,
   needsPlanner,
+  needsUiEvidence,
   normalizeEvidenceLine,
   parseEvidenceBlock,
   plannerPrompt,
@@ -768,7 +769,26 @@ check("stdlibShadow: non-stdlib root file passes", stdlibShadowHits("A\tmain.py\
   const fab = verifyEvidence(ws, fabricated, false);
   check("evidence: fabricated output rejected by re-execution", fab.ok === false && fab.detail.includes("diverges"));
   check("evidence: missing block rejected", verifyEvidence(ws, "all done", false).detail.includes("no EVIDENCE block"));
-  check("evidence: non-allowlisted command rejected", verifyEvidence(ws, "EVIDENCE:\n$ rm -rf /\n", false).detail.includes("non-allowlisted"));
+  check("evidence: non-allowlisted command dropped, never executed", verifyEvidence(ws, "EVIDENCE:\n$ rm -rf /\n", false).detail.includes("missing required command"));
+  const transcript = `EVIDENCE:\n$ npm run typecheck --silent\nTS-OK\n$ npm run test:unit --silent\n$ npm run typecheck\nUNIT-OK\n`;
+  check("evidence: prompt-looking lines in real output don't reject an honest block", verifyEvidence(ws, transcript, false).ok === true && !parseEvidenceBlock(transcript)?.commands.some((c) => c.cmd === "npm run typecheck"));
+  // round 2: one predicate drives prompt AND gate (reviewer finding #1/#5)
+  check("evidence: needsUiEvidence is the union of area tag and diff", needsUiEvidence("ui", false) && needsUiEvidence("desktop", false) && needsUiEvidence("infra", true) && !needsUiEvidence("infra", false));
+  check("evidence: prompt warns that UI diffs need shots even untagged", builderPrompt(INFRA_TASK, 1, "", []).includes("even when this task is not tagged ui/desktop"));
+  // round 2: screenshot freshness — a stale PNG from an earlier task must not pass
+  const stale = join(ws, "stale.png");
+  writeFileSync(stale, png(1440, 900));
+  const past = Date.now() / 1000 - 60;
+  utimesSync(stale, past, past);
+  const fresh = join(ws, "fresh.png");
+  writeFileSync(fresh, png(1440, 900));
+  writeFileSync(join(ws, "phone-still-fresh.png"), png(390, 844));
+  const uiStale = `EVIDENCE:\n$ npm run typecheck --silent\nTS-OK\n$ npm run test:unit --silent\nUNIT-OK\nshot-1440x900: ${stale}\nshot-390: ${ws}/phone-still-fresh.png\n`;
+  const uiFresh = uiStale.replace(stale, fresh);
+  const startedAt = Date.now() - 10_000;
+  check("evidence: stale screenshot rejected by mtime bound", verifyEvidence(ws, uiStale, true, startedAt).detail.includes("stale screenshot"));
+  check("evidence: fresh screenshot passes the mtime bound", verifyEvidence(ws, uiFresh, true, startedAt).ok === true);
+  check("evidence: freshness off when not requested", verifyEvidence(ws, uiStale, true).ok === true);
   check("evidence: missing required command rejected", verifyEvidence(ws, "EVIDENCE:\n$ npm run build --silent\nx\n", false).detail.includes("missing required command"));
   const realPng = join(ws, "shot-desktop.png");
   writeFileSync(realPng, png(1440, 900));
