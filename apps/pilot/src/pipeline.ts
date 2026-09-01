@@ -1,12 +1,13 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
-import { exec, runAgent } from "./runner";
+import { agentStream, exec, runAgent } from "./runner";
 import { nowLocalISO } from "./log";
 import { markDone, type Task } from "./backlog";
 import { emit } from "./events";
 import { latestUiShot } from "./shot";
 import { touchHeartbeat, type PilotConfig, type PilotState } from "./state";
+import { appendLessonsToWorkspace, pickRelevantLessons, readExperienceFile } from "./experience";
 
 export const CONSTITUTION = `CONSTITUTION (never violate):
 1. E2E crypto stays E2E: the relay must remain a blind router; never log plaintext frames.
@@ -15,15 +16,19 @@ export const CONSTITUTION = `CONSTITUTION (never violate):
 4. No secrets in the repo. No network listeners beyond the documented ports.
 5. Every user-visible change is documented (README/AGENTS/docs) and covered by the eval battery.`;
 
-function builderPrompt(t: Task, round: number, findings: string): string {
+/** P1-007: injected into builder/strategist prompts — top keyword-matched lessons. */
+export function lessonsBlock(lessons: string[]): string {
+  return lessons.length ? `\nEXPERIENCE — relevant lessons from past merges (follow them):\n${lessons.join("\n")}\n` : "";
+}
+
+export function builderPrompt(t: Task, round: number, findings: string, lessons: string[] = []): string {
   const uiTask = t.area === "ui" || t.area === "desktop";
   return `You are the BUILDER agent of the opencode-remote autonomous pipeline (round ${round}).
 Work inside this repository (your cwd is a dedicated clone; production runs elsewhere).
 
 TASK (${t.id}) [${t.priority}]: ${t.title}
 spec: ${t.spec || "(no extra spec — use judgement, keep the change small and shippable)"}
-${findings ? `\nREVIEWER FINDINGS TO ADDRESS:\n${findings}\n` : ""}
-
+${findings ? `\nREVIEWER FINDINGS TO ADDRESS:\n${findings}\n` : ""}${lessonsBlock(lessons)}
 Rules:
 - ${CONSTITUTION}
 - Create/keep working on branch pilot/${t.id}. Commit your work with a conventional message "pilot(${t.id}): ...".
@@ -38,6 +43,102 @@ ${round > 1 ? `- Rounds 1..${round - 1} already committed work on this branch. I
   }
 
 When finished, your LAST line of output must be exactly: PILOT:TASK-DONE`;
+}
+
+/**
+ * P1-007 SCRIBE role: distill ≤3 reusable lessons from a just-merged diff.
+ * The agent only OUTPUTS lesson lines — the runner validates, dedupes, appends
+ * to docs/EXPERIENCE.md and commits, so an LLM never edits the file directly.
+ */
+export function scribePrompt(t: Task, diff: string, findings: string): string {
+  return `You are the SCRIBE agent of the opencode-remote autonomous pipeline.
+The task below was just merged after passing adversarial reviews and the deterministic gatekeeper.
+Your job: distill reusable engineering lessons for future agents.
+
+TASK (${t.id}) [${t.priority}]: ${t.title}
+spec: ${t.spec || "(none)"}
+${findings ? `\nREVIEWER FINDINGS (already addressed by the merge):\n${findings}\n` : ""}
+Rules:
+- Read the diff below (and the repo if needed). Do NOT modify any files.
+- Output 1 to 3 lessons: concrete, generalizable rules a future agent must
+  follow when touching similar code (gotchas, root causes, invariants). Skip the obvious.
+- One lesson per line, EXACTLY this format (plain text, no markdown headings or code blocks):
+  - When <situation>, do <action> (fonte: ${t.id})
+
+Your LAST lines must be exactly:
+LESSONS:
+<lesson lines>
+SCRIBE:DONE
+
+DIFF:
+\`\`\`diff
+${diff.slice(0, 30_000)}
+\`\`\``;
+}
+
+/** Parse the lesson lines between the LESSONS: marker and SCRIBE:DONE (max 3). */
+export function parseScribeLessons(output: string): string[] {
+  const idx = output.lastIndexOf("LESSONS:");
+  if (idx < 0 || !/SCRIBE:DONE/.test(output.slice(idx))) return [];
+  const tail = output.slice(idx + "LESSONS:".length);
+  const body = tail.split("SCRIBE:DONE")[0] ?? "";
+  return body
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => /^- \S/.test(l))
+    .slice(0, 3);
+}
+
+/**
+ * Append lessons to the workspace EXPERIENCE.md and push to main. Retries the
+ * whole append+commit+push cycle: concurrent slots' scribes can move main
+ * between the reset and the push, so a non-fast-forward is expected and cheap
+ * to redo (the append is recomputed from the freshly fetched file each time).
+ */
+function commitLessons(ws: string, id: string, lessons: string[]): boolean {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    exec("git fetch -q origin", { cwd: ws, allowFail: true });
+    exec("git checkout -q main", { cwd: ws, allowFail: true });
+    exec("git reset -q --hard origin/main", { cwd: ws, allowFail: true });
+    exec("git clean -qfd", { cwd: ws, allowFail: true });
+    const added = appendLessonsToWorkspace(ws, lessons, id);
+    if (!added) return true; // all deduped away — nothing to commit
+    const commit = exec(`git add docs/EXPERIENCE.md && git commit -qm "pilot(scribe): ${added} lesson(s) from ${id}"`, {
+      cwd: ws,
+      allowFail: true,
+    });
+    if (!commit.ok) return false; // e.g. index.lock churn — give up, next merge tries again
+    if (exec("git push -q origin main", { cwd: ws, allowFail: true }).ok) return true;
+  }
+  return false;
+}
+
+async function runScribe(ws: string, t: Task, diff: string, findings: string): Promise<void> {
+  emit("phase", { task: t.id, phase: "scribe" });
+  const out = await runAgent(scribePrompt(t, diff, findings), {
+    cwd: ws,
+    timeoutMin: 10,
+    label: `scribe-${t.id}`,
+    onStdout: agentStream("scribe"),
+  });
+  if (!out.output.includes("SCRIBE:DONE")) {
+    logScribe(t.id, "scribe did not finish — lessons skipped");
+    return;
+  }
+  const lessons = parseScribeLessons(out.output);
+  if (!lessons.length) {
+    logScribe(t.id, "no parsable lessons — nothing recorded");
+    return;
+  }
+  const ok = commitLessons(ws, t.id, lessons);
+  logScribe(t.id, `committed ${lessons.length} lesson(s) to docs/EXPERIENCE.md`, ok);
+  emit("phase", { task: t.id, phase: "scribe-done", ok, detail: `${lessons.length} lesson(s)` });
+}
+
+function logScribe(task: string, msg: string, ok?: boolean) {
+  console.log(
+    JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "scribe", data: { task, msg, ok } }),
+  );
 }
 
 function reviewerPrompt(role: string, focus: string, t: Task, diff: string, uiShot: string | null): string {
@@ -182,7 +283,9 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
   for (let round = 1; round <= cfg.maxReviewRounds && !merged; round++) {
     emit("phase", { task: t.id, phase: "builder", detail: `round ${round}` });
     console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "builder round", data: { task: t.id, round } }));
-    const build = await runAgent(builderPrompt(t, round, findings), {
+    // P1-007: top-5 lessons keyword-matched against this task, most recent first
+    const lessons = pickRelevantLessons(readExperienceFile(ws), t.title, t.spec);
+    const build = await runAgent(builderPrompt(t, round, findings, lessons), {
       cwd: ws,
       timeoutMin: cfg.taskTimeoutMin,
       label: `builder-${t.id}-r${round}`,
@@ -319,6 +422,17 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
           try {
             rmSync(f);
           } catch {}
+        }
+        // P1-007 SCRIBE: distill lessons from the merged diff while the
+        // workspace still sits on updated main — outside the gate lock (LLM
+        // latency must not block other slots) and before the pipeline returns
+        // (the next pipeline resets this worktree, which would race the agent).
+        try {
+          await runScribe(ws, t, diff, findings);
+        } catch (err) {
+          console.log(
+            JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "scribe crashed", data: { task: t.id, err: String(err).slice(0, 200) } }),
+          );
         }
       }
       if (!merged) return { ok: false, detail: "gatekeeper rejected: eval battery or invariants failed" };

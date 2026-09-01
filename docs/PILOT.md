@@ -31,6 +31,7 @@ BACKLOG.md ──> BUILDER ────┬──> SECURITY REVIEWER ─┬──
 | `builder` | implementa a task em branch `pilot/<id>`, commita | 45 min |
 | `security reviewer` | foco: crypto, auth, injection, secrets | 20 min |
 | `quality reviewer` | foco: regressão, UX, docs, testes | 20 min |
+| `scribe` | após o merge: destila até 3 lições do diff + findings → `docs/EXPERIENCE.md` | 10 min |
 | `strategist` | quando a fila tem <2 tasks: lê código/memória/métricas e redige as próximas tasks no BACKLOG.md | 25 min |
 | `red team` (03:00/dia) | tenta quebrar segurança/robustez; achados viram task P0 | 30 min |
 | gatekeeper | **não é LLM** — roda scripts, decide por exit codes | — |
@@ -222,6 +223,34 @@ Only verified findings reach the builder prompt in the next round; the
 reviewer prompt documents the citation contract. Pinned by unit tests in
 `scripts/unit.test.ts` (one valid citation with a real path, one hallucinated
 path — only the invalid one is dropped).
+
+## Experience memory (IER, P1-007)
+
+O pipeline mantém uma **memória de experiência** versionada em `docs/EXPERIENCE.md`:
+lições de engenharia de uma linha, no formato `- When <situação>, do <ação> (fonte: <ID>)`,
+seção `## Lessons`. Três peças:
+
+1. **SCRIBE (pós-merge)**: logo depois que o gatekeeper mergea, um agent lê o diff
+   da task + os findings de review (já endereçados) e **saída** de 1-3 lições no
+   formato acima — o agent nunca edita o arquivo direto: o runner valida o formato,
+   deduplica contra o que já existe, appenda (máx. 3 por merge) e comita/pusha em
+   `main` (`pilot(scribe): N lesson(s) from <ID>`), com retry de push para lidar com
+   scribes concorrentes de slots paralelos. Falha do scribe nunca falha o pipeline
+   (o merge já aconteceu); é log + evento `scribe-done`.
+2. **Injeção nos prompts**: `builderPrompt` e o prompt do strategist recebem o
+   **top-5 de lições relevantes** — keyword-match (tokenizado, stopword-filtered)
+   do título (peso 2) + spec (peso 1) da task contra o texto da lição, empate
+   resolvido pela mais recente primeiro. Task sem overlap de keywords não recebe
+   lição nenhuma (nada é injetado à força).
+3. **Manutenção noturna (red team)**: no pass noturno das 03:00, além da caça a
+   buracos de segurança, o pilot **deduplica e poda** `docs/EXPERIENCE.md`
+   quando ele passa de **60 lições** — dedupe por chave normalizada (case/
+   pontuação/provenance-insensitive, vence a ocorrência mais recente) e poda
+   para as 60 mais recentes, com commit+push `pilot(redteam): experience maintenance`.
+
+A memória cresce a cada merge (critério de aceite) e os prompts provam a injeção
+nos testes de `scripts/unit.test.ts` (parse, match, append-dedupe, cap e block do
+builder).
 
 ## RESEARCHER role (daily frontier scan)
 

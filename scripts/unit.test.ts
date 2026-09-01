@@ -11,6 +11,16 @@ import { sessionTitleOf } from "../apps/web/src/lib/title";
 import { permissionPreview } from "../apps/web/src/lib/permission";
 import { applySessionFilters } from "../apps/web/src/lib/sessionFilter";
 import { taskMergedIn } from "../apps/pilot/src/pipeline";
+import { builderPrompt, lessonsBlock, parseScribeLessons } from "../apps/pilot/src/pipeline";
+import {
+  appendLessons,
+  dedupeAndPrune,
+  EXPERIENCE_CAP,
+  maintainExperienceFile,
+  normalizeLesson,
+  parseLessons,
+  pickRelevantLessons,
+} from "../apps/pilot/src/experience";
 import { clampSlots, ensureSingleton, loadState, recordTaskFailure } from "../apps/pilot/src/state";
 import { areaKey, pickBatch, pickTasks } from "../apps/pilot/src/scheduler";
 import { blockTask, loadBacklog, parseBacklog, type Task } from "../apps/pilot/src/backlog";
@@ -775,6 +785,97 @@ check("disk guard: statfs probe returns bytes on a real dir", realFree !== null 
     events.length === 2 && events[1]!.phase === "disk-guard" && events[1]!.ok === false,
   );
   rmSync(tmpDisk, { recursive: true, force: true });
+}
+
+// --- P1-007 experience memory (IER) ------------------------------------------
+check("experience: cap pinned at 60", EXPERIENCE_CAP === 60);
+
+const EXP_TASK: Task = { id: "P1-007", priority: "P1", title: "Memory of experience", spec: "scribe lessons", area: "infra", line: "" };
+const lessonOf = (n: number) => `- When case ${n} happens, do remedy ${n} on the relay frames (fonte: P0-001)`;
+
+{
+  const md = `# Experience memory (IER)\n\nintro text\n\n## Lessons\n${lessonOf(1)}\n${lessonOf(2)}\n\n## Done\n- not a lesson\n`;
+  check("experience: parseLessons reads only the Lessons section", JSON.stringify(parseLessons(md)) === JSON.stringify([lessonOf(1), lessonOf(2)]));
+  check("experience: parseLessons empty when section missing", parseLessons("# file\n\n- nope\n").length === 0);
+}
+
+{
+  const md = [
+    "# Experience memory (IER)",
+    "",
+    "## Lessons",
+    "- When touching relay frames, keep them opaque (fonte: P0-004)",
+    "- When styling the dashboard canvas, avoid layout thrash (fonte: P2-011)",
+    "- When relay frames duplicate, check the seq watermark first (fonte: P1-002)",
+    "- When editing deploy scripts, justify invariants changes (fonte: P3-006)",
+    "- When relay latency grows, queue with backoff and retry (fonte: P9-002)",
+    "- When relay spikes happen, slow down and back off (fonte: P9-001)",
+    "",
+  ].join("\n");
+  const pick = pickRelevantLessons(md, "relay frame duplication", "keep frames opaque, check watermark");
+  check("experience: picks only keyword-matched lessons", pick.length === 4);
+  check("experience: higher score first (title beats spec weight)", pick[0]!.includes("seq watermark"));
+  check(
+    "experience: ties resolved most-recent-first",
+    pick[2]!.includes("slow down and back off") && pick[3]!.includes("queue with backoff"),
+  );
+  check("experience: no match → empty injection", pickRelevantLessons(md, "capacitor ios build", "app store packaging").length === 0);
+  const many = Array.from({ length: 7 }, (_, i) => `- When relay topic ${i} appears, handle relay ${i} (fonte: P2-00${i})`).join("\n");
+  check("experience: capped at 5 lessons", pickRelevantLessons(`${md}\n${many}`, "relay", "relay").length === 5);
+}
+
+{
+  check("experience: normalizeLesson rewrites the fonte tag", normalizeLesson("- When X happens, do Y (fonte: WRONG-ID)", "P1-007") === "- When X happens, do Y (fonte: P1-007)");
+  check("experience: normalizeLesson drops junk", normalizeLesson("too short", "P1-007") === "");
+  const t0 = "# Experience memory (IER)\n\n## Lessons\n- When a thing exists already, do not duplicate it ever again (fonte: P0-001)\n";
+  const appended = appendLessons(t0, ["- When a thing exists already, do not duplicate it ever again", "When writing tests, pin the acceptance criterion"], "P1-007");
+  check("experience: append dedupes against the file and adds new", appended.added.length === 1 && appended.added[0]!.includes("(fonte: P1-007)"));
+  const back = appendLessons(appended.md, ["- When writing tests, pin the acceptance criterion"], "P1-007");
+  check("experience: append is idempotent", back.added.length === 0 && back.md === appended.md);
+  const fresh = appendLessons(
+    "",
+    ["- When lesson one appears, do one", "- When lesson two appears, do two", "- When lesson three appears, do three", "- When lesson four appears, do four"],
+    "P1-007",
+  );
+  check("experience: append caps at 3 and creates the section", fresh.added.length === 3 && parseLessons(fresh.md).length === 3);
+}
+
+{
+  const capMd = "# Experience memory (IER)\n\n## Lessons\n" + Array.from({ length: 65 }, (_, i) => lessonOf(i)).join("\n") + "\n" + lessonOf(0) + "\n";
+  const pruned = dedupeAndPrune(capMd);
+  const kept = parseLessons(pruned.md);
+  check("experience: prune removes dupes + oldest above cap", pruned.removed === 6 && kept.length === EXPERIENCE_CAP);
+  check("experience: dedupe keeps the newest occurrence only", kept.filter((l) => l.includes("case 0")).length === 1);
+  check("experience: keeps the most recent lessons", kept[0]!.includes("case 6") && kept[kept.length - 1]!.includes("case 0"));
+  const underCap = "# Experience memory (IER)\n\n## Lessons\n" + lessonOf(1) + "\n" + lessonOf(2) + "\n";
+  check("experience: at/under cap is a no-op", dedupeAndPrune(underCap).md === underCap && dedupeAndPrune(underCap).removed === 0);
+}
+
+check("experience: lessonsBlock injects nothing when empty", lessonsBlock([]) === "" && !builderPrompt(EXP_TASK, 1, "", []).includes("EXPERIENCE"));
+check(
+  "experience: builder prompt carries the injected lessons",
+  builderPrompt(EXP_TASK, 1, "", ["- When X, do Y (fonte: P0-001)"]).includes("EXPERIENCE — relevant lessons from past merges") &&
+    builderPrompt(EXP_TASK, 1, "", ["- When X, do Y (fonte: P0-001)"]).includes("(fonte: P0-001)"),
+);
+
+{
+  const out = `thinking...\nLESSONS:\n- When a relay frame drops, check the seq watermark (fonte: P1-007)\n- When a test fails only in CI, pin the clock first (fonte: P1-007)\n- junk one-word\n- When three, do 3 (fonte: P1-007)\n- When four, do 4 (fonte: P1-007)\nSCRIBE:DONE\n`;
+  check("experience: parseScribeLessons takes max 3 between markers", parseScribeLessons(out).length === 3);
+  check("experience: parseScribeLessons requires SCRIBE:DONE", parseScribeLessons(out.replace("SCRIBE:DONE", "")).length === 0);
+  check("experience: parseScribeLessons empty without marker", parseScribeLessons("- When a, do b (fonte: P1-007)").length === 0);
+}
+
+{
+  const expDir = mkdtempSync(join(tmpdir(), "ocr-experience-"));
+  mkdirSync(join(expDir, "docs"), { recursive: true });
+  const file = join(expDir, "docs", "EXPERIENCE.md");
+  writeFileSync(file, `# Experience memory (IER)\n\n## Lessons\n${Array.from({ length: 62 }, (_, i) => lessonOf(i)).join("\n")}\n`);
+  const first = maintainExperienceFile(expDir);
+  check("experience: maintain prunes a file above the cap", first.changed && first.removed === 2 && first.lessons === 60);
+  const second = maintainExperienceFile(expDir);
+  check("experience: maintain is a no-op below the cap", !second.changed && second.lessons === 60);
+  check("experience: maintain on a missing file does nothing", maintainExperienceFile(join(expDir, "nope")).changed === false);
+  rmSync(expDir, { recursive: true, force: true });
 }
 
 if (failures > 0) {
