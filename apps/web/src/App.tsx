@@ -51,6 +51,9 @@ interface DesktopBridge {
   /** P2-007: first-run QR overlay state (desktop shell only). */
   getPairingState?: () => Promise<PairingState | null>;
   onPairingState?: (cb: (state: PairingState | null) => void) => () => void;
+  /** P3-014: opencode-remote:// pair link handed over by the OS (validated in the shell). */
+  getDeepLink?: () => Promise<string | null>;
+  onDeepLink?: (cb: (uri: string) => void) => () => void;
 }
 
 function desktopBridge(): DesktopBridge | null {
@@ -304,9 +307,29 @@ export default function App() {
     // connect(persist=true) — so the manual screen only appears as fallback.
     const bridge = desktopBridge();
     if (!bridge?.getPairUrl) return;
-    bridge
-      .getPairUrl()
-      .then(async (uri) => {
+    // P3-014: an opencode-remote:// pair link opened by the OS (install/invite
+    // page) takes precedence and routes through the SAME parsePairingUri path
+    // as paste-pairing — no new crypto, no new flow.
+    let pairingStarted = false;
+    const applyDeepLink = (uri: string | null | undefined): boolean => {
+      const pairing = uri ? parsePairingUri(uri) : null;
+      if (!pairing) return false;
+      if (!pairingStarted) {
+        pairingStarted = true;
+        void connect(pairing, true);
+      }
+      return true;
+    };
+    const offDeepLink = bridge.onDeepLink?.((uri) => {
+      // Only while still unpaired — a running session is never hijacked.
+      if (!loadState()) applyDeepLink(uri);
+    });
+    const getPairUrl = bridge.getPairUrl;
+    void (async () => {
+      try {
+        const deep = await bridge.getDeepLink?.();
+        if (applyDeepLink(deep)) return;
+        const uri = await getPairUrl();
         if (!uri) return;
         const pairing = parsePairingUri(uri);
         if (!pairing) return;
@@ -318,10 +341,11 @@ export default function App() {
           await bridge.approveClient(identity.publicKey);
         }
         void connect(pairing, true);
-      })
-      .catch(() => {
+      } catch {
         /* no URI or unparsable URI → PairingView fallback */
-      });
+      }
+    })();
+    return () => offDeepLink?.();
   }, []);
 
   // Web Share Target (Android/desktop Chrome): shared content arrives as query params

@@ -15,6 +15,7 @@ import {
 import { initDesktopLog, log, logError } from "./desktop-log";
 import { phonePaired, type PairingState } from "./pairing";
 import { daemonNotify, NOTIFY_BACK_BODY, NOTIFY_DOWN_BODY, NOTIFY_TITLE, type DaemonHealth } from "./notify";
+import { deepLinkFromArgv, parseDeepLink } from "./deeplink";
 import { daemonTooltip, loginItemSupported } from "./tray";
 import { checkForUpdatesOnBoot } from "./update";
 import { loadWindowBounds, saveWindowBounds, WINDOW_MIN, windowStateFile } from "./window-state";
@@ -52,7 +53,26 @@ const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
 } else {
-  app.on("second-instance", () => showMainWindow());
+  // P3-014: OS-level registration for opencode-remote:// pair links. Packaged
+  // builds only — a dev run must never steal the OS handler — and only on the
+  // platforms that support the flow (macOS open-url, Windows second-instance
+  // argv). Registration covers the packaged app alone; electron-builder
+  // declares the scheme in the bundle (protocols: in electron-builder.yml).
+  if (app.isPackaged && (process.platform === "darwin" || process.platform === "win32")) {
+    app.setAsDefaultProtocolClient("opencode-remote");
+  }
+  // macOS: Finder/LaunchServices hands the URL over before ready on a cold
+  // start — register early so the very first launch already pairs.
+  app.on("open-url", (event, url) => {
+    event.preventDefault();
+    handleDeepLink(url);
+  });
+  app.on("second-instance", (_event, argv) => {
+    showMainWindow();
+    // Windows: the OS spawns a second process whose argv carries the URL;
+    // the single-instance winner receives it here.
+    handleDeepLink(deepLinkFromArgv(argv));
+  });
   app
     .whenReady()
     .then(() => onReady())
@@ -120,6 +140,14 @@ async function onReady(): Promise<void> {
   // Boot pairing URI captured from the daemon sidecar's stdout (null when the
   // daemon was reused or hasn't printed it yet) — lets the renderer auto-pair.
   ipcMain.handle("app:pairUrl", () => getPairUrl());
+  // P3-014: late pull for opencode-remote:// pair links. A renderer mounting
+  // after the OS already handed over the URL (cold start via open-url) reads
+  // the cached value here; consumed once so a stale link can't loop around.
+  ipcMain.handle("app:deepLink", () => {
+    const uri = lastDeepLink;
+    lastDeepLink = null;
+    return uri;
+  });
   // P2-007: first-run pairing state for the renderer's QR overlay. The main
   // process polls the daemon (see startPairingWatcher) and caches the result;
   // the sandboxed renderer only ever sees this derived state — never the
@@ -190,6 +218,28 @@ async function onReady(): Promise<void> {
       app.quit();
     });
   });
+}
+
+// --- opencode-remote:// deep links (P3-014) ----------------------------------
+// The OS hands the shell a raw URL (macOS open-url, Windows second-instance
+// argv) whenever an install/invite page opens the app. Validation is pure
+// (src/deeplink.ts): only a well-formed pair URI passes. A valid link is
+// cached for the renderer's late pull (app:deepLink) and pushed to any live
+// window; the renderer routes it through the same parsePairingUri path as
+// paste-pairing — no new crypto.
+
+let lastDeepLink: string | null = null;
+
+function handleDeepLink(raw: unknown): void {
+  const uri = parseDeepLink(raw);
+  if (!uri) return;
+  // Logged without the URI: it carries the room's pairing key material and
+  // the desktop.log lives on disk unencrypted.
+  log("[desktop] deep link accepted (opencode-remote://pair)");
+  lastDeepLink = uri;
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send("ocr:deep-link", uri);
+  }
 }
 
 // --- first-run pairing watcher (P2-007) --------------------------------------
