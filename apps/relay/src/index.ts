@@ -2,6 +2,7 @@ import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import { readFileSync } from "node:fs";
 import { WebSocketServer, type WebSocket } from "ws";
+import { TokenBucket } from "./ratelimit";
 
 /**
  * Relay: a blind router.
@@ -18,17 +19,29 @@ const PORT = Number(process.env.RELAY_PORT ?? 8787);
 const MAX_FRAME = 1_000_000; // bytes; sealed op payloads are far smaller
 const MAX_SOCKETS = 1000;
 const MAX_PER_ROOM = 10;
+// per-device rate limit on forwarded message frames (0 disables)
+const RATE_PER_MIN = Number(process.env.RELAY_RATE_PER_MIN ?? 30);
+const RATE_BURST = Number(process.env.RELAY_RATE_BURST ?? 10);
+const RATE_LIMIT_CLOSE = 4029; // custom 4xxx: "too many frames"
 
 interface Socket extends WebSocket {
   id?: string;
   rooms?: Set<string>;
+  bucket?: TokenBucket;
 }
 
 const rooms = new Map<string, Set<Socket>>();
 
 // --- optional metrics endpoint (localhost-only) -----------------------------
 const METRICS_PORT = Number(process.env.RELAY_METRICS_PORT ?? 0);
-const m = { connectionsTotal: 0, framesRouted: 0, bytesRouted: 0, rejects: 0, startedAt: Date.now() };
+const m = {
+  connectionsTotal: 0,
+  framesRouted: 0,
+  bytesRouted: 0,
+  rejects: 0,
+  rateLimited: 0,
+  startedAt: Date.now(),
+};
 if (METRICS_PORT) {
   createHttpServer((req, res) => {
     if (req.url?.startsWith("/metrics")) {
@@ -44,6 +57,8 @@ if (METRICS_PORT) {
           `relay_bytes_routed ${m.bytesRouted}`,
           "# TYPE relay_rejects counter",
           `relay_rejects ${m.rejects}`,
+          "# TYPE relay_rate_limited_total counter",
+          `relay_rate_limited_total ${m.rateLimited}`,
           "# TYPE relay_rooms_active gauge",
           `relay_rooms_active ${rooms.size}`,
         ];
@@ -61,6 +76,7 @@ if (METRICS_PORT) {
             frames_routed: m.framesRouted,
             bytes_routed: m.bytesRouted,
             rejects: m.rejects,
+            rate_limited_total: m.rateLimited,
             rooms_active: rooms.size,
           },
           null,
@@ -114,6 +130,8 @@ server.listen(PORT, () => {
     tls: Boolean(tlsCert),
     maxFrame: MAX_FRAME,
     maxPerRoom: MAX_PER_ROOM,
+    ratePerMin: RATE_PER_MIN,
+    rateBurst: RATE_BURST,
   });
 });
 
@@ -136,6 +154,25 @@ wss.on("connection", (socket: Socket) => {
       return;
     }
     if (typeof frame.room !== "string" || typeof frame.payload !== "string") return;
+
+    // token bucket per connection (one device session). Room-owner frames
+    // (from === room, i.e. the daemon's chunked transfers and event stream)
+    // are exempt: the owner is trusted infrastructure, and throttling it
+    // would stall large res-chunk flows mid-transfer.
+    if (RATE_PER_MIN > 0 && frame.from !== frame.room) {
+      socket.bucket ??= new TokenBucket(RATE_BURST, RATE_PER_MIN);
+      if (!socket.bucket.take()) {
+        m.rateLimited++;
+        // identity prefix for triage only — never any payload content
+        ev("warn", "rate limited, dropping device", {
+          id: socket.id,
+          from: String(frame.from).slice(0, 10),
+          close: RATE_LIMIT_CLOSE,
+        });
+        socket.close(RATE_LIMIT_CLOSE, "rate limited");
+        return;
+      }
+    }
 
     ev("info", "frame in", {
       room: frame.room.slice(0, 8),

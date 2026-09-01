@@ -16,8 +16,12 @@ the handshake proves both sides possess the matching secret.
 ### apps/relay
 A blind router. Forwards opaque `RelayFrame` envelopes between sockets that
 share a room id. Deliberately cannot decrypt, forge or reorder payloads.
-Resource limits: 1MB/frame, 1000 sockets, 10 peers/room. Optional TLS
-(`wss://`) or termination via Caddy.
+Resource limits: 1MB/frame, 1000 sockets, 10 peers/room, and a per-connection
+token bucket on message frames (30 msgs/min, burst 10 — `RELAY_RATE_PER_MIN` /
+`RELAY_RATE_BURST`, 0 disables). A device over budget is disconnected with
+close code 4029 and counted in `rate_limited_total` on `/metrics`; the room
+owner (the daemon, `from === room`) is exempt so chunked transfers never stall.
+Optional TLS (`wss://`) or termination via Caddy.
 
 ### apps/daemon
 Runs next to `opencode serve`. Responsibilities:

@@ -33,6 +33,10 @@ identity servers, no accounts.
 
 - A compromised relay can DoS you (drop frames) but cannot read, alter or
   forge content.
+- A rogue device cannot flood the relay: message frames are token-bucketed
+  per connection (30 msgs/min, burst 10, tunable via env) and the over-budget
+  socket is dropped with close code 4029. The relay stays blind — limits use
+  only envelope metadata, never payload content.
 - Malicious image attachments are downscaled and re-encoded by the browser
   canvas before reaching the daemon; session history is rendered as text
   with sandboxed iframes for HTML previews.
