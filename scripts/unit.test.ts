@@ -72,7 +72,7 @@ import type { PilotConfig } from "../apps/pilot/src/state";
 import { overlayVisible, phonePaired } from "../apps/desktop/src/pairing";
 import { daemonTooltip, loginItemSupported, trayIconSource } from "../apps/desktop/src/tray";
 import { updateMenuLabel } from "../apps/desktop/src/update";
-import { daemonNotify, NOTIFY_BACK_BODY, NOTIFY_DOWN_BODY } from "../apps/desktop/src/notify";
+import { appIdForPlatform, applyAppUserModelId, daemonNotify, NOTIFY_BACK_BODY, NOTIFY_DOWN_BODY, WINDOWS_APP_ID } from "../apps/desktop/src/notify";
 import { DEEP_LINK_QUERY_MAX, deepLinkFromArgv, parseDeepLink } from "../apps/desktop/src/deeplink";
 import {
   DEFAULT_WINDOW_BOUNDS,
@@ -1342,6 +1342,31 @@ check(
   check(
     "notify: message strings are distinct and non-empty",
     NOTIFY_DOWN_BODY.length > 0 && NOTIFY_BACK_BODY.length > 0 && NOTIFY_DOWN_BODY !== NOTIFY_BACK_BODY,
+  );
+}
+
+// --- desktop Windows AppUserModelID (P3-020) -------------------------------------
+{
+  // The appId registered by electron-builder.yml must not drift apart from the
+  // runtime AUMID, or win32 toasts silently drop again.
+  check("aumid: constant matches the electron-builder appId", WINDOWS_APP_ID === "com.culturabuilder.opencode-remote");
+  check("aumid: win32 resolves the appId", appIdForPlatform("win32") === WINDOWS_APP_ID);
+  check("aumid: darwin resolves null (Info.plist covers it)", appIdForPlatform("darwin") === null);
+  check("aumid: linux resolves null", appIdForPlatform("linux") === null);
+  check("aumid: unknown platform resolves null", appIdForPlatform("freebsd") === null);
+
+  // Fake-app wiring: setAppUserModelId fires exactly once on win32, never on
+  // darwin — this is the exact contract main.ts relies on before whenReady.
+  const fakeApp = (calls: string[]) => ({ setAppUserModelId: (id: string) => calls.push(id) });
+  const winCalls: string[] = [];
+  check(
+    "aumid: win32 wires setAppUserModelId exactly 1x",
+    applyAppUserModelId(fakeApp(winCalls), "win32") === true && winCalls.length === 1 && winCalls[0] === WINDOWS_APP_ID,
+  );
+  const macCalls: string[] = [];
+  check(
+    "aumid: darwin never calls setAppUserModelId",
+    applyAppUserModelId(fakeApp(macCalls), "darwin") === false && macCalls.length === 0,
   );
 }
 

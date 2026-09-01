@@ -15,7 +15,7 @@ import {
 } from "./daemon";
 import { initDesktopLog, log, logError } from "./desktop-log";
 import { phonePaired, type PairingState } from "./pairing";
-import { daemonNotify, NOTIFY_BACK_BODY, NOTIFY_DOWN_BODY, NOTIFY_TITLE, type DaemonHealth } from "./notify";
+import { applyAppUserModelId, daemonNotify, NOTIFY_BACK_BODY, NOTIFY_DOWN_BODY, NOTIFY_TITLE, type DaemonHealth } from "./notify";
 import { deepLinkFromArgv, parseDeepLink } from "./deeplink";
 import { daemonTooltip, loginItemSupported, trayIconSource } from "./tray";
 import { checkForUpdatesOnBoot, feedUrlFromEnv, updateMenuLabel, type UpdateStatus } from "./update";
@@ -57,6 +57,10 @@ const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
 } else {
+  // P3-020: Windows toasts are dropped by the OS unless the AppUserModelID is
+  // set (must match electron-builder.yml's appId); must happen before ready.
+  // macOS resolves the identity via Info.plist, so the call is skipped there.
+  applyAppUserModelId(app, process.platform);
   // P3-014: OS-level registration for opencode-remote:// pair links. Packaged
   // builds only — a dev run must never steal the OS handler — and only on the
   // platforms that support the flow (macOS open-url, Windows second-instance

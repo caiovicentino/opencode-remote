@@ -211,13 +211,16 @@ light/dark menu bar, degrading to an embedded 16px glyph when the asset is
 unavailable.
 
 **Native notification when the daemon stops**: if the sidecar's respawn budget
-is exhausted, the shell fires a one-time macOS notification —
+is exhausted, the shell fires a one-time native notification —
 `daemon parou — reabra o OpenCode Remote` — and `daemon de volta` when a
 healthy daemon answers again. Each transition notifies exactly once (deduped
 by the same 3s poll that feeds the tray tooltip) and the feature is
 best-effort: on platforms without notification support the shell keeps
 running silently, and with the window closed to the tray this is how a
-non-technical user finds out control was lost.
+non-technical user finds out control was lost. On Windows the shell also
+registers its AppUserModelID at boot (`com.culturabuilder.opencode-remote`,
+matching the packaged appId) — without it win32 toasts are silently dropped
+by the OS, so this is what makes notifications functional there.
 
 **Close-to-tray keeps the daemon alive**: closing the window (red button,
 `Alt+F4`) no longer quits the app — on every platform the window hides and the

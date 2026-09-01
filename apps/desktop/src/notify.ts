@@ -30,3 +30,22 @@ export function daemonNotify(prev: DaemonHealth | null, next: DaemonHealth): Not
   if (prev === null || prev === next) return { notify: "none" };
   return { notify: next === "down" ? "down" : "back" };
 }
+
+/** AppUserModelID for Windows toasts — must match the appId declared in
+ * electron-builder.yml or win32 notifications silently drop (P3-020). */
+export const WINDOWS_APP_ID = "com.culturabuilder.opencode-remote";
+
+/** Pure appId resolution: Windows needs the AUMID wired at runtime; macOS
+ * resolves through the Info.plist and Linux has no AUMID concept at all. */
+export function appIdForPlatform(platform: string): string | null {
+  return platform === "win32" ? WINDOWS_APP_ID : null;
+}
+
+/** Wire the AUMID into the app, tolerating an id-less (non-win32) target as a
+ * no-op. Electron-free signature so unit tests can pass a fake app. */
+export function applyAppUserModelId(app: { setAppUserModelId(id: string): void }, platform: string): boolean {
+  const id = appIdForPlatform(platform);
+  if (id === null) return false;
+  app.setAppUserModelId(id);
+  return true;
+}
