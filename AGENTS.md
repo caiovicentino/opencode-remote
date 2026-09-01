@@ -74,3 +74,20 @@ sua resposta** — o app desktop lista esses arquivos no pane "Artifacts"
 (html em iframe sandboxed, md/tabelas e csv renderizados, pdf inline) e mostra
 um card anexado na mensagem que cita o artifact. Use `uploads/` (método acima)
 quando o objetivo for o usuário baixar o arquivo no celular.
+
+## Browser self-driving (validação visual de UI)
+
+O daemon controla um Chromium headless no host via `/api/browse` (Playwright).
+Para validar visualmente mudanças de UI, use o CLI:
+
+    node tools/browse.mjs open <url> [shot.png]   # navegar (+ screenshot)
+    node tools/browse.mjs shot <out.png>          # screenshot da página atual
+    node tools/browse.mjs click "text=Settings"   # ou click <x> <y>
+    node tools/browse.mjs text                    # extrair texto visível
+
+O token vem de `~/.opencode-remote/daemon.json` (loopback apenas). Screenshots
+pós-deploy ficam em `~/.opencode-remote/pilot/shots/` (evidência por task,
+com retenção dos 20 mais recentes) e reviewers os citam no veredito
+(docs/PILOT.md). Seus próprios checks pré-merge vão em
+`~/.opencode-remote/pilot/shots/builder/` — o subdir builder não é usado como
+evidência de review.

@@ -32,9 +32,44 @@ opencode-remote token
 | POST | `/api/session/:id/message` | send a prompt `{ text }` → `202` |
 | GET | `/api/artifacts?session=<id>` | list agent artifacts (all sessions, or one) |
 | GET | `/api/artifacts/file?session=<id>&name=<file>` | raw artifact bytes |
+| GET | `/api/browse` | list live browser sessions |
+| POST | `/api/browse/open` | navigate `{ url, session?, width?, height? }` |
+| POST | `/api/browse/click` | click by `{ selector }`, `{ text }` or `{ x, y }` |
+| GET | `/api/browse/text?session=` | extract visible text `{ title, url, text }` |
+| GET | `/api/browse/screenshot?session=&w=&h=` | PNG screenshot of the live viewport |
+| POST | `/api/browse/close` | close a session `{ }` (name via `?session=`) |
 
 Prompts are asynchronous: the endpoint returns `202 { accepted }` while the
 agent works. Poll `messages` for the reply, or use the SDK's `sendAndWait`.
+
+### Browser self-driving (P2-011)
+
+`/api/browse/*` drives a headless Chromium on the host (Playwright). Sessions
+are named (`?session=`, default `main`), capped at 3 with a 5-minute idle
+timeout, and only accept `http:`/`https:` targets — including loopback, since
+screenshotting local services (dashboard, dev servers) is the point; callers
+already hold the daemon token, so browse adds no privilege. The Chromium
+renderer sandbox stays ON (any Chromium n-day must not become host compromise);
+only set `OCR_BROWSE_NO_SANDBOX=1` on environments where the sandbox is
+known-broken. Request bodies are capped at 64 KB. Audit entries land in the
+same `audit.log` the app reviews; set `OCR_BROWSE_DISABLED=1` to turn the
+surface off. The desktop app exposes the same routes through the **🌐 Browser**
+pane (screenshot loop — page content never renders inside the app origin).
+
+```bash
+TOKEN=$(opencode-remote token)
+
+# navigate + screenshot
+curl -s -X POST -H "Authorization: Bearer $TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"url":"http://127.0.0.1:8792/dashboard"}' \
+  http://127.0.0.1:8792/api/browse/open
+curl -s -H "Authorization: Bearer $TOKEN" \
+  http://127.0.0.1:8792/api/browse/screenshot -o shot.png
+```
+
+Agents (builder/reviewer of the pilot) have a tiny CLI for this:
+`node tools/browse.mjs open <url> [shot.png]` — see `docs/PILOT.md`.
 
 ### Artifacts
 

@@ -22,6 +22,7 @@ import SettingsView, { applyTheme } from "./components/SettingsView";
 import FilesView from "./components/FilesView";
 import ArtifactsView from "./components/ArtifactsView";
 import SendToAgentView from "./components/SendToAgentView";
+import BrowserView, { type BrowseFn } from "./components/BrowserView";
 
 type Phase = "unpaired" | "connecting" | "paired" | "error";
 
@@ -31,6 +32,11 @@ type TabId = "sessions" | "files" | "settings";
 interface DesktopBridge {
   getPairUrl?: () => Promise<string | null>;
   approveClient?: (pub: string) => Promise<boolean>;
+  daemonBrowse?: (req: { path: string; method?: string; body?: unknown }) => Promise<{
+    status: number;
+    contentType: string;
+    body: string;
+  } | null>;
 }
 
 function desktopBridge(): DesktopBridge | null {
@@ -128,6 +134,10 @@ export default function App() {
   const [settings, setSettings] = useState(false);
   const [filesView, setFilesView] = useState(false);
   const [artifactsView, setArtifactsView] = useState(false);
+  const [browserView, setBrowserView] = useState(false);
+  // stable handle: the bridge returns a fresh fn each render, which would
+  // re-trigger the BrowserView's open-on-mount effect forever
+  const [browseFn] = useState<BrowseFn | null>(() => desktopBridge()?.daemonBrowse ?? null);
   const [share, setShare] = useState<{ title?: string; text?: string; url?: string } | null>(null);
   const [tick, setTick] = useState(0);
   const [connStatus, setConnStatus] = useState<Status>("connecting");
@@ -349,6 +359,8 @@ export default function App() {
       setTick((t) => t + 1);
     } else if (artifactsView) {
       setArtifactsView(false);
+    } else if (browserView) {
+      setBrowserView(false);
     } else if (filesView) {
       setFilesView(false);
     } else if (share) {
@@ -452,6 +464,7 @@ export default function App() {
   const settingsNode = <SettingsView request={request} onBack={goBack} />;
   const filesNode = <FilesView request={request} onBack={goBack} />;
   const artifactsNode = <ArtifactsView request={request} onBack={goBack} />;
+  const browseNode = <BrowserView browse={browseFn} onBack={goBack} />;
   const shareNode = (
     <SendToAgentView
       request={request}
@@ -502,11 +515,13 @@ export default function App() {
       ? settingsNode
       : artifactsView
         ? artifactsNode
-        : filesView
-          ? filesNode
-          : share
-            ? shareNode
-            : null;
+        : browserView
+          ? browseNode
+          : filesView
+            ? filesNode
+            : share
+              ? shareNode
+              : null;
 
   return (
     <div
@@ -524,11 +539,12 @@ export default function App() {
             <div className="desk-side-scroll">{sessionsNode}</div>
             <div className="desk-nav">
               <button
-                className={!settings && !filesView && !artifactsView ? "active" : ""}
+                className={!settings && !filesView && !artifactsView && !browserView ? "active" : ""}
                 onClick={() => {
                   setSettings(false);
                   setFilesView(false);
                   setArtifactsView(false);
+                  setBrowserView(false);
                   setSession(null);
                 }}
                 title="Conversas"
@@ -544,6 +560,7 @@ export default function App() {
                   setSession(null);
                   setSettings(false);
                   setFilesView(false);
+                  setBrowserView(false);
                 }}
                 title="Artifacts"
               >
@@ -551,10 +568,26 @@ export default function App() {
                 <span>Artifacts</span>
               </button>
               <button
+                className={browserView ? "active" : ""}
+                onClick={() => {
+                  setNavDir("fwd");
+                  setBrowserView(true);
+                  setSession(null);
+                  setSettings(false);
+                  setFilesView(false);
+                  setArtifactsView(false);
+                }}
+                title="Browser"
+              >
+                <span>🌐</span>
+                <span>Browser</span>
+              </button>
+              <button
                 className={filesView ? "active" : ""}
                 onClick={() => {
                   setNavDir("fwd");
                   setFilesView(true);
+                  setBrowserView(false);
                 }}
                 title="Arquivos"
               >
@@ -566,6 +599,7 @@ export default function App() {
                 onClick={() => {
                   setNavDir("fwd");
                   setSettings(true);
+                  setBrowserView(false);
                 }}
                 title="Config"
               >
@@ -575,15 +609,23 @@ export default function App() {
             </div>
           </aside>
           <main className="desk-main">
-            {mainContent ?? (
-              <div className="desk-empty">
-                <div>
-                  <div className="desk-greet-mark">✻</div>
-                  <h2>olá{machineName ? `, ${machineName.toLowerCase()}` : ""}!</h2>
-                  <p>Selecione uma conversa na barra lateral</p>
-                </div>
+            {/* Browser pane stays mounted (hidden) so the user's current page,
+                URL input and text panel survive tab switches. */}
+            {browseFn && (
+              <div style={{ display: browserView ? "block" : "none", height: "100%" }}>
+                <BrowserView browse={browseFn} onBack={goBack} />
               </div>
             )}
+            {!browserView &&
+              (mainContent ?? (
+                <div className="desk-empty">
+                  <div>
+                    <div className="desk-greet-mark">✻</div>
+                    <h2>olá{machineName ? `, ${machineName.toLowerCase()}` : ""}!</h2>
+                    <p>Selecione uma conversa na barra lateral</p>
+                  </div>
+                </div>
+              ))}
           </main>
         </div>
       ) : (

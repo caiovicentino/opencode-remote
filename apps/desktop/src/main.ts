@@ -38,6 +38,39 @@ async function onReady(): Promise<void> {
   buildTray();
 
   ipcMain.handle("app:version", () => app.getVersion());
+  // P2-011: narrow HTTP bridge to the local daemon's /api/browse surface so
+  // the renderer can drive the host browser without ever seeing the api token
+  // (the 0600 state file stays in this main process). Loopback only, browse
+  // routes only — the token never leaves this process.
+  ipcMain.handle("app:daemonBrowse", async (_e, req: { path?: string; method?: string; body?: unknown }) => {
+    if (!req || typeof req.path !== "string") return null;
+    const method = req.method === "POST" ? "POST" : "GET";
+    // Anchored, URL-parsed allowlist: `new URL` normalizes ../ traversal into
+    // the pathname, so only genuine /api/browse[/action] paths can pass. The
+    // outbound URL is rebuilt from the parsed components — the raw renderer
+    // string is never forwarded.
+    const u = new URL(req.path, "http://127.0.0.1");
+    if (!/^\/api\/browse(\/[a-z]+)?$/.test(u.pathname)) return null;
+    try {
+      const stateFile = join(homedir(), ".opencode-remote", "daemon.json");
+      const token = (JSON.parse(readFileSync(stateFile, "utf8")) as { apiToken?: string }).apiToken;
+      if (!token) return null;
+      const res = await fetch(`http://127.0.0.1:${DAEMON_METRICS_PORT}${u.pathname}${u.search}`, {
+        method,
+        headers: { authorization: `Bearer ${token}` },
+        body: method === "POST" ? JSON.stringify(req.body ?? {}) : undefined,
+        signal: AbortSignal.timeout(45_000),
+      });
+      // defense in depth: the daemon bounds its payloads, but never trust that
+      // blindly — a screenshot is a few MB, so 32 MB is a generous ceiling
+      const raw = await res.arrayBuffer();
+      if (raw.byteLength > 32 * 1024 * 1024) return null;
+      return { status: res.status, contentType: res.headers.get("content-type") ?? "", body: Buffer.from(raw).toString("base64") };
+    } catch (err) {
+      console.error("[desktop] daemonBrowse failed:", err);
+      return null;
+    }
+  });
   // Boot pairing URI captured from the daemon sidecar's stdout (null when the
   // daemon was reused or hasn't printed it yet) — lets the renderer auto-pair.
   ipcMain.handle("app:pairUrl", () => getPairUrl());

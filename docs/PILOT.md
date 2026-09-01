@@ -190,3 +190,31 @@ and HN front page, compares against docs/VISION.md, and appends 1-2 `[spike]` ta
 BACKLOG.md ## Ready (citing the source URL in the spec). The scan commit stays on main;
 the summary is pushed to the supervisor session for review. Spike budget rule: at least
 1 in 4 tasks may be an experiment — cheap failures are signal.
+
+## Browser self-driving + review screenshots (P2-011)
+
+The daemon exposes `/api/browse` (Playwright chromium on the host) and the desktop
+app has a **Browser pane** that shows live screenshots of the host browser. The
+pipeline uses both to close the loop on UI changes:
+
+- **Builder** (tasks tagged `area: ui` or `area: desktop`): instructed to validate
+  its own output visually — `node tools/browse.mjs open <url> shot.png` — saving
+  under `pilot/shots/builder/` and referencing the PNG in the final output.
+  Builder shots are pre-merge self-checks and are structurally excluded from
+  review evidence (separate subdir + deploy-shot shape filter).
+- **Post-deploy**: when a merged task touched `apps/web/` or `apps/desktop/`
+  (detected from `git diff --name-only` — unit-tested), the deploy captures a
+  screenshot of the production dashboard into
+  `~/.opencode-remote/pilot/shots/<task>-<sha7>-<ts>.png` and emits a `ui-shot`
+  event (visible on the dashboard feed). It uses a dedicated `pilot-shot`
+  browse session so it never clobbers a session in use. Retention: the 20
+  newest shots are kept.
+- **Reviewer**: the evidence function serves only the newest deploy-shaped shot
+  **of that same task** (by mtime). The prompt states honestly that the shot
+  may predate the diff (regression baseline, not proof), asks the reviewer to
+  describe what it shows and check the diff against it, and offers the CLI for
+  fresh screenshots.
+
+So a cycle that changes the UI always leaves visual evidence in the review log,
+and the verdict references it. Browse sessions are capped (3, 5-min idle) and the
+whole surface can be disabled with `OCR_BROWSE_DISABLED=1`.

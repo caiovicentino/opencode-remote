@@ -57,7 +57,10 @@ remoto, zero confiança**.
   Artifacts** que lista e renderiza tudo dentro do app (html sandboxed,
   markdown/tabelas, PDF inline) e mensagens do chat que citam um artifact
   ganham um card anexado; também listável via `GET /api/artifacts`
-- **App desktop (inicial)** — shell Electron com a mesma UI, com tray e menu nativo
+- **App desktop (inicial)** — shell Electron com a mesma UI, com tray e menu nativo;
+  inclui um **pane Browser** que controla um Chromium headless no host via daemon
+  (`/api/browse` — navegar, clicar, extrair texto, screenshot) para agentes validarem
+  visualmente o próprio output
 
 ## Quick Start (Mac → iPhone, ~5 min)
 

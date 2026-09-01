@@ -181,7 +181,7 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
       void notifySupervisor(task.id, result.ok, result.detail.slice(0, 300)).catch(() => {});
     }
     if (result.ok && result.sha) {
-      launchDeploy(wscfg, task, result.sha);
+      launchDeploy(wscfg, task, result.sha, result.touchedUi === true);
     } else if (!result.ok) {
       if (blockedAttempts !== null && wscfg.digest) {
         await digest(
@@ -212,7 +212,7 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
  * when one is in flight the merge stays queued on main and the next deploy
  * picks it up. The deploy budget is global (all slots share it).
  */
-function launchDeploy(cfg: PilotConfig, task: Task, sha: string) {
+function launchDeploy(cfg: PilotConfig, task: Task, sha: string, touchedUi: boolean) {
   if (deployBusy) {
     log("info", "deploy in flight — merge queued on main, next deploy will pick it up", { task: task.id });
     return;
@@ -226,7 +226,7 @@ function launchDeploy(cfg: PilotConfig, task: Task, sha: string) {
   // fire-and-forget: the deploy (npm ci/build/soak) runs in the prod repo
   // while builders work in their slot clones — independent file systems
   deployBusy = true;
-  void deploy(cfg, sha)
+  void deploy(cfg, sha, { task: task.id, ui: touchedUi })
     .then((dep) => {
       log("info", "deploy result", { task: task.id, ...dep });
       if (!dep.ok) state.failures++;

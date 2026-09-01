@@ -32,7 +32,12 @@ await build({
   format: "cjs",
   target: "node20",
   outfile: join(desktop, "dist-daemon", "index.js"),
-  external: ["bufferutil", "utf-8-validate"],
+  external: ["bufferutil", "utf-8-validate",
+    // Playwright-core (P2-011, /api/browse) stays external: it is huge and
+    // resolves its chromium binary from the host cache at runtime. When the
+    // packaged app has no node_modules the require fails and /api/browse
+    // answers 502 with install instructions — browse is optional there.
+    "playwright-core"],
   // metrics.ts reads the root package.json via import.meta.url in source
   // checkouts; the bundle has no package.json next to it, so the version is
   // baked in instead (see the typeof guard there).

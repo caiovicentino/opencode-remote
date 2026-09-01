@@ -14,12 +14,15 @@ import { taskMergedIn } from "../apps/pilot/src/pipeline";
 import { clampSlots, ensureSingleton, loadState, recordTaskFailure } from "../apps/pilot/src/state";
 import { areaKey, pickBatch, pickTasks } from "../apps/pilot/src/scheduler";
 import { blockTask, loadBacklog, parseBacklog, type Task } from "../apps/pilot/src/backlog";
-import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync, utimesSync } from "node:fs";
 import { execSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { artifactMime, kindFor, listArtifacts, readArtifact, validSegment } from "../apps/daemon/src/artifacts";
+import { browseTarget, clickPoint, validSession, viewportFromParams } from "../apps/daemon/src/browse";
+import { touchedUiFromDiff } from "../apps/pilot/src/pipeline";
+import { latestUiShot, pruneShots } from "../apps/pilot/src/shot";
 import { parseMarkdown, parseInline } from "../apps/web/src/lib/md";
 import { parseCsv } from "../apps/web/src/lib/csv";
 import { artifactMentions, fmtBytes } from "../apps/web/src/lib/artifacts";
@@ -531,6 +534,86 @@ check(
 check("parseCsv basic", JSON.stringify(parseCsv("a,b\n1,2")) === JSON.stringify([["a", "b"], ["1", "2"]]));
 check("parseCsv quoted comma", JSON.stringify(parseCsv('a,b\n"x, y",2')) === JSON.stringify([["a", "b"], ["x, y", "2"]]));
 check("parseCsv escaped quotes", parseCsv('"he said ""hi"""')[0]?.[0] === 'he said "hi"');
+
+// --- browser self-driving guards (P2-011) ------------------------------------
+check("browseTarget accepts http", browseTarget("http://127.0.0.1:8792/dashboard")?.protocol === "http:");
+check("browseTarget accepts https", browseTarget("https://example.com/x")?.hostname === "example.com");
+check("browseTarget rejects file:", browseTarget("file:///etc/passwd") === null);
+check("browseTarget rejects javascript:", browseTarget("javascript:alert(1)") === null);
+check("browseTarget rejects garbage", browseTarget("not a url") === null);
+check("browseTarget rejects oversize", browseTarget(`http://a.com/${"x".repeat(3000)}`) === null);
+check("validSession accepts simple", validSession("main_2-x"));
+check("validSession rejects empty/long/path", !validSession("") && !validSession("a".repeat(40)) && !validSession("../etc"));
+
+// --- UI-cycle screenshot detection (P2-011, round-2 regression) --------------
+// input is `git diff --name-only` output: bare paths, one per line
+check("touchedUi: web file", touchedUiFromDiff("apps/daemon/src/browse.ts\napps/web/src/App.tsx"));
+check("touchedUi: desktop file", touchedUiFromDiff("apps/desktop/src/main.ts"));
+check("touchedUi: daemon-only diff", !touchedUiFromDiff("apps/daemon/src/browse.ts\ndocs/api.md"));
+check("touchedUi: empty diff", !touchedUiFromDiff(""));
+// prefixed unified-diff lines must never fool the check (bare-path contract)
+check("touchedUi: prefixed lines rejected", !touchedUiFromDiff("+++ b/apps/web/src/App.tsx"));
+// lookalike prefixes must not match ("apps/web/" is a directory boundary)
+check("touchedUi: lookalike apps/webui rejected", !touchedUiFromDiff("apps/webui/src/x.ts"));
+check("touchedUi: lookalike apps/webs rejected", !touchedUiFromDiff("apps/webs/src/x.ts"));
+
+// --- click coordinate bounds (P2-011, round-3) -------------------------------
+const vp = { width: 1280, height: 800 };
+check("clickPoint: in-range passes", clickPoint(100, 200, vp)?.x === 100 && clickPoint(100, 200, vp)?.y === 200);
+check("clickPoint: edge inclusive", clickPoint(1280, 800, vp) !== null);
+check("clickPoint: beyond width rejected", clickPoint(1281, 400, vp) === null);
+check("clickPoint: beyond height rejected", clickPoint(100, 801, vp) === null);
+check("clickPoint: negative rejected", clickPoint(-1, 100, vp) === null);
+check("clickPoint: NaN rejected", clickPoint("x", 100, vp) === null);
+check("clickPoint: no silent clamp to edge (round-3)", clickPoint(9999, 9999, vp) === null);
+
+// --- screenshot viewport params (P2-011, round-2 regression) -----------------
+check("viewport: absent params keep live viewport", viewportFromParams(null, null) === null);
+check("viewport: absent w only", viewportFromParams(null, "800") === null);
+check("viewport: valid", viewportFromParams("1280", "800")?.width === 1280);
+check("viewport: clamped to max", viewportFromParams("99999", "800")?.width === 1920);
+check("viewport: zero rejected (round-1 bug shrank shots to 200)", viewportFromParams("0", "0") === null);
+check("viewport: garbage rejected", viewportFromParams("x", "800") === null);
+
+// --- newest shot by mtime + per-task evidence scope (P2-011, round-3) --------
+{
+  const dir = mkdtempSync(join(tmpdir(), "ocr-shots-"));
+  const dir2 = mkdtempSync(join(tmpdir(), "ocr-shots2-"));
+  try {
+    check("latestUiShot: empty dir", latestUiShot(undefined, dir) === null);
+    const old = join(dir, "aaa-old.png");
+    const newest = join(dir, "zzz-new.png");
+    writeFileSync(old, "x");
+    writeFileSync(newest, "y");
+    // lexical order says aaa-old.png is first; mtime must win
+    const past = Date.now() / 1000 - 60;
+    utimesSync(old, past, past);
+    check("latestUiShot: newest by mtime, not lexical", latestUiShot(undefined, dir) === newest);
+    writeFileSync(join(dir, "notes.txt"), "not a shot");
+    check("latestUiShot: ignores non-png", latestUiShot(undefined, dir) === newest);
+    // evidence scope (round-3): only deploy-shot shape <task>-<sha7>-<ts>.png
+    writeFileSync(join(dir2, "P2-011-r1.png"), "builder self-shot");
+    writeFileSync(join(dir2, "P3-002-deadbee-123.png"), "other task");
+    const mine = join(dir2, "P2-011-abc1234-456.png");
+    writeFileSync(mine, "deploy shot");
+    check("latestUiShot: builder shots excluded from evidence", latestUiShot("P2-011", dir2) === mine);
+    check("latestUiShot: other task's shot excluded", latestUiShot("P9-999", dir2) === null);
+    check("latestUiShot: per-task filter returns own shot", latestUiShot("P3-002", dir2)?.endsWith("P3-002-deadbee-123.png") === true);
+    check("latestUiShot: unscoped call still works", latestUiShot(undefined, dir2) !== null);
+    // retention: prune keeps the newest N
+    for (let i = 0; i < 5; i++) {
+      const p = join(dir2, `P3-00${i}-abc1234-${i}.png`);
+      writeFileSync(p, "x");
+      const t = Date.now() / 1000 + i;
+      utimesSync(p, t, t);
+    }
+    pruneShots(dir2, 3);
+    check("pruneShots: keeps only newest N", readdirSync(dir2).filter((f) => f.endsWith(".png")).length === 3);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir2, { recursive: true, force: true });
+  }
+}
 
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);
