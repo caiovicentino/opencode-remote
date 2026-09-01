@@ -1,5 +1,5 @@
 import { app, BrowserWindow, ipcMain, Menu, nativeImage, Notification, screen, Tray, shell } from "electron";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import QRCode from "qrcode";
@@ -44,6 +44,14 @@ let lastUpdateStatus: UpdateStatus | null = null;
 // packaged app is invisible to the stage-5 user (no terminal), so every
 // main-process line now also lands in userData/logs/desktop.log (~1MB cap,
 // one rotated file kept). Write failures are log-only and never throw.
+// P1-051: harness escape hatch (tools/desktop.mjs) — a hermetic launch points
+// userData at a temp dir before anything reads a path under it (file log,
+// window-state, single-instance lock). Same test-only OCR_* hatch pattern.
+const harnessUserData = process.env.OCR_USER_DATA_DIR;
+if (harnessUserData) {
+  mkdirSync(harnessUserData, { recursive: true });
+  app.setPath("userData", harnessUserData);
+}
 initDesktopLog(app.getPath("userData"));
 // P3-011: a main-process exception used to crash Electron without will-quit,
 // killing the daemon sidecar with no cleanup. Installed before anything can

@@ -33,6 +33,12 @@ const RESPAWN_DELAYS_MS = (process.env.OCR_DAEMON_RESPAWN_DELAYS ?? "5000,15000,
   .filter((n) => Number.isFinite(n) && n >= 0);
 const RESPAWN_MAX_ATTEMPTS = 3;
 
+/** Test-only escape hatch (tools/desktop.mjs, P1-051): reports the sidecar as
+ * permanently down without spawning anything, so a hermetic launch gets the
+ * deterministic daemon-down pairing state instead of null. Never set in
+ * production — same policy as the other OCR_DAEMON_* test variables. */
+const FORCE_DAEMON_DOWN = process.env.OCR_DAEMON_FORCE_DOWN === "1";
+
 interface SidecarState {
   child: ChildProcess | null;
   spawned: boolean;
@@ -357,7 +363,7 @@ async function respawn(): Promise<void> {
 
 /** True once the respawn budget is exhausted and the shell stopped retrying. */
 export function isDaemonDown(): boolean {
-  return sidecar.gaveUp;
+  return FORCE_DAEMON_DOWN || sidecar.gaveUp;
 }
 
 /** Diagnostic view into the respawn bookkeeping (eval battery asserts on it). */
