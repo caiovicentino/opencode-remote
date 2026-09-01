@@ -528,6 +528,36 @@ BACKLOG.md ## Ready (citing the source URL in the spec). The scan commit stays o
 the summary is pushed to the supervisor session for review. Spike budget rule: at least
 1 in 4 tasks may be an experiment — cheap failures are signal.
 
+## Explorer noturno: computer-use agentic async (P3-052)
+
+Junto do pass noturno do red team (janela das 03:00), o pilot acorda um agente
+com **visão** para explorar o app desktop **de verdade** — via harness hermético
+do P1-051 (`tools/desktop.mjs`, sessão `explorer` isolada, sem daemon de
+produção). É a camada exploratória que complementa os reviewers adversariais:
+em vez de olhar diffs, olha o **produto** como um usuário de primeira viagem.
+
+- **O que explora**: onboarding/pairing (incl. código inválido e campos vazios),
+  fluxos completos entre panes, states de erro deliberados, dead ends de navegação.
+- **Budget de custo previsível**: no máx. **24 comandos de harness** por run
+  (enforced no prompt), timeout de agente de **25min** e cap de **5 findings**
+  inseridos por run (`EXPLORER_MAX_*` em `apps/pilot/src/explorer.ts`).
+- **Findings viram backlog**: o parser determinístico (`parseExplorerFindings`)
+  só aceita achados com `title`, `severity` (high|medium|low) e **shot que
+  existe em disco**; unknown area degrada para fila serial; títulos duplicados
+  são dedupados. Cada achado vira linha `- [ ] (P3-0XX) [P3] [explorer][sev]
+  Título — spec: ... (severity: ..., evidence: /abs/shot.png) (area: ...)` no
+  `## Ready`, commitada com `pilot(explorer): N finding(s) from nightly run`
+  e push com retry.
+- **Nunca bloqueia**: qualquer falha (sync, agente, push) é log-only — o
+  explorer não participa do circuit breaker nem reprova merge. Guard diário
+  próprio em `state.json` (`explorerLast`), independente do `redteamLast`.
+- **Watchdog**: a pass bloqueia o loop por ~25min; o callback de stdout do
+  explorer toca o heartbeat (mesma preocupação do P1-035) para o self-watchdog
+  não matar o pilot no meio da exploração.
+
+Barra de aceitação: a primeira run noturna deve gerar >=3 findings reais no
+backlog, cada um com shot anexado.
+
 ## Browser self-driving + review screenshots (P2-011)
 
 The daemon exposes `/api/browse` (Playwright chromium on the host) and the desktop

@@ -72,7 +72,8 @@ import {
   recordBlockEvent,
   recordCycle,
 } from "../apps/pilot/src/audit";
-import { blockTask, loadBacklog, parseBacklog, type Task } from "../apps/pilot/src/backlog";
+import { blockTask, loadBacklog, parseBacklog, addTask, type Task } from "../apps/pilot/src/backlog";
+import { EXPLORER_MAX_FINDINGS, EXPLORER_MAX_STEPS, EXPLORER_TIMEOUT_MIN, EXPLORER_PUSH_RETRIES, EXPLORER_PUSH_WAIT_MS, commitAndPushFindings, explorerSpec, parseExplorerFindings, type ExplorerFinding } from "../apps/pilot/src/explorer";
 import { API_PREFLIGHT, apiHealthy, idScanner, mergeAgentIds, OPENCODE_URL_DEFAULT, scanIds, waitForApi } from "../apps/pilot/src/runner";
 import { mkdtempSync, mkdirSync, readdirSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync, utimesSync } from "node:fs";
 import { execSync, spawn } from "node:child_process";
@@ -1971,6 +1972,151 @@ check(
     check("clearAuditMode: wipes the diagnosis with the pause", st.auditMode === null && st.auditDiagnosis === undefined);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// --- P3-052 nightly explorer: finding parser + backlog insertion format -----------
+{
+  const dir = mkdtempSync(join(tmpdir(), "pilot-explorer-"));
+  try {
+    const shot = join(dir, "01-boot.png");
+    writeFileSync(shot, "png");
+    const output = [
+      "prelude noise EXPLORER: FINDING inline mentions are ignored",
+      "EXPLORER: FINDING",
+      "title: Pairing error vanishes after retry",
+      "severity: high",
+      "area: ui",
+      `shot: ${shot}`,
+      "detail: The invalid-code error clears after 2s with no explanation.",
+      "",
+      "EXPLORER: FINDING",
+      "title: Unknown area finding",
+      "severity: low",
+      "area: bogus",
+      `shot: ${shot}`,
+      "detail: Kept but serial.",
+      "",
+      "EXPLORER: FINDING",
+      "title: Bad severity is dropped",
+      "severity: critical",
+      `shot: ${shot}`,
+      "detail: x",
+      "",
+      "EXPLORER: FINDING",
+      "title: Missing shot is dropped",
+      "severity: low",
+      "shot: /definitely/not/a/file.png",
+      "detail: x",
+      "",
+      "EXPLORER: FINDING",
+      "title: duplicate title",
+      "severity: low",
+      `shot: ${shot}`,
+      "detail: first",
+      "",
+      "EXPLORER: FINDING",
+      "title: Duplicate TITLE",
+      "severity: high",
+      `shot: ${shot}`,
+      "detail: second",
+    ].join("\n");
+    const found = parseExplorerFindings(output);
+    check("explorer: parses valid findings with severity/area/evidence", found[0]?.title === "Pairing error vanishes after retry" && found[0]?.severity === "high" && found[0]?.area === "ui" && found[0]?.shot === shot);
+    check("explorer: unknown area degrades to serial", found[1]?.area === "" && found[1]?.severity === "low");
+    check("explorer: invalid severity dropped", !found.some((f) => f.title === "Bad severity is dropped"));
+    check("explorer: nonexistent shot dropped", !found.some((f) => f.title === "Missing shot is dropped"));
+    check("explorer: duplicate titles deduped keeping the first", found.length === 3 && found[2]?.detail === "first");
+    check("explorer: detail collapses whitespace/newlines", found[0]?.detail === "The invalid-code error clears after 2s with no explanation.");
+
+    // budget: the per-run cap is enforced deterministically by the parser
+    const three = [1, 2, 3].map((n) => `EXPLORER: FINDING\ntitle: f${n}\nseverity: low\nshot: ${shot}\ndetail: d${n}`).join("\n");
+    check("explorer: max option caps insertion", parseExplorerFindings(three, { exists: () => true, max: 2 }).length === 2);
+    check("explorer: default budget cap is the module constant", parseExplorerFindings(three, { exists: () => true, max: EXPLORER_MAX_FINDINGS }).length === 3 && EXPLORER_MAX_FINDINGS <= 5);
+    check("explorer: budgets keep the run cost predictable", EXPLORER_MAX_STEPS > 0 && EXPLORER_TIMEOUT_MIN > 0 && EXPLORER_TIMEOUT_MIN <= 30);
+
+    // real insertion path: the addTask line must round-trip through parseBacklog
+    writeFileSync(join(dir, "BACKLOG.md"), "# B\n\n## Ready\n\n## Done\n");
+    const f: ExplorerFinding = { title: "Pairing error vanishes after retry", severity: "high", area: "ui", shot, detail: "The invalid-code error clears after 2s." };
+    addTask(dir, "P3-099", "P3", `[explorer][${f.severity}] ${f.title}`, explorerSpec(f));
+    const parsed = parseBacklog(readFileSync(join(dir, "BACKLOG.md"), "utf8"));
+    check("explorer: inserted line lands as a parseable Ready task", parsed.length === 1 && parsed[0]!.id === "P3-099" && parsed[0]!.priority === "P3" && parsed[0]!.area === "ui");
+    check("explorer: inserted spec carries severity + evidence path", parsed[0]!.spec.includes("(severity: high, evidence: ") && parsed[0]!.spec.includes(shot));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// --- P3-052 round 2: push retry semantics (commitAndPushFindings) -----------------
+{
+  // fake-driven: lands on the 3rd attempt — commit once, push 3x, sleep only between
+  const calls: string[] = [];
+  const sleeps: number[] = [];
+  let pushes = 0;
+  const landed = await commitAndPushFindings("pilot(explorer): test run", {
+    exec: (cmd) => {
+      calls.push(cmd);
+      if (cmd.includes("git push")) return { ok: ++pushes >= 3, output: "" };
+      return { ok: true, output: "" };
+    },
+    sleep: async (ms) => {
+      sleeps.push(ms);
+    },
+  });
+  check("explorer push retry: lands on a later attempt", landed === true);
+  check("explorer push retry: commit once, then pushes", calls.filter((c) => c.includes("git commit")).length === 1 && calls.filter((c) => c.includes("git push")).length === 3);
+  check("explorer push retry: waits between attempts only", sleeps.length === 2 && sleeps.every((s) => s === EXPLORER_PUSH_WAIT_MS));
+
+  // always-failing push (commit itself succeeds): budget exhausted, false reported
+  let failPushes = 0;
+  const exhausted = await commitAndPushFindings("msg", {
+    exec: (cmd) => {
+      if (cmd.includes("git push")) {
+        failPushes++;
+        return { ok: false, output: "" };
+      }
+      return { ok: true, output: "" };
+    },
+    sleep: async () => {},
+  });
+  check("explorer push retry: false after exhausting the budget", exhausted === false && failPushes === EXPLORER_PUSH_RETRIES);
+
+  // commit failure: aborts before any push is attempted
+  let calls2 = 0;
+  const noCommit = await commitAndPushFindings("msg", {
+    exec: () => {
+      calls2++;
+      return { ok: false, output: "" };
+    },
+    sleep: async () => {},
+  });
+  check("explorer push retry: commit failure aborts before pushing", noCommit === false && calls2 === 1);
+
+  // real git smoke: apostrophe in the message pins the shq escaping, and the
+  // commit must actually land on the bare remote's main
+  const repo = mkdtempSync(join(tmpdir(), "pilot-explorer-push-"));
+  try {
+    const git = (cmd: string, opts: { cwd: string }) => execSync(cmd, { cwd: opts.cwd, stdio: "pipe" }).toString();
+    execSync("git init -q -b main && git config user.email t@t.local && git config user.name t", { cwd: repo });
+    const bare = join(repo, "origin.git");
+    execSync(`git init -q --bare "${bare}"`, { cwd: repo });
+    execSync(`git remote add origin "${bare}"`, { cwd: repo });
+    writeFileSync(join(repo, "BACKLOG.md"), "# B\n\n## Ready\n");
+    const smoke = await commitAndPushFindings("pilot(explorer): smoke'd run", {
+      exec: (cmd) => {
+        try {
+          execSync(cmd, { cwd: repo, stdio: "pipe" });
+          return { ok: true, output: "" };
+        } catch {
+          return { ok: false, output: "" };
+        }
+      },
+      sleep: async () => {},
+    });
+    const remoteLog = execSync(`git --git-dir "${bare}" log --format=%s main`).toString();
+    check("explorer push retry: real git lands the commit on origin/main", smoke === true && remoteLog.includes("smoke'd run"));
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
   }
 }
 
