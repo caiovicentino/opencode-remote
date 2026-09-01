@@ -8,6 +8,7 @@ import {
   getPairUrl,
   isDaemonDown,
   readApiToken,
+  restartDaemon,
   startDaemonSidecar,
   stopDaemonSidecar,
   waitForDaemonHealth,
@@ -533,6 +534,16 @@ function buildTray(): void {
   tray.setToolTip(daemonTooltip(false));
   const items: Electron.MenuItemConstructorOptions[] = [
     { label: "Open OpenCode Remote", click: showMainWindow },
+    {
+      // P3-017: always-present one-click recovery for a sidecar whose respawn
+      // budget is exhausted (P2-017) or an adopted daemon gone unstable.
+      label: "Restart daemon",
+      click: () => {
+        // Best-effort: restartDaemon is try/caught and log-only; the extra
+        // .catch keeps any unexpected rejection away from the shell.
+        void restartDaemon().catch((err) => logError("[desktop] tray restart daemon failed:", err));
+      },
+    },
   ];
   // Login autostart is a no-op outside macOS/Windows — hide it elsewhere.
   if (loginItemSupported(process.platform)) {
