@@ -15,7 +15,8 @@ export const CONSTITUTION = `CONSTITUTION (never violate):
 2. Auth surface only grows more strict: handshake allowlist, replay protection (seq in AAD) and the 0600 state file are untouchable.
 3. scripts/invariants.ts and deploy/ are safety-critical: changes there need explicit justification in the commit message.
 4. No secrets in the repo. No network listeners beyond the documented ports.
-5. Every user-visible change is documented (README/AGENTS/docs) and covered by the eval battery.`;
+5. Every user-visible change is documented (README/AGENTS/docs) and covered by the eval battery.
+6. Design bar: the product must look professionally designed, never AI-generated. Banned tells: generic purple/blue gradients, glassmorphism abuse, emoji as icons, inconsistent spacing/typography, rounded-everything, placeholder copy. Every UI change reads as intentional craft (reference bar: Linear, Raycast, Claude Desktop).`;
 
 /** P1-007: injected into builder/strategist prompts — top keyword-matched lessons. */
 export function lessonsBlock(lessons: string[]): string {
