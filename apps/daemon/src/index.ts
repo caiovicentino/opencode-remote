@@ -1666,7 +1666,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       try {
         cfg = JSON.parse(readFileSync(join(homedir(), ".opencode-remote", "pilot.json"), "utf8"));
       } catch {}
-      let lastAux: Record<string, string> = {};
+      const lastAux: Record<string, string> = {};
       try {
         const tail = readFileSync(join(homedir(), ".opencode-remote", "logs", "pilot.log"), "utf8")
           .split("\n")
