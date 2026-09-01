@@ -616,7 +616,7 @@ async function renderReady() {
   try {
     const res = await fetch("/api/pilot-ready", { headers: { authorization: `Bearer ${token}` } });
     const { ready, blocked } = await res.json();
-    const row = (t: { id: string; title: string; area: string }, cls = "") =>
+    const row = (t, cls = "") =>
       `<div class="drow ${cls}"><b>${escapeHtml(t.id)}</b>${escapeHtml(t.title)}${t.area ? `<span class="area">${escapeHtml(t.area)}</span>` : ""}</div>`;
     const blockedHtml = (blocked || []).length
       ? `<div class="drow blocked"><b>BLOQUEADAS</b></div>` + (blocked || []).map((t) => row(t, "blocked")).join("")
