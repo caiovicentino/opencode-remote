@@ -565,7 +565,9 @@ export default function SettingsView({ request, onBack }: Props) {
                 title={r.lastError ? `last error: ${r.lastError}` : r.lastStatus === "ok" ? "last run: ok" : "never ran"}
                 style={{ fontSize: "0.85rem" }}
               >
-                {r.lastStatus === "ok" ? "🟢" : r.lastStatus === "error" ? "🔴" : "⚪"}
+                <span
+                  className={`status-dot ${r.lastStatus === "ok" ? "ok" : r.lastStatus === "error" ? "err" : "idle"}`}
+                />
               </span>
               <button
                 className="danger"

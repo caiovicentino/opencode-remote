@@ -6,6 +6,7 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { readFileSync, existsSync, mkdtempSync } from "node:fs";
+import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import WebSocket from "ws";
@@ -19,7 +20,18 @@ import {
   type OpResponse,
 } from "@ocr/protocol";
 
-const RELAY_PORT = 8899;
+// P2-055 (reviewer finding): the hardcoded port collided with whatever process
+// happened to be listening on it — the probe then read a plain HTTP 200 from a
+// stranger ("Unexpected server response: 200") instead of ECONNREFUSED, and the
+// test reported "relay never came up". Ask the kernel for a free port instead.
+const RELAY_PORT = await new Promise<number>((resolve, reject) => {
+  const srv = createServer();
+  srv.listen(0, "127.0.0.1", () => {
+    const { port } = srv.address() as AddressInfo;
+    srv.close(() => resolve(port));
+  });
+  srv.on("error", reject);
+});
 const RELAY_URL = `ws://127.0.0.1:${RELAY_PORT}`;
 
 setTimeout(() => {

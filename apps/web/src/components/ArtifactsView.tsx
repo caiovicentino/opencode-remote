@@ -1,12 +1,8 @@
 import { useEffect, useState } from "react";
-import {
-  artifactIcon,
-  fmtBytes,
-  listArtifacts,
-  type ArtifactMeta,
-} from "../lib/artifacts";
+import { fmtBytes, listArtifacts, type ArtifactMeta } from "../lib/artifacts";
 import type { OcrRequest } from "../lib/files";
 import ArtifactViewer from "./ArtifactViewer";
+import { ArtifactIcon } from "./icons";
 
 /**
  * Artifacts pane (P1-010): agent-produced documents written to
@@ -74,7 +70,9 @@ export default function ArtifactsView({
                 style={{ display: "flex", gap: 8, alignItems: "center", padding: "10px 12px", cursor: "pointer" }}
                 onClick={() => setViewer(a)}
               >
-                <span aria-hidden>{artifactIcon(a.kind)}</span>
+                <span aria-hidden className="artifact-icon">
+                  <ArtifactIcon kind={a.kind} />
+                </span>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {a.name}
