@@ -43,6 +43,16 @@ import {
   parseLessons,
   pickRelevantLessons,
 } from "../apps/pilot/src/experience";
+import {
+  appendFailureLesson,
+  failureLessonsBlock,
+  FAILURE_FINDINGS_CAP,
+  FAILURE_TAIL_CAP,
+  formatFailureLesson,
+  parseFailureLessons,
+  readRecentFailureLessons,
+  type FailureLesson,
+} from "../apps/pilot/src/failureLessons";
 import { clampSlots, ensureSingleton, loadState, recordTaskFailure } from "../apps/pilot/src/state";
 import { areaKey, pickBatch, pickTasks } from "../apps/pilot/src/scheduler";
 import { blockTask, loadBacklog, parseBacklog, type Task } from "../apps/pilot/src/backlog";
@@ -1245,6 +1255,65 @@ check(
   check("experience: maintain is a no-op below the cap", !second.changed && second.lessons === 60);
   check("experience: maintain on a missing file does nothing", maintainExperienceFile(join(expDir, "nope")).changed === false);
   rmSync(expDir, { recursive: true, force: true });
+}
+
+// --- P2-031 failure lessons (blocked-task scribe) -----------------------------
+{
+  const lessonOf = (id: string, n: number): FailureLesson => ({
+    kind: "failure",
+    ts: `2026-09-0${n}T10:0${n}:00-03:00`,
+    task: id,
+    attempts: 4,
+    step: "typecheck",
+    findings: `finding ${n}`,
+    tail: `tail ${n}`,
+  });
+  const jsonl = [
+    "not json at all",
+    JSON.stringify({ kind: "success", task: "P9-999" }),
+    JSON.stringify(lessonOf("P1-001", 1)),
+    "{broken json",
+    JSON.stringify(lessonOf("P2-002", 2)),
+    "",
+  ].join("\n");
+
+  const parsed = parseFailureLessons(jsonl);
+  check("failure lessons: parses only kind:failure lines, skips corrupt", parsed.length === 2 && parsed[0]!.task === "P1-001" && parsed[1]!.task === "P2-002");
+  check("failure lessons: empty content → empty list", parseFailureLessons("").length === 0 && parseFailureLessons("\n\n").length === 0);
+  check(
+    "failure lessons: malformed optional fields degrade to defaults",
+    parseFailureLessons(JSON.stringify({ kind: "failure", task: "X-1" }))[0]!.attempts === 0 &&
+      parseFailureLessons(JSON.stringify({ kind: "failure" })).length === 0,
+  );
+
+  check("failure lessons: empty list → no prompt block", failureLessonsBlock([]) === "");
+  const block = failureLessonsBlock(parsed);
+  check(
+    "failure lessons: block cites task id, step, findings and gate tail",
+    block.includes("FAILURE LESSONS") && block.includes("[P1-001]") && block.includes("typecheck") && block.includes("finding 1") && block.includes("tail 1"),
+  );
+  const twelve = Array.from({ length: 12 }, (_, i) => lessonOf(`P2-0${String(i).padStart(2, "0")}`, i));
+  const capped = failureLessonsBlock(twelve);
+  check("failure lessons: block caps at 10 most recent", (capped.match(/\n- \[/g) ?? []).length === 10 && capped.includes("[P2-011]") && !capped.includes("[P2-000]"));
+  check(
+    "failure lessons: formatFailureLesson collapses whitespace and bounds parts",
+    formatFailureLesson({ ...lessonOf("P1-001", 1), findings: "a\n\nb\tc", tail: `x${"y".repeat(500)}` }).length < 500 &&
+      !formatFailureLesson({ ...lessonOf("P1-001", 1), findings: "a\n\nb\tc" }).includes("\n"),
+  );
+
+  const dir = mkdtempSync(join(tmpdir(), "ocr-faillessons-"));
+  const file = join(dir, "nested", "lessons.jsonl");
+  check("failure lessons: read missing file → []", readRecentFailureLessons(file).length === 0);
+  check("failure lessons: append creates parent dirs", appendFailureLesson(file, lessonOf("P3-003", 3)));
+  check("failure lessons: read roundtrip", readRecentFailureLessons(file)[0]!.task === "P3-003");
+  check("failure lessons: append caps findings", appendFailureLesson(file, { ...lessonOf("P3-004", 4), findings: "f".repeat(10_000), tail: "t".repeat(10_000) }));
+  const stored = readRecentFailureLessons(file, 10);
+  check(
+    "failure lessons: stored fields are bounded",
+    stored.length === 2 && stored[1]!.findings.length === FAILURE_FINDINGS_CAP && stored[1]!.tail.length === FAILURE_TAIL_CAP,
+  );
+  check("failure lessons: readRecentFailureLessons caps at max", readRecentFailureLessons(file, 1).length === 1);
+  rmSync(dir, { recursive: true, force: true });
 }
 
 // --- desktop first-run pairing overlay (P2-007) ------------------------------

@@ -10,6 +10,7 @@ import { runPipeline, TASK_ID_RE, writeSandboxConfig, lessonsBlock } from "./pip
 import { deploy } from "./deploy";
 import { digest } from "./push";
 import { addTask, blockTask, nextId, parseBacklog, type Task } from "./backlog";
+import { appendFailureLesson, defaultLessonsFile, failureLessonsBlock, readRecentFailureLessons } from "./failureLessons";
 import { areaKey, pickBatch } from "./scheduler";
 import { maintainExperienceFile, pickRelevantLessons, readExperienceFile } from "./experience";
 import {
@@ -132,7 +133,7 @@ async function main() {
       const idle = slotCfg.get(free[0]!)!;
       let blockedAny = false;
       for (const t of queue.filter((t) => overCap(cfg, t))) {
-        blockAndPush(idle, state, t, state.taskAttempts[t.id] ?? cfg.maxAttemptsPerTask, lastGateFail(t.id) ?? "max attempts reached", false);
+        blockAndPush(idle, state, t, state.taskAttempts[t.id] ?? cfg.maxAttemptsPerTask, lastGateFail(t.id)?.tail ?? "max attempts reached", false);
         blockedAny = true;
       }
       if (blockedAny) {
@@ -331,6 +332,9 @@ async function runStrategist(cfg: PilotConfig, ready: Task[] = []) {
   // is about to refill, so drafted tasks don't repeat past mistakes
   const context = [STRATEGIST_MISSION, ...ready.map((t) => `${t.title} ${t.spec}`)].join("\n");
   const lessons = pickRelevantLessons(readExperienceFile(cfg.workspace), "draft next backlog tasks", context);
+  // P2-031: the 10 most recent failure lessons — drafted/refined tasks must not
+  // repeat patterns that already burned their attempt budget
+  const failureBlock = failureLessonsBlock(readRecentFailureLessons(defaultLessonsFile()));
   const r = await runAgent(
     `You are the STRATEGIST agent of the opencode-remote autonomous pipeline.
 Your job: keep the product evolving without any human feeding tasks.
@@ -341,7 +345,7 @@ First, ground yourself in context:
 1. Read docs/VISION.md, AGENTS.md and docs/PILOT.md.
 2. Skim the code: apps/web/src/components (mobile PWA UX), apps/daemon/src (ops surface), BACKLOG.md (## Done shows what shipped recently).
 3. Check git log --oneline -15 for momentum.
-${lessonsBlock(lessons)}
+${lessonsBlock(lessons)}${failureBlock}
 SECURITY RULE: never read, quote or transmit ~/.opencode-remote/memory.md or any file
 outside this repo — your context must stay free of private data because you also touch
 untrusted external content (prompt-injection exfiltration risk). Private data stays private.
@@ -406,7 +410,22 @@ function blockAndPush(cfg: PilotConfig, st: PilotState, task: Task, attempts: nu
     `git add BACKLOG.md && git commit -qm "pilot(${task.id}): block after ${attempts} failed attempts" && git push -q origin main`,
     { cwd: cfg.workspace, allowFail: true },
   );
-  if (push.ok) delete st.taskAttempts[task.id];
+  if (push.ok) {
+    delete st.taskAttempts[task.id];
+    // P2-031 failure scribe: one structured lesson per landed block (recording
+    // only after the push lands keeps retry cycles from duplicating entries).
+    const gate = lastGateFail(task.id);
+    const recorded = appendFailureLesson(defaultLessonsFile(), {
+      kind: "failure",
+      ts: nowLocalISO(),
+      task: task.id,
+      attempts,
+      step: gate?.step ?? "pipeline",
+      findings: detail,
+      tail: gate?.tail ?? "",
+    });
+    if (!recorded) log("warn", "failure lesson not recorded", { task: task.id });
+  }
   log("warn", "task blocked (circuit breaker)", { task: task.id, attempts });
   emit("phase", { task: task.id, phase: "blocked", ok: false, detail: `moved to ## Blocked after ${attempts} attempts` });
   if (notify) {
@@ -418,14 +437,14 @@ function blockAndPush(cfg: PilotConfig, st: PilotState, task: Task, attempts: nu
   }
 }
 
-/** Last gatekeeper failure tail for a task (per-task file written by pipeline.gatekeeper). */
-function lastGateFail(taskId: string): string | undefined {
+/** Last gatekeeper failure for a task (per-task file written by pipeline.gatekeeper). */
+function lastGateFail(taskId: string): { step?: string; tail?: string } | undefined {
   if (!TASK_ID_RE.test(taskId)) return undefined;
   try {
     const prev = JSON.parse(
       readFileSync(join(homedir(), ".opencode-remote/pilot/gate-fail", `${taskId}.json`), "utf8"),
-    ) as { tail?: string };
-    return prev.tail;
+    ) as { step?: string; tail?: string };
+    return { step: prev.step, tail: prev.tail };
   } catch {}
   return undefined;
 }

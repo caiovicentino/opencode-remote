@@ -21,7 +21,11 @@ in pilot.json the scheduler runs up to N pipelines concurrently, one workspace c
 two tasks of the same area never run in parallel, and deploys stay serial (P1-006). After every
 successful merge a SCRIBE agent distills up to 3 engineering lessons into `docs/EXPERIENCE.md`
 (P1-007) — the top-5 keyword-matched lessons are injected into the builder and strategist prompts,
-and the nightly red-team pass dedupes/prunes the file above 60 lessons. If you are asked to change anything that
+and the nightly red-team pass dedupes/prunes the file above 60 lessons. When the stop-loss moves a
+task to `## Blocked`, a failure scribe records a structured `kind:"failure"` lesson (failing step,
+findings, gate tail) in `~/.opencode-remote/pilot/lessons.jsonl` (P2-031) and the strategist
+prompt receives the 10 most recent failure lessons so new tasks avoid repeating blocked patterns.
+If you are asked to change anything that
 the constitution protects (crypto, allowlist, replay protection, deploy/), flag it explicitly in
 the commit message. Never commit secrets. Always document user-visible changes.
 
