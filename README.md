@@ -175,6 +175,13 @@ and an authenticated daemon that appears on the port (e.g. a launchd install)
 is adopted instead of spawned on top of. Restarting the app always resets the
 cycle.
 
+**Tray: daemon health + start at login**: the tray tooltip doubles as a
+sidecar health indicator — it reads `OpenCode Remote — daemon ok` /
+`OpenCode Remote — daemon down`, refreshed by the same 3s poll that feeds the
+pairing overlay. The context menu also has a **Start at login** checkbox
+(macOS/Windows) backed by `app.setLoginItemSettings`, so the toggle persists
+across app restarts and OS reboots.
+
 **First-run QR for your phone**: while no phone is paired yet, the desktop
 window shows a first-run overlay with a scannable pairing QR (rendered by the
 main process from the daemon's `GET /__ocr/pairing-uri`, a read-only loopback
