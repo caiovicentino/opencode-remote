@@ -140,7 +140,10 @@ A linha da task no BACKLOG.md pode carregar a tag opcional `(size: S|M|L)` (defa
   seguintes fazem `git checkout pilot/<ID>` sem reset, preservando o histórico —
   o prompt do builder recebe o bloco "attempt N: a branch já existe, continue do
   histórico". A branch preservada já contém o spec commitado, então o planner não
-  é re-executado (o `commitSpec` dele resetaria a branch e destruiria o trabalho).
+  é re-executado (o `commitSpec` dele resetaria a branch e destruiria o trabalho):
+  se a cópia em disco estiver ausente/adulterada, o spec é recuperado do histórico
+  da branch; irrecuperável com commits preservados → fail fast sem destruir nada
+  (o planner só re-roda quando a branch não tem nenhum commit além de origin/main).
 - **Planner com marcos**: para tasks L, o planner precisa estruturar a seção
   `## Approach` em marcos numerados M1..Mn com critério de aceite por marco; o
   builder executa os marcos em ordem, 1+ por round.

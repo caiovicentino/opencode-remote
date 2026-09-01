@@ -600,6 +600,31 @@ function specOnDisk(ws: string, path: string): boolean {
   }
 }
 
+/**
+ * P1-060 (round-2 review): recover the planner spec from the preserved
+ * branch's history when the worktree copy is missing or tampered — walks the
+ * commits touching the spec path (newest first) and returns the first blob
+ * that validates. `path` is always specs/<ID>.md (id TASK_ID_RE-checked) and
+ * shas are re-validated against the object-id charset before interpolation.
+ * Null when no commit carries a valid spec.
+ */
+export function recoverSpecFromBranch(ws: string, id: string, path: string): string | null {
+  const log = exec(`git log -q --format=%H -n 10 -- ${path}`, { cwd: ws, allowFail: true });
+  if (!log.ok) return null;
+  for (const sha of log.output.split("\n").map((l) => l.trim()).filter(Boolean)) {
+    if (!/^[0-9a-f]{7,40}$/.test(sha)) continue;
+    const blob = exec(`git show ${sha}:${path}`, { cwd: ws, allowFail: true });
+    if (blob.ok && validateSpec(blob.output)) return blob.output;
+  }
+  return null;
+}
+
+/** P1-060: true when the task branch carries commits beyond origin/main. */
+export function branchHasCommits(ws: string, branch: string): boolean {
+  const r = exec(`git log -q --oneline origin/main..${branch}`, { cwd: ws, allowFail: true });
+  return r.ok && r.output.trim().length > 0;
+}
+
 // ── P2-009 mandatory builder evidence ────────────────────────────────────────
 
 export const EVIDENCE_MARKER = "EVIDENCE:";
@@ -912,10 +937,33 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
     if (!specFile) return { ok: false, detail: `invalid task id for planner: ${t.id}` };
     // P1-060: a preserved branch already carries its committed spec — reuse it
     // instead of re-running the planner (commitSpec resets the branch to
-    // origin/main, which would destroy the preserved work).
-    if (resumed && specOnDisk(ws, specFile)) {
-      emit("phase", { task: t.id, phase: "planner-done", ok: true, detail: `${specFile} (preserved branch)` });
-    } else {
+    // origin/main, which would destroy the preserved work). When the worktree
+    // copy is missing/tampered, recover the committed spec from the branch
+    // history; if that is impossible AND the branch carries preserved commits,
+    // fail fast — never reset over preserved history.
+    let specState: "disk" | "recovered" | "planner" = "planner";
+    if (resumed) {
+      if (specOnDisk(ws, specFile)) {
+        specState = "disk";
+      } else {
+        const recovered = recoverSpecFromBranch(ws, t.id, specFile);
+        if (recovered !== null) {
+          try {
+            mkdirSync(dirname(join(ws, specFile)), { recursive: true });
+            writeFileSync(join(ws, specFile), recovered);
+            specState = "recovered";
+          } catch {}
+        } else if (branchHasCommits(ws, branch)) {
+          emit("phase", { task: t.id, phase: "planner-done", ok: false, detail: "spec unrecoverable on preserved branch" });
+          return {
+            ok: false,
+            detail: `preserved branch ${branch} carries commits but no recoverable ${specFile} — refusing to run the planner (its reset would destroy preserved work)`,
+          };
+        }
+        // else: branch equals origin/main — the planner's reset destroys nothing
+      }
+    }
+    if (specState === "planner") {
       emit("phase", { task: t.id, phase: "planner" });
       console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "planner", data: { task: t.id } }));
       let plannerSession: string | undefined;
@@ -944,6 +992,13 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
         return { ok: false, detail: `planner did not produce a valid ${specFile} after 2 attempt(s)` };
       }
       emit("phase", { task: t.id, phase: "planner-done", ok: true, detail: specFile });
+    } else {
+      emit("phase", {
+        task: t.id,
+        phase: "planner-done",
+        ok: true,
+        detail: specState === "disk" ? `${specFile} (preserved branch)` : `${specFile} (recovered from branch history)`,
+      });
     }
   }
   for (let round = 1; round <= cfg.maxReviewRounds && !merged; round++) {

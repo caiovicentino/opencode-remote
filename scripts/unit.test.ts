@@ -18,6 +18,8 @@ import {
   budgetsFor,
   isOverCap,
   preserveBranch,
+  recoverSpecFromBranch,
+  branchHasCommits,
   commitSpec,
   evidenceMatches,
   evidenceShotDimsOk,
@@ -778,6 +780,36 @@ check("touchedUi: lookalike apps/webs rejected", !touchedUiFromDiff("apps/webs/s
   const inc = reviewerPrompt("SECURITY", "crypto", L_TASK, "", null, null, "abc1234");
   check("reviewer: incremental scope note cites the range", inc.includes("INCREMENTAL REVIEW") && inc.includes("commits since abc1234"));
   check("reviewer: no incremental note for total diffs", !reviewerPrompt("SECURITY", "crypto", L_TASK, "", null).includes("INCREMENTAL REVIEW"));
+
+  // scratch git repo: spec recovery from a preserved branch's history
+  const recRepo = mkdtempSync(join(tmpdir(), "ocr-specrecover-"));
+  try {
+    const g = (c: string) => execSync(c, { cwd: recRepo, stdio: ["ignore", "pipe", "pipe"] });
+    g("git init -q -b main .");
+    g("git config user.email t@t.local");
+    g("git config user.name t");
+    writeFileSync(join(recRepo, "README.md"), "base\n");
+    g("git add . && git commit -qm base");
+    g("git update-ref refs/remotes/origin/main HEAD");
+    g("git checkout -qb pilot/P1-060");
+    mkdirSync(join(recRepo, "specs"));
+    const validSpec = ["## Problem", "## Approach", "## Touched files", "## Edge cases", "## Acceptance criteria", "## Out of scope"].join("\n") + "\n";
+    writeFileSync(join(recRepo, "specs", "P1-060.md"), validSpec);
+    g("git add specs/P1-060.md && git commit -qm 'pilot(P1-060): planner spec'");
+    g("git commit -qm work --allow-empty"); // preserved attempt work
+    check("branchHasCommits: preserved branch has commits beyond origin/main", branchHasCommits(recRepo, "pilot/P1-060") === true);
+    check("branchHasCommits: branch at origin/main has none", branchHasCommits(recRepo, "main") === false);
+    // tampered tip: the recovery must walk back to the committed planner spec
+    writeFileSync(join(recRepo, "specs", "P1-060.md"), "tampered\n");
+    g("git add specs/P1-060.md && git commit -qm 'tamper the spec'");
+    check("spec recovery: tampered tip falls back to the committed planner spec", recoverSpecFromBranch(recRepo, "P1-060", "specs/P1-060.md") === validSpec);
+    // missing tip: the recovery still finds the ancestor blob
+    g("git rm -q specs/P1-060.md && git commit -qm 'delete the spec'");
+    check("spec recovery: deleted tip still recovers from history", recoverSpecFromBranch(recRepo, "P1-060", "specs/P1-060.md") === validSpec);
+    check("spec recovery: no history at all returns null", recoverSpecFromBranch(recRepo, "P1-061", "specs/P1-061.md") === null);
+  } finally {
+    rmSync(recRepo, { recursive: true, force: true });
+  }
 }
 
 // --- module-shadowing invariant (P2-014) --------------------------------------
