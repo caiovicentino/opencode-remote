@@ -16,6 +16,8 @@ export interface PilotConfig {
   reviewTimeoutMin: number;
   monitorMin: number;
   digest: boolean;
+  /** P3-033: record golden-corpus gate samples every N successful merges. */
+  corpusEveryNMerges: number;
 }
 
 export const DEFAULTS: PilotConfig = {
@@ -33,6 +35,7 @@ export const DEFAULTS: PilotConfig = {
   reviewTimeoutMin: 20,
   monitorMin: 10,
   digest: true,
+  corpusEveryNMerges: 5,
 };
 
 /** P1-006: scheduler slot count — 1 (serial, default) up to a hard cap of 8. */
@@ -49,6 +52,8 @@ export function loadConfig(): PilotConfig {
       const cfg = { ...DEFAULTS, ...JSON.parse(readFileSync(p, "utf8")) } as PilotConfig;
       if (!Number.isFinite(cfg.maxAttemptsPerTask) || cfg.maxAttemptsPerTask < 1)
         cfg.maxAttemptsPerTask = DEFAULTS.maxAttemptsPerTask;
+      if (!Number.isFinite(cfg.corpusEveryNMerges) || cfg.corpusEveryNMerges < 1)
+        cfg.corpusEveryNMerges = DEFAULTS.corpusEveryNMerges;
       cfg.slots = clampSlots(cfg.slots);
       return cfg;
     }
@@ -87,6 +92,8 @@ export interface PilotState {
   blockEvents?: number[];
   /** P2-032: active audit mode (queue paused) or null when healthy. */
   auditMode?: AuditMode | null;
+  /** P3-033: successful merges since the last golden-corpus capture. */
+  mergesSinceCorpus?: number;
 }
 
 function normalizeAudit(a: unknown): AuditMode | null {

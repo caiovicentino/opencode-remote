@@ -1,0 +1,32 @@
+▲ [WARNING] "import.meta" is not available with the "cjs" output format and will be empty [empty-import-meta]
+
+    ../daemon/src/index.ts:1513:61:
+      1513 │ ...RL("../../../apps/pilot/dashboard/index.html", import.meta.url);
+           ╵                                                   ~~~~~~~~~~~
+
+  You need to set the output format to "esm" for "import.meta" to work correctly.
+
+▲ [WARNING] "import.meta" is not available with the "cjs" output format and will be empty [empty-import-meta]
+
+    ../daemon/src/metrics.ts:44:65:
+      44 │ ...c(new URL("../../../package.json", import.meta.url), "utf8")) as {
+         ╵                                       ~~~~~~~~~~~
+
+  You need to set the output format to "esm" for "import.meta" to work correctly.
+
+2 warnings
+
+  dist-daemon/index.js  637.9kb
+
+⚡ Done in 20ms
+version.ts -> 0.2.0
+vite v6.4.3 building for production...
+transforming...
+✓ 62 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                   0.65 kB │ gzip:   0.36 kB
+dist/assets/index-BUzAmikJ.css   10.53 kB │ gzip:   2.90 kB
+dist/assets/push-BR2QlyMt.js      1.51 kB │ gzip:   0.67 kB
+dist/assets/index-B7p9hDCQ.js   397.42 kB │ gzip: 132.04 kB
+✓ built in 607ms

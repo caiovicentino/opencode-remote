@@ -308,6 +308,42 @@ o que fez e o gate **re-executa** a prova:
   freshness por mtime, o predicado compartilhado prompt/gate e o caminho
   fim-a-fim com re-execução real (scripts `echo` num workspace temp).
 
+## Corpus dourado para os gates (P3-033)
+
+Gates determinísticos têm falso-positivo que só aparece contra variação real de
+output — o P1-030 foi rejeitado porque duas rodadas verdes do mesmo comando
+imprimem timestamps/pids/tempdirs diferentes. Para não depender de strings
+sintéticas, a bateria de eval testa o evidence matcher contra um **corpus de
+outputs reais** dos três comandos de evidência:
+
+- **Fixtures**: `apps/pilot/src/__fixtures__/gate-corpus/<slug>/<seq>-<sha>.txt`
+  (slug = comando com não-alfanuméricos virando `-`; sha = commit-ish da
+  captura). Cada amostra é output real de uma rodada verde, sanitizado por
+  `sanitizeForCorpus` (usernames de paths, hex longo). Hoje: 3 amostras de
+  typecheck (vazio no sucesso — também é variação real), 5 de unit, 3 de build.
+- **Bateria**: `scripts/unit.test.ts` carrega o corpus (`loadGateCorpus`) e
+  exige, para cada amostra: `evidenceMatches(s, s)` verdadeiro (e idempotência
+  de `normalizeEvidenceLine`), paste truncado continua passando, ruído
+  ANSI/espaço/linha-em-branco continua passando, linha fabricada continua
+  reprovando, e **cross-pairs** — paste da amostra A contra re-run da amostra B
+  — passam nas duas direções quando A e B são do mesmo commit (commits
+  diferentes divergem legitimamente, ex. contagem de testes). Cobertura mínima:
+  >= 3 amostras por comando. Regressão de falso-positivo (ex. tirar o mask de
+  timestamps ISO-8601, que o P1-030 sofreu) quebra a bateria antes de quebrar
+  merges honestos.
+- **Crescimento automático**: a cada `corpusEveryNMerges` merges bem-sucedidos
+  (config pilot.json, default 5; contador `mergesSinceCorpus` em state.json), o
+  gatekeeper grava os próprios outputs de re-execução da evidência (sem rodar
+  npm de novo) via `captureGateCorpus` e empurra `pilot(corpus): N gate
+  sample(s) from <ID>` direto em main — mesmo fluxo de retry do scribe. Amostra
+  idêntica à última é descartada (typecheck vazio não acumula arquivo).
+- **Correção que o corpus exigiu**: `normalizeEvidenceLine` agora mascara
+  timestamps ISO-8601 (com data/milis/offset), contadores de processo
+  (`"pid"`, `"uptimeS"`, `"activeConnections"`) e sufixos aleatórios de
+  `mkdtemp` (`-HASH/`) — tokens que variam entre duas rodadas verdes, sem
+  enfraquecer a detecção de fabricação (a linha fabricada continua sem fonte no
+  re-run).
+
 ## Round efficiency + async deploy (31/08, v1.1)
 
 - **Preflight typecheck**: after each builder round, a fast `tsc --noEmit` runs

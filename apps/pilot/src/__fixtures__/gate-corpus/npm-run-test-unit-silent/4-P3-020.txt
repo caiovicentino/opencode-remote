@@ -1,0 +1,12 @@
+OK   aumid: constant matches the electron-builder appId
+OK   aumid: win32 resolves the appId
+OK   aumid: darwin resolves null (Info.plist covers it)
+OK   aumid: linux resolves null
+OK   aumid: unknown platform resolves null
+OK   aumid: win32 wires setAppUserModelId exactly 1x
+OK   aumid: darwin never calls setAppUserModelId
+OK   notify: healthy→down fires 'down'
+OK   notify: down→healthy fires 'back'
+OK   notify: healthy→healthy is deduped
+OK   notify: down→down is deduped
+desktop log tests: all green
