@@ -71,6 +71,7 @@ import { deploy } from "../apps/pilot/src/deploy";
 import type { PilotConfig } from "../apps/pilot/src/state";
 import { overlayVisible, phonePaired } from "../apps/desktop/src/pairing";
 import { daemonTooltip, loginItemSupported, trayIconSource } from "../apps/desktop/src/tray";
+import { updateMenuLabel, type UpdateStatus } from "../apps/desktop/src/update";
 import { daemonNotify, NOTIFY_BACK_BODY, NOTIFY_DOWN_BODY } from "../apps/desktop/src/notify";
 import { DEEP_LINK_QUERY_MAX, deepLinkFromArgv, parseDeepLink } from "../apps/desktop/src/deeplink";
 import {
@@ -1297,6 +1298,27 @@ check(
   check("tray: template asset committed at 16px with 2x variant", pngSize(tray16)?.w === 16 && pngSize(tray16)?.h === 16 && pngSize(tray32)?.w === 32 && pngSize(tray32)?.h === 32);
   const builderYml = readFileSync(join(desktopRoot, "electron-builder.yml"), "utf8");
   check("tray: template assets packaged via electron-builder files", builderYml.includes("build/trayTemplate.png") && builderYml.includes("build/trayTemplate@2x.png"));
+}
+
+// --- desktop tray: update status menu label (P3-019) ----------------------------
+{
+  // All 5 UpdateStatus values must have a label: the tray renders it as a
+  // disabled status item whenever a feed is configured. The
+  // "update-available" wording is the actionable one fixed by the P3-019 spec.
+  check("update menu: update-available label", updateMenuLabel("update-available") === "Update available — restart to install");
+  check("update menu: update-not-available label", updateMenuLabel("update-not-available") === "Up to date");
+  check("update menu: feed-unreachable label", updateMenuLabel("feed-unreachable") === "Update check failed — feed unreachable");
+  check("update menu: unrecognized-feed label", updateMenuLabel("unrecognized-feed") === "Update check failed — unrecognized feed");
+  check("update menu: disabled label", updateMenuLabel("disabled") === "Updates disabled");
+  const statuses: UpdateStatus[] = ["disabled", "update-available", "update-not-available", "unrecognized-feed", "feed-unreachable"];
+  check("update menu: all 5 status labels are distinct", new Set(statuses.map(updateMenuLabel)).size === 5);
+  // Wiring guard: the labels are consumed by main.ts's tray menu, which gates
+  // the update items on the feed env var (no feed → tray unchanged).
+  const mainSrc = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  check(
+    "update menu: main.ts wires label + check item behind the feed env gate",
+    mainSrc.includes("updateMenuLabel(") && mainSrc.includes("Check for updates") && mainSrc.includes("feedUrlFromEnv()"),
+  );
 }
 
 // --- desktop native daemon notifications (P3-013) -------------------------------

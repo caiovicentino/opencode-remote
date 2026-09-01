@@ -47,6 +47,27 @@ export type UpdateStatus =
 /** Single fetch timeout for the feed document. */
 const FEED_TIMEOUT_MS = 10_000;
 
+/**
+ * P3-019: tray label for the current update state. Pure and electron-free
+ * (same pattern as tray.ts) so scripts/unit.test.ts can exercise it. The tray
+ * renders the label as a disabled, informational item; only the
+ * "update-available" wording asks the user for an action (a restart).
+ */
+export function updateMenuLabel(status: UpdateStatus): string {
+  switch (status) {
+    case "disabled":
+      return "Updates disabled";
+    case "update-available":
+      return "Update available — restart to install";
+    case "update-not-available":
+      return "Up to date";
+    case "unrecognized-feed":
+      return "Update check failed — unrecognized feed";
+    case "feed-unreachable":
+      return "Update check failed — feed unreachable";
+  }
+}
+
 /** OCR_UPDATE_FEED holds the staged feed URL; unset/empty disables everything. */
 export function feedUrlFromEnv(env: NodeJS.ProcessEnv = process.env): string | null {
   const raw = env.OCR_UPDATE_FEED?.trim();
