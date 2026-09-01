@@ -6,7 +6,7 @@
  * session ids and file names are single safe path segments, and the resolved
  * absolute path must stay inside ARTIFACTS_ROOT.
  */
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -78,16 +78,19 @@ export function listArtifacts(sessionId?: string, root: string = ARTIFACTS_ROOT)
   for (const sid of sessions) {
     if (!validSegment(sid)) continue;
     if (sessionId && sid !== sessionId) continue;
-    let files: string[] = [];
+    let dirents: import("node:fs").Dirent[] = [];
     try {
-      files = readdirSync(join(root, sid));
+      dirents = readdirSync(join(root, sid), { withFileTypes: true });
     } catch {
       continue;
     }
-    for (const name of files) {
+    for (const ent of dirents) {
+      // symlinks (and anything non-regular) are never followed or listed
+      if (!ent.isFile()) continue;
+      const name = ent.name;
       if (!validSegment(name)) continue;
       try {
-        const st = statSync(join(root, sid, name));
+        const st = lstatSync(join(root, sid, name));
         if (!st.isFile()) continue;
         out.push({ sessionId: sid, name, size: st.size, mtime: st.mtimeMs, kind: kindFor(name) });
       } catch {}
@@ -108,6 +111,9 @@ export function readArtifact(
   const abs = resolve(base, sessionId, name);
   if (!abs.startsWith(base + "/")) return null; // defense in depth
   try {
+    // lstat: a symlink pointing outside the root must not be served
+    const st = lstatSync(abs);
+    if (!st.isFile()) return null;
     return readFileSync(abs);
   } catch {
     return null;

@@ -62,7 +62,8 @@ export function saveBlob(blob: Blob, name: string): void {
   a.href = url;
   a.download = name;
   a.click();
-  URL.revokeObjectURL(url);
+  // the click only starts the download — revoke later so it never breaks mid-flight
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 
 export function artifactIcon(kind: ArtifactKind): string {
@@ -85,5 +86,15 @@ export function artifactIcon(kind: ArtifactKind): string {
 }
 
 export function fmtBytes(n: number): string {
-  return n > 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1e3))} KB`;
+  if (!Number.isFinite(n) || n < 0) return "0 B";
+  if (n < 1000) return `${Math.round(n)} B`;
+  if (n < 1e6) return `${(n / 1e3).toFixed(1)} KB`;
+  if (n < 1e9) return `${(n / 1e6).toFixed(1)} MB`;
+  return `${(n / 1e9).toFixed(1)} GB`;
+}
+
+/** artifacts whose file name appears in the message text (ChatView cards) */
+export function artifactMentions(text: string, list: ArtifactMeta[]): ArtifactMeta[] {
+  if (!text || list.length === 0) return [];
+  return list.filter((a) => text.includes(a.name));
 }

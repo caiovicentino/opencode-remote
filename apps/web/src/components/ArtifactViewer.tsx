@@ -8,6 +8,7 @@ interface ViewState {
   loading: boolean;
   error?: string;
   text?: string;
+  truncated?: boolean;
   url?: string;
   mime?: string;
   size?: number;
@@ -149,10 +150,10 @@ export default function ArtifactViewer({
         }
         const blob = b64ToBlob(c.data, c.mime);
         const url = TEXTISH.has(c.kind) ? undefined : URL.createObjectURL(blob);
-        const text = TEXTISH.has(c.kind)
-          ? (await blob.text()).slice(0, 500_000)
-          : undefined;
-        setState({ loading: false, url, text, mime: c.mime, size: c.size, blob });
+        const full = TEXTISH.has(c.kind) ? await blob.text() : undefined;
+        const truncated = full !== undefined && full.length > 500_000;
+        const text = truncated ? full!.slice(0, 500_000) : full;
+        setState({ loading: false, url, text, truncated, mime: c.mime, size: c.size, blob });
       } catch (err) {
         if (alive) setState({ loading: false, error: err instanceof Error ? err.message : String(err) });
       }
@@ -216,6 +217,11 @@ export default function ArtifactViewer({
         {state.error && <p style={{ color: "var(--danger)" }}>{state.error}</p>}
         {!state.loading && !state.error && (
           <>
+            {state.truncated && (
+              <p className="muted" style={{ margin: "0 0 8px" }}>
+                Large file — showing the first 500 KB. Use Save to get it whole.
+              </p>
+            )}
             {meta.kind === "html" && (
               <iframe
                 title={meta.name}

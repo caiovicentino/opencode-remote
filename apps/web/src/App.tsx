@@ -228,8 +228,18 @@ export default function App() {
         setSettings(false);
         return;
       }
-      if (h === "#/files" && clientRef.current) setFilesView(true);
-      if (h === "#/artifacts" && clientRef.current) setArtifactsView(true);
+      if (h === "#/files" && clientRef.current) {
+        setFilesView(true);
+        setSession(null);
+        setSettings(false);
+        setArtifactsView(false);
+      }
+      if (h === "#/artifacts" && clientRef.current) {
+        setArtifactsView(true);
+        setSession(null);
+        setSettings(false);
+        setFilesView(false);
+      }
     }
     applyHash();
     window.addEventListener("hashchange", applyHash);
@@ -531,6 +541,9 @@ export default function App() {
                 onClick={() => {
                   setNavDir("fwd");
                   setArtifactsView(true);
+                  setSession(null);
+                  setSettings(false);
+                  setFilesView(false);
                 }}
                 title="Artifacts"
               >

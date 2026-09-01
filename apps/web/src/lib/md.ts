@@ -13,6 +13,16 @@ export type MdBlock =
   | { type: "code"; text: string }
   | { type: "table"; header: string[]; rows: string[][] };
 
+/** only http(s)/mailto — blocks javascript:, data:, vbscript: etc. */
+export function safeUrl(href: string): boolean {
+  try {
+    const u = new URL(href);
+    return u.protocol === "http:" || u.protocol === "https:" || u.protocol === "mailto:";
+  } catch {
+    return false;
+  }
+}
+
 /** inline spans: **bold**, *italic*, `code`, [label](url), bare URLs */
 export function parseInline(text: string): Inline[] {
   const out: Inline[] = [];
@@ -28,7 +38,11 @@ export function parseInline(text: string): Inline[] {
     else if (tok.startsWith("*")) out.push({ kind: "italic", text: tok.slice(1, -1) });
     else if (tok.startsWith("[")) {
       const link = /^\[([^\]]+)\]\(([^)\s]+)\)$/.exec(tok);
-      out.push(link ? { kind: "link", text: link[1] ?? tok, href: link[2] } : tok);
+      if (link && safeUrl(link[2] ?? "")) {
+        out.push({ kind: "link", text: link[1] ?? tok, href: link[2] });
+      } else {
+        out.push(tok); // unsafe scheme — keep as plain text
+      }
     } else {
       // bare URL: don't swallow trailing sentence punctuation
       const url = tok.replace(/[.,;:!?)\]]+$/, "");

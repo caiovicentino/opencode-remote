@@ -317,6 +317,7 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
   // listing
   if (req.path === "/__ocr/artifacts" && req.method === "GET") {
     const sessionId = req.query?.session || undefined;
+    metrics.inc("ocr_artifacts_list_total");
     return { id: req.id, status: 200, body: { artifacts: listArtifacts(sessionId) } };
   }
   // content of a single artifact (base64; the tunnel chunks oversized bodies)
@@ -1665,7 +1666,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       try {
         cfg = JSON.parse(readFileSync(join(homedir(), ".opencode-remote", "pilot.json"), "utf8"));
       } catch {}
-      const lastAux: Record<string, string> = {};
+      let lastAux: Record<string, string> = {};
       try {
         const tail = readFileSync(join(homedir(), ".opencode-remote", "logs", "pilot.log"), "utf8")
           .split("\n")
@@ -1693,14 +1694,22 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
         send(404, { error: "artifact not found" });
         return true;
       }
+      metrics.inc("ocr_artifacts_read_total");
+      // html/svg artifacts are agent-authored active content: never render them
+      // in the daemon's origin — sandbox CSP + force download
+      const kind = kindFor(name);
+      const active = kind === "html" || name.toLowerCase().endsWith(".svg");
       res.writeHead(200, {
         "content-type": artifactMime(name),
         "x-content-type-options": "nosniff",
+        "content-security-policy": "sandbox",
+        "content-disposition": `${active ? "attachment" : "inline"}; filename="${name.replace(/"/g, "")}"`,
       });
       res.end(buf);
       return true;
     }
     if (seg[1] === "artifacts" && req.method === "GET") {
+      metrics.inc("ocr_artifacts_list_total");
       send(200, { artifacts: listArtifacts(url.searchParams.get("session") ?? undefined) });
       return true;
     }

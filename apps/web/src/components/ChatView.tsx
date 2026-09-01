@@ -7,7 +7,7 @@ import { humanizeError } from "../lib/errors";
 import { getVoiceSettings } from "./SettingsView";
 import { renderBubbleText } from "./FileCard";
 import ArtifactViewer from "./ArtifactViewer";
-import { listArtifacts, type ArtifactMeta } from "../lib/artifacts";
+import { artifactMentions, listArtifacts, type ArtifactMeta } from "../lib/artifacts";
 import { sessionTitleOf } from "../lib/title";
 import { permissionPreview } from "../lib/permission";
 
@@ -103,12 +103,6 @@ interface Skill {
   id: string;
   label: string;
   prompt: string;
-}
-
-/** artifacts whose file name appears in the message text */
-function artifactMentions(text: string, list: ArtifactMeta[]): ArtifactMeta[] {
-  if (!text || list.length === 0) return [];
-  return list.filter((a) => text.includes(a.name));
 }
 
 function extractPermission(

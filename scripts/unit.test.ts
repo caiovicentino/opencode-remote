@@ -14,7 +14,7 @@ import { taskMergedIn } from "../apps/pilot/src/pipeline";
 import { clampSlots, ensureSingleton, loadState, recordTaskFailure } from "../apps/pilot/src/state";
 import { areaKey, pickBatch, pickTasks } from "../apps/pilot/src/scheduler";
 import { blockTask, loadBacklog, parseBacklog, type Task } from "../apps/pilot/src/backlog";
-import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync } from "node:fs";
 import { execSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
@@ -22,6 +22,7 @@ import { join } from "node:path";
 import { artifactMime, kindFor, listArtifacts, readArtifact, validSegment } from "../apps/daemon/src/artifacts";
 import { parseMarkdown, parseInline } from "../apps/web/src/lib/md";
 import { parseCsv } from "../apps/web/src/lib/csv";
+import { artifactMentions, fmtBytes } from "../apps/web/src/lib/artifacts";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -438,6 +439,9 @@ const aroot = mkdtempSync(join(tmpdir(), "ocr-artifacts-"));
 try {
   mkdirSync(join(aroot, "ses_test"));
   writeFileSync(join(aroot, "ses_test", "index.html"), "<h1>oi</h1>");
+  writeFileSync(join(aroot, "ses_test", "data.csv"), "a,b\n1,2");
+  symlinkSync(join(aroot, "ses_test", "index.html"), join(aroot, "ses_test", "symlink.html"));
+  symlinkSync("/etc/hosts", join(aroot, "ses_test", "outside.html"));
   check(
     "readArtifact reads inside root",
     readArtifact("ses_test", "index.html", aroot)?.toString() === "<h1>oi</h1>",
@@ -449,15 +453,45 @@ try {
       readArtifact("../evil", "x.html", aroot) === null,
   );
   check("readArtifact missing is null", readArtifact("ses_test", "nope.html", aroot) === null);
-  const list = listArtifacts(undefined, aroot);
   check(
-    "listArtifacts lists and classifies",
-    list.length === 1 && list[0]?.name === "index.html" && list[0]?.kind === "html",
+    "readArtifact refuses symlinks (even to outside the root)",
+    readArtifact("ses_test", "symlink.html", aroot) === null &&
+      readArtifact("ses_test", "outside.html", aroot) === null,
+  );
+  const list = listArtifacts(undefined, aroot);
+  const listNames = list.map((a) => a.name).sort().join(",");
+  check(
+    "listArtifacts lists and classifies (symlinks excluded)",
+    listNames === "data.csv,index.html" &&
+      list[0]?.kind !== undefined &&
+      kindFor("index.html") === "html",
   );
   check("listArtifacts filters by session", listArtifacts("other", aroot).length === 0);
 } finally {
   rmSync(aroot, { recursive: true, force: true });
 }
+
+// --- artifacts web lib (P1-010) -----------------------------------------------
+check(
+  "fmtBytes: zero/sub-KB/KB/MB/GB/negative",
+  fmtBytes(0) === "0 B" &&
+    fmtBytes(999) === "999 B" &&
+    fmtBytes(1500) === "1.5 KB" &&
+    fmtBytes(2e6) === "2.0 MB" &&
+    fmtBytes(1.5e9) === "1.5 GB" &&
+    fmtBytes(-5) === "0 B",
+);
+const mentionsList = [
+  { sessionId: "s1", name: "report.html", size: 10, mtime: 1, kind: "html" as const },
+  { sessionId: "s1", name: "data.csv", size: 20, mtime: 2, kind: "csv" as const },
+];
+check(
+  "artifactMentions matches filenames mentioned in text",
+  JSON.stringify(artifactMentions("veja o report.html anexo", mentionsList)) ===
+    JSON.stringify([mentionsList[0]]) &&
+    artifactMentions("nada aqui", mentionsList).length === 0 &&
+    artifactMentions("", mentionsList).length === 0,
+);
 
 // --- markdown model for the artifacts pane (P1-010) ---------------------------
 const md = parseMarkdown(
@@ -479,6 +513,18 @@ check(
   "parseInline bold/code/link",
   inl.filter((s) => typeof s === "object").map((s) => (s as { kind: string }).kind).join(",") ===
     "bold,code,link",
+);
+const jsInl = parseInline("[x](javascript:alert(1)) next");
+check(
+  "parseInline rejects javascript: hrefs (plain text, no link)",
+  typeof jsInl[0] === "string" &&
+    jsInl[0] === "[x](javascript:alert(1)" &&
+    jsInl.every((s) => typeof s === "string" || (s as { kind: string }).kind !== "link"),
+);
+const mailInl = parseInline("[mail me](mailto:a@b.c)");
+check(
+  "parseInline keeps mailto links",
+  typeof mailInl[0] === "object" && (mailInl[0] as { kind: string }).kind === "link",
 );
 
 // --- csv parsing (P1-010) -----------------------------------------------------
