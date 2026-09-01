@@ -602,11 +602,19 @@ function applyTrayMenu(): void {
 // Fire-and-forget like the tray's Restart daemon (P3-017): the async check
 // must never block or crash the shell, so any unexpected rejection is caught
 // and logged. Resolving stores the status and re-applies the tray menu.
+// Overlapping triggers are possible (a slow feed can hold a check for up to
+// FEED_TIMEOUT_MS) and resolve in completion order — the generation counter
+// makes the newest trigger win, so a stale result never overwrites a fresher
+// one in the menu.
+let updateCheckSeq = 0;
+
 function runUpdateCheck(): void {
+  const gen = ++updateCheckSeq;
   void checkForUpdatesOnBoot()
     .then((status) => {
+      if (gen !== updateCheckSeq) return;
       updateStatus = status;
       applyTrayMenu();
     })
-    .catch((err) => logError("[desktop] tray update check failed:", err));
+    .catch((err) => logError("[desktop] update check failed:", err));
 }
