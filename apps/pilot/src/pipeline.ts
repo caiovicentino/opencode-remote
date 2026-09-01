@@ -964,6 +964,10 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
       // only verified findings reach the builder prompt (P2-015)
       findings = [...(secOk ? [] : secVerified.kept), ...(qualOk ? [] : qualVerified.kept)].join("\n");
       if (round === cfg.maxReviewRounds) {
+        // P2-031: the carryover file must reflect the REAL last failure — a task
+        // burning out at review after an old gate failure would otherwise be
+        // blocked with a stale step/tail in its failure lesson
+        recordGateFail(state, t.id, "review", findings);
         return { ok: false, detail: `max review rounds reached — findings: ${findings.slice(0, 400)}` };
       }
     }
