@@ -14,11 +14,14 @@ import { taskMergedIn } from "../apps/pilot/src/pipeline";
 import { clampSlots, ensureSingleton, loadState, recordTaskFailure } from "../apps/pilot/src/state";
 import { areaKey, pickBatch, pickTasks } from "../apps/pilot/src/scheduler";
 import { blockTask, loadBacklog, parseBacklog, type Task } from "../apps/pilot/src/backlog";
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { execSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import { join } from "node:path";
+import { artifactMime, kindFor, listArtifacts, readArtifact, validSegment } from "../apps/daemon/src/artifacts";
+import { parseMarkdown, parseInline } from "../apps/web/src/lib/md";
+import { parseCsv } from "../apps/web/src/lib/csv";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -425,6 +428,63 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
     check("slots=2 simulation: two tasks of distinct areas ran simultaneously", concurrentBatches > 0);
   }
 }
+
+// --- artifacts (P1-010) -------------------------------------------------------
+check("validSegment accepts ids/names", validSegment("ses_abc123") && validSegment("report-1.html"));
+check("validSegment rejects traversal", !validSegment("..") && !validSegment("../etc") && !validSegment("a/b"));
+check("kindFor kinds", kindFor("a.pdf") === "pdf" && kindFor("a.html") === "html" && kindFor("a.md") === "md" && kindFor("a.csv") === "csv" && kindFor("a.exe") === "binary");
+check("artifactMime csv", artifactMime("a.csv") === "text/csv; charset=utf-8");
+const aroot = mkdtempSync(join(tmpdir(), "ocr-artifacts-"));
+try {
+  mkdirSync(join(aroot, "ses_test"));
+  writeFileSync(join(aroot, "ses_test", "index.html"), "<h1>oi</h1>");
+  check(
+    "readArtifact reads inside root",
+    readArtifact("ses_test", "index.html", aroot)?.toString() === "<h1>oi</h1>",
+  );
+  check(
+    "readArtifact blocks traversal",
+    readArtifact("ses_test", "..", aroot) === null &&
+      readArtifact("ses_test", "../../daemon.json", aroot) === null &&
+      readArtifact("../evil", "x.html", aroot) === null,
+  );
+  check("readArtifact missing is null", readArtifact("ses_test", "nope.html", aroot) === null);
+  const list = listArtifacts(undefined, aroot);
+  check(
+    "listArtifacts lists and classifies",
+    list.length === 1 && list[0]?.name === "index.html" && list[0]?.kind === "html",
+  );
+  check("listArtifacts filters by session", listArtifacts("other", aroot).length === 0);
+} finally {
+  rmSync(aroot, { recursive: true, force: true });
+}
+
+// --- markdown model for the artifacts pane (P1-010) ---------------------------
+const md = parseMarkdown(
+  "# Title\n\nintro **bold** and `code`\n\n- item one\n- item two\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n```js\nx()\n```",
+);
+check(
+  "parseMarkdown block types",
+  md[0]?.type === "heading" &&
+    md[1]?.type === "para" &&
+    md[2]?.type === "li" &&
+    md[3]?.type === "li" &&
+    md[4]?.type === "table" &&
+    md[5]?.type === "code",
+);
+const mdTable = md.find((b) => b.type === "table") as { header: string[]; rows: string[][] } | undefined;
+check("parseMarkdown table cells", mdTable?.header.join(",") === "a,b" && mdTable?.rows[0]?.join(",") === "1,2");
+const inl = parseInline("**b** `c` [x](https://a.b)");
+check(
+  "parseInline bold/code/link",
+  inl.filter((s) => typeof s === "object").map((s) => (s as { kind: string }).kind).join(",") ===
+    "bold,code,link",
+);
+
+// --- csv parsing (P1-010) -----------------------------------------------------
+check("parseCsv basic", JSON.stringify(parseCsv("a,b\n1,2")) === JSON.stringify([["a", "b"], ["1", "2"]]));
+check("parseCsv quoted comma", JSON.stringify(parseCsv('a,b\n"x, y",2')) === JSON.stringify([["a", "b"], ["x, y", "2"]]));
+check("parseCsv escaped quotes", parseCsv('"he said ""hi"""')[0]?.[0] === 'he said "hi"');
 
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);

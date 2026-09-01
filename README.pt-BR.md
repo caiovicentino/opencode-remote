@@ -52,6 +52,11 @@ remoto, zero confiança**.
   AES-256-GCM, anti-replay, allowlist de dispositivos, audit log, biometria
 - **BYOM** — opencode suporta qualquer provider; escolha o modelo por sessão
 - **API + SDK** — dirija sessões por código (`packages/sdk`)
+- **Artifacts** — o agente escreve documentos (html, md, csv, pdf) em
+  `~/.opencode-remote/artifacts/<sessionId>/`; o app desktop ganha um **pane
+  Artifacts** que lista e renderiza tudo dentro do app (html sandboxed,
+  markdown/tabelas, PDF inline) e mensagens do chat que citam um artifact
+  ganham um card anexado; também listável via `GET /api/artifacts`
 - **App desktop (inicial)** — shell Electron com a mesma UI, com tray e menu nativo
 
 ## Quick Start (Mac → iPhone, ~5 min)

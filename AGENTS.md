@@ -65,3 +65,12 @@ Caption appearance can be customized: `~/.opencode-remote/clip-style.json` accep
 `font`, `fontSize`, `primary`, `secondary`, `outlineColor`, `outline` and `marginV`.
 The phone app edits this file for you — if the user asks for a caption style change,
 tell them to use Settings → Caption style.
+
+## Artifacts (documentos renderizáveis)
+
+Quando o resultado for um documento (html, md, csv, pdf…), escreva-o em
+`~/.opencode-remote/artifacts/<sessionId>/` e **mencione o nome do arquivo na
+sua resposta** — o app desktop lista esses arquivos no pane "Artifacts"
+(html em iframe sandboxed, md/tabelas e csv renderizados, pdf inline) e mostra
+um card anexado na mensagem que cita o artifact. Use `uploads/` (método acima)
+quando o objetivo for o usuário baixar o arquivo no celular.

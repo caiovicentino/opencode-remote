@@ -30,9 +30,28 @@ opencode-remote token
 | DELETE | `/api/session/:id` | delete session |
 | GET | `/api/session/:id/messages?limit=200` | message history (oldest→newest) |
 | POST | `/api/session/:id/message` | send a prompt `{ text }` → `202` |
+| GET | `/api/artifacts?session=<id>` | list agent artifacts (all sessions, or one) |
+| GET | `/api/artifacts/file?session=<id>&name=<file>` | raw artifact bytes |
 
 Prompts are asynchronous: the endpoint returns `202 { accepted }` while the
 agent works. Poll `messages` for the reply, or use the SDK's `sendAndWait`.
+
+### Artifacts
+
+The agent can hand documents to the app by writing them into
+`~/.opencode-remote/artifacts/<sessionId>/` (html, md, csv, pdf…). The daemon
+lists and serves them:
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8792/api/artifacts
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "http://127.0.0.1:8792/api/artifacts/file?session=ses_xxx&name=report.html" -o report.html
+```
+
+Paths are strictly validated (no traversal); unknown/invalid names answer 404.
+The phone/desktop UI consumes the same data over the E2E tunnel
+(`/__ocr/artifacts`) — the desktop app shows them in the **Artifacts pane**,
+and chat messages that mention an artifact file name render an attached card.
 
 ## SDK (TypeScript/JS)
 

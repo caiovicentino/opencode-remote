@@ -51,6 +51,11 @@ private. That is the product: **local power, remote control, zero trust**.
   replay protection, device allowlist, audit log, biometric unlock
 - **BYOM** — opencode supports any provider; pick the model per session
 - **API + SDK** — drive sessions from code (`packages/sdk`)
+- **Artifacts** — the agent writes documents (html, md, csv, pdf) to
+  `~/.opencode-remote/artifacts/<sessionId>/`; the desktop app gains an
+  **Artifacts pane** that lists and renders them in-app (sandboxed html,
+  markdown/tables, inline PDF) and chat messages that mention an artifact get
+  an attached card; also listed programmatically via `GET /api/artifacts`
 - **Desktop shell (early)** — Electron app wrapping the same UI, with tray and native menu
 
 ## Quick Start (Mac → iPhone, ~5 min)

@@ -34,6 +34,7 @@ import { log } from "./log.js";
 import { detectWhisper, transcribeAudio, type WhisperTool } from "./whisper.js";
 import { metrics, startMetricsServer, VERSION } from "./metrics.js";
 import { loadRoutines, saveRoutines, type Routine } from "./routines.js";
+import { artifactMime, kindFor, listArtifacts, readArtifact } from "./artifacts.js";
 
 const RELAY_URL = process.env.RELAY_URL ?? "ws://127.0.0.1:8787";
 const OPENCODE_URL = process.env.OPENCODE_URL ?? "http://127.0.0.1:4096";
@@ -310,6 +311,33 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
     routines = routines.filter((r) => r.id !== id);
     saveRoutines(routines);
     return { id: req.id, status: 200, body: { ok: true } };
+  }
+
+  // --- artifacts: agent-produced documents (P1-010) ---------------------------
+  // listing
+  if (req.path === "/__ocr/artifacts" && req.method === "GET") {
+    const sessionId = req.query?.session || undefined;
+    return { id: req.id, status: 200, body: { artifacts: listArtifacts(sessionId) } };
+  }
+  // content of a single artifact (base64; the tunnel chunks oversized bodies)
+  if (req.path === "/__ocr/artifact" && req.method === "GET") {
+    const sessionId = req.query?.session ?? "";
+    const name = req.query?.name ?? "";
+    const buf = readArtifact(sessionId, name);
+    if (!buf) return { id: req.id, status: 404, body: { error: "artifact not found" } };
+    metrics.inc("ocr_artifacts_read_total");
+    return {
+      id: req.id,
+      status: 200,
+      body: {
+        name,
+        sessionId,
+        kind: kindFor(name),
+        mime: artifactMime(name),
+        size: buf.length,
+        data: buf.toString("base64"),
+      },
+    };
   }
 
   // --- file delivery: the agent hands artifacts back to the phone ------------
@@ -1637,7 +1665,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       try {
         cfg = JSON.parse(readFileSync(join(homedir(), ".opencode-remote", "pilot.json"), "utf8"));
       } catch {}
-      let lastAux: Record<string, string> = {};
+      const lastAux: Record<string, string> = {};
       try {
         const tail = readFileSync(join(homedir(), ".opencode-remote", "logs", "pilot.log"), "utf8")
           .split("\n")
@@ -1654,6 +1682,26 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
         }
       } catch {}
       send(200, { state, heartbeatMs, events, cfg, lastAux });
+      return true;
+    }
+    // GET /api/artifacts?session=… — list agent artifacts (P1-010)
+    if (seg[1] === "artifacts" && seg[2] === "file" && req.method === "GET") {
+      const session = url.searchParams.get("session") ?? "";
+      const name = url.searchParams.get("name") ?? "";
+      const buf = readArtifact(session, name);
+      if (!buf) {
+        send(404, { error: "artifact not found" });
+        return true;
+      }
+      res.writeHead(200, {
+        "content-type": artifactMime(name),
+        "x-content-type-options": "nosniff",
+      });
+      res.end(buf);
+      return true;
+    }
+    if (seg[1] === "artifacts" && req.method === "GET") {
+      send(200, { artifacts: listArtifacts(url.searchParams.get("session") ?? undefined) });
       return true;
     }
     if (seg[1] !== "session") {
