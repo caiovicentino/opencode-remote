@@ -220,10 +220,9 @@ try {
   if (pilotRepo) rmSync(pilotRepo, { recursive: true, force: true });
 }
 
-// --- desktop render smoke: ServiceWorker-on-file:// noise filter (P0-002) ----
+// --- desktop render smoke: driver helpers required as a CJS library ----------
 const requireCjs = createRequire(import.meta.url);
-const { isKnownNoise, readConsoleMessage } = requireCjs("../scripts/desktop-render-driver.cjs") as {
-  isKnownNoise: (message: string, sourceUrl: string | undefined) => boolean;
+const { readConsoleMessage } = requireCjs("../scripts/desktop-render-driver.cjs") as {
   readConsoleMessage: (...args: unknown[]) => {
     level: string;
     message?: string;
@@ -231,23 +230,6 @@ const { isKnownNoise, readConsoleMessage } = requireCjs("../scripts/desktop-rend
     lineNumber?: number;
   };
 };
-check(
-  "noise filter: SW registration failure on file:// is noise",
-  isKnownNoise(
-    "Uncaught (in promise) TypeError: Failed to register a ServiceWorker: The URL protocol of the script (file:///sw.js) is not supported.",
-    "file:///repo/apps/web/dist/index.html",
-  ) === true,
-);
-check("noise filter: SW failure without source URL is noise", isKnownNoise("ServiceWorker registration failed", "") === true);
-check(
-  "noise filter: SW failure on http(s) is NOT noise",
-  isKnownNoise("ServiceWorker registration failed", "https://ui.example/index.html") === false,
-);
-check(
-  "noise filter: renderer TypeError on file:// is NOT noise",
-  isKnownNoise("Uncaught TypeError: x is undefined", "file:///repo/apps/web/dist/assets/index.js") === false,
-);
-check("noise filter: empty message is noise-free", isKnownNoise("", "file:///x") === false);
 
 // --- desktop render smoke: console-message arg normalization (P0-002) --------
 // Shapes verified at runtime on Electron 38.8.6: (details, 3, msg, line, src)

@@ -12,6 +12,10 @@ createRoot(document.getElementById("root")!).render(
   </ErrorBoundary>,
 );
 
-if ("serviceWorker" in navigator && import.meta.env.PROD) {
+if (
+  "serviceWorker" in navigator &&
+  import.meta.env.PROD &&
+  location.protocol !== "file:"
+) {
   navigator.serviceWorker.register("/sw.js");
 }

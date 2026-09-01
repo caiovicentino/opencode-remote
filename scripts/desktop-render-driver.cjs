@@ -24,27 +24,8 @@
  */
 "use strict";
 
-const NOISE_PATTERNS = [
-  // apps/web/src/main.tsx registers /sw.js unconditionally; ServiceWorker
-  // registration can never work on file:// — that uncaught rejection is known
-  // noise until P3-005 stops registering it in the desktop shell.
-  /service[-_ ]?worker/i,
-];
-
 /** Known-good console error injected by the driver to verify capture works. */
 const CANARY = "ocr-render-smoke-canary";
-
-/**
- * True for renderer console errors that are expected noise in the desktop
- * shell and must not fail the render smoke: ServiceWorker failures when the
- * UI is served from file://. The same failure over http(s) is real.
- */
-function isKnownNoise(message, sourceUrl) {
-  const scheme = /^(file:)/i.exec(String(sourceUrl || ""));
-  const isFile = !sourceUrl || scheme !== null;
-  if (!isFile) return false;
-  return NOISE_PATTERNS.some((re) => re.test(String(message)));
-}
 
 const LEVEL_NAMES = ["verbose", "info", "warning", "error"];
 
@@ -93,8 +74,8 @@ function runDriver() {
 
   function finish(result) {
     // Verdict: page loaded, console capture verified by the canary, and
-    // nothing but known noise in the console. (For early/timeout finishes
-    // loadOk/canarySeen stay false → not ok.)
+    // zero renderer console errors — any console error fails (P3-005).
+    // (For early/timeout finishes loadOk/canarySeen stay false → not ok.)
     result.ok =
       result.loadOk === true &&
       result.canarySeen === true &&
@@ -158,7 +139,7 @@ function runDriver() {
         result.canarySeen = true;
         return;
       }
-      if (m.level === "error" && !isKnownNoise(m.message, m.sourceUrl)) {
+      if (m.level === "error") {
         consoleErrors.push(`${m.message} (${m.sourceUrl || "?"}:${m.lineNumber ?? "?"})`);
       }
     });
@@ -206,7 +187,7 @@ function runDriver() {
   });
 }
 
-module.exports = { isKnownNoise, readConsoleMessage };
+module.exports = { readConsoleMessage };
 
 // Electron does not set require.main for the entry script — detect the
 // Electron runtime instead (absent when required from node/tsx unit tests).
