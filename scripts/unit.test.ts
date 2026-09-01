@@ -28,6 +28,9 @@ import { latestUiShot, pruneShots } from "../apps/pilot/src/shot";
 import { parseMarkdown, parseInline } from "../apps/web/src/lib/md";
 import { parseCsv } from "../apps/web/src/lib/csv";
 import { artifactMentions, fmtBytes } from "../apps/web/src/lib/artifacts";
+import { DISK_MIN_FREE_BYTES, diskGuardDetail, freeDiskBytes } from "../apps/pilot/src/disk";
+import { deploy } from "../apps/pilot/src/deploy";
+import type { PilotConfig } from "../apps/pilot/src/state";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -708,6 +711,70 @@ check("viewport: garbage rejected", viewportFromParams("x", "800") === null);
     "preflight: non-JSON 200 body counts as up",
     (await apiHealthy("http://x", 50, fetchOf(async () => ({ ok: true, json: async () => { throw new Error("not json"); } } as unknown as Response)))) === true,
   );
+}
+
+// --- P3-006 disk guard -------------------------------------------------------
+const GB = 1024 ** 3;
+check("disk guard: default threshold is 5GB", DISK_MIN_FREE_BYTES === 5 * GB);
+check("disk guard: below threshold aborts with clear detail", diskGuardDetail(4.2 * GB, 5 * GB)?.startsWith("disk low: 4.2gb free") === true);
+check("disk guard: at/above threshold proceeds", diskGuardDetail(5 * GB, 5 * GB) === null && diskGuardDetail(9.9 * GB, 5 * GB) === null);
+check("disk guard: unavailable probe fails open", diskGuardDetail(null, 5 * GB) === null);
+const realFree = await freeDiskBytes(tmpdir());
+check("disk guard: statfs probe returns bytes on a real dir", realFree !== null && realFree > 0);
+
+// deploy() with a mocked probe + threshold must abort BEFORE any git/npm step:
+// the bare tmp-dir repo would make `git rev-parse HEAD` throw if it were reached.
+{
+  const tmpDisk = mkdtempSync(join(tmpdir(), "ocr-disk-guard-"));
+  const notified: Array<{ task: string; ok: boolean; detail: string }> = [];
+  const events: Array<{ phase?: string; ok?: boolean; detail?: string }> = [];
+  let probeCalls = 0;
+  const cfgDisk: PilotConfig = {
+    repo: tmpDisk,
+    workspace: tmpDisk,
+    slots: 1,
+    maxTasksPerDay: 1,
+    maxDeploysPerDay: 1,
+    maxReviewRounds: 1,
+    maxAttemptsPerTask: 1,
+    taskTimeoutMin: 1,
+    reviewTimeoutMin: 1,
+    monitorMin: 1,
+    digest: false,
+  };
+  const res = await deploy(cfgDisk, "1234567890abcdef1234567890abcdef12345678", { task: "P3-006" }, {
+    minFreeBytes: 5 * GB,
+    probeFreeBytes: async () => {
+      probeCalls++;
+      return 4.2 * GB;
+    },
+    notify: async (task, ok, detail) => {
+      notified.push({ task, ok, detail });
+      return true;
+    },
+    emitEvent: (_type, fields) => {
+      events.push(fields);
+    },
+  });
+  check(
+    "disk guard: mocked threshold aborts deploy before npm ci",
+    res.ok === false &&
+      res.rolledBack === false &&
+      res.detail.startsWith("disk low: 4.2gb free") &&
+      probeCalls === 1,
+  );
+  check(
+    "disk guard: supervisor notified with disk-low detail",
+    notified.length === 1 &&
+      notified[0]!.task === "P3-006" &&
+      notified[0]!.ok === false &&
+      notified[0]!.detail.startsWith("disk low"),
+  );
+  check(
+    "disk guard: abort emits start + disk-guard deploy events",
+    events.length === 2 && events[1]!.phase === "disk-guard" && events[1]!.ok === false,
+  );
+  rmSync(tmpDisk, { recursive: true, force: true });
 }
 
 if (failures > 0) {
