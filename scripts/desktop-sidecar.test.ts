@@ -315,6 +315,34 @@ if (existsSync(bundle)) {
     (await fetch(`http://127.0.0.1:${smokePort}/dashboard`)).status === 200,
   );
 
+  // P2-007: the pairing URI is exposed read-only over loopback, Bearer-gated.
+  // Virgin daemon (throwaway HOME) → the boot URI must come back intact and
+  // the fresh allowlist must be empty.
+  const noTokenRes = await fetch(`http://127.0.0.1:${smokePort}/__ocr/pairing-uri`);
+  check("bundle smoke: GET /__ocr/pairing-uri without token is 401", noTokenRes.status === 401);
+  const wrongTokenRes = await fetch(`http://127.0.0.1:${smokePort}/__ocr/pairing-uri`, {
+    headers: { authorization: "Bearer nope" },
+  });
+  check("bundle smoke: GET /__ocr/pairing-uri with wrong token is 401", wrongTokenRes.status === 401);
+  const pairRes = await fetch(`http://127.0.0.1:${smokePort}/__ocr/pairing-uri`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  const pairBody = (await pairRes.json()) as { uri?: string };
+  check(
+    "bundle smoke: authenticated /__ocr/pairing-uri returns the boot URI",
+    pairRes.status === 200 && typeof pairBody.uri === "string" && pairBody.uri.startsWith("opencode-remote://pair?v=2&"),
+  );
+  const devRes = await fetch(`http://127.0.0.1:${smokePort}/__ocr/devices`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  const devBody = (await devRes.json()) as { devices?: unknown[] };
+  check(
+    "bundle smoke: authenticated /__ocr/devices returns the fresh allowlist",
+    devRes.status === 200 && Array.isArray(devBody.devices) && devBody.devices.length === 0,
+  );
+  const devNoAuthRes = await fetch(`http://127.0.0.1:${smokePort}/__ocr/devices`);
+  check("bundle smoke: GET /__ocr/devices without token is 401", devNoAuthRes.status === 401);
+
   child.kill("SIGTERM");
   check("bundle smoke: child exits on SIGTERM", await until(() => !pidAlive(child.pid ?? -1)));
 } else {

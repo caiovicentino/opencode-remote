@@ -145,6 +145,13 @@ execução. A tela manual de QR/colar continua disponível como fallback
 (troca de máquinas → add machine), por exemplo quando um daemon já rodando foi
 reaproveitado e nenhum URI foi capturado.
 
+**QR de primeira execução pro celular**: enquanto nenhum celular estiver
+pareado, a janela do desktop mostra um overlay com o QR de pareamento
+(renderizado pelo processo main a partir do `GET /__ocr/pairing-uri` do
+daemon, rota read-only em loopback com o mesmo bearer token). O shell checa a
+allowlist a cada 3s — quando o celular pareia, o overlay sai e o chat aparece.
+"Pair later" dispensa o overlay pela sessão.
+
 ## Roadmap
 
 Próximos: relay hospedado

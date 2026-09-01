@@ -66,7 +66,7 @@ function stateFile(): string {
 }
 
 /** Same token the daemon serves the web UI with; never logged, never sent elsewhere. */
-function readApiToken(): string | null {
+export function readApiToken(): string | null {
   try {
     const raw = JSON.parse(readFileSync(stateFile(), "utf8")) as { apiToken?: string };
     return raw.apiToken ?? null;

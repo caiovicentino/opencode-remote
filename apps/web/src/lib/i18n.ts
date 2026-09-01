@@ -135,6 +135,12 @@ const dict = {
     errCreateFailed: "Could not create the conversation — try again.",
     // session cards
     justNow: "now",
+    // first-run pairing overlay (desktop, P2-007)
+    pairOverlayTitle: "Pair your phone",
+    pairOverlayHint:
+      "Scan this QR code with the OpenCode Remote app to control this machine from your phone. Traffic is end-to-end encrypted.",
+    pairOverlayAlt: "Pairing QR code",
+    pairOverlayLater: "Pair later",
   },
   pt: {
     search: "Buscar conversas…",
@@ -221,5 +227,11 @@ const dict = {
     errCreateFailed: "Não deu pra criar a conversa — tenta de novo.",
     // session cards
     justNow: "agora",
+    // first-run pairing overlay (desktop, P2-007)
+    pairOverlayTitle: "Pareie seu celular",
+    pairOverlayHint:
+      "Escaneie este QR code com o app OpenCode Remote para controlar esta máquina do celular. O tráfego é criptografado ponta a ponta.",
+    pairOverlayAlt: "QR code de pareamento",
+    pairOverlayLater: "Parear depois",
   },
 } satisfies Record<Lang, Record<string, string>>;

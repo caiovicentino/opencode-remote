@@ -8,6 +8,14 @@ export interface DaemonBrowseResponse {
   body: string;
 }
 
+/** First-run pairing state pushed/pulled from the main process (P2-007). */
+export interface PairingState {
+  uri: string | null;
+  qrDataUrl: string | null;
+  devices: number;
+  phonePaired: boolean;
+}
+
 contextBridge.exposeInMainWorld("ocrDesktop", {
   platform: process.platform,
   version: ipcRenderer.invoke("app:version"),
@@ -18,4 +26,11 @@ contextBridge.exposeInMainWorld("ocrDesktop", {
   // P2-011: browser pane — proxy GET/POST to the daemon's /api/browse routes.
   daemonBrowse: (req: { path: string; method?: string; body?: unknown }): Promise<DaemonBrowseResponse | null> =>
     ipcRenderer.invoke("app:daemonBrowse", req),
+  // P2-007: first-run QR overlay — current snapshot plus change pushes.
+  getPairingState: (): Promise<PairingState | null> => ipcRenderer.invoke("app:pairingState"),
+  onPairingState: (cb: (state: PairingState | null) => void): (() => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, state: PairingState | null): void => cb(state);
+    ipcRenderer.on("ocr:pairing-state", listener);
+    return () => ipcRenderer.removeListener("ocr:pairing-state", listener);
+  },
 });

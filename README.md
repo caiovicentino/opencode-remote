@@ -163,6 +163,13 @@ QR scan on first run. The manual QR/paste screen remains as a fallback
 (machines switcher → add machine), for example when an already-running daemon
 was reused and never printed a URI to capture.
 
+**First-run QR for your phone**: while no phone is paired yet, the desktop
+window shows a first-run overlay with a scannable pairing QR (rendered by the
+main process from the daemon's `GET /__ocr/pairing-uri`, a read-only loopback
+route gated by the same bearer token). The shell polls the allowlist every 3s —
+once a phone pairs the overlay leaves and the chat appears. "Pair later"
+dismisses it for the session.
+
 ## Roadmap
 
 Next up: hosted relay option,

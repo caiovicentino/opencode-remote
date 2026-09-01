@@ -42,6 +42,19 @@ opencode-remote token
 Prompts are asynchronous: the endpoint returns `202 { accepted }` while the
 agent works. Poll `messages` for the reply, or use the SDK's `sendAndWait`.
 
+### Pairing state (P2-007)
+
+Two read-only routes serve the desktop shell's first-run QR overlay; they are
+the HTTP twin of the E2E `/__ocr` routes and never mutate anything:
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/__ocr/pairing-uri` | `{ uri }` — the `opencode-remote://pair?v=2&…` URI built at boot (null before boot completes) |
+| GET | `/__ocr/devices` | `{ devices }` — the current allowlist, fresh-read from the 0600 state file |
+
+Both require the bearer token, are bound to `127.0.0.1` like every daemon
+route, and answer `401` without a valid token.
+
 ### Browser self-driving (P2-011)
 
 `/api/browse/*` drives a headless Chromium on the host (Playwright). Sessions
