@@ -6,6 +6,9 @@ productName: OpenCode Remote
 files:
   - dist-electron/**
   - package.json
+  # P3-009: real app icon (scripts/make-icon.mjs) — shipped inside the asar so
+  # BrowserWindow/app.dock.setIcon can resolve it at runtime (appIcon()).
+  - build/icon.png
 extraResources:
   # Bundle the web UI so the packaged app can load it from resources/web-dist
   - from: ../web/dist
@@ -24,7 +27,10 @@ extraResources:
 mac:
   target: dir
   category: public.app-category.developer-tools
+  icon: build/icon.png
 win:
   target: dir
+  icon: build/icon.png
 linux:
   target: dir
+  icon: build/icon.png
