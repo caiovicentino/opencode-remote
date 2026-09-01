@@ -82,6 +82,17 @@ export interface PipelineResult {
 export const TASK_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 /**
+ * P2-011: does this diff (from `git diff --name-only`) touch the UI surfaces?
+ * Pure function so the eval battery can pin the acceptance criterion: a
+ * UI-changing cycle must produce a post-deploy screenshot.
+ */
+export function touchedUiFromDiff(nameOnly: string): boolean {
+  return nameOnly
+    .split("\n")
+    .some((l) => l.trim().startsWith("apps/web/") || l.trim().startsWith("apps/desktop/"));
+}
+
+/**
  * P1-006: per-task gatekeeper failure file (path-safe: id is TASK_ID_RE-checked).
  * Concurrent slots must not overwrite each other's carryover findings.
  */
@@ -183,12 +194,12 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
     if (!build.output.includes("PILOT:TASK-DONE")) {
       return { ok: false, detail: `builder did not finish (round ${round}): ${build.output.slice(-300)}` };
     }
+    // --name-only: unified diff lines are prefixed (a/, b/, diff --git) and
+    // would never match a bare path — round-2 review caught exactly that.
     const diff = exec(`git diff main...pilot/${t.id}`, { cwd: ws }).output;
+    touchedUi = touchedUiFromDiff(exec(`git diff --name-only main...pilot/${t.id}`, { cwd: ws }).output);
     // P2-011: UI tasks get visual evidence — reviewers cite the newest
     // post-deploy screenshot (and can capture fresh ones) in their verdict.
-    touchedUi = diff
-      .split("\n")
-      .some((l) => l.startsWith("apps/web/") || l.startsWith("apps/desktop/"));
     const uiShot = touchedUi ? latestUiShot() : null;
     if (!diff.trim()) {
       // empty-diff self-heal: builder ran after the task was already merged.

@@ -14,13 +14,15 @@ import { taskMergedIn } from "../apps/pilot/src/pipeline";
 import { clampSlots, ensureSingleton, loadState, recordTaskFailure } from "../apps/pilot/src/state";
 import { areaKey, pickBatch, pickTasks } from "../apps/pilot/src/scheduler";
 import { blockTask, loadBacklog, parseBacklog, type Task } from "../apps/pilot/src/backlog";
-import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync, utimesSync } from "node:fs";
 import { execSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { artifactMime, kindFor, listArtifacts, readArtifact, validSegment } from "../apps/daemon/src/artifacts";
-import { browseTarget, validSession } from "../apps/daemon/src/browse";
+import { browseTarget, validSession, viewportFromParams } from "../apps/daemon/src/browse";
+import { touchedUiFromDiff } from "../apps/pilot/src/pipeline";
+import { latestUiShot } from "../apps/pilot/src/shot";
 import { parseMarkdown, parseInline } from "../apps/web/src/lib/md";
 import { parseCsv } from "../apps/web/src/lib/csv";
 import { artifactMentions, fmtBytes } from "../apps/web/src/lib/artifacts";
@@ -542,6 +544,43 @@ check("browseTarget rejects garbage", browseTarget("not a url") === null);
 check("browseTarget rejects oversize", browseTarget(`http://a.com/${"x".repeat(3000)}`) === null);
 check("validSession accepts simple", validSession("main_2-x"));
 check("validSession rejects empty/long/path", !validSession("") && !validSession("a".repeat(40)) && !validSession("../etc"));
+
+// --- UI-cycle screenshot detection (P2-011, round-2 regression) --------------
+// input is `git diff --name-only` output: bare paths, one per line
+check("touchedUi: web file", touchedUiFromDiff("apps/daemon/src/browse.ts\napps/web/src/App.tsx"));
+check("touchedUi: desktop file", touchedUiFromDiff("apps/desktop/src/main.ts"));
+check("touchedUi: daemon-only diff", !touchedUiFromDiff("apps/daemon/src/browse.ts\ndocs/api.md"));
+check("touchedUi: empty diff", !touchedUiFromDiff(""));
+// prefixed unified-diff lines must never fool the check (bare-path contract)
+check("touchedUi: prefixed lines rejected", !touchedUiFromDiff("+++ b/apps/web/src/App.tsx"));
+
+// --- screenshot viewport params (P2-011, round-2 regression) -----------------
+check("viewport: absent params keep live viewport", viewportFromParams(null, null) === null);
+check("viewport: absent w only", viewportFromParams(null, "800") === null);
+check("viewport: valid", viewportFromParams("1280", "800")?.width === 1280);
+check("viewport: clamped to max", viewportFromParams("99999", "800")?.width === 1920);
+check("viewport: zero rejected (round-1 bug shrank shots to 200)", viewportFromParams("0", "0") === null);
+check("viewport: garbage rejected", viewportFromParams("x", "800") === null);
+
+// --- newest shot by mtime (P2-011, round-2 regression) -----------------------
+{
+  const dir = mkdtempSync(join(tmpdir(), "ocr-shots-"));
+  try {
+    check("latestUiShot: empty dir", latestUiShot(dir) === null);
+    const old = join(dir, "aaa-old.png");
+    const newest = join(dir, "zzz-new.png");
+    writeFileSync(old, "x");
+    writeFileSync(newest, "y");
+    // lexical order says aaa-old.png is first; mtime must win
+    const past = Date.now() / 1000 - 60;
+    utimesSync(old, past, past);
+    check("latestUiShot: newest by mtime, not lexical", latestUiShot(dir) === newest);
+    writeFileSync(join(dir, "notes.txt"), "not a shot");
+    check("latestUiShot: ignores non-png", latestUiShot(dir) === newest);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);

@@ -22,7 +22,11 @@ export function validSession(name: string): boolean {
   return /^[A-Za-z0-9_-]{1,32}$/.test(name);
 }
 
-/** Only http(s) — the browser must never reach file://, ftp:, chrome:// … */
+/** Only http(s) — the browser must never reach file://, ftp:, chrome:// …
+ * Loopback targets (127.0.0.1) are deliberately allowed: the whole point is to
+ * screenshot the local dashboard/running UIs. That is not a privilege boundary —
+ * every caller already holds the daemon apiToken, which grants the full
+ * /api surface anyway (documented in docs/api.md). */
 export function browseTarget(raw: string): URL | null {
   if (typeof raw !== "string" || raw.length > 2048) return null;
   try {
@@ -34,10 +38,33 @@ export function browseTarget(raw: string): URL | null {
   }
 }
 
+const VIEWPORT_MIN = 200;
+
 function clampViewport(n: unknown, fallback: number): number {
   const v = Number(n);
   if (!Number.isFinite(v)) return fallback;
-  return Math.min(Math.max(Math.round(v), 200), VIEWPORT_MAX);
+  return Math.min(Math.max(Math.round(v), VIEWPORT_MIN), VIEWPORT_MAX);
+}
+
+/**
+ * Pure helper for the screenshot route: returns a viewport only when BOTH w and
+ * h are present and valid. A missing param must keep the current viewport —
+ * coercing absent params to 0 (→ min 200×200) silently shrank every default
+ * screenshot and desynced click coordinate mapping in the pane.
+ */
+export function viewportFromParams(
+  w: string | null,
+  h: string | null,
+): { width: number; height: number } | null {
+  if (w === null || h === null) return null;
+  const width = Number(w);
+  const height = Number(h);
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return null;
+  if (width < 1 || height < 1) return null;
+  return {
+    width: clampViewport(width, VIEWPORT_MAX),
+    height: clampViewport(height, VIEWPORT_MAX),
+  };
 }
 
 /** Security-relevant actions land in the same audit.log the app reviews. */
@@ -74,11 +101,16 @@ async function getBrowser(): Promise<import("playwright-core").Browser> {
   if (browser && browser.isConnected()) return browser;
   const pw = await import("playwright-core");
   const exe = process.env.OCR_BROWSER_PATH;
+  // The Chromium renderer sandbox stays ON (default): the browser renders
+  // untrusted web content on the user's host, and --no-sandbox would turn any
+  // Chromium n-day into host compromise. Only environments where the sandbox
+  // is known-broken (some hardened containers) may opt out explicitly.
+  const noSandbox = process.env.OCR_BROWSE_NO_SANDBOX === "1";
   try {
     browser = await pw.chromium.launch({
       headless: true,
       ...(exe ? { executablePath: exe } : {}),
-      args: ["--no-sandbox", "--disable-dev-shm-usage"],
+      args: [...(noSandbox ? ["--no-sandbox"] : []), "--disable-dev-shm-usage"],
     });
   } catch (err) {
     log("warn", "browse: chromium launch failed", { error: String(err).slice(0, 200) });
@@ -93,30 +125,42 @@ async function getBrowser(): Promise<import("playwright-core").Browser> {
   return browser;
 }
 
+// Serialize the open path: concurrent POSTs must not race the LRU eviction
+// (both could pass the size check and overshoot MAX_SESSIONS).
+let opening: Promise<unknown> = Promise.resolve();
+
 async function openSession(url: string, name: string, w?: unknown, h?: unknown): Promise<BrowseSession> {
-  const target = browseTarget(url);
-  if (!target) throw new Error("invalid or non-http(s) url");
-  // LRU: never keep more than MAX_SESSIONS live pages around
-  while (sessions.size >= MAX_SESSIONS) {
-    let oldest = "";
-    let oldestAt = Infinity;
-    for (const [k, v] of sessions) {
-      if (v.lastUsed < oldestAt) {
-        oldestAt = v.lastUsed;
-        oldest = k;
+  const run = async (): Promise<BrowseSession> => {
+    const target = browseTarget(url);
+    if (!target) throw new Error("invalid or non-http(s) url");
+    // replace-or-evict: an existing session of the same name is closed first,
+    // otherwise its context leaks until the next full teardown
+    if (sessions.has(name)) await closeSession(name);
+    // LRU: never keep more than MAX_SESSIONS live pages around
+    while (sessions.size >= MAX_SESSIONS) {
+      let oldest = "";
+      let oldestAt = Infinity;
+      for (const [k, v] of sessions) {
+        if (v.lastUsed < oldestAt) {
+          oldestAt = v.lastUsed;
+          oldest = k;
+        }
       }
+      if (oldest) await closeSession(oldest);
+      else break;
     }
-    if (oldest) await closeSession(oldest);
-    else break;
-  }
-  const viewport = { width: clampViewport(w, 1280), height: clampViewport(h, 800) };
-  const b = await getBrowser();
-  const ctx = await b.newContext({ viewport });
-  const page = await ctx.newPage();
-  const session: BrowseSession = { page, viewport, lastUsed: Date.now() };
-  sessions.set(name, session);
-  await page.goto(target.toString(), { waitUntil: "load", timeout: NAV_TIMEOUT_MS });
-  return session;
+    const viewport = { width: clampViewport(w, 1280), height: clampViewport(h, 800) };
+    const b = await getBrowser();
+    const ctx = await b.newContext({ viewport });
+    const page = await ctx.newPage();
+    const session: BrowseSession = { page, viewport, lastUsed: Date.now() };
+    sessions.set(name, session);
+    await page.goto(target.toString(), { waitUntil: "load", timeout: NAV_TIMEOUT_MS });
+    return session;
+  };
+  const done = opening.then(run, run);
+  opening = done.catch(() => {});
+  return done;
 }
 
 async function closeSession(name: string): Promise<void> {
@@ -170,9 +214,15 @@ function json(res: ServerResponse, status: number, body: unknown) {
   res.end(JSON.stringify(body));
 }
 
+/** Browse bodies are tiny (url + selector); anything bigger is an attack. */
+const MAX_BODY = 64 * 1024;
+
 async function bodyJson(req: IncomingMessage): Promise<Record<string, unknown>> {
   let raw = "";
-  for await (const chunk of req) raw += chunk;
+  for await (const chunk of req) {
+    raw += chunk;
+    if (raw.length > MAX_BODY) throw new Error("body too large");
+  }
   try {
     return JSON.parse(raw || "{}") as Record<string, unknown>;
   } catch {
@@ -297,12 +347,11 @@ export async function handleBrowse(
         json(res, 404, { error: "no such browse session — open a url first" });
         return true;
       }
-      const w = Number(url.searchParams.get("w"));
-      const h = Number(url.searchParams.get("h"));
-      if (Number.isFinite(w) && Number.isFinite(h)) {
-        s.viewport.width = clampViewport(w, s.viewport.width);
-        s.viewport.height = clampViewport(h, s.viewport.height);
-        await s.page.setViewportSize(s.viewport);
+      // absent/invalid w or h keeps the live viewport (never shrink to min)
+      const vp = viewportFromParams(url.searchParams.get("w"), url.searchParams.get("h"));
+      if (vp) {
+        s.viewport = vp;
+        await s.page.setViewportSize(vp);
       }
       touch(sessionName);
       const shot = await s.page.screenshot({ type: "png" });

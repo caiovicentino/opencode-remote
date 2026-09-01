@@ -3,7 +3,7 @@
 // production dashboard and saves a PNG under pilot/shots/. Reviewers of later
 // rounds read the newest shot and cite it in their verdict — a UI regression
 // becomes visible evidence in the review log instead of a hunch.
-import { mkdirSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { nowLocalISO } from "./log";
@@ -12,14 +12,19 @@ export function shotsDir(): string {
   return join(homedir(), ".opencode-remote", "pilot", "shots");
 }
 
-/** Newest screenshot in pilot/shots (absolute path) or null. */
-export function latestUiShot(): string | null {
+/** Newest screenshot by mtime (absolute path) or null. Lexical order is wrong
+ * across tasks (`<task>-<sha>-<ts>.png` sorts by task name first), so compare
+ * file mtimes — reviewers must cite the most recent evidence. */
+export function latestUiShot(dir = shotsDir()): string | null {
   try {
-    const files = readdirSync(shotsDir())
-      .filter((f) => f.endsWith(".png"))
-      .sort();
-    const last = files[files.length - 1];
-    return last ? join(shotsDir(), last) : null;
+    let best: { path: string; mtime: number } | null = null;
+    for (const f of readdirSync(dir)) {
+      if (!f.endsWith(".png")) continue;
+      const path = join(dir, f);
+      const mtime = statSync(path).mtimeMs;
+      if (!best || mtime > best.mtime) best = { path, mtime };
+    }
+    return best?.path ?? null;
   } catch {
     return null;
   }
@@ -39,23 +44,27 @@ function apiToken(): string | null {
 
 /**
  * Open the production dashboard in the host browser and screenshot it.
- * Best-effort: a missing browser or daemon must never fail a deploy — returns
- * the saved path or null.
+ * Uses a dedicated `pilot-shot` session so it never clobbers a browse session
+ * the user (Browser pane) or a reviewer is using. Best-effort: a missing
+ * browser or daemon must never fail a deploy — returns the saved path or null.
  */
 export async function captureUiShot(taskId: string, sha: string): Promise<string | null> {
   const token = apiToken();
   if (!token) return null;
-  const base = "http://127.0.0.1:8792";
+  const port = Number(process.env.OCR_DAEMON_METRICS_PORT) || Number(process.env.OCR_METRICS_PORT) || 8792;
+  const base = `http://127.0.0.1:${port}`;
+  const session = "pilot-shot";
+  const sfx = `?session=${session}`;
   const headers = { authorization: `Bearer ${token}` };
   try {
-    const open = await fetch(`${base}/api/browse/open`, {
+    const open = await fetch(`${base}/api/browse/open${sfx}`, {
       method: "POST",
       headers,
       body: JSON.stringify({ url: `${base}/dashboard` }),
       signal: AbortSignal.timeout(60_000),
     });
     if (!open.ok) return null;
-    const shot = await fetch(`${base}/api/browse/screenshot`, {
+    const shot = await fetch(`${base}/api/browse/screenshot${sfx}`, {
       headers,
       signal: AbortSignal.timeout(30_000),
     });

@@ -200,14 +200,17 @@ pipeline uses both to close the loop on UI changes:
 - **Builder** (tasks tagged `area: ui` or `area: desktop`): instructed to validate
   its own output visually — `node tools/browse.mjs open <url> shot.png` — and to
   reference the PNG in the final output.
-- **Post-deploy**: when a merged task touched `apps/web/` or `apps/desktop/`, the
-  deploy captures a screenshot of the production dashboard into
+- **Post-deploy**: when a merged task touched `apps/web/` or `apps/desktop/`
+  (detected from `git diff --name-only` — unit-tested), the deploy captures a
+  screenshot of the production dashboard into
   `~/.opencode-remote/pilot/shots/<task>-<sha>-<ts>.png` and emits a `ui-shot`
-  event (visible on the dashboard feed).
-- **Reviewer**: when a newer screenshot exists, both reviewer prompts embed the
-  absolute path and require citing it in the verdict ("does the rendered layout
-  match what the diff promises?"). Reviewers can also take fresh screenshots with
-  the same CLI.
+  event (visible on the dashboard feed). It uses a dedicated `pilot-shot`
+  browse session so it never clobbers a session in use.
+- **Reviewer**: the newest screenshot is chosen by mtime (not lexical order,
+  which would pick an arbitrary task's old shot); both reviewer prompts embed
+  the absolute path and require citing it in the verdict ("does the rendered
+  layout match what the diff promises?"). Reviewers can also take fresh
+  screenshots with the same CLI.
 
 So a cycle that changes the UI always leaves visual evidence in the review log,
 and the verdict references it. Browse sessions are capped (3, 5-min idle) and the

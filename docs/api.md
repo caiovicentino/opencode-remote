@@ -46,7 +46,12 @@ agent works. Poll `messages` for the reply, or use the SDK's `sendAndWait`.
 
 `/api/browse/*` drives a headless Chromium on the host (Playwright). Sessions
 are named (`?session=`, default `main`), capped at 3 with a 5-minute idle
-timeout, and only accept `http:`/`https:` targets. Audit entries land in the
+timeout, and only accept `http:`/`https:` targets — including loopback, since
+screenshotting local services (dashboard, dev servers) is the point; callers
+already hold the daemon token, so browse adds no privilege. The Chromium
+renderer sandbox stays ON (any Chromium n-day must not become host compromise);
+only set `OCR_BROWSE_NO_SANDBOX=1` on environments where the sandbox is
+known-broken. Request bodies are capped at 64 KB. Audit entries land in the
 same `audit.log` the app reviews; set `OCR_BROWSE_DISABLED=1` to turn the
 surface off. The desktop app exposes the same routes through the **🌐 Browser**
 pane (screenshot loop — page content never renders inside the app origin).
