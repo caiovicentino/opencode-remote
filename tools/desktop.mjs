@@ -13,9 +13,25 @@
 // userData, no daemon sidecar) that survives between CLI calls until the idle
 // TTL expires. OCR_DESKTOP_SESSION keys the keeper socket so a gate run never
 // reuses (or kills) a builder's leftover session.
+// Security (P1-051 round 2 review): all session state lives in a 0700
+// session-owned dir — a world-connectable socket in /tmp would let any local
+// account run JS in the renderer (ipc), drive input (click/type) or overwrite
+// files (shot), and a predictable /tmp log path follows pre-placed symlinks.
+// The Unix socket is chmod 0600 after listen and every request must carry the
+// per-session random token (0600 file in the same dir), so a peer that cannot
+// read the token can neither drive the app nor spoof gate verdicts.
 import { spawn } from "node:child_process";
 import { connect as netConnect, createServer } from "node:net";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
@@ -24,8 +40,10 @@ import { fileURLToPath } from "node:url";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(HERE, "..");
 const SESSION = process.env.OCR_DESKTOP_SESSION || "main";
-const SOCK = join(tmpdir(), `ocr-desktop-${SESSION}.sock`);
-const LOG = join(tmpdir(), `ocr-desktop-${SESSION}.log`);
+const SESSION_DIR = join(tmpdir(), `ocr-desktop-${SESSION}`);
+const SOCK = join(SESSION_DIR, "keeper.sock");
+const LOG = join(SESSION_DIR, "keeper.log");
+const TOKEN_FILE = join(SESSION_DIR, "token");
 const IDLE_TTL_MS = Number(process.env.OCR_DESKTOP_TTL_MS) || 5 * 60_000;
 const CLOSE_DEADLINE_MS = 12_000;
 const BOOT_TIMEOUT_MS = 90_000;
@@ -46,6 +64,28 @@ if (process.env.OCR_DESKTOP_KEEPER === "1") {
 }
 
 // --- client -------------------------------------------------------------------
+
+/** The keeper mints a per-session token at boot (0600 file in the 0700
+ * session dir); every request carries it. null = no keeper (or mid-boot). */
+function readToken() {
+  try {
+    const token = readFileSync(TOKEN_FILE, "utf8").trim();
+    return token || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Fail closed: a session dir we cannot lock down (e.g. planted by another
+ * account before us) must never carry the socket — that is the spoof surface. */
+function ensureSessionDir() {
+  mkdirSync(SESSION_DIR, { recursive: true, mode: 0o700 });
+  try {
+    chmodSync(SESSION_DIR, 0o700);
+  } catch (err) {
+    throw new Error(`session dir ${SESSION_DIR} is not ours to chmod 0700 (${err?.code ?? err})`);
+  }
+}
 
 async function clientMain() {
   if (!cmd || cmd === "help") {
@@ -109,8 +149,15 @@ function fail(res) {
   else console.log(JSON.stringify({ ok: true, session: SESSION }));
 }
 
-/** One JSON-line request to the keeper; null when it is not running. */
+/** One JSON-line request to the keeper; null when it is not running. The
+ * session token is attached to every request, and the keeper must answer with
+ * sha256(token:nonce) — proof only the real keeper (or the owner of the token
+ * file) can produce. A hijacked socket path answering blind {ok:true} fails
+ * the proof, so a spoofed keeper can never turn a gate green. */
 async function send(msg, timeoutMs = CMD_TIMEOUT_MS) {
+  const token = readToken();
+  if (!token) return null;
+  const nonce = randomBytes(8).toString("hex");
   const sock = await new Promise((resolveSock, rejectSock) => {
     const s = netConnect(SOCK);
     s.once("error", rejectSock);
@@ -130,13 +177,18 @@ async function send(msg, timeoutMs = CMD_TIMEOUT_MS) {
         const nl = buf.indexOf("\n");
         if (nl === -1) return;
         clearTimeout(timer);
-        resolveRes(JSON.parse(buf.slice(0, nl)));
+        const res = JSON.parse(buf.slice(0, nl));
+        if (res.ok === true && res.proof !== createHash("sha256").update(`${token}:${nonce}`).digest("hex")) {
+          rejectRes(new Error("keeper failed the token proof — something else is answering on this socket"));
+          return;
+        }
+        resolveRes(res);
       });
       sock.on("error", (err) => {
         clearTimeout(timer);
         rejectRes(err);
       });
-      sock.write(JSON.stringify(msg) + "\n");
+      sock.write(JSON.stringify({ ...msg, token, nonce }) + "\n");
     });
   } finally {
     sock.destroy();
@@ -144,14 +196,16 @@ async function send(msg, timeoutMs = CMD_TIMEOUT_MS) {
 }
 
 function spawnKeeper() {
+  ensureSessionDir();
   try {
     unlinkSync(SOCK); // stale socket of a dead keeper
+    unlinkSync(TOKEN_FILE); // stale token — the fresh keeper mints its own
   } catch {}
   const child = spawn(process.execPath, [fileURLToPath(import.meta.url)], {
     detached: true,
     stdio: "ignore",
     cwd: repoRoot,
-    env: { ...process.env, OCR_DESKTOP_KEEPER: "1", OCR_DESKTOP_SOCK: SOCK },
+    env: { ...process.env, OCR_DESKTOP_KEEPER: "1" },
   });
   child.unref();
 }
@@ -208,6 +262,12 @@ async function keeperMain() {
     keeperLog("uncaught:", err?.stack ?? err);
     process.exit(1);
   });
+  ensureSessionDir();
+  // Per-session auth token (P1-051 round 2): written 0600 inside the 0700
+  // session dir BEFORE the socket is bound. Peers that cannot read it are
+  // rejected, so binding the well-known socket path alone buys nothing.
+  const token = randomBytes(32).toString("hex");
+  writeFileSync(TOKEN_FILE, token + "\n", { mode: 0o600 });
   const req = createRequire(join(repoRoot, "package.json"));
   const { _electron } = req("playwright-core");
   const env = hermeticEnv();
@@ -255,8 +315,22 @@ async function keeperMain() {
         } catch {
           continue;
         }
+        // Token check + signed reply: only the token holder gets work done,
+        // and only the token holder can produce proofs the client accepts —
+        // a fake server on this path can answer, but never convincingly.
+        if (msg.token !== token) {
+          keeperLog("unauthorized request (bad token) — ignored");
+          sock.write(JSON.stringify({ ok: false, error: "unauthorized: bad session token" }) + "\n");
+          return;
+        }
+        const reply = (res) => {
+          if (res.ok === true) {
+            res.proof = createHash("sha256").update(`${token}:${String(msg.nonce)}`).digest("hex");
+          }
+          sock.write(JSON.stringify(res) + "\n");
+        };
         if (msg.cmd === "close") {
-          sock.write(JSON.stringify({ ok: true }) + "\n");
+          reply({ ok: true });
           sock.end();
           keeperLog("close requested");
           void shutdown(electronApp, 0);
@@ -264,12 +338,8 @@ async function keeperMain() {
         }
         resetIdle();
         handle(electronApp, page, msg)
-          .then((res) => sock.write(JSON.stringify(res) + "\n"))
-          .catch((err) =>
-            sock.write(
-              JSON.stringify({ ok: false, error: String(err?.message ?? err).split("\n")[0] }) + "\n",
-            ),
-          );
+          .then(reply)
+          .catch((err) => reply({ ok: false, error: String(err?.message ?? err).split("\n")[0] }));
       }
     });
   });
@@ -280,7 +350,14 @@ async function keeperMain() {
   try {
     unlinkSync(SOCK);
   } catch {}
-  server.listen(SOCK);
+  server.listen(SOCK, () => {
+    // Defense in depth: even inside the 0700 dir, only the owner may connect.
+    try {
+      chmodSync(SOCK, 0o600);
+    } catch (err) {
+      keeperLog("socket chmod failed:", err);
+    }
+  });
 
   const stop = () => void shutdown(electronApp, 0);
   process.on("SIGTERM", stop);
@@ -371,8 +448,10 @@ async function quit(electronApp) {
 async function shutdown(electronApp, code) {
   // Stop accepting new work immediately: once shutdown starts the socket must
   // go away, or a concurrent `open` would adopt a keeper that is quitting.
+  // The token goes with it — a session without a keeper has no credentials.
   try {
     unlinkSync(SOCK);
+    unlinkSync(TOKEN_FILE);
   } catch {}
   // Hard-exit guarantee: electronApp.close() can hang forever when the app
   // already died or refuses to quit — the keeper must still die, or the

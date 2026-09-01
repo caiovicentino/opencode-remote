@@ -53,7 +53,8 @@ const cliEnv = { ...process.env, OCR_DESKTOP_SESSION: session };
 const startedAt = Date.now();
 const DEADLINE_MS = 60_000;
 const shotPath = join(tmpdir(), "ocr-desktop-flow", `flow-${process.pid}.png`);
-const logFile = join(tmpdir(), `ocr-desktop-${session}.log`);
+// P1-051 round 2: session state (socket, token, log) lives in a 0700 dir.
+const logFile = join(tmpdir(), `ocr-desktop-${session}`, "keeper.log");
 
 function run(step: string, cliArgs: string[], timeoutMs: number): { ok: boolean; stdout: string } {
   const remaining = deadline();
