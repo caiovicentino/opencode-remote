@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { agentStream, exec, runAgent } from "./runner";
@@ -90,6 +90,16 @@ export function validateSpec(content: string): boolean {
   return SPEC_SECTIONS.every((s) => headings.some((h) => h.startsWith(s.toLowerCase())));
 }
 
+/**
+ * P2-009 (round 2): single predicate for "UI evidence required", shared by the
+ * builder prompt and the gatekeeper so the builder is always asked for exactly
+ * what the gate will demand. The diff half (renderTouched) is only known at
+ * gate time — at prompt time the conditional wording covers it.
+ */
+export function needsUiEvidence(area: string | undefined, renderTouched: boolean): boolean {
+  return renderTouched || area === "ui" || area === "desktop";
+}
+
 export function builderPrompt(
   t: Task,
   round: number,
@@ -97,7 +107,7 @@ export function builderPrompt(
   lessons: string[] = [],
   specFile: string | null = null,
 ): string {
-  const uiTask = t.area === "ui" || t.area === "desktop";
+  const uiTask = needsUiEvidence(t.area, false);
   // P2-008: when a planner spec exists on the branch, the builder must follow it
   const specBlock = specFile
     ? `\nPLANNER SPEC: ${specFile} exists on this branch — read it FIRST. It holds the agreed problem analysis, approach, touched files, edge cases, acceptance criteria and out-of-scope. Follow it; if you must deviate, justify the deviation in the commit message. Do not delete or rewrite the spec.\n`
@@ -117,11 +127,30 @@ Rules:
 - Keep the diff focused: one task, no drive-by refactors.
 ${round > 1 ? `- Rounds 1..${round - 1} already committed work on this branch. Inspect it first with \`git diff main...pilot/${t.id}\` and fix the findings INCREMENTALLY — do not restart from scratch or re-read files you already understand.` : ""}${
     uiTask
-      ? `\n- UI self-driving (P2-011): this task changes the UI. Validate your own output visually before finishing: build the app, then use the host browser CLI — \`node tools/browse.mjs open <url> ~/.opencode-remote/pilot/shots/builder/${t.id}-r${round}.png\` — and inspect the PNG. Mention the screenshot path in your final output. This is YOUR pre-merge self-check; post-deploy evidence is captured separately by the pipeline.`
+      ? `\n- UI self-driving (P2-011): this task changes the UI. Validate your own output visually before finishing: build the app, then use the host browser CLI — \`node tools/browse.mjs open <url> ~/.opencode-remote/pilot/shots/builder/${t.id}-r${round}.png\` — and inspect the PNG. Produce TWO sized screenshots with the browse CLI — \`node tools/browse.mjs shot <path>.png 1440 900\` (desktop) and \`node tools/browse.mjs shot <path>.png 390 844\` (phone), positional width/height — and cite both paths in the EVIDENCE block below; PNG dimensions are verified at the gate (1440x900 exactly, 2x Retina accepted; width 390). This is YOUR pre-merge self-check; post-deploy evidence is captured separately by the pipeline.`
       : ""
   }
 
-When finished, your LAST line of output must be exactly: PILOT:TASK-DONE`;
+MANDATORY EVIDENCE (P2-009): when finished, end your output with exactly this EVIDENCE
+block — the deterministic gatekeeper parses it, re-executes every cited command and
+REJECTS the merge when the block is missing or the real output diverges from what you
+pasted. Only real output you produced this round; only "npm run typecheck --silent",
+"npm run test:unit --silent" and "npm run build --silent" may be cited. The gate also
+requires both screenshot lines whenever your diff touches apps/web/ or apps/desktop/ —
+even when this task is not tagged ui/desktop — so take them fresh this round and cite
+the fresh files:
+
+EVIDENCE:
+$ npm run typecheck --silent
+<paste the real command output here>
+$ npm run test:unit --silent
+<paste the real command output here>${
+    uiTask
+      ? `\nshot-1440x900: <absolute path of a real 1440x900 PNG screenshot>\nshot-390: <absolute path of a real 390px-wide PNG screenshot>`
+      : `\n(if this round's diff touches apps/web/ or apps/desktop/, also cite:\nshot-1440x900: <absolute path of a real 1440x900 PNG screenshot>\nshot-390: <absolute path of a real 390px-wide PNG screenshot>)`
+  }
+
+Your LAST line of output must be exactly: PILOT:TASK-DONE`;
 }
 
 /**
@@ -378,10 +407,225 @@ export function commitSpec(ws: string, id: string): boolean {
   return names.ok && names.output.trim() === path;
 }
 
+// ── P2-009 mandatory builder evidence ────────────────────────────────────────
+
+export const EVIDENCE_MARKER = "EVIDENCE:";
+export const TASK_DONE_MARKER = "PILOT:TASK-DONE";
+
+/** The only commands a builder may cite as evidence — the gatekeeper re-executes
+ * them verbatim in the workspace, so this allowlist doubles as the injection
+ * guard between LLM output and the pipeline's shell. */
+export const EVIDENCE_COMMANDS: readonly string[] = [
+  "npm run typecheck --silent",
+  "npm run test:unit --silent",
+  "npm run build --silent",
+];
+
+/** Every task must prove typecheck + unit; build is covered by the gate battery. */
+export const EVIDENCE_REQUIRED: readonly string[] = [
+  "npm run typecheck --silent",
+  "npm run test:unit --silent",
+];
+
+export interface EvidenceCommand {
+  cmd: string;
+  output: string;
+}
+
+export interface EvidenceBlock {
+  commands: EvidenceCommand[];
+  shots: Record<string, string>;
+}
+
+/**
+ * Parse the builder's final EVIDENCE block: `$ <cmd>` lines introduce a command,
+ * following lines are its pasted output, and `shot-<label>: <path>` lines cite
+ * screenshot files. Only the LAST marker counts (prose earlier in the output
+ * may quote it); the block ends at the task-done marker when present. Returns
+ * null when the block is missing or pathologically padded.
+ *
+ * Round 2: only ALLOWLISTED `$ ` lines open a command entry — a prompt-looking
+ * line inside a real command's pasted output (or a transcript echo like
+ * `$ npm run typecheck` without --silent) must not become a spurious command
+ * and reject an honest block. Non-allowlisted `$ ` lines are dropped entirely:
+ * never executed, never counted as output (the allowlist in verifyEvidence
+ * stays as a defensive second layer).
+ */
+export function parseEvidenceBlock(output: string): EvidenceBlock | null {
+  const lines = output.split("\n");
+  let start = -1;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (lines[i]?.trim() === EVIDENCE_MARKER) {
+      start = i;
+      break;
+    }
+  }
+  if (start < 0) return null;
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (lines[i]?.trim() === TASK_DONE_MARKER) {
+      end = i;
+      break;
+    }
+  }
+  const body = lines.slice(start + 1, end);
+  // headroom pinned by the eval battery: the unit battery alone prints ~300
+  // lines today and keeps growing — 600 keeps honest full pastes parseable
+  if (body.length > 600) return null;
+  const block: EvidenceBlock = { commands: [], shots: {} };
+  let current: EvidenceCommand | null = null;
+  for (const line of body) {
+    const t = line.trim();
+    if (t.startsWith("$ ")) {
+      const cmd = t.slice(2).trim();
+      if (!EVIDENCE_COMMANDS.includes(cmd)) continue;
+      current = { cmd, output: "" };
+      block.commands.push(current);
+      continue;
+    }
+    const shot = t.match(/^(shot-[0-9a-z]+):\s*(\S+)\s*$/i);
+    if (shot) {
+      block.shots[shot[1]!.toLowerCase()] = shot[2]!;
+      continue;
+    }
+    if (current && t) current.output += (current.output ? "\n" : "") + t;
+  }
+  return block;
+}
+
+/** Whitespace/ANSI-insensitive line normalization for evidence comparison. */
+export function normalizeEvidenceLine(s: string): string {
+  return s
+    .replace(/\x1b\[[0-9;]*[A-Za-z]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Containment check: every non-empty pasted line must appear (normalized) in
+ * the real re-run output. Subset semantics tolerate truncated pastes; a single
+ * fabricated line — the thing this gate exists to catch — has no source in the
+ * re-run and fails the merge.
+ * Round 3: an empty paste is only honest when the re-run itself printed nothing
+ * (e.g. silent tsc success) — citing a verbose command and pasting nothing must
+ * not pass on re-execution alone ("outputs reais colados").
+ */
+export function evidenceMatches(pasted: string, actual: string): boolean {
+  const actualLines = new Set(actual.split("\n").map(normalizeEvidenceLine).filter(Boolean));
+  const pastedLines = pasted
+    .split("\n")
+    .map(normalizeEvidenceLine)
+    .filter(Boolean)
+    .slice(0, 600);
+  if (pastedLines.length === 0) return actualLines.size === 0;
+  return pastedLines.every((l) => actualLines.has(l));
+}
+
+/** PNG IHDR dimensions (first 24 bytes) or null when not a readable PNG. */
+export function pngSize(path: string): { w: number; h: number } | null {
+  try {
+    const buf = readFileSync(path);
+    if (buf.length < 24) return null;
+    const magic = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    if (!buf.subarray(0, 8).equals(magic)) return null;
+    const w = buf.readUInt32BE(16);
+    const h = buf.readUInt32BE(20);
+    return w > 0 && h > 0 ? { w, h } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Accepted dimensions per shot key: 1x and 2x (Retina `screencapture`). */
+export function evidenceShotDimsOk(key: string, size: { w: number; h: number }): boolean {
+  if (key === "shot-1440x900") return (size.w === 1440 && size.h === 900) || (size.w === 2880 && size.h === 1800);
+  if (key === "shot-390") return size.w === 390 || size.w === 780;
+  return false;
+}
+
+export interface EvidenceResult {
+  ok: boolean;
+  detail: string;
+}
+
+/**
+ * P2-009 deterministic gate step: parse the builder's EVIDENCE block, then
+ * re-execute every cited command in the workspace and require the pasted
+ * output to be reproducible. Static checks (block present, commands allowlisted,
+ * required commands cited, screenshot paths/dimensions/freshness) run BEFORE
+ * any re-execution so hostile or malformed blocks fail fast without touching
+ * npm.
+ *
+ * Round 2: screenshots must be fresh — `minShotMtimeMs` (the pipeline start)
+ * bounds their mtime, so a stale PNG from an earlier task/round cannot pass
+ * as this round's UI evidence. `run` is injectable for the eval battery; the
+ * gatekeeper injects a caching runner so re-executed commands double as the
+ * gate battery's typecheck/build/unit results (no double execution while
+ * holding the cross-slot gate lock).
+ */
+export function verifyEvidence(
+  ws: string,
+  builderOutput: string,
+  requireShots: boolean,
+  minShotMtimeMs = 0,
+  run?: (cmd: string, cwd: string) => { ok: boolean; output: string },
+): EvidenceResult {
+  const runCmd =
+    run ?? ((cmd: string, cwd: string) => exec(cmd, { cwd, timeoutMin: 20, allowFail: true }));
+  const block = parseEvidenceBlock(builderOutput);
+  if (!block) return { ok: false, detail: "no EVIDENCE block in builder output" };
+  for (const c of block.commands) {
+    if (!EVIDENCE_COMMANDS.includes(c.cmd)) {
+      return { ok: false, detail: `evidence cites non-allowlisted command: ${c.cmd}` };
+    }
+  }
+  const cited = new Set(block.commands.map((c) => c.cmd));
+  for (const req of EVIDENCE_REQUIRED) {
+    if (!cited.has(req)) return { ok: false, detail: `evidence missing required command: ${req}` };
+  }
+  if (requireShots) {
+    for (const key of ["shot-1440x900", "shot-390"]) {
+      const p = block.shots[key];
+      if (!p) return { ok: false, detail: `UI task without ${key} path in the EVIDENCE block` };
+      const abs = p.startsWith("~") ? join(homedir(), p.slice(1)) : p;
+      const size = pngSize(abs);
+      if (!size) return { ok: false, detail: `${key}: not a readable PNG: ${p}` };
+      if (!evidenceShotDimsOk(key, size)) {
+        return { ok: false, detail: `${key}: wrong PNG dimensions ${size.w}x${size.h}: ${p}` };
+      }
+      if (minShotMtimeMs > 0) {
+        let mtime = 0;
+        try {
+          mtime = statSync(abs).mtimeMs;
+        } catch {}
+        if (mtime < minShotMtimeMs) {
+          return { ok: false, detail: `${key}: stale screenshot (predates this round): ${p}` };
+        }
+      }
+    }
+  }
+  for (const c of block.commands) {
+    const rerun = runCmd(c.cmd, ws);
+    if (!rerun.ok) return { ok: false, detail: `cited command failed on re-run: ${c.cmd}` };
+    if (!evidenceMatches(c.output, rerun.output)) {
+      const emptyPaste = !c.output.split("\n").some((l) => normalizeEvidenceLine(l));
+      return {
+        ok: false,
+        detail: emptyPaste
+          ? `no output pasted for: ${c.cmd} (the re-run produced output)`
+          : `pasted output diverges from re-run of: ${c.cmd}\nre-run tail:\n${rerun.output.slice(-400)}`,
+      };
+    }
+  }
+  return { ok: true, detail: `${block.commands.length} command(s) re-executed` };
+}
+
 export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState): Promise<PipelineResult> {
   const ws = cfg.workspace;
   // central injection guard: t.id is interpolated into shell commands below
   if (!TASK_ID_RE.test(t.id)) return { ok: false, detail: `invalid task id: ${t.id}` };
+  // P2-009: pipeline (branch) start — cited UI evidence must be newer than this
+  const startedAtMs = Date.now();
   // fresh workspace at origin/main
   exec("git fetch origin", { cwd: ws });
   exec("git reset -q --hard origin/main", { cwd: ws });
@@ -598,7 +842,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
     if (secOk && qualOk) {
       emit("phase", { task: t.id, phase: "gatekeeper" });
       // serialized across slots: fixed battery ports + main push (P1-006)
-      merged = await runGateExclusive(() => gatekeeper(cfg, ws, t, state));
+      merged = await runGateExclusive(() => gatekeeper(cfg, ws, t, state, build.output, startedAtMs));
       emit("phase", { task: t.id, phase: "merge", ok: merged });
       if (merged) {
         // gate passed — the per-task carryover file has no reason to linger
@@ -714,8 +958,33 @@ function logHallucination(task: string, reviewer: string, finding: string) {
   );
 }
 
-/** Deterministic gate: typecheck, build, test battery, invariants. No judgement. */
-async function gatekeeper(cfg: PilotConfig, ws: string, t: Task, state: PilotState): Promise<boolean> {
+/** Shared gatekeeper failure path: warn log + per-task carryover file + counter. */
+function recordGateFail(state: PilotState, taskId: string, step: string, tail: string) {
+  console.log(
+    JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "gatekeeper fail", data: { task: taskId, step, tail: tail.slice(-300) } }),
+  );
+  const failFile = gateFailFile(taskId);
+  if (failFile) {
+    try {
+      mkdirSync(dirname(failFile), { recursive: true });
+      writeFileSync(
+        failFile,
+        JSON.stringify({ task: taskId, step, tail: tail.slice(-1200), at: nowLocalISO() }, null, 2),
+      );
+    } catch {}
+  }
+  state.failures++;
+}
+
+/** Deterministic gate: evidence, typecheck, build, test battery, invariants. No judgement. */
+async function gatekeeper(
+  cfg: PilotConfig,
+  ws: string,
+  t: Task,
+  state: PilotState,
+  builderOutput: string,
+  startedAtMs: number,
+): Promise<boolean> {
   const steps: Array<[string, string]> = [
     ["typecheck", "npm run typecheck --silent"],
     ["build", "npm run build --silent"],
@@ -744,21 +1013,35 @@ async function gatekeeper(cfg: PilotConfig, ws: string, t: Task, state: PilotSta
   if (renderTouched) {
     steps.push(["desktop-render", "npx tsx scripts/desktop-render.test.ts"]);
   }
+  // P2-009 mandatory evidence: static checks first (missing block, fabricated
+  // command, missing screenshot) then re-execution of every cited command —
+  // pasted output that diverges from the real one rejects the merge here,
+  // before the expensive battery burns time on fabricated work.
+  // Round 2: shots are demanded under the SAME predicate the prompt used
+  // (needsUiEvidence) — a non-UI-tagged task whose diff touches apps/web or
+  // apps/desktop is instructed to bring shots and the gate enforces it.
+  // Round 2: re-run results are cached — the typecheck/build/unit steps below
+  // reuse them instead of re-executing the same commands while holding the
+  // cross-slot gate lock (P1-006).
+  const rerunResults = new Map<string, { ok: boolean; output: string }>();
+  const requireShots = needsUiEvidence(t.area, renderTouched);
+  const evidence = verifyEvidence(ws, builderOutput, requireShots, startedAtMs, (cmd, cwd) => {
+    const cached = rerunResults.get(cmd);
+    if (cached) return cached;
+    const r = exec(cmd, { cwd, timeoutMin: 20, allowFail: true });
+    rerunResults.set(cmd, r);
+    return r;
+  });
+  if (!evidence.ok) {
+    recordGateFail(state, t.id, "evidence", evidence.detail);
+    return false;
+  }
   for (const [name, cmd] of steps) {
-    const r = exec(cmd, { cwd: ws, timeoutMin: 20, allowFail: true });
+    // evidence already re-executed this exact command in this workspace — keep
+    // its result; the step list uses the same canonical command strings
+    const r = rerunResults.get(cmd) ?? exec(cmd, { cwd: ws, timeoutMin: 20, allowFail: true });
     if (!r.ok) {
-      console.log(JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "gatekeeper fail", data: { task: t.id, step: name, tail: r.output.slice(-300) } }));
-      const failFile = gateFailFile(t.id);
-      if (failFile) {
-        try {
-          mkdirSync(dirname(failFile), { recursive: true });
-          writeFileSync(
-            failFile,
-            JSON.stringify({ task: t.id, step: name, tail: r.output.slice(-1200), at: nowLocalISO() }, null, 2),
-          );
-        } catch {}
-      }
-      state.failures++;
+      recordGateFail(state, t.id, name, r.output);
       return false;
     }
   }

@@ -15,13 +15,20 @@ import {
   builderPrompt,
   codeChanges,
   commitSpec,
+  evidenceMatches,
+  evidenceShotDimsOk,
   lessonsBlock,
   needsPlanner,
+  needsUiEvidence,
+  normalizeEvidenceLine,
+  parseEvidenceBlock,
   plannerPrompt,
+  pngSize,
   reviewerPrompt,
   specPathFor,
   parseScribeLessons,
   validateSpec,
+  verifyEvidence,
 } from "../apps/pilot/src/pipeline";
 import {
   appendLessons,
@@ -708,6 +715,97 @@ check("stdlibShadow: non-stdlib root file passes", stdlibShadowHits("A\tmain.py\
   check("verifyFindings: snippet absent from diff dropped", verifyFindings(['- the string "totally absent" is wrong'], ws, diff).kept.length === 0);
   check("verifyFindings: prose mention of real file resolves", verifyFindings(["- mention of real.ts in prose is fine"], ws, diff).kept.length === 1);
   check("verifyFindings: URL not mistaken for a file citation", verifyFindings(["- see https://example.com/a/real.ts:2, plus `beta touched` here"], ws, diff).kept.length === 1);
+  rmSync(ws, { recursive: true, force: true });
+}
+
+// --- mandatory builder evidence (P2-009) --------------------------------------
+{
+  const UI_TASK: Task = { id: "P2-009", priority: "P2", title: "Evidence", spec: "", area: "ui", line: "" };
+  const INFRA_TASK: Task = { id: "P2-009", priority: "P2", title: "Evidence", spec: "", area: "infra", line: "" };
+  const bp = builderPrompt(INFRA_TASK, 1, "", []);
+  const bpUi = builderPrompt(UI_TASK, 1, "", []);
+  check("evidence: builder prompt mandates the EVIDENCE block", bp.includes("MANDATORY EVIDENCE") && bp.includes("EVIDENCE:"));
+  check("evidence: builder prompt requires typecheck + test:unit", bp.includes("$ npm run typecheck --silent") && bp.includes("$ npm run test:unit --silent"));
+  check("evidence: non-UI prompt shows the shot keys as conditional lines", bp.includes("if this round's diff touches apps/web/") && bp.includes("shot-1440x900:") && bp.includes("shot-390:"));
+  check("evidence: UI prompt asks both sized screenshots", bpUi.includes("shot-1440x900:") && bpUi.includes("shot-390:"));
+  check("evidence: task-done marker stays the last line", bp.trimEnd().endsWith("PILOT:TASK-DONE"));
+
+  const block = `working...\nEVIDENCE:\n$ npm run typecheck --silent\nTS-OK\n$ npm run test:unit --silent\nOK   one\nOK   two\nUNIT TESTS PASSED\nshot-1440x900: /tmp/desktop.png\nshot-390: /tmp/phone.png\nPILOT:TASK-DONE`;
+  const parsed = parseEvidenceBlock(block);
+  check("evidence: parses commands after the marker", parsed !== null && parsed.commands.length === 2 && parsed.commands[0]!.cmd === "npm run typecheck --silent" && parsed.commands[0]!.output === "TS-OK");
+  check("evidence: multi-line pasted output preserved", parsed?.commands[1]?.output === "OK   one\nOK   two\nUNIT TESTS PASSED");
+  check("evidence: shot paths parsed", parsed?.shots["shot-1440x900"] === "/tmp/desktop.png" && parsed?.shots["shot-390"] === "/tmp/phone.png");
+  check("evidence: block stops at the task-done marker", !JSON.stringify(parsed).includes("PILOT:TASK-DONE"));
+  check("evidence: no marker → null", parseEvidenceBlock("no evidence here\nPILOT:TASK-DONE") === null);
+  check("evidence: prose quoting the marker is ignored", parseEvidenceBlock("EVIDENCE: is required\n\nEVIDENCE:\n$ npm run build --silent\nx\n")?.commands.length === 1);
+  check("evidence: works without a trailing task-done marker", parseEvidenceBlock("EVIDENCE:\n$ npm run build --silent\nx\n")?.commands.length === 1);
+  check("evidence: padded block rejected", parseEvidenceBlock(`EVIDENCE:\n${"x\n".repeat(700)}`) === null);
+  const longHonest = parseEvidenceBlock(`EVIDENCE:\n$ npm run test:unit --silent\n${"OK  check\n".repeat(550)}`);
+  check("evidence: block cap leaves headroom for honest full pastes", (longHonest?.commands[0]?.output.split("\n").length ?? 0) === 550);
+  check("evidence: prompt teaches the positional browse CLI the tool implements", bpUi.includes("browse.mjs shot <path>.png 1440 900") && bpUi.includes("browse.mjs shot <path>.png 390 844") && !bpUi.includes("--w"));
+  check("evidence: prompt drops the unpredictable screencapture fallback", !bpUi.includes("screencapture"));
+
+  check("evidence: containment accepts a truncated real paste", evidenceMatches("UNIT TESTS PASSED", "OK a\nOK b\nUNIT TESTS PASSED") === true);
+  check("evidence: empty paste honest only for a silent re-run", evidenceMatches("", "") === true && evidenceMatches("", "OK a") === false);
+  check("evidence: fabricated line diverges", evidenceMatches("OK a\nFABRICATED 999", "OK a\nOK b") === false);
+  check("evidence: whitespace/ANSI normalized", evidenceMatches("OK   \x1b[32ma\x1b[0m", "OK a") === true);
+  check("evidence: line normalization is order/spacing insensitive", normalizeEvidenceLine("  OK   a  b  ") === "OK a b");
+
+  // PNG header parsing: hand-built IHDR for 1440x900 and 390x844
+  const png = (w: number, h: number) => {
+    const b = Buffer.alloc(24);
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(b, 0);
+    b.writeUInt32BE(w, 16);
+    b.writeUInt32BE(h, 20);
+    return b;
+  };
+  check("evidence: pngSize null on missing file / bad magic", pngSize("nope-missing.png") === null && pngSize(join(tmpdir(), "p2-009-missing.png")) === null);
+  check("evidence: shot dims accept 1440x900 (and 2x Retina)", evidenceShotDimsOk("shot-1440x900", { w: 1440, h: 900 }) && evidenceShotDimsOk("shot-1440x900", { w: 2880, h: 1800 }));
+  check("evidence: shot dims accept 390-wide (and 2x)", evidenceShotDimsOk("shot-390", { w: 390, h: 844 }) && evidenceShotDimsOk("shot-390", { w: 780, h: 1688 }));
+  check("evidence: shot dims reject wrong sizes", !evidenceShotDimsOk("shot-1440x900", { w: 1280, h: 800 }) && !evidenceShotDimsOk("shot-390", { w: 391, h: 844 }));
+
+  // end-to-end verifyEvidence against a real re-execution (echo scripts)
+  const ws = mkdtempSync(join(tmpdir(), "p2-009-"));
+  writeFileSync(ws + "/package.json", JSON.stringify({ name: "p2-009", scripts: { typecheck: "echo TS-OK", "test:unit": "echo UNIT-OK" } }));
+  const good = `EVIDENCE:\n$ npm run typecheck --silent\nTS-OK\n$ npm run test:unit --silent\nUNIT-OK\nPILOT:TASK-DONE`;
+  check("evidence: honest paste survives re-execution", verifyEvidence(ws, good, false).ok === true);
+  const fabricated = `EVIDENCE:\n$ npm run typecheck --silent\nTS-OK\n$ npm run test:unit --silent\nall 999 checks passed\nPILOT:TASK-DONE`;
+  const fab = verifyEvidence(ws, fabricated, false);
+  check("evidence: fabricated output rejected by re-execution", fab.ok === false && fab.detail.includes("diverges"));
+  const emptyPaste = `EVIDENCE:\n$ npm run typecheck --silent\nTS-OK\n$ npm run test:unit --silent\n`;
+  const ep = verifyEvidence(ws, emptyPaste, false);
+  check("evidence: empty paste for a verbose command rejected", ep.ok === false && ep.detail.includes("no output pasted"));
+  check("evidence: missing block rejected", verifyEvidence(ws, "all done", false).detail.includes("no EVIDENCE block"));
+  check("evidence: non-allowlisted command dropped, never executed", verifyEvidence(ws, "EVIDENCE:\n$ rm -rf /\n", false).detail.includes("missing required command"));
+  const transcript = `EVIDENCE:\n$ npm run typecheck --silent\nTS-OK\n$ npm run test:unit --silent\n$ npm run typecheck\nUNIT-OK\n`;
+  check("evidence: prompt-looking lines in real output don't reject an honest block", verifyEvidence(ws, transcript, false).ok === true && !parseEvidenceBlock(transcript)?.commands.some((c) => c.cmd === "npm run typecheck"));
+  // round 2: one predicate drives prompt AND gate (reviewer finding #1/#5)
+  check("evidence: needsUiEvidence is the union of area tag and diff", needsUiEvidence("ui", false) && needsUiEvidence("desktop", false) && needsUiEvidence("infra", true) && !needsUiEvidence("infra", false));
+  check("evidence: prompt warns that UI diffs need shots even untagged", builderPrompt(INFRA_TASK, 1, "", []).includes("even when this task is not tagged ui/desktop"));
+  // round 2: screenshot freshness — a stale PNG from an earlier task must not pass
+  const stale = join(ws, "stale.png");
+  writeFileSync(stale, png(1440, 900));
+  const past = Date.now() / 1000 - 60;
+  utimesSync(stale, past, past);
+  const fresh = join(ws, "fresh.png");
+  writeFileSync(fresh, png(1440, 900));
+  writeFileSync(join(ws, "phone-still-fresh.png"), png(390, 844));
+  const uiStale = `EVIDENCE:\n$ npm run typecheck --silent\nTS-OK\n$ npm run test:unit --silent\nUNIT-OK\nshot-1440x900: ${stale}\nshot-390: ${ws}/phone-still-fresh.png\n`;
+  const uiFresh = uiStale.replace(stale, fresh);
+  const startedAt = Date.now() - 10_000;
+  check("evidence: stale screenshot rejected by mtime bound", verifyEvidence(ws, uiStale, true, startedAt).detail.includes("stale screenshot"));
+  check("evidence: fresh screenshot passes the mtime bound", verifyEvidence(ws, uiFresh, true, startedAt).ok === true);
+  check("evidence: freshness off when not requested", verifyEvidence(ws, uiStale, true).ok === true);
+  check("evidence: missing required command rejected", verifyEvidence(ws, "EVIDENCE:\n$ npm run build --silent\nx\n", false).detail.includes("missing required command"));
+  const realPng = join(ws, "shot-desktop.png");
+  writeFileSync(realPng, png(1440, 900));
+  writeFileSync(join(ws, "shot-phone.png"), png(390, 844));
+  check("evidence: pngSize reads IHDR dimensions", JSON.stringify(pngSize(realPng)) === JSON.stringify({ w: 1440, h: 900 }));
+  const uiOk = `EVIDENCE:\n$ npm run typecheck --silent\nTS-OK\n$ npm run test:unit --silent\nUNIT-OK\nshot-1440x900: ${realPng}\nshot-390: ${ws}/shot-phone.png\nPILOT:TASK-DONE`;
+  check("evidence: UI shots verified by dimension", verifyEvidence(ws, uiOk, true).ok === true);
+  writeFileSync(join(ws, "tiny.png"), "not a png");
+  const uiBad = uiOk.replace(realPng, join(ws, "tiny.png"));
+  check("evidence: unreadable shot rejected", verifyEvidence(ws, uiBad, true).detail.includes("not a readable PNG"));
   rmSync(ws, { recursive: true, force: true });
 }
 
