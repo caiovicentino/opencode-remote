@@ -71,6 +71,7 @@ import type { PilotConfig } from "../apps/pilot/src/state";
 import { overlayVisible, phonePaired } from "../apps/desktop/src/pairing";
 import { daemonTooltip, loginItemSupported } from "../apps/desktop/src/tray";
 import { daemonNotify, NOTIFY_BACK_BODY, NOTIFY_DOWN_BODY } from "../apps/desktop/src/notify";
+import { DEEP_LINK_QUERY_MAX, deepLinkFromArgv, parseDeepLink } from "../apps/desktop/src/deeplink";
 import {
   DEFAULT_WINDOW_BOUNDS,
   loadWindowBounds,
@@ -119,6 +120,34 @@ try {
   threw = true;
 }
 check("parsePairingUri rejects v1", threw);
+
+// --- opencode-remote:// deep link (P3-014) -----------------------------------
+const deepUri =
+  `opencode-remote://pair?v=2&relay=wss%3A%2F%2Frelay.example.com&room=abc123` +
+  `&k=${encodeURIComponent(spki)}&name=mac`;
+check("parseDeepLink valid (echoes uri)", parseDeepLink(deepUri) === deepUri);
+check("parseDeepLink trims whitespace", parseDeepLink(`  ${deepUri}  `) === deepUri);
+check("parseDeepLink rejects wrong scheme", parseDeepLink("https://evil.example/pair?v=2&room=x") === null);
+check("parseDeepLink rejects unknown action", parseDeepLink("opencode-remote://evil?v=2&room=x") === null);
+check("parseDeepLink rejects missing v", parseDeepLink("opencode-remote://pair?room=x") === null);
+check("parseDeepLink rejects v1", parseDeepLink("opencode-remote://pair?v=1&room=x") === null);
+check("parseDeepLink rejects path suffix", parseDeepLink("opencode-remote://pair/x?v=2") === null);
+check("parseDeepLink rejects fragment", parseDeepLink("opencode-remote://pair?v=2#x") === null);
+check("parseDeepLink rejects space (unsafe charset)", parseDeepLink("opencode-remote://pair?v=2&room=a b") === null);
+check("parseDeepLink rejects control char", parseDeepLink("opencode-remote://pair?v=2&room=a\x00b") === null);
+check(
+  "parseDeepLink rejects oversize query",
+  parseDeepLink(`opencode-remote://pair?v=2&room=${"a".repeat(DEEP_LINK_QUERY_MAX)}`) === null,
+);
+check("parseDeepLink accepts 4KB-boundary query", parseDeepLink(`opencode-remote://pair?v=2&room=${"a".repeat(DEEP_LINK_QUERY_MAX - 1 - "v=2&room=".length)}`) !== null);
+check("parseDeepLink rejects garbage", parseDeepLink("not a uri") === null);
+check("parseDeepLink rejects empty", parseDeepLink("") === null);
+check("parseDeepLink rejects non-string", parseDeepLink(undefined) === null);
+check("deepLinkFromArgv finds link in argv", deepLinkFromArgv(["C:\\app.exe", "--flag", deepUri]) === deepUri);
+check("deepLinkFromArgv rejects invalid link in argv", deepLinkFromArgv(["C:\\app.exe", "opencode-remote://evil?v=2"]) === null);
+check("deepLinkFromArgv no link", deepLinkFromArgv(["C:\\app.exe", "--flag"]) === null);
+check("deepLinkFromArgv rejects non-array", deepLinkFromArgv("opencode-remote://pair?v=2") === null);
+
 
 // --- mime map ---------------------------------------------------------------
 check("mimeFor pdf", mimeFor("report.pdf") === "application/pdf");

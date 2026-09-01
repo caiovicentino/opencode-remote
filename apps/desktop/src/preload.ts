@@ -35,4 +35,12 @@ contextBridge.exposeInMainWorld("ocrDesktop", {
     ipcRenderer.on("ocr:pairing-state", listener);
     return () => ipcRenderer.removeListener("ocr:pairing-state", listener);
   },
+  // P3-014: opencode-remote:// pair link (already validated in main) — late
+  // pull plus live push, mirroring the pairing-state channel above.
+  getDeepLink: (): Promise<string | null> => ipcRenderer.invoke("app:deepLink"),
+  onDeepLink: (cb: (uri: string) => void): (() => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, uri: string): void => cb(uri);
+    ipcRenderer.on("ocr:deep-link", listener);
+    return () => ipcRenderer.removeListener("ocr:deep-link", listener);
+  },
 });

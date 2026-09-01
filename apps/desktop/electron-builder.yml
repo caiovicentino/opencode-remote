@@ -3,6 +3,14 @@
 # only guarantees a working `--dir` build of the current shell.
 appId: com.culturabuilder.opencode-remote
 productName: OpenCode Remote
+# P3-014: declare the opencode-remote:// scheme in the packaged bundle
+# (CFBundleURLTypes on macOS, registry on Windows) so the installer knows the
+# app handles it; main.ts binds the handler at runtime via
+# setAsDefaultProtocolClient (packaged builds only).
+protocols:
+  - name: "OpenCode Remote Pairing"
+    schemes:
+      - opencode-remote
 files:
   - dist-electron/**
   - package.json
