@@ -59,7 +59,7 @@ import {
   readRecentFailureLessons,
   type FailureLesson,
 } from "../apps/pilot/src/failureLessons";
-import { clampSlots, ensureSingleton, loadState, recordTaskFailure } from "../apps/pilot/src/state";
+import { clampSlots, ensureSingleton, loadState, normalizeModels, recordTaskFailure, tierBModelFor } from "../apps/pilot/src/state";
 import { avgPhaseDurations, burnDown, countFailSteps } from "../apps/pilot/src/metrics";
 import type { PilotEvent } from "../apps/pilot/src/events";
 import { areaKey, pickBatch, pickTasks } from "../apps/pilot/src/scheduler";
@@ -79,7 +79,7 @@ import {
 } from "../apps/pilot/src/audit";
 import { blockTask, loadBacklog, parseBacklog, addTask, type Task } from "../apps/pilot/src/backlog";
 import { EXPLORER_MAX_FINDINGS, EXPLORER_MAX_STEPS, EXPLORER_TIMEOUT_MIN, EXPLORER_PUSH_RETRIES, EXPLORER_PUSH_WAIT_MS, commitAndPushFindings, explorerSpec, parseExplorerFindings, type ExplorerFinding } from "../apps/pilot/src/explorer";
-import { API_PREFLIGHT, apiHealthy, idScanner, mergeAgentIds, OPENCODE_URL_DEFAULT, scanIds, waitForApi } from "../apps/pilot/src/runner";
+import { API_PREFLIGHT, apiHealthy, claudeArgs, idScanner, mergeAgentIds, OPENCODE_URL_DEFAULT, scanIds, shouldFallbackTierB, waitForApi } from "../apps/pilot/src/runner";
 import { mkdtempSync, mkdirSync, readdirSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync, utimesSync } from "node:fs";
 import { execSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
@@ -93,7 +93,7 @@ import { dirname, join } from "node:path";
 import { artifactMime, kindFor, listArtifacts, readArtifact, validSegment } from "../apps/daemon/src/artifacts";
 import { browseTarget, clickPoint, validSession, viewportFromParams } from "../apps/daemon/src/browse";
 import { createShutdown, DRAIN_MS, stopAccepting } from "../apps/daemon/src/shutdown";
-import { touchedUiFromDiff, parseFindings, verifyFindings } from "../apps/pilot/src/pipeline";
+import { touchedUiFromDiff, needsEscalation, parseFindings, verifyFindings } from "../apps/pilot/src/pipeline";
 import { stdlibShadowHits } from "./stdlib-shadow";
 import { latestUiShot, pruneShots } from "../apps/pilot/src/shot";
 import { parseMarkdown, parseInline } from "../apps/web/src/lib/md";
@@ -116,6 +116,7 @@ import {
   windowStateFile,
   type WindowBounds,
 } from "../apps/desktop/src/window-state";
+import { extractReport, FORENSIC_MARKER, FORENSIC_WINDOW_MS, forensicDue, forensicPrompt, listGateFails } from "../apps/pilot/src/forensic";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -2196,6 +2197,69 @@ check(
     check("explorer push retry: real git lands the commit on origin/main", smoke === true && remoteLog.includes("smoke'd run"));
   } finally {
     rmSync(repo, { recursive: true, force: true });
+  }
+}
+
+// --- P1-059: tiered cognition — claude CLI dispatch + escalation predicate ---
+
+check("p1-059 claudeArgs pins the tier-B argv contract", JSON.stringify(claudeArgs("opus", "/w")) === JSON.stringify(["-p", "--model", "opus", "--add-dir", "/w", "--permission-mode", "acceptEdits"]));
+
+check("p1-059 shouldFallbackTierB: not ok", shouldFallbackTierB({ ok: false, timedOut: false, output: "x" }));
+check("p1-059 shouldFallbackTierB: timed out", shouldFallbackTierB({ ok: true, timedOut: true, output: "x" }));
+check("p1-059 shouldFallbackTierB: empty output", shouldFallbackTierB({ ok: true, timedOut: false, output: "   \n " }));
+check("p1-059 shouldFallbackTierB: marker missing", shouldFallbackTierB({ ok: true, timedOut: false, output: "some output" }, "PLANNER:DONE"));
+check("p1-059 shouldFallbackTierB: ok with marker", !shouldFallbackTierB({ ok: true, timedOut: false, output: "done\nPLANNER:DONE" }, "PLANNER:DONE"));
+check("p1-059 shouldFallbackTierB: no marker required", !shouldFallbackTierB({ ok: true, timedOut: false, output: "any output" }));
+
+// config resolution: absent models block → every role stays tier A
+for (const role of ["strategist", "planner", "forensic", "reviewerEscalation"] as const) {
+  check(`p1-059 no models block → tier A for ${role}`, tierBModelFor(undefined, role) === undefined);
+}
+check(
+  "p1-059 tierB block resolves per-role models",
+  tierBModelFor({ tierB: { planner: "fable-5.1", reviewerEscalation: "opus" } }, "planner") === "fable-5.1" &&
+    tierBModelFor({ tierB: { planner: "fable-5.1" } }, "reviewerEscalation") === undefined,
+);
+check(
+  "p1-059 normalizeModels keeps string values, drops garbage",
+  JSON.stringify(normalizeModels({ tierA: { builder: "glm-5.3-flash", scribe: 3 }, tierB: { planner: " opus " } })) ===
+    JSON.stringify({ tierA: { builder: "glm-5.3-flash" }, tierB: { planner: "opus" } }),
+);
+check("p1-059 normalizeModels: non-object → undefined", normalizeModels("nope") === undefined && normalizeModels(null) === undefined);
+check("p1-059 normalizeModels: empty tiers → undefined", normalizeModels({ tierA: {}, tierB: { planner: "" } }) === undefined);
+
+// escalation table (P1-059 acceptance): divergent ⇒ true; both APPROVE ⇒ false; round>1 ⇒ false
+check("p1-059 needsEscalation: divergent round 1", needsEscalation(1, true, false, false, false) && needsEscalation(1, false, true, false, false));
+check("p1-059 needsEscalation: both approve round 1", !needsEscalation(1, true, true, false, false));
+check("p1-059 needsEscalation: both reject with kept findings", !needsEscalation(1, false, false, false, false));
+check("p1-059 needsEscalation: all-dropped triggers", needsEscalation(1, true, true, true, false) && needsEscalation(1, false, false, false, true));
+check("p1-059 needsEscalation: never past round 1", !needsEscalation(2, true, false, true, true));
+
+// forensic guards + report extraction
+check("p1-059 forensicDue: never ran", forensicDue(undefined) === true);
+check("p1-059 forensicDue: unparsable date", forensicDue("not-a-date") === true);
+check("p1-059 forensicDue: within 7 days", !forensicDue(new Date(Date.now() - 3 * 24 * 3600 * 1000).toISOString()));
+check("p1-059 forensicDue: older than 7 days", forensicDue(new Date(Date.now() - (FORENSIC_WINDOW_MS + 60_000)).toISOString()));
+check("p1-059 extractReport: body before marker, echo-safe", extractReport("REPORT\nFORENSIC:DONE is the marker\nmore\nFORENSIC:DONE") === "REPORT\nFORENSIC:DONE is the marker\nmore");
+check("p1-059 extractReport: missing marker keeps everything", extractReport("just a report") === "just a report");
+check("p1-059 forensicPrompt carries the sections + marker", forensicPrompt("l1", [{ task: "P9-001", step: "unit" }], "abc1234 x").includes("## Patterns") && forensicPrompt("l1", [{ task: "P9-001", step: "unit" }], "abc1234 x").includes(FORENSIC_MARKER));
+check("p1-059 listGateFails: missing dir → []", listGateFails(join(tmpdir(), `no-such-dir-${Date.now()}`)).length === 0);
+{
+  const dir = mkdtempSync(join(tmpdir(), "gatefail-sort-"));
+  try {
+    for (const [i, name] of ["a.json", "b.json", "c.json"].entries()) {
+      writeFileSync(join(dir, name), JSON.stringify({ task: name.replace(".json", ""), step: `s-${i}` }));
+    }
+    // b.json newest, then c.json, then a.json (round-2 finding: newest first)
+    utimesSync(join(dir, "a.json"), new Date(1_000_000), new Date(1_000_000));
+    utimesSync(join(dir, "b.json"), new Date(3_000_000), new Date(3_000_000));
+    utimesSync(join(dir, "c.json"), new Date(2_000_000), new Date(2_000_000));
+    const fails = listGateFails(dir);
+    check("p1-059 listGateFails: sorted by mtime desc", fails.map((f) => f.task).join(",") === "b,c,a");
+    const capped = listGateFails(dir, 2);
+    check("p1-059 listGateFails: cap keeps most recent", capped.length === 2 && capped[0].task === "b" && capped[1].task === "c");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 }
 

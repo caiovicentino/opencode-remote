@@ -10,7 +10,16 @@ gatekeeper runs the eval battery + `scripts/invariants.ts` (see `docs/CONSTITUTI
 deploys are staged with automatic rollback. P0/P1 tasks first go through a PLANNER phase: a
 read-only agent writes `specs/<ID>.md` on the task branch (problem, approach, touched files,
 edge cases, acceptance criteria, out of scope) and the builder + quality reviewer are held to
-it; P2+ tasks go straight to the builder (P2-008). Tasks that keep failing the pipeline are circuit-broken
+it; P2+ tasks go straight to the builder (P2-008). Cognition is tiered (P1-059): pilot.json may set a
+`models.tierB` block mapping the judgment roles (`strategist`, `planner`, `forensic`,
+`reviewerEscalation`) to a stronger model — those roles then dispatch through the claude CLI
+(`claude -p --model <m> --add-dir <workspace>`, prompt via stdin) with automatic tier-A fallback
+on spawn error/timeout/empty output/missing completion marker (`tierB-fallback` in the log),
+while builder/reviewers/scribe stay tier A (flash via `opencode run`) and the deterministic
+evidence gate is unchanged; round-1 review divergence or all-unverifiable findings trigger at
+most one tier-B escalation reviewer (`review-escalation` phase), and a weekly forensic pass
+distills the failure record into a taxonomy at `~/.opencode-remote/pilot/forensic-latest.md`.
+Tasks that keep failing the pipeline are circuit-broken
 after `maxAttemptsPerTask` (default 4; a `(size: L)` task has its own cap of 6) attempts: moved to `## Blocked` in BACKLOG.md with the last
 findings and never re-scheduled until a human/red team moves them back (P1-014). A task line may also carry a
 `(size: L)` tag (P1-060): long-horizon epics scale budgets to 6 rounds/90min/6 attempts, keep the `pilot/<ID>`

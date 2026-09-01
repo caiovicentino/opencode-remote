@@ -18,6 +18,51 @@ export interface PilotConfig {
   digest: boolean;
   /** P3-033: record golden-corpus gate samples every N successful merges. */
   corpusEveryNMerges: number;
+  /** P1-059: tiered cognition — optional; absent block = everything tier A. */
+  models?: ModelsConfig;
+}
+
+// ── P1-059: tiered cognition (strong models plan/judge, flash executes) ──────
+
+/** Judgment roles: may be dispatched to a stronger model via the claude CLI. */
+export type TierBRole = "strategist" | "planner" | "forensic" | "reviewerEscalation";
+/** Execution roles: always run the configured opencode model. Names in tierA
+ * are documentation only — tier A dispatch never changes binaries. */
+export type TierARole = "builder" | "reviewer" | "scribe";
+export type TierBModels = Partial<Record<TierBRole, string>>;
+export type TierAModels = Partial<Record<TierARole, string>>;
+
+export interface ModelsConfig {
+  tierA?: TierAModels;
+  tierB?: TierBModels;
+}
+
+/**
+ * P1-059: tolerant parse of the `models` pilot.json block. Only string values
+ * on the known role keys survive; anything else (garbage, wrong types, empty
+ * strings) is dropped. A block that yields no usable entry is undefined, which
+ * resolves every role to tier A — the pre-P1-059 behavior.
+ */
+export function normalizeModels(m: unknown): ModelsConfig | undefined {
+  if (!m || typeof m !== "object") return undefined;
+  const raw = m as { tierA?: unknown; tierB?: unknown };
+  const pick = (v: unknown): Record<string, string> | undefined => {
+    if (!v || typeof v !== "object") return undefined;
+    const out: Record<string, string> = {};
+    for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+      if (typeof val === "string" && val.trim()) out[k] = val.trim();
+    }
+    return Object.keys(out).length ? out : undefined;
+  };
+  const tierA = pick(raw.tierA) as TierAModels | undefined;
+  const tierB = pick(raw.tierB) as TierBModels | undefined;
+  if (!tierA && !tierB) return undefined;
+  return { tierA, tierB };
+}
+
+/** Tier B model configured for a role, if any — the whole dispatch decision. */
+export function tierBModelFor(models: ModelsConfig | undefined, role: TierBRole): string | undefined {
+  return models?.tierB?.[role];
 }
 
 export const DEFAULTS: PilotConfig = {
@@ -55,6 +100,11 @@ export function loadConfig(): PilotConfig {
       if (!Number.isFinite(cfg.corpusEveryNMerges) || cfg.corpusEveryNMerges < 1)
         cfg.corpusEveryNMerges = DEFAULTS.corpusEveryNMerges;
       cfg.slots = clampSlots(cfg.slots);
+      // P1-059: tolerate garbage in the models block — invalid content behaves
+      // exactly like an absent block (everything tier A)
+      const models = normalizeModels(cfg.models);
+      if (models) cfg.models = models;
+      else delete cfg.models;
       return cfg;
     }
   } catch {}
@@ -90,6 +140,8 @@ export interface PilotState {
   researchLast?: string;
   /** P3-052: last YYYY-MM-DD the nightly explorer ran (once per day). */
   explorerLast?: string;
+  /** P1-059: last date the weekly tier-B forensic taxonomy ran (own 7-day guard). */
+  forensicLast?: string;
   /** P2-032: sliding window of recent pipeline outcomes (fever rate). */
   cycles?: CycleSample[];
   /** P2-032: epoch ms timestamps of blocks that landed on main (30min burst). */

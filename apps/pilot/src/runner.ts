@@ -1,5 +1,6 @@
 import { spawn, execSync } from "node:child_process";
 import { nowLocalISO } from "./log";
+import { tierBModelFor, touchHeartbeat, type TierBRole } from "./state";
 
 export interface RunResult {
   ok: boolean;
@@ -273,4 +274,130 @@ function Bun_shim_execSync(cmd: string, opts: { cwd: string; timeoutMin?: number
     timeout: (opts.timeoutMin ?? 10) * 60_000,
     maxBuffer: 64 * 1024 * 1024,
   }) as unknown as string;
+}
+
+// ── P1-059: tiered cognition — judgment roles may dispatch to the claude CLI ─
+
+export interface AgentRunOpts {
+  cwd: string;
+  timeoutMin: number;
+  label: string;
+  sessionId?: string;
+  printLogs?: boolean;
+  onStdout?: (chunk: string) => void;
+}
+
+/**
+ * Exact argv of the tier-B dispatch, pinned by the unit battery. `-p` print
+ * mode + `--add-dir` restricted to the slot workspace clone (anti-exfiltration:
+ * nothing under ~/.opencode-remote is ever mounted) + edits auto-accepted.
+ */
+export function claudeArgs(model: string, ws: string): string[] {
+  return ["-p", "--model", model, "--add-dir", ws, "--permission-mode", "acceptEdits"];
+}
+
+/**
+ * P1-059: fallback decision (pure). Tier B output is only trusted when the
+ * process exited cleanly AND produced non-empty output containing the role's
+ * completion marker — anything else re-runs the role through tier A.
+ */
+export function shouldFallbackTierB(r: Pick<RunResult, "ok" | "timedOut" | "output">, marker?: string): boolean {
+  if (!r.ok) return true;
+  if (r.timedOut) return true;
+  if (!r.output.trim()) return true;
+  return !!marker && !r.output.includes(marker);
+}
+
+/**
+ * One tier-B run: `claude -p` with the prompt via stdin (stdin closed after
+ * EOF — the proven pattern). Same SIGTERM→SIGKILL timeout ladder as runAgent.
+ * `claude -p` may stay silent on stdout until the final answer, so the run
+ * feeds touchHeartbeat() on a timer — the self-watchdog must not kill the
+ * pilot mid-run (P3-052 lesson applied to a non-streaming spawn).
+ */
+export async function runTierB(
+  model: string,
+  prompt: string,
+  opts: { cwd: string; timeoutMin: number },
+): Promise<RunResult> {
+  return new Promise((resolve) => {
+    const child = spawn("claude", claudeArgs(model, opts.cwd), {
+      cwd: opts.cwd,
+      env: process.env,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let output = "";
+    let timedOut = false;
+    let done = false;
+    const finish = (r: RunResult) => {
+      if (done) return;
+      done = true;
+      clearInterval(hb);
+      clearTimeout(timer);
+      resolve(r);
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+      setTimeout(() => child.kill("SIGKILL"), 10_000);
+    }, opts.timeoutMin * 60_000);
+    const hb = setInterval(touchHeartbeat, 60_000);
+    child.stdout.on("data", (c: Buffer) => {
+      output += c.toString();
+    });
+    child.stderr.on("data", (c: Buffer) => {
+      output += c.toString();
+    });
+    child.stdin.on("error", () => {}); // early exit → EPIPE on the prompt write
+    child.stdin.write(prompt);
+    child.stdin.end();
+    child.on("exit", (code) => {
+      finish({ ok: !timedOut && code === 0, output, timedOut, taskIds: [] });
+    });
+    child.on("error", (err) => {
+      finish({ ok: false, output: output + `\nspawn error: ${String(err)}`, timedOut, taskIds: [] });
+    });
+  });
+}
+
+function logDispatch(level: string, msg: string, data: Record<string, unknown>) {
+  console.log(JSON.stringify({ ts: nowLocalISO(), level, msg, data }));
+}
+
+/**
+ * Role-aware dispatch (P1-059): judgment roles (strategist, planner, forensic,
+ * reviewer escalation) run the stronger tier-B model when one is configured in
+ * pilot.json `models.tierB`; on any tier-B failure (spawn error, timeout, empty
+ * output, missing completion marker) the same prompt re-runs through tier A
+ * (opencode run) so the pipeline never stalls on tier-B availability. Without
+ * a configured tier-B model this is exactly runAgent.
+ *
+ * Tier-B runs are NON-STREAMING and CONTEXT-LESS (round-2 review): `claude -p`
+ * prints its final answer once at the end, so `opts.onStdout` is not wired to
+ * tier-B output and no session id is produced — `opts.sessionId` and
+ * `opts.onStdout` only take effect when the role dispatches to (or falls back
+ * to) tier A. The self-watchdog is fed by runTierB's internal heartbeat timer
+ * instead of stdout callbacks.
+ */
+export async function runAgentForRole(
+  role: TierBRole,
+  prompt: string,
+  opts: AgentRunOpts & { models?: unknown; marker?: string },
+): Promise<RunResult> {
+  const model = tierBModelFor(opts.models as Parameters<typeof tierBModelFor>[0], role);
+  if (!model) return runAgent(prompt, opts);
+  logDispatch("info", "agent-dispatch", { role, tier: "B", model, label: opts.label });
+  const r = await runTierB(model, prompt, { cwd: opts.cwd, timeoutMin: opts.timeoutMin });
+  if (!shouldFallbackTierB(r, opts.marker)) return r;
+  logDispatch("warn", "tierB-fallback", {
+    role,
+    model,
+    label: opts.label,
+    ok: r.ok,
+    timedOut: r.timedOut,
+    outputLen: r.output.length,
+    marker: opts.marker ?? null,
+    markerSeen: opts.marker ? r.output.includes(opts.marker) : null,
+  });
+  return runAgent(prompt, opts);
 }
