@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { emit } from "./events";
@@ -6,11 +6,22 @@ import { agentStream, exec, runAgent } from "./runner";
 import { nowLocalISO } from "./log";
 import { notifySupervisor } from "./notify";
 import { runResearcher } from "./researcher";
-import { runPipeline, writeSandboxConfig } from "./pipeline";
+import { runPipeline, TASK_ID_RE, writeSandboxConfig } from "./pipeline";
 import { deploy } from "./deploy";
 import { digest } from "./push";
-import { addTask, loadBacklog, nextId } from "./backlog";
-import { ensureSingleton, frozen, loadConfig, loadState, saveState, startWatchdog, touchHeartbeat, type PilotConfig } from "./state";
+import { addTask, blockTask, loadBacklog, nextId, type Task } from "./backlog";
+import {
+  ensureSingleton,
+  frozen,
+  loadConfig,
+  loadState,
+  recordTaskFailure,
+  saveState,
+  startWatchdog,
+  touchHeartbeat,
+  type PilotConfig,
+  type PilotState,
+} from "./state";
 
 let deployBusy = false;
 const log = (level: string, msg: string, data?: unknown) =>
@@ -86,15 +97,34 @@ async function main() {
       continue;
     }
 
+    // P1-014 circuit breaker: cap already reached (e.g. the ## Blocked push
+    // failed last cycle) — re-persist the block, never re-schedule it
+    const breakerAttempts = state.taskAttempts[task.id] ?? 0;
+    if (TASK_ID_RE.test(task.id) && breakerAttempts >= cfg.maxAttemptsPerTask) {
+      blockAndPush(cfg, state, task, breakerAttempts, lastGateFail(task.id) ?? "max attempts reached", false);
+      saveState(state);
+      await sleep(20_000);
+      continue;
+    }
+
     log("info", "pipeline start", { task: task.id, title: task.title });
     emit("loop", { task: task.id, phase: "picked", detail: task.title });
     try {
       const result = await runPipeline(cfg, task, state);
       state.tasks++;
+      let blockedAttempts: number | null = null;
+      if (result.ok) {
+        delete state.taskAttempts[task.id]; // gate passed — breaker reset
+      } else {
+        blockedAttempts = tripCircuitBreaker(cfg, state, task, result.detail);
+      }
       saveState(state);
       log("info", "pipeline result", { task: task.id, ok: result.ok, detail: result.detail.slice(0, 200) });
       emit("result", { task: task.id, ok: result.ok, detail: result.detail.slice(0, 200) });
-      void notifySupervisor(task.id, result.ok, result.detail.slice(0, 300)).catch(() => {});
+      // blocked tasks get a single dedicated supervisor notification instead
+      if (blockedAttempts === null) {
+        void notifySupervisor(task.id, result.ok, result.detail.slice(0, 300)).catch(() => {});
+      }
       if (result.ok && result.sha) {
         if (deployBusy) {
           log("info", "deploy in flight — merge queued on main, next deploy will pick it up", { task: task.id });
@@ -127,14 +157,24 @@ async function main() {
             });
         }
       } else if (!result.ok) {
-        if (cfg.digest) await digest(`🧪 Pilot falhou: ${task.id}`, result.detail.slice(0, 120), "#/");
+        if (blockedAttempts !== null && cfg.digest) {
+          await digest(
+            `Pilot: ${task.id} blocked`,
+            `moved to ## Blocked after ${blockedAttempts} attempts`,
+            "#/",
+          );
+        } else if (cfg.digest) {
+          await digest(`🧪 Pilot falhou: ${task.id}`, result.detail.slice(0, 120), "#/");
+        }
         await sleep(10_000); // short cool-down; full output saved for diagnosis
       }
       saveState(state);
     } catch (err) {
       state.failures++;
+      const detail = String(err).slice(0, 300);
+      tripCircuitBreaker(cfg, state, task, `pipeline crashed: ${detail}`);
       saveState(state);
-      log("error", "pipeline crashed", { task: task.id, err: String(err).slice(0, 300) });
+      log("error", "pipeline crashed", { task: task.id, err: detail });
       await sleep(30_000);
     }
 
@@ -228,6 +268,52 @@ Your LAST line must be exactly: STRATEGIST:DONE`,
   } else {
     log("warn", "strategist did not finish", { tail: r.output.slice(-200) });
   }
+}
+
+/**
+ * P1-014 stop-loss: count one more pipeline failure for the task; when the
+ * counter hits `maxAttemptsPerTask`, move the task to ## Blocked in BACKLOG.md
+ * (commit+push so the workspace sync can't resurrect it) and notify the
+ * supervisor once. Returns the attempt count when the breaker tripped, else null.
+ */
+function tripCircuitBreaker(cfg: PilotConfig, state: PilotState, task: Task, detail: string): number | null {
+  if (!recordTaskFailure(state, task.id, cfg.maxAttemptsPerTask)) return null;
+  const attempts = state.taskAttempts[task.id] ?? 0;
+  blockAndPush(cfg, state, task, attempts, detail, true);
+  return attempts;
+}
+
+/** Move the task line to ## Blocked and push. Clears the counter on success so
+ * a human/red-team re-queue starts with a fresh allowance. Never notifies twice. */
+function blockAndPush(cfg: PilotConfig, state: PilotState, task: Task, attempts: number, detail: string, notify: boolean) {
+  if (!TASK_ID_RE.test(task.id)) return;
+  const summary = `blocked after ${attempts} attempts: ${detail}`;
+  if (!blockTask(cfg.workspace, task.id, summary)) return;
+  const push = exec(
+    `git add BACKLOG.md && git commit -qm "pilot(${task.id}): block after ${attempts} failed attempts" && git push -q origin main`,
+    { cwd: cfg.workspace, allowFail: true },
+  );
+  if (push.ok) delete state.taskAttempts[task.id];
+  log("warn", "task blocked (circuit breaker)", { task: task.id, attempts });
+  emit("phase", { task: task.id, phase: "blocked", ok: false, detail: `moved to ## Blocked after ${attempts} attempts` });
+  if (notify) {
+    void notifySupervisor(
+      task.id,
+      false,
+      `${summary} - moved to ## Blocked (infinite cooldown; moving it back to ## Ready re-schedules it with a fresh counter)`,
+    ).catch(() => {});
+  }
+}
+
+/** Last gatekeeper failure tail for a task (written by pipeline.gatekeeper). */
+function lastGateFail(taskId: string): string | undefined {
+  try {
+    const prev = JSON.parse(
+      readFileSync(join(homedir(), ".opencode-remote/pilot/last-gate-fail.json"), "utf8"),
+    ) as { task?: string; tail?: string };
+    return prev.task === taskId ? prev.tail : undefined;
+  } catch {}
+  return undefined;
 }
 
 function ensureWorkspace(cfg: PilotConfig) {

@@ -37,6 +37,31 @@ export function markDone(repoDir: string, id: string, note: string) {
   writeFileSync(p, updated);
 }
 
+/**
+ * P1-014 stop-loss: move a task line from ## Ready to a `## Blocked` section
+ * (created before ## Done, or at the end of the file) with a one-line summary
+ * of the last findings. Idempotent: returns false when the line is missing or
+ * already under ## Blocked.
+ */
+export function blockTask(repoDir: string, id: string, findings: string): boolean {
+  const p = join(repoDir, BACKLOG);
+  const md = readFileSync(p, "utf8");
+  const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`^(- \\[ \\] \\(${escaped}\\).*)$`, "m");
+  const match = re.exec(md);
+  if (!match) return false;
+  const blockedAt = md.search(/^## Blocked$/m);
+  if (blockedAt >= 0 && match.index > blockedAt) return false; // already blocked
+  const summary = findings.replace(/\s+/g, " ").trim().slice(0, 200);
+  const entry = `${match[1]} — ${summary}`;
+  const removed = md.replace(re, "").replace(/\n{3,}/g, "\n\n");
+  const updated = /^## Done$/m.test(removed)
+    ? removed.replace(/^## Done$/m, `## Blocked\n${entry}\n\n## Done`)
+    : `${removed.replace(/\s*$/, "")}\n\n## Blocked\n${entry}\n`;
+  writeFileSync(p, updated);
+  return true;
+}
+
 /** Add a task at the top of ## Ready (used by redteam findings). */
 export function addTask(repoDir: string, id: string, priority: string, title: string, spec: string) {
   const p = join(repoDir, BACKLOG);

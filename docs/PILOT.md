@@ -73,7 +73,7 @@ produção: `userData` do Electron é temporário e nenhum sidecar é spawnado.
 ## Budgets e kill switch
 
 - `~/.opencode-remote/pilot.json` (opcional): `maxTasksPerDay` (6), `maxDeploysPerDay` (6),
-  `maxReviewRounds` (3), `taskTimeoutMin` (45), `monitorMin` (10), `digest`.
+  `maxReviewRounds` (3), `maxAttemptsPerTask` (4), `taskTimeoutMin` (45), `monitorMin` (10), `digest`.
 - **Freeze**: `touch ~/.opencode-remote/pilot.lock` para o loop (checado a cada ciclo).
 - Contadores diários em `~/.opencode-remote/pilot/state.json`.
 
@@ -94,6 +94,25 @@ produção: `userData` do Electron é temporário e nenhum sidecar é spawnado.
    e, se a instância anterior ainda estiver viva, a derruba (SIGTERM → 2s → SIGKILL, log
    `stale pilot instance killed`); o self-reload pós-deploy sai com `process.exit(0)` imediato
    (log já flushado, sem órfão); heartbeat + watchdog — 30min sem sinal → exit → KeepAlive ressozinho
+
+## Stop-loss por task (circuit breaker, P1-014)
+
+Toda falha de pipeline de uma task (builder não terminou, diff vazio, reviewers
+reprovando até `maxReviewRounds`, gatekeeper vermelho, crash) incrementa
+`taskAttempts[id]` em `state.json`. Ao atingir `maxAttemptsPerTask` (pilot.json,
+default 4) o breaker dispara:
+
+1. a linha da task sai de `## Ready` e vai para a seção `## Blocked` do
+   BACKLOG.md (commit + push, com resumo do último findings) — o painel FILA do
+   dashboard já mostra as duas filas;
+2. um **único** `notifySupervisor` "task blocked after N attempts" é enviado;
+3. a task não é re-agendada: cooldown infinito até um humano (ou o red team)
+   mover de volta para `## Ready` — o contador é zerado quando a task passa no
+   gate e também no momento do bloqueio, então a re-entrada começa limpa.
+
+O contador **não** é zerado pelo reset diário de `state.json` (virar a noite não
+reabre o breaker) e, se o push do bloqueio falhar, o guard do loop re-bloqueia a
+task no ciclo seguinte em vez de executá-la de novo.
 
 ## Rodar manualmente
 
