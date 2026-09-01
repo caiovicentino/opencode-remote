@@ -37,6 +37,10 @@ interface PairingState {
   phonePaired: boolean;
   /** P2-017: sidecar respawn budget exhausted (desktop shell only). */
   daemonDown?: boolean;
+  /** P1-053: adopted daemon lost, shell still probing (desktop shell only). */
+  reconnecting?: boolean;
+  /** P1-053: failed reconnect probes since the loss was detected. */
+  reconnectAttempts?: number;
 }
 
 /** Electron bridge from apps/desktop/src/preload.ts (absent in the browser). */
@@ -54,6 +58,8 @@ interface DesktopBridge {
   /** P3-014: opencode-remote:// pair link handed over by the OS (validated in the shell). */
   getDeepLink?: () => Promise<string | null>;
   onDeepLink?: (cb: (uri: string) => void) => () => void;
+  /** P1-053: one-click recovery from the daemon-down banner. */
+  reconnectDaemon?: () => Promise<boolean>;
 }
 
 function desktopBridge(): DesktopBridge | null {
@@ -295,7 +301,13 @@ export default function App() {
     return () => window.removeEventListener("hashchange", applyHash);
   }, [phase]);
 
-  useEffect(() => {
+  // P1-053: auto-pair extracted from the mount effect so the recovery watcher
+  // below can re-run it when an adopted daemon's health comes back — this is
+  // what kills the eternal pairing screen after a daemon outage.
+  const autoPairCleanupRef = useRef<(() => void) | null>(null);
+  function tryAutoPair(): void {
+    autoPairCleanupRef.current?.();
+    autoPairCleanupRef.current = null;
     const stored = loadState();
     if (stored) {
       void connect(stored.pairing, false);
@@ -324,6 +336,7 @@ export default function App() {
       // Only while still unpaired — a running session is never hijacked.
       if (!loadState()) applyDeepLink(uri);
     });
+    autoPairCleanupRef.current = offDeepLink ?? null;
     const getPairUrl = bridge.getPairUrl;
     void (async () => {
       try {
@@ -345,8 +358,27 @@ export default function App() {
         /* no URI or unparsable URI → PairingView fallback */
       }
     })();
-    return () => offDeepLink?.();
+  }
+
+  useEffect(() => {
+    tryAutoPair();
+    return () => autoPairCleanupRef.current?.();
   }, []);
+
+  // P1-053: when the daemon's health comes back (reconnecting/daemon-down
+  // banner clears) while we are still sitting unpaired, retry the auto-pair
+  // once — the pairing URI is reachable again and no user re-pairing is needed.
+  const sawOutageRef = useRef(false);
+  useEffect(() => {
+    if (pairingState?.reconnecting || pairingState?.daemonDown) {
+      sawOutageRef.current = true;
+      return;
+    }
+    if (sawOutageRef.current && phase === "unpaired" && !loadState()) {
+      sawOutageRef.current = false;
+      tryAutoPair();
+    }
+  }, [pairingState, phase]);
 
   // Web Share Target (Android/desktop Chrome): shared content arrives as query params
   useEffect(() => {
@@ -477,18 +509,33 @@ export default function App() {
     ) : null;
 
   // P2-017: the shell gave up respawning the daemon sidecar — warn instead of
-  // leaving the user with a silently disconnected app.
+  // leaving the user with a silently disconnected app. P1-053: an adopted
+  // daemon going missing is never terminal — show the active "reconnecting…"
+  // state (yellow) with the attempt counter instead.
+  const reconnecting = !!pairingState?.reconnecting;
   const daemonDown = !!pairingState?.daemonDown;
-  const daemonDownBanner = daemonDown ? (
+  const banner = reconnecting ? (
+    <div className="daemon-reconnecting" role="status">
+      ⟳ {t("reconnecting", { n: pairingState?.reconnectAttempts ?? 0 })}
+    </div>
+  ) : daemonDown ? (
     <div className="daemon-down" role="alert">
-      ⚠︎ {t("daemonDown")}
+      ⚠︎ {t("daemonDown")}{" "}
+      {desktopBridge()?.reconnectDaemon && (
+        <button
+          className="daemon-reconnect-btn"
+          onClick={() => void desktopBridge()?.reconnectDaemon?.()}
+        >
+          {t("reconnectNow")}
+        </button>
+      )}
     </div>
   ) : null;
 
   if (addingMachine) {
     return (
-      <div className={daemonDown ? "pair-wrap has-daemon-down" : "pair-wrap"}>
-        {daemonDownBanner}
+      <div className={banner ? "pair-wrap has-daemon-down" : "pair-wrap"}>
+        {banner}
         {pairingOverlay}
         <PairingView
           phase="unpaired"
@@ -511,8 +558,8 @@ export default function App() {
 
   if (phase !== "paired") {
     return (
-      <div className={daemonDown ? "pair-wrap has-daemon-down" : "pair-wrap"}>
-        {daemonDownBanner}
+      <div className={banner ? "pair-wrap has-daemon-down" : "pair-wrap"}>
+        {banner}
         {pairingOverlay}
         <PairingView
           phase={phase}
@@ -611,14 +658,14 @@ export default function App() {
   return (
     <div
       ref={appRootRef}
-      className={`app-root${session ? "" : " has-tabbar"}${daemonDown ? " has-daemon-down" : ""}`}
+      className={`app-root${session ? "" : " has-tabbar"}${banner ? " has-daemon-down" : ""}`}
       data-nav={navDir}
       onTouchStart={isDesktop ? undefined : onTouchStart}
       onTouchMove={isDesktop ? undefined : onTouchMove}
       onTouchEnd={isDesktop ? undefined : onTouchEnd}
       style={{ height: "100%" }}
     >
-      {daemonDownBanner}
+      {banner}
       {isDesktop ? (
         <div className="desk">
           <aside className="desk-side">

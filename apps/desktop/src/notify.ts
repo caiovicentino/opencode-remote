@@ -16,8 +16,9 @@ export interface NotifyDecision {
 
 /** Native notification shown when the sidecar give-up is detected. */
 export const NOTIFY_TITLE = "OpenCode Remote";
-/** Body for the healthy→down transition (give-up definitive do sidecar). */
-export const NOTIFY_DOWN_BODY = "daemon parou — reabra o OpenCode Remote";
+/** Body for the healthy→down transition (give-up definitive do sidecar).
+ * P1-053: points to the banner's recovery button instead of relaunching. */
+export const NOTIFY_DOWN_BODY = "daemon parou — use “Reconectar agora” no OpenCode Remote";
 /** Body for the down→healthy transition (daemon answering again). */
 export const NOTIFY_BACK_BODY = "daemon de volta";
 

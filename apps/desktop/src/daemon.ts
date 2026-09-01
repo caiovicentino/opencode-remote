@@ -33,11 +33,36 @@ const RESPAWN_DELAYS_MS = (process.env.OCR_DAEMON_RESPAWN_DELAYS ?? "5000,15000,
   .filter((n) => Number.isFinite(n) && n >= 0);
 const RESPAWN_MAX_ATTEMPTS = 3;
 
+/** Hard cap for the adopted-daemon reconnect backoff (P1-053): an outage of
+ * any length keeps probing at most every 30s, forever. */
+const RECONNECT_DELAY_CAP_MS = 30_000;
+/** Production fallback for reconnectDelayMs — the same 5s/15s/45s schedule. */
+const RECONNECT_BASE_SCHEDULE = [5_000, 15_000, 45_000];
+
+/**
+ * P1-053: pure reconnect backoff for an adopted daemon. `n` (1-based) indexes
+ * the base schedule, then keeps doubling past its end, capped at 30s — so the
+ * production curve is 5s → 15s → 30s → 30s → … and a 5-minute outage still
+ * gets ≥10 probes. Tests shorten the runtime schedule via
+ * OCR_DAEMON_RESPAWN_DELAYS (passed explicitly by the watchdog); the default
+ * argument keeps this function honest without env setup.
+ */
+export function reconnectDelayMs(n: number, schedule: number[] = RECONNECT_BASE_SCHEDULE): number {
+  const list = schedule.length > 0 ? schedule : RECONNECT_BASE_SCHEDULE;
+  const base = list[Math.min(Math.max(n, 1) - 1, list.length - 1)] ?? 45_000;
+  return Math.min(RECONNECT_DELAY_CAP_MS, base * 2 ** Math.max(0, n - list.length));
+}
+
 /** Test-only escape hatch (tools/desktop.mjs, P1-051): reports the sidecar as
  * permanently down without spawning anything, so a hermetic launch gets the
  * deterministic daemon-down pairing state instead of null. Never set in
  * production — same policy as the other OCR_DAEMON_* test variables. */
 const FORCE_DAEMON_DOWN = process.env.OCR_DAEMON_FORCE_DOWN === "1";
+
+/** Test-only escape hatch (scripts/desktop-flow.test.ts, P1-053): forces the
+ * "reconnecting" degradation state so a hermetic launch gets the yellow banner
+ * deterministically. Never set in production — same policy as FORCE_DOWN. */
+const FORCE_RECONNECTING = process.env.OCR_DAEMON_FORCE_RECONNECTING === "1";
 
 interface SidecarState {
   child: ChildProcess | null;
@@ -76,6 +101,20 @@ const sidecar: SidecarState = {
 
 /** Pending respawn backoff timer, if any. */
 let respawnTimer: NodeJS.Timeout | null = null;
+
+// --- adopted-daemon reconnect watchdog (P1-053) -------------------------------
+// When the shell reuses an external daemon (launchd/CLI on :8792) there is no
+// child to respawn and no budget to exhaust: losing it is not terminal, so the
+// shell keeps probing forever with honest UI degradation instead of giving up.
+
+/** True while a watchdog loop is armed (an adopted daemon is being tracked). */
+let watchdogArmed = false;
+/** Pending watchdog probe timer, if any. */
+let reconnectTimer: NodeJS.Timeout | null = null;
+/** Consecutive failed probes since the loss was detected. */
+let reconnectAttempts = 0;
+/** True from the first failed probe until the next successful one. */
+let reconnectActive = false;
 
 interface DaemonEntry {
   node: string;
@@ -237,6 +276,9 @@ export async function startDaemonSidecar(
   if (sidecar.token !== null && (await healthOnce(DAEMON_METRICS_PORT, sidecar.token))) {
     log(`[desktop] daemon already running on :${DAEMON_METRICS_PORT} — reusing it`);
     sidecar.reused = true; // enables the daemon.log pair-URI fallback
+    // P1-053: an adopted daemon is not our child — track its health forever
+    // instead of relying on the (hosted-only) respawn budget.
+    startReconnectWatchdog();
     // P3-017: also remember how a replacement could be spawned so the manual
     // restart (restartDaemon) can act when an adopted daemon turns unstable.
     const adopted = resolveEntry(appPath, resourcesPath);
@@ -258,6 +300,9 @@ export async function startDaemonSidecar(
 
 /** Spawn + wire one daemon child (used by the initial start and by respawns). */
 function spawnChild(entry: DaemonEntry): void {
+  // We're taking over with our own child again: the adopted-daemon watchdog
+  // belongs to the reuse mode and must never probe (or state) alongside it.
+  stopReconnectWatchdog();
   const child = spawn(entry.node, [...entry.args, entry.file], {
     cwd: entry.cwd,
     env: {
@@ -349,6 +394,8 @@ async function respawn(): Promise<void> {
     sidecar.spawned = false;
     sidecar.reused = true;
     sidecar.failures = 0;
+    // Adopted again → the infinite reconnect watchdog takes over (P1-053).
+    startReconnectWatchdog();
     return;
   }
   spawnChild(entry);
@@ -371,13 +418,80 @@ export function respawnState(): { failures: number; gaveUp: boolean } {
   return { failures: sidecar.failures, gaveUp: sidecar.gaveUp };
 }
 
+/**
+ * P1-053: honest degradation for an adopted daemon that vanished. While the
+ * watchdog keeps probing, `reconnecting` is true and `attempts` counts the
+ * failed probes — the UI shows an active yellow "reconnecting…" banner (never
+ * the terminal daemon-down state, which stays hosted-mode-only).
+ */
+export function reconnectState(): { reconnecting: boolean; attempts: number } {
+  if (FORCE_RECONNECTING) return { reconnecting: true, attempts: Math.max(1, reconnectAttempts) };
+  return { reconnecting: reconnectActive, attempts: reconnectAttempts };
+}
+
+/** Arm the watchdog after an adoption (sidecar.reused = true). Idempotent. */
+function startReconnectWatchdog(): void {
+  if (watchdogArmed) return;
+  watchdogArmed = true;
+  log(`[desktop] adopted daemon watchdog armed on :${DAEMON_METRICS_PORT} (infinite reconnect)`);
+  scheduleReconnectProbe(0);
+}
+
+/**
+ * Disarm the watchdog: no probe may fire after (or during) an intentional
+ * stop, a fresh spawn of our own child, or a restart — and the transient
+ * reconnect state never outlives the condition that caused it.
+ */
+function stopReconnectWatchdog(): void {
+  watchdogArmed = false;
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  reconnectActive = false;
+  reconnectAttempts = 0;
+}
+
+/** One self-scheduling probe; runs forever while the watchdog stays armed. */
+function scheduleReconnectProbe(afterMs: number): void {
+  if (!watchdogArmed) return;
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    void reconnectProbe();
+  }, afterMs);
+}
+
+async function reconnectProbe(): Promise<void> {
+  if (!watchdogArmed) return;
+  const healthy = await healthOnce(DAEMON_METRICS_PORT, sidecar.token ?? readApiToken());
+  // An intentional stop/fresh spawn may have happened during the probe.
+  if (!watchdogArmed) return;
+  if (healthy) {
+    if (reconnectActive) {
+      log(`[desktop] adopted daemon healthy again on :${DAEMON_METRICS_PORT} — reconnected after ${reconnectAttempts} attempt(s)`);
+    }
+    reconnectActive = false;
+    reconnectAttempts = 0;
+  } else {
+    if (!reconnectActive) {
+      log(`[desktop] adopted daemon lost on :${DAEMON_METRICS_PORT} — reconnecting with infinite backoff (no spawn, no give-up)`);
+    }
+    reconnectActive = true;
+    reconnectAttempts += 1;
+  }
+  scheduleReconnectProbe(reconnectDelayMs(reconnectActive ? reconnectAttempts : 1, RESPAWN_DELAYS_MS));
+}
+
 /** Terminate the child we spawned (SIGTERM → 3s grace → SIGKILL). Idempotent. */
 export async function stopDaemonSidecar(): Promise<void> {
-  // A pending respawn must never fire after (or during) an intentional stop.
+  // A pending respawn must never fire after (or during) an intentional stop,
+  // and neither may an adopted-daemon reconnect probe (P1-053).
   if (respawnTimer) {
     clearTimeout(respawnTimer);
     respawnTimer = null;
   }
+  stopReconnectWatchdog();
   sidecar.failures = 0;
   sidecar.gaveUp = false;
   const child = sidecar.child;
@@ -436,6 +550,8 @@ export async function restartDaemon(): Promise<boolean> {
     if (sidecar.token !== null && (await healthOnce(DAEMON_METRICS_PORT, sidecar.token))) {
       log(`[desktop] restart daemon: daemon healthy on :${DAEMON_METRICS_PORT} — reusing it`);
       sidecar.reused = true;
+      // Adopted again → re-arm the infinite reconnect watchdog (P1-053).
+      startReconnectWatchdog();
       return true;
     }
     spawnChild(entry);

@@ -271,6 +271,13 @@ async function keeperMain() {
   const req = createRequire(join(repoRoot, "package.json"));
   const { _electron } = req("playwright-core");
   const env = hermeticEnv();
+  // P1-053: the desktop-flow gate records the "reconnecting…" banner state in
+  // a second hermetic launch — mutually exclusive with the daemon-down one,
+  // so the caller opts in via the session env and FORCE_DOWN is dropped.
+  if (process.env.OCR_DAEMON_FORCE_RECONNECTING === "1") {
+    delete env.OCR_DAEMON_FORCE_DOWN;
+    env.OCR_DAEMON_FORCE_RECONNECTING = "1";
+  }
   keeperLog("launching electron (session", SESSION + ")");
   const electronApp = await _electron.launch({
     args: [join(repoRoot, "apps", "desktop")],
@@ -417,8 +424,14 @@ async function shot(page, electronApp, msg) {
   if (msg.w && msg.h) {
     // _electron pages cannot emulate a viewport: resize the native window's
     // content area, so `shot out.png 1440 900` yields an exact 1440x900 PNG.
+    // P1-053: evidence shots below the app's UX minimum (390px mobile) first
+    // drop the minimum constraint — test-only session, restored on close.
     await electronApp.evaluate(({ BrowserWindow }, size) => {
-      BrowserWindow.getAllWindows()[0]?.setContentSize(size.w, size.h);
+      const win = BrowserWindow.getAllWindows()[0];
+      if (!win) return;
+      const [minW, minH] = win.getMinimumSize();
+      if (Number(size.w) < minW || Number(size.h) < minH) win.setMinimumSize(0, 0);
+      win.setContentSize(size.w, size.h);
     }, { w: Number(msg.w), h: Number(msg.h) });
     await page.waitForTimeout(300);
   }

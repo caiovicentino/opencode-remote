@@ -113,6 +113,8 @@ const {
   getPairUrl,
   healthOnce,
   isDaemonDown,
+  reconnectDelayMs,
+  reconnectState,
   restartDaemon,
   resolveEntry,
   respawnState,
@@ -351,6 +353,58 @@ check(
   "restart: replacement child is stopped",
   await until(() => !pidAlive(Number(readFileSync(restartEntry + ".pid", "utf8")))),
 );
+
+// --- P1-053: reconnectDelayMs — infinite backoff, cap 30s ---------------------
+// Pure production schedule (no env): 5s → 15s → 30s → 30s… A 5-minute outage
+// must still fit ≥10 probes (sum of the first 10 delays ≤ 300s).
+check("reconnectDelayMs(1) = 5000", reconnectDelayMs(1) === 5000);
+check("reconnectDelayMs(2) = 15000", reconnectDelayMs(2) === 15000);
+check("reconnectDelayMs(3) = 30000 (capped)", reconnectDelayMs(3) === 30000);
+check("reconnectDelayMs(4) = 30000 (capped)", reconnectDelayMs(4) === 30000);
+const tenSum = Array.from({ length: 10 }, (_, i) => reconnectDelayMs(i + 1)).reduce((a, b) => a + b, 0);
+check("reconnectDelayMs: first 10 delays sum ≤ 300s", tenSum <= 300_000);
+check(
+  "reconnectDelayMs honors a shortened test schedule (200,200,200)",
+  reconnectDelayMs(1, [200, 200, 200]) === 200 && reconnectDelayMs(4, [200, 200, 200]) === 400,
+);
+
+// --- P1-053: adopted-daemon outage → infinite reconnect, no give-up -----------
+// Reuse mode: the desktop adopts the healthy fixture server (reuse path).
+// Killing it must NEVER set gaveUp and NEVER spawn a child — only the active
+// reconnecting state with a growing attempt counter. A canary fixture acts as
+// a spawn detector: its pid file only exists if something wrongly spawned it.
+const canaryEntry = fixture("canary.cjs", "setInterval(() => {}, 1000);");
+process.env.OCR_DAEMON_ENTRY = canaryEntry;
+const stateBefore = readFileSync(fakeState, "utf8");
+check("reconnect: adopted daemon starts the watchdog", (await startDaemonSidecar(tmp, undefined)) === true);
+check(
+  "reconnect: starts healthy (not reconnecting)",
+  reconnectState().reconnecting === false && reconnectState().attempts === 0,
+);
+await new Promise<void>((r) => {
+  server.closeAllConnections();
+  server.close(() => r());
+});
+check("reconnect: outage marks reconnecting", await until(() => reconnectState().reconnecting, 5_000));
+check("reconnect: reuse mode is never reported down", !isDaemonDown());
+check("reconnect: attempts grow past the hosted budget", await until(() => reconnectState().attempts > 3, 15_000));
+check("reconnect: still not down after >3 attempts", !isDaemonDown());
+// Recovery: the external daemon comes back → state resets, health is 200
+// within 2s, and nothing was spawned and nothing re-paired in the meantime.
+await new Promise<void>((r) => server.listen(port, "127.0.0.1", r));
+check(
+  "reconnect: recovery clears the state within 2s",
+  await until(() => !reconnectState().reconnecting && reconnectState().attempts === 0, 2_000),
+);
+check("reconnect: health 200 right after recovery", (await healthOnce(port, TOKEN)) === true);
+check("reconnect: watchdog never spawned a child (canary pid absent)", !existsSync(canaryEntry + ".pid"));
+check("reconnect: 0600 state file untouched (no re-pairing)", readFileSync(fakeState, "utf8") === stateBefore);
+await stopDaemonSidecar();
+check(
+  "reconnect: stop clears the reconnecting state",
+  reconnectState().reconnecting === false && reconnectState().attempts === 0,
+);
+delete process.env.OCR_DAEMON_ENTRY;
 
 // --- bundled artifact smoke (P2-006) -----------------------------------------
 // The packaged app runs dist-daemon/index.js (shipped as resources/daemon/

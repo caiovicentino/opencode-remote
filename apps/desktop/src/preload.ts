@@ -16,6 +16,10 @@ export interface PairingState {
   phonePaired: boolean;
   /** P2-017: sidecar gave up respawning — surfaced so the UI can warn. */
   daemonDown?: boolean;
+  /** P1-053: adopted daemon lost, shell still probing (yellow banner). */
+  reconnecting?: boolean;
+  /** P1-053: failed probes since the loss was detected (banner counter). */
+  reconnectAttempts?: number;
 }
 
 contextBridge.exposeInMainWorld("ocrDesktop", {
@@ -30,6 +34,8 @@ contextBridge.exposeInMainWorld("ocrDesktop", {
     ipcRenderer.invoke("app:daemonBrowse", req),
   // P2-007: first-run QR overlay — current snapshot plus change pushes.
   getPairingState: (): Promise<PairingState | null> => ipcRenderer.invoke("app:pairingState"),
+  // P1-053: banner button — manual daemon restart (same path as the tray).
+  reconnectDaemon: (): Promise<boolean> => ipcRenderer.invoke("app:reconnectDaemon"),
   onPairingState: (cb: (state: PairingState | null) => void): (() => void) => {
     const listener = (_e: Electron.IpcRendererEvent, state: PairingState | null): void => cb(state);
     ipcRenderer.on("ocr:pairing-state", listener);

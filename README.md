@@ -184,6 +184,21 @@ is adopted instead of spawned on top of. Restarting the app always resets the
 cycle — and the tray's **Restart daemon** action (below) does the same without
 relaunching.
 
+**Honest degradation when an adopted daemon vanishes**: when the shell reuses
+an external daemon (a launchd/CLI install already answering on the metrics
+port) there is no child to respawn and no budget to exhaust — losing it is
+never terminal. The shell probes the daemon with an infinite backoff
+(5s → 15s → capped at 30s) and the UI shows a yellow
+"Reconnecting to daemon… (n)" banner (`role="status"`) with the attempt
+counter; no QR overlay can open from this state and no child is ever spawned
+against the external supervisor. When the daemon answers again, the banner
+disappears and the previous session is picked up with **no re-pairing** — the
+desktop never rewrites the 0600 state file and never adds allowlist entries.
+The red "daemon is down" banner is now only for the hosted sidecar give-up
+case and carries a **Reconnect now** button wired to the same restart as the
+tray action — so a daemon `kickstart`d by a deploy no longer leaves the app
+stuck on the pairing screen.
+
 **Crash-proof shell**: a renderer crash no longer leaves a dead white window —
 the shell logs the crash reason and reloads the UI automatically (bounded to
 3 reloads per minute so a page that crashes on boot cannot become a reload
@@ -212,7 +227,8 @@ unavailable.
 
 **Native notification when the daemon stops**: if the sidecar's respawn budget
 is exhausted, the shell fires a one-time native notification —
-`daemon parou — reabra o OpenCode Remote` — and `daemon de volta` when a
+`daemon parou — use "Reconectar agora" no OpenCode Remote` — and
+`daemon de volta` when a
 healthy daemon answers again. Each transition notifies exactly once (deduped
 by the same 3s poll that feeds the tray tooltip) and the feature is
 best-effort: on platforms without notification support the shell keeps
