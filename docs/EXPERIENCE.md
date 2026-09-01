@@ -7,6 +7,6 @@ mais recentes primeiro); o red team noturno deduplica e poda acima de
 60 lições.
 
 ## Lessons
-- When registering an OS protocol handler in Electron (`setAsDefaultProtocolClient`), guard it with `app.isPackaged` plus explicit platform checks so a dev run never steals the OS handler from the packaged app, and declare the scheme in elec… (fonte: P3-014)
-- When accepting deep links in an Electron shell, handle both delivery paths — macOS `open-url` (fires before app ready on cold start, so register early) and Windows second-instance argv — and cache the validated URI for a one-shot `ipcMain.… (fonte: P3-014)
-- When validating OS-supplied strings (deep links, argv), keep the parse/validate logic in a pure module with no electron imports (window-state.ts pattern) so unit tests exercise it directly, and route the accepted result through the existin… (fonte: P3-014)
+- When shipping an asset loaded at runtime by Electron (tray icon, dock icon), name the Retina variant `<base>@2x.png` beside the base file so `nativeImage.createFromPath` auto-pairs them, add BOTH to electron-builder's `files`, and unit-tes… (fonte: P3-015)
+- When loading an image asset that may be missing or corrupt, gate the load on both `existsSync` and `!createFromPath(path).isEmpty()` (a zero-byte file yields an empty NativeImage, not a thrown error) and keep an embedded data-URL fallback… (fonte: P3-015)
+- When generating macOS template images, write pure alpha (RGB=0 — the menu bar recolors the mask, color is ignored) and call `setTemplateImage(true)` only on darwin, while keeping the asset/platform policy in an electron-free pure function… (fonte: P3-015)
