@@ -19,10 +19,27 @@ const PORT = Number(process.env.RELAY_PORT ?? 8787);
 const MAX_FRAME = 1_000_000; // bytes; sealed op payloads are far smaller
 const MAX_SOCKETS = 1000;
 const MAX_PER_ROOM = 10;
-// per-device rate limit on forwarded message frames (0 disables)
-const RATE_PER_MIN = Number(process.env.RELAY_RATE_PER_MIN ?? 30);
-const RATE_BURST = Number(process.env.RELAY_RATE_BURST ?? 10);
+// per-connection rate limit on forwarded message frames (0 disables).
+// Defaults are sized to pass the daemon's worst-case chunked transfer
+// (MAX_CHUNKS = 512 frames, concurrent sessions interleaved on one socket)
+// while still capping runaway or flooding connections. There are no
+// exemptions: envelope metadata is client-controlled, so the only identity
+// the relay verifies is the connection itself.
+const RATE_PER_MIN = envNum("RELAY_RATE_PER_MIN", 600);
+const RATE_BURST = envNum("RELAY_RATE_BURST", 1000);
 const RATE_LIMIT_CLOSE = 4029; // custom 4xxx: "too many frames"
+
+/** Env number with validation: invalid values fall back loudly, never silently disable. */
+function envNum(name: string, dflt: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return dflt;
+  const v = Number(raw);
+  if (!Number.isFinite(v) || v < 0) {
+    ev("warn", "invalid numeric env, using default", { env: name, default: dflt });
+    return dflt;
+  }
+  return v;
+}
 
 interface Socket extends WebSocket {
   id?: string;
@@ -155,11 +172,10 @@ wss.on("connection", (socket: Socket) => {
     }
     if (typeof frame.room !== "string" || typeof frame.payload !== "string") return;
 
-    // token bucket per connection (one device session). Room-owner frames
-    // (from === room, i.e. the daemon's chunked transfers and event stream)
-    // are exempt: the owner is trusted infrastructure, and throttling it
-    // would stall large res-chunk flows mid-transfer.
-    if (RATE_PER_MIN > 0 && frame.from !== frame.room) {
+    // token bucket per connection (one device session). Applied to every
+    // frame, including joins (payload "") and self-declared room owners —
+    // envelope metadata is attacker-controllable and grants nothing.
+    if (RATE_PER_MIN > 0) {
       socket.bucket ??= new TokenBucket(RATE_BURST, RATE_PER_MIN);
       if (!socket.bucket.take()) {
         m.rateLimited++;
