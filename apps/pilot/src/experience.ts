@@ -136,7 +136,10 @@ export function appendLessons(
     added.push(line);
   }
   if (!added.length) return { md, added };
-  return { md: spliceLessonsSection(md, added), added };
+  // keep the FULL history: existing lessons first, new ones appended —
+  // splicing with only `added` was wiping the whole section every merge
+  const kept = parseLessons(md).filter((l) => !added.includes(l));
+  return { md: spliceLessonsSection(md, [...kept, ...added]), added };
 }
 
 /**

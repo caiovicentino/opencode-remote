@@ -1348,6 +1348,9 @@ const lessonOf = (n: number) => `- When case ${n} happens, do remedy ${n} on the
   check("experience: append dedupes against the file and adds new", appended.added.length === 1 && appended.added[0]!.includes("(fonte: P1-007)"));
   const back = appendLessons(appended.md, ["- When writing tests, pin the acceptance criterion"], "P1-007");
   check("experience: append is idempotent", back.added.length === 0 && back.md === appended.md);
+  const mem = "# Experience memory (IER)\n\n## Lessons\n- existing lesson one survives (fonte: P1-007)\n- existing lesson two survives (fonte: P1-007)\n";
+  const memOut = appendLessons(mem, ["- brand new lesson three"], "P1-052");
+  check("experience: append preserves existing lessons (no amnesia)", parseLessons(memOut.md).length === 3 && memOut.md.includes("existing lesson one survives"));
   const fresh = appendLessons(
     "",
     ["- When lesson one appears, do one", "- When lesson two appears, do two", "- When lesson three appears, do three", "- When lesson four appears, do four"],
