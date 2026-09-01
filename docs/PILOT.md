@@ -182,6 +182,25 @@ O pilot pega a primeira task `Ready`, em ordem. Red team insere `(RT-###)` P0 no
   are independent); the next task starts immediately. `deployBusy` prevents
   concurrent deploys; pending-deploy self-heal covers a crashed deploy.
 
+## Verifiable findings (P2-015)
+
+Reviewers are LLMs and hallucinate. When the pipeline parses `VERDICT:
+REQUEST_CHANGES`, every finding bullet must carry verifiable evidence:
+
+- a repo-relative `path/file.ext:LINE` citation — the file must exist in the
+  workspace clone and, when a line is cited, that line must be non-empty; or
+- a quoted literal snippet (≥6 chars) that appears verbatim in the reviewed diff.
+
+A cheap mechanical verifier (`verifyFindings` in `apps/pilot/src/pipeline.ts`)
+drops findings whose citations don't resolve and logs each one as
+`finding hallucinated, dropped` (level `warn`). If **all** findings of a
+`REQUEST_CHANGES` verdict are dropped, the review degenerates to an effective
+APPROVE — a reviewer that provides no real evidence cannot block a merge.
+Only verified findings reach the builder prompt in the next round; the
+reviewer prompt documents the citation contract. Pinned by unit tests in
+`scripts/unit.test.ts` (one valid citation with a real path, one hallucinated
+path — only the invalid one is dropped).
+
 ## RESEARCHER role (daily frontier scan)
 
 Once per day, before picking tasks, the pilot wakes a RESEARCHER agent with webfetch.

@@ -21,7 +21,7 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { artifactMime, kindFor, listArtifacts, readArtifact, validSegment } from "../apps/daemon/src/artifacts";
 import { browseTarget, clickPoint, validSession, viewportFromParams } from "../apps/daemon/src/browse";
-import { touchedUiFromDiff } from "../apps/pilot/src/pipeline";
+import { touchedUiFromDiff, parseFindings, verifyFindings } from "../apps/pilot/src/pipeline";
 import { latestUiShot, pruneShots } from "../apps/pilot/src/shot";
 import { parseMarkdown, parseInline } from "../apps/web/src/lib/md";
 import { parseCsv } from "../apps/web/src/lib/csv";
@@ -556,6 +556,38 @@ check("touchedUi: prefixed lines rejected", !touchedUiFromDiff("+++ b/apps/web/s
 // lookalike prefixes must not match ("apps/web/" is a directory boundary)
 check("touchedUi: lookalike apps/webui rejected", !touchedUiFromDiff("apps/webui/src/x.ts"));
 check("touchedUi: lookalike apps/webs rejected", !touchedUiFromDiff("apps/webs/src/x.ts"));
+
+// --- verifiable findings / anti-hallucination filter (P2-015) ----------------
+{
+  const ws = mkdtempSync(join(tmpdir(), "p2-015-"));
+  // line 2 non-empty, line 3 empty (whitespace-only), line 4 beyond EOF
+  writeFileSync(join(ws, "real.ts"), "alpha\nbeta\n\n   \ndelta\n");
+  const diff = "diff --git a/real.ts b/real.ts\n+beta touched\n";
+  const out = [
+    "VERDICT: REQUEST_CHANGES",
+    "- real.ts:2 — beta is wrong",
+    "- ghost.ts:1 — this file does not exist",
+    "- real.ts:3 — cites an empty line",
+    "- real.ts:99 — line beyond EOF",
+    "- no citation at all, just vibes",
+    '- the snippet "beta touched" is misplaced',
+  ].join("\n");
+  const parsed = parseFindings(out);
+  check("parseFindings: bullet lines after verdict", parsed.length === 6 && parsed[0].includes("real.ts:2"));
+  const v = verifyFindings(parsed, ws, diff);
+  check("verifyFindings: valid path:line kept", v.kept.some((f) => f.includes("real.ts:2")));
+  check("verifyFindings: kept exactly the 2 resolvable findings", v.kept.length === 2);
+  check("verifyFindings: snippet present in diff kept", v.kept.some((f) => f.includes("beta touched")));
+  check("verifyFindings: exactly 4 hallucinations dropped", v.dropped.length === 4);
+  check("verifyFindings: nonexistent path dropped", v.dropped.some((f) => f.includes("ghost.ts")));
+  check("verifyFindings: empty cited line dropped", v.dropped.some((f) => f.includes("real.ts:3")));
+  check("verifyFindings: out-of-range line dropped", v.dropped.some((f) => f.includes("real.ts:99")));
+  check("verifyFindings: citation-free finding dropped", v.dropped.some((f) => f.includes("just vibes")));
+  check("verifyFindings: snippet absent from diff dropped", verifyFindings(['- the string "totally absent" is wrong'], ws, diff).kept.length === 0);
+  check("verifyFindings: prose mention of real file resolves", verifyFindings(["- mention of real.ts in prose is fine"], ws, diff).kept.length === 1);
+  check("verifyFindings: URL not mistaken for a file citation", verifyFindings(["- see https://example.com/a/real.ts:2, plus `beta touched` here"], ws, diff).kept.length === 1);
+  rmSync(ws, { recursive: true, force: true });
+}
 
 // --- click coordinate bounds (P2-011, round-3) -------------------------------
 const vp = { width: 1280, height: 800 };
