@@ -17,6 +17,11 @@ files:
   # P3-009: real app icon (scripts/make-icon.mjs) — shipped inside the asar so
   # BrowserWindow/app.dock.setIcon can resolve it at runtime (appIcon()).
   - build/icon.png
+  # P3-015: tray template image (monochrome glyph, adapts to light/dark menu
+  # bar) + its 2x Retina variant — nativeImage.createFromPath picks the @2x
+  # sibling up automatically. Same asar-relative path appIcon() relies on.
+  - build/trayTemplate.png
+  - build/trayTemplate@2x.png
 extraResources:
   # Bundle the web UI so the packaged app can load it from resources/web-dist
   - from: ../web/dist
