@@ -81,7 +81,8 @@ produção: `userData` do Electron é temporário e nenhum sidecar é spawnado.
    evento `disk-guard` no feed e `notifySupervisor` em vez de falhar depois com
    um `git index.lock` críptico. Sonda indisponível = fail-open (não bloqueia).
 1. `git reset --hard <sha>` no repo de produção + `npm ci` + `npm run build`
-2. `launchctl kickstart -k` relay e daemon
+2. `launchctl kickstart -k` relay e daemon (o daemon derruba-se com shutdown
+   graceful desde P2-020: drain ≤3s, ws close 1001, exit 0)
 3. Health: `GET 127.0.0.1:8792/api/health` (Bearer apiToken) até 90s
 4. Soak: checagens a cada 60s por `monitorMin`; 3 falhas seguidas = rollback
 5. Rollback: reset para o SHA anterior + rebuild + kickstart (idempotente)

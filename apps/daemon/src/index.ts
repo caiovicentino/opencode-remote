@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, statSync, readdirSync, openSync, readSync, closeSync, appendFileSync, copyFileSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import type { IncomingMessage, ServerResponse } from "node:http";
+import type { IncomingMessage, ServerResponse, Server as HttpServer } from "node:http";
 import { homedir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import JSON5 from "json5";
@@ -36,6 +36,7 @@ import { detectWhisper, transcribeAudio, type WhisperTool } from "./whisper.js";
 import { metrics, startMetricsServer, VERSION } from "./metrics.js";
 import { loadRoutines, saveRoutines, type Routine } from "./routines.js";
 import { artifactMime, kindFor, listArtifacts, readArtifact } from "./artifacts.js";
+import { createShutdown, stopAccepting } from "./shutdown.js";
 
 const RELAY_URL = process.env.RELAY_URL ?? "ws://127.0.0.1:8787";
 const OPENCODE_URL = process.env.OPENCODE_URL ?? "http://127.0.0.1:4096";
@@ -1222,6 +1223,7 @@ async function forwardEvents() {
         error: err instanceof Error ? err.message : String(err),
       });
     }
+    if (isShuttingDown()) return; // drain in progress: stop reconnecting
     // exponential backoff with jitter: 2s, 4s, 8s, ... capped at 30s
     const delay = Math.min(30_000, 2000 * 2 ** attempt++) + Math.floor(Math.random() * 1000);
     await new Promise((r) => setTimeout(r, delay));
@@ -1389,8 +1391,31 @@ async function handleMessage(data: WebSocket.RawData, ws: WebSocket) {
   await handleSealedFrame(frame, ws);
 }
 
+// handle to the live relay websocket (shutdown closes it with code 1001)
+let relaySocket: WebSocket | null = null;
+// handle to the loopback API/metrics server (shutdown calls .close())
+let apiServer: HttpServer | null = null;
+
+// P2-020: SIGTERM/SIGINT graceful shutdown — drain ≤3s, then exit 0.
+const bootTime = Date.now();
+const { shutdown, isShuttingDown } = createShutdown({
+  activeConnections: () => sessions.size,
+  uptimeMs: () => Date.now() - bootTime,
+  stopListeners: () => {
+    const sockets = new Set<WebSocket>([...sessions.values()].map((s) => s.socket));
+    if (relaySocket) sockets.add(relaySocket);
+    return stopAccepting(apiServer, sockets);
+  },
+  exit: (code) => process.exit(code),
+  setTimeout,
+  clearTimeout,
+});
+process.on("SIGTERM", () => void shutdown("SIGTERM"));
+process.on("SIGINT", () => void shutdown("SIGINT"));
+
 function connectRelay() {
   const ws = new WebSocket(RELAY_URL);
+  relaySocket = ws;
 
   ws.on("open", () => {
     log("info", "connected to relay", { relay: RELAY_URL, room: daemon.room });
@@ -1402,6 +1427,7 @@ function connectRelay() {
   ws.on("message", (data) => void handleMessage(data, ws));
 
   ws.on("close", () => {
+    if (isShuttingDown()) return; // drain in progress: do not reconnect
     log("warn", "relay connection lost; retrying in 2s");
     metrics.gauge("ocr_relay_connected", 0);
     metrics.gauge("ocr_sessions_active", 0);
@@ -1847,7 +1873,7 @@ async function main() {
   });
 
   const metricsPort = Number(process.env.OCR_METRICS_PORT);
-  if (metricsPort) startMetricsServer(metricsPort, handleApi);
+  if (metricsPort) apiServer = startMetricsServer(metricsPort, handleApi);
 
   // boot healthcheck: fail loudly early if opencode is unreachable
   try {

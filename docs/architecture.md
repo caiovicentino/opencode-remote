@@ -73,6 +73,10 @@ unavailable — registration there can only reject.
 
 ## Constraints worth knowing
 
+- SIGTERM/SIGINT trigger a graceful daemon shutdown (P2-020): new API
+  connections stop, relay/client websockets are closed with code 1001, a
+  ≤3s drain timer bounds the wait and the process exits 0; a second signal
+  exits immediately. Clients auto-rehandshake on the next boot.
 - Session keys are re-derived on every handshake; daemon restart invalidates
   them by design (clients auto-rehandshake transparently)
 - The relay learns room ids and traffic volume, nothing else
