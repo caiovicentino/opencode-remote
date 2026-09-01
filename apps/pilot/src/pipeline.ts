@@ -33,7 +33,7 @@ Rules:
 - Keep the diff focused: one task, no drive-by refactors.
 ${round > 1 ? `- Rounds 1..${round - 1} already committed work on this branch. Inspect it first with \`git diff main...pilot/${t.id}\` and fix the findings INCREMENTALLY — do not restart from scratch or re-read files you already understand.` : ""}${
     uiTask
-      ? `\n- UI self-driving (P2-011): this task changes the UI. Validate your own output visually before finishing: build the app, then use the host browser CLI — \`node tools/browse.mjs open <url> ~/.opencode-remote/pilot/shots/${t.id}-r${round}.png\` — and inspect the PNG. Mention the screenshot path in your final output.`
+      ? `\n- UI self-driving (P2-011): this task changes the UI. Validate your own output visually before finishing: build the app, then use the host browser CLI — \`node tools/browse.mjs open <url> ~/.opencode-remote/pilot/shots/builder/${t.id}-r${round}.png\` — and inspect the PNG. Mention the screenshot path in your final output. This is YOUR pre-merge self-check; post-deploy evidence is captured separately by the pipeline.`
       : ""
   }
 
@@ -53,7 +53,7 @@ Rules:
 - Be strict but concrete: every finding must reference a file and a problem.
 ${
   uiShot
-    ? `- UI evidence (P2-011): a post-deploy screenshot of the deployed UI is saved at "${uiShot}". Read it (it is an image) and cite it in your verdict — say explicitly whether the rendered layout matches what the diff promises. You can also take fresh screenshots: \`node tools/browse.mjs shot <path>.png\`.`
+    ? `- UI evidence (P2-011): the most recent available screenshot for this task is "${uiShot}". It may predate this diff (captured after an earlier deploy) — treat it as a regression baseline, not proof of this diff. Read it (it is an image), say what it shows, and state explicitly whether the diff could plausibly regress it. You can take a fresh screenshot of your local build: \`node tools/browse.mjs shot <path>.png\`.`
     : ""
 }
 
@@ -198,9 +198,10 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
     // would never match a bare path — round-2 review caught exactly that.
     const diff = exec(`git diff main...pilot/${t.id}`, { cwd: ws }).output;
     touchedUi = touchedUiFromDiff(exec(`git diff --name-only main...pilot/${t.id}`, { cwd: ws }).output);
-    // P2-011: UI tasks get visual evidence — reviewers cite the newest
-    // post-deploy screenshot (and can capture fresh ones) in their verdict.
-    const uiShot = touchedUi ? latestUiShot() : null;
+    // P2-011: UI tasks get visual evidence — per-task, post-deploy shape only
+    // (round-3 review: unscoped mtime pick could serve another task's stale
+    // shot or a builder's pre-merge self-shot as "deployed UI" evidence).
+    const uiShot = touchedUi ? latestUiShot(t.id) : null;
     if (!diff.trim()) {
       // empty-diff self-heal: builder ran after the task was already merged.
       // Refresh origin/main first so the merge check below isn't fooled by a

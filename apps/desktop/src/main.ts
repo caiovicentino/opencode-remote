@@ -61,8 +61,11 @@ async function onReady(): Promise<void> {
         body: method === "POST" ? JSON.stringify(req.body ?? {}) : undefined,
         signal: AbortSignal.timeout(45_000),
       });
-      const buf = Buffer.from(await res.arrayBuffer());
-      return { status: res.status, contentType: res.headers.get("content-type") ?? "", body: buf.toString("base64") };
+      // defense in depth: the daemon bounds its payloads, but never trust that
+      // blindly — a screenshot is a few MB, so 32 MB is a generous ceiling
+      const raw = await res.arrayBuffer();
+      if (raw.byteLength > 32 * 1024 * 1024) return null;
+      return { status: res.status, contentType: res.headers.get("content-type") ?? "", body: Buffer.from(raw).toString("base64") };
     } catch (err) {
       console.error("[desktop] daemonBrowse failed:", err);
       return null;

@@ -3,7 +3,7 @@
 // production dashboard and saves a PNG under pilot/shots/. Reviewers of later
 // rounds read the newest shot and cite it in their verdict — a UI regression
 // becomes visible evidence in the review log instead of a hunch.
-import { mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, readdirSync, statSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { nowLocalISO } from "./log";
@@ -12,14 +12,51 @@ export function shotsDir(): string {
   return join(homedir(), ".opencode-remote", "pilot", "shots");
 }
 
-/** Newest screenshot by mtime (absolute path) or null. Lexical order is wrong
- * across tasks (`<task>-<sha>-<ts>.png` sorts by task name first), so compare
- * file mtimes — reviewers must cite the most recent evidence. */
-export function latestUiShot(dir = shotsDir()): string | null {
+/** Builder self-validation shots live in their own subdir: they are pre-merge
+ * and must never be mistaken for post-deploy evidence (the dir split makes
+ * that structural, not name-based). */
+export function builderShotsDir(): string {
+  return join(shotsDir(), "builder");
+}
+
+/** Retention: reviewers only need the newest few; shots are rendered captures
+ * of internal pages, so they must not accumulate forever. */
+const KEEP_SHOTS = 20;
+
+/** Delete all but the newest `keep` files (by mtime) in dir. */
+export function pruneShots(dir: string, keep = KEEP_SHOTS): void {
   try {
+    const files = readdirSync(dir)
+      .filter((f) => f.endsWith(".png"))
+      .map((f) => {
+        const path = join(dir, f);
+        return { path, mtime: statSync(path).mtimeMs };
+      })
+      .sort((a, b) => b.mtime - a.mtime);
+    for (const f of files.slice(keep)) rmSync(f.path, { force: true });
+  } catch {}
+}
+
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Newest post-deploy screenshot (absolute path) or null. Evidence is scoped:
+ * only files with the deploy-shot shape `<taskId>-<sha7>-<ts>.png` for the
+ * requested task count — builder self-shots (separate dir) and other tasks'
+ * shots are never served as this task's evidence. Newest wins by mtime
+ * (lexical order would sort by task name first).
+ */
+export function latestUiShot(taskId?: string, dir = shotsDir()): string | null {
+  try {
+    const shape = taskId
+      ? new RegExp(`^${escapeRe(taskId)}-[0-9a-f]{7}-\\d+\\.png$`)
+      : null;
     let best: { path: string; mtime: number } | null = null;
     for (const f of readdirSync(dir)) {
       if (!f.endsWith(".png")) continue;
+      if (shape && !shape.test(f)) continue;
       const path = join(dir, f);
       const mtime = statSync(path).mtimeMs;
       if (!best || mtime > best.mtime) best = { path, mtime };
@@ -75,6 +112,8 @@ export async function captureUiShot(taskId: string, sha: string): Promise<string
     console.log(
       JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "ui-shot", data: { task: taskId, path } }),
     );
+    pruneShots(shotsDir());
+    pruneShots(builderShotsDir());
     return path;
   } catch {
     return null;

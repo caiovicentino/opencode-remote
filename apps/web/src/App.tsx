@@ -609,15 +609,23 @@ export default function App() {
             </div>
           </aside>
           <main className="desk-main">
-            {mainContent ?? (
-              <div className="desk-empty">
-                <div>
-                  <div className="desk-greet-mark">✻</div>
-                  <h2>olá{machineName ? `, ${machineName.toLowerCase()}` : ""}!</h2>
-                  <p>Selecione uma conversa na barra lateral</p>
-                </div>
+            {/* Browser pane stays mounted (hidden) so the user's current page,
+                URL input and text panel survive tab switches. */}
+            {browseFn && (
+              <div style={{ display: browserView ? "block" : "none", height: "100%" }}>
+                <BrowserView browse={browseFn} onBack={goBack} />
               </div>
             )}
+            {!browserView &&
+              (mainContent ?? (
+                <div className="desk-empty">
+                  <div>
+                    <div className="desk-greet-mark">✻</div>
+                    <h2>olá{machineName ? `, ${machineName.toLowerCase()}` : ""}!</h2>
+                    <p>Selecione uma conversa na barra lateral</p>
+                  </div>
+                </div>
+              ))}
           </main>
         </div>
       ) : (

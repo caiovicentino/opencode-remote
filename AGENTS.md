@@ -86,5 +86,8 @@ Para validar visualmente mudanças de UI, use o CLI:
     node tools/browse.mjs text                    # extrair texto visível
 
 O token vem de `~/.opencode-remote/daemon.json` (loopback apenas). Screenshots
-pós-deploy ficam em `~/.opencode-remote/pilot/shots/` e reviewers os citam no
-veredito (docs/PILOT.md).
+pós-deploy ficam em `~/.opencode-remote/pilot/shots/` (evidência por task,
+com retenção dos 20 mais recentes) e reviewers os citam no veredito
+(docs/PILOT.md). Seus próprios checks pré-merge vão em
+`~/.opencode-remote/pilot/shots/builder/` — o subdir builder não é usado como
+evidência de review.

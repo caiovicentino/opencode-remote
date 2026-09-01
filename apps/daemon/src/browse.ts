@@ -154,8 +154,16 @@ async function openSession(url: string, name: string, w?: unknown, h?: unknown):
     const ctx = await b.newContext({ viewport });
     const page = await ctx.newPage();
     const session: BrowseSession = { page, viewport, lastUsed: Date.now() };
+    // registered only after a successful navigation: a failed goto must not
+    // leave a phantom about:blank session in the map (listed by GET /api/browse,
+    // evicting healthy sessions, answering screenshots with blank PNGs)
+    try {
+      await page.goto(target.toString(), { waitUntil: "load", timeout: NAV_TIMEOUT_MS });
+    } catch (err) {
+      await ctx.close().catch(() => {});
+      throw err;
+    }
     sessions.set(name, session);
-    await page.goto(target.toString(), { waitUntil: "load", timeout: NAV_TIMEOUT_MS });
     return session;
   };
   const done = opening.then(run, run);
@@ -232,8 +240,25 @@ async function bodyJson(req: IncomingMessage): Promise<Record<string, unknown>> 
 
 function fail(res: ServerResponse, err: unknown) {
   const msg = err instanceof Error ? err.message : String(err);
-  log("warn", "browse action failed", { error: msg.slice(0, 200) });
-  json(res, 502, { error: msg.slice(0, 300) });
+  // detail stays server-side: raw Playwright/Node errors can leak internals
+  // (paths, flags) to the client — callers only get a generic message
+  log("warn", "browse action failed", { error: msg.slice(0, 300) });
+  json(res, 502, { error: "browse action failed — see daemon log for details" });
+}
+
+/** Pure helper for the click route: out-of-range coordinates are REJECTED, not
+ * clamped — a silent clamp would redirect mistyped clicks to the viewport edge
+ * with a 200 OK (exactly the wrong spot). Null means "reject with 400". */
+export function clickPoint(
+  x: unknown,
+  y: unknown,
+  viewport: { width: number; height: number },
+): { x: number; y: number } | null {
+  const px = Number(x);
+  const py = Number(y);
+  if (!Number.isFinite(px) || !Number.isFinite(py)) return null;
+  if (px < 0 || py < 0 || px > viewport.width || py > viewport.height) return null;
+  return { x: px, y: py };
 }
 
 /**
@@ -309,17 +334,16 @@ export async function handleBrowse(
           .getByText(body.text, { exact: false })
           .first()
           .click({ timeout: CLICK_TIMEOUT_MS });
-      } else {
-        const x = Number(body.x);
-        const y = Number(body.y);
-        if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0) {
-          json(res, 400, { error: "selector, text or x/y required" });
+      } else if (body.x !== undefined || body.y !== undefined) {
+        const point = clickPoint(body.x, body.y, s.viewport);
+        if (!point) {
+          json(res, 400, { error: `x/y out of viewport range (${s.viewport.width}x${s.viewport.height})` });
           return true;
         }
-        await s.page.mouse.click(
-          Math.min(x, s.viewport.width),
-          Math.min(y, s.viewport.height),
-        );
+        await s.page.mouse.click(point.x, point.y);
+      } else {
+        json(res, 400, { error: "selector, text or x/y required" });
+        return true;
       }
       touch(sessionName);
       await s.page
@@ -337,6 +361,8 @@ export async function handleBrowse(
         return true;
       }
       touch(sessionName);
+      // read actions are the sensitive ones (they capture internal pages) — audit them
+      audit("browse.text", { session: sessionName });
       json(res, 200, { url: s.page.url(), title: await s.page.title(), text: await textOf(s.page) });
       return true;
     }
@@ -354,6 +380,7 @@ export async function handleBrowse(
         await s.page.setViewportSize(vp);
       }
       touch(sessionName);
+      audit("browse.screenshot", { session: sessionName });
       const shot = await s.page.screenshot({ type: "png" });
       res.writeHead(200, { "content-type": "image/png", "cache-control": "no-store" });
       res.end(shot);
