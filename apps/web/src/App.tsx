@@ -16,6 +16,7 @@ import type { OpResponse, EventEnvelope } from "@ocr/protocol";
 import { gateVerify, gateEnroll } from "./lib/gate";
 import { useT } from "./lib/i18n";
 import PairingView from "./components/PairingView";
+import PairingOverlay from "./components/PairingOverlay";
 import SessionsView from "./components/SessionsView";
 import ChatView from "./components/ChatView";
 import SettingsView, { applyTheme } from "./components/SettingsView";
@@ -28,6 +29,14 @@ type Phase = "unpaired" | "connecting" | "paired" | "error";
 
 type TabId = "sessions" | "files" | "settings";
 
+/** Mirrors apps/desktop/src/preload.ts PairingState (kept in sync by tests). */
+interface PairingState {
+  uri: string | null;
+  qrDataUrl: string | null;
+  devices: number;
+  phonePaired: boolean;
+}
+
 /** Electron bridge from apps/desktop/src/preload.ts (absent in the browser). */
 interface DesktopBridge {
   getPairUrl?: () => Promise<string | null>;
@@ -37,6 +46,9 @@ interface DesktopBridge {
     contentType: string;
     body: string;
   } | null>;
+  /** P2-007: first-run QR overlay state (desktop shell only). */
+  getPairingState?: () => Promise<PairingState | null>;
+  onPairingState?: (cb: (state: PairingState | null) => void) => () => void;
 }
 
 function desktopBridge(): DesktopBridge | null {
@@ -155,6 +167,28 @@ export default function App() {
     }
   });
   const activeSessionRef = useRef<string | null>(null);
+
+  // P2-007: first-run pairing overlay (desktop shell only). The main process
+  // polls the daemon every 3s and caches the state; we pull once on mount and
+  // subscribe to pushes so the QR shows immediately and leaves as soon as a
+  // phone pairs.
+  const [pairingState, setPairingState] = useState<PairingState | null>(null);
+  const [pairingDismissed, setPairingDismissed] = useState(false);
+  useEffect(() => {
+    const bridge = desktopBridge();
+    if (!bridge?.getPairingState) return;
+    let alive = true;
+    bridge.getPairingState().then((s) => {
+      if (alive) setPairingState(s);
+    }).catch(() => {});
+    const un = bridge.onPairingState?.((s) => {
+      if (alive) setPairingState(s);
+    });
+    return () => {
+      alive = false;
+      un?.();
+    };
+  }, []);
 
   // keep the ref in sync for the event handler (which captures it once)
   useEffect(() => {
@@ -408,46 +442,60 @@ export default function App() {
     if (went > 72) goBack();
   }
 
+  const pairingOverlay =
+    !pairingDismissed && pairingState?.qrDataUrl && !pairingState.phonePaired ? (
+      <PairingOverlay
+        qrDataUrl={pairingState.qrDataUrl}
+        onDismiss={() => setPairingDismissed(true)}
+      />
+    ) : null;
+
   if (addingMachine) {
     return (
-      <PairingView
-        phase="unpaired"
-        error={error}
-        onPair={(uri) => {
-          setAddingMachine(false);
-          const pairing = parsePairingUri(uri);
-          if (!pairing) {
-            setError("Invalid pairing code");
-            setPhase("error");
-            return;
-          }
-          void connect(pairing, true);
-        }}
-        onRetry={() => setAddingMachine(false)}
-      />
+      <>
+        {pairingOverlay}
+        <PairingView
+          phase="unpaired"
+          error={error}
+          onPair={(uri) => {
+            setAddingMachine(false);
+            const pairing = parsePairingUri(uri);
+            if (!pairing) {
+              setError("Invalid pairing code");
+              setPhase("error");
+              return;
+            }
+            void connect(pairing, true);
+          }}
+          onRetry={() => setAddingMachine(false)}
+        />
+      </>
     );
   }
 
   if (phase !== "paired") {
     return (
-      <PairingView
-        phase={phase}
-        error={error}
-        onPair={(uri) => {
-          const pairing = parsePairingUri(uri);
-          if (!pairing) {
-            setError("Invalid pairing code");
-            setPhase("error");
-            return;
-          }
-          void connect(pairing, true);
-        }}
-        onRetry={() => {
-          const stored = loadState();
-          if (stored) void connect(stored.pairing, false);
-          else setPhase("unpaired");
-        }}
-      />
+      <>
+        {pairingOverlay}
+        <PairingView
+          phase={phase}
+          error={error}
+          onPair={(uri) => {
+            const pairing = parsePairingUri(uri);
+            if (!pairing) {
+              setError("Invalid pairing code");
+              setPhase("error");
+              return;
+            }
+            void connect(pairing, true);
+          }}
+          onRetry={() => {
+            const stored = loadState();
+            if (stored) void connect(stored.pairing, false);
+            else setPhase("unpaired");
+          }}
+        />
+      </>
     );
   }
 
@@ -654,6 +702,7 @@ export default function App() {
           )}
         </>
       )}
+      {pairingOverlay}
     </div>
   );
 }

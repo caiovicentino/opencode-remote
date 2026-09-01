@@ -1,6 +1,7 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
+    "esModuleInterop": true,
     "lib": ["ES2022"],
     "module": "CommonJS",
     "moduleResolution": "node",

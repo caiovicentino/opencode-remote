@@ -41,6 +41,7 @@ import { artifactMentions, fmtBytes } from "../apps/web/src/lib/artifacts";
 import { DISK_MIN_FREE_BYTES, diskGuardDetail, freeDiskBytes } from "../apps/pilot/src/disk";
 import { deploy } from "../apps/pilot/src/deploy";
 import type { PilotConfig } from "../apps/pilot/src/state";
+import { overlayVisible, phonePaired } from "../apps/desktop/src/pairing";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -876,6 +877,23 @@ check(
   check("experience: maintain is a no-op below the cap", !second.changed && second.lessons === 60);
   check("experience: maintain on a missing file does nothing", maintainExperienceFile(join(expDir, "nope")).changed === false);
   rmSync(expDir, { recursive: true, force: true });
+}
+
+// --- desktop first-run pairing overlay (P2-007) ------------------------------
+{
+  // the shell self-approves its own identity, so a virgin allowlist already
+  // holds one entry — only a non-host device (the phone) counts as paired
+  const host = { pub: "a".repeat(40), label: "desktop-host", addedAt: "2026-09-01T00:00:00Z" };
+  const phone = { pub: "b".repeat(40), addedAt: "2026-09-01T00:00:00Z" };
+  check("pairing: host-only allowlist is not 'phone paired'", phonePaired([host]) === false);
+  check("pairing: empty allowlist is not 'phone paired'", phonePaired([]) === false);
+  check("pairing: unlabeled device counts as a phone", phonePaired([phone]) === true);
+  check("pairing: phone closes the overlay", phonePaired([host, phone]) === true);
+  const state = { uri: "opencode-remote://pair?v=2&room=r", qrDataUrl: "data:image/png;base64,x", devices: 1, phonePaired: false };
+  check("pairing: overlay visible with QR and no phone", overlayVisible(state) === true);
+  check("pairing: overlay hidden once the phone pairs", overlayVisible({ ...state, phonePaired: true }) === false);
+  check("pairing: overlay hidden without a QR", overlayVisible({ ...state, qrDataUrl: null }) === false);
+  check("pairing: overlay hidden with no state (daemon down)", overlayVisible(null) === false);
 }
 
 if (failures > 0) {

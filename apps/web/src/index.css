@@ -646,3 +646,41 @@ select {
     flex-direction: column;
   }
 }
+
+/* first-run pairing overlay (desktop shell, P2-007) */
+.pair-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  padding: 24px;
+}
+.pair-overlay-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  text-align: center;
+  max-width: 420px;
+  padding: 28px;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: var(--panel, var(--bg));
+}
+.pair-overlay-card h2 {
+  margin: 0;
+  font-size: 1.15rem;
+}
+.pair-overlay-card p {
+  margin: 0;
+  font-size: 0.85rem;
+}
+.pair-overlay-qr {
+  border-radius: 12px;
+  background: #fff; /* QR modules stay dark-on-light for scanner contrast */
+  padding: 10px;
+}

@@ -2,13 +2,16 @@ import { app, BrowserWindow, ipcMain, Menu, nativeImage, Tray, shell } from "ele
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import QRCode from "qrcode";
 import {
   DAEMON_METRICS_PORT,
   getPairUrl,
+  readApiToken,
   startDaemonSidecar,
   stopDaemonSidecar,
   waitForDaemonHealth,
 } from "./daemon";
+import { phonePaired, type PairingState } from "./pairing";
 
 // Data-URL PNG keeps the repo free of binary assets; replace with a proper
 // .png/.icns asset when the distribution stage lands (docs/VISION.md stage 5).
@@ -74,6 +77,11 @@ async function onReady(): Promise<void> {
   // Boot pairing URI captured from the daemon sidecar's stdout (null when the
   // daemon was reused or hasn't printed it yet) — lets the renderer auto-pair.
   ipcMain.handle("app:pairUrl", () => getPairUrl());
+  // P2-007: first-run pairing state for the renderer's QR overlay. The main
+  // process polls the daemon (see startPairingWatcher) and caches the result;
+  // the sandboxed renderer only ever sees this derived state — never the
+  // apiToken, allowlist file or raw HTTP responses.
+  ipcMain.handle("app:pairingState", () => pairingState);
   // Host self-approval: the desktop shell runs on the same machine that owns
   // daemon.json, so it may add its own client identity to the allowlist. The
   // daemon re-reads the allowlist file on every handshake (fresh read), so
@@ -111,6 +119,7 @@ async function onReady(): Promise<void> {
   }
 
   createWindow();
+  startPairingWatcher();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -124,11 +133,83 @@ async function onReady(): Promise<void> {
     // Encerra o daemon que subimos antes de sair (idempotente).
     if (daemonStopped) return;
     event.preventDefault();
+    if (pairingTimer) clearInterval(pairingTimer);
     void stopDaemonSidecar().then(() => {
       daemonStopped = true;
       app.quit();
     });
   });
+}
+
+// --- first-run pairing watcher (P2-007) --------------------------------------
+// After daemon health OK, poll the loopback API every 3s: while no phone is
+// paired, fetch the boot pairing URI, render it as a PNG data-URL and hand the
+// whole state to the renderer, which draws the QR overlay. As soon as the
+// allowlist holds a non-host device (the phone scanned the QR), the overlay
+// leaves and the chat shows. Read-only end to end: the allowlist itself is
+// only ever read, never written here.
+
+const PAIRING_POLL_MS = 3_000;
+const PROBE_TIMEOUT_MS = 2_000;
+
+let pairingState: PairingState | null = null;
+let pairingTimer: NodeJS.Timeout | null = null;
+
+function setPairingState(next: PairingState | null): void {
+  const changed = JSON.stringify(next) !== JSON.stringify(pairingState);
+  pairingState = next;
+  // Push so the overlay reacts within one poll; the renderer also pulls
+  // (invoke) on mount — a fresh window never waits for a change. Broadcast to
+  // every window: createWindow() doesn't track a single mainWindow handle.
+  if (changed) {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send("ocr:pairing-state", pairingState);
+    }
+  }
+}
+
+async function refreshPairingState(): Promise<void> {
+  const token = readApiToken();
+  if (!token) {
+    setPairingState(null);
+    return;
+  }
+  const base = `http://127.0.0.1:${DAEMON_METRICS_PORT}`;
+  const headers = { authorization: `Bearer ${token}` };
+  try {
+    const devRes = await fetch(`${base}/__ocr/devices`, { headers, signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
+    if (!devRes.ok) throw new Error(`devices ${devRes.status}`);
+    const { devices } = (await devRes.json()) as { devices?: { pub: string; label?: string }[] };
+    if (!Array.isArray(devices)) throw new Error("malformed devices payload");
+
+    const paired = phonePaired(devices);
+    let uri = pairingState?.uri ?? null;
+    let qrDataUrl = pairingState?.qrDataUrl ?? null;
+    if (!paired && !uri) {
+      // Only fetch/refresh while the overlay may still be needed; once a phone
+      // is paired the QR is dead weight.
+      const uriRes = await fetch(`${base}/__ocr/pairing-uri`, {
+        headers,
+        signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+      });
+      if (!uriRes.ok) throw new Error(`pairing-uri ${uriRes.status}`);
+      uri = ((await uriRes.json()) as { uri?: string }).uri ?? null;
+      if (uri) qrDataUrl = await QRCode.toDataURL(uri, { margin: 1, width: 480 });
+    }
+    setPairingState({ uri, qrDataUrl, devices: devices.length, phonePaired: paired });
+  } catch (err) {
+    // Daemon down, token rotated or state file wiped: drop the cached state so
+    // a stale QR (old room/keys) is never shown. The next healthy tick
+    // rebuilds everything from scratch.
+    console.error(`[desktop] pairing poll failed: ${err instanceof Error ? err.message : err}`);
+    setPairingState(null);
+  }
+}
+
+function startPairingWatcher(): void {
+  if (pairingTimer) return;
+  void refreshPairingState();
+  pairingTimer = setInterval(() => void refreshPairingState(), PAIRING_POLL_MS);
 }
 
 function createWindow(): BrowserWindow {

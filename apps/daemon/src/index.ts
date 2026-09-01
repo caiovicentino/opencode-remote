@@ -146,6 +146,12 @@ async function loadIdentity(): Promise<DaemonIdentity> {
 // CJS, apps/desktop/scripts/bundle-daemon.mjs).
 let daemon: DaemonIdentity;
 
+// P2-007: the `opencode-remote://pair?v=2&…` URI built at boot (printed to the
+// terminal as text + QR). Exposed read-only to loopback callers via
+// GET /__ocr/pairing-uri so the desktop shell can render the first-run QR
+// without scraping stdout. Null until main() finishes building it.
+let pairingUri: string | null = null;
+
 // user-editable settings (name, notifications) persisted in the state file
 let appSettings: AppSettings;
 
@@ -1494,6 +1500,31 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     }
     return true;
   }
+  // P2-007: loopback-only, Bearer-gated reads of boot pairing state for the
+  // desktop shell's first-run QR overlay. Strictly read-only: the URI is the
+  // same one printed to stdout at boot and devices come from a fresh
+  // readAllowlist() — identical to the E2E /__ocr/devices route. No crypto or
+  // allowlist logic is touched (handshake auth path stays exactly as it was).
+  if (req.method === "GET" && (url.pathname === "/__ocr/pairing-uri" || url.pathname === "/__ocr/devices")) {
+    if (req.headers.authorization !== `Bearer ${apiToken()}`) {
+      send401(res);
+      return true;
+    }
+    res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+    if (url.pathname === "/__ocr/pairing-uri") {
+      res.end(JSON.stringify({ uri: pairingUri }));
+    } else {
+      let devices: PairedClient[] = [];
+      try {
+        devices = readAllowlist();
+      } catch {
+        // state file missing/unreadable: report an empty allowlist rather than
+        // letting the exception escape into an unhandled rejection
+      }
+      res.end(JSON.stringify({ devices }));
+    }
+    return true;
+  }
   if (!url.pathname.startsWith("/api/")) return false;
   // P2-011: /api/browse/* — host browser automation (Playwright), same Bearer gate
   if (url.pathname.startsWith("/api/browse")) {
@@ -1832,7 +1863,7 @@ async function main() {
     });
   }
 
-  const pairingUri =
+  pairingUri =
     `opencode-remote://pair?v=2` +
     `&relay=${encodeURIComponent(RELAY_URL)}` +
     `&room=${daemon.room}` +
