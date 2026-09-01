@@ -164,6 +164,39 @@ O contador **não** é zerado pelo reset diário de `state.json` (virar a noite 
 reabre o breaker) e, se o push do bloqueio falhar, o guard do loop re-bloqueia a
 task no ciclo seguinte em vez de executá-la de novo.
 
+## Circuit breaker de febre — modo auditoria (P2-032)
+
+O stop-loss acima é **por task**; o breaker de febre é **global**: pausa o
+scheduler inteiro quando o pipeline em si está doente. Dois gatilhos
+independentes, alimentados por estado em `state.json` (`cycles`,
+`blockEvents`, `auditMode` — sobrevivem ao rollover de meia-noite):
+
+1. **Taxa de febre**: janela deslizante dos últimos **10 ciclos** de pipeline;
+   **>= 60% de falha** (6/10) dispara. Janela parcial nunca dispara (sem amostra
+   pequena demais).
+2. **Rajada de bloqueios**: **2 tasks** indo para `## Blocked` em **30min**
+   (contagem nos landings reais do push em `main`).
+
+Ao disparar, o pilot entra em **modo auditoria**:
+
+- **não pega tasks novas** do `## Ready` (slots em execução terminam; suas
+  falhas contam para o relógio de retomada);
+- roda o **pass de doctor**: sonda de saúde da API do opencode (mesmo check do
+  `cli.mjs doctor`) + agregação determinística de **top steps de falha**
+  (lições de falha P2-031 + arquivos `gate-fail/<ID>.json`, sem dupla contagem)
+  e **top tasks rejeitadas** (lições + `taskAttempts` vivos), postada no log
+  JSONL (`audit mode entered` / `audit diagnosis`) e no feed de eventos
+  (tipo `audit`), com `notifySupervisor`;
+- **retomar** por intervenção externa (`touch
+  ~/.opencode-remote/pilot/audit-clear` — a flag é consumida no ciclo seguinte,
+  no espírito do `pilot.lock`) ou automaticamente após **2h sem falha nova**
+  (qualquer falha enquanto pausado empurra o prazo). Nas duas retomadas as
+  janelas são zeradas — febre nova precisa re-acumular.
+
+Cobertura: `scripts/unit.test.ts` injeta falhas nos dois gatilhos (janela
+deslizante, rajada com pruning, fronteira de 2h, agregação do diagnóstico e
+persistência no `state.json`).
+
 ## Rodar manualmente
 
 ```sh

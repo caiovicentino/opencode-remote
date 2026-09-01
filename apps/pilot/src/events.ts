@@ -7,7 +7,7 @@ const MAX_LINES = 400;
 
 export interface PilotEvent {
   ts: string;
-  type: "phase" | "agent" | "result" | "deploy" | "loop";
+  type: "phase" | "agent" | "result" | "deploy" | "loop" | "audit";
   task?: string;
   phase?: string;
   ok?: boolean;

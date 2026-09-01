@@ -12,6 +12,18 @@ import { digest } from "./push";
 import { addTask, blockTask, nextId, parseBacklog, type Task } from "./backlog";
 import { appendFailureLesson, defaultLessonsFile, failureLessonsBlock, readRecentFailureLessons } from "./failureLessons";
 import { areaKey, pickBatch } from "./scheduler";
+import {
+  auditClearFile,
+  auditResumeDue,
+  buildDiagnosis,
+  clearAuditMode,
+  enterAuditMode,
+  feverReason,
+  formatDiagnosis,
+  recordBlockEvent,
+  recordCycle,
+} from "./audit";
+import { apiHealthy } from "./runner";
 import { maintainExperienceFile, pickRelevantLessons, readExperienceFile } from "./experience";
 import {
   ensureSingleton,
@@ -73,6 +85,56 @@ async function main() {
       if (once) return;
       await sleep(30_000);
       continue;
+    }
+
+    // P2-032 fever circuit breaker: audit mode entry / hold / resume.
+    // External intervention = touching ~/.opencode-remote/pilot/audit-clear
+    // (consumed on the next cycle, mirroring the pilot.lock freeze pattern).
+    if (existsSync(auditClearFile())) {
+      rmSync(auditClearFile());
+      if (state.auditMode) {
+        clearAuditMode(state);
+        saveState(state);
+        log("info", "audit mode cleared by external intervention");
+        emit("audit", { detail: "cleared by external intervention" });
+      }
+    }
+
+    if (!state.auditMode) {
+      const fever = feverReason(state);
+      if (fever && enterAuditMode(state, fever)) {
+        saveState(state);
+        log("warn", "audit mode entered — queue paused", { reason: fever });
+        emit("audit", { detail: `${fever} — queue paused` });
+        void notifySupervisor(
+          "pilot-audit",
+          false,
+          `${fever} — new tasks paused. Resume: touch ${auditClearFile()} or wait 2h without failures`,
+        ).catch(() => {});
+        // doctor pass: deterministic diagnostics in the log — API health plus
+        // the top failure steps and top rejected tasks from the failure record
+        const api = await apiHealthy();
+        const diag = buildDiagnosis({
+          lessonsFile: defaultLessonsFile(),
+          gateFailDir: join(homedir(), ".opencode-remote/pilot/gate-fail"),
+          attempts: state.taskAttempts,
+          api,
+        });
+        log("warn", "audit diagnosis", { summary: formatDiagnosis(diag), ...diag });
+      }
+    }
+
+    if (state.auditMode) {
+      if (auditResumeDue(state.auditMode)) {
+        clearAuditMode(state);
+        saveState(state);
+        log("info", "audit mode: 2h without failure — resuming the queue");
+        emit("audit", { detail: "resumed after 2h without failure" });
+      } else {
+        if (once) return;
+        await sleep(30_000);
+        continue;
+      }
     }
 
     // nightly redteam (03:xx) + weekly maintenance — best effort, slots idle
@@ -172,6 +234,7 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
   try {
     const result = await runPipeline(wscfg, task, state);
     state.tasks++;
+    recordCycle(state, result.ok); // P2-032 fever window
     let blockedAttempts: number | null = null;
     if (result.ok) {
       delete state.taskAttempts[task.id]; // gate passed — breaker reset
@@ -202,6 +265,7 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
     saveState(state);
   } catch (err) {
     state.failures++;
+    recordCycle(state, false); // P2-032: a crashed pipeline is fever evidence too
     const detail = String(err).slice(0, 300);
     tripCircuitBreaker(wscfg, state, task, `pipeline crashed: ${detail}`);
     saveState(state);
@@ -415,6 +479,7 @@ function blockAndPush(cfg: PilotConfig, st: PilotState, task: Task, attempts: nu
   );
   if (push.ok) {
     delete st.taskAttempts[task.id];
+    recordBlockEvent(st); // P2-032: block-burst trigger watches landings on main
     // P2-031 failure scribe: one structured lesson per landed block (recording
     // only after the push lands keeps retry cycles from duplicating entries).
     const gate = lastGateFail(task.id);

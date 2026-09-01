@@ -12,7 +12,11 @@ read-only agent writes `specs/<ID>.md` on the task branch (problem, approach, to
 edge cases, acceptance criteria, out of scope) and the builder + quality reviewer are held to
 it; P2+ tasks go straight to the builder (P2-008). Tasks that keep failing the pipeline are circuit-broken
 after `maxAttemptsPerTask` (default 4) attempts: moved to `## Blocked` in BACKLOG.md with the last
-findings and never re-scheduled until a human/red team moves them back (P1-014). Builders must end
+findings and never re-scheduled until a human/red team moves them back (P1-014). A global
+"fever" breaker (P2-032) pauses the whole queue in audit mode when >=60% of the last 10
+pipeline cycles fail or 2 tasks get blocked within 30min — it posts a diagnostic summary to
+the log and resumes after external intervention (`touch ~/.opencode-remote/pilot/audit-clear`)
+or 2h without a new failure. Builders must end
 their output with a final EVIDENCE block (real typecheck/test:unit outputs, plus 1440x900 and
 390px screenshot paths for UI tasks) — the gatekeeper re-executes the cited commands and rejects
 missing or fabricated evidence (P2-009). With `slots` > 1
