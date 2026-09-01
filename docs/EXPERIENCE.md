@@ -7,6 +7,6 @@ mais recentes primeiro); o red team noturno deduplica e poda acima de
 60 lições.
 
 ## Lessons
-- When adding rate-based circuit breakers with sliding windows, require the window to be full (e.g., cycles.length >= window size) before evaluating the failure rate, so a partial window can never trip the breaker on a tiny sample (fonte: P2-032)
-- When adding breaker/pause fields to persisted runtime state that resets on date rollover, explicitly carry those fields through the reset and normalize them on load (validate types, backfill legacy files, reject malformed values), or the m… (fonte: P2-032)
-- When counting failure evidence from multiple overlapping sources, record events only at the point of truth (e.g., after the push to main actually succeeds) and dedupe by entity key across sources, so retry cycles and double-recorded artifa… (fonte: P2-032)
+- When building a golden corpus for output matchers (evidence gates, invariant checks), capture structurally different samples of the same command — verbose run, terse run, run with warnings — not just repeated identical runs; a matcher test… (fonte: P3-033)
+- When recording real command output as fixtures, sanitize volatile tokens (timestamps, pids, tmp dirs, durations) but keep warnings, JSON log lines and stack traces verbatim — the matcher must learn to tolerate the noise an honest paste act… (fonte: P3-033)
+- When naming corpus fixtures, embed the provenance (source task/merge id) in the filename (e.g. `2-13f3a96.txt`) so future agents can trace where each sample came from and avoid re-capturing duplicates of the same code state (fonte: P3-033)
