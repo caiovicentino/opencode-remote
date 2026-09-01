@@ -2,12 +2,13 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, statSync
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { IncomingMessage, ServerResponse, Server as HttpServer } from "node:http";
+import type { Socket as NetSocket } from "node:net";
 import { homedir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import JSON5 from "json5";
 import { randomUUID } from "node:crypto";
 import QRCode from "qrcode";
-import WebSocket from "ws";
+import WebSocket, { WebSocketServer } from "ws";
 import webpush from "web-push";
 import {
   b64,
@@ -37,6 +38,7 @@ import { metrics, startMetricsServer, VERSION } from "./metrics.js";
 import { loadRoutines, saveRoutines, type Routine } from "./routines.js";
 import { artifactMime, kindFor, listArtifacts, readArtifact } from "./artifacts.js";
 import { createShutdown, stopAccepting } from "./shutdown.js";
+import { localUpgradeAllowed } from "./localws.js";
 // P2-045: dashboard v2 metrics — aggregations shared with the pilot's eval battery
 import { avgPhaseDurations, burnDown, countFailSteps, type HistoryEntry } from "../../pilot/src/metrics";
 import type { PilotEvent } from "../../pilot/src/events";
@@ -862,6 +864,8 @@ interface ClientSession {
   lastSeq: number; // highest seq accepted from this client (replay guard)
   sendSeq: number; // monotonically increasing per daemon->client frame
   lastSeen: number; // last sealed frame received (stale sweep)
+  /** P1-061: session rides a direct loopback WS instead of the relay. */
+  local?: boolean;
 }
 
 const sessions = new Map<string, ClientSession>();
@@ -1025,7 +1029,7 @@ setInterval(() => {
     if (s.lastSeen < cutoff) {
       sessions.delete(from);
       metrics.gauge("ocr_sessions_active", sessions.size);
-      audit("client.session.expired", { pub: s.pub.slice(0, 16) });
+      audit("client.session.expired", { pub: s.pub.slice(0, 16), local: s.local === true });
     }
   }
 }, 300_000);
@@ -1310,7 +1314,13 @@ async function handleMessage(data: WebSocket.RawData, ws: WebSocket) {
       isControl = true;
       // liveness probe: pong when the session is known, otherwise ask for a
       // fresh handshake (daemon restarted while the client stayed up)
-      const reply = sessions.has(frame.from) ? { type: "pong" } : { type: "reconnect" };
+      const known = sessions.get(frame.from);
+      // P1-061 (reviewer fix): a ping IS liveness — refresh lastSeen so the
+      // 1h stale sweep can never delete a session whose socket is open and
+      // heartbeating (otherwise broadcast() silently stops delivering while
+      // the client stays "paired" and never reconnects).
+      if (known) known.lastSeen = Date.now();
+      const reply = known ? { type: "pong" } : { type: "reconnect" };
       ws.send(
         JSON.stringify({
           room: daemon.room,
@@ -1366,6 +1376,7 @@ async function handleMessage(data: WebSocket.RawData, ws: WebSocket) {
         lastSeq: 0,
         sendSeq: 0,
         lastSeen: Date.now(),
+        local: localSockets.has(ws),
       });
       log("info", "client paired", {
         pub: accepted.clientPub.slice(0, 16),
@@ -1433,12 +1444,77 @@ function connectRelay() {
     if (isShuttingDown()) return; // drain in progress: do not reconnect
     log("warn", "relay connection lost; retrying in 2s");
     metrics.gauge("ocr_relay_connected", 0);
-    metrics.gauge("ocr_sessions_active", 0);
-    sessions.clear();
+    // P1-061: only sessions that actually ride this relay socket go away —
+    // a relay kickstart must never disturb direct local WS sessions.
+    for (const [from, s] of sessions) {
+      if (s.socket === ws) sessions.delete(from);
+    }
+    metrics.gauge("ocr_sessions_active", sessions.size);
     setTimeout(connectRelay, 2000);
   });
 
   ws.on("error", (err) => log("error", "relay error", { error: err.message }));
+}
+
+// ---------------------------------------------------------------------------
+// local direct mode (P1-061): same-machine clients dial ws://127.0.0.1:<port>/ws
+// with the apiToken from the 0600 state file — no relay hop. Frames are the
+// exact same RelayFrame envelopes: E2E handshake, fresh-read allowlist and
+// seq-in-AAD replay guard are untouched, so no plaintext route is added.
+// ---------------------------------------------------------------------------
+
+const localWss = new WebSocketServer({ noServer: true });
+const localSockets = new WeakSet<WebSocket>();
+let localWsCount = 0;
+
+function refreshLocalGauge() {
+  metrics.gauge("ocr_local_ws_sessions", localWsCount);
+}
+
+/** A closed socket's session must not linger in the map: broadcast() skips
+ * non-OPEN sockets silently, but a stale entry would keep answering pings
+ * with "pong" and block the client's fresh handshake. */
+function pruneLocalSessions(ws: WebSocket) {
+  for (const [from, s] of sessions) {
+    if (s.socket === ws) sessions.delete(from);
+  }
+  metrics.gauge("ocr_sessions_active", sessions.size);
+}
+
+function attachLocalWs(server: HttpServer): void {
+  server.on("upgrade", (req, socket, head) => {
+    try {
+      const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      const allowed = localUpgradeAllowed(
+        url.pathname,
+        url.searchParams.get("token"),
+        (socket as NetSocket).remoteAddress,
+        req.headers.origin,
+        apiToken(),
+      );
+      if (!allowed) {
+        // no log with the URL: the token rides in the query string
+        socket.destroy();
+        return;
+      }
+      localWss.handleUpgrade(req, socket, head, (ws) => {
+        localSockets.add(ws);
+        localWsCount++;
+        refreshLocalGauge();
+        ws.on("close", () => {
+          localWsCount--;
+          refreshLocalGauge();
+          pruneLocalSessions(ws);
+        });
+        ws.on("error", () => {});
+        ws.on("message", (data) => void handleMessage(data, ws));
+      });
+    } catch {
+      // unreadable state file / malformed URL: never crash the daemon on an
+      // upgrade — just refuse the socket
+      socket.destroy();
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1901,7 +1977,11 @@ async function main() {
   });
 
   const metricsPort = Number(process.env.OCR_METRICS_PORT);
-  if (metricsPort) apiServer = startMetricsServer(metricsPort, handleApi);
+  if (metricsPort) {
+    apiServer = startMetricsServer(metricsPort, handleApi);
+    // P1-061: direct loopback WS for same-machine clients (desktop shell).
+    attachLocalWs(apiServer);
+  }
 
   // boot healthcheck: fail loudly early if opencode is unreachable
   try {

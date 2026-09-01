@@ -25,7 +25,7 @@
     "test:desktop-render": "tsx scripts/desktop-render.test.ts",
     "test:desktop-flow": "tsx scripts/desktop-flow.test.ts",
     "test:desktop-crash": "tsx scripts/desktop-crash.test.ts",
-    "test:e2e": "tsx scripts/reconnect.test.ts && tsx scripts/chunk.test.ts"
+    "test:e2e": "tsx scripts/localws.test.ts && tsx scripts/reconnect.test.ts && tsx scripts/chunk.test.ts"
   },
   "engines": {
     "node": ">=20"

@@ -163,6 +163,15 @@ execução. A tela manual de QR/colar continua disponível como fallback
 (troca de máquinas → add machine), por exemplo quando um daemon já rodando foi
 reaproveitado e nenhum URI foi capturado.
 
+**Conexão local direta (P1-061)**: na máquina host, o app desktop dispensa o
+relay — ele fala direto com o WebSocket local do daemon
+(`ws://127.0.0.1:8792/ws`, autenticado com o token local do arquivo de estado
+0600). Kickstarts de deploy no relay não interrompem mais a sessão aberta e,
+após qualquer reconexão, a conversa aberta é recarregada sozinha — mensagens
+produzidas na lacuna aparecem sem reenvio. Acesso remoto (celular, fora de
+casa) continua via relay; o fio em uso aparece em Config → About ("Conexão:
+direta (local) / via relay").
+
 **QR de primeira execução pro celular**: enquanto nenhum celular estiver
 pareado, a janela do desktop mostra um overlay com o QR de pareamento
 (renderizado pelo processo main a partir do `GET /__ocr/pairing-uri` do

@@ -67,6 +67,8 @@ interface DesktopBridge {
   onDeepLink?: (cb: (uri: string) => void) => () => void;
   /** P1-053: one-click recovery from the daemon-down banner. */
   reconnectDaemon?: () => Promise<boolean>;
+  /** P1-061: loopback WS credentials for the direct local transport. */
+  getLocalLink?: () => Promise<{ port: number; token: string } | null>;
 }
 
 function desktopBridge(): DesktopBridge | null {
@@ -211,7 +213,9 @@ export default function App() {
       if (!(await gateVerify())) {
         throw new Error("Biometric unlock failed");
       }
-      const client = await OcrClient.connect(pairing);
+      const client = await OcrClient.connect(pairing, {
+        getLocalLink: desktopBridge()?.getLocalLink,
+      });
       client.onStatus = (s) => setConnStatus(s);
       // connect() resolves once already paired — the "paired" status event
       // fired before this handler existed, so sync the current state (P2-055:
@@ -568,7 +572,9 @@ export default function App() {
       onBack={goBack}
     />
   );
-  const settingsNode = <SettingsView request={request} onBack={goBack} />;
+  const settingsNode = (
+    <SettingsView request={request} onBack={goBack} transport={clientRef.current?.transport} />
+  );
   const filesNode = <FilesView request={request} onBack={goBack} />;
   const artifactsNode = <ArtifactsView request={request} onBack={goBack} />;
   const browseNode = <BrowserView browse={browseFn} onBack={goBack} />;

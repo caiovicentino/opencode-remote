@@ -10,6 +10,8 @@ interface Props {
     query?: Record<string, string>,
   ) => Promise<{ status: number; body: unknown }>;
   onBack: () => void;
+  /** P1-061: current wire — "local" loopback WS or the relay (PWA default). */
+  transport?: "local" | "relay";
 }
 
 interface Device {
@@ -76,7 +78,7 @@ export function applyTheme() {
   document.documentElement.style.fontSize = font === "small" ? "14px" : font === "large" ? "19px" : "16.5px";
 }
 
-export default function SettingsView({ request, onBack }: Props) {
+export default function SettingsView({ request, onBack, transport }: Props) {
   const [devices, setDevices] = useState<Device[]>([]);
   const [name, setName] = useState("");
   const [notify, setNotify] = useState({ permission: true, idle: true });
@@ -199,6 +201,9 @@ export default function SettingsView({ request, onBack }: Props) {
                 {t("versionMismatch")}
               </span>
             )}
+          </p>
+          <p className="muted" style={{ margin: "2px 0 0" }}>
+            {transport === "local" ? t("connLocal") : t("connRelay")}
           </p>
         </div>
 

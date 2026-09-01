@@ -3,7 +3,27 @@
 ```
 [PWA (phone)] ⇄ [Relay] ⇄ [Daemon] ⇄ [opencode serve]
    passkey+QR     blind      E2E         localhost
+
+[Desktop shell (same Mac)] ⇄ ws://127.0.0.1:8792/ws  (direct, no relay)
 ```
+
+## Local direct mode (P1-061)
+
+When the desktop shell and the daemon share a machine, the app dials
+`ws://127.0.0.1:8792/ws?token=…` directly instead of routing every frame
+through the relay. The daemon serves this WS on the same loopback server as
+its API/metrics port and gates it on the `apiToken` from the 0600 state file,
+a `remoteAddress` loopback re-check and a loopback-Origin allowlist (absent,
+`file://`/`null` or loopback hosts — arbitrary web pages are rejected).
+Frames are the exact same sealed `RelayFrame` envelopes used over the relay:
+handshake, allowlist and replay guard are identical, so no plaintext route
+exists. Deploy kickstarts of the relay no longer touch a local session, and a
+daemon kickstart only costs a quick redial: on any reconnect the client
+refetches the open conversation (stream resync), so messages produced during
+the gap appear without a resend. Transport selection is local-first and
+sticky, failing over to the relay after 2 consecutive local failures (PWA and
+remote phones always use the relay). The current transport is visible in
+Settings → About ("Connection: direct (local) / via relay").
 
 ## Components
 

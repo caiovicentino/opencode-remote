@@ -122,6 +122,8 @@ const dict = {
     voiceAutoSend: "Auto-send after transcription",
     versionMismatch:
       " — version mismatch: refresh the PWA (pull-to-refresh) or update the daemon",
+    connLocal: "Connection: direct (local)",
+    connRelay: "Connection: via relay",
     // tab bar
     tabSessions: "Chats",
     tabFiles: "Files",
@@ -221,6 +223,8 @@ const dict = {
     voiceAutoSend: "Enviar sozinho após transcrição",
     versionMismatch:
       " — versões diferentes: atualize o PWA (puxe pra recarregar) ou o daemon",
+    connLocal: "Conexão: direta (local)",
+    connRelay: "Conexão: via relay",
     // tab bar
     tabSessions: "Chats",
     tabFiles: "Arquivos",
