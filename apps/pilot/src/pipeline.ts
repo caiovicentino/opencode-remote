@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { exec, runAgent } from "./runner";
@@ -51,6 +51,10 @@ Rules:
 - ${CONSTITUTION}
 - Judge only this diff against the task and the constitution. Do not rewrite the code.
 - Be strict but concrete: every finding must reference a file and a problem.
+- Cite or it didn't happen (P2-015): every finding bullet must cite a repo-relative
+  \`path/file.ext:LINE\` (line matching the workspace files) or quote a literal snippet
+  from the diff. Findings without a verifiable citation are mechanically dropped as
+  hallucinated; a reviewer whose findings ALL fail verification counts as APPROVE.
 ${
   uiShot
     ? `- UI evidence (P2-011): the most recent available screenshot for this task is "${uiShot}". It may predate this diff (captured after an earlier deploy) — treat it as a regression baseline, not proof of this diff. Read it (it is an image), say what it shows, and state explicitly whether the diff could plausibly regress it. You can take a fresh screenshot of your local build: \`node tools/browse.mjs shot <path>.png\`.`
@@ -278,8 +282,30 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
         data: { task: t.id, round, secOk: /VERDICT:\s*APPROVE/i.test(sec.output), qualOk: /VERDICT:\s*APPROVE/i.test(qual.output) },
       }),
     );
-    const secOk = /VERDICT:\s*APPROVE/i.test(sec.output);
-    const qualOk = /VERDICT:\s*APPROVE/i.test(qual.output);
+    const secParsed = parseFindings(sec.output);
+    const qualParsed = parseFindings(qual.output);
+    // P2-015: reviewers are LLMs — findings citing files/lines that don't exist
+    // (or snippets absent from the diff) are mechanically dropped. A verdict
+    // whose findings all fail verification degenerates to an effective APPROVE.
+    const secVerified = verifyFindings(secParsed, ws, diff);
+    const qualVerified = verifyFindings(qualParsed, ws, diff);
+    for (const d of secVerified.dropped) logHallucination(t.id, "security", d);
+    for (const d of qualVerified.dropped) logHallucination(t.id, "quality", d);
+    const approve = (o: string) => /VERDICT:\s*APPROVE/i.test(o);
+    const allDropped = (o: string, v: { kept: string[]; dropped: string[] }) =>
+      /VERDICT:\s*REQUEST_CHANGES/i.test(o) && v.dropped.length > 0 && v.kept.length === 0;
+    const secOk = approve(sec.output) || allDropped(sec.output, secVerified);
+    const qualOk = approve(qual.output) || allDropped(qual.output, qualVerified);
+    if (allDropped(sec.output, secVerified) || allDropped(qual.output, qualVerified)) {
+      console.log(
+        JSON.stringify({
+          ts: nowLocalISO(),
+          level: "info",
+          msg: "review findings all unverifiable → effective approve",
+          data: { task: t.id, round },
+        }),
+      );
+    }
     emit("phase", { task: t.id, phase: "reviewers-done", ok: secOk && qualOk });
     if (secOk && qualOk) {
       emit("phase", { task: t.id, phase: "gatekeeper" });
@@ -297,10 +323,8 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
       }
       if (!merged) return { ok: false, detail: "gatekeeper rejected: eval battery or invariants failed" };
     } else {
-      findings = [
-        ...(!secOk ? extractFindings(sec.output) : []),
-        ...(!qualOk ? extractFindings(qual.output) : []),
-      ].join("\n");
+      // only verified findings reach the builder prompt (P2-015)
+      findings = [...(secOk ? [] : secVerified.kept), ...(qualOk ? [] : qualVerified.kept)].join("\n");
       if (round === cfg.maxReviewRounds) {
         return { ok: false, detail: `max review rounds reached — findings: ${findings.slice(0, 400)}` };
       }
@@ -309,13 +333,86 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
   return { ok: true, detail: `task ${t.id} merged`, sha: headSha(ws), touchedUi };
 }
 
-function extractFindings(output: string): string[] {
+/** P2-015: findings are the bullet lines after (or near) the verdict marker. */
+export function parseFindings(output: string): string[] {
   const idx = output.search(/VERDICT:\s*REQUEST_CHANGES/i);
   const tail = idx >= 0 ? output.slice(idx) : output.slice(-1500);
   return tail
     .split("\n")
     .filter((l) => /^\s*[-*]/.test(l))
     .slice(0, 12);
+}
+
+export interface VerifiedFindings {
+  kept: string[];
+  dropped: string[];
+}
+
+/**
+ * P2-015 anti-hallucination filter. A finding is resolvable when:
+ *  - it cites only repo-relative files that exist in `ws` (every file citation
+ *    must resolve; a cited line, when present, must be non-empty); or
+ *  - it cites no file but quotes a literal snippet (≥6 chars) that appears
+ *    verbatim in the reviewed diff.
+ * Pure in spirit — fs reads only touch the workspace, so the eval battery can
+ * pin this against fake findings (one real path, one nonexistent).
+ */
+export function verifyFindings(findings: string[], ws: string, diff: string): VerifiedFindings {
+  const kept: string[] = [];
+  const dropped: string[] = [];
+  for (const f of findings) {
+    if (findingResolves(f, ws, diff)) kept.push(f);
+    else dropped.push(f);
+  }
+  return { kept, dropped };
+}
+
+interface FileCite {
+  path: string;
+  line?: number;
+}
+
+/** Known source extensions keep prose words ("e.g", "v1.2") out of citations. */
+const KNOWN_EXT = "ts|tsx|js|jsx|mjs|cjs|json|md|css|html?|sh|py|rb|go|rs|java|ya?ml|toml|sql|txt|xml|svg";
+const FILE_CITE_RE = new RegExp(`(\\b[\\w@][\\w@./+-]*\\.(?:${KNOWN_EXT}))(?::(\\d+))?`, "g");
+const SNIPPET_RES = [/"([^"\n]{6,})"/g, /`([^`\n]{6,})`/g];
+
+function findingResolves(finding: string, ws: string, diff: string): boolean {
+  // URLs are not file citations; they would only produce phantom paths
+  const cleaned = finding.replace(/https?:\/\/\S+/g, " ");
+  const fileCites: FileCite[] = [...cleaned.matchAll(FILE_CITE_RE)].map((m) => ({
+    path: m[1] ?? "", // group 1 always matches when the regex matched
+    line: m[2] !== undefined ? Number(m[2]) : undefined,
+  }));
+  if (fileCites.length > 0) return fileCites.every((c) => pathResolves(ws, c.path, c.line));
+  return SNIPPET_RES.some((re) => [...cleaned.matchAll(re)].some((m) => m[1] !== undefined && diff.includes(m[1])));
+}
+
+function pathResolves(ws: string, rawPath: string, line: number | undefined): boolean {
+  // unified-diff prefixes + traversal attempts are never valid citations
+  const rel = rawPath.replace(/^(?:\.\/)+/, "").replace(/^(?:a|b)\//, "");
+  if (rel.includes("..")) return false;
+  let lines: string[];
+  try {
+    if (!existsSync(join(ws, rel))) return false;
+    lines = readFileSync(join(ws, rel), "utf8").split("\n");
+  } catch {
+    return false;
+  }
+  if (line === undefined) return true;
+  const l = lines[line - 1];
+  return l !== undefined && l.trim().length > 0;
+}
+
+function logHallucination(task: string, reviewer: string, finding: string) {
+  console.log(
+    JSON.stringify({
+      ts: nowLocalISO(),
+      level: "warn",
+      msg: "finding hallucinated, dropped",
+      data: { task, reviewer, finding: finding.trim().slice(0, 200) },
+    }),
+  );
 }
 
 /** Deterministic gate: typecheck, build, test battery, invariants. No judgement. */
