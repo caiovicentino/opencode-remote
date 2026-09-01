@@ -182,6 +182,13 @@ pairing overlay. The context menu also has a **Start at login** checkbox
 (macOS/Windows) backed by `app.setLoginItemSettings`, so the toggle persists
 across app restarts and OS reboots.
 
+**Close-to-tray keeps the daemon alive**: closing the window (red button,
+`Alt+F4`) no longer quits the app — on every platform the window hides and the
+daemon sidecar keeps running, so the phone never loses its connection just
+because the window went away. Reopen the window from the tray
+(**Open OpenCode Remote**) or by launching the app again; **Quit** in the tray
+menu (or `Cmd+Q` on macOS) performs a real quit with full daemon cleanup.
+
 **The window remembers its size and position**: move/resize the window, quit
 and reopen — the bounds are restored. They live in
 `userData/window-state.json`, written on close, and are validated against the

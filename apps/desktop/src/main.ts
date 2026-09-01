@@ -25,6 +25,10 @@ const TRAY_ICON_PNG =
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let daemonStopped = false;
+// P2-021: set by every real quit path (tray Quit, before-quit, will-quit) so
+// the window's close handler can tell "user closed the window" apart from
+// "app is shutting down" — close-to-tray on every platform.
+let quitting = false;
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -136,13 +140,21 @@ async function onReady(): Promise<void> {
     else showMainWindow();
   });
   app.on("window-all-closed", () => {
+    // P2-021: with close-to-tray the window is hidden on close, so this only
+    // fires when windows are really gone (win.destroy, crash cleanup).
     // Keep the tray alive on macOS (convention); quit elsewhere.
     if (process.platform !== "darwin") app.quit();
+  });
+  app.on("before-quit", () => {
+    // Every app.quit() path (tray Quit, menu role, window-all-closed) is a
+    // real quit: the close handler must let the window die instead of hiding.
+    quitting = true;
   });
   app.on("will-quit", (event) => {
     // Encerra o daemon que subimos antes de sair (idempotente).
     if (daemonStopped) return;
     event.preventDefault();
+    quitting = true;
     if (pairingTimer) clearInterval(pairingTimer);
     void stopDaemonSidecar().then(() => {
       daemonStopped = true;
@@ -273,11 +285,22 @@ function createWindow(): BrowserWindow {
     },
   });
   win.once("ready-to-show", () => win.show());
+  // P2-021: track the shell window so showMainWindow() re-shows the hidden
+  // one after a close-to-tray instead of spawning duplicates.
+  mainWindow = win;
   // P3-008: persist bounds on "close" — it fires both on quit (app.quit()
-  // closes every window) and on a macOS red-button close (window-all-closed
-  // doesn't quit there). Failures are log-only and must never block quitting.
-  win.on("close", () => {
+  // closes every window) and when a previously hidden window is destroyed.
+  // Failures are log-only and must never block quitting.
+  // P2-021 close-to-tray: a plain close (red button, Alt+F4) hides the window
+  // instead of destroying it, keeping the daemon sidecar and the tray alive.
+  // A real quit (tray Quit, menu Quit — flagged via before-quit/will-quit)
+  // still closes for real, so the sidecar cleanup in will-quit keeps running.
+  win.on("close", (event) => {
     saveWindowBounds(stateFile, win.getBounds());
+    if (!quitting) {
+      event.preventDefault();
+      win.hide();
+    }
   });
   win.on("closed", () => {
     if (mainWindow === win) mainWindow = null;
@@ -389,6 +412,9 @@ function buildTray(): void {
     {
       label: "Quit",
       click: () => {
+        // P2-021: real quit — flag before app.quit() so the close handler
+        // doesn't hide; will-quit then stops the daemon sidecar with cleanup.
+        quitting = true;
         tray = null;
         app.quit();
       },
