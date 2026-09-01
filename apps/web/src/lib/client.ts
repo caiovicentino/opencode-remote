@@ -713,6 +713,17 @@ export class OcrClient {
         getLocalLink,
       );
       client.transport = "local";
+      // send the handshake on open — without this the local dial sits silent,
+      // hits the 3s timeout and every connect falls back to the relay
+      ws.onopen = () => {
+        ws.send(
+          JSON.stringify({
+            room: pairing.room,
+            from,
+            payload: b64(new TextEncoder().encode(JSON.stringify({ type: "hello", hello }))),
+          }),
+        );
+      };
       const fail = (err: Error) => {
         clearTimeout(timeout);
         client.intentionalClose = true; // this socket's auto-reconnect is not wanted

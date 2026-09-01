@@ -5,6 +5,8 @@
  *   2. correct token → full E2E hello→confirm handshake over the local WS
  *   3. one sealed op round-trips against the real daemon
  *   4. the ping control frame answers pong on a live session
+ *   5. OcrClient.connect transport selection with a stubbed getLocalLink:
+ *      working link → "local", unreachable link → relay fallback, null → relay
  * Run: npx tsx scripts/localws.test.ts
  */
 import { spawn, type ChildProcess } from "node:child_process";
@@ -24,9 +26,9 @@ import {
 } from "@ocr/protocol";
 
 setTimeout(() => {
-  console.error("localws test timed out (global 30s)");
+  console.error("localws test timed out (global 45s)");
   process.exit(1);
-}, 30_000).unref();
+}, 45_000).unref();
 
 // ask the kernel for a free port (P2-055 lesson: never hardcode test ports)
 const PORT = await new Promise<number>((resolve, reject) => {
@@ -204,6 +206,125 @@ ws.send(
 }
 
 ws.close();
+
+// --- 5. OcrClient.connect transport selection (stubbed getLocalLink) --------
+// Browser globals the client module expects; shimmed with Node equivalents so
+// the real OcrClient (unmodified) runs here. The dynamic import keeps the
+// shims ahead of the first module evaluation.
+(globalThis as Record<string, unknown>).window = {
+  setTimeout,
+  setInterval,
+  clearTimeout,
+  clearInterval,
+};
+interface IdbRequestShim {
+  result?: unknown;
+  onupgradeneeded?: () => void;
+  onsuccess?: () => void;
+  onerror?: () => void;
+}
+// Pre-seeded with the identity from phase 2 — that handshake already
+// bootstrapped the daemon allowlist with this public key, so the real client
+// below is an authorized peer without touching the 0600 state file.
+const idbStore = new Map<string, unknown>([
+  ["identity", { spki: identity.publicKey, key: identity.privateKey }],
+]);
+(globalThis as Record<string, unknown>).indexedDB = {
+  open(): IdbRequestShim {
+    const req: IdbRequestShim = {
+      result: {
+        createObjectStore: () => {},
+        transaction: () => ({
+          objectStore() {
+            return {
+              get(key: string): IdbRequestShim {
+                const req: IdbRequestShim = {};
+                queueMicrotask(() => {
+                  req.result = idbStore.get(key);
+                  req.onsuccess?.();
+                });
+                return req;
+              },
+              put(key: string, value: unknown): IdbRequestShim {
+                const req: IdbRequestShim = {};
+                queueMicrotask(() => {
+                  idbStore.set(key, value);
+                  req.onsuccess?.();
+                });
+                return req;
+              },
+            };
+          },
+        }),
+      },
+    };
+    queueMicrotask(() => {
+      req.onupgradeneeded?.();
+      req.onsuccess?.();
+    });
+    return req;
+  },
+};
+(globalThis as Record<string, unknown>).WebSocket = WebSocket;
+
+const { OcrClient } = await import("../apps/web/src/lib/client");
+
+// A guaranteed-closed port for the "unreachable local daemon" scenario.
+const CLOSED_PORT = await new Promise<number>((resolve, reject) => {
+  const srv = createServer();
+  srv.listen(0, "127.0.0.1", () => {
+    const { port } = srv.address() as AddressInfo;
+    srv.close(() => resolve(port));
+  });
+  srv.on("error", reject);
+});
+
+// The daemon's local /ws speaks the exact same RelayFrame protocol as the
+// relay, so pointing `pairing.relay` at it exercises the real relay-fallback
+// code path without spawning a second process (the relay hop itself is
+// covered by scripts/reconnect.test.ts).
+const localUrl = `ws://127.0.0.1:${PORT}/ws?token=${encodeURIComponent(token)}`;
+const pairing = {
+  v: 2 as const,
+  relay: localUrl,
+  room: (JSON.parse(readFileSync(stateFile, "utf8")) as { room: string }).room,
+  k: (JSON.parse(readFileSync(stateFile, "utf8")) as { ecdhPub: string }).ecdhPub,
+  name: "localws-client-test",
+};
+
+// 5a. working link → transport "local", sealed op round-trips via request()
+{
+  const client = await OcrClient.connect(pairing, {
+    getLocalLink: async () => ({ port: PORT, token }),
+  });
+  if (client.status !== "paired") throw new Error("client should be paired over local WS");
+  if (client.transport !== "local") throw new Error(`expected transport local, got ${client.transport}`);
+  const res = await client.request("POST", "/__ocr/transcribe/chunk", { id: "c1", idx: 0, data: "" });
+  if (res.status !== 200) throw new Error(`op over OcrClient local transport failed: ${res.status}`);
+  client.close();
+  console.log("OcrClient.connect local-first (transport=local) + sealed op: OK");
+}
+
+// 5b. unreachable link → falls back to the relay of the pairing URI
+{
+  const client = await OcrClient.connect(pairing, {
+    getLocalLink: async () => ({ port: CLOSED_PORT, token }),
+  });
+  if (client.status !== "paired") throw new Error("client should be paired after local failure");
+  if (client.transport !== "relay") throw new Error(`expected transport relay, got ${client.transport}`);
+  client.close();
+  console.log("OcrClient.connect unreachable local → relay fallback: OK");
+}
+
+// 5c. null link (PWA / no bridge) → straight to relay, zero behavior change
+{
+  const client = await OcrClient.connect(pairing, { getLocalLink: async () => null });
+  if (client.status !== "paired") throw new Error("client should be paired over relay");
+  if (client.transport !== "relay") throw new Error(`expected transport relay, got ${client.transport}`);
+  client.close();
+  console.log("OcrClient.connect null link → relay: OK");
+}
+
 daemon.kill("SIGTERM");
 console.log("LOCALWS TEST PASSED");
 process.exit(0);
