@@ -220,7 +220,7 @@ try {
   if (pilotRepo) rmSync(pilotRepo, { recursive: true, force: true });
 }
 
-// --- desktop render smoke: console-message arg normalization (P0-002) --------
+// --- desktop render smoke: driver helpers required as a CJS library ----------
 const requireCjs = createRequire(import.meta.url);
 const { readConsoleMessage } = requireCjs("../scripts/desktop-render-driver.cjs") as {
   readConsoleMessage: (...args: unknown[]) => {

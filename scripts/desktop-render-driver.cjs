@@ -74,8 +74,8 @@ function runDriver() {
 
   function finish(result) {
     // Verdict: page loaded, console capture verified by the canary, and
-    // nothing but known noise in the console. (For early/timeout finishes
-    // loadOk/canarySeen stay false → not ok.)
+    // zero renderer console errors — any console error fails (P3-005).
+    // (For early/timeout finishes loadOk/canarySeen stay false → not ok.)
     result.ok =
       result.loadOk === true &&
       result.canarySeen === true &&
