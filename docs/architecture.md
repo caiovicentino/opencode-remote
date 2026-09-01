@@ -16,7 +16,10 @@ the handshake proves both sides possess the matching secret.
 ### apps/relay
 A blind router. Forwards opaque `RelayFrame` envelopes between sockets that
 share a room id. Deliberately cannot decrypt, forge or reorder payloads.
-Resource limits: 1MB/frame, 1000 sockets, 10 peers/room, and a per-connection
+Resource limits: 1MB/frame, 1000 sockets, 10 peers/room, a per-IP
+live-connection cap (`RELAY_MAX_PER_IP`, default 20, 0 disables — the
+surplus connection is closed with 1013 "too many connections" and counted
+in `rejects` on `/metrics`), and a per-connection
 token bucket on message frames (600 msgs/min sustained, burst 1000 —
 `RELAY_RATE_PER_MIN` / `RELAY_RATE_BURST`, 0 disables). Defaults are sized to
 pass the daemon's worst-case chunked transfer; a connection over budget is
@@ -33,6 +36,9 @@ answering `{ok, version, uptimeS, rooms}` (counters only, never room ids) for
 load balancers in the hosted stage; `/metrics` stays loopback-only.
 Optional TLS (`wss://`)
 or termination via Caddy.
+Note the per-IP cap reads `req.socket.remoteAddress` — if you front the relay
+with a TLS-terminating proxy every connection shares the proxy IP, so raise
+`RELAY_MAX_PER_IP` (or route TCP passthrough) accordingly.
 
 ### apps/daemon
 Runs next to `opencode serve`. Responsibilities:
