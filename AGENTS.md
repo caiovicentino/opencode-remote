@@ -11,8 +11,12 @@ deploys are staged with automatic rollback. P0/P1 tasks first go through a PLANN
 read-only agent writes `specs/<ID>.md` on the task branch (problem, approach, touched files,
 edge cases, acceptance criteria, out of scope) and the builder + quality reviewer are held to
 it; P2+ tasks go straight to the builder (P2-008). Tasks that keep failing the pipeline are circuit-broken
-after `maxAttemptsPerTask` (default 4) attempts: moved to `## Blocked` in BACKLOG.md with the last
-findings and never re-scheduled until a human/red team moves them back (P1-014). A global
+after `maxAttemptsPerTask` (default 4; a `(size: L)` task has its own cap of 6) attempts: moved to `## Blocked` in BACKLOG.md with the last
+findings and never re-scheduled until a human/red team moves them back (P1-014). A task line may also carry a
+`(size: L)` tag (P1-060): long-horizon epics scale budgets to 6 rounds/90min/6 attempts, keep the `pilot/<ID>`
+branch across attempts (the builder continues the preserved history), and from round 2 on are reviewed on the
+incremental diff since the round checkpoint (`~/.opencode-remote/pilot/checkpoints/<ID>.json`) instead of the
+truncated whole-branch diff. A global
 "fever" breaker (P2-032) pauses the whole queue in audit mode when >=60% of the last 10
 pipeline cycles fail or 2 tasks get blocked within 30min — it posts a diagnostic summary to
 the log and resumes after external intervention (`touch ~/.opencode-remote/pilot/audit-clear`)

@@ -7,7 +7,7 @@ import { nowLocalISO } from "./log";
 import { notifySupervisor } from "./notify";
 import { runResearcher } from "./researcher";
 import { runExplorer } from "./explorer";
-import { runPipeline, TASK_ID_RE, writeSandboxConfig, lessonsBlock } from "./pipeline";
+import { runPipeline, TASK_ID_RE, writeSandboxConfig, lessonsBlock, budgetsFor, isOverCap } from "./pipeline";
 import { deploy } from "./deploy";
 import { digest } from "./push";
 import { addTask, blockTask, nextId, parseBacklog, type Task } from "./backlog";
@@ -199,11 +199,11 @@ async function main() {
     if (free.length > 0) {
       const idle = slotCfg.get(free[0]!)!;
       let blockedAny = false;
-      for (const t of queue.filter((t) => overCap(cfg, t))) {
+      for (const t of queue.filter((t) => overCap(t))) {
         // P2-031: findings and tail must not repeat the same string in the
         // failure lesson — the step name summarizes, the tail carries detail
         const gate = lastGateFail(t.id);
-        blockAndPush(idle, state, t, state.taskAttempts[t.id] ?? cfg.maxAttemptsPerTask, gate?.step ? `kept failing at step "${gate.step}"` : "max attempts reached", false);
+        blockAndPush(idle, state, t, state.taskAttempts[t.id] ?? budgetsFor(t.size).attempts, gate?.step ? `kept failing at step "${gate.step}"` : "max attempts reached", false);
         blockedAny = true;
       }
       if (blockedAny) {
@@ -216,7 +216,7 @@ async function main() {
     const busyAreas = new Set([...running.values()].map((r) => areaKey(r.task)));
     // budget-aware batch: freeSlots AND the remaining daily task budget
     const remainingBudget = cfg.maxTasksPerDay - state.tasks - running.size;
-    const picked = pickBatch(queue.filter((t) => !overCap(cfg, t)), once ? 1 : free.length, busyAreas, remainingBudget);
+    const picked = pickBatch(queue.filter((t) => !overCap(t)), once ? 1 : free.length, busyAreas, remainingBudget);
     for (const task of picked) {
       const slot = free.find((s) => !running.has(s))!;
       const wscfg = slotCfg.get(slot)!;
@@ -236,15 +236,25 @@ async function main() {
 
 /** One pipeline run in a slot workspace, with all result bookkeeping. */
 async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotConfig): Promise<void> {
+  // P1-060: budgets scale with the task's size tag — clone the slot config
+  // with the effective rounds/timeout/attempts so runPipeline and the
+  // circuit breaker both honor the long-horizon allowance for size L.
+  const budgets = budgetsFor(task.size);
+  const taskCfg: PilotConfig = {
+    ...wscfg,
+    maxReviewRounds: budgets.rounds,
+    taskTimeoutMin: budgets.timeoutMin,
+    maxAttemptsPerTask: budgets.attempts,
+  };
   try {
-    const result = await runPipeline(wscfg, task, state);
+    const result = await runPipeline(taskCfg, task, state);
     state.tasks++;
     recordCycle(state, result.ok); // P2-032 fever window
     let blockedAttempts: number | null = null;
     if (result.ok) {
       delete state.taskAttempts[task.id]; // gate passed — breaker reset
     } else {
-      blockedAttempts = tripCircuitBreaker(wscfg, state, task, result.detail);
+      blockedAttempts = tripCircuitBreaker(taskCfg, state, task, result.detail);
     }
     saveState(state);
     log("info", "pipeline result", { task: task.id, ok: result.ok, slot, detail: result.detail.slice(0, 200) });
@@ -272,7 +282,7 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
     state.failures++;
     recordCycle(state, false); // P2-032: a crashed pipeline is fever evidence too
     const detail = String(err).slice(0, 300);
-    tripCircuitBreaker(wscfg, state, task, `pipeline crashed: ${detail}`);
+    tripCircuitBreaker(taskCfg, state, task, `pipeline crashed: ${detail}`);
     saveState(state);
     log("error", "pipeline crashed", { task: task.id, slot, err: detail });
     await sleep(30_000);
@@ -319,8 +329,8 @@ function launchDeploy(cfg: PilotConfig, task: Task, sha: string, touchedUi: bool
     });
 }
 
-function overCap(cfg: PilotConfig, task: Task): boolean {
-  return TASK_ID_RE.test(task.id) && (state.taskAttempts[task.id] ?? 0) >= cfg.maxAttemptsPerTask;
+function overCap(task: Task): boolean {
+  return TASK_ID_RE.test(task.id) && isOverCap(state.taskAttempts[task.id], task.size);
 }
 
 /** One-shot validation mode used by the eval battery. */
@@ -431,6 +441,12 @@ Then draft 2-3 NEW tasks that are:
 - aligned with the mission: at most 1 mobile-UX task per batch; prefer desktop-app,
   packaging, onboarding or robustness tasks
 - NOT duplicates of anything in ## Ready or ## Done
+- (P1-060) exception to "small": at most ONE task per batch may be a genuine
+  long-horizon epic tagged (size: L) — indivisible work that would lose coherence
+  if sliced (e.g. a whole-subsystem v2). Its spec line must list the execution
+  milestones in order (M1, M2, ...) and the tag goes BEFORE the area tag:
+  "... (size: L) (area: desktop)". Never tag routine work (size: L) just because
+  it looks big — sliced S tasks are still cheaper and safer.
 
 Append them to BACKLOG.md under ## Ready using EXACTLY the existing line format:
 - [ ] (ID) [Pn] Title — spec: what to do, where, and acceptance criteria (area: <area>)
