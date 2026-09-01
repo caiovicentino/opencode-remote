@@ -7,6 +7,6 @@ mais recentes primeiro); o red team noturno deduplica e poda acima de
 60 lições.
 
 ## Lessons
-- When a dashboard counter must be honest (match `git log --since=00:00`), derive it from a persistent daily counter in state.json that rolls at midnight with the other budgets — never count occurrences in a truncated events tail (slice(-200… (fonte: P2-045)
-- When adding a field to state.json, backfill it defensively in loadState (typeof/finite guard) and zero it in the date-rollover reset branch, so legacy state files predating the field never surface undefined/NaN. (fonte: P2-045)
-- When a widget depends on an optional artifact (e.g. history.jsonl) or a structured signal, implement the aggregation as pure functions over the records in a shared module testable by the eval battery, have the API return `exists:false` for… (fonte: P2-045)
+- When a local test harness exposes a control socket or log file, do create every session artifact (socket, token file, log) inside a fresh 0700 session-owned dir and chmod the socket 0600 after bind — predictable paths in world-writable /tm… (fonte: P1-051)
+- When a gate's verdict is "CLI exited 0" against a well-named socket or endpoint, do use a unique per-run session name and require the server to prove identity (answer = sha256(token:nonce) over a per-request nonce) — an impostor binding th… (fonte: P1-051)
+- When hermetic tests need deterministic app behavior, do add explicit test-only env escape hatches (like OCR_DAEMON_FORCE_DOWN or OCR_USER_DATA_DIR) applied at the earliest possible point of the main process before anything reads the affect… (fonte: P1-051)
