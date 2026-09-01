@@ -28,6 +28,7 @@ BACKLOG.md ──> BUILDER ────┬──> SECURITY REVIEWER ─┬──
 
 | Role | O que faz | Timeout |
 |---|---|---|
+| `planner` | para tasks **P0/P1**: agent read-only lê o código e escreve `specs/<ID>.md` na branch antes do builder | 10 min |
 | `builder` | implementa a task em branch `pilot/<id>`, commita | 45 min |
 | `security reviewer` | foco: crypto, auth, injection, secrets | 20 min |
 | `quality reviewer` | foco: regressão, UX, docs, testes | 20 min |
@@ -182,6 +183,24 @@ qual área a task roda no scheduler paralelo; task sem tag roda serial.
 
 O pilot pega a primeira task `Ready`, em ordem. Red team insere `(RT-###)` P0 no topo.
 
+
+## Spec-before-build (P2-008)
+
+Tasks de prioridade **P0/P1** ganham uma fase **PLANNER** antes do builder: um
+agent **read-only** lê o código no clone e escreve `specs/<ID>.md` na branch da
+task, com seções obrigatórias `## Problem`, `## Approach`, `## Touched files`,
+`## Edge cases`, `## Acceptance criteria` e `## Out of scope`. O runner valida
+deterministicamente as seções e commita o arquivo na branch (o agent nunca
+commita); se o spec válido não existir após 2 tentativas, o pipeline falha — o
+circuit breaker (P1-014) cuida do retry. Tasks **P2+ seguem direto pro builder**,
+sem spec.
+
+- O `builderPrompt` referência o spec: "read it FIRST ... do not delete or
+  rewrite the spec" — desvios precisam ser justificados no commit.
+- O reviewer de **quality** ganha o critério explícito "does the diff fulfill
+  `specs/<ID>.md`?" — desvio de abordagem/arquivos/critérios de aceite é finding.
+- Se a task já está mergeada em `origin/main`, o planner é pulado (senão o
+  commit do spec sozinho mascararia o self-heal de diff vazio).
 
 ## Round efficiency + async deploy (31/08, v1.1)
 

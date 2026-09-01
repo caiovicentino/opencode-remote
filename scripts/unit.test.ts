@@ -11,7 +11,16 @@ import { sessionTitleOf } from "../apps/web/src/lib/title";
 import { permissionPreview } from "../apps/web/src/lib/permission";
 import { applySessionFilters } from "../apps/web/src/lib/sessionFilter";
 import { taskMergedIn } from "../apps/pilot/src/pipeline";
-import { builderPrompt, lessonsBlock, parseScribeLessons } from "../apps/pilot/src/pipeline";
+import {
+  builderPrompt,
+  lessonsBlock,
+  needsPlanner,
+  plannerPrompt,
+  reviewerPrompt,
+  specPathFor,
+  parseScribeLessons,
+  validateSpec,
+} from "../apps/pilot/src/pipeline";
 import {
   appendLessons,
   dedupeAndPrune,
@@ -572,6 +581,40 @@ check("touchedUi: prefixed lines rejected", !touchedUiFromDiff("+++ b/apps/web/s
 // lookalike prefixes must not match ("apps/web/" is a directory boundary)
 check("touchedUi: lookalike apps/webui rejected", !touchedUiFromDiff("apps/webui/src/x.ts"));
 check("touchedUi: lookalike apps/webs rejected", !touchedUiFromDiff("apps/webs/src/x.ts"));
+
+// --- spec-before-build planner phase (P2-008) --------------------------------
+{
+  const TASK: Task = { id: "P0-999", priority: "P0", title: "Spec before build", spec: "s", area: "", line: "" };
+  check("planner: P0/P1 need the planner phase", needsPlanner("P0") && needsPlanner("P1"));
+  check("planner: P2/P3 skip straight to the builder", !needsPlanner("P2") && !needsPlanner("P3"));
+  check("planner: spec path follows the task id", specPathFor("P0-999") === "specs/P0-999.md" && specPathFor("../x") === null);
+  const prompt = plannerPrompt(TASK, 1);
+  check(
+    "planner: prompt targets the spec file with all sections",
+    prompt.includes("specs/P0-999.md") &&
+      prompt.includes("## Problem") &&
+      prompt.includes("## Approach") &&
+      prompt.includes("## Touched files") &&
+      prompt.includes("## Edge cases") &&
+      prompt.includes("## Acceptance criteria") &&
+      prompt.includes("## Out of scope") &&
+      prompt.includes("PLANNER:DONE"),
+  );
+  check("planner: retry attempt mentions the previous failure", plannerPrompt(TASK, 2).includes("attempt 2"));
+  const template = ["## Problem", "## Approach", "## Touched files", "## Edge cases", "## Acceptance criteria", "## Out of scope"].join("\n");
+  check("planner: validateSpec accepts the full template", validateSpec(template));
+  check("planner: validateSpec tolerates heading suffixes", validateSpec("## Problem — why\n## Approach\n## Touched files\n## Edge cases\n## Acceptance criteria\n## Out of scope (future)"));
+  check("planner: validateSpec rejects a missing section", !validateSpec(template.replace("## Edge cases", "## Gotchas")));
+  check("planner: validateSpec rejects empty content", !validateSpec(""));
+  const bpWith = builderPrompt(TASK, 1, "", [], "specs/P0-999.md");
+  const bpWithout = builderPrompt(TASK, 1, "", [], null);
+  check("planner: builder prompt cites the spec when present", bpWith.includes("specs/P0-999.md") && bpWith.includes("read it FIRST"));
+  check("planner: builder prompt silent without a spec", !bpWithout.includes("specs/P0-999.md"));
+  const qual = reviewerPrompt("QUALITY", "regressions", TASK, "", null, "specs/P0-999.md");
+  check("planner: quality reviewer gets the spec criterion", qual.includes("does the diff fulfill specs/P0-999.md"));
+  check("planner: no spec criterion without a spec", !reviewerPrompt("QUALITY", "regressions", TASK, "", null).includes("specs/P0-999.md"));
+  check("planner: security reviewer never gets the spec criterion", !reviewerPrompt("SECURITY", "crypto", TASK, "", null, "specs/P0-999.md").includes("does the diff fulfill"));
+}
 
 // --- module-shadowing invariant (P2-014) --------------------------------------
 // input is `git diff --name-status` output; only introduced (A/R/C) root files count

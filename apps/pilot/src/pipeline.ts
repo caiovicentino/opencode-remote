@@ -21,14 +21,86 @@ export function lessonsBlock(lessons: string[]): string {
   return lessons.length ? `\nEXPERIENCE — relevant lessons from past merges (follow them):\n${lessons.join("\n")}\n` : "";
 }
 
-export function builderPrompt(t: Task, round: number, findings: string, lessons: string[] = []): string {
+// ── P2-008 spec-before-build: PLANNER phase for P0/P1 tasks ─────────────────
+
+/** Planner agents are read-only code readers; 10 min like the scribe. */
+export const PLANNER_TIMEOUT_MIN = 10;
+export const SPEC_SECTIONS = [
+  "Problem",
+  "Approach",
+  "Touched files",
+  "Edge cases",
+  "Acceptance criteria",
+  "Out of scope",
+] as const;
+
+/** P2-008: only high-priority tasks pay the planner tax before the builder. */
+export function needsPlanner(priority: string): boolean {
+  return priority === "P0" || priority === "P1";
+}
+
+/** P2-008: branch-relative spec path; null when the id can't reach a shell. */
+export function specPathFor(id: string): string | null {
+  if (!TASK_ID_RE.test(id)) return null;
+  return `specs/${id}.md`;
+}
+
+export function plannerPrompt(t: Task, attempt: number): string {
+  const retry = attempt > 1
+    ? `\nATTENTION: this is attempt ${attempt}. Your previous run did not leave a valid specs/${t.id}.md on disk — write the file this time.\n`
+    : "";
+  return `You are the PLANNER agent of the opencode-remote autonomous pipeline (READ-ONLY).
+The task below is high priority; before any builder touches it, you must produce its build spec.
+
+TASK (${t.id}) [${t.priority}]: ${t.title}
+spec: ${t.spec || "(no extra spec — use judgement, keep the change small and shippable)"}
+${retry}
+Read the relevant code in this repository and write the build spec to the file
+specs/${t.id}.md (create the specs/ directory if needed) with EXACTLY these markdown sections:
+## Problem
+## Approach
+## Touched files
+## Edge cases
+## Acceptance criteria
+## Out of scope
+
+Rules:
+- ${CONSTITUTION}
+- READ-ONLY except for specs/${t.id}.md: do NOT modify, create or delete any other file, do NOT commit.
+- Keep the spec short and concrete (<= ~120 lines) — the builder is another agent that will follow it.
+- Acceptance criteria must be testable: commands to run, observable behaviors, numbers when applicable.
+- Touched files must cite real repo paths you actually inspected.
+
+When finished, your LAST line of output must be exactly: PLANNER:DONE`;
+}
+
+/** P2-008: deterministic check — every required section heading is present. */
+export function validateSpec(content: string): boolean {
+  const headings = content
+    .split("\n")
+    .filter((l) => l.startsWith("## "))
+    .map((l) => l.slice(3).trim().toLowerCase());
+  return SPEC_SECTIONS.every((s) => headings.some((h) => h.startsWith(s.toLowerCase())));
+}
+
+export function builderPrompt(
+  t: Task,
+  round: number,
+  findings: string,
+  lessons: string[] = [],
+  specFile: string | null = null,
+): string {
   const uiTask = t.area === "ui" || t.area === "desktop";
+  // P2-008: when a planner spec exists on the branch, the builder must follow it
+  const specBlock = specFile
+    ? `\nPLANNER SPEC: ${specFile} exists on this branch — read it FIRST. It holds the agreed problem analysis, approach, touched files, edge cases, acceptance criteria and out-of-scope. Follow it; if you must deviate, justify the deviation in the commit message. Do not delete or rewrite the spec.\n`
+    : "";
   return `You are the BUILDER agent of the opencode-remote autonomous pipeline (round ${round}).
 Work inside this repository (your cwd is a dedicated clone; production runs elsewhere).
 
 TASK (${t.id}) [${t.priority}]: ${t.title}
 spec: ${t.spec || "(no extra spec — use judgement, keep the change small and shippable)"}
-${findings ? `\nREVIEWER FINDINGS TO ADDRESS:\n${findings}\n` : ""}${lessonsBlock(lessons)}
+${specBlock}${findings ? `\nREVIEWER FINDINGS TO ADDRESS:\n${findings}\n` : ""}${lessonsBlock(lessons)}
 Rules:
 - ${CONSTITUTION}
 - Create/keep working on branch pilot/${t.id}. Commit your work with a conventional message "pilot(${t.id}): ...".
@@ -141,7 +213,14 @@ function logScribe(task: string, msg: string, ok?: boolean) {
   );
 }
 
-function reviewerPrompt(role: string, focus: string, t: Task, diff: string, uiShot: string | null): string {
+export function reviewerPrompt(
+  role: string,
+  focus: string,
+  t: Task,
+  diff: string,
+  uiShot: string | null,
+  specFile: string | null = null,
+): string {
   return `You are the ${role} REVIEWER agent of the opencode-remote autonomous pipeline.
 A builder implemented TASK (${t.id}): ${t.title}
 spec: ${t.spec || "(none)"}
@@ -156,6 +235,11 @@ Rules:
   \`path/file.ext:LINE\` (line matching the workspace files) or quote a literal snippet
   from the diff. Findings without a verifiable citation are mechanically dropped as
   hallucinated; a reviewer whose findings ALL fail verification counts as APPROVE.
+${
+  role === "QUALITY" && specFile
+    ? `- Spec compliance (P2-008): this branch carries a planner spec at "${specFile}" (read it in the workspace). Answer explicitly in your review: does the diff fulfill ${specFile}? A deviation from its approach, touched-files list or acceptance criteria is a finding unless the diff justifies it.`
+    : ""
+}
 ${
   uiShot
     ? `- UI evidence (P2-011): the most recent available screenshot for this task is "${uiShot}". It may predate this diff (captured after an earlier deploy) — treat it as a regression baseline, not proof of this diff. Read it (it is an image), say what it shows, and state explicitly whether the diff could plausibly regress it. You can take a fresh screenshot of your local build: \`node tools/browse.mjs shot <path>.png\`.`
@@ -236,6 +320,30 @@ export function writeSandboxConfig(ws: string) {
   );
 }
 
+/**
+ * P2-008: deterministically validate and commit the planner spec. The planner
+ * agent only leaves the file on disk — the runner owns the commit (id is
+ * TASK_ID_RE-checked, so the interpolation is safe). Returns true only when a
+ * valid spec file exists and is part of the branch (committed either here or
+ * by the agent itself — a "nothing to commit" is fine).
+ */
+function commitSpec(ws: string, id: string): boolean {
+  const path = specPathFor(id);
+  if (!path) return false;
+  const abs = join(ws, path);
+  if (!existsSync(abs)) return false;
+  let content: string;
+  try {
+    content = readFileSync(abs, "utf8");
+  } catch {
+    return false;
+  }
+  if (!validateSpec(content)) return false;
+  exec(`git add ${path}`, { cwd: ws, allowFail: true });
+  exec(`git commit -qm "pilot(${id}): planner spec"`, { cwd: ws, allowFail: true });
+  return true;
+}
+
 export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState): Promise<PipelineResult> {
   const ws = cfg.workspace;
   // central injection guard: t.id is interpolated into shell commands below
@@ -280,12 +388,45 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
       );
     }
   };
+
+  // ── P2-008 spec-before-build: PLANNER phase for P0/P1 tasks ──────────────
+  // Skipped when the task is already merged: the spec commit alone would
+  // otherwise mask the empty-diff self-heal with a spec-only diff.
+  let specFile: string | null = null;
+  if (needsPlanner(t.priority) && !taskMergedIn(ws, t.id)) {
+    specFile = specPathFor(t.id);
+    if (!specFile) return { ok: false, detail: `invalid task id for planner: ${t.id}` };
+    emit("phase", { task: t.id, phase: "planner" });
+    console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "planner", data: { task: t.id } }));
+    let plannerSession: string | undefined;
+    let specOk = false;
+    for (let attempt = 1; attempt <= 2 && !specOk; attempt++) {
+      const out = await runAgent(plannerPrompt(t, attempt), {
+        cwd: ws,
+        timeoutMin: PLANNER_TIMEOUT_MIN,
+        label: `planner-${t.id}-a${attempt}`,
+        sessionId: plannerSession, // retry resumes the planner's own context
+        printLogs: true,
+        onStdout: stream,
+      });
+      if (out.sessionId) plannerSession = out.sessionId;
+      // deterministic validation + commit: the LLM is never trusted, only the
+      // on-disk file (all six sections present) counts as a spec
+      specOk = commitSpec(ws, t.id);
+      if (specOk) break;
+      console.log(
+        JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "planner attempt produced no valid spec", data: { task: t.id, attempt } }),
+      );
+    }
+    if (!specOk) return { ok: false, detail: `planner did not produce a valid ${specFile} after 2 attempt(s)` };
+    emit("phase", { task: t.id, phase: "planner-done", ok: true, detail: specFile });
+  }
   for (let round = 1; round <= cfg.maxReviewRounds && !merged; round++) {
     emit("phase", { task: t.id, phase: "builder", detail: `round ${round}` });
     console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "builder round", data: { task: t.id, round } }));
     // P1-007: top-5 lessons keyword-matched against this task, most recent first
     const lessons = pickRelevantLessons(readExperienceFile(ws), t.title, t.spec);
-    const build = await runAgent(builderPrompt(t, round, findings, lessons), {
+    const build = await runAgent(builderPrompt(t, round, findings, lessons, specFile), {
       cwd: ws,
       timeoutMin: cfg.taskTimeoutMin,
       label: `builder-${t.id}-r${round}`,
@@ -370,7 +511,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
         label: `sec-${t.id}-r${round}`,
         onStdout: stream,
       }),
-      runAgent(reviewerPrompt("QUALITY", "regressions, UX, docs, test coverage, complexity", t, diff, uiShot), {
+      runAgent(reviewerPrompt("QUALITY", "regressions, UX, docs, test coverage, complexity", t, diff, uiShot, specFile), {
         cwd: ws,
         timeoutMin: cfg.reviewTimeoutMin,
         label: `qual-${t.id}-r${round}`,

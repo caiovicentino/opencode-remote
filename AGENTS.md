@@ -7,7 +7,10 @@ Remote control for this opencode instance: mobile PWA -> relay -> daemon -> loca
 This repo evolves autonomously via the Pilot service (`apps/pilot`, docs in `docs/PILOT.md`):
 agents implement tasks from `BACKLOG.md`, adversarial reviewers check them, a deterministic
 gatekeeper runs the eval battery + `scripts/invariants.ts` (see `docs/CONSTITUTION.md`), and
-deploys are staged with automatic rollback. Tasks that keep failing the pipeline are circuit-broken
+deploys are staged with automatic rollback. P0/P1 tasks first go through a PLANNER phase: a
+read-only agent writes `specs/<ID>.md` on the task branch (problem, approach, touched files,
+edge cases, acceptance criteria, out of scope) and the builder + quality reviewer are held to
+it; P2+ tasks go straight to the builder (P2-008). Tasks that keep failing the pipeline are circuit-broken
 after `maxAttemptsPerTask` (default 4) attempts: moved to `## Blocked` in BACKLOG.md with the last
 findings and never re-scheduled until a human/red team moves them back (P1-014). With `slots` > 1
 in pilot.json the scheduler runs up to N pipelines concurrently, one workspace clone per slot
