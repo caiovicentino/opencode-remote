@@ -78,7 +78,7 @@ export async function deploy(cfg: PilotConfig, sha: string): Promise<DeployResul
   const pilotChanged = exec(`git diff --name-only ${sha} HEAD -- apps/pilot`, { cwd: cfg.repo, allowFail: true });
   if (String(pilotChanged.output || "").includes("apps/pilot")) {
     log("warn", "deploy included pilot changes — self-reloading");
-    setTimeout(() => process.exit(0), 500);
+    process.exit(0); // log is flushed synchronously; the pidfile singleton covers any overlap
   }
   return { ok: true, rolledBack: false, detail: `deployed ${sha.slice(0, 7)} (prev ${prev.slice(0, 7)})` };
 }

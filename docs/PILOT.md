@@ -90,7 +90,10 @@ produção: `userData` do Electron é temporário e nenhum sidecar é spawnado.
 
 1. **Agent**: retry de npm ci, re-upload de attachments, rounds de review
 2. **Pipeline**: rollback automático de deploy (health + soak + invariants live); diff vazio do builder + task já presente no histórico de merge de `origin/main` (grep ancorado no formato de sujeito `^pilot(<id>):`, com ID validado) → `markDone` no BACKLOG.md e ciclo encerrado com sucesso em vez de falhar para sempre na mesma task
-3. **Serviço**: heartbeat + watchdog — 30min sem sinal → exit → KeepAlive ressozinho
+3. **Serviço**: singleton via pidfile — ao iniciar, o pilot grava `~/.opencode-remote/pilot/pilot.pid`
+   e, se a instância anterior ainda estiver viva, a derruba (SIGTERM → 2s → SIGKILL, log
+   `stale pilot instance killed`); o self-reload pós-deploy sai com `process.exit(0)` imediato
+   (log já flushado, sem órfão); heartbeat + watchdog — 30min sem sinal → exit → KeepAlive ressozinho
 
 ## Rodar manualmente
 
@@ -99,6 +102,9 @@ npm run once --workspace @ocr/pilot        # um ciclo (eval)
 npm run start --workspace @ocr/pilot       # loop contínuo em foreground
 ./deploy/install-pilot.sh                  # instalar como serviço launchd
 ```
+
+Atenção: vale o singleton do pidfile — subir uma segunda instância (foreground,
+`once` ou serviço) mata a instância anterior viva.
 
 ## Regras do BACKLOG.md
 

@@ -11,8 +11,9 @@ import { sessionTitleOf } from "../apps/web/src/lib/title";
 import { permissionPreview } from "../apps/web/src/lib/permission";
 import { applySessionFilters } from "../apps/web/src/lib/sessionFilter";
 import { taskMergedIn } from "../apps/pilot/src/pipeline";
-import { mkdtempSync, rmSync, existsSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { ensureSingleton } from "../apps/pilot/src/state";
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { execSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import { join } from "node:path";
@@ -232,6 +233,37 @@ check(
   readConsoleMessage({}, 2, "w", 1, "") .level === "warning" && readConsoleMessage({}, 0, "v", 1, "").level === "verbose",
 );
 check("console-message: undefined first arg falls back to legacy", readConsoleMessage(undefined, 3, "u", 1, "").message === "u");
+
+// --- pilot singleton via pidfile (P0-004) --------------------------------------
+{
+  const pidDir = mkdtempSync(join(tmpdir(), "pilot-pid-"));
+  const pidFile = join(pidDir, "pilot.pid");
+  let holder: ReturnType<typeof spawn> | null = null;
+  try {
+    writeFileSync(pidFile, "999999999"); // above any real pid range — dead
+    await ensureSingleton(pidFile);
+    check("singleton overwrites stale pidfile", readFileSync(pidFile, "utf8").trim() === String(process.pid));
+
+    writeFileSync(pidFile, "not-a-pid");
+    await ensureSingleton(pidFile);
+    check("singleton survives garbage pidfile", readFileSync(pidFile, "utf8").trim() === String(process.pid));
+
+    // child traps SIGTERM so the 2s grace expires and the SIGKILL path must fire
+    holder = spawn(process.execPath, ["-e", 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000);'], {
+      stdio: "ignore",
+    });
+    await new Promise((r) => setTimeout(r, 300)); // let the child install its SIGTERM handler
+    writeFileSync(pidFile, String(holder.pid));
+    const exited = new Promise<string>((resolve) => holder!.once("exit", (_code, signal) => resolve(String(signal))));
+    await ensureSingleton(pidFile);
+    const signal = await Promise.race([exited, new Promise<string>((r) => setTimeout(() => r("timeout"), 5_000))]);
+    check("singleton kills live previous instance (SIGTERM trapped → SIGKILL)", signal === "SIGKILL");
+    check("singleton pidfile points at current pid after kill", readFileSync(pidFile, "utf8").trim() === String(process.pid));
+  } finally {
+    if (holder && holder.exitCode === null && holder.signalCode === null) holder.kill("SIGKILL");
+    rmSync(pidDir, { recursive: true, force: true });
+  }
+}
 
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);
