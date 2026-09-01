@@ -73,7 +73,7 @@ import {
   recordCycle,
 } from "../apps/pilot/src/audit";
 import { blockTask, loadBacklog, parseBacklog, addTask, type Task } from "../apps/pilot/src/backlog";
-import { EXPLORER_MAX_FINDINGS, EXPLORER_MAX_STEPS, EXPLORER_TIMEOUT_MIN, explorerSpec, parseExplorerFindings, type ExplorerFinding } from "../apps/pilot/src/explorer";
+import { EXPLORER_MAX_FINDINGS, EXPLORER_MAX_STEPS, EXPLORER_TIMEOUT_MIN, EXPLORER_PUSH_RETRIES, EXPLORER_PUSH_WAIT_MS, commitAndPushFindings, explorerSpec, parseExplorerFindings, type ExplorerFinding } from "../apps/pilot/src/explorer";
 import { API_PREFLIGHT, apiHealthy, idScanner, mergeAgentIds, OPENCODE_URL_DEFAULT, scanIds, waitForApi } from "../apps/pilot/src/runner";
 import { mkdtempSync, mkdirSync, readdirSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync, utimesSync } from "node:fs";
 import { execSync, spawn } from "node:child_process";
@@ -2044,6 +2044,79 @@ check(
     check("explorer: inserted spec carries severity + evidence path", parsed[0]!.spec.includes("(severity: high, evidence: ") && parsed[0]!.spec.includes(shot));
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// --- P3-052 round 2: push retry semantics (commitAndPushFindings) -----------------
+{
+  // fake-driven: lands on the 3rd attempt — commit once, push 3x, sleep only between
+  const calls: string[] = [];
+  const sleeps: number[] = [];
+  let pushes = 0;
+  const landed = await commitAndPushFindings("pilot(explorer): test run", {
+    exec: (cmd) => {
+      calls.push(cmd);
+      if (cmd.includes("git push")) return { ok: ++pushes >= 3, output: "" };
+      return { ok: true, output: "" };
+    },
+    sleep: async (ms) => {
+      sleeps.push(ms);
+    },
+  });
+  check("explorer push retry: lands on a later attempt", landed === true);
+  check("explorer push retry: commit once, then pushes", calls.filter((c) => c.includes("git commit")).length === 1 && calls.filter((c) => c.includes("git push")).length === 3);
+  check("explorer push retry: waits between attempts only", sleeps.length === 2 && sleeps.every((s) => s === EXPLORER_PUSH_WAIT_MS));
+
+  // always-failing push (commit itself succeeds): budget exhausted, false reported
+  let failPushes = 0;
+  const exhausted = await commitAndPushFindings("msg", {
+    exec: (cmd) => {
+      if (cmd.includes("git push")) {
+        failPushes++;
+        return { ok: false, output: "" };
+      }
+      return { ok: true, output: "" };
+    },
+    sleep: async () => {},
+  });
+  check("explorer push retry: false after exhausting the budget", exhausted === false && failPushes === EXPLORER_PUSH_RETRIES);
+
+  // commit failure: aborts before any push is attempted
+  let calls2 = 0;
+  const noCommit = await commitAndPushFindings("msg", {
+    exec: () => {
+      calls2++;
+      return { ok: false, output: "" };
+    },
+    sleep: async () => {},
+  });
+  check("explorer push retry: commit failure aborts before pushing", noCommit === false && calls2 === 1);
+
+  // real git smoke: apostrophe in the message pins the shq escaping, and the
+  // commit must actually land on the bare remote's main
+  const repo = mkdtempSync(join(tmpdir(), "pilot-explorer-push-"));
+  try {
+    const git = (cmd: string, opts: { cwd: string }) => execSync(cmd, { cwd: opts.cwd, stdio: "pipe" }).toString();
+    execSync("git init -q -b main && git config user.email t@t.local && git config user.name t", { cwd: repo });
+    const bare = join(repo, "origin.git");
+    execSync(`git init -q --bare "${bare}"`, { cwd: repo });
+    execSync(`git remote add origin "${bare}"`, { cwd: repo });
+    writeFileSync(join(repo, "BACKLOG.md"), "# B\n\n## Ready\n");
+    const smoke = await commitAndPushFindings("pilot(explorer): smoke'd run", {
+      exec: (cmd) => {
+        try {
+          execSync(cmd, { cwd: repo, stdio: "pipe" });
+          return { ok: true, output: "" };
+        } catch {
+          return { ok: false, output: "" };
+        }
+      },
+      sleep: async () => {},
+    });
+    const remoteLog = execSync(`git --git-dir "${bare}" log --format=%s main`).toString();
+    check("explorer push retry: real git lands the commit on origin/main", smoke === true && remoteLog.includes("smoke'd run"));
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
   }
 }
 

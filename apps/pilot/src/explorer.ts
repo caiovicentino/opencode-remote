@@ -21,6 +21,9 @@ import { saveState, touchHeartbeat, type PilotConfig, type PilotState } from "./
 export const EXPLORER_MAX_STEPS = 24; // harness commands the agent may run
 export const EXPLORER_MAX_FINDINGS = 5; // backlog lines inserted per run
 export const EXPLORER_TIMEOUT_MIN = 25; // agent wall-clock budget
+/** Push retry budget: concurrent researcher/scribe pushes can move origin/main. */
+export const EXPLORER_PUSH_RETRIES = 3;
+export const EXPLORER_PUSH_WAIT_MS = 3_000;
 
 export const EXPLORER_SEVERITIES = new Set(["high", "medium", "low"]);
 
@@ -90,6 +93,38 @@ export function explorerSpec(f: ExplorerFinding): string {
   return `${f.detail} (severity: ${f.severity}, evidence: ${f.shot})${f.area ? ` (area: ${f.area})` : ""}`;
 }
 
+/** Injectable sinks for commitAndPushFindings (unit battery pins the semantics). */
+export interface PushIo {
+  exec: (cmd: string) => { ok: boolean; output: string };
+  sleep: (ms: number) => Promise<void>;
+}
+
+/**
+ * Commit the BACKLOG.md edit and push origin/main with retry. The retry loop
+ * (round 2 review): pushes land concurrently from the researcher/scribes, and
+ * a one-shot push used to silently lose the findings on the next sync. Returns
+ * true only when the push actually landed; commit failure aborts before any
+ * push is attempted.
+ */
+export async function commitAndPushFindings(
+  message: string,
+  io: PushIo,
+  attempts: number = EXPLORER_PUSH_RETRIES,
+): Promise<boolean> {
+  const add = io.exec(`git add BACKLOG.md && git commit -qm ${shq(message)}`);
+  if (!add.ok) return false;
+  for (let i = 1; i <= attempts; i++) {
+    if (io.exec("git push -q origin main").ok) return true;
+    if (i < attempts) await io.sleep(EXPLORER_PUSH_WAIT_MS);
+  }
+  return false;
+}
+
+/** POSIX single-quote escape (JSON.stringify is NOT shell quoting). */
+function shq(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
 /**
  * One nightly run. Once-per-day guarded via state, budget-capped, and
  * non-blocking: any error is logged, never rethrown.
@@ -131,11 +166,14 @@ export async function runExplorer(cfg: PilotConfig, state: PilotState): Promise<
       addTask(cfg.workspace, id, "P3", `[explorer][${f.severity}] ${f.title}`, explorerSpec(f));
       inserted++;
     }
-    const push = exec(
-      `git add BACKLOG.md && git commit -qm "pilot(explorer): ${inserted} finding(s) from nightly run ${today}" && for i in 1 2 3; do git push -q origin main && break || sleep 3; done`,
-      { cwd: cfg.workspace, allowFail: true },
+    const push = await commitAndPushFindings(
+      `pilot(explorer): ${inserted} finding(s) from nightly run ${today}`,
+      {
+        exec: (cmd) => exec(cmd, { cwd: cfg.workspace, allowFail: true }),
+        sleep: (ms) => new Promise<void>((r) => setTimeout(r, ms)),
+      },
     );
-    if (!push.ok) {
+    if (!push) {
       log("warn", "explorer backlog push failed (non-blocking)", { findings: inserted });
       return;
     }
