@@ -28,7 +28,8 @@ remoto, zero confiança**.
 
 - **Chat completo** com streaming, markdown, imagens e histórico de ferramentas;
   o header do chat mostra o título da conversa (o genérico "session" enquanto
-  a sessão ainda não tem título)
+  a sessão ainda não tem título); conversa nova mostra um empty state de
+  boas-vindas com dicas rápidas (áudio, foto ou texto)
 - **AutoMode** — o agente roda solto; toda aprovação automática vira auditoria
   (e notificação, se você quiser)
 - **Preview de aprovação** — o card de permissão mostra as primeiras linhas

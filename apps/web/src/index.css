@@ -239,6 +239,32 @@ select {
   overscroll-behavior: contain;
 }
 
+/* welcome empty state (P3-003): shown when the conversation has no bubbles */
+.chat-empty {
+  margin: auto;
+  text-align: center;
+  padding: 16px;
+  max-width: 320px;
+  color: var(--muted);
+  animation: msg-in 0.16s ease;
+}
+.chat-empty-icon {
+  font-size: 2.2rem;
+  display: block;
+  margin-bottom: 6px;
+}
+.chat-empty-title {
+  margin: 0 0 4px;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text, inherit);
+}
+.chat-empty-hint {
+  margin: 0;
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+
 .msg {
   padding: 10px 12px;
   border-radius: 12px;
