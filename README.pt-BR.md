@@ -111,6 +111,9 @@ O primeiro estágio da [visão desktop](docs/VISION.md): um shell Electron
 ícone de tray, menus nativos e renderer sandboxed — sem terminal, sem
 Tailscale. Ele carrega o mesmo build de `@ocr/web` usado no telefone.
 
+O shell roda em **Electron 44** (Chromium 152, V8 15.2, Node 24.18.1), que
+exige **macOS 13 (Ventura) ou mais recente**.
+
 ```bash
 npm run build --workspace @ocr/web       # gere a UI uma vez
 npm run build --workspace @ocr/desktop   # compila o shell (main process em TypeScript)
