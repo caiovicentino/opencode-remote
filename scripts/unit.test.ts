@@ -25,6 +25,8 @@ import {
   plannerPrompt,
   pngSize,
   reviewerPrompt,
+  resumeBlock,
+  RESUME_MAX_TASK_IDS,
   specPathFor,
   parseScribeLessons,
   validateSpec,
@@ -42,7 +44,7 @@ import {
 import { clampSlots, ensureSingleton, loadState, recordTaskFailure } from "../apps/pilot/src/state";
 import { areaKey, pickBatch, pickTasks } from "../apps/pilot/src/scheduler";
 import { blockTask, loadBacklog, parseBacklog, type Task } from "../apps/pilot/src/backlog";
-import { API_PREFLIGHT, apiHealthy, OPENCODE_URL_DEFAULT, waitForApi } from "../apps/pilot/src/runner";
+import { API_PREFLIGHT, apiHealthy, OPENCODE_URL_DEFAULT, waitForApi, scanIds, idScanner } from "../apps/pilot/src/runner";
 import { mkdtempSync, mkdirSync, readdirSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync, utimesSync } from "node:fs";
 import { execSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -895,6 +897,74 @@ check("viewport: garbage rejected", viewportFromParams("x", "800") === null);
   check(
     "preflight: non-JSON 200 body counts as up",
     (await apiHealthy("http://x", 50, fetchOf(async () => ({ ok: true, json: async () => { throw new Error("not json"); } } as unknown as Response)))) === true,
+  );
+}
+
+// --- P2-013 cheap resumption: id capture + resume prompt ----------------------
+{
+  const RESUME_TASK: Task = { id: "P2-013", priority: "P2", title: "Cheap resumption", spec: "", area: "infra", line: "" };
+  const CANNED = [
+    "[LOG] builder session ses_1a2B3c4D5e6F7g8h9i0JkL started",
+    "subagent tool call failed: task_A1b2C3d4E5f6 is resumable (opencode >=1.18.20)",
+    "a second failure surfaced task_Zz9Yy8Xx7Ww6 as well",
+    "done",
+  ].join("\n");
+
+  const ids = scanIds(CANNED);
+  check("resume: canned output extracts the ses_ id", ids.sessionId === "ses_1a2B3c4D5e6F7g8h9i0JkL");
+  check(
+    "resume: canned output extracts task_ ids in order",
+    JSON.stringify(ids.taskIds) === JSON.stringify(["task_A1b2C3d4E5f6", "task_Zz9Yy8Xx7Ww6"]),
+  );
+  const none = scanIds("all good here, nothing to resume");
+  check("resume: plain output yields no ids", none.sessionId === undefined && none.taskIds.length === 0);
+
+  // streaming: an id split across two stdout chunks is captured whole via the
+  // tail buffer; a match still growing at the chunk edge waits for flush()
+  const scanner = idScanner();
+  const r1 = scanner.scan("failed subagent task_");
+  check("resume: split task id not committed while incomplete", r1.taskIds.length === 0);
+  const r2 = scanner.scan("Ab12Cd3 done; ses_9");
+  check("resume: split task id completed by the tail buffer", r2.taskIds.includes("task_Ab12Cd3"));
+  check("resume: session id stays pending while its match ends at the chunk edge", r2.sessionId === undefined);
+  const r3 = scanner.scan("8z7Yy6 end");
+  check("resume: split session id completed on the next chunk", r3.sessionId === "ses_98z7Yy6");
+
+  const dup = idScanner();
+  dup.scan("task_R1 registered; ");
+  const dup2 = dup.scan("the tail repeats task_R1 verbatim");
+  check("resume: duplicate task ids collapse to one", dup2.taskIds.filter((t) => t === "task_R1").length === 1);
+
+  const RESUME_IDS = { sessionId: "ses_1a2B3c4D5e6F7g8h9i0JkL", taskIds: ["task_A1b2C3d4E5f6", "task_Zz9Yy8Xx7Ww6"] };
+  const block = resumeBlock(RESUME_IDS);
+  check(
+    "resume: block carries session + task ids and the continue instruction",
+    block.includes("ses_1a2B3c4D5e6F7g8h9i0JkL") &&
+      block.includes("task_A1b2C3d4E5f6") &&
+      block.includes("task_Zz9Yy8Xx7Ww6") &&
+      block.includes("CONTINUE from it"),
+  );
+  check("resume: no ids -> empty block", resumeBlock({ taskIds: [] }) === "" && resumeBlock(null) === "");
+  check(
+    "resume: task id list is capped",
+    resumeBlock({ sessionId: "ses_x", taskIds: Array.from({ length: RESUME_MAX_TASK_IDS + 4 }, (_, i) => `task_${i}`) }).split("\n")
+      .some((l) => l.startsWith(`- Resumable`) && l.split("task_").length - 1 === RESUME_MAX_TASK_IDS),
+  );
+
+  const round2 = builderPrompt(RESUME_TASK, 2, "", [], null, RESUME_IDS);
+  check(
+    "resume: round N+1 prompt contains the captured session + task ids",
+    round2.includes("ses_1a2B3c4D5e6F7g8h9i0JkL") &&
+      round2.includes("task_A1b2C3d4E5f6") &&
+      round2.includes("task_Zz9Yy8Xx7Ww6"),
+  );
+  check(
+    "resume: round 1 prompt without ids has no resume block",
+    !builderPrompt(RESUME_TASK, 1, "", [], null, { taskIds: [] }).includes("RESUME PARTIAL WORK"),
+  );
+  check(
+    "resume: prompt keeps the mandatory evidence block intact",
+    round2.includes("EVIDENCE:") && round2.includes("PILOT:TASK-DONE"),
   );
 }
 

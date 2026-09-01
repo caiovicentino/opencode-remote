@@ -311,6 +311,37 @@ reviewer prompt documents the citation contract. Pinned by unit tests in
 `scripts/unit.test.ts` (one valid citation with a real path, one hallucinated
 path — only the invalid one is dropped).
 
+## Cheap resumption (P2-013)
+
+Since opencode ≥1.18.20, failed subagent tool calls surface a **resumable
+`task_id`** instead of vanishing. The pipeline exploits that for cheap
+resumption of a failed builder round:
+
+- **Capture** (`apps/pilot/src/runner.ts`): `runAgent` scans stdout for both
+  `ses_[A-Za-z0-9]+` (session) and `task_[A-Za-z0-9]+` (resumable subagent
+  tasks) and returns them in `RunResult` (`sessionId`, `taskIds[]`). The
+  streaming scanner (`idScanner`) dedupes in arrival order and keeps a 128-char
+  tail buffer so an id split across two stdout chunks is captured whole; a
+  match still growing at the chunk edge is committed by `flush()` at exit.
+- **Feed-back** (`apps/pilot/src/pipeline.ts`): task ids accumulate across
+  rounds and the next builder prompt carries a `RESUME PARTIAL WORK (P2-013)`
+  block — previous builder session id + resumable task ids (capped at
+  `RESUME_MAX_TASK_IDS`) — with the instruction to inspect and CONTINUE the
+  partial work instead of restarting from scratch.
+- **Failed rounds now retry**: a builder round that dies without
+  `PILOT:TASK-DONE` (crash/timeout) continues to the next round within the
+  existing `maxReviewRounds` budget instead of aborting the pipeline, so the
+  resume ids actually reach a round N+1. The final round still fails as before
+  and counts through the normal circuit-breaker path (P1-014).
+- **Prompt-only**: ids flow exclusively into the builder prompt text — never
+  into a shell command — so captured output cannot become injection. A
+  round with no captured ids renders no block (round 1 unchanged).
+
+Pinned by unit tests in `scripts/unit.test.ts`: canned output extracts `ses_`
+and `task_` correctly, split-across-chunks ids are recovered, duplicates
+collapse, and the round N+1 prompt contains the captured ids with the evidence
+block intact.
+
 ## Experience memory (IER, P1-007)
 
 O pipeline mantém uma **memória de experiência** versionada em `docs/EXPERIENCE.md`:

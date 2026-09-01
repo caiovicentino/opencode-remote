@@ -100,12 +100,49 @@ export function needsUiEvidence(area: string | undefined, renderTouched: boolean
   return renderTouched || area === "ui" || area === "desktop";
 }
 
+// ── P2-013 cheap resumption: failed rounds carry resumable ids ──────────────
+
+/** Ids captured from previous builder rounds (runner stdout scan). */
+export interface ResumeIds {
+  sessionId?: string;
+  taskIds: string[];
+}
+
+/** Cap so a noisy round cannot flood the next prompt with ids. */
+export const RESUME_MAX_TASK_IDS = 10;
+
+/**
+ * P2-013: prompt section injected into round N+1 after a failed round N.
+ * opencode >=1.18.20 surfaces failed subagent tool calls with a resumable
+ * task_id — handing the ids back lets the builder inspect and resume partial
+ * work instead of paying for a cold restart. Empty string when there is
+ * nothing resumable (round 1 or no ids captured).
+ */
+export function resumeBlock(resume: ResumeIds | null | undefined): string {
+  const tasks = [...new Set(resume?.taskIds ?? [])].slice(-RESUME_MAX_TASK_IDS);
+  if (!resume?.sessionId && tasks.length === 0) return "";
+  const lines = [
+    "RESUME PARTIAL WORK (P2-013): the previous round on this task failed mid-work and left recoverable state.",
+  ];
+  if (resume?.sessionId) {
+    lines.push(`- Previous builder session: ${resume.sessionId} (this round continues it via -s — its context is intact).`);
+  }
+  if (tasks.length) {
+    lines.push(
+      `- Resumable subagent task ids surfaced by opencode >=1.18.20: ${tasks.join(", ")} — inspect these failed tasks and recover whatever partial work they hold.`,
+    );
+  }
+  lines.push("- Inspect the partial work already on this branch and CONTINUE from it — do not restart from scratch.");
+  return `\n${lines.join("\n")}\n`;
+}
+
 export function builderPrompt(
   t: Task,
   round: number,
   findings: string,
   lessons: string[] = [],
   specFile: string | null = null,
+  resume: ResumeIds | null = null,
 ): string {
   const uiTask = needsUiEvidence(t.area, false);
   // P2-008: when a planner spec exists on the branch, the builder must follow it
@@ -117,7 +154,7 @@ Work inside this repository (your cwd is a dedicated clone; production runs else
 
 TASK (${t.id}) [${t.priority}]: ${t.title}
 spec: ${t.spec || "(no extra spec — use judgement, keep the change small and shippable)"}
-${specBlock}${findings ? `\nREVIEWER FINDINGS TO ADDRESS:\n${findings}\n` : ""}${lessonsBlock(lessons)}
+${specBlock}${resumeBlock(resume)}${findings ? `\nREVIEWER FINDINGS TO ADDRESS:\n${findings}\n` : ""}${lessonsBlock(lessons)}
 Rules:
 - ${CONSTITUTION}
 - Create/keep working on branch pilot/${t.id}. Commit your work with a conventional message "pilot(${t.id}): ...".
@@ -641,6 +678,9 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
   let findings = "";
   let touchedUi = false;
   let builderSession: string | undefined;
+  // P2-013: resumable subagent task ids captured from every failed builder
+  // round, fed back into the next round's prompt for cheap resumption
+  const resumeTaskIds: string[] = [];
   // carry over the last gatekeeper failure for this task, so the builder can
   // fix the exact failing step instead of rediscovering it (per-task file)
   const failFile = gateFailFile(t.id);
@@ -708,21 +748,35 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
     console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "builder round", data: { task: t.id, round } }));
     // P1-007: top-5 lessons keyword-matched against this task, most recent first
     const lessons = pickRelevantLessons(readExperienceFile(ws), t.title, t.spec);
-    const build = await runAgent(builderPrompt(t, round, findings, lessons, specFile), {
-      cwd: ws,
-      timeoutMin: cfg.taskTimeoutMin,
-      label: `builder-${t.id}-r${round}`,
-      sessionId: builderSession, // context cache: resume the same session across rounds
-      printLogs: true,
-      onStdout: stream,
-    });
+    const build = await runAgent(
+      builderPrompt(t, round, findings, lessons, specFile, { sessionId: builderSession, taskIds: resumeTaskIds }),
+      {
+        cwd: ws,
+        timeoutMin: cfg.taskTimeoutMin,
+        label: `builder-${t.id}-r${round}`,
+        sessionId: builderSession, // context cache: resume the same session across rounds
+        printLogs: true,
+        onStdout: stream,
+      },
+    );
     if (build.sessionId) builderSession = build.sessionId;
+    // P2-013: accumulate resumable ids across rounds (dedupe keeps arrival order)
+    for (const id of build.taskIds) {
+      if (!resumeTaskIds.includes(id)) resumeTaskIds.push(id);
+    }
     console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "builder done", data: { task: t.id, round } }));
     // per-task diagnostic log: concurrent slots would clobber a shared file
     writeFileSync(join(homedir(), ".opencode-remote/pilot", `builder-${t.id}.log`), build.output);
     emit("phase", { task: t.id, phase: "builder-done", ok: build.output.includes("PILOT:TASK-DONE") });
     if (!build.output.includes("PILOT:TASK-DONE")) {
-      return { ok: false, detail: `builder did not finish (round ${round}): ${build.output.slice(-300)}` };
+      // P2-013: a failed round (crash/timeout) is exactly when partial work
+      // exists — retry within the round budget instead of aborting, handing
+      // back the captured session + task ids so the builder resumes cheaply.
+      if (round === cfg.maxReviewRounds) {
+        return { ok: false, detail: `builder did not finish (round ${round}): ${build.output.slice(-300)}` };
+      }
+      findings = `[builder round ${round} did not finish (crash or timeout) — branch pilot/${t.id} may hold partial work; resume it instead of starting over]\n${findings}`;
+      continue;
     }
     // --name-only: unified diff lines are prefixed (a/, b/, diff --git) and
     // would never match a bare path — round-2 review caught exactly that.

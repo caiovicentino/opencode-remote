@@ -6,6 +6,70 @@ export interface RunResult {
   output: string;
   timedOut: boolean;
   sessionId?: string;
+  /** P2-013: resumable subagent task ids seen in stdout (opencode >=1.18.20). */
+  taskIds: string[];
+}
+
+// ── P2-013: cheap resumption — id capture from agent stdout ─────────────────
+
+export interface AgentIds {
+  sessionId?: string;
+  taskIds: string[];
+}
+
+const RESUMABLE_TASK_ID_RE = /task_[A-Za-z0-9]+/g;
+
+/**
+ * P2-013: opencode >=1.18.20 surfaces failed subagent tool calls with a
+ * resumable `task_id`. Extract those plus the agent's own session id from a
+ * block of stdout (pure — pinned against canned output by the unit battery).
+ */
+export function scanIds(window: string): AgentIds {
+  return {
+    sessionId: window.match(/ses_[A-Za-z0-9]+/)?.[0],
+    taskIds: [...window.matchAll(RESUMABLE_TASK_ID_RE)].map((m) => m[0]),
+  };
+}
+
+/**
+ * Streaming scanner behind runAgent: dedupes task ids in arrival order, keeps
+ * the first session id and buffers a tail so an id split across two stdout
+ * chunks is still captured whole. A match ending exactly at the chunk edge may
+ * still grow, so it is held back until more text arrives; flush() commits it
+ * once the stream is over.
+ */
+export function idScanner(): { scan: (chunk: string) => AgentIds; flush: () => AgentIds } {
+  let sessionId: string | undefined;
+  let tail = "";
+  const seen = new Set<string>();
+  const taskIds: string[] = [];
+  const commit = (window: string, final: boolean) => {
+    // a match ending at the window edge may be split across the next chunk —
+    // only settle it once more text has arrived (or on the final flush)
+    const settled = (m: RegExpMatchArray) => final || m.index! + m[0].length < window.length;
+    if (!sessionId) {
+      const s = [...window.matchAll(/ses_[A-Za-z0-9]+/g)].find(settled);
+      if (s) sessionId = s[0];
+    }
+    for (const m of [...window.matchAll(RESUMABLE_TASK_ID_RE)]) {
+      if (settled(m) && !seen.has(m[0])) {
+        seen.add(m[0]);
+        taskIds.push(m[0]);
+      }
+    }
+  };
+  return {
+    scan(chunk: string): AgentIds {
+      const window = tail + chunk;
+      commit(window, false);
+      tail = window.slice(-128);
+      return { sessionId, taskIds: [...taskIds] };
+    },
+    flush(): AgentIds {
+      if (tail) commit(tail, true);
+      return { sessionId, taskIds: [...taskIds] };
+    },
+  };
 }
 
 /**
@@ -115,6 +179,7 @@ export async function runAgent(
       ok: false,
       timedOut: false,
       output: `[preflight] opencode API unreachable at ${OPENCODE_URL} after ${API_PREFLIGHT.retries} retries (~${(API_PREFLIGHT.retries * API_PREFLIGHT.waitMs) / 1000}s) — aborting before spawn`,
+      taskIds: [],
     };
   }
   return new Promise((resolve) => {
@@ -129,34 +194,36 @@ export async function runAgent(
     });
     let output = "";
     let timedOut = false;
-    let sessionId: string | undefined;
+    const scanner = idScanner();
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill("SIGTERM");
       setTimeout(() => child.kill("SIGKILL"), 10_000);
     }, opts.timeoutMin * 60_000);
-    const scanSession = (c: string) => {
-      if (!sessionId) {
-        const m = c.match(/ses_[A-Za-z0-9]+/);
-        if (m) sessionId = m[0];
-      }
-    };
     child.stdout.on("data", (c: Buffer) => {
       output += c.toString();
-      scanSession(c.toString());
+      scanner.scan(c.toString());
       opts.onStdout?.(c.toString());
     });
     child.stderr.on("data", (c: Buffer) => {
       output += c.toString();
-      scanSession(c.toString());
+      scanner.scan(c.toString());
     });
     child.on("exit", () => {
       clearTimeout(timer);
-      resolve({ ok: !timedOut, output, timedOut, sessionId });
+      const ids = scanner.flush();
+      resolve({ ok: !timedOut, output, timedOut, sessionId: ids.sessionId, taskIds: ids.taskIds });
     });
     child.on("error", (err) => {
       clearTimeout(timer);
-      resolve({ ok: false, output: output + `\nspawn error: ${String(err)}`, timedOut });
+      const ids = scanner.flush();
+      resolve({
+        ok: false,
+        output: output + `\nspawn error: ${String(err)}`,
+        timedOut,
+        sessionId: ids.sessionId,
+        taskIds: ids.taskIds,
+      });
     });
   });
 }
