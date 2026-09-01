@@ -212,6 +212,14 @@ displays currently attached at boot: a window left on a since-disconnected
 screen (or a corrupted state file) falls back to the 1280×820 default instead
 of opening off-screen or crashing.
 
+**Persistent shell log**: the desktop app appends everything the main process
+logs (`[desktop] …` lines: daemon sidecar lifecycle, pairing polls, renderer
+crashes, fatal errors) to `userData/logs/desktop.log` — so a packaged app used
+by someone without a terminal still has a diagnosable trail. The file is
+capped at ~1MB and rotates to `desktop.log.1` (only 2 files kept); if the disk
+is full the app keeps running and simply stops writing log lines. To find the
+folder on macOS: `~/Library/Application Support/OpenCode Remote/logs/`.
+
 **First-run QR for your phone**: while no phone is paired yet, the desktop
 window shows a first-run overlay with a scannable pairing QR (rendered by the
 main process from the daemon's `GET /__ocr/pairing-uri`, a read-only loopback
