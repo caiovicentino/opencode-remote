@@ -217,6 +217,36 @@ sem spec.
 - Se a task já está mergeada em `origin/main`, o planner é pulado (senão o
   commit do spec sozinho mascararia o self-heal de diff vazio).
 
+## Evidência obrigatória no builder (P2-009)
+
+Builder de mentira é o pior modo de falha do pipeline: reviewers gastariam tokens
+confiando em "typecheck verde" que nunca rodou. Agora o builder **tem que provar**
+o que fez e o gate **re-executa** a prova:
+
+- **Prompt**: o `builderPrompt` exige um bloco final `EVIDENCE:` com os outputs
+  reais colados de `npm run typecheck --silent` e `npm run test:unit --silent`
+  (`$ <comando>` + output colado), e — para tasks de UI — os paths de dois
+  screenshots reais: `shot-1440x900:` (desktop) e `shot-390:` (phone), produzidos
+  via `tools/browse.mjs shot <path>.png --w 390 --h 844` ou `screencapture -x`.
+- **Gatekeeper determinístico**: novo primeiro step do gate (`evidence`) que
+  parseia o bloco do output do builder e (1) reprova bloco ausente, (2) reprova
+  comando fora da allowlist — só `npm run {typecheck,test:unit,build} --silent`
+  podem ser citados, o que também fecha injeção de shell via output de LLM —
+  (3) reprova comando obrigatório faltando, (4) reprova screenshot inexistente
+  ou com dimensões erradas (aceita 1x e 2x Retina: 1440x900/2880x1800 e
+  largura 390/780 — o tamanho é lido direto do header PNG) e (5) **re-executa**
+  cada comando citado no workspace: toda linha colada tem que existir no output
+  real (semântica de contenção, normalizada contra ANSI/whitespace) — output
+  fabricado diverge e reprova.
+- **Self-heal**: falha de evidência escreve o carryover padrão
+  `pilot/gate-fail/<ID>.json` (step `evidence`), então a próxima rodada do
+  builder recebe o detalhe exato (ex.: "wrong PNG dimensions 1280x800") e corrige
+  sem redescobrir o problema.
+- **Barato por design**: os checks estáticos rodam antes de qualquer re-execução;
+  blocos patológicos (>400 linhas) são rejeitados no parse. Cobertura:
+  `scripts/unit.test.ts` testa parse, contenção, allowlist, dimensões PNG e o
+  caminho fim-a-fim com re-execução real (scripts `echo` num workspace temp).
+
 ## Round efficiency + async deploy (31/08, v1.1)
 
 - **Preflight typecheck**: after each builder round, a fast `tsc --noEmit` runs

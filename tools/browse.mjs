@@ -43,43 +43,68 @@ function savePng(out, buf) {
 }
 
 const session = process.env.OCR_BROWSE_SESSION;
-const sfx = session ? `?session=${session}` : "";
+
+// P2-009: optional `w h` size args — sized screenshots are the builder's
+// mandatory EVIDENCE (1440x900 desktop + 390px phone), verified by dimension
+// at the gate, so the CLI must be able to request an exact viewport.
+function sizeOf(list) {
+  const w = Number(list[0]);
+  const h = Number(list[1]);
+  return Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0 ? { w, h } : null;
+}
+
+function shotQuery(size) {
+  const q = new URLSearchParams();
+  if (session) q.set("session", session);
+  if (size) {
+    q.set("w", String(size.w));
+    q.set("h", String(size.h));
+  }
+  const s = q.toString();
+  return s ? `?${s}` : "";
+}
+
+const baseQuery = shotQuery(null); // session-only query for non-screenshot calls
 
 async function main() {
   if (!cmd || cmd === "help") {
     console.log(
-      "usage: node tools/browse.mjs open <url> [shot.png] | shot <out.png> | click <selector | x y> | text | close",
+      "usage: node tools/browse.mjs open <url> [shot.png [w h]] | shot <out.png> [w h] | click <selector | x y> | text | close",
     );
     process.exit(cmd ? 0 : 2);
   }
   if (cmd === "open") {
     const url = args[0];
     if (!url) throw new Error("open <url> required");
-    const r = await api(`/api/browse/open${sfx}`, "POST", { url });
+    const size = sizeOf(args.slice(2));
+    const r = await api(`/api/browse/open${baseQuery}`, "POST", {
+      url,
+      ...(size ? { width: size.w, height: size.h } : {}),
+    });
     if (r.status >= 400) throw new Error(JSON.stringify(r.json));
     if (args[1]) {
-      const shot = await api(`/api/browse/screenshot${sfx}`);
+      const shot = await api(`/api/browse/screenshot${shotQuery(size)}`);
       if (shot.status === 200) savePng(args[1], shot.png);
     }
     console.log(JSON.stringify(r.json, null, 2));
   } else if (cmd === "shot") {
     const out = args[0] ?? "shot.png";
-    const r = await api(`/api/browse/screenshot${sfx}`);
+    const r = await api(`/api/browse/screenshot${shotQuery(sizeOf(args.slice(1)))}`);
     if (r.status !== 200) throw new Error(JSON.stringify(r.json ?? r.status));
     savePng(out, r.png);
   } else if (cmd === "click") {
     const x = Number(args[0]);
     const y = Number(args[1]);
     const body = Number.isFinite(x) && Number.isFinite(y) && args.length >= 2 ? { x, y } : { selector: args[0] };
-    const r = await api(`/api/browse/click${sfx}`, "POST", body);
+    const r = await api(`/api/browse/click${baseQuery}`, "POST", body);
     if (r.status >= 400) throw new Error(JSON.stringify(r.json));
     console.log(JSON.stringify(r.json, null, 2));
   } else if (cmd === "text") {
-    const r = await api(`/api/browse/text${sfx}`);
+    const r = await api(`/api/browse/text${baseQuery}`);
     if (r.status >= 400) throw new Error(JSON.stringify(r.json));
     console.log(JSON.stringify(r.json, null, 2));
   } else if (cmd === "close") {
-    const r = await api(`/api/browse/close${sfx}`, "POST", {});
+    const r = await api(`/api/browse/close${baseQuery}`, "POST", {});
     console.log(JSON.stringify(r.json, null, 2));
   } else {
     throw new Error(`unknown command: ${cmd}`);

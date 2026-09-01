@@ -12,7 +12,10 @@ read-only agent writes `specs/<ID>.md` on the task branch (problem, approach, to
 edge cases, acceptance criteria, out of scope) and the builder + quality reviewer are held to
 it; P2+ tasks go straight to the builder (P2-008). Tasks that keep failing the pipeline are circuit-broken
 after `maxAttemptsPerTask` (default 4) attempts: moved to `## Blocked` in BACKLOG.md with the last
-findings and never re-scheduled until a human/red team moves them back (P1-014). With `slots` > 1
+findings and never re-scheduled until a human/red team moves them back (P1-014). Builders must end
+their output with a final EVIDENCE block (real typecheck/test:unit outputs, plus 1440x900 and
+390px screenshot paths for UI tasks) — the gatekeeper re-executes the cited commands and rejects
+missing or fabricated evidence (P2-009). With `slots` > 1
 in pilot.json the scheduler runs up to N pipelines concurrently, one workspace clone per slot
 (`~/.opencode-remote/pilot/repo-1`, `repo-2`…), always on tasks with distinct `area:` tags —
 two tasks of the same area never run in parallel, and deploys stay serial (P1-006). After every
