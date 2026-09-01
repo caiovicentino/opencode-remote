@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, nativeImage, Tray, shell } from "electron";
+import { app, BrowserWindow, ipcMain, Menu, nativeImage, screen, Tray, shell } from "electron";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -15,6 +15,7 @@ import {
 import { phonePaired, type PairingState } from "./pairing";
 import { daemonTooltip, loginItemSupported } from "./tray";
 import { checkForUpdatesOnBoot } from "./update";
+import { loadWindowBounds, saveWindowBounds, WINDOW_MIN, windowStateFile } from "./window-state";
 
 // Data-URL PNG keeps the repo free of binary assets; replace with a proper
 // .png/.icns asset when the distribution stage lands (docs/VISION.md stage 5).
@@ -251,11 +252,17 @@ function startPairingWatcher(): void {
 }
 
 function createWindow(): BrowserWindow {
+  // P3-008: restore the last window bounds. loadWindowBounds degrades to the
+  // 1280x820 default on a missing/corrupted file, and sanitizeWindowBounds
+  // drops bounds that don't intersect any currently attached display (window
+  // parked on a since-disconnected screen). screen.* is safe here: this only
+  // runs after app.whenReady().
+  const stateFile = windowStateFile(app.getPath("userData"));
+  const bounds = loadWindowBounds(stateFile, screen.getAllDisplays());
   const win = new BrowserWindow({
-    width: 1280,
-    height: 820,
-    minWidth: 1024,
-    minHeight: 640,
+    ...bounds,
+    minWidth: WINDOW_MIN.width,
+    minHeight: WINDOW_MIN.height,
     title: "OpenCode Remote",
     show: false,
     webPreferences: {
@@ -266,6 +273,12 @@ function createWindow(): BrowserWindow {
     },
   });
   win.once("ready-to-show", () => win.show());
+  // P3-008: persist bounds on "close" — it fires both on quit (app.quit()
+  // closes every window) and on a macOS red-button close (window-all-closed
+  // doesn't quit there). Failures are log-only and must never block quitting.
+  win.on("close", () => {
+    saveWindowBounds(stateFile, win.getBounds());
+  });
   win.on("closed", () => {
     if (mainWindow === win) mainWindow = null;
   });

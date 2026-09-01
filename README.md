@@ -182,6 +182,13 @@ pairing overlay. The context menu also has a **Start at login** checkbox
 (macOS/Windows) backed by `app.setLoginItemSettings`, so the toggle persists
 across app restarts and OS reboots.
 
+**The window remembers its size and position**: move/resize the window, quit
+and reopen — the bounds are restored. They live in
+`userData/window-state.json`, written on close, and are validated against the
+displays currently attached at boot: a window left on a since-disconnected
+screen (or a corrupted state file) falls back to the 1280×820 default instead
+of opening off-screen or crashing.
+
 **First-run QR for your phone**: while no phone is paired yet, the desktop
 window shows a first-run overlay with a scannable pairing QR (rendered by the
 main process from the daemon's `GET /__ocr/pairing-uri`, a read-only loopback
