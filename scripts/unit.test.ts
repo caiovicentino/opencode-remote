@@ -11,7 +11,8 @@ import { sessionTitleOf } from "../apps/web/src/lib/title";
 import { permissionPreview } from "../apps/web/src/lib/permission";
 import { applySessionFilters } from "../apps/web/src/lib/sessionFilter";
 import { taskMergedIn } from "../apps/pilot/src/pipeline";
-import { ensureSingleton } from "../apps/pilot/src/state";
+import { ensureSingleton, loadState, recordTaskFailure } from "../apps/pilot/src/state";
+import { blockTask, loadBacklog } from "../apps/pilot/src/backlog";
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { execSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -262,6 +263,72 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
   } finally {
     if (holder && holder.exitCode === null && holder.signalCode === null) holder.kill("SIGKILL");
     rmSync(pidDir, { recursive: true, force: true });
+  }
+}
+
+// --- P1-014 stop-loss circuit breaker ------------------------------------------
+{
+  const dir = mkdtempSync(join(tmpdir(), "pilot-blocker-"));
+  try {
+    writeFileSync(
+      join(dir, "BACKLOG.md"),
+      [
+        "# BACKLOG",
+        "",
+        "## Ready",
+        "",
+        "- [ ] (T-001) [P1] Task A — spec: fails 4x",
+        "- [ ] (T-002) [P2] Task B — spec: fine",
+        "",
+        "## Done",
+        "- [x] (T-000) [P1] Old — done",
+      ].join("\n"),
+    );
+    const st = { date: "2026-08-31", tasks: 0, deploys: 0, failures: 0, taskAttempts: {} as Record<string, number> };
+    check("breaker: failures 1..3 stay under the cap", [1, 2, 3].every(() => !recordTaskFailure(st, "T-001", 4)));
+    check("breaker: 4th failure trips", recordTaskFailure(st, "T-001", 4) === true);
+    check("breaker: attempts tracked in state", st.taskAttempts["T-001"] === 4);
+    check("breaker: other task unaffected", recordTaskFailure(st, "T-002", 4) === false);
+
+    check("blockTask moves the Ready line under ## Blocked", blockTask(dir, "T-001", "max review rounds reached — findings:\n- bad\n- thing") === true);
+    const md = readFileSync(join(dir, "BACKLOG.md"), "utf8");
+    const blockedChunk = md.split("\n## Blocked\n")[1] ?? "";
+    check(
+      "blocked section holds task line + findings summary (whitespace collapsed)",
+      blockedChunk.includes("(T-001)") && blockedChunk.includes("max review rounds reached") && blockedChunk.includes("findings: - bad - thing"),
+    );
+    check("blocked section sits before ## Done", md.indexOf("## Blocked") < md.indexOf("## Done"));
+    check("blocked task leaves the Ready queue (no solo reschedule)", loadBacklog(dir).map((t) => t.id).join(",") === "T-002");
+    check("blockTask is idempotent", blockTask(dir, "T-001", "again") === false && (md.match(/\(T-001\)/g) ?? []).length === 1);
+    check("blockTask unknown id returns false", blockTask(dir, "T-999", "x") === false);
+    check("blockTask escapes the id regex", blockTask(dir, "T-001) [P1] x.*", "y") === false);
+
+    // reset on gate pass: deleting the counter gives a fresh allowance
+    delete st.taskAttempts["T-001"];
+    check("breaker: gate pass resets the counter", recordTaskFailure(st, "T-001", 4) === false && st.taskAttempts["T-001"] === 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// --- P1-014 state.json: attempts survive the daily reset ------------------------
+{
+  const dir = mkdtempSync(join(tmpdir(), "pilot-state-"));
+  try {
+    const file = join(dir, "state.json");
+    writeFileSync(
+      file,
+      JSON.stringify({ date: "2026-01-01", tasks: 5, deploys: 3, failures: 2, taskAttempts: { "T-001": 3 } }),
+    );
+    const rolled = loadState(file);
+    const today = new Date().toLocaleDateString("en-CA");
+    check("loadState rolls daily counters", rolled.date === today && rolled.tasks === 0 && rolled.deploys === 0);
+    check("loadState keeps taskAttempts across midnight", rolled.taskAttempts["T-001"] === 3);
+    writeFileSync(file, JSON.stringify({ date: today, tasks: 1, deploys: 1, failures: 1 }));
+    const legacy = loadState(file);
+    check("loadState backfills missing taskAttempts", legacy.tasks === 1 && Object.keys(legacy.taskAttempts).length === 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 }
 

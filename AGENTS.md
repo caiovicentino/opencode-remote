@@ -7,8 +7,10 @@ Remote control for this opencode instance: mobile PWA -> relay -> daemon -> loca
 This repo evolves autonomously via the Pilot service (`apps/pilot`, docs in `docs/PILOT.md`):
 agents implement tasks from `BACKLOG.md`, adversarial reviewers check them, a deterministic
 gatekeeper runs the eval battery + `scripts/invariants.ts` (see `docs/CONSTITUTION.md`), and
-deploys are staged with automatic rollback. If you are asked to change anything that the
-constitution protects (crypto, allowlist, replay protection, deploy/), flag it explicitly in
+deploys are staged with automatic rollback. Tasks that keep failing the pipeline are circuit-broken
+after `maxAttemptsPerTask` (default 4) attempts: moved to `## Blocked` in BACKLOG.md with the last
+findings and never re-scheduled until a human/red team moves them back (P1-014). If you are asked to change anything that
+the constitution protects (crypto, allowlist, replay protection, deploy/), flag it explicitly in
 the commit message. Never commit secrets. Always document user-visible changes.
 
 ## Memória do projeto (LER PRIMEIRO)

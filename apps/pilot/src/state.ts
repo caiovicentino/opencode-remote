@@ -9,6 +9,7 @@ export interface PilotConfig {
   maxTasksPerDay: number;
   maxDeploysPerDay: number;
   maxReviewRounds: number;
+  maxAttemptsPerTask: number;
   taskTimeoutMin: number;
   reviewTimeoutMin: number;
   monitorMin: number;
@@ -21,6 +22,7 @@ export const DEFAULTS: PilotConfig = {
   maxTasksPerDay: 6,
   maxDeploysPerDay: 6,
   maxReviewRounds: 3,
+  maxAttemptsPerTask: 4,
   taskTimeoutMin: 45,
   reviewTimeoutMin: 20,
   monitorMin: 10,
@@ -30,7 +32,12 @@ export const DEFAULTS: PilotConfig = {
 export function loadConfig(): PilotConfig {
   const p = join(homedir(), ".opencode-remote", "pilot.json");
   try {
-    if (existsSync(p)) return { ...DEFAULTS, ...JSON.parse(readFileSync(p, "utf8")) };
+    if (existsSync(p)) {
+      const cfg = { ...DEFAULTS, ...JSON.parse(readFileSync(p, "utf8")) } as PilotConfig;
+      if (!Number.isFinite(cfg.maxAttemptsPerTask) || cfg.maxAttemptsPerTask < 1)
+        cfg.maxAttemptsPerTask = DEFAULTS.maxAttemptsPerTask;
+      return cfg;
+    }
   } catch {}
   return DEFAULTS;
 }
@@ -43,19 +50,34 @@ export interface PilotState {
   tasks: number;
   deploys: number;
   failures: number;
+  /** P1-014 stop-loss: pipeline failures per task id (circuit breaker). */
+  taskAttempts: Record<string, number>;
   redteamLast?: string;
   researchLast?: string;
 }
 
-export function loadState(): PilotState {
+export function loadState(file = STATE_FILE): PilotState {
   try {
-    const s = JSON.parse(readFileSync(STATE_FILE, "utf8")) as PilotState;
+    const s = JSON.parse(readFileSync(file, "utf8")) as PilotState;
     const today = nowLocalISO().slice(0, 10);
-    if (s.date === today) return s;
-    return { date: today, tasks: 0, deploys: 0, failures: 0 };
+    // daily budgets reset at midnight; per-task attempts persist — the circuit
+    // breaker must not be defeated by the date rollover
+    const attempts = s.taskAttempts ?? {};
+    if (s.date === today) return { ...s, taskAttempts: attempts };
+    return { date: today, tasks: 0, deploys: 0, failures: 0, taskAttempts: attempts };
   } catch {
-    return { date: nowLocalISO().slice(0, 10), tasks: 0, deploys: 0, failures: 0 };
+    return { date: nowLocalISO().slice(0, 10), tasks: 0, deploys: 0, failures: 0, taskAttempts: {} };
   }
+}
+
+/**
+ * P1-014 stop-loss: count one more pipeline failure for a task.
+ * Returns true when the failure count reached maxAttempts (breaker trips).
+ */
+export function recordTaskFailure(state: PilotState, taskId: string, maxAttempts: number): boolean {
+  const n = (state.taskAttempts[taskId] ?? 0) + 1;
+  state.taskAttempts[taskId] = n;
+  return n >= maxAttempts;
 }
 
 export function saveState(s: PilotState) {
