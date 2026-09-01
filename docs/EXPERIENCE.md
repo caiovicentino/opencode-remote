@@ -7,6 +7,6 @@ mais recentes primeiro); o red team noturno deduplica e poda acima de
 60 lições.
 
 ## Lessons
-- When releasing a per-connection resource from both `close` and `error` handlers, add an idempotency flag on the socket (e.g. `released`) before the first release — ws can fire both events for one connection and double-release corrupts/unde… (fonte: P2-025)
-- When keying admission limits off `req.socket.remoteAddress`, document the proxy case: behind a TLS-terminating proxy every client shares one IP, so the cap must be raised via env or traffic routed as TCP passthrough (fonte: P2-025)
-- When testing server-side WebSocket admission, don't treat handshake `open` as proof of admission — a refused connection closes right after handshake, so resolve success only after a short grace period (~150ms) and assert the close code/rea… (fonte: P2-025)
+- When a start path adopts an already-healthy daemon via a health-check-before-spawn branch, persist the resolved spawn entry there too — otherwise a later manual restart has no entry and becomes a logged no-op exactly for the adopted-daemon… (fonte: P3-017)
+- When adding a manual restart to a supervisor, cancel the pending respawn timer and reset failures/gaveUp before stopping the child, then re-check port health before spawning: an adopted/launchd daemon may still own the port, and spawning i… (fonte: P3-017)
+- When wiring async recovery into tray/UI entry points, keep the function try/caught and log-only, invoke it as `void fn().catch(...)`, and make the no-entry case return false instead of throwing — a click must never take the shell down (fonte: P3-017)
