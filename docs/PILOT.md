@@ -73,6 +73,11 @@ produção: `userData` do Electron é temporário e nenhum sidecar é spawnado.
 
 ## Deploy staged + rollback
 
+0. **Guard de disco (P3-006)**: antes de qualquer mutação (git/npm), `statfs` no
+   repo de produção — com menos de **5GB livres** o deploy aborta com detail
+   claro (`disk low: Xgb free (need 5.0gb) — deploy aborted before npm ci/build`),
+   evento `disk-guard` no feed e `notifySupervisor` em vez de falhar depois com
+   um `git index.lock` críptico. Sonda indisponível = fail-open (não bloqueia).
 1. `git reset --hard <sha>` no repo de produção + `npm ci` + `npm run build`
 2. `launchctl kickstart -k` relay e daemon
 3. Health: `GET 127.0.0.1:8792/api/health` (Bearer apiToken) até 90s
@@ -254,3 +259,16 @@ pipeline uses both to close the loop on UI changes:
 So a cycle that changes the UI always leaves visual evidence in the review log,
 and the verdict references it. Browse sessions are capped (3, 5-min idle) and the
 whole surface can be disabled with `OCR_BROWSE_DISABLED=1`.
+
+## Disk guard no deploy (P3-006, 01/09)
+
+Um disco cheio derrubou o pilot com um `git index.lock` críptico. Agora o
+`deploy()` roda um **guard de disco** como primeiro passo (antes de qualquer
+git/npm): `statfs` no repo de produção (`apps/pilot/src/disk.ts`) e, com menos
+de **5GB livres**, o deploy aborta com `{ ok: false, rolledBack: false }`,
+detail `disk low: Xgb free (need 5.0gb) — deploy aborted before npm ci/build`,
+evento `deploy/disk-guard` no feed e `notifySupervisor` avisando o supervisor.
+Sonda indisponível = fail-open (nunca bloqueia deploy saudável). Sondas,
+threshold, notify e emit são injetáveis (`DeployOpts`) — a bateria de eval
+(`scripts/unit.test.ts`) testa o abort com threshold mockado provando que ele
+acontece antes do `npm ci`.

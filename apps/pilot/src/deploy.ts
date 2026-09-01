@@ -6,6 +6,8 @@ import { emit } from "./events";
 import { log, nowLocalISO } from "./log";
 import { captureUiShot } from "./shot";
 import { touchHeartbeat, type PilotConfig } from "./state";
+import { notifySupervisor } from "./notify";
+import { DISK_MIN_FREE_BYTES, diskGuardDetail, freeDiskBytes } from "./disk";
 
 export interface DeployResult {
   ok: boolean;
@@ -14,18 +16,45 @@ export interface DeployResult {
 }
 
 /**
+ * P3-006: injectable disk-guard dependencies — tests mock the free-space probe,
+ * the threshold, the event stream and the supervisor notify to pin the
+ * abort-before-npm-ci path without touching the production event log.
+ */
+export interface DeployOpts {
+  minFreeBytes?: number;
+  probeFreeBytes?: (path: string) => Promise<number | null>;
+  notify?: typeof notifySupervisor;
+  emitEvent?: typeof emit;
+}
+
+/**
  * Staged deploy of a merged SHA into the production checkout:
  * reset prod repo to SHA → install → build → restart services → health watch.
  * Any failure rolls back to the previous SHA automatically.
  * `meta.ui` (P2-011): after a clean deploy of a UI-touching task, capture a
  * screenshot of the deployed dashboard into the review log (pilot/shots).
+ * P3-006: aborts with a clear detail (and a supervisor notify) before touching
+ * anything when free disk space is below the 5GB ceiling.
  */
 export async function deploy(
   cfg: PilotConfig,
   sha: string,
   meta?: { task?: string; ui?: boolean },
+  opts?: DeployOpts,
 ): Promise<DeployResult> {
-  emit("deploy", { phase: "start", detail: `sha ${sha.slice(0, 7)}` });
+  const emitEvent = opts?.emitEvent ?? emit;
+  emitEvent("deploy", { phase: "start", detail: `sha ${sha.slice(0, 7)}` });
+  // P3-006 disk guard: must run before ANY mutation (git/npm) — a full disk
+  // used to surface later as a cryptic git index.lock failure. Unavailable
+  // probe = proceed (fail-open).
+  const probe = opts?.probeFreeBytes ?? freeDiskBytes;
+  const guard = diskGuardDetail(await probe(cfg.repo), opts?.minFreeBytes ?? DISK_MIN_FREE_BYTES);
+  if (guard) {
+    log("warn", guard);
+    emitEvent("deploy", { phase: "disk-guard", ok: false, detail: guard });
+    await (opts?.notify ?? notifySupervisor)(meta?.task ?? "deploy", false, guard);
+    return { ok: false, rolledBack: false, detail: guard };
+  }
   const prev = exec("git rev-parse HEAD", { cwd: cfg.repo }).output.trim();
   try {
     const prevLock = exec("git show HEAD:package-lock.json | shasum -a 256 | cut -d' ' -f1", { cwd: cfg.repo }).output.trim();
