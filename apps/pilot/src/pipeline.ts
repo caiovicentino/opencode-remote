@@ -1136,6 +1136,9 @@ async function gatekeeper(
     });
   if (renderTouched) {
     steps.push(["desktop-render", "npx tsx scripts/desktop-render.test.ts"]);
+    // P1-051: real interaction flow against the packaged shell (Playwright
+    // _electron via tools/desktop.mjs) — open → interact → shot → assert IPC.
+    steps.push(["desktop-flow", "npx tsx scripts/desktop-flow.test.ts"]);
   }
   // P2-009 mandatory evidence: static checks first (missing block, fabricated
   // command, missing screenshot) then re-execution of every cited command —

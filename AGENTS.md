@@ -108,3 +108,10 @@ com retenção dos 20 mais recentes) e reviewers os citam no veredito
 (docs/PILOT.md). Seus próprios checks pré-merge vão em
 `~/.opencode-remote/pilot/shots/builder/` — o subdir builder não é usado como
 evidência de review.
+
+Desktop app: para interagir com o app Electron real use o harness
+`tools/desktop.mjs` (`open/see/click/type/shot/ipc/close`, mesma DX do
+browse.mjs) — launch hermético, sem daemon de produção. Quando o diff toca
+`apps/desktop/` ou `apps/web/`, o gate roda `npm run test:desktop-flow` (fluxo
+de interação real, <60s); use `OCR_DESKTOP_SESSION` próprio para não colidir
+com a sessão de outro processo.

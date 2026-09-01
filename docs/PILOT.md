@@ -73,6 +73,30 @@ de console do renderer reprova. O trigger é **fail-closed**: se `git diff`
 falhar, o smoke roda de qualquer jeito. O teste roda sem tocar no daemon de
 produção: `userData` do Electron é temporário e nenhum sidecar é spawnado.
 
+### Harness de interação no app desktop (P1-051)
+
+O render smoke valida boot + montagem; para **interagir** com o app real os
+builders usam `tools/desktop.mjs` (mesma DX do `browse.mjs`): `open [shot [w h]]`,
+`see <texto>`, `click <sel>`, `type <sel> <texto>`, `shot <out.png> [w h]`,
+`ipc <expr>` (avalia contra `window.ocrDesktop` e imprime JSON) e `close`. O
+launch é hermético via Playwright `_electron`: `userData` temporário
+(`OCR_USER_DATA_DIR`), state file sem `apiToken` (`OCR_DAEMON_STATE_FILE`),
+`OCR_DAEMON_ENTRY` inexistente (nenhum sidecar spawnado) e `OCR_DAEMON_FORCE_DOWN`
+(state de pairing determinístico `daemonDown:true`). Um keeper destacado mantém o
+app vivo entre os comandos CLI por até 5min de idle; `OCR_DESKTOP_SESSION`
+isola a instância — **o gate usa sessão única por execução** para nunca colidir
+com a sessão `main` de um builder. Toda sessão vive num **dir 0700** próprio
+(socket `chmod 0600` pós-bind + **token random 0600** que cada request deve
+apresentar e **provar** — o keeper responde `sha256(token:nonce)`; server
+impostor no path responde, mas não prova — achado do review round 2). Quando
+o diff toca `apps/desktop/` ou
+`apps/web/`, o gatekeeper roda também o **desktop-flow** (`npm run
+test:desktop-flow`): 1 fluxo real de interação (abrir app → digitar código de
+pairing inválido → clicar Pair → assert do erro visível → shot → asserts de IPC
+`app:version` e `app:pairingState`) com orçamento de **60s**. O rail desktop
+(Conversas/Artifacts) só renderiza com o app pareado a um daemon vivo — fora do
+escopo hermético por design (chaves E2E reais).
+
 ## Deploy staged + rollback
 
 0. **Guard de disco (P3-006)**: antes de qualquer mutação (git/npm), `statfs` no
