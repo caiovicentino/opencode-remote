@@ -16,11 +16,11 @@ export interface FailureLesson {
   ts: string;
   task: string;
   attempts: number;
-  /** failing step: gatekeeper step name, "review", "crash", "pipeline", …. */
+  /** failing step: a gatekeeper step name, "review" (review-round burnout) or "pipeline" fallback. */
   step: string;
   /** last failure reason carried by the pipeline result. */
   findings: string;
-  /** tail of the gatekeeper output for the task ("" when the failure was pre-gate). */
+  /** tail of the gatekeeper/review output for the task ("" when unavailable). */
   tail: string;
 }
 

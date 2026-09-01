@@ -158,7 +158,7 @@ default 4) o breaker dispara:
 4. **scribe de falha (P2-031)**: quando o bloqueio "pousa" em `main` (push ok),
    uma lição estruturada `kind:"failure"` é gravada em
    `~/.opencode-remote/pilot/lessons.jsonl` com o step da falha, os findings e
-   o tail do gatekeeper — ver "Lições de falha" na seção do IER.
+   o tail do gatekeeper/review — ver "Lições de falha" na seção do IER.
 
 O contador **não** é zerado pelo reset diário de `state.json` (virar a noite não
 reabre o breaker) e, se o push do bloqueio falhar, o guard do loop re-bloqueia a
@@ -397,13 +397,17 @@ O IER acima só cobre merges bem-sucedidos; o caminho oposto — task **bloquead
 pelo stop-loss — também gera memória. Quando o bloqueio "pousa" em `main`
 (`push` ok), o pilot grava uma linha JSONL em
 `~/.opencode-remote/pilot/lessons.jsonl` com `kind:"failure"` e os campos
-`task`, `attempts`, `step` (step do gatekeeper que falhou ou `pipeline`),
+`task`, `attempts`, `step` (o step real da última falha: um step do gatekeeper,
+`review` quando a task queima as rodadas de review — caminho que também grava o
+arquivo de falha, com os findings verificados dos reviewers — ou `pipeline`),
 `findings` (último motivo da falha, cap 500 chars) e `tail` (tail do output do
-gatekeeper, cap 1200 chars, vazio se a falha foi pré-gate). A gravação só
+gatekeeper/review, cap 1200 chars, vazio quando indisponível). A gravação só
 acontece quando o push do bloqueio pousa em `main`, então ciclos de retry não
-duplicam entradas. O prompt do **strategist** recebe as **10 lições de falha mais
-recentes** num bloco `FAILURE LESSONS` na hora de criar/refinar tasks, para não
-re-propor padrões que já queimaram o orçamento de tentativas.
+duplicam entradas, e `findings` nunca repete o conteúdo de `tail` no caminho de
+re-bloqueio (que resume pelo step). O prompt do **strategist** recebe as **10
+lições de falha mais recentes** num bloco `FAILURE LESSONS` na hora de
+criar/refinar tasks, para não re-propor padrões que já queimaram o orçamento de
+tentativas.
 
 ## RESEARCHER role (daily frontier scan)
 

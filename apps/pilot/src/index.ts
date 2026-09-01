@@ -133,7 +133,10 @@ async function main() {
       const idle = slotCfg.get(free[0]!)!;
       let blockedAny = false;
       for (const t of queue.filter((t) => overCap(cfg, t))) {
-        blockAndPush(idle, state, t, state.taskAttempts[t.id] ?? cfg.maxAttemptsPerTask, lastGateFail(t.id)?.tail ?? "max attempts reached", false);
+        // P2-031: findings and tail must not repeat the same string in the
+        // failure lesson — the step name summarizes, the tail carries detail
+        const gate = lastGateFail(t.id);
+        blockAndPush(idle, state, t, state.taskAttempts[t.id] ?? cfg.maxAttemptsPerTask, gate?.step ? `kept failing at step "${gate.step}"` : "max attempts reached", false);
         blockedAny = true;
       }
       if (blockedAny) {
