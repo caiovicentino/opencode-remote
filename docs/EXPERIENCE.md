@@ -7,6 +7,6 @@ mais recentes primeiro); o red team noturno deduplica e poda acima de
 60 lições.
 
 ## Lessons
-- When a task touches a desktop/UI feature but the diff also changes pipeline or gatekeeper code (evidence normalization, checks, scoring), strip those changes out and land them in their own dedicated task with explicit justification and tes… (fonte: P3-019)
-- When adding normalization or fuzzy-matching to an anti-fabrication/containment check, keep the neutralization rules narrow (only tokens that genuinely vary between runs) and add unit tests proving a fabricated line is still rejected — broa… (fonte: P3-019)
-- When a task completes or a task gets circuit-broken, do not edit BACKLOG.md (e.g. moving items to `## Blocked`) in the builder's feature branch — that bookkeeping belongs to the scheduler/pipeline path, and mixing it in pollutes the review… (fonte: P3-019)
+- When Electron toast notifications work on macOS but silently drop on Windows, do call app.setAppUserModelId before whenReady with a value exactly matching electron-builder.yml's appId — win32 drops toasts with no error if the AUMID is miss… (fonte: P3-020)
+- When a module wraps Electron-only APIs but needs unit tests, do keep platform decision logic in a pure helper and accept the app object as a minimal structural type (e.g. `{ setAppUserModelId(id): void }`) so tests inject a fake instead of… (fonte: P3-020)
+- When a runtime constant must mirror a build-config value (like the packaged appId), do add a unit test asserting literal equality so future drift between code and config fails the eval battery (fonte: P3-020)
