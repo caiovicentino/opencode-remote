@@ -1,10 +1,29 @@
 import { spawn, execSync } from "node:child_process";
+import { nowLocalISO } from "./log";
 
 export interface RunResult {
   ok: boolean;
   output: string;
   timedOut: boolean;
   sessionId?: string;
+}
+
+/**
+ * Throttled stdout→log bridge for aux agents: one line per 10s lands in
+ * pilot.log as `msg: "<role>"`, which the dashboard log drawer filters by role.
+ */
+export function agentStream(role: string): (chunk: string) => void {
+  let last = 0;
+  return (chunk: string) => {
+    const now = Date.now();
+    if (now - last < 10_000) return;
+    last = now;
+    const lines = chunk.split("\n").filter((l) => l.trim());
+    const line = lines[lines.length - 1];
+    if (line) {
+      console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: role, data: line.trim().slice(0, 400) }));
+    }
+  };
 }
 
 /**

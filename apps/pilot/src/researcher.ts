@@ -1,4 +1,4 @@
-import { exec, runAgent } from "./runner";
+import { agentStream, exec, runAgent } from "./runner";
 import { log, nowLocalISO } from "./log";
 import { notifySupervisor } from "./notify";
 import { emit } from "./events";
@@ -54,6 +54,7 @@ Your LAST line of output must be exactly: RESEARCHER:DONE`;
     cwd: cfg.workspace,
     timeoutMin: 20,
     label: "researcher",
+    onStdout: agentStream("researcher"),
   });
   emit("phase", { task: "research", phase: r.output.includes("RESEARCHER:DONE") ? "done" : "failed", ok: r.output.includes("RESEARCHER:DONE") });
   if (!r.output.includes("RESEARCHER:DONE")) {

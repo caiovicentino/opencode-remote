@@ -155,6 +155,7 @@
     <span class="chip role" data-role="gatekeeper" onclick="toggleRole(this)">GATE</span>
     <span class="chip role" data-role="deploy" onclick="toggleRole(this)">DEPLOY</span>
     <span class="chip role" data-role="strategist" onclick="toggleRole(this)">STRATEGIST</span>
+    <span class="chip role" data-role="researcher" onclick="toggleRole(this)">RESEARCHER</span>
     <span class="chip role" data-role="redteam" onclick="toggleRole(this)">REDTEAM</span>
     <span class="chip on" id="followbtn" onclick="toggleFollow()">FOLLOW ▼</span>
     <button id="logclose" onclick="closeLogs()">✕</button>
@@ -467,8 +468,9 @@ function escapeHtml(s) { return s.replace(/</g, "&lt;"); }
 
 // ─── log drawer ───────────────────────────────────────────────────────────────
 let logLines = [], roleFilters = new Set(), follow = true, logsOpen = false;
-const ROLES = ["agent","reviewer","gatekeeper","deploy","strategist","redteam","pipeline","info"];
+const ROLES = ["agent","reviewer","gatekeeper","deploy","strategist","researcher","redteam","pipeline","info"];
 function roleOf(msg) {
+  if (/researcher/.test(msg)) return "researcher";
   if (/strategist/.test(msg)) return "strategist";
   if (/redteam/.test(msg)) return "redteam";
   if (/reviewer/.test(msg)) return "reviewer";

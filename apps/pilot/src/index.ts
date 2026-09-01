@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { emit } from "./events";
-import { exec, runAgent } from "./runner";
+import { agentStream, exec, runAgent } from "./runner";
 import { nowLocalISO } from "./log";
 import { notifySupervisor } from "./notify";
 import { runResearcher } from "./researcher";
@@ -163,7 +163,7 @@ ${"Constitution: " + CONSTITUTION_REF}
 
 Output: either "REDTEAM: CLEAN" if you found nothing actionable, or
 "REDTEAM: FINDING" followed by title, severity and a one-paragraph proof/attack sketch.`,
-    { cwd: cfg.workspace, timeoutMin: 30, label: "redteam" },
+    { cwd: cfg.workspace, timeoutMin: 30, label: "redteam", onStdout: agentStream("redteam") },
   );
   if (r.output.includes("REDTEAM: FINDING")) {
     const id = nextId(cfg.workspace, "RT");
@@ -216,7 +216,7 @@ Append them to BACKLOG.md under ## Ready using EXACTLY the existing line format:
 IDs continue the sequence (P2-00X / P3-00X). Do not touch other sections, do not commit.
 
 Your LAST line must be exactly: STRATEGIST:DONE`,
-    { cwd: cfg.workspace, timeoutMin: 25, label: "strategist" },
+    { cwd: cfg.workspace, timeoutMin: 25, label: "strategist", onStdout: agentStream("strategist") },
   );
   if (r.output.includes("STRATEGIST:DONE")) {
     exec(`git add BACKLOG.md && git commit -qm "pilot(strategist): queue refill $(date -u +%H:%M)" && git push -q origin main`, {
