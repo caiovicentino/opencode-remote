@@ -20,6 +20,35 @@ export interface Pairing {
 
 export type Status = "connecting" | "paired" | "rejected" | "closed";
 
+/** P1-061: which wire the client is currently dialed on. */
+export type Transport = "local" | "relay";
+
+/** Shape returned by the desktop bridge's app:localLink IPC. */
+export interface LocalLink {
+  port: number;
+  token: string;
+}
+
+/** Options for OcrClient.connect — absent in the browser (PWA stays relay-only). */
+export interface ConnectOptions {
+  /** Desktop shell bridge: fresh loopback WS credentials from the 0600 state file. */
+  getLocalLink?: () => Promise<LocalLink | null>;
+}
+
+/** Local direct-mode URL builder: token rides the query, loopback only. */
+export function localWsUrl(port: number, token: string): string {
+  return `ws://127.0.0.1:${port}/ws?token=${encodeURIComponent(token)}`;
+}
+
+/**
+ * P1-061 failover predicate (unit-pinned): one failed local dial stays sticky
+ * on the direct transport; two consecutive failures hand the next dial to the
+ * relay. A successful pairing resets the counter.
+ */
+export function shouldFailoverToRelay(localFailures: number): boolean {
+  return localFailures >= 2;
+}
+
 interface StoredState {
   pairing: Pairing;
 }
@@ -193,6 +222,8 @@ export class OcrClient {
   vapidKey?: string;
   caps: { transcribe?: boolean } = {};
   onStatus: ((s: Status) => void) | null = null;
+  /** P1-061: transport of the current dial ("local" loopback or "relay"). */
+  transport: Transport = "relay";
 
   private ws: WebSocket;
   private key: CryptoKey;
@@ -216,6 +247,8 @@ export class OcrClient {
     }
   >();
   private listeners = new Set<Handler>();
+  private localLink?: () => Promise<LocalLink | null>;
+  private localFailures = 0;
 
   private constructor(
     ws: WebSocket,
@@ -227,6 +260,7 @@ export class OcrClient {
     daemonSpki = "",
     pairing?: Pairing,
     identity?: Identity,
+    localLink?: () => Promise<LocalLink | null>,
   ) {
     this.ws = ws;
     this.key = key;
@@ -237,6 +271,7 @@ export class OcrClient {
     this.daemonSpki = daemonSpki;
     if (pairing) this.pairing = pairing;
     if (identity) this.identity = identity;
+    if (localLink) this.localLink = localLink;
 
     this.attach(ws);
     if (typeof document !== "undefined") {
@@ -262,6 +297,7 @@ export class OcrClient {
   private hbTimer: number | null = null;
   private reconnectTimer: number | null = null;
   private reconnectAttempt = 0;
+  private confirmTimer: number | null = null;
 
   private attach(ws: WebSocket) {
     const gen = ++this.gen;
@@ -271,6 +307,9 @@ export class OcrClient {
     };
     ws.onclose = () => {
       if (gen !== this.gen || this.ws !== ws || this.intentionalClose) return;
+      // P1-061: a local socket that died counts toward transport failover;
+      // relay losses don't (relay is already the fallback transport).
+      if (this.transport === "local") this.localFailures++;
       this.scheduleReconnect();
     };
     ws.onerror = () => {};
@@ -324,6 +363,7 @@ export class OcrClient {
 
   private scheduleReconnect() {
     this.stopHeartbeat();
+    this.clearConfirmWatchdog();
     if (this.reconnectTimer !== null || this.intentionalClose) return;
     this.setStatus("connecting");
     const delay = Math.min(15_000, 1000 * 2 ** this.reconnectAttempt++);
@@ -336,12 +376,53 @@ export class OcrClient {
   private async reconnect() {
     if (this.intentionalClose || !this.pairing) return;
     try {
-      const ws = new WebSocket(this.pairing.relay);
+      const target = await this.dialTarget();
+      const ws = new WebSocket(target.url);
       this.ws = ws;
+      this.transport = target.transport;
       this.attach(ws);
       ws.onopen = () => void this.sendHello(ws);
+      this.armConfirmWatchdog(target.confirmTimeoutMs);
     } catch {
       this.scheduleReconnect();
+    }
+  }
+
+  /**
+   * P1-061: pick the wire for the next dial. Local is preferred whenever a
+   * loopback link is available and hasn't failed twice in a row; otherwise the
+   * relay of the pairing URI is used exactly as before.
+   */
+  private async dialTarget(): Promise<{
+    url: string;
+    transport: Transport;
+    confirmTimeoutMs: number;
+  }> {
+    if (this.localLink && !shouldFailoverToRelay(this.localFailures)) {
+      const link = await this.localLink().catch(() => null);
+      if (link?.port && link.token) {
+        return { url: localWsUrl(link.port, link.token), transport: "local", confirmTimeoutMs: 3_000 };
+      }
+    }
+    return { url: this.pairing.relay, transport: "relay", confirmTimeoutMs: 15_000 };
+  }
+
+  /**
+   * P1-061: a dial that never confirms (daemon mid-kickstart, silent relay)
+   * must not strand the client in "connecting" forever — close and retry.
+   */
+  private armConfirmWatchdog(confirmTimeoutMs: number) {
+    if (this.confirmTimer !== null) clearTimeout(this.confirmTimer);
+    this.confirmTimer = window.setTimeout(() => {
+      this.confirmTimer = null;
+      if (this.status !== "paired" && !this.intentionalClose) this.forceReconnect();
+    }, confirmTimeoutMs);
+  }
+
+  private clearConfirmWatchdog() {
+    if (this.confirmTimer !== null) {
+      clearTimeout(this.confirmTimer);
+      this.confirmTimer = null;
     }
   }
 
@@ -417,6 +498,10 @@ export class OcrClient {
     this.status = s;
     if (s === "paired") {
       this.reconnectAttempt = 0;
+      // P1-061: a confirmed handshake proves the current transport works —
+      // stay sticky on it and give local another chance after any outage.
+      this.localFailures = 0;
+      this.clearConfirmWatchdog();
       this.startHeartbeat();
     } else if (s !== "connecting") {
       this.stopHeartbeat();
@@ -569,6 +654,7 @@ export class OcrClient {
   close() {
     this.intentionalClose = true;
     this.stopHeartbeat();
+    this.clearConfirmWatchdog();
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -577,13 +663,105 @@ export class OcrClient {
     this.setStatus("closed");
   }
 
-  static async connect(pairing: Pairing): Promise<OcrClient> {
+  static async connect(pairing: Pairing, opts?: ConnectOptions): Promise<OcrClient> {
     const identity = await getOrCreateIdentity();
     const { hello, sessionKey } = await clientHello(pairing.k, identity);
+    const from = Math.random().toString(36).slice(2, 10);
+    const getLocalLink = opts?.getLocalLink;
 
+    // P1-061: local-first. When the shell provides loopback credentials and
+    // the daemon answers there, no relay hop is involved at all — deploy
+    // kickstarts of the relay can't touch the session. Any local failure
+    // (unreachable, timeout) falls back to the relay of the pairing URI.
+    if (getLocalLink) {
+      const link = await getLocalLink().catch(() => null);
+      if (link?.port && link.token) {
+        try {
+          return await OcrClient.dialLocal(pairing, from, hello, sessionKey, identity, getLocalLink, link);
+        } catch (err) {
+          if (err instanceof Error && err.message.startsWith("rejected by daemon")) throw err;
+          // otherwise: relay as always
+        }
+      }
+    }
+    return OcrClient.dialRelay(pairing, from, hello, sessionKey, identity, getLocalLink);
+  }
+
+  /** Dial the loopback WS. Rejects with "local daemon unreachable" on
+   * timeout/close (caller falls back to relay), propagates daemon rejection. */
+  private static dialLocal(
+    pairing: Pairing,
+    from: string,
+    hello: Awaited<ReturnType<typeof clientHello>>["hello"],
+    sessionKey: CryptoKey,
+    identity: Identity,
+    getLocalLink: () => Promise<LocalLink | null>,
+    link: LocalLink,
+  ): Promise<OcrClient> {
+    return new Promise((resolve, reject) => {
+      const ws = new WebSocket(localWsUrl(link.port, link.token));
+      const client = new OcrClient(
+        ws,
+        sessionKey,
+        pairing.room,
+        pairing.name ?? "",
+        from,
+        pairing.vapid,
+        pairing.k,
+        pairing,
+        identity,
+        getLocalLink,
+      );
+      client.transport = "local";
+      // send the handshake on open — without this the local dial sits silent,
+      // hits the 3s timeout and every connect falls back to the relay
+      ws.onopen = () => {
+        ws.send(
+          JSON.stringify({
+            room: pairing.room,
+            from,
+            payload: b64(new TextEncoder().encode(JSON.stringify({ type: "hello", hello }))),
+          }),
+        );
+      };
+      const fail = (err: Error) => {
+        clearTimeout(timeout);
+        client.intentionalClose = true; // this socket's auto-reconnect is not wanted
+        try {
+          ws.close();
+        } catch {}
+        reject(err);
+      };
+      const timeout = setTimeout(() => fail(new Error("local daemon unreachable")), 3_000);
+      client.onStatus = (s) => {
+        if (s === "paired") {
+          clearTimeout(timeout);
+          resolve(client);
+        } else if (s === "rejected") {
+          clearTimeout(timeout);
+          reject(
+            new Error(
+              "rejected by daemon: this client is not in the allowlist — clear it with `manage.ts revoke-all` and pair again",
+            ),
+          );
+        } else if (s === "closed") {
+          fail(new Error("local daemon unreachable"));
+        }
+      };
+    });
+  }
+
+  /** Relay dial — the pre-P1-061 connect() path, unchanged. */
+  private static dialRelay(
+    pairing: Pairing,
+    from: string,
+    hello: Awaited<ReturnType<typeof clientHello>>["hello"],
+    sessionKey: CryptoKey,
+    identity: Identity,
+    getLocalLink?: () => Promise<LocalLink | null>,
+  ): Promise<OcrClient> {
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(pairing.relay);
-      const from = Math.random().toString(36).slice(2, 10);
 
       const timeout = setTimeout(() => {
         ws.close();
@@ -611,6 +789,7 @@ export class OcrClient {
         pairing.k,
         pairing,
         identity,
+        getLocalLink,
       );
       client.onStatus = (s) => {
         if (s === "paired") {

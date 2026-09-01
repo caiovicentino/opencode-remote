@@ -3,7 +3,8 @@
  * Run: npx tsx scripts/unit.test.ts
  */
 import { b64, fromB64, seal, openSealed, seqAad } from "@ocr/protocol";
-import { parsePairingUri } from "../apps/web/src/lib/client";
+import { parsePairingUri, localWsUrl, shouldFailoverToRelay } from "../apps/web/src/lib/client";
+import { isLoopbackAddr, localOriginAllowed, localUpgradeAllowed } from "../apps/daemon/src/localws";
 import { copyText, hasClipboardApi, legacyCopy } from "../apps/web/src/lib/clipboard";
 import { mimeFor } from "../apps/web/src/lib/files";
 import { timeAgo, sessionUpdatedTs } from "../apps/web/src/lib/time";
@@ -2261,6 +2262,35 @@ check("p1-059 listGateFails: missing dir → []", listGateFails(join(tmpdir(), `
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+// --- P1-061: local direct-mode transport ------------------------------------
+
+check("p1-061 localWsUrl builds ws://127.0.0.1:<port>/ws?token=…", localWsUrl(8792, "tok") === "ws://127.0.0.1:8792/ws?token=tok");
+check("p1-061 localWsUrl encodes the token", localWsUrl(8792, "a/b c") === "ws://127.0.0.1:8792/ws?token=a%2Fb%20c");
+check("p1-061 failover predicate: 0 and 1 failures stay sticky local", !shouldFailoverToRelay(0) && !shouldFailoverToRelay(1));
+check("p1-061 failover predicate: 2 consecutive failures hand over to relay", shouldFailoverToRelay(2) && shouldFailoverToRelay(3));
+check("p1-061 isLoopbackAddr: v4, v6 and v4-mapped", isLoopbackAddr("127.0.0.1") && isLoopbackAddr("::1") && isLoopbackAddr("::ffff:127.0.0.1"));
+check("p1-061 isLoopbackAddr: foreign addr rejected", !isLoopbackAddr("192.168.1.10") && !isLoopbackAddr(undefined));
+check("p1-061 origin: absent (non-browser) allowed", localOriginAllowed(undefined));
+check("p1-061 origin: Electron loadFile allowed", localOriginAllowed("null") && localOriginAllowed("file://"));
+check("p1-061 origin: loopback pages allowed", localOriginAllowed("http://127.0.0.1:5173") && localOriginAllowed("http://localhost:5173"));
+check("p1-061 origin: arbitrary web pages rejected", !localOriginAllowed("https://evil.example") && !localOriginAllowed("not-a-url"));
+check(
+  "p1-061 upgrade predicate: exact path + loopback + origin + token",
+  localUpgradeAllowed("/ws", "tok", "127.0.0.1", undefined, "tok") &&
+    !localUpgradeAllowed("/other", "tok", "127.0.0.1", undefined, "tok") &&
+    !localUpgradeAllowed("/ws", "tok", "192.168.1.10", undefined, "tok") &&
+    !localUpgradeAllowed("/ws", "bad", "127.0.0.1", undefined, "tok") &&
+    !localUpgradeAllowed("/ws", null, "127.0.0.1", undefined, "tok") &&
+    !localUpgradeAllowed("/ws", "tok", "127.0.0.1", "https://evil.example", "tok"),
+);
+// log hygiene: the token rides in the upgrade query — no log call may ever
+// include it (acceptance criterion "nenhum log contém token=")
+{
+  const daemonSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  const leaky = daemonSrc.split("\n").filter((l) => l.includes("log(") && l.includes("token="));
+  check("p1-061 no daemon log call contains token=", leaky.length === 0);
 }
 
 if (failures > 0) {

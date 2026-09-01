@@ -168,6 +168,15 @@ QR scan on first run. The manual QR/paste screen remains as a fallback
 (machines switcher → add machine), for example when an already-running daemon
 was reused and never printed a URI to capture.
 
+**Direct local connection (P1-061)**: on the host machine the desktop app
+skips the relay entirely — it dials the daemon's loopback WebSocket
+(`ws://127.0.0.1:8792/ws`, authenticated with the local token from the 0600
+state file). Deploy kickstarts of the relay no longer interrupt a running
+session, and after any reconnect the open conversation is refetched so
+messages produced during the gap show up without a resend. Remote access
+(phone, away from home) keeps using the relay as before; the current wire is
+shown in Settings → About ("Connection: direct (local) / via relay").
+
 **Pairing deep links**: the packaged desktop app registers the
 `opencode-remote://` protocol with the OS (macOS/Windows). An install or
 invite page can open the app with an `opencode-remote://pair?v=2&…` link and

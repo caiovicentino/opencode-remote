@@ -28,6 +28,16 @@ identity servers, no accounts.
 8. **Audit trail.** Pairing, rejection, connection, revocation and expiry
    events land in `~/.opencode-remote/audit.log` and surface in
    Settings → Security log.
+9. **Local direct mode (P1-061).** The desktop shell reads the `apiToken`
+   from the 0600 state file in the (privileged) main process and hands it to
+   the sandboxed renderer so it can dial the daemon's loopback WS
+   (`ws://127.0.0.1:8792/ws`). This deliberately relaxes the old "renderer
+   never sees the apiToken" rule: the renderer is a same-user process, the
+   token is only valid on loopback, the upgrade additionally enforces a
+   loopback-Origin allowlist (arbitrary web pages cannot hold local sockets),
+   and every application payload stays E2E-sealed end to end — the local WS
+   speaks the exact same sealed-frame protocol as the relay. The token is
+   never logged and the daemon never logs the upgrade URL.
 
 ## Threat notes
 

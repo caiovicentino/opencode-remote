@@ -160,6 +160,21 @@ async function onReady(): Promise<void> {
       return null;
     }
   });
+  // P1-061: local direct mode — the renderer dials the daemon's loopback WS
+  // itself (ws://127.0.0.1:<port>/ws?token=…) instead of riding the relay.
+  // This deliberately relaxes the "renderer never sees the apiToken" rule:
+  // the renderer is a same-user process, the token is only valid on loopback
+  // and the E2E client is an authorized peer of the daemon anyway (the
+  // handshake crypto stays intact). Trade-off documented in docs/security.md.
+  ipcMain.handle("app:localLink", () => {
+    try {
+      const file = join(homedir(), ".opencode-remote", "daemon.json");
+      const raw = JSON.parse(readFileSync(file, "utf8")) as { apiToken?: string };
+      return raw.apiToken ? { port: DAEMON_METRICS_PORT, token: raw.apiToken } : null;
+    } catch {
+      return null;
+    }
+  });
   // Boot pairing URI captured from the daemon sidecar's stdout (null when the
   // daemon was reused or hasn't printed it yet) — lets the renderer auto-pair.
   ipcMain.handle("app:pairUrl", () => getPairUrl());

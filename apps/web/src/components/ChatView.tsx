@@ -462,6 +462,26 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
     }
   }, [events, sessionId]);
 
+  // P1-061 stream resync: after any reconnect (local loopback or relay), history
+  // is the source of truth. On the connecting→paired transition following a
+  // drop, clear the stale streaming tail and refetch the conversation —
+  // messages produced during the gap appear without a resend. The watermark is
+  // re-anchored to the buffer tail so already-rendered events never replay.
+  const hadDropRef = useRef(false);
+  useEffect(() => {
+    if (connStatus === "connecting" || connStatus === "closed") {
+      hadDropRef.current = true;
+      return;
+    }
+    if (connStatus === "paired" && hadDropRef.current) {
+      hadDropRef.current = false;
+      setLiveText("");
+      liveRef.current = "";
+      lastEventId.current = events[events.length - 1]?.id ?? null;
+      void loadHistory();
+    }
+  }, [connStatus]);
+
   // AutoMode: the daemon answered a permission ask on the user's behalf —
   // clear the local ask UI and surface a transient note.
   const autoSeenRef = useRef<Set<string>>(new Set());

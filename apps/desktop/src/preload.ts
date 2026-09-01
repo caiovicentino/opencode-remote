@@ -8,6 +8,12 @@ export interface DaemonBrowseResponse {
   body: string;
 }
 
+/** P1-061: loopback WS credentials for the direct local transport. */
+export interface LocalLink {
+  port: number;
+  token: string;
+}
+
 /** First-run pairing state pushed/pulled from the main process (P2-007). */
 export interface PairingState {
   uri: string | null;
@@ -36,6 +42,9 @@ contextBridge.exposeInMainWorld("ocrDesktop", {
   getPairingState: (): Promise<PairingState | null> => ipcRenderer.invoke("app:pairingState"),
   // P1-053: banner button — manual daemon restart (same path as the tray).
   reconnectDaemon: (): Promise<boolean> => ipcRenderer.invoke("app:reconnectDaemon"),
+  // P1-061: fresh loopback WS credentials (port + token) for the local direct
+  // transport; null when the state file has no token yet (first health poll).
+  getLocalLink: (): Promise<LocalLink | null> => ipcRenderer.invoke("app:localLink"),
   onPairingState: (cb: (state: PairingState | null) => void): (() => void) => {
     const listener = (_e: Electron.IpcRendererEvent, state: PairingState | null): void => cb(state);
     ipcRenderer.on("ocr:pairing-state", listener);
