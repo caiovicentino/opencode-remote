@@ -119,6 +119,52 @@ escopo hermético por design (chaves E2E reais).
 - **Freeze**: `touch ~/.opencode-remote/pilot.lock` para o loop (checado a cada ciclo).
 - Contadores diários em `~/.opencode-remote/pilot/state.json`.
 
+## Cognição em tiers (P1-059)
+
+Papéis de **julgamento** merecem modelo mais forte; papéis de **execução**
+seguem no flash (tier A, `opencode run` com o modelo configurado do
+opencode.json — os nomes em `tierA` são documentação, não mudam o dispatch).
+Sem o bloco `models` no pilot.json, **tudo é tier A** (comportamento anterior
+intacto). Bloco opcional:
+
+```json
+"models": {
+  "tierA": { "builder": "glm-5.3-flash", "reviewer": "glm-5.3-flash", "scribe": "glm-5.3-flash" },
+  "tierB": { "strategist": "fable-5.1", "planner": "opus", "forensic": "fable-5.1", "reviewerEscalation": "opus" }
+}
+```
+
+- **Dispatch tier B** (`runAgentForRole` em `apps/pilot/src/runner.ts`): se o
+  papel tem modelo em `tierB`, roda via **CLI claude** — `claude -p --model <m>
+  --add-dir <workspace> --permission-mode acceptEdits`, prompt via **stdin**
+  (fechado após EOF), timeout com a mesma escada SIGTERM→SIGKILL do `runAgent`.
+  `--add-dir` fica restrito ao clone do slot: nada de `~/.opencode-remote` no
+  tier B (a regra anti-exfiltração do strategist se mantém).
+- **Fallback**: spawn error, timeout, output vazio ou marker de conclusão do
+  papel ausente (`PLANNER:DONE`, `STRATEGIST:DONE`, `VERDICT:`,
+  `FORENSIC:DONE`) ⇒ o mesmo prompt re-executa pelo tier A e o pilot.log recebe
+  `tierB-fallback` — o pipeline nunca trava nem queima attempt por indisponibilidade
+  do tier B. Sem tier B configurado, `runAgentForRole` === `runAgent`. Cada
+  dispatch loga `agent-dispatch` com role/tier/model.
+- **Papéis tier B**: planner de P0/P1 (o spec commitado passa pelo mesmo
+  `validateSpec`/gate determinístico), strategist (refill de qualidade),
+  **reviewer de escalada** e **forensic semanal** (abaixo). O gatekeeper e a
+  bateria de evidência não mudam: modelo forte planeja/julga, mas o merge passa
+  pela mesma evidência.
+- **Escalada de review** (round 1): vereditos divergentes (1× APPROVE vs
+  1× REQUEST_CHANGES) ou findings **todos** unverificados disparam **1** reviewer
+  extra com o modelo `reviewerEscalation` (fase `review-escalation` no feed);
+  o veredito + findings verificados dele decidem. Máx. 1 escalada por round; sem
+  `reviewerEscalation` configurado, divergência e `allDropped` seguem o fluxo
+  atual.
+- **Forensic semanal**: na janela nightly 03:xx, um agente analisa as últimas
+  100 failure lessons (`lessons.jsonl`), os carryovers de gate-fail e o
+  `git log -50` e escreve a taxonomia de falhas (padrões, causas raiz,
+  recomendações) em `~/.opencode-remote/pilot/forensic-latest.md` + digest no
+  telefone. Guard próprio de 7 dias (`state.forensicLast`, persistido **antes**
+  do run); falha é best-effort e nunca bloqueia o loop. O relatório chega ao
+  disco pelo runner (stdout), nunca por write direto do agente fora do workspace.
+
 ## Tarefas long-horizon — campo size (P1-060)
 
 A linha da task no BACKLOG.md pode carregar a tag opcional `(size: S|M|L)` (default

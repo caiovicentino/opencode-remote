@@ -2,7 +2,7 @@ import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { emit } from "./events";
-import { agentStream, exec, runAgent } from "./runner";
+import { agentStream, exec, runAgent, runAgentForRole } from "./runner";
 import { nowLocalISO } from "./log";
 import { notifySupervisor } from "./notify";
 import { runResearcher } from "./researcher";
@@ -12,6 +12,7 @@ import { deploy } from "./deploy";
 import { digest } from "./push";
 import { addTask, blockTask, nextId, parseBacklog, type Task } from "./backlog";
 import { appendFailureLesson, defaultLessonsFile, failureLessonsBlock, readRecentFailureLessons } from "./failureLessons";
+import { forensicDue, runForensic } from "./forensic";
 import { areaKey, pickBatch } from "./scheduler";
 import {
   auditClearFile,
@@ -338,7 +339,10 @@ async function maybeNightly(cfg: PilotConfig, st: PilotState) {
   const today = nowLocalISO().slice(0, 10);
   const hour = new Date().getHours();
   if (hour !== 3) return;
-  if (st.redteamLast === today && st.explorerLast === today) return; // nightly passes already done
+  // P1-059: forensic carries its own 7-day guard — a due forensic must not be
+  // skipped just because redteam/explorer already ran today (both self-guard).
+  const nightlyDone = st.redteamLast === today && st.explorerLast === today;
+  if (nightlyDone && !forensicDue(st.forensicLast)) return;
   // sync so the nightly agents read a fresh main; a failing sync only skips
   // the pass (best-effort by design — never blocks the loop)
   let wsReady = true;
@@ -349,6 +353,9 @@ async function maybeNightly(cfg: PilotConfig, st: PilotState) {
     log("warn", "nightly workspace sync failed — nightly passes skipped");
   }
   writeSandboxConfig(cfg.workspace); // headless runs abort without sandbox perms
+  // P1-059: weekly failure-forensic taxonomy (tier B when configured) —
+  // best-effort, never blocks the loop
+  if (wsReady) await runForensic(cfg, st);
   // P3-052: nightly computer-use explorer — strictly non-blocking, once per
   // day (own guard in state.explorerLast), budget-capped for predictable cost
   if (wsReady) await runExplorer(cfg, st);
@@ -407,6 +414,9 @@ Output: either "REDTEAM: CLEAN" if you found nothing actionable, or
  */
 let lastStrategistRun = 0;
 
+/** P1-059: tier-B dispatch checks this marker before trusting a strategist run. */
+const STRATEGIST_MARKER = "STRATEGIST:DONE";
+
 const STRATEGIST_MISSION =
   "turn this project into a desktop app like Claude Desktop (Mac + Windows) with our harness built in. " +
   "Stages 1-2 are done; stage 3 (desktop app shell) is the priority, then hosted relay, then distribution.";
@@ -421,7 +431,8 @@ async function runStrategist(cfg: PilotConfig, ready: Task[] = []) {
   // P2-031: the 10 most recent failure lessons — drafted/refined tasks must not
   // repeat patterns that already burned their attempt budget
   const failureBlock = failureLessonsBlock(readRecentFailureLessons(defaultLessonsFile()));
-  const r = await runAgent(
+  const r = await runAgentForRole(
+    "strategist",
     `You are the STRATEGIST agent of the opencode-remote autonomous pipeline.
 Your job: keep the product evolving without any human feeding tasks.
 
@@ -458,9 +469,9 @@ different areas in parallel and never two tasks of the same area at once.
 Do not touch other sections, do not commit.
 
 Your LAST line must be exactly: STRATEGIST:DONE`,
-    { cwd: cfg.workspace, timeoutMin: 25, label: "strategist", onStdout: agentStream("strategist") },
+    { cwd: cfg.workspace, timeoutMin: 25, label: "strategist", onStdout: agentStream("strategist"), models: cfg.models, marker: STRATEGIST_MARKER },
   );
-  if (r.output.includes("STRATEGIST:DONE")) {
+  if (r.output.includes(STRATEGIST_MARKER)) {
     exec(`git add BACKLOG.md && git commit -qm "pilot(strategist): queue refill $(date -u +%H:%M)" && git push -q origin main`, {
       cwd: cfg.workspace,
       allowFail: true,

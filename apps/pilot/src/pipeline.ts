@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
-import { agentStream, exec, runAgent, type AgentIds } from "./runner";
+import { agentStream, exec, runAgent, runAgentForRole, type AgentIds } from "./runner";
 import { nowLocalISO } from "./log";
 import { markDone, type Task } from "./backlog";
 import { emit } from "./events";
@@ -27,6 +27,7 @@ export function lessonsBlock(lessons: string[]): string {
 
 /** Planner agents are read-only code readers; 10 min like the scribe. */
 export const PLANNER_TIMEOUT_MIN = 10;
+export const PLANNER_MARKER = "PLANNER:DONE";
 export const SPEC_SECTIONS = [
   "Problem",
   "Approach",
@@ -451,7 +452,7 @@ ${
     : ""
 }
 ${
-  role === "QUALITY" && specFile
+  (role === "QUALITY" || role === "ESCALATION") && specFile
     ? `- Spec compliance (P2-008): this branch carries a planner spec at "${specFile}" (read it in the workspace). Answer explicitly in your review: does the diff fulfill ${specFile}? A deviation from its approach, touched-files list or acceptance criteria is a finding unless the diff justifies it.`
     : ""
 }
@@ -471,6 +472,28 @@ DIFF:
 \`\`\`diff
 ${diff.slice(0, 60_000)}
 \`\`\``;
+}
+
+/** P1-059: a tier-B escalation reviewer's output must carry a verdict marker. */
+export const ESCALATION_MARKER = "VERDICT:";
+
+/**
+ * P1-059: pure escalation predicate — round-1 review outcomes that are
+ * ambiguous enough to deserve a stronger-model arbitration: divergent verdicts
+ * (one approve, one request-changes) or a reviewer whose findings all failed
+ * verification (allDropped ⇒ "effective approve" is unproven). Round > 1
+ * already carries the previous round's findings into the builder — no
+ * escalation. Both-approve (nothing suspicious) → false.
+ */
+export function needsEscalation(
+  round: number,
+  secOk: boolean,
+  qualOk: boolean,
+  secAllDropped: boolean,
+  qualAllDropped: boolean,
+): boolean {
+  if (round !== 1) return false;
+  return secOk !== qualOk || secAllDropped || qualAllDropped;
 }
 
 export interface PipelineResult {
@@ -969,14 +992,20 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
       let plannerSession: string | undefined;
       let specOk = false;
       for (let attempt = 1; attempt <= 2 && !specOk; attempt++) {
-        const out = await runAgent(plannerPrompt(t, attempt), {
-          cwd: ws,
-          timeoutMin: PLANNER_TIMEOUT_MIN,
-          label: `planner-${t.id}-a${attempt}`,
-          sessionId: plannerSession, // retry resumes the planner's own context
-          printLogs: true,
-          onStdout: stream,
-        });
+        const out = await runAgentForRole(
+          "planner",
+          plannerPrompt(t, attempt),
+          {
+            cwd: ws,
+            timeoutMin: PLANNER_TIMEOUT_MIN,
+            label: `planner-${t.id}-a${attempt}`,
+            sessionId: plannerSession, // retry resumes the planner's own context
+            printLogs: true,
+            onStdout: stream,
+            models: cfg.models,
+            marker: PLANNER_MARKER,
+          },
+        );
         if (out.sessionId) plannerSession = out.sessionId;
         // deterministic validation + commit: the LLM is never trusted, only the
         // on-disk file (all six sections present) counts as a spec
@@ -1162,9 +1191,11 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
     const approve = (o: string) => /VERDICT:\s*APPROVE/i.test(o);
     const allDropped = (o: string, v: { kept: string[]; dropped: string[] }) =>
       /VERDICT:\s*REQUEST_CHANGES/i.test(o) && v.dropped.length > 0 && v.kept.length === 0;
-    const secOk = approve(sec.output) || allDropped(sec.output, secVerified);
-    const qualOk = approve(qual.output) || allDropped(qual.output, qualVerified);
-    if (allDropped(sec.output, secVerified) || allDropped(qual.output, qualVerified)) {
+    const secAllDropped = allDropped(sec.output, secVerified);
+    const qualAllDropped = allDropped(qual.output, qualVerified);
+    const secOk = approve(sec.output) || secAllDropped;
+    const qualOk = approve(qual.output) || qualAllDropped;
+    if (secAllDropped || qualAllDropped) {
       console.log(
         JSON.stringify({
           ts: nowLocalISO(),
@@ -1174,8 +1205,47 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
         }),
       );
     }
-    emit("phase", { task: t.id, phase: "reviewers-done", ok: secOk && qualOk });
-    if (secOk && qualOk) {
+    // P1-059 reviewer escalation: round-1 divergence (1× approve vs 1× request
+    // changes) and all-unverifiable findings are exactly the ambiguous cases a
+    // flash pair misjudged in the past (semantic misses through 20 merges). One
+    // extra tier-B reviewer arbiters; at most one escalation per round.
+    let gateSecOk = secOk;
+    let gateQualOk = qualOk;
+    let escalationFindings: string[] | null = null;
+    if (cfg.models?.tierB?.reviewerEscalation && needsEscalation(round, secOk, qualOk, secAllDropped, qualAllDropped)) {
+      emit("phase", { task: t.id, phase: "review-escalation", detail: `round ${round}` });
+      console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "review escalation", data: { task: t.id, round } }));
+      const esc = await runAgentForRole("reviewerEscalation", reviewerPrompt("ESCALATION", "spec fidelity, semantic correctness, regressions", t, reviewDiff, uiShot, specFile, incrementalFrom), {
+        cwd: ws,
+        timeoutMin: cfg.reviewTimeoutMin,
+        label: `esc-${t.id}-r${round}`,
+        onStdout: stream,
+        models: cfg.models,
+        marker: ESCALATION_MARKER,
+      });
+      const escParsed = parseFindings(esc.output);
+      const escVerified = verifyFindings(escParsed, ws, reviewDiff);
+      for (const d of escVerified.dropped) logHallucination(t.id, "escalation", d);
+      const escApprove = approve(esc.output) || allDropped(esc.output, escVerified);
+      if (escApprove) {
+        gateSecOk = true;
+        gateQualOk = true;
+      } else {
+        gateSecOk = false;
+        gateQualOk = false;
+        escalationFindings = escVerified.kept;
+      }
+      console.log(
+        JSON.stringify({
+          ts: nowLocalISO(),
+          level: "info",
+          msg: "review escalation done",
+          data: { task: t.id, round, approve: escApprove, kept: escVerified.kept.length },
+        }),
+      );
+    }
+    emit("phase", { task: t.id, phase: "reviewers-done", ok: gateSecOk && gateQualOk });
+    if (gateSecOk && gateQualOk) {
       emit("phase", { task: t.id, phase: "gatekeeper" });
       // serialized across slots: fixed battery ports + main push (P1-006)
       merged = await runGateExclusive(() => gatekeeper(cfg, ws, t, state, build.output, startedAtMs));
@@ -1202,8 +1272,9 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
       }
       if (!merged) return { ok: false, detail: "gatekeeper rejected: eval battery or invariants failed" };
     } else {
-      // only verified findings reach the builder prompt (P2-015)
-      findings = [...(secOk ? [] : secVerified.kept), ...(qualOk ? [] : qualVerified.kept)].join("\n");
+      // only verified findings reach the builder prompt (P2-015); when the
+      // escalation arbiter rejected, its own verified findings decide
+      findings = escalationFindings !== null ? escalationFindings.join("\n") : [...(secOk ? [] : secVerified.kept), ...(qualOk ? [] : qualVerified.kept)].join("\n");
       if (round === cfg.maxReviewRounds) {
         // P2-031: the carryover file must reflect the REAL last failure — a task
         // burning out at review after an old gate failure would otherwise be
