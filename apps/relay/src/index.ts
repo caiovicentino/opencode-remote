@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { WebSocketServer, type WebSocket } from "ws";
 import { healthzHandler } from "./healthz";
 import { TokenBucket } from "./ratelimit";
+import { IpCap } from "./ipcap";
 
 /**
  * Relay: a blind router.
@@ -29,6 +30,11 @@ const MAX_PER_ROOM = 10;
 const RATE_PER_MIN = envNum("RELAY_RATE_PER_MIN", 600);
 const RATE_BURST = envNum("RELAY_RATE_BURST", 1000);
 const RATE_LIMIT_CLOSE = 4029; // custom 4xxx: "too many frames"
+// live-connection cap per source IP (0 disables): MAX_SOCKETS bounds the
+// pool, but one host could otherwise hold all 1000 slots and deny every
+// other peer admission
+const MAX_PER_IP = envNum("RELAY_MAX_PER_IP", 20);
+const ipCap = new IpCap(MAX_PER_IP);
 
 // root package.json (monorepo) — same single source the web PWA generates from
 const VERSION = (() => {
@@ -57,6 +63,8 @@ interface Socket extends WebSocket {
   id?: string;
   rooms?: Set<string>;
   bucket?: TokenBucket;
+  ip?: string;
+  released?: boolean;
 }
 
 const rooms = new Map<string, Set<Socket>>();
@@ -166,18 +174,36 @@ server.listen(PORT, () => {
     tls: Boolean(tlsCert),
     maxFrame: MAX_FRAME,
     maxPerRoom: MAX_PER_ROOM,
+    maxPerIp: MAX_PER_IP,
     ratePerMin: RATE_PER_MIN,
     rateBurst: RATE_BURST,
   });
 });
 
-wss.on("connection", (socket: Socket) => {
+// release the per-IP slot exactly once per admitted socket (close and
+// error can both fire for the same connection)
+function releaseIp(socket: Socket) {
+  if (socket.ip === undefined || socket.released) return;
+  socket.released = true;
+  ipCap.release(socket.ip);
+}
+
+wss.on("connection", (socket: Socket, req) => {
   m.connectionsTotal++;
   if (wss.clients.size > MAX_SOCKETS) {
     m.rejects++;
     socket.close(1013, "server busy");
     return;
   }
+  // admission control: the per-IP cap applies before any room join
+  const ip = req.socket.remoteAddress ?? "unknown";
+  if (!ipCap.admit(ip)) {
+    m.rejects++;
+    ev("warn", "connection rejected: per-IP cap exceeded", { ip });
+    socket.close(1013, "too many connections");
+    return;
+  }
+  socket.ip = ip;
   socket.id = `s${Date.now().toString(36)}${(counter++).toString(36)}`;
   socket.rooms = new Set();
   ev("info", "connection open", { id: socket.id, total: wss.clients.size });
@@ -242,7 +268,11 @@ wss.on("connection", (socket: Socket) => {
 
   socket.on("close", () => {
     leaveAll(socket);
+    releaseIp(socket);
     ev("info", "connection closed", { id: socket.id, total: wss.clients.size });
   });
-  socket.on("error", () => leaveAll(socket));
+  socket.on("error", () => {
+    releaseIp(socket);
+    leaveAll(socket);
+  });
 });
