@@ -102,6 +102,23 @@ try {
         /"daemon",\s*"index\.js"/.test(desktopSidecar),
   );
 
+  // desktop: real app icon + About panel (added by P3-009; additive check —
+  // justification lives in the pilot(P3-009) commit message per rule #3.
+  // Reads only the new icon artifact and its refs: no crypto, allowlist or
+  // deploy surface is touched. Behavioral/visual coverage in the builder's
+  // dist --dir run + screenshot evidence.)
+  const iconPng = readFileSync(join(ROOT, "apps/desktop/build/icon.png"));
+  check(
+    "desktop: app icon wired (512px PNG, builder config, dock/window/About)",
+    iconPng.readUInt32BE(16) === 512 &&
+      iconPng.readUInt32BE(20) === 512 &&
+      /icon:\s*build\/icon\.png/.test(builderYml) &&
+      /appIcon\(\)/.test(desktopMain) &&
+      /dock\.setIcon/.test(desktopMain) &&
+      /setAboutPanelOptions/.test(desktopMain) &&
+      /applicationVersion:\s*app\.getVersion\(\)/.test(desktopMain),
+  );
+
   // no committed secrets
   const secretPatterns = [/BEGIN [A-Z ]*PRIVATE KEY/, /ghp_[A-Za-z0-9]{20,}/, /AKIA[0-9A-Z]{16}/, /sk-[A-Za-z0-9]{20,}/];
   const gitFiles = exec("git -C . ls-files");
