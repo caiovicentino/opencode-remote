@@ -2,6 +2,7 @@ import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import { readFileSync } from "node:fs";
 import { WebSocketServer, type WebSocket } from "ws";
+import { TokenBucket } from "./ratelimit";
 
 /**
  * Relay: a blind router.
@@ -18,17 +19,46 @@ const PORT = Number(process.env.RELAY_PORT ?? 8787);
 const MAX_FRAME = 1_000_000; // bytes; sealed op payloads are far smaller
 const MAX_SOCKETS = 1000;
 const MAX_PER_ROOM = 10;
+// per-connection rate limit on forwarded message frames (0 disables).
+// Defaults are sized to pass the daemon's worst-case chunked transfer
+// (MAX_CHUNKS = 512 frames, concurrent sessions interleaved on one socket)
+// while still capping runaway or flooding connections. There are no
+// exemptions: envelope metadata is client-controlled, so the only identity
+// the relay verifies is the connection itself.
+const RATE_PER_MIN = envNum("RELAY_RATE_PER_MIN", 600);
+const RATE_BURST = envNum("RELAY_RATE_BURST", 1000);
+const RATE_LIMIT_CLOSE = 4029; // custom 4xxx: "too many frames"
+
+/** Env number with validation: invalid values fall back loudly, never silently disable. */
+function envNum(name: string, dflt: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return dflt;
+  const v = Number(raw);
+  if (!Number.isFinite(v) || v < 0) {
+    ev("warn", "invalid numeric env, using default", { env: name, default: dflt });
+    return dflt;
+  }
+  return v;
+}
 
 interface Socket extends WebSocket {
   id?: string;
   rooms?: Set<string>;
+  bucket?: TokenBucket;
 }
 
 const rooms = new Map<string, Set<Socket>>();
 
 // --- optional metrics endpoint (localhost-only) -----------------------------
 const METRICS_PORT = Number(process.env.RELAY_METRICS_PORT ?? 0);
-const m = { connectionsTotal: 0, framesRouted: 0, bytesRouted: 0, rejects: 0, startedAt: Date.now() };
+const m = {
+  connectionsTotal: 0,
+  framesRouted: 0,
+  bytesRouted: 0,
+  rejects: 0,
+  rateLimited: 0,
+  startedAt: Date.now(),
+};
 if (METRICS_PORT) {
   createHttpServer((req, res) => {
     if (req.url?.startsWith("/metrics")) {
@@ -44,6 +74,8 @@ if (METRICS_PORT) {
           `relay_bytes_routed ${m.bytesRouted}`,
           "# TYPE relay_rejects counter",
           `relay_rejects ${m.rejects}`,
+          "# TYPE relay_rate_limited_total counter",
+          `relay_rate_limited_total ${m.rateLimited}`,
           "# TYPE relay_rooms_active gauge",
           `relay_rooms_active ${rooms.size}`,
         ];
@@ -61,6 +93,7 @@ if (METRICS_PORT) {
             frames_routed: m.framesRouted,
             bytes_routed: m.bytesRouted,
             rejects: m.rejects,
+            rate_limited_total: m.rateLimited,
             rooms_active: rooms.size,
           },
           null,
@@ -114,6 +147,8 @@ server.listen(PORT, () => {
     tls: Boolean(tlsCert),
     maxFrame: MAX_FRAME,
     maxPerRoom: MAX_PER_ROOM,
+    ratePerMin: RATE_PER_MIN,
+    rateBurst: RATE_BURST,
   });
 });
 
@@ -136,6 +171,24 @@ wss.on("connection", (socket: Socket) => {
       return;
     }
     if (typeof frame.room !== "string" || typeof frame.payload !== "string") return;
+
+    // token bucket per connection (one device session). Applied to every
+    // frame, including joins (payload "") and self-declared room owners —
+    // envelope metadata is attacker-controllable and grants nothing.
+    if (RATE_PER_MIN > 0) {
+      socket.bucket ??= new TokenBucket(RATE_BURST, RATE_PER_MIN);
+      if (!socket.bucket.take()) {
+        m.rateLimited++;
+        // identity prefix for triage only — never any payload content
+        ev("warn", "rate limited, dropping device", {
+          id: socket.id,
+          from: String(frame.from).slice(0, 10),
+          close: RATE_LIMIT_CLOSE,
+        });
+        socket.close(RATE_LIMIT_CLOSE, "rate limited");
+        return;
+      }
+    }
 
     ev("info", "frame in", {
       room: frame.room.slice(0, 8),
