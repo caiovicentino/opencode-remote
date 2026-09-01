@@ -59,6 +59,19 @@ export function loadConfig(): PilotConfig {
 // ── runtime state (counters) ──────────────────────────────────────────────────
 const STATE_FILE = join(homedir(), ".opencode-remote", "pilot", "state.json");
 
+/** P2-032: one pipeline outcome in the fever sliding window. */
+export interface CycleSample {
+  ok: boolean;
+  at: number; // epoch ms
+}
+
+/** P2-032: fever audit mode — the scheduler-wide pause state. */
+export interface AuditMode {
+  since: string; // ISO timestamp of when it tripped
+  reason: string; // which trigger fired
+  lastFailure: number; // epoch ms of the most recent failure (drives the 2h resume)
+}
+
 export interface PilotState {
   date: string; // YYYY-MM-DD
   tasks: number;
@@ -68,19 +81,51 @@ export interface PilotState {
   taskAttempts: Record<string, number>;
   redteamLast?: string;
   researchLast?: string;
+  /** P2-032: sliding window of recent pipeline outcomes (fever rate). */
+  cycles?: CycleSample[];
+  /** P2-032: epoch ms timestamps of blocks that landed on main (30min burst). */
+  blockEvents?: number[];
+  /** P2-032: active audit mode (queue paused) or null when healthy. */
+  auditMode?: AuditMode | null;
+}
+
+function normalizeAudit(a: unknown): AuditMode | null {
+  if (!a || typeof a !== "object") return null;
+  const m = a as Partial<AuditMode>;
+  if (typeof m.reason !== "string" || !m.reason) return null;
+  return {
+    since: typeof m.since === "string" ? m.since : "",
+    reason: m.reason,
+    lastFailure: typeof m.lastFailure === "number" ? m.lastFailure : 0,
+  };
 }
 
 export function loadState(file = STATE_FILE): PilotState {
   try {
     const s = JSON.parse(readFileSync(file, "utf8")) as PilotState;
     const today = nowLocalISO().slice(0, 10);
-    // daily budgets reset at midnight; per-task attempts persist — the circuit
-    // breaker must not be defeated by the date rollover
+    // daily budgets reset at midnight; per-task attempts and the fever breaker
+    // (P2-032) persist — neither breaker may be defeated by the date rollover
     const attempts = s.taskAttempts ?? {};
-    if (s.date === today) return { ...s, taskAttempts: attempts };
-    return { date: today, tasks: 0, deploys: 0, failures: 0, taskAttempts: attempts };
+    const shared = {
+      taskAttempts: attempts,
+      cycles: Array.isArray(s.cycles) ? s.cycles : [],
+      blockEvents: Array.isArray(s.blockEvents) ? s.blockEvents.filter((t) => typeof t === "number") : [],
+      auditMode: normalizeAudit(s.auditMode),
+    };
+    if (s.date === today) return { ...s, ...shared };
+    return { date: today, tasks: 0, deploys: 0, failures: 0, ...shared };
   } catch {
-    return { date: nowLocalISO().slice(0, 10), tasks: 0, deploys: 0, failures: 0, taskAttempts: {} };
+    return {
+      date: nowLocalISO().slice(0, 10),
+      tasks: 0,
+      deploys: 0,
+      failures: 0,
+      taskAttempts: {},
+      cycles: [],
+      blockEvents: [],
+      auditMode: null,
+    };
   }
 }
 

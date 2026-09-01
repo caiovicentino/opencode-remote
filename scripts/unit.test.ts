@@ -55,6 +55,20 @@ import {
 } from "../apps/pilot/src/failureLessons";
 import { clampSlots, ensureSingleton, loadState, recordTaskFailure } from "../apps/pilot/src/state";
 import { areaKey, pickBatch, pickTasks } from "../apps/pilot/src/scheduler";
+import {
+  AUDIT_BLOCK_TRIGGER,
+  AUDIT_BLOCK_WINDOW_MS,
+  AUDIT_RESUME_MS,
+  AUDIT_WINDOW,
+  auditResumeDue,
+  buildDiagnosis,
+  clearAuditMode,
+  enterAuditMode,
+  feverReason,
+  formatDiagnosis,
+  recordBlockEvent,
+  recordCycle,
+} from "../apps/pilot/src/audit";
 import { blockTask, loadBacklog, parseBacklog, type Task } from "../apps/pilot/src/backlog";
 import { API_PREFLIGHT, apiHealthy, idScanner, mergeAgentIds, OPENCODE_URL_DEFAULT, scanIds, waitForApi } from "../apps/pilot/src/runner";
 import { mkdtempSync, mkdirSync, readdirSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync, utimesSync } from "node:fs";
@@ -1626,6 +1640,140 @@ check(
     keepAlive.destroy();
     client.terminate();
     wss.close();
+  }
+}
+
+// --- P2-032 fever circuit breaker (audit mode): fault injection ------------------
+{
+  const st = () =>
+    ({ date: "2026-09-01", tasks: 0, deploys: 0, failures: 0, taskAttempts: {} } as Parameters<typeof feverReason>[0]);
+
+  // sliding window keeps only the AUDIT_WINDOW most recent samples
+  {
+    const s = st();
+    for (let i = 0; i < AUDIT_WINDOW + 4; i++) recordCycle(s, true, i);
+    check("audit: sliding window keeps the last 10 cycles", s.cycles!.length === AUDIT_WINDOW && s.cycles![0]!.at === 4);
+  }
+
+  // trigger 1: fever rate over the cycle window
+  {
+    const partial = st();
+    for (let i = 0; i < 4; i++) recordCycle(partial, false, i);
+    check("audit: partial window never trips the rate trigger", feverReason(partial, 100) === null);
+
+    const s = st();
+    recordCycle(s, true, 0); // oldest sample is a success so one more failure crosses the line
+    for (let i = 1; i <= 5; i++) recordCycle(s, false, i);
+    for (let i = 6; i < AUDIT_WINDOW; i++) recordCycle(s, true, i);
+    check("audit: 5/10 failures stay under the 60% line", feverReason(s, 100) === null);
+    recordCycle(s, false, AUDIT_WINDOW); // success slides out, failure slides in -> 6/10
+    check("audit: 6/10 failures trip the fever rate", (feverReason(s, AUDIT_WINDOW + 1) ?? "").includes("6/10"));
+  }
+
+  // trigger 2: 2 tasks blocked within 30 min
+  {
+    check("audit: burst trigger constant is 2 blocks", AUDIT_BLOCK_TRIGGER === 2);
+    const s = st();
+    recordBlockEvent(s, 0);
+    check("audit: one block is not a burst", feverReason(s, 1) === null);
+    recordBlockEvent(s, AUDIT_BLOCK_WINDOW_MS - 1);
+    check("audit: 2 blocks within 30min trip the burst trigger", (feverReason(s, AUDIT_BLOCK_WINDOW_MS) ?? "").includes("2 tasks blocked"));
+    check("audit: stale blocks no longer count (pruned lazily)", feverReason(s, AUDIT_BLOCK_WINDOW_MS * 2) === null);
+    recordBlockEvent(s, AUDIT_BLOCK_WINDOW_MS * 3);
+    check("audit: recording prunes timestamps outside the window", s.blockEvents!.length === 1);
+  }
+
+  // lifecycle: enter once, hold, resume on either path
+  {
+    const s = st();
+    for (let i = 0; i < AUDIT_WINDOW; i++) recordCycle(s, false, i);
+    const reason = feverReason(s, AUDIT_WINDOW);
+    check("audit: enterAuditMode trips once", enterAuditMode(s, reason!, 1000) === true && enterAuditMode(s, reason!, 1001) === false);
+    check("audit: entering clears the trigger windows", s.cycles!.length === 0 && s.blockEvents!.length === 0);
+    check("audit: audit state carries reason + since", s.auditMode!.reason === reason && s.auditMode!.since.length > 0);
+    check("audit: resume not due before 2h", auditResumeDue(s.auditMode!, 1000 + AUDIT_RESUME_MS - 1) === false);
+    check("audit: resume due after 2h without failure", auditResumeDue(s.auditMode!, 1000 + AUDIT_RESUME_MS) === true);
+    recordCycle(s, false, 2000);
+    check("audit: fresh failure pushes the resume deadline", s.auditMode!.lastFailure === 2000);
+    recordCycle(s, true, 3000);
+    check("audit: success does not push the resume deadline", s.auditMode!.lastFailure === 2000);
+    recordBlockEvent(s, 4000);
+    check("audit: block landing also pushes the deadline", s.auditMode!.lastFailure === 4000);
+    clearAuditMode(s);
+    check("audit: clear resets every breaker counter", s.auditMode === null && s.cycles!.length === 0 && s.blockEvents!.length === 0);
+    check("audit: healthy state has no trigger", feverReason(s, 5000) === null);
+  }
+}
+
+// --- P2-032 audit diagnosis: doctor summary aggregation ---------------------------
+{
+  const dir = mkdtempSync(join(tmpdir(), "pilot-audit-"));
+  try {
+    const gateDir = join(dir, "gate-fail");
+    mkdirSync(gateDir, { recursive: true });
+    writeFileSync(
+      join(dir, "lessons.jsonl"),
+      [
+        JSON.stringify({ kind: "failure", ts: "t", task: "P1-001", attempts: 4, step: "unit", findings: "f", tail: "" }),
+        JSON.stringify({ kind: "failure", ts: "t", task: "P1-002", attempts: 4, step: "unit", findings: "f", tail: "" }),
+        JSON.stringify({ kind: "failure", ts: "t", task: "P1-001", attempts: 4, step: "review", findings: "f", tail: "" }),
+        "not json",
+      ].join("\n"),
+    );
+    // P1-003 has no lesson yet (still retrying) — its gate-fail file must count
+    writeFileSync(join(gateDir, "P1-003.json"), JSON.stringify({ task: "P1-003", step: "build", tail: "boom", at: "t" }));
+    // P1-002 already has a lesson — no double counting
+    writeFileSync(join(gateDir, "P1-002.json"), JSON.stringify({ task: "P1-002", step: "unit", tail: "boom", at: "t" }));
+
+    const d = buildDiagnosis({ lessonsFile: join(dir, "lessons.jsonl"), gateFailDir: gateDir, attempts: { "P1-009": 2, "P1-001": 4 }, api: false });
+    check("audit diagnosis: api probe result carried through", d.api === "down");
+    check("audit diagnosis: top step is the double-failing one", d.topSteps[0]?.step === "unit" && d.topSteps[0]?.count === 2);
+    check("audit diagnosis: gate-fail of lessoned task not double counted", d.topSteps.find((x) => x.step === "unit")?.count === 2);
+    check("audit diagnosis: retrying task counted from gate-fail", d.topSteps.find((x) => x.step === "build")?.count === 1);
+    check("audit diagnosis: top task merges lessons + live attempts", d.topTasks[0]?.task === "P1-001" && d.topTasks[0]?.count === 4);
+    check("audit diagnosis: live-attempt-only task present", d.topTasks.find((x) => x.task === "P1-009")?.count === 2);
+    const line = formatDiagnosis(d);
+    check(
+      "audit diagnosis: one-line log format",
+      line.includes("api=down") && line.includes("top failure steps: unit(2)") && line.includes("top rejected tasks: P1-001(4)"),
+    );
+
+    const empty = buildDiagnosis({ lessonsFile: join(dir, "missing.jsonl"), gateFailDir: join(dir, "no-such-dir") });
+    check("audit diagnosis: missing sources degrade to none", empty.topSteps.length === 0 && empty.topTasks.length === 0 && empty.api === "unknown");
+    check("audit diagnosis: empty format", formatDiagnosis(empty).includes("top failure steps: none"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// --- P2-032 state.json: fever breaker survives the daily rollover -----------------
+{
+  const dir = mkdtempSync(join(tmpdir(), "pilot-audit-state-"));
+  try {
+    const file = join(dir, "state.json");
+    writeFileSync(
+      file,
+      JSON.stringify({
+        date: "2026-01-01",
+        tasks: 5,
+        deploys: 3,
+        failures: 2,
+        taskAttempts: { "T-001": 3 },
+        cycles: [{ ok: false, at: 1 }],
+        blockEvents: [42],
+        auditMode: { since: "s", reason: "fever: test", lastFailure: 7 },
+      }),
+    );
+    const rolled = loadState(file);
+    check("loadState keeps fever windows across midnight", rolled.cycles!.length === 1 && rolled.blockEvents!.length === 1);
+    check("loadState keeps audit mode across midnight", rolled.auditMode?.reason === "fever: test" && rolled.auditMode.lastFailure === 7);
+    writeFileSync(file, JSON.stringify({ date: "2026-01-01", tasks: 1, deploys: 1, failures: 1 }));
+    const legacy = loadState(file);
+    check("loadState backfills fever fields for legacy state", legacy.cycles!.length === 0 && legacy.blockEvents!.length === 0 && legacy.auditMode === null);
+    writeFileSync(file, JSON.stringify({ date: "2026-01-01", auditMode: { reason: "" } }));
+    check("loadState rejects a malformed audit mode", loadState(file).auditMode === null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 }
 
