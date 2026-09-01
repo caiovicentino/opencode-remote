@@ -103,6 +103,21 @@
   #readylist .drow b { color:#a78bfa; margin-right:8px; }
   #readylist .drow .area { color:#64748b; font-size:10px; margin-left:8px; text-transform:uppercase; letter-spacing:.06em; }
   #readylist .drow.blocked { border-left-color:#ef4444; }
+  /* ── P2-045: audit chip + failure breakdown + history widget ── */
+  #audit-chip { display:none; margin-bottom:8px; padding:6px 10px; border:1px solid var(--red);
+                background:rgba(248,113,113,.12); color:var(--red); font-size:10px; font-weight:700;
+                letter-spacing:.1em; border-radius:8px; text-transform:uppercase; animation:pulse-red 2s infinite; cursor:help; }
+  #audit-reason { display:block; color:#fca5a5; font-weight:400; text-transform:none; letter-spacing:0;
+                  margin-top:3px; font-size:10px; word-break:break-word; }
+  @keyframes pulse-red { 0%{box-shadow:0 0 0 0 rgba(248,113,113,.55)} 70%{box-shadow:0 0 0 10px rgba(248,113,113,0)} 100%{box-shadow:0 0 0 0 rgba(248,113,113,0)} }
+  .fstep { display:flex; justify-content:space-between; font-size:10px; color:var(--red); padding:1px 2px 0 14px; }
+  .fstep b { font-variant-numeric:tabular-nums; }
+  #hist { display:none; margin-top:8px; }
+  #hist-bars { display:flex; gap:3px; align-items:flex-end; height:30px; margin-top:4px; }
+  .hbar { flex:1; display:flex; flex-direction:column; justify-content:flex-end; }
+  .hbar i { display:block; width:100%; background:var(--green); border-radius:1px 1px 0 0; }
+  .hbar i.f { background:var(--red); border-radius:0; }
+  #hist-phases { font-size:10px; color:var(--muted); margin-top:2px; }
   #logbar .vtab { background:#0e1824; border:1px solid #2a3947; color:#9db2c6; font-weight:700; letter-spacing:.12em;
                   font-size:10px; padding:5px 12px; border-radius:999px; cursor:pointer; }
   #logbar .vtab.on { border-color:var(--cyan); color:var(--cyan); }
@@ -122,17 +137,24 @@
 </div>
 
 <div class="overlay" id="stats">
+  <div id="audit-chip" title="">⛔ AUDIT MODE<span id="audit-reason"></span></div>
   <div class="row"><span>TASKS HOJE</span><b id="s-tasks">0</b></div>
   <div class="meter"><span>TASKS / DIA</span><div class="bedit"><input id="b-tasks" type="number" min="1" max="99" /><b id="m-tasks-t">0/15</b></div><div class="bar"><i id="m-tasks"></i></div></div>
   <div class="meter"><span>DEPLOYS / DIA</span><div class="bedit"><input id="b-dep" type="number" min="1" max="99" /><b id="m-dep-t">0/12</b></div><div class="bar"><i id="m-dep"></i></div></div>
   <button id="bsave" onclick="saveBudget()">SALVAR ORÇAMENTO</button>
   <div class="row" style="margin-top:8px"><span>DEPLOYS</span><b id="s-deploys" class="ok">0</b></div>
   <div class="row"><span>FALHAS</span><b id="s-fails" class="bad">0</b></div>
-  <div class="row"><span>MERGES</span><b id="s-prs">0</b></div>
+  <div id="failsteps" style="display:none"></div>
+  <div class="row"><span>MERGES</span><b id="s-prs" class="ok">0</b></div>
   <div class="row"><span>HEARTBEAT</span><b id="s-hb">—</b></div>
+  <div id="hist">
+    <div class="meter"><span>BURN-DOWN 7 DIAS</span><div id="hist-bars"></div></div>
+    <span style="font-size:10px;letter-spacing:.12em;color:var(--muted)">DURAÇÃO MÉDIA / FASE</span>
+    <div id="hist-phases">—</div>
+  </div>
   <div id="logs-btn" onclick="openLogs()">⌘ LOGS AO VIVO</div>
   <div id="done-btn" onclick="openDone()">✓ CONCLUÍDAS</div>
-  <div id="ready-btn" onclick="openReady()">☰ FILA</div>
+  <div id="ready-btn" onclick="openReady()">☰ FILA <span id="fila-n"></span></div>
 </div>
 
 <div class="overlay" id="task"><span id="progress"><i></i></span><span class="phase" id="task-phase">IDLE</span><span id="task-title">aguardando backlog…</span></div>
@@ -387,6 +409,19 @@ async function poll() {
     document.getElementById("s-tasks").textContent = data.state?.tasks ?? 0;
     document.getElementById("s-deploys").textContent = data.state?.deploys ?? 0;
     document.getElementById("s-fails").textContent = data.state?.failures ?? 0;
+    // P2-045: honest daily merge counter from state.json (resets at midnight
+    // with the other budgets) — never a windowed count of the events buffer
+    document.getElementById("s-prs").textContent = data.state?.merges ?? 0;
+    // P2-045: audit-mode chip — state.json already carries the pause + reason
+    const audit = data.state?.auditMode;
+    const chip = document.getElementById("audit-chip");
+    chip.style.display = audit ? "block" : "none";
+    if (audit) {
+      document.getElementById("audit-reason").textContent = audit.reason || "";
+      chip.title = data.state?.auditDiagnosis || "";
+    }
+    // P2-045: gate failure breakdown by step (evidence/invariants/integration/…)
+    renderFailSteps(data.failSteps);
     // budget meters
     lastAuxData = data.lastAux || {};
     const maxT = data.cfg?.maxTasksPerDay || 15, maxD = data.cfg?.maxDeploysPerDay || 12;    document.getElementById("m-tasks").style.width = `${Math.min((data.state?.tasks ?? 0) / maxT * 100, 100)}%`;
@@ -394,11 +429,60 @@ async function poll() {
     document.getElementById("m-tasks-t").textContent = `${data.state?.tasks ?? 0}/${maxT}`;
     document.getElementById("m-dep-t").textContent = `${data.state?.deploys ?? 0}/${maxD}`;
     render(data.events || []);
+    loadFilaCounts();
+    loadHistory();
   } catch {
     document.getElementById("live").className = "stale";
   }
 }
 function startPolling() { poll(); setInterval(poll, 2000); loadMission(); }
+
+// P2-045: queue + blocked counters on the FILA button (## Ready / ## Blocked)
+async function loadFilaCounts() {
+  try {
+    const res = await fetch("/api/pilot-ready", { headers: { authorization: `Bearer ${token}` } });
+    const { ready, blocked } = await res.json();
+    document.getElementById("fila-n").textContent = `· ${(ready || []).length} ⛔${(blocked || []).length}`;
+  } catch {}
+}
+
+// P2-045: 7-day burn-down + avg duration per phase (P2-043 history.jsonl)
+async function loadHistory() {
+  const w = document.getElementById("hist");
+  try {
+    const res = await fetch("/api/pilot-history", { headers: { authorization: `Bearer ${token}` } });
+    const data = await res.json();
+    if (!data.exists) { w.style.display = "none"; return; }
+    w.style.display = "block";
+    const days = data.days || [];
+    const max = Math.max(1, ...days.map((d) => d.ok + d.failed));
+    document.getElementById("hist-bars").innerHTML = days.map((d) => {
+      const hOk = Math.round((d.ok / max) * 28);
+      const hFail = Math.round((d.failed / max) * 28);
+      return `<div class="hbar" title="${d.day}: ${d.ok} ok, ${d.failed} falhas"><i style="height:${hOk}px"></i><i class="f" style="height:${hFail}px"></i></div>`;
+    }).join("");
+    document.getElementById("hist-phases").textContent = (data.phaseAvg || []).length
+      ? data.phaseAvg.map((p) => `${p.phase} ${fmtDur(p.avgMs)} (${p.n})`).join(" · ")
+      : "—";
+  } catch {
+    w.style.display = "none";
+  }
+}
+function fmtDur(ms) {
+  if (ms >= 3_600_000) return `${(ms / 3_600_000).toFixed(1)}h`;
+  if (ms >= 60_000) return `${Math.round(ms / 60_000)}m`;
+  return `${Math.round(ms / 1000)}s`;
+}
+
+// P2-045: per-step gate failure rows under the FALHAS counter
+function renderFailSteps(steps) {
+  const el = document.getElementById("failsteps");
+  const list = steps || [];
+  el.innerHTML = list
+    .map((s) => `<div class="fstep"><span>${escapeHtml(s.step)}</span><b>${s.count}</b></div>`)
+    .join("");
+  el.style.display = list.length ? "block" : "none";
+}
 
 function render(events) {
   resetStates();
@@ -468,7 +552,6 @@ function render(events) {
     if (dep.phase === "rollback") { setState("deploy","fail"); burst(nodeMap.core.x, nodeMap.core.y, "#f87171"); }
     if (dep.phase === "done") burst(nodeMap.core.x, nodeMap.core.y, "#4ade80");
   }
-  document.getElementById("s-prs").textContent = events.filter(e => e.phase === "merge" && e.ok).length;
 }
 function escapeHtml(s) { return s.replace(/</g, "&lt;"); }
 

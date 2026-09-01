@@ -55,6 +55,8 @@ import {
   type FailureLesson,
 } from "../apps/pilot/src/failureLessons";
 import { clampSlots, ensureSingleton, loadState, recordTaskFailure } from "../apps/pilot/src/state";
+import { avgPhaseDurations, burnDown, countFailSteps } from "../apps/pilot/src/metrics";
+import type { PilotEvent } from "../apps/pilot/src/events";
 import { areaKey, pickBatch, pickTasks } from "../apps/pilot/src/scheduler";
 import {
   AUDIT_BLOCK_TRIGGER,
@@ -1893,6 +1895,77 @@ check(
     check("loadState backfills fever fields for legacy state", legacy.cycles!.length === 0 && legacy.blockEvents!.length === 0 && legacy.auditMode === null);
     writeFileSync(file, JSON.stringify({ date: "2026-01-01", auditMode: { reason: "" } }));
     check("loadState rejects a malformed audit mode", loadState(file).auditMode === null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// --- P2-045 dashboard v2: honest counters + diagnostics aggregations --------------
+{
+  const dir = mkdtempSync(join(tmpdir(), "pilot-metrics-"));
+  try {
+    const file = join(dir, "state.json");
+    // daily MERGES counter: rolls at midnight like tasks/deploys/failures and
+    // backfills 0 for legacy state files written before P2-045
+    writeFileSync(file, JSON.stringify({ date: "2026-01-01", tasks: 5, deploys: 3, failures: 2, merges: 4, taskAttempts: {} }));
+    const rolled = loadState(file);
+    check("loadState rolls the daily merge counter at midnight", rolled.date !== "2026-01-01" && rolled.merges === 0);
+    writeFileSync(file, JSON.stringify({ date: new Date().toLocaleDateString("en-CA"), tasks: 1, deploys: 1, failures: 1 }));
+    const legacy = loadState(file);
+    check("loadState backfills merges for legacy state", legacy.merges === 0 && legacy.tasks === 1);
+
+    // per-step failure breakdown from gate-fail events
+    const evs: PilotEvent[] = [
+      { ts: "2026-09-01T10:00:00Z", type: "phase", task: "P1", phase: "gate-fail", ok: false, detail: "evidence" },
+      { ts: "2026-09-01T10:01:00Z", type: "phase", task: "P1", phase: "gate-fail", ok: false, detail: "invariants" },
+      { ts: "2026-09-01T10:02:00Z", type: "phase", task: "P2", phase: "gate-fail", ok: false, detail: "evidence" },
+      { ts: "2026-09-01T10:03:00Z", type: "phase", task: "P3", phase: "merge", ok: false },
+      { ts: "2026-09-01T10:04:00Z", type: "result", task: "P3", ok: false, detail: "gatekeeper rejected" },
+    ];
+    const steps = countFailSteps(evs);
+    check("failSteps: groups gate-fail events by step", steps[0]?.step === "evidence" && steps[0]?.count === 2);
+    check("failSteps: keeps every failing step", steps.find((s) => s.step === "invariants")?.count === 1 && steps.length === 2);
+    check("failSteps: empty on a clean feed", countFailSteps([{ ts: "t", type: "result", task: "P1", ok: true }]).length === 0);
+
+    // burn-down: 7 zero-filled buckets, ok/failed split per local day
+    const hist = [
+      { ts: "2026-08-30T12:00:00-03:00", id: "P1", ok: true, durMin: 12, attempts: 1 },
+      { ts: "2026-08-30T14:00:00-03:00", id: "P2", ok: false, durMin: 30, attempts: 4 },
+      { ts: "2026-08-31T10:00:00-03:00", id: "P3", ok: true, durMin: 8, attempts: 1 },
+    ];
+    const days = burnDown(hist, 7, new Date("2026-09-01T12:00:00-03:00"));
+    check("burnDown: always returns 7 buckets ending today", days.length === 7 && days[6]?.day === "2026-09-01");
+    check("burnDown: splits ok/failed per day", days[5]?.ok === 1 && days[5]?.failed === 0 && days[4]?.ok === 1 && days[4]?.failed === 1);
+    check("burnDown: today zero-filled", days[6]?.ok === 0 && days[6]?.failed === 0);
+    check("burnDown: tolerates malformed rows", burnDown([{ ts: "nope" }, null as unknown as { ts: string }], 1, new Date("2026-09-01T12:00:00-03:00"))[0]?.ok === 0);
+
+    // avg duration per phase from phase transitions (multi-round aware)
+    // t(h) ticks 1 second per step — every phase below spans exactly 1s
+    const t = (h: number) => `2026-09-01T10:00:0${h}-03:00`;
+    const flow: PilotEvent[] = [
+      { ts: t(0), type: "phase", task: "PA", phase: "planner" },
+      { ts: t(1), type: "phase", task: "PA", phase: "planner-done", ok: true }, // 1s planner
+      { ts: t(2), type: "phase", task: "PA", phase: "builder" },
+      { ts: t(3), type: "phase", task: "PA", phase: "builder-done", ok: false }, // 1s round 1
+      { ts: t(4), type: "phase", task: "PA", phase: "builder" },
+      { ts: t(5), type: "phase", task: "PA", phase: "builder-done", ok: true }, // 1s round 2
+      { ts: t(6), type: "phase", task: "PA", phase: "reviewers" },
+      { ts: t(7), type: "phase", task: "PA", phase: "reviewers-done", ok: true }, // 1s
+      { ts: t(8), type: "phase", task: "PA", phase: "gatekeeper" },
+      { ts: t(9), type: "phase", task: "PA", phase: "merge", ok: true }, // 1s
+    ];
+    const avg = avgPhaseDurations(flow);
+    check("phaseDur: averages multi-round phases", avg.find((p) => p.phase === "builder")?.avgMs === 1_000 && avg.find((p) => p.phase === "builder")?.n === 2);
+    check("phaseDur: closes every tracked phase", avg.find((p) => p.phase === "planner")?.avgMs === 1_000 && avg.find((p) => p.phase === "reviewers")?.avgMs === 1_000 && avg.find((p) => p.phase === "gatekeeper")?.avgMs === 1_000);
+    check("phaseDur: no completed sample → phase omitted", avg.find((p) => p.phase === "scribe") === undefined);
+    check("phaseDur: empty feed → empty summary", avgPhaseDurations([]).length === 0);
+
+    // clearing audit mode also drops the persisted diagnosis (chip hygiene)
+    const st = loadState(file);
+    enterAuditMode(st, "fever: test", Date.now());
+    st.auditDiagnosis = "api=down | top failure steps: unit(2)";
+    clearAuditMode(st);
+    check("clearAuditMode: wipes the diagnosis with the pause", st.auditMode === null && st.auditDiagnosis === undefined);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -1,4 +1,4 @@
-const TZ = "America/Sao_Paulo";
+export const TZ = "America/Sao_Paulo";
 
 /** Local-time ISO string (GMT-3) — the whole team reads timestamps in local. */
 export function nowLocalISO(): string {
