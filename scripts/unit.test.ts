@@ -14,7 +14,7 @@ import { taskMergedIn } from "../apps/pilot/src/pipeline";
 import { clampSlots, ensureSingleton, loadState, recordTaskFailure } from "../apps/pilot/src/state";
 import { areaKey, pickBatch, pickTasks } from "../apps/pilot/src/scheduler";
 import { blockTask, loadBacklog, parseBacklog, type Task } from "../apps/pilot/src/backlog";
-import { API_PREFLIGHT, apiHealthy, OPENCODE_URL, waitForApi } from "../apps/pilot/src/runner";
+import { API_PREFLIGHT, apiHealthy, OPENCODE_URL_DEFAULT, waitForApi } from "../apps/pilot/src/runner";
 import { mkdtempSync, mkdirSync, readdirSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync, utimesSync } from "node:fs";
 import { execSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -662,7 +662,10 @@ check("viewport: garbage rejected", viewportFromParams("x", "800") === null);
     "preflight: defaults are 5s timeout / 15s wait x3 retries (~45s)",
     API_PREFLIGHT.timeoutMs === 5_000 && API_PREFLIGHT.waitMs === 15_000 && API_PREFLIGHT.retries === 3,
   );
-  check("preflight: default URL is the local opencode serve", OPENCODE_URL.includes("127.0.0.1:4096"));
+  check(
+    "preflight: default URL is the local opencode serve (pinned fallback, env-independent)",
+    OPENCODE_URL_DEFAULT === "http://127.0.0.1:4096",
+  );
 
   const s1 = sleeper();
   const up1 = await waitForApi({ fetchImpl: fetchOf(async () => res(true)), sleepImpl: s1.sleepImpl, timeoutMs: 50 });

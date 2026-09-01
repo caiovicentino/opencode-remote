@@ -8,8 +8,13 @@ export interface RunResult {
   sessionId?: string;
 }
 
-/** P2-016: opencode API endpoint — same default as the daemon (OPENCODE_URL). */
-export const OPENCODE_URL = process.env.OPENCODE_URL ?? "http://127.0.0.1:4096";
+/**
+ * P2-016: opencode API endpoint. Reviewer note (round 2): the :4096 fallback is
+ * duplicated with apps/daemon/src/index.ts (OPENCODE_URL) — keep them in sync;
+ * the daemon copy is not exported, so a shared constant is a follow-up.
+ */
+export const OPENCODE_URL_DEFAULT = "http://127.0.0.1:4096";
+export const OPENCODE_URL = process.env.OPENCODE_URL ?? OPENCODE_URL_DEFAULT;
 
 /** P2-016 preflight tuning: 5s probe timeout, 15s between retries, 3 retries (~45s). */
 export const API_PREFLIGHT = { timeoutMs: 5_000, waitMs: 15_000, retries: 3 } as const;
