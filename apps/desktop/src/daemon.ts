@@ -231,6 +231,10 @@ export async function startDaemonSidecar(
   if (sidecar.token !== null && (await healthOnce(DAEMON_METRICS_PORT, sidecar.token))) {
     log(`[desktop] daemon already running on :${DAEMON_METRICS_PORT} — reusing it`);
     sidecar.reused = true; // enables the daemon.log pair-URI fallback
+    // P3-017: also remember how a replacement could be spawned so the manual
+    // restart (restartDaemon) can act when an adopted daemon turns unstable.
+    const adopted = resolveEntry(appPath, resourcesPath);
+    if (adopted) sidecar.entry = adopted;
     return true;
   }
 
@@ -392,4 +396,46 @@ export async function stopDaemonSidecar(): Promise<void> {
   sidecar.child = null;
   sidecar.stopping = false;
   log("[desktop] daemon sidecar stopped");
+}
+
+/**
+ * P3-017: manual recovery behind the tray's "Restart daemon" action. Covers
+ * the states the automatic respawn cannot fix — the respawn budget exhausted
+ * (gaveUp) or an adopted daemon gone unstable — without making the user quit
+ * and relaunch the app.
+ *
+ * Best-effort by contract: the whole body is try/caught and log-only, so a
+ * tray click can never take the shell down. With no entry resolved yet (no
+ * successful start, e.g. a dev checkout without tsx) it is a logged no-op.
+ */
+export async function restartDaemon(): Promise<boolean> {
+  const entry = sidecar.entry;
+  if (!entry) {
+    log("[desktop] restart daemon: no daemon entry (no successful start yet) — nothing to restart");
+    return false;
+  }
+  try {
+    // A pending respawn must never fire into (or after) the manual restart.
+    if (respawnTimer) {
+      clearTimeout(respawnTimer);
+      respawnTimer = null;
+    }
+    // Fresh crash budget: the user explicitly asked for another recovery round.
+    sidecar.failures = 0;
+    sidecar.gaveUp = false;
+    await stopDaemonSidecar();
+    sidecar.token = readApiToken();
+    // Our own child is gone; an adopted/launchd daemon may still own the port.
+    // Reuse it instead of crash-looping a fresh spawn against the busy port.
+    if (sidecar.token !== null && (await healthOnce(DAEMON_METRICS_PORT, sidecar.token))) {
+      log(`[desktop] restart daemon: daemon healthy on :${DAEMON_METRICS_PORT} — reusing it`);
+      sidecar.reused = true;
+      return true;
+    }
+    spawnChild(entry);
+    return true;
+  } catch (err) {
+    logError("[desktop] restart daemon failed:", err);
+    return false;
+  }
 }

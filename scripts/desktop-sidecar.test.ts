@@ -113,6 +113,7 @@ const {
   getPairUrl,
   healthOnce,
   isDaemonDown,
+  restartDaemon,
   resolveEntry,
   respawnState,
   startDaemonSidecar,
@@ -173,6 +174,12 @@ check(
   "resolveEntry dev checkout runs daemon source via tsx",
   dev?.file === join(repoRoot, "apps", "daemon", "src", "index.ts") && dev.args.length === 1,
 );
+
+// --- restartDaemon: no entry yet → logged no-op (P3-017) ----------------------
+// Nothing started successfully so far, so there is nothing to restart: the
+// call must resolve false without throwing (tray click on a never-started
+// sidecar).
+check("restart without any successful start is a logged no-op", (await restartDaemon()) === false);
 
 // --- reuse vs spawn ----------------------------------------------------------
 // Bogus appPath ⇒ resolveEntry finds nothing, so true is only reachable
@@ -307,6 +314,43 @@ const t3 = Date.now();
 await stopDaemonSidecar();
 check("stopDaemonSidecar is idempotent", Date.now() - t3 < 1000);
 check("give-up: intentional stop clears the down state", !isDaemonDown());
+
+// --- P3-017: tray "Restart daemon" ---------------------------------------------
+// gaveUp is simulated the same way as the give-up section above (a fixture
+// that exits rapidly), except this one stays alive on its 5th run — so the
+// manual restart has something healthy to spawn. Criterion: gaveUp + restart
+// → the sidecar respawns and waitForDaemonHealth returns 200 within the
+// timeout; a restart with no prior child must not throw.
+const restartEntry = fixture(
+  "restart.cjs",
+  `let n = 0;` +
+    `try { n = Number(require("node:fs").readFileSync(__filename + ".count", "utf8")); } catch {}` +
+    `require("node:fs").writeFileSync(__filename + ".count", String(n + 1));` +
+    `if (n < 4) process.exit(0);` +
+    `setInterval(() => {}, 1000);`,
+);
+process.env.OCR_DAEMON_ENTRY = restartEntry;
+check("restart: sidecar starts the burn fixture", (await startDaemonSidecar(tmp, undefined)) === true);
+check("restart: give-up reached again", await until(() => isDaemonDown(), 10_000));
+check("restart: recovers from give-up with no prior child (no throw)", (await restartDaemon()) === true);
+check(
+  "restart: replacement child is running (fixture stayed alive)",
+  await until(
+    () => existsSync(restartEntry + ".count") && Number(readFileSync(restartEntry + ".count", "utf8")) >= 5,
+    10_000,
+  ),
+);
+check("restart: give-up state cleared", !isDaemonDown());
+await new Promise<void>((r) => server.listen(port, "127.0.0.1", r));
+check(
+  "restart: waitForDaemonHealth returns 200 within the timeout",
+  (await waitForDaemonHealth({ timeoutMs: 10_000 })) === true,
+);
+await stopDaemonSidecar();
+check(
+  "restart: replacement child is stopped",
+  await until(() => !pidAlive(Number(readFileSync(restartEntry + ".pid", "utf8")))),
+);
 
 // --- bundled artifact smoke (P2-006) -----------------------------------------
 // The packaged app runs dist-daemon/index.js (shipped as resources/daemon/
