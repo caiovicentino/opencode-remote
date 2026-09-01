@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
-import { agentStream, exec, runAgent } from "./runner";
+import { agentStream, exec, runAgent, type AgentIds } from "./runner";
 import { nowLocalISO } from "./log";
 import { markDone, type Task } from "./backlog";
 import { emit } from "./events";
@@ -100,12 +100,82 @@ export function needsUiEvidence(area: string | undefined, renderTouched: boolean
   return renderTouched || area === "ui" || area === "desktop";
 }
 
+// ── P2-013 cheap resumption: failed rounds carry resumable ids ──────────────
+
+/** Cap so a noisy round cannot flood the next prompt with ids. */
+export const RESUME_MAX_TASK_IDS = 10;
+
+/**
+ * P2-013 (round 2): pure state transition for the resume bookkeeping across
+ * builder rounds. Only a round that actually failed (no PILOT:TASK-DONE in its
+ * output) leaves resumable state — a successful round RESETS it, so a normal
+ * review-fix round never gets a false "resume the crash" block. Failed rounds
+ * merge their captured ids into the accumulated ones (dedupe, arrival order,
+ * capped at the FIRST ${RESUME_MAX_TASK_IDS} so later garbage cannot evict
+ * real ids captured earlier); the session id always tracks the latest round
+ * (it is the one -s resumes).
+ */
+export function updateResumeState(prev: AgentIds | null, roundFailed: boolean, round: AgentIds): AgentIds | null {
+  if (!roundFailed) return null;
+  const taskIds = [...(prev?.taskIds ?? [])];
+  for (const id of round.taskIds) {
+    if (taskIds.length >= RESUME_MAX_TASK_IDS) break;
+    if (!taskIds.includes(id)) taskIds.push(id);
+  }
+  return { sessionId: round.sessionId ?? prev?.sessionId, taskIds };
+}
+
+/**
+ * P2-013 (round 2): pure decision for a builder round that finished without
+ * the PILOT:TASK-DONE marker (crash or timeout). Retry within the existing
+ * round budget or abort on the final round, exactly like the pre-spike
+ * behavior. The failure notice itself lives in the resume block (prompt
+ * hygiene round 3: findings stay reviewer-only).
+ */
+export function crashRoundDecision(round: number, maxRounds: number): { retry: boolean; detail: string } {
+  if (round >= maxRounds) {
+    return { retry: false, detail: `builder did not finish (round ${round})` };
+  }
+  return { retry: true, detail: "" };
+}
+
+/**
+ * P2-013: prompt section injected into round N+1 after a failed round N — the
+ * caller only passes non-null resume state (`updateResumeState`) when the
+ * previous round actually failed. opencode >=1.18.20 surfaces failed subagent
+ * tool calls with a resumable task_id — handing the ids back lets the builder
+ * inspect and resume partial work instead of paying for a cold restart.
+ * `failedRound` (the caller's round - 1) names the crashed round; omit it for
+ * the generic wording. Empty string when there is nothing resumable (round 1
+ * or no ids captured).
+ */
+export function resumeBlock(resume: AgentIds | null | undefined, failedRound?: number): string {
+  const tasks = [...new Set(resume?.taskIds ?? [])].slice(0, RESUME_MAX_TASK_IDS);
+  if (!resume?.sessionId && tasks.length === 0) return "";
+  const lines = [
+    failedRound !== undefined
+      ? `RESUME PARTIAL WORK (P2-013): round ${failedRound} failed mid-work (crash or timeout) and left recoverable state.`
+      : "RESUME PARTIAL WORK (P2-013): the previous round on this task failed mid-work and left recoverable state.",
+  ];
+  if (resume?.sessionId) {
+    lines.push(`- Previous builder session: ${resume.sessionId} (this round continues it via -s — its context is intact).`);
+  }
+  if (tasks.length) {
+    lines.push(
+      `- Resumable subagent task ids surfaced by opencode >=1.18.20: ${tasks.join(", ")} — inspect these failed tasks and recover whatever partial work they hold.`,
+    );
+  }
+  lines.push("- Inspect the partial work already on this branch and CONTINUE from it — do not restart from scratch.");
+  return `\n${lines.join("\n")}\n`;
+}
+
 export function builderPrompt(
   t: Task,
   round: number,
   findings: string,
   lessons: string[] = [],
   specFile: string | null = null,
+  resume: AgentIds | null = null,
 ): string {
   const uiTask = needsUiEvidence(t.area, false);
   // P2-008: when a planner spec exists on the branch, the builder must follow it
@@ -117,7 +187,7 @@ Work inside this repository (your cwd is a dedicated clone; production runs else
 
 TASK (${t.id}) [${t.priority}]: ${t.title}
 spec: ${t.spec || "(no extra spec — use judgement, keep the change small and shippable)"}
-${specBlock}${findings ? `\nREVIEWER FINDINGS TO ADDRESS:\n${findings}\n` : ""}${lessonsBlock(lessons)}
+${specBlock}${resumeBlock(resume, round - 1)}${findings ? `\nREVIEWER FINDINGS TO ADDRESS:\n${findings}\n` : ""}${lessonsBlock(lessons)}
 Rules:
 - ${CONSTITUTION}
 - Create/keep working on branch pilot/${t.id}. Commit your work with a conventional message "pilot(${t.id}): ...".
@@ -641,6 +711,9 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
   let findings = "";
   let touchedUi = false;
   let builderSession: string | undefined;
+  // P2-013: non-null only right after a builder round that actually failed —
+  // carries the resumable session + task ids into the next round's prompt
+  let resume: AgentIds | null = null;
   // carry over the last gatekeeper failure for this task, so the builder can
   // fix the exact failing step instead of rediscovering it (per-task file)
   const failFile = gateFailFile(t.id);
@@ -708,7 +781,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
     console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "builder round", data: { task: t.id, round } }));
     // P1-007: top-5 lessons keyword-matched against this task, most recent first
     const lessons = pickRelevantLessons(readExperienceFile(ws), t.title, t.spec);
-    const build = await runAgent(builderPrompt(t, round, findings, lessons, specFile), {
+    const build = await runAgent(builderPrompt(t, round, findings, lessons, specFile, resume), {
       cwd: ws,
       timeoutMin: cfg.taskTimeoutMin,
       label: `builder-${t.id}-r${round}`,
@@ -717,12 +790,25 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
       onStdout: stream,
     });
     if (build.sessionId) builderSession = build.sessionId;
+    // P2-013 (round 2): only a failed round leaves resumable state — a
+    // successful one resets it, so review-fix rounds never see a false
+    // "resume the crash" block
+    const roundFailed = !build.output.includes("PILOT:TASK-DONE");
+    resume = updateResumeState(resume, roundFailed, { sessionId: builderSession, taskIds: build.taskIds });
     console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "builder done", data: { task: t.id, round } }));
     // per-task diagnostic log: concurrent slots would clobber a shared file
     writeFileSync(join(homedir(), ".opencode-remote/pilot", `builder-${t.id}.log`), build.output);
-    emit("phase", { task: t.id, phase: "builder-done", ok: build.output.includes("PILOT:TASK-DONE") });
-    if (!build.output.includes("PILOT:TASK-DONE")) {
-      return { ok: false, detail: `builder did not finish (round ${round}): ${build.output.slice(-300)}` };
+    emit("phase", { task: t.id, phase: "builder-done", ok: !roundFailed });
+    if (roundFailed) {
+      // P2-013: a failed round (crash/timeout) is exactly when partial work
+      // exists — retry within the round budget instead of aborting; the
+      // failure notice travels in the resume block, not under the reviewer
+      // findings header.
+      const crash = crashRoundDecision(round, cfg.maxReviewRounds);
+      if (!crash.retry) {
+        return { ok: false, detail: `${crash.detail}: ${build.output.slice(-300)}` };
+      }
+      continue;
     }
     // --name-only: unified diff lines are prefixed (a/, b/, diff --git) and
     // would never match a bare path — round-2 review caught exactly that.
