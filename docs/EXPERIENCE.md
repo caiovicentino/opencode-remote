@@ -7,6 +7,6 @@ mais recentes primeiro); o red team noturno deduplica e poda acima de
 60 lições.
 
 ## Lessons
-- When shipping an asset loaded at runtime by Electron (tray icon, dock icon), name the Retina variant `<base>@2x.png` beside the base file so `nativeImage.createFromPath` auto-pairs them, add BOTH to electron-builder's `files`, and unit-tes… (fonte: P3-015)
-- When loading an image asset that may be missing or corrupt, gate the load on both `existsSync` and `!createFromPath(path).isEmpty()` (a zero-byte file yields an empty NativeImage, not a thrown error) and keep an embedded data-URL fallback… (fonte: P3-015)
-- When generating macOS template images, write pure alpha (RGB=0 — the menu bar recolors the mask, color is ignored) and call `setTemplateImage(true)` only on darwin, while keeping the asset/platform policy in an electron-free pure function… (fonte: P3-015)
+- When releasing a per-connection resource from both `close` and `error` handlers, add an idempotency flag on the socket (e.g. `released`) before the first release — ws can fire both events for one connection and double-release corrupts/unde… (fonte: P2-025)
+- When keying admission limits off `req.socket.remoteAddress`, document the proxy case: behind a TLS-terminating proxy every client shares one IP, so the cap must be raised via env or traffic routed as TCP passthrough (fonte: P2-025)
+- When testing server-side WebSocket admission, don't treat handshake `open` as proof of admission — a refused connection closes right after handshake, so resolve success only after a short grace period (~150ms) and assert the close code/rea… (fonte: P2-025)
