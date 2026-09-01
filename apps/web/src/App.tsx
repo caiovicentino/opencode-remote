@@ -20,6 +20,7 @@ import SessionsView from "./components/SessionsView";
 import ChatView from "./components/ChatView";
 import SettingsView, { applyTheme } from "./components/SettingsView";
 import FilesView from "./components/FilesView";
+import ArtifactsView from "./components/ArtifactsView";
 import SendToAgentView from "./components/SendToAgentView";
 
 type Phase = "unpaired" | "connecting" | "paired" | "error";
@@ -126,6 +127,7 @@ export default function App() {
   const [session, setSession] = useState<string | null>(null);
   const [settings, setSettings] = useState(false);
   const [filesView, setFilesView] = useState(false);
+  const [artifactsView, setArtifactsView] = useState(false);
   const [share, setShare] = useState<{ title?: string; text?: string; url?: string } | null>(null);
   const [tick, setTick] = useState(0);
   const [connStatus, setConnStatus] = useState<Status>("connecting");
@@ -226,7 +228,18 @@ export default function App() {
         setSettings(false);
         return;
       }
-      if (h === "#/files" && clientRef.current) setFilesView(true);
+      if (h === "#/files" && clientRef.current) {
+        setFilesView(true);
+        setSession(null);
+        setSettings(false);
+        setArtifactsView(false);
+      }
+      if (h === "#/artifacts" && clientRef.current) {
+        setArtifactsView(true);
+        setSession(null);
+        setSettings(false);
+        setFilesView(false);
+      }
     }
     applyHash();
     window.addEventListener("hashchange", applyHash);
@@ -334,6 +347,8 @@ export default function App() {
     } else if (settings) {
       setSettings(false);
       setTick((t) => t + 1);
+    } else if (artifactsView) {
+      setArtifactsView(false);
     } else if (filesView) {
       setFilesView(false);
     } else if (share) {
@@ -346,7 +361,7 @@ export default function App() {
   function onTouchStart(e: React.TouchEvent) {
     const t = e.touches[0];
     if (!t || e.touches.length !== 1) return;
-    if (!session && !settings && !filesView && !share) return;
+    if (!session && !settings && !filesView && !artifactsView && !share) return;
     swipe.current = { x: t.clientX, y: t.clientY, dx: 0, active: t.clientX > window.innerWidth - 28 };
   }
   function onTouchMove(e: React.TouchEvent) {
@@ -436,6 +451,7 @@ export default function App() {
   );
   const settingsNode = <SettingsView request={request} onBack={goBack} />;
   const filesNode = <FilesView request={request} onBack={goBack} />;
+  const artifactsNode = <ArtifactsView request={request} onBack={goBack} />;
   const shareNode = (
     <SendToAgentView
       request={request}
@@ -484,11 +500,13 @@ export default function App() {
     ? chatNode
     : settings
       ? settingsNode
-      : filesView
-        ? filesNode
-        : share
-          ? shareNode
-          : null;
+      : artifactsView
+        ? artifactsNode
+        : filesView
+          ? filesNode
+          : share
+            ? shareNode
+            : null;
 
   return (
     <div
@@ -506,16 +524,31 @@ export default function App() {
             <div className="desk-side-scroll">{sessionsNode}</div>
             <div className="desk-nav">
               <button
-                className={!settings && !filesView ? "active" : ""}
+                className={!settings && !filesView && !artifactsView ? "active" : ""}
                 onClick={() => {
                   setSettings(false);
                   setFilesView(false);
+                  setArtifactsView(false);
                   setSession(null);
                 }}
                 title="Conversas"
               >
                 <span>💬</span>
                 <span>Conversas</span>
+              </button>
+              <button
+                className={artifactsView ? "active" : ""}
+                onClick={() => {
+                  setNavDir("fwd");
+                  setArtifactsView(true);
+                  setSession(null);
+                  setSettings(false);
+                  setFilesView(false);
+                }}
+                title="Artifacts"
+              >
+                <span>🗂️</span>
+                <span>Artifacts</span>
               </button>
               <button
                 className={filesView ? "active" : ""}

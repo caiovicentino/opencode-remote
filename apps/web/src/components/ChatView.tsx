@@ -6,6 +6,8 @@ import { useT } from "../lib/i18n";
 import { humanizeError } from "../lib/errors";
 import { getVoiceSettings } from "./SettingsView";
 import { renderBubbleText } from "./FileCard";
+import ArtifactViewer from "./ArtifactViewer";
+import { artifactMentions, listArtifacts, type ArtifactMeta } from "../lib/artifacts";
 import { sessionTitleOf } from "../lib/title";
 import { permissionPreview } from "../lib/permission";
 
@@ -172,6 +174,9 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
   const [showActivity, setShowActivity] = useState(false);
   const [historyTools, setHistoryTools] = useState<Map<string, ToolActivity>>(new Map());
   const [sessionTitle, setSessionTitle] = useState("");
+  // agent artifacts (P1-010): cards under messages that reference them
+  const [artifacts, setArtifacts] = useState<ArtifactMeta[]>([]);
+  const [artifactView, setArtifactView] = useState<ArtifactMeta | null>(null);
   const t = useT();
 
   const [exporting, setExporting] = useState(false);
@@ -254,6 +259,24 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
       } catch {}
     })();
   }, []);
+
+  // artifacts for this session; refetched whenever the agent turns idle again
+  const idleCount = events.filter(
+    (e) =>
+      e.type === "session.idle" &&
+      ((e.properties ?? {}) as { sessionID?: string }).sessionID === sessionId,
+  ).length;
+  useEffect(() => {
+    let alive = true;
+    void listArtifacts(request, sessionId)
+      .then((list) => {
+        if (alive) setArtifacts(list);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [sessionId, idleCount, request]);
 
   useEffect(() => {
     let alive = true;
@@ -1207,6 +1230,39 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
                 </div>
               )}
               {renderBubbleText(b.text, request, setError)}
+              {b.role === "assistant" &&
+                artifactMentions(b.text, artifacts).map((a) => (
+                  <button
+                    key={a.name}
+                    className="card"
+                    style={{
+                      display: "flex",
+                      gap: 6,
+                      alignItems: "center",
+                      padding: "6px 10px",
+                      marginTop: 4,
+                      width: "100%",
+                    }}
+                    onClick={() => setArtifactView(a)}
+                    title="Open artifact"
+                  >
+                    <span aria-hidden>🗂️</span>
+                    <span
+                      style={{
+                        flex: 1,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                        textAlign: "left",
+                      }}
+                    >
+                      {a.name}
+                    </span>
+                    <span className="muted" style={{ fontSize: "0.72rem" }}>
+                      {a.kind}
+                    </span>
+                  </button>
+                ))}
               {b.role === "user" && b.messageID && (
                 <button
                   className="muted"
@@ -1780,6 +1836,9 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
             ))}
           </div>
         </div>
+      )}
+      {artifactView && (
+        <ArtifactViewer meta={artifactView} request={request} onClose={() => setArtifactView(null)} />
       )}
     </div>
   );
