@@ -7,6 +7,6 @@ mais recentes primeiro); o red team noturno deduplica e poda acima de
 60 lições.
 
 ## Lessons
-- When a start path adopts an already-healthy daemon via a health-check-before-spawn branch, persist the resolved spawn entry there too — otherwise a later manual restart has no entry and becomes a logged no-op exactly for the adopted-daemon… (fonte: P3-017)
-- When adding a manual restart to a supervisor, cancel the pending respawn timer and reset failures/gaveUp before stopping the child, then re-check port health before spawning: an adopted/launchd daemon may still own the port, and spawning i… (fonte: P3-017)
-- When wiring async recovery into tray/UI entry points, keep the function try/caught and log-only, invoke it as `void fn().catch(...)`, and make the no-entry case return false instead of throwing — a click must never take the shell down (fonte: P3-017)
+- When creating a per-task branch with `git checkout -b pilot/<ID>`, first delete any stale branch of the same name (e.g. `git branch -D pilot/<ID>` if it exists) — aborted pipeline attempts leave the branch behind and every retry fails with… (fonte: P2-019)
+- When a server-side Map is keyed by client-supplied identifiers (room ids, channels, topics), enforce both a charset/length grammar and a per-connection cap on distinct keys — check the cap before the join but let re-joins of already-held k… (fonte: P2-019)
+- When a frame violates a soft protocol rule on a long-lived socket, drop the frame and increment a counter instead of closing the connection, exposing the counter on /metrics and /healthz with only id prefixes logged — this keeps legit clie… (fonte: P2-019)
