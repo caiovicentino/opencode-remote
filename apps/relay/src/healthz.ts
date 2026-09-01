@@ -11,6 +11,7 @@ export interface HealthzState {
   version: string;
   startedAt: number;
   rooms: () => number;
+  roomsRejected: () => number;
 }
 
 export function healthzPayload(s: HealthzState, now = Date.now()) {
@@ -19,6 +20,7 @@ export function healthzPayload(s: HealthzState, now = Date.now()) {
     version: s.version,
     uptimeS: Math.max(0, Math.round((now - s.startedAt) / 1000)),
     rooms: s.rooms(),
+    roomsRejected: s.roomsRejected(),
   };
 }
 

@@ -5,6 +5,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { healthzHandler } from "./healthz";
 import { TokenBucket } from "./ratelimit";
 import { IpCap } from "./ipcap";
+import { isValidRoomId, MAX_ROOMS_PER_SOCKET } from "./roomid";
 
 /**
  * Relay: a blind router.
@@ -77,6 +78,7 @@ const m = {
   bytesRouted: 0,
   rejects: 0,
   rateLimited: 0,
+  roomsRejected: 0,
   startedAt: Date.now(),
 };
 if (METRICS_PORT) {
@@ -96,6 +98,8 @@ if (METRICS_PORT) {
           `relay_rejects ${m.rejects}`,
           "# TYPE relay_rate_limited_total counter",
           `relay_rate_limited_total ${m.rateLimited}`,
+          "# TYPE relay_rooms_rejected counter",
+          `relay_rooms_rejected ${m.roomsRejected}`,
           "# TYPE relay_rooms_active gauge",
           `relay_rooms_active ${rooms.size}`,
         ];
@@ -114,6 +118,7 @@ if (METRICS_PORT) {
             bytes_routed: m.bytesRouted,
             rejects: m.rejects,
             rate_limited_total: m.rateLimited,
+            rooms_rejected: m.roomsRejected,
             rooms_active: rooms.size,
           },
           null,
@@ -165,7 +170,12 @@ let counter = 0;
 // Sits on the plain-HTTP request path; the ws upgrade path is untouched.
 server.on(
   "request",
-  healthzHandler({ version: VERSION, startedAt: m.startedAt, rooms: () => rooms.size }),
+  healthzHandler({
+    version: VERSION,
+    startedAt: m.startedAt,
+    rooms: () => rooms.size,
+    roomsRejected: () => m.roomsRejected,
+  }),
 );
 
 server.listen(PORT, () => {
@@ -233,6 +243,29 @@ wss.on("connection", (socket: Socket, req) => {
         socket.close(RATE_LIMIT_CLOSE, "rate limited");
         return;
       }
+    }
+
+    // room grammar + per-socket room cap (P2-019): room ids are the only
+    // envelope field that allocates relay state, so unvalidated ids let one
+    // socket grow the rooms map without bound. Both checks run after the
+    // rate limiter so abuse is budget-bounded; a bad frame is dropped —
+    // never close — with only a prefix logged, as everywhere else.
+    if (!isValidRoomId(frame.room)) {
+      m.roomsRejected++;
+      ev("warn", "frame dropped: invalid room id", {
+        id: socket.id,
+        room: String(frame.room).slice(0, 8),
+      });
+      return;
+    }
+    if (!socket.rooms?.has(frame.room) && (socket.rooms?.size ?? 0) >= MAX_ROOMS_PER_SOCKET) {
+      m.roomsRejected++;
+      ev("warn", "frame dropped: socket room cap exceeded", {
+        id: socket.id,
+        room: frame.room.slice(0, 8),
+        cap: MAX_ROOMS_PER_SOCKET,
+      });
+      return;
     }
 
     ev("info", "frame in", {

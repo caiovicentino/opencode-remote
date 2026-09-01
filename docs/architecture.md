@@ -16,6 +16,13 @@ the handshake proves both sides possess the matching secret.
 ### apps/relay
 A blind router. Forwards opaque `RelayFrame` envelopes between sockets that
 share a room id. Deliberately cannot decrypt, forge or reorder payloads.
+Room ids must match the daemon's grammar — a string of 8–128 chars from
+`[A-Za-z0-9_-]` (the daemon generates `randomUUID` with hyphens stripped,
+32 hex chars) — and a socket may occupy at most 8 distinct rooms at once
+(re-joins of rooms it already holds are free). Frames with an invalid id or
+from a socket over that cap are dropped without disconnecting and counted in
+`rooms_rejected` on `/metrics` and `/healthz`; together with the per-socket
+cap this keeps the rooms map bounded against memory DoS on the public relay.
 Resource limits: 1MB/frame, 1000 sockets, 10 peers/room, a per-IP
 live-connection cap (`RELAY_MAX_PER_IP`, default 20, 0 disables — the
 surplus connection is closed with 1013 "too many connections" and counted
@@ -32,9 +39,9 @@ the sealed E2E handshake, invisible to the relay by design. The bucket
 resets on reconnect, so a device can trade a reconnect for a fresh budget;
 total abuse stays bounded by the 1000-socket cap. `GET /healthz` is the one
 public HTTP endpoint on the relay port — an unauthenticated liveness probe
-answering `{ok, version, uptimeS, rooms}` (counters only, never room ids) for
-load balancers in the hosted stage; `/metrics` stays loopback-only.
-Optional TLS (`wss://`)
+answering `{ok, version, uptimeS, rooms, roomsRejected}` (counters only,
+never room ids) for load balancers in the hosted stage; `/metrics` stays
+loopback-only. Optional TLS (`wss://`)
 or termination via Caddy.
 Note the per-IP cap reads `req.socket.remoteAddress` — if you front the relay
 with a TLS-terminating proxy every connection shares the proxy IP, so raise
