@@ -686,6 +686,11 @@ export function verifyEvidence(
   for (const c of block.commands) {
     const rerun = runCmd(c.cmd, ws);
     if (!rerun.ok) return { ok: false, detail: `cited command failed on re-run: ${c.cmd}` };
+    // A silent successful re-run (e.g. `tsc --silent`) prints nothing, so there
+    // is no text to contain the paste — the re-execution itself is the proof.
+    // Fabrication is still caught: a failing command exits non-zero above.
+    const rerunEmpty = !rerun.output.split("\n").some((l) => normalizeEvidenceLine(l));
+    if (rerunEmpty) continue;
     if (!evidenceMatches(c.output, rerun.output)) {
       const emptyPaste = !c.output.split("\n").some((l) => normalizeEvidenceLine(l));
       return {

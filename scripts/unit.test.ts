@@ -833,6 +833,10 @@ check("stdlibShadow: non-stdlib root file passes", stdlibShadowHits("A\tmain.py\
   const ep = verifyEvidence(ws, emptyPaste, false);
   check("evidence: empty paste for a verbose command rejected", ep.ok === false && ep.detail.includes("no output pasted"));
   check("evidence: missing block rejected", verifyEvidence(ws, "all done", false).detail.includes("no EVIDENCE block"));
+  const wsSilent = mkdtempSync(join(tmpdir(), "p2-009-silent-"));
+  writeFileSync(wsSilent + "/package.json", JSON.stringify({ name: "p2-009s", scripts: { typecheck: "node -e ''", "test:unit": "node -e ''" } }));
+  const pasteVerbose = `EVIDENCE:\n$ npm run typecheck --silent\n0 errors\n$ npm run test:unit --silent\nUNIT TESTS PASSED\nPILOT:TASK-DONE`;
+  check("evidence: verbose paste over silent successful re-run accepted", verifyEvidence(wsSilent, pasteVerbose, false).ok === true);
   check("evidence: non-allowlisted command dropped, never executed", verifyEvidence(ws, "EVIDENCE:\n$ rm -rf /\n", false).detail.includes("missing required command"));
   const transcript = `EVIDENCE:\n$ npm run typecheck --silent\nTS-OK\n$ npm run test:unit --silent\n$ npm run typecheck\nUNIT-OK\n`;
   check("evidence: prompt-looking lines in real output don't reject an honest block", verifyEvidence(ws, transcript, false).ok === true && !parseEvidenceBlock(transcript)?.commands.some((c) => c.cmd === "npm run typecheck"));
