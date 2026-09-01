@@ -143,6 +143,8 @@ const dict = {
       "Scan this QR code with the OpenCode Remote app to control this machine from your phone. Traffic is end-to-end encrypted.",
     pairOverlayAlt: "Pairing QR code",
     pairOverlayLater: "Pair later",
+    // daemon sidecar gave up (desktop, P2-017)
+    daemonDown: "Local daemon is down — the app stopped retrying. Restart OpenCode Remote to recover.",
   },
   pt: {
     search: "Buscar conversas…",
@@ -237,5 +239,7 @@ const dict = {
       "Escaneie este QR code com o app OpenCode Remote para controlar esta máquina do celular. O tráfego é criptografado ponta a ponta.",
     pairOverlayAlt: "QR code de pareamento",
     pairOverlayLater: "Parear depois",
+    // daemon sidecar gave up (desktop, P2-017)
+    daemonDown: "Daemon local caiu — o app parou de tentar reiniciar. Reabra o OpenCode Remote para recuperar.",
   },
 } satisfies Record<Lang, Record<string, string>>;

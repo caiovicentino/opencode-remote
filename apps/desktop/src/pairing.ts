@@ -20,6 +20,9 @@ export interface PairingState {
   devices: number;
   /** True when at least one non-host device is paired (typically the phone). */
   phonePaired: boolean;
+  /** P2-017: sidecar respawn budget exhausted — the daemon is not coming
+   * back until the app restarts (set only while no healthy daemon answers). */
+  daemonDown?: boolean;
 }
 
 /**

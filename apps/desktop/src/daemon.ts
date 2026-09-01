@@ -23,6 +23,15 @@ const PAIR_URL_RE = /opencode-remote:\/\/pair\?v=2\S*/;
 /** Bound on the stdout tail kept around while scanning for the pairing URI. */
 const STDOUT_TAIL_MAX = 8192;
 
+/** Respawn backoff (P2-017): 5s → 15s → 45s, then give up. Tests shorten the
+ * schedule via OCR_DAEMON_RESPAWN_DELAYS (comma-separated ms) — production
+ * never sets it, exactly like the other OCR_DAEMON_* test escape hatches. */
+const RESPAWN_DELAYS_MS = (process.env.OCR_DAEMON_RESPAWN_DELAYS ?? "5000,15000,45000")
+  .split(",")
+  .map((s) => Number(s.trim()))
+  .filter((n) => Number.isFinite(n) && n >= 0);
+const RESPAWN_MAX_ATTEMPTS = 3;
+
 interface SidecarState {
   child: ChildProcess | null;
   spawned: boolean;
@@ -36,6 +45,12 @@ interface SidecarState {
   reused: boolean;
   /** Rolling stdout tail (bounded) scanned for the pairing URI. */
   stdoutTail: string;
+  /** Entry resolved at the first successful start; respawns reuse it. */
+  entry: DaemonEntry | null;
+  /** Consecutive respawn attempts since the last confirmed-healthy daemon. */
+  failures: number;
+  /** True once RESPAWN_MAX_ATTEMPTS consecutive attempts failed (terminal). */
+  gaveUp: boolean;
 }
 
 const sidecar: SidecarState = {
@@ -47,7 +62,13 @@ const sidecar: SidecarState = {
   pairUrl: null,
   reused: false,
   stdoutTail: "",
+  entry: null,
+  failures: 0,
+  gaveUp: false,
 };
+
+/** Pending respawn backoff timer, if any. */
+let respawnTimer: NodeJS.Timeout | null = null;
 
 interface DaemonEntry {
   node: string;
@@ -219,7 +240,13 @@ export async function startDaemonSidecar(
     );
     return false;
   }
+  sidecar.entry = entry;
+  spawnChild(entry);
+  return true;
+}
 
+/** Spawn + wire one daemon child (used by the initial start and by respawns). */
+function spawnChild(entry: DaemonEntry): void {
   const child = spawn(entry.node, [...entry.args, entry.file], {
     cwd: entry.cwd,
     env: {
@@ -256,19 +283,92 @@ export async function startDaemonSidecar(
     sidecar.exited = true;
     if (!sidecar.stopping) {
       console.error(`[desktop] daemon sidecar exited (code=${child.exitCode} signal=${child.signalCode})`);
+      scheduleRespawn();
     }
   });
   // Spawn failures (ENOENT, cwd missing) emit "error" without "exit".
   child.on("error", (err) => {
     sidecar.exited = true;
-    if (!sidecar.stopping) console.error(`[desktop] daemon sidecar failed: ${err.message}`);
+    if (!sidecar.stopping) {
+      console.error(`[desktop] daemon sidecar failed: ${err.message}`);
+      scheduleRespawn();
+    }
   });
   console.log(`[desktop] daemon sidecar spawned (pid ${child.pid}, metrics :${DAEMON_METRICS_PORT})`);
-  return true;
+}
+
+/**
+ * P2-017: keep the UI connected when the sidecar dies at runtime (crash, OOM,
+ * stray kill). Each unintentional exit schedules one respawn with growing
+ * backoff; the failure counter resets as soon as waitForDaemonHealth() gets a
+ * 200 again. After RESPAWN_MAX_ATTEMPTS consecutive failures the shell gives
+ * up (logged loudly) and the UI is told via the pairing-state channel.
+ */
+function scheduleRespawn(): void {
+  if (sidecar.stopping || sidecar.gaveUp) return;
+  sidecar.failures += 1;
+  if (sidecar.failures > RESPAWN_MAX_ATTEMPTS) {
+    sidecar.gaveUp = true;
+    console.error("[desktop] daemon sidecar gave up after 3 attempts");
+    return;
+  }
+  const delay = RESPAWN_DELAYS_MS[Math.min(sidecar.failures - 1, RESPAWN_DELAYS_MS.length - 1)] ?? 45_000;
+  console.log(
+    `[desktop] daemon sidecar respawn in ${Math.round(delay / 1000)}s (attempt ${sidecar.failures}/${RESPAWN_MAX_ATTEMPTS})`,
+  );
+  if (respawnTimer) clearTimeout(respawnTimer);
+  respawnTimer = setTimeout(() => {
+    respawnTimer = null;
+    void respawn();
+  }, delay);
+}
+
+/** One backoff-driven respawn attempt. */
+async function respawn(): Promise<void> {
+  const entry = sidecar.entry;
+  if (!entry || sidecar.stopping || sidecar.gaveUp) return;
+  if (sidecar.child && !sidecar.exited) return; // recovered meanwhile
+  sidecar.token = readApiToken();
+  // An authenticated daemon on the port (e.g. a launchd install the user
+  // started after the crash) counts as recovered — spawning on top of it
+  // would just crash-loop on the busy port.
+  if (sidecar.token !== null && (await healthOnce(DAEMON_METRICS_PORT, sidecar.token))) {
+    console.log(`[desktop] daemon already healthy again on :${DAEMON_METRICS_PORT} — no respawn needed`);
+    sidecar.child = null;
+    sidecar.spawned = false;
+    sidecar.reused = true;
+    sidecar.failures = 0;
+    return;
+  }
+  spawnChild(entry);
+  // 200 → the sidecar is doing its job again; a fresh crash budget starts.
+  void waitForDaemonHealth().then((healthy) => {
+    if (healthy) {
+      sidecar.failures = 0;
+      sidecar.gaveUp = false;
+    }
+  });
+}
+
+/** True once the respawn budget is exhausted and the shell stopped retrying. */
+export function isDaemonDown(): boolean {
+  return sidecar.gaveUp;
+}
+
+/** Diagnostic view into the respawn bookkeeping (eval battery asserts on it). */
+export function respawnState(): { failures: number; gaveUp: boolean } {
+  return { failures: sidecar.failures, gaveUp: sidecar.gaveUp };
 }
 
 /** Terminate the child we spawned (SIGTERM → 3s grace → SIGKILL). Idempotent. */
 export async function stopDaemonSidecar(): Promise<void> {
+  // A pending respawn must never fire after (or during) an intentional stop.
+  if (respawnTimer) {
+    clearTimeout(respawnTimer);
+    respawnTimer = null;
+  }
+  sidecar.failures = 0;
+  sidecar.gaveUp = false;
   const child = sidecar.child;
   if (!child || !sidecar.spawned) return;
   sidecar.spawned = false;

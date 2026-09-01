@@ -6,6 +6,7 @@ import QRCode from "qrcode";
 import {
   DAEMON_METRICS_PORT,
   getPairUrl,
+  isDaemonDown,
   readApiToken,
   startDaemonSidecar,
   stopDaemonSidecar,
@@ -162,6 +163,12 @@ const PROBE_TIMEOUT_MS = 2_000;
 let pairingState: PairingState | null = null;
 let pairingTimer: NodeJS.Timeout | null = null;
 
+/** Placeholder state while the sidecar is down for good (P2-017): no QR (the
+ * old room/keys are dead with the daemon), just the "daemon down" flag. */
+function daemonDownState(): PairingState {
+  return { uri: null, qrDataUrl: null, devices: 0, phonePaired: false, daemonDown: true };
+}
+
 function setPairingState(next: PairingState | null): void {
   const changed = JSON.stringify(next) !== JSON.stringify(pairingState);
   pairingState = next;
@@ -178,7 +185,7 @@ function setPairingState(next: PairingState | null): void {
 async function refreshPairingState(): Promise<void> {
   const token = readApiToken();
   if (!token) {
-    setPairingState(null);
+    setPairingState(isDaemonDown() ? daemonDownState() : null);
     return;
   }
   const base = `http://127.0.0.1:${DAEMON_METRICS_PORT}`;
@@ -207,9 +214,14 @@ async function refreshPairingState(): Promise<void> {
   } catch (err) {
     // Daemon down, token rotated or state file wiped: drop the cached state so
     // a stale QR (old room/keys) is never shown. The next healthy tick
-    // rebuilds everything from scratch.
+    // rebuilds everything from scratch. When the sidecar exhausted its
+    // respawn budget (P2-017), tell the renderer instead of staying silent.
     console.error(`[desktop] pairing poll failed: ${err instanceof Error ? err.message : err}`);
-    setPairingState(null);
+    if (isDaemonDown()) {
+      setPairingState(daemonDownState());
+    } else {
+      setPairingState(null);
+    }
   }
 }
 

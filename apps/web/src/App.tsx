@@ -35,6 +35,8 @@ interface PairingState {
   qrDataUrl: string | null;
   devices: number;
   phonePaired: boolean;
+  /** P2-017: sidecar respawn budget exhausted (desktop shell only). */
+  daemonDown?: boolean;
 }
 
 /** Electron bridge from apps/desktop/src/preload.ts (absent in the browser). */
@@ -450,9 +452,19 @@ export default function App() {
       />
     ) : null;
 
+  // P2-017: the shell gave up respawning the daemon sidecar — warn instead of
+  // leaving the user with a silently disconnected app.
+  const daemonDown = !!pairingState?.daemonDown;
+  const daemonDownBanner = daemonDown ? (
+    <div className="daemon-down" role="alert">
+      ⚠︎ {t("daemonDown")}
+    </div>
+  ) : null;
+
   if (addingMachine) {
     return (
-      <>
+      <div className={daemonDown ? "pair-wrap has-daemon-down" : "pair-wrap"}>
+        {daemonDownBanner}
         {pairingOverlay}
         <PairingView
           phase="unpaired"
@@ -469,13 +481,14 @@ export default function App() {
           }}
           onRetry={() => setAddingMachine(false)}
         />
-      </>
+      </div>
     );
   }
 
   if (phase !== "paired") {
     return (
-      <>
+      <div className={daemonDown ? "pair-wrap has-daemon-down" : "pair-wrap"}>
+        {daemonDownBanner}
         {pairingOverlay}
         <PairingView
           phase={phase}
@@ -495,7 +508,7 @@ export default function App() {
             else setPhase("unpaired");
           }}
         />
-      </>
+      </div>
     );
   }
 
@@ -574,13 +587,14 @@ export default function App() {
   return (
     <div
       ref={appRootRef}
-      className={`app-root${session ? "" : " has-tabbar"}`}
+      className={`app-root${session ? "" : " has-tabbar"}${daemonDown ? " has-daemon-down" : ""}`}
       data-nav={navDir}
       onTouchStart={isDesktop ? undefined : onTouchStart}
       onTouchMove={isDesktop ? undefined : onTouchMove}
       onTouchEnd={isDesktop ? undefined : onTouchEnd}
       style={{ height: "100%" }}
     >
+      {daemonDownBanner}
       {isDesktop ? (
         <div className="desk">
           <aside className="desk-side">

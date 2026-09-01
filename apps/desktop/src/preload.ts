@@ -14,6 +14,8 @@ export interface PairingState {
   qrDataUrl: string | null;
   devices: number;
   phonePaired: boolean;
+  /** P2-017: sidecar gave up respawning — surfaced so the UI can warn. */
+  daemonDown?: boolean;
 }
 
 contextBridge.exposeInMainWorld("ocrDesktop", {
