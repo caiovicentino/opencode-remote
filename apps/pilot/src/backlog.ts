@@ -8,13 +8,21 @@ export interface Task {
   spec: string;
   /** P1-006 area tag `(area: ui|daemon|desktop|infra|relay)`; "" when untagged. */
   area: string;
+  /** P1-060 size tag `(size: L)`; "S" when absent/unknown — scales budgets. */
+  size?: TaskSize;
   line: string;
 }
+
+/** P1-060: task horizon. S/M keep the classic budgets; L unlocks long horizon. */
+export type TaskSize = "S" | "M" | "L";
 
 const BACKLOG = "BACKLOG.md";
 
 /** Trailing area tag appended by the strategist: `... (area: ui)`. */
 const AREA_RE = /\(area:\s*([A-Za-z][A-Za-z0-9_-]*)\)\s*$/;
+
+/** P1-060 trailing size tag: `... (size: L)`. Unknown values never match. */
+const SIZE_RE = /\(size:\s*([SML])\)\s*$/i;
 
 /** P1-006: documented area vocabulary; unknown tags fall back to serial "". */
 export const KNOWN_AREAS = new Set(["ui", "daemon", "desktop", "infra", "relay"]);
@@ -26,13 +34,28 @@ export function parseBacklog(md: string): Task[] {
     const trimmed = line.trim();
     let body = trimmed;
     let area = "";
-    const am = AREA_RE.exec(body);
-    if (am) {
-      area = KNOWN_AREAS.has(am[1] ?? "") ? am[1]! : "";
-      body = body.slice(0, am.index).trimEnd();
+    let size: TaskSize | undefined;
+    // P1-060: strip trailing tags right-to-left — (size:) and (area:) may
+    // appear in either order and only a trailing occurrence counts, so a tag
+    // mentioned mid-spec stays part of the spec text (parse never breaks).
+    for (;;) {
+      const am = AREA_RE.exec(body);
+      if (am) {
+        area = KNOWN_AREAS.has(am[1] ?? "") ? am[1]! : "";
+        body = body.slice(0, am.index).trimEnd();
+        continue;
+      }
+      const sm = SIZE_RE.exec(body);
+      if (sm) {
+        size = sm[1]!.toUpperCase() as TaskSize;
+        body = body.slice(0, sm.index).trimEnd();
+        continue;
+      }
+      break;
     }
     const m = /^- \[ \] \(([^)]+)\) \[(P\d)\] (.+?)(?: — spec: (.+))?$/.exec(body);
-    if (m && m[1] && m[2] && m[3]) tasks.push({ id: m[1], priority: m[2], title: m[3], spec: m[4] ?? "", area, line: trimmed });
+    if (m && m[1] && m[2] && m[3])
+      tasks.push({ id: m[1], priority: m[2], title: m[3], spec: m[4] ?? "", area, size: size ?? "S", line: trimmed });
   }
   return tasks;
 }

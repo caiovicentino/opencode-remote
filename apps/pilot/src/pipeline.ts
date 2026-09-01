@@ -51,6 +51,9 @@ export function plannerPrompt(t: Task, attempt: number): string {
   const retry = attempt > 1
     ? `\nATTENTION: this is attempt ${attempt}. Your previous run did not leave a valid specs/${t.id}.md on disk — write the file this time.\n`
     : "";
+  const milestones = t.size === "L"
+    ? "\n- Long-horizon task (P1-060): this task is size L. The ## Approach must be a numbered list of milestones M1..Mn, each with its own acceptance criterion — the builder executes them in order, 1+ per round across several reviewed rounds.\n"
+    : "";
   return `You are the PLANNER agent of the opencode-remote autonomous pipeline (READ-ONLY).
 The task below is high priority; before any builder touches it, you must produce its build spec.
 
@@ -71,7 +74,7 @@ Rules:
 - READ-ONLY except for specs/${t.id}.md: do NOT modify, create or delete any other file, do NOT commit.
 - Keep the spec short and concrete (<= ~120 lines) — the builder is another agent that will follow it.
 - Acceptance criteria must be testable: commands to run, observable behaviors, numbers when applicable.
-- Touched files must cite real repo paths you actually inspected.
+- Touched files must cite real repo paths you actually inspected.${milestones}
 
 When finished, your LAST line of output must be exactly: PLANNER:DONE`;
 }
@@ -100,6 +103,90 @@ export function validateSpec(content: string): boolean {
  */
 export function needsUiEvidence(area: string | undefined, renderTouched: boolean): boolean {
   return renderTouched || area === "ui" || area === "desktop";
+}
+
+// ── P1-060 long-horizon tasks: size budgets, branch preservation, checkpoints ─
+
+/** Effective per-run budgets for a task, keyed by its BACKLOG size tag. */
+export interface TaskBudgets {
+  rounds: number;
+  timeoutMin: number;
+  attempts: number;
+}
+
+/**
+ * P1-060: pure budget table. S/M keep the classic budgets for any task;
+ * size L (genuine long-horizon epics) scales them so the flash can chew on
+ * big work: 6 rounds, 90min per builder round, 6 attempts before blocking.
+ */
+export function budgetsFor(size: Task["size"]): TaskBudgets {
+  return size === "L"
+    ? { rounds: 6, timeoutMin: 90, attempts: 6 }
+    : { rounds: 3, timeoutMin: 45, attempts: 4 };
+}
+
+/** P1-060: pure circuit-breaker decision — attempts vs the task-size cap. */
+export function isOverCap(attempts: number | undefined, size: Task["size"]): boolean {
+  return (attempts ?? 0) >= budgetsFor(size).attempts;
+}
+
+/**
+ * P1-060 (P1-036 prerequisite): pure decision for branch preservation across
+ * attempts. The FIRST attempt starts clean (delete + recreate `pilot/<ID>`);
+ * any later attempt continues the preserved branch so failed-attempt work
+ * survives. A missing branch always falls back to the fresh path.
+ */
+export function preserveBranch(attempts: number | undefined, branchExists: boolean): boolean {
+  return (attempts ?? 0) > 0 && branchExists;
+}
+
+export interface RoundCheckpoint {
+  task: string;
+  /** Branch head sha at builder-round start (40-hex, validated on load). */
+  sha: string;
+  round: number;
+  at: string;
+}
+
+/** Per-task round checkpoint file (path-safe: id is TASK_ID_RE-checked). */
+function checkpointFile(taskId: string): string | null {
+  if (!TASK_ID_RE.test(taskId)) return null;
+  return join(homedir(), ".opencode-remote/pilot/checkpoints", `${taskId}.json`);
+}
+
+/** Record the branch head at builder-round start (best-effort by design). */
+export function saveCheckpoint(taskId: string, sha: string, round: number): void {
+  const f = checkpointFile(taskId);
+  if (!f) return;
+  try {
+    mkdirSync(dirname(f), { recursive: true });
+    writeFileSync(f, JSON.stringify({ task: taskId, sha, round, at: nowLocalISO() } satisfies RoundCheckpoint, null, 2));
+  } catch {}
+}
+
+/**
+ * Load the last checkpoint for a task. The sha is re-validated against the
+ * object-id charset before it may reach a shell `git diff` (the file lives
+ * outside the repo, so treat it as untrusted input).
+ */
+export function loadCheckpoint(taskId: string): RoundCheckpoint | null {
+  const f = checkpointFile(taskId);
+  if (!f) return null;
+  try {
+    const c = JSON.parse(readFileSync(f, "utf8")) as RoundCheckpoint;
+    if (typeof c?.sha !== "string" || !/^[0-9a-f]{7,40}$/.test(c.sha)) return null;
+    return c;
+  } catch {
+    return null;
+  }
+}
+
+function clearCheckpoint(taskId: string): void {
+  const f = checkpointFile(taskId);
+  if (!f) return;
+  try {
+    rmSync(f);
+  } catch {}
 }
 
 // ── P2-013 cheap resumption: failed rounds carry resumable ids ──────────────
@@ -178,18 +265,27 @@ export function builderPrompt(
   lessons: string[] = [],
   specFile: string | null = null,
   resume: AgentIds | null = null,
+  attempt = 1,
 ): string {
   const uiTask = needsUiEvidence(t.area, false);
   // P2-008: when a planner spec exists on the branch, the builder must follow it
   const specBlock = specFile
     ? `\nPLANNER SPEC: ${specFile} exists on this branch — read it FIRST. It holds the agreed problem analysis, approach, touched files, edge cases, acceptance criteria and out-of-scope. Follow it; if you must deviate, justify the deviation in the commit message. Do not delete or rewrite the spec.\n`
     : "";
+  // P1-060: long-horizon tasks — the spec carries ordered milestones and the
+  // branch survives across attempts, so rounds build on prior work
+  const longBlock = t.size === "L"
+    ? `\nLONG-HORIZON TASK (P1-060): this task is size L and its spec's ## Approach is structured as numbered milestones (M1..Mn). Execute milestones IN ORDER, one or more per round, and keep the branch green at the end of every round (typecheck + build + unit). You have a larger round/timeout budget than a size-S task — use it to finish milestones, not to gold-plate.\n`
+    : "";
+  const attemptBlock = attempt > 1
+    ? `\nATTEMPT ${attempt} (P1-060): the branch pilot/${t.id} already exists with committed work from previous attempts and was PRESERVED for you. Continue from the existing history (git log, \`git diff main...pilot/${t.id}\`) — do NOT restart from scratch and do NOT undo already-committed work.\n`
+    : "";
   return `You are the BUILDER agent of the opencode-remote autonomous pipeline (round ${round}).
 Work inside this repository (your cwd is a dedicated clone; production runs elsewhere).
 
 TASK (${t.id}) [${t.priority}]: ${t.title}
 spec: ${t.spec || "(no extra spec — use judgement, keep the change small and shippable)"}
-${specBlock}${resumeBlock(resume, round - 1)}${findings ? `\nREVIEWER FINDINGS TO ADDRESS:\n${findings}\n` : ""}${lessonsBlock(lessons)}
+${specBlock}${longBlock}${attemptBlock}${resumeBlock(resume, round - 1)}${findings ? `\nREVIEWER FINDINGS TO ADDRESS:\n${findings}\n` : ""}${lessonsBlock(lessons)}
 Rules:
 - ${CONSTITUTION}
 - Create/keep working on branch pilot/${t.id}. Commit your work with a conventional message "pilot(${t.id}): ...".
@@ -331,6 +427,7 @@ export function reviewerPrompt(
   diff: string,
   uiShot: string | null,
   specFile: string | null = null,
+  incrementalFrom: string | null = null,
 ): string {
   return `You are the ${role} REVIEWER agent of the opencode-remote autonomous pipeline.
 A builder implemented TASK (${t.id}): ${t.title}
@@ -346,6 +443,13 @@ Rules:
   \`path/file.ext:LINE\` (line matching the workspace files) or quote a literal snippet
   from the diff. Findings without a verifiable citation are mechanically dropped as
   hallucinated; a reviewer whose findings ALL fail verification counts as APPROVE.
+${
+  incrementalFrom
+    ? `- INCREMENTAL REVIEW (P1-060): this is a later round of a long-horizon task. Earlier
+  rounds were already reviewed and accepted; judge ONLY the incremental diff below
+  (commits since ${incrementalFrom}), not the whole branch history.`
+    : ""
+}
 ${
   role === "QUALITY" && specFile
     ? `- Spec compliance (P2-008): this branch carries a planner spec at "${specFile}" (read it in the workspace). Answer explicitly in your review: does the diff fulfill ${specFile}? A deviation from its approach, touched-files list or acceptance criteria is a finding unless the diff justifies it.`
@@ -480,6 +584,20 @@ export function commitSpec(ws: string, id: string): boolean {
   // airtight: the branch diff must be exactly the spec file, nothing else
   const names = exec("git diff --name-only origin/main...HEAD", { cwd: ws, allowFail: true });
   return names.ok && names.output.trim() === path;
+}
+
+/** P1-060: true when a local branch ref exists in the workspace. */
+function branchExists(ws: string, branch: string): boolean {
+  return exec(`git rev-parse -q --verify refs/heads/${branch}`, { cwd: ws, allowFail: true }).ok;
+}
+
+/** P1-060: the planner spec already sits valid on the (preserved) branch. */
+function specOnDisk(ws: string, path: string): boolean {
+  try {
+    return validateSpec(readFileSync(join(ws, path), "utf8"));
+  } catch {
+    return false;
+  }
 }
 
 // ── P2-009 mandatory builder evidence ────────────────────────────────────────
@@ -726,14 +844,27 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
   const ws = cfg.workspace;
   // central injection guard: t.id is interpolated into shell commands below
   if (!TASK_ID_RE.test(t.id)) return { ok: false, detail: `invalid task id: ${t.id}` };
+  const branch = `pilot/${t.id}`;
   // P2-009: pipeline (branch) start — cited UI evidence must be newer than this
   const startedAtMs = Date.now();
-  // fresh workspace at origin/main
+  // P1-060: first attempt starts clean at origin/main; later attempts keep the
+  // branch (P1-036 prerequisite) so the previous attempt's committed work
+  // survives — the builder continues it instead of restarting from scratch.
+  const attemptNo = state.taskAttempts[t.id] ?? 0;
   exec("git fetch origin", { cwd: ws });
-  exec("git reset -q --hard origin/main", { cwd: ws });
+  exec("git reset -q --hard", { cwd: ws }); // clear dirt on whatever branch we are on
   exec("git clean -qfd", { cwd: ws });
-  exec(`git branch -qD pilot/${t.id} 2>/dev/null || true`, { cwd: ws, allowFail: true });
-  exec(`git checkout -q -B pilot/${t.id}`, { cwd: ws });
+  let resumed = false;
+  if (preserveBranch(attemptNo, branchExists(ws, branch))) {
+    resumed = exec(`git checkout -q ${branch}`, { cwd: ws, allowFail: true }).ok;
+  }
+  if (resumed) {
+    console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "branch preserved from previous attempt", data: { task: t.id, attempt: attemptNo + 1 } }));
+  } else {
+    exec(`git branch -qD ${branch} 2>/dev/null || true`, { cwd: ws, allowFail: true });
+    exec(`git checkout -q -B ${branch} origin/main`, { cwd: ws });
+    clearCheckpoint(t.id); // no stale range diff may resurrect deleted work
+  }
 
   // sandbox permissions: agents in the clone get full tool access (the real
   // security boundary is the gatekeeper + invariants + staged deploy, not this)
@@ -779,41 +910,53 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
   if (needsPlanner(t.priority) && !taskMergedIn(ws, t.id)) {
     specFile = specPathFor(t.id);
     if (!specFile) return { ok: false, detail: `invalid task id for planner: ${t.id}` };
-    emit("phase", { task: t.id, phase: "planner" });
-    console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "planner", data: { task: t.id } }));
-    let plannerSession: string | undefined;
-    let specOk = false;
-    for (let attempt = 1; attempt <= 2 && !specOk; attempt++) {
-      const out = await runAgent(plannerPrompt(t, attempt), {
-        cwd: ws,
-        timeoutMin: PLANNER_TIMEOUT_MIN,
-        label: `planner-${t.id}-a${attempt}`,
-        sessionId: plannerSession, // retry resumes the planner's own context
-        printLogs: true,
-        onStdout: stream,
-      });
-      if (out.sessionId) plannerSession = out.sessionId;
-      // deterministic validation + commit: the LLM is never trusted, only the
-      // on-disk file (all six sections present) counts as a spec
-      specOk = commitSpec(ws, t.id);
-      if (specOk) break;
-      console.log(
-        JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "planner attempt produced no valid spec", data: { task: t.id, attempt } }),
-      );
+    // P1-060: a preserved branch already carries its committed spec — reuse it
+    // instead of re-running the planner (commitSpec resets the branch to
+    // origin/main, which would destroy the preserved work).
+    if (resumed && specOnDisk(ws, specFile)) {
+      emit("phase", { task: t.id, phase: "planner-done", ok: true, detail: `${specFile} (preserved branch)` });
+    } else {
+      emit("phase", { task: t.id, phase: "planner" });
+      console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "planner", data: { task: t.id } }));
+      let plannerSession: string | undefined;
+      let specOk = false;
+      for (let attempt = 1; attempt <= 2 && !specOk; attempt++) {
+        const out = await runAgent(plannerPrompt(t, attempt), {
+          cwd: ws,
+          timeoutMin: PLANNER_TIMEOUT_MIN,
+          label: `planner-${t.id}-a${attempt}`,
+          sessionId: plannerSession, // retry resumes the planner's own context
+          printLogs: true,
+          onStdout: stream,
+        });
+        if (out.sessionId) plannerSession = out.sessionId;
+        // deterministic validation + commit: the LLM is never trusted, only the
+        // on-disk file (all six sections present) counts as a spec
+        specOk = commitSpec(ws, t.id);
+        if (specOk) break;
+        console.log(
+          JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "planner attempt produced no valid spec", data: { task: t.id, attempt } }),
+        );
+      }
+      if (!specOk) {
+        // terminal ok:false so the dashboard doesn't hang on "working" (round-3)
+        emit("phase", { task: t.id, phase: "planner-done", ok: false, detail: "no valid spec" });
+        return { ok: false, detail: `planner did not produce a valid ${specFile} after 2 attempt(s)` };
+      }
+      emit("phase", { task: t.id, phase: "planner-done", ok: true, detail: specFile });
     }
-    if (!specOk) {
-      // terminal ok:false so the dashboard doesn't hang on "working" (round-3)
-      emit("phase", { task: t.id, phase: "planner-done", ok: false, detail: "no valid spec" });
-      return { ok: false, detail: `planner did not produce a valid ${specFile} after 2 attempt(s)` };
-    }
-    emit("phase", { task: t.id, phase: "planner-done", ok: true, detail: specFile });
   }
   for (let round = 1; round <= cfg.maxReviewRounds && !merged; round++) {
     emit("phase", { task: t.id, phase: "builder", detail: `round ${round}` });
     console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "builder round", data: { task: t.id, round } }));
+    // P1-060 checkpoint review: for size-L tasks record the branch head at
+    // round start — reviewers of rounds > 1 receive the incremental diff
+    // against this sha instead of the truncated whole-branch diff
+    const isLong = t.size === "L";
+    if (isLong) saveCheckpoint(t.id, headSha(ws), round);
     // P1-007: top-5 lessons keyword-matched against this task, most recent first
     const lessons = pickRelevantLessons(readExperienceFile(ws), t.title, t.spec);
-    const build = await runAgent(builderPrompt(t, round, findings, lessons, specFile, resume), {
+    const build = await runAgent(builderPrompt(t, round, findings, lessons, specFile, resume, attemptNo + 1), {
       cwd: ws,
       timeoutMin: cfg.taskTimeoutMin,
       label: `builder-${t.id}-r${round}`,
@@ -851,6 +994,24 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
     // (round-3 review: unscoped mtime pick could serve another task's stale
     // shot or a builder's pre-merge self-shot as "deployed UI" evidence).
     const uiShot = touchedUi ? latestUiShot(t.id) : null;
+    // P1-060 checkpoint review (size-L tasks only): rounds after the first are
+    // reviewed on the INCREMENTAL diff since the round-start checkpoint —
+    // earlier rounds were already reviewed, and a 60k-truncated whole-branch
+    // diff would be noise. An empty/failed incremental (e.g. a round that only
+    // re-ran evidence) falls back to the total branch diff. Round 1 and S/M
+    // tasks keep the total diff.
+    let reviewDiff = diff;
+    let incrementalFrom: string | null = null;
+    if (t.size === "L" && round > 1) {
+      const cp = loadCheckpoint(t.id);
+      if (cp?.sha) {
+        const inc = exec(`git diff ${cp.sha} ${branch}`, { cwd: ws, allowFail: true });
+        if (inc.ok && inc.output.trim()) {
+          reviewDiff = inc.output;
+          incrementalFrom = cp.sha.slice(0, 7);
+        }
+      }
+    }
     // P2-008: the planner spec commit is bookkeeping and must not mask an
     // empty builder diff — the empty-diff/self-heal checks below decide on
     // the builder's non-spec changes only (e.g. a task merged by another push
@@ -911,13 +1072,13 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
     emit("phase", { task: t.id, phase: "reviewers" });
     console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "reviewers start", data: { task: t.id, round } }));
     const [sec, qual] = await Promise.all([
-      runAgent(reviewerPrompt("SECURITY", "crypto, auth, injection, secrets, permission surface", t, diff, uiShot), {
+      runAgent(reviewerPrompt("SECURITY", "crypto, auth, injection, secrets, permission surface", t, reviewDiff, uiShot, null, incrementalFrom), {
         cwd: ws,
         timeoutMin: cfg.reviewTimeoutMin,
         label: `sec-${t.id}-r${round}`,
         onStdout: stream,
       }),
-      runAgent(reviewerPrompt("QUALITY", "regressions, UX, docs, test coverage, complexity", t, diff, uiShot, specFile), {
+      runAgent(reviewerPrompt("QUALITY", "regressions, UX, docs, test coverage, complexity", t, reviewDiff, uiShot, specFile, incrementalFrom), {
         cwd: ws,
         timeoutMin: cfg.reviewTimeoutMin,
         label: `qual-${t.id}-r${round}`,
@@ -937,8 +1098,10 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
     // P2-015: reviewers are LLMs — findings citing files/lines that don't exist
     // (or snippets absent from the diff) are mechanically dropped. A verdict
     // whose findings all fail verification degenerates to an effective APPROVE.
-    const secVerified = verifyFindings(secParsed, ws, diff);
-    const qualVerified = verifyFindings(qualParsed, ws, diff);
+    // P1-060: verification runs against the same diff the reviewers saw
+    // (incremental on later rounds of size-L tasks).
+    const secVerified = verifyFindings(secParsed, ws, reviewDiff);
+    const qualVerified = verifyFindings(qualParsed, ws, reviewDiff);
     for (const d of secVerified.dropped) logHallucination(t.id, "security", d);
     for (const d of qualVerified.dropped) logHallucination(t.id, "quality", d);
     const approve = (o: string) => /VERDICT:\s*APPROVE/i.test(o);

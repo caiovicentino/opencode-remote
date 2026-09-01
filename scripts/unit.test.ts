@@ -15,6 +15,9 @@ import { CORPUS_COMMANDS, appendCorpusSample, captureGateCorpus, corpusSlug, loa
 import {
   builderPrompt,
   codeChanges,
+  budgetsFor,
+  isOverCap,
+  preserveBranch,
   commitSpec,
   evidenceMatches,
   evidenceShotDimsOk,
@@ -735,6 +738,48 @@ check("touchedUi: lookalike apps/webs rejected", !touchedUiFromDiff("apps/webs/s
   check("planner: security reviewer never gets the spec criterion", !reviewerPrompt("SECURITY", "crypto", TASK, "", null, "specs/P0-999.md").includes("does the diff fulfill"));
 }
 
+// --- P1-060 long-horizon tasks: size tag, budgets, checkpoint review ----------
+{
+  const md = [
+    "## Ready",
+    "",
+    "- [ ] (L-001) [P1] Epic — spec: whole shell v2 (size: L) (area: desktop)",
+    "- [ ] (L-002) [P2] Plain — spec: x (area: ui)",
+    "- [ ] (L-003) [P2] Reversed tags — spec: x (area: daemon) (size: L)",
+    "- [ ] (L-004) [P2] Bogus size — spec: x (size: XL)",
+  ].join("\n");
+  const tasks = parseBacklog(md);
+  const byId = (id: string) => tasks.find((t) => t.id === id)!;
+  check("size: (size: L) parsed and stripped before (area:)", byId("L-001")!.size === "L" && byId("L-001")!.area === "desktop" && byId("L-001")!.spec === "whole shell v2");
+  check("size: absent tag defaults to S", byId("L-002")!.size === "S");
+  check("size: tag after the area tag also parses", byId("L-003")!.size === "L" && byId("L-003")!.area === "daemon");
+  check("size: unknown value falls back to S and stays in spec", byId("L-004")!.size === "S" && byId("L-004")!.spec.includes("(size: XL)"));
+
+  check("budgetsFor: S keeps the classic budgets", JSON.stringify(budgetsFor("S")) === '{"rounds":3,"timeoutMin":45,"attempts":4}');
+  check("budgetsFor: M behaves like S", JSON.stringify(budgetsFor("M")) === JSON.stringify(budgetsFor("S")));
+  check("budgetsFor: L scales to 6 rounds / 90min / 6 attempts", JSON.stringify(budgetsFor("L")) === '{"rounds":6,"timeoutMin":90,"attempts":6}');
+  check("budgetsFor: undefined size falls back to S", JSON.stringify(budgetsFor(undefined)) === JSON.stringify(budgetsFor("S")));
+
+  check("isOverCap: L with 5 attempts keeps going (cap 6)", isOverCap(5, "L") === false && isOverCap(6, "L") === true);
+  check("isOverCap: S with 4 attempts is capped", isOverCap(4, "S") === true && isOverCap(3, "S") === false);
+  check("isOverCap: undefined attempts is below every cap", isOverCap(undefined, "S") === false && isOverCap(undefined, "L") === false);
+
+  check("preserveBranch: first attempt (0/undefined) recreates the branch", preserveBranch(0, true) === false && preserveBranch(undefined, true) === false);
+  check("preserveBranch: later attempt keeps an existing branch", preserveBranch(2, true) === true);
+  check("preserveBranch: missing branch falls back to fresh", preserveBranch(2, false) === false);
+
+  const L_TASK: Task = { id: "P1-060", priority: "P1", title: "Long horizon", spec: "", area: "infra", line: "", size: "L" };
+  const S_TASK: Task = { ...L_TASK, size: "S" };
+  check("planner: L task demands numbered milestones in the spec", plannerPrompt(L_TASK, 1).includes("milestones M1..Mn"));
+  check("planner: S task gets no milestone demand", !plannerPrompt(S_TASK, 1).includes("milestones M1..Mn"));
+  check("builder: L task gets the milestone-per-round instruction", builderPrompt(L_TASK, 1).includes("M1..Mn") && builderPrompt(L_TASK, 1).includes("IN ORDER"));
+  check("builder: attempt>1 orders continuation from the preserved branch", builderPrompt(S_TASK, 1, "", [], null, null, 2).includes("was PRESERVED"));
+  check("builder: attempt 1 has no continuation block", !builderPrompt(S_TASK, 1).includes("was PRESERVED"));
+  const inc = reviewerPrompt("SECURITY", "crypto", L_TASK, "", null, null, "abc1234");
+  check("reviewer: incremental scope note cites the range", inc.includes("INCREMENTAL REVIEW") && inc.includes("commits since abc1234"));
+  check("reviewer: no incremental note for total diffs", !reviewerPrompt("SECURITY", "crypto", L_TASK, "", null).includes("INCREMENTAL REVIEW"));
+}
+
 // --- module-shadowing invariant (P2-014) --------------------------------------
 // input is `git diff --name-status` output; only introduced (A/R/C) root files count
 check("stdlibShadow: clean diff passes", stdlibShadowHits("M\tapps/daemon/src/index.ts\nA\ttools/lib.py\nA\tREADME.md\n").length === 0);
@@ -844,8 +889,10 @@ check("stdlibShadow: non-stdlib root file passes", stdlibShadowHits("A\tmain.py\
       // subset semantics: an honest truncated paste must match the full re-run
       const half = s.output.split("\n").slice(0, Math.max(1, Math.floor(s.output.split("\n").length / 2))).join("\n");
       if (!evidenceMatches(half, s.output)) truncFail++;
-      // anti-fabrication direction: a line with no source in the re-run fails
-      if (evidenceMatches(`${s.output}\nFABRICATED-CORPUS-LINE-31337`, s.output)) fabFail++;
+      // anti-fabrication direction: a line with no source in the re-run fails.
+      // Prepended so the assertion stays independent of the 600-line paste cap
+      // (appended lines beyond the cap are legitimately sliced away).
+      if (evidenceMatches(`FABRICATED-CORPUS-LINE-31337\n${s.output}`, s.output)) fabFail++;
       // normalization is idempotent — a line survives repeated normalization
       for (const l of s.output.split("\n")) {
         if (normalizeEvidenceLine(normalizeEvidenceLine(l)) !== normalizeEvidenceLine(l)) {

@@ -115,8 +115,37 @@ escopo hermético por design (chaves E2E reais).
 
 - `~/.opencode-remote/pilot.json` (opcional): `maxTasksPerDay` (6), `maxDeploysPerDay` (6),
   `maxReviewRounds` (3), `maxAttemptsPerTask` (4), `slots` (1), `taskTimeoutMin` (45), `monitorMin` (10), `digest`.
+- Tasks com a tag `(size: L)` escalam os próprios budgets — ver a seção abaixo.
 - **Freeze**: `touch ~/.opencode-remote/pilot.lock` para o loop (checado a cada ciclo).
 - Contadores diários em `~/.opencode-remote/pilot/state.json`.
+
+## Tarefas long-horizon — campo size (P1-060)
+
+A linha da task no BACKLOG.md pode carregar a tag opcional `(size: S|M|L)` (default
+`S` quando ausente ou desconhecida), no fim da linha junto da tag de área:
+`- [ ] (P1-060) [P1] Título — spec: ... (size: L) (area: desktop)`.
+
+- **Budgets por size**: S/M mantêm os budgets clássicos (3 rounds de review, 45min
+  por round de builder, 4 attempts); **L** escala para **6 rounds, 90min por round,
+  6 attempts** antes do circuit breaker (`budgetsFor` em `apps/pilot/src/pipeline.ts`).
+- **Checkpoint review**: em tasks L, o início de cada round de builder grava o SHA
+  corrente da branch em `~/.opencode-remote/pilot/checkpoints/<ID>.json`; os
+  reviewers dos rounds > 1 recebem o diff **incremental** desde esse SHA
+  (`git diff <sha> pilot/<ID>`, com nota explícita de que rounds anteriores já
+  foram revisados) em vez do diff total truncado a 60.000 chars. Diff incremental
+  vazio ou falho cai no fallback do diff total da branch; round 1 e tasks S/M
+  sempre recebem o diff total.
+- **Branch preservada entre attempts** (pré-requisito P1-036): só o primeiro
+  attempt recomeça limpo (`checkout -B` a partir de origin/main); attempts
+  seguintes fazem `git checkout pilot/<ID>` sem reset, preservando o histórico —
+  o prompt do builder recebe o bloco "attempt N: a branch já existe, continue do
+  histórico". A branch preservada já contém o spec commitado, então o planner não
+  é re-executado (o `commitSpec` dele resetaria a branch e destruiria o trabalho).
+- **Planner com marcos**: para tasks L, o planner precisa estruturar a seção
+  `## Approach` em marcos numerados M1..Mn com critério de aceite por marco; o
+  builder executa os marcos em ordem, 1+ por round.
+- **Strategist**: no máximo 1 épico `(size: L)` por batch, apenas para trabalho
+  genuinamente indivisível, com os marcos listados na própria linha do BACKLOG.
 
 ## Paralelismo com slots (P1-006)
 
@@ -187,7 +216,7 @@ escopo hermético por design (chaves E2E reais).
 Toda falha de pipeline de uma task (builder não terminou, diff vazio, reviewers
 reprovando até `maxReviewRounds`, gatekeeper vermelho, crash) incrementa
 `taskAttempts[id]` em `state.json`. Ao atingir `maxAttemptsPerTask` (pilot.json,
-default 4) o breaker dispara:
+default 4; task size L tem cap próprio de 6, P1-060) o breaker dispara:
 
 1. a linha da task sai de `## Ready` e vai para a seção `## Blocked` do
    BACKLOG.md (commit + push, com resumo do último findings) — o painel FILA do
