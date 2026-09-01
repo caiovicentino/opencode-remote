@@ -23,6 +23,7 @@
     "test:desktop": "tsx scripts/desktop-sidecar.test.ts",
     "test:desktop-update": "tsx scripts/desktop-update.test.ts",
     "test:desktop-render": "tsx scripts/desktop-render.test.ts",
+    "test:desktop-crash": "tsx scripts/desktop-crash.test.ts",
     "test:e2e": "tsx scripts/reconnect.test.ts && tsx scripts/chunk.test.ts"
   },
   "engines": {

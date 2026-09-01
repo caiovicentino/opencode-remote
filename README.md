@@ -175,6 +175,14 @@ and an authenticated daemon that appears on the port (e.g. a launchd install)
 is adopted instead of spawned on top of. Restarting the app always resets the
 cycle.
 
+**Crash-proof shell**: a renderer crash no longer leaves a dead white window —
+the shell logs the crash reason and reloads the UI automatically (bounded to
+3 reloads per minute so a page that crashes on boot cannot become a reload
+loop). And if the main process itself hits an unexpected exception, the app
+now quits gracefully: the error is logged with its stack and the exit runs the
+normal quit path, which stops the daemon sidecar cleanly instead of orphaning
+it.
+
 **Tray: daemon health + start at login**: the tray tooltip doubles as a
 sidecar health indicator — it reads `OpenCode Remote — daemon ok` /
 `OpenCode Remote — daemon down`, refreshed by the same 3s poll that feeds the
