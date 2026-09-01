@@ -1084,6 +1084,9 @@ function recordGateFail(state: PilotState, taskId: string, step: string, tail: s
   console.log(
     JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "gatekeeper fail", data: { task: taskId, step, tail: tail.slice(-300) } }),
   );
+  // P2-045: structured step signal on the events feed — the dashboard failure
+  // breakdown aggregates these instead of the operator grepping pilot.log
+  emit("phase", { task: taskId, phase: "gate-fail", ok: false, detail: step });
   const failFile = gateFailFile(taskId);
   if (failFile) {
     try {
@@ -1204,6 +1207,9 @@ async function gatekeeper(
     cwd: ws,
     allowFail: true,
   });
+  // P2-045: honest daily merge counter for the dashboard — state.json resets
+  // at midnight (loadState), matching `git log --since=00:00` exactly
+  state.merges = (state.merges ?? 0) + 1;
   // P3-033: grow the golden corpus every corpusEveryNMerges successful merges —
   // the evidence gate's own re-run outputs are the real variation the matcher
   // must keep accepting. Best-effort: a corpus problem never fails a green gate.

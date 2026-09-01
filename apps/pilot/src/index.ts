@@ -121,6 +121,10 @@ async function main() {
           api,
         });
         log("warn", "audit diagnosis", { summary: formatDiagnosis(diag), ...diag });
+        // P2-045: surface the diagnosis on the dashboard audit chip — the
+        // operator sees WHY the queue paused without grepping the log
+        state.auditDiagnosis = formatDiagnosis(diag);
+        saveState(state);
       }
     }
 

@@ -37,6 +37,9 @@ import { metrics, startMetricsServer, VERSION } from "./metrics.js";
 import { loadRoutines, saveRoutines, type Routine } from "./routines.js";
 import { artifactMime, kindFor, listArtifacts, readArtifact } from "./artifacts.js";
 import { createShutdown, stopAccepting } from "./shutdown.js";
+// P2-045: dashboard v2 metrics — aggregations shared with the pilot's eval battery
+import { avgPhaseDurations, burnDown, countFailSteps, type HistoryEntry } from "../../pilot/src/metrics";
+import type { PilotEvent } from "../../pilot/src/events";
 
 const RELAY_URL = process.env.RELAY_URL ?? "ws://127.0.0.1:8787";
 const OPENCODE_URL = process.env.OPENCODE_URL ?? "http://127.0.0.1:4096";
@@ -1713,14 +1716,17 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     // GET /api/pilot-events — dashboard feed: state, heartbeat freshness, event tail
     if (seg[1] === "pilot-events") {
       const dir = join(homedir(), ".opencode-remote", "pilot");
-      let events: unknown[] = [];
+      let allEvents: PilotEvent[] = [];
       try {
-        events = readFileSync(join(dir, "events.jsonl"), "utf8")
+        allEvents = readFileSync(join(dir, "events.jsonl"), "utf8")
           .split("\n")
           .filter(Boolean)
-          .slice(-200)
-          .map((l) => JSON.parse(l));
+          .map((l) => JSON.parse(l) as PilotEvent);
       } catch {}
+      const events = allEvents.slice(-200);
+      // P2-045: per-step gate failure breakdown over the full event file —
+      // wider than the 200-event tail so the picture stays honest
+      const failSteps = countFailSteps(allEvents);
       let state: unknown = {};
       let heartbeatMs: number | null = null;
       try {
@@ -1749,7 +1755,29 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
           } catch {}
         }
       } catch {}
-      send(200, { state, heartbeatMs, events, cfg, lastAux });
+      send(200, { state, heartbeatMs, events, cfg, lastAux, failSteps });
+      return true;
+    }
+    // GET /api/pilot-history — P2-043 history.jsonl digest: 7-day burn-down and
+    // average duration per pipeline phase. `exists: false` until the file is
+    // created, so the dashboard hides the widget instead of faking a trend.
+    if (seg[1] === "pilot-history") {
+      const dir = join(homedir(), ".opencode-remote", "pilot");
+      let history: HistoryEntry[] = [];
+      try {
+        history = readFileSync(join(dir, "history.jsonl"), "utf8")
+          .split("\n")
+          .filter(Boolean)
+          .map((l) => JSON.parse(l) as HistoryEntry);
+      } catch {}
+      let events: PilotEvent[] = [];
+      try {
+        events = readFileSync(join(dir, "events.jsonl"), "utf8")
+          .split("\n")
+          .filter(Boolean)
+          .map((l) => JSON.parse(l) as PilotEvent);
+      } catch {}
+      send(200, { exists: history.length > 0, days: burnDown(history, 7), phaseAvg: avgPhaseDurations(events) });
       return true;
     }
     // GET /api/artifacts?session=… — list agent artifacts (P1-010)

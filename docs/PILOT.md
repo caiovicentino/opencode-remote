@@ -127,6 +127,23 @@ produção: `userData` do Electron é temporário e nenhum sidecar é spawnado.
 
 - **Dashboard 3D em tempo real**: `http://127.0.0.1:8792/dashboard?token=<apiToken>`
   (Canvas 2D sem dependências: nodes do pipeline, partículas de trabalho, bursts de merge, rollback vermelho)
+- **Métricas honestas (P2-045)**: o contador **MERGES** vem do `state.json`
+  (`merges` diário, zerado à meia-noite junto com os outros orçamentos) — bate
+  com `git log --oneline --since=00:00 --grep='pilot.*(#'`, nunca com a janela
+  de eventos. **FALHAS** ganhou breakdown por step do gate
+  (evidence/typecheck/build/…/invariants/review) calculado sobre os eventos
+  `gate-fail` que o `recordGateFail` emite; o botão **FILA** mostra na face
+  `n prontos ⛔m bloqueadas` (seções `## Ready`/`## Blocked` do BACKLOG.md).
+- **Chip AUDIT MODE**: quando o circuit breaker de febre (P2-032) pausa a fila,
+  um chip vermelho no topo do painel mostra o motivo e, no tooltip, o resumo
+  do `buildDiagnosis` (api + top steps + top tasks) persistido em
+  `state.json` (`auditDiagnosis`) pelo doctor pass.
+- **Histórico (condicional ao P2-043)**: existindo
+  `~/.opencode-remote/pilot/history.jsonl`, o painel exibe burn-down de 7 dias
+  (verde ok / vermelho falha por dia local) e duração média por fase
+  (planner/builder/reviewers/gatekeeper, rounds incluídos) via
+  `GET /api/pilot-history`; sem o arquivo, o widget fica oculto em vez de
+  inventar série.
 - Logs JSONL: `~/.opencode-remote/logs/pilot.log`
 - Feed bruto: `GET 127.0.0.1:8792/api/pilot-events` (Bearer apiToken) — eventos + contadores + heartbeat
 - Digest a cada pipeline: push no seu telefone (via `POST /api/push` autenticado no daemon)

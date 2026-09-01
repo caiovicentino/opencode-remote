@@ -82,6 +82,8 @@ export interface PilotState {
   tasks: number;
   deploys: number;
   failures: number;
+  /** P2-045: successful merges today — the honest dashboard MERGES counter. */
+  merges: number;
   /** P1-014 stop-loss: pipeline failures per task id (circuit breaker). */
   taskAttempts: Record<string, number>;
   redteamLast?: string;
@@ -94,6 +96,8 @@ export interface PilotState {
   auditMode?: AuditMode | null;
   /** P3-033: successful merges since the last golden-corpus capture. */
   mergesSinceCorpus?: number;
+  /** P2-045: last audit-mode doctor summary (formatDiagnosis) shown on the dash chip. */
+  auditDiagnosis?: string;
 }
 
 function normalizeAudit(a: unknown): AuditMode | null {
@@ -114,20 +118,23 @@ export function loadState(file = STATE_FILE): PilotState {
     // daily budgets reset at midnight; per-task attempts and the fever breaker
     // (P2-032) persist — neither breaker may be defeated by the date rollover
     const attempts = s.taskAttempts ?? {};
+    // P2-045: legacy state files predate the daily merge counter
+    const merges = typeof s.merges === "number" && Number.isFinite(s.merges) ? s.merges : 0;
     const shared = {
       taskAttempts: attempts,
       cycles: Array.isArray(s.cycles) ? s.cycles : [],
       blockEvents: Array.isArray(s.blockEvents) ? s.blockEvents.filter((t) => typeof t === "number") : [],
       auditMode: normalizeAudit(s.auditMode),
     };
-    if (s.date === today) return { ...s, ...shared };
-    return { date: today, tasks: 0, deploys: 0, failures: 0, ...shared };
+    if (s.date === today) return { ...s, ...shared, merges };
+    return { date: today, tasks: 0, deploys: 0, failures: 0, merges: 0, ...shared };
   } catch {
     return {
       date: nowLocalISO().slice(0, 10),
       tasks: 0,
       deploys: 0,
       failures: 0,
+      merges: 0,
       taskAttempts: {},
       cycles: [],
       blockEvents: [],

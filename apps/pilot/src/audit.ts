@@ -95,6 +95,7 @@ export function auditResumeDue(audit: AuditMode, now = Date.now()): boolean {
 /** Leave audit mode (either resume path) and reset every breaker counter. */
 export function clearAuditMode(st: PilotState): void {
   st.auditMode = null;
+  st.auditDiagnosis = undefined; // P2-045: chip has no reason to outlive the pause
   st.cycles = [];
   st.blockEvents = [];
 }
