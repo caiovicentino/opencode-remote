@@ -72,6 +72,8 @@ const dict = {
     activity: "Activity",
     // chat
     stop: "Stop",
+    emptyTitle: "Start the conversation 👋",
+    emptyHint: "Send an audio, photo or text — your agent is ready.",
     agentWorking: "agent is working…",
     queued: "{n} message(s) queued — will send when reconnected",
     exported: "Conversation exported ✔",
@@ -165,6 +167,8 @@ const dict = {
     forget: "Esquecer",
     activity: "Atividade",
     stop: "Parar",
+    emptyTitle: "Comece a conversa 👋",
+    emptyHint: "Mande um áudio, foto ou texto — seu agente tá pronto.",
     agentWorking: "agente trabalhando…",
     queued: "{n} mensagem(s) na fila — enviam ao reconectar",
     exported: "Conversa exportada ✔",

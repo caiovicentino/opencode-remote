@@ -1205,6 +1205,15 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
               <div className="skel" style={{ width: "70%", height: 64 }} />
             </>
           )}
+          {!loadingHistory && bubbles.length === 0 && !liveText && (
+            <div className="chat-empty">
+              <span className="chat-empty-icon" aria-hidden>
+                💬
+              </span>
+              <p className="chat-empty-title">{t("emptyTitle")}</p>
+              <p className="chat-empty-hint">{t("emptyHint")}</p>
+            </div>
+          )}
           {winStart > 0 && (
             <div className="muted" style={{ textAlign: "center", fontSize: "0.75rem" }}>
               ↑ {winStart} mensagens anteriores

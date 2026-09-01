@@ -27,7 +27,8 @@ private. That is the product: **local power, remote control, zero trust**.
 
 - **Full chat** with streaming, markdown, images and tool-activity history;
   the chat header shows the conversation's title (generic "session" while the
-  session has no title yet)
+  session has no title yet); a fresh conversation shows a welcome empty state
+  with quick tips (audio, photo or text)
 - **AutoMode** — the agent runs hands-free; every auto-approved action is
   audited and pushable
 - **Approval preview** — permission cards show the first lines of the
