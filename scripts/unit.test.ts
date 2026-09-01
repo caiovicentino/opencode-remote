@@ -49,11 +49,16 @@ import { blockTask, loadBacklog, parseBacklog, type Task } from "../apps/pilot/s
 import { API_PREFLIGHT, apiHealthy, idScanner, mergeAgentIds, OPENCODE_URL_DEFAULT, scanIds, waitForApi } from "../apps/pilot/src/runner";
 import { mkdtempSync, mkdirSync, readdirSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync, utimesSync } from "node:fs";
 import { execSync, spawn } from "node:child_process";
+import { createServer } from "node:http";
+import { AddressInfo } from "node:net";
+import { connect as netConnect } from "node:net";
+import WebSocket, { WebSocketServer } from "ws";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { artifactMime, kindFor, listArtifacts, readArtifact, validSegment } from "../apps/daemon/src/artifacts";
 import { browseTarget, clickPoint, validSession, viewportFromParams } from "../apps/daemon/src/browse";
+import { createShutdown, DRAIN_MS, stopAccepting } from "../apps/daemon/src/shutdown";
 import { touchedUiFromDiff, parseFindings, verifyFindings } from "../apps/pilot/src/pipeline";
 import { stdlibShadowHits } from "./stdlib-shadow";
 import { latestUiShot, pruneShots } from "../apps/pilot/src/shot";
@@ -1308,6 +1313,130 @@ check(
     "window-state: write failure is log-only (unwritable dir)",
     saveWindowBounds(join(wsd, "gone", "window-state.json"), DEFAULT_WINDOW_BOUNDS) === false,
   );
+}
+
+// --- P2-020 daemon graceful shutdown (SIGTERM/SIGINT) ---------------------------
+{
+  // controllable fake timers: hard-drain timers fire only when flushed
+  type Timer = ReturnType<typeof setTimeout>;
+  const timers: { id: number; fn: () => void; ms: number }[] = [];
+  let nextId = 1;
+  const fakeSetTimeout = (fn: () => void, ms: number): Timer => {
+    const t = { id: nextId++, fn, ms };
+    timers.push(t);
+    return t as unknown as Timer;
+  };
+  const fakeClearTimeout = (timer: Timer) => {
+    const i = timers.indexOf(timer as unknown as { id: number });
+    if (i >= 0) timers.splice(i, 1);
+  };
+  const flushTimers = (upToMs: number) => {
+    const due = timers.filter((t) => t.ms <= upToMs);
+    for (const t of due) {
+      fakeClearTimeout(t);
+      t.fn();
+    }
+  };
+
+  // 1. clean path: stopListeners runs once, state is logged, exit(0)
+  {
+    let stopCalls = 0;
+    const exits: number[] = [];
+    const { shutdown, isShuttingDown } = createShutdown({
+      activeConnections: () => 2,
+      uptimeMs: () => 65_000,
+      stopListeners: async () => {
+        stopCalls++;
+      },
+      exit: (code) => exits.push(code),
+      setTimeout: fakeSetTimeout,
+      clearTimeout: fakeClearTimeout,
+    });
+    check("shutdown: idle state is not shutting down", isShuttingDown() === false);
+    const p = shutdown("SIGTERM");
+    await new Promise((r) => setTimeout(r, 0)); // let stopListeners run and queue the settle timer
+    check("shutdown: hard timer queued at DRAIN_MS (plus settle)", timers.length === 2 && timers[0]!.ms === DRAIN_MS);
+    flushTimers(DRAIN_MS - 1); // fire the settle timer, keep the hard one queued
+    await p;
+    check("shutdown: stops listeners exactly once", stopCalls === 1);
+    check("shutdown: exits with code 0 after drain", exits.length === 1 && exits[0] === 0);
+    check("shutdown: flag flips while draining", isShuttingDown() === true);
+    check("shutdown: hard timer consumed on clean path", timers.length === 0);
+  }
+
+  // 2. idempotent: a second signal exits immediately, no second cleanup pass
+  {
+    let stopCalls = 0;
+    const exits: number[] = [];
+    const { shutdown } = createShutdown({
+      activeConnections: () => 0,
+      uptimeMs: () => 0,
+      stopListeners: async () => {
+        stopCalls++;
+        await new Promise(() => {}); // drain hangs (e.g. stuck socket)
+      },
+      exit: (code) => exits.push(code),
+      setTimeout: fakeSetTimeout,
+      clearTimeout: fakeClearTimeout,
+    });
+    void shutdown("SIGTERM"); // first signal: drain starts and hangs
+    await shutdown("SIGINT"); // second signal: immediate exit
+    check("shutdown: second signal exits immediately (code 0)", exits.length === 1 && exits[0] === 0);
+    check("shutdown: second signal does not re-run cleanup", stopCalls === 1);
+  }
+
+  // 3. drain timer: hanging stopListeners still exits(0) within DRAIN_MS
+  {
+    const exits: number[] = [];
+    const { shutdown } = createShutdown({
+      activeConnections: () => 0,
+      uptimeMs: () => 0,
+      stopListeners: () => new Promise<void>(() => {}), // never resolves
+      exit: (code) => exits.push(code),
+      setTimeout: fakeSetTimeout,
+      clearTimeout: fakeClearTimeout,
+    });
+    void shutdown("SIGTERM");
+    flushTimers(DRAIN_MS);
+    check("shutdown: drain timer forces exit(0)", exits.length === 1 && exits[0] === 0);
+  }
+
+  // 4. behavioral: real http server + real ws peer, close code 1001
+  {
+    const httpServer = createServer((_req, res) => res.end("ok"));
+    await new Promise<void>((r) => httpServer.listen(0, "127.0.0.1", r));
+    const port = (httpServer.address() as AddressInfo).port;
+    // an open keep-alive socket must not stall server.close()
+    const keepAlive = netConnect(port, "127.0.0.1");
+    await new Promise((r) => keepAlive.on("connect", r));
+
+    const wss = new WebSocketServer({ port: 0 });
+    const client = new WebSocket(`ws://127.0.0.1:${(wss.address() as AddressInfo).port}`);
+    await new Promise((r) => client.on("open", r));
+    const serverSock = [...wss.clients][0]!;
+
+    let closeCode: number | null = null;
+    client.on("close", (code) => {
+      closeCode = code;
+    });
+    let stopped = false;
+    let refused = false;
+    const stop = stopAccepting(httpServer, [serverSock]).then(() => {
+      stopped = true;
+    });
+    await Promise.race([stop, new Promise((r) => setTimeout(r, 2000))]);
+    try {
+      await fetch(`http://127.0.0.1:${port}/metrics`);
+    } catch {
+      refused = true;
+    }
+    check("shutdown: http server stops accepting (keep-alive drained ≤2s)", stopped && !httpServer.listening && refused);
+    await new Promise((r) => setTimeout(r, 300)); // let the ws close handshake land
+    check("shutdown: ws peer receives close code 1001", closeCode === 1001);
+    keepAlive.destroy();
+    client.terminate();
+    wss.close();
+  }
 }
 
 if (failures > 0) {

@@ -1,4 +1,4 @@
-import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { readFileSync } from "node:fs";
 import { log } from "./log";
 
@@ -68,7 +68,8 @@ function snapshot() {
   };
 }
 
-export function startMetricsServer(port: number, api?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>) {
+/** Starts the loopback server; returns it so shutdown can close it (P2-020). */
+export function startMetricsServer(port: number, api?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>): Server {
   const server = createHttpServer(async (req, res) => {
     if (req.url?.startsWith("/metrics")) {
       const body = req.url.includes("format=prom") ? promText() : JSON.stringify(snapshot(), null, 2);
@@ -85,4 +86,5 @@ export function startMetricsServer(port: number, api?: (req: IncomingMessage, re
   server.on("error", (err) => {
     log("info", "metrics server unavailable", { error: (err as Error).message });
   });
+  return server;
 }
