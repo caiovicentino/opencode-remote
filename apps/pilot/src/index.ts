@@ -10,13 +10,14 @@ import { runPipeline, writeSandboxConfig } from "./pipeline";
 import { deploy } from "./deploy";
 import { digest } from "./push";
 import { addTask, loadBacklog, nextId } from "./backlog";
-import { frozen, loadConfig, loadState, saveState, startWatchdog, touchHeartbeat, type PilotConfig } from "./state";
+import { ensureSingleton, frozen, loadConfig, loadState, saveState, startWatchdog, touchHeartbeat, type PilotConfig } from "./state";
 
 let deployBusy = false;
 const log = (level: string, msg: string, data?: unknown) =>
   console.log(JSON.stringify({ ts: nowLocalISO(), level, msg, data }));
 
 async function main() {
+  await ensureSingleton();
   const cfg = loadConfig();
   ensureWorkspace(cfg);
   startWatchdog();
