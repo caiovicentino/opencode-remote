@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import WebSocket from "ws";
 import { clientHello, openSealed, seal, seqAad, newIdentity, type OpResponse } from "@ocr/protocol";
+import { stdlibShadowHits } from "./stdlib-shadow";
 
 const ROOT = process.env.OCR_PILOT_REPO ?? process.cwd();
 let fails = 0;
@@ -118,6 +119,38 @@ try {
     }
   }
   check("repo: no committed secrets", secretHit === "", secretHit);
+
+  // module-shadowing defense (P2-014): agent-hijack chains (embracethered
+  // 26/08/2026) make the agent extract an untrusted archive and run code inside
+  // it, so a root-level struct.py/os.py/... shadows runtime stdlib for every
+  // later Python in the workspace. Additive check — justification lives in the
+  // pilot(P2-014) commit message per rule #3. Fail-closed: if the merge diff
+  // cannot be computed, this check FAILS instead of skipping.
+  const shadowName = "repo: merge diff shadows no runtime stdlib at workspace root";
+  try {
+    let base = "";
+    for (const ref of ["origin/main", "main"]) {
+      try {
+        exec(`git rev-parse --verify -q ${ref}^{commit}`);
+        base = ref;
+        break;
+      } catch {}
+    }
+    if (!base) {
+      check(shadowName, false, "cannot resolve main to compute the merge diff");
+    } else {
+      const hits = stdlibShadowHits(exec(`git diff --name-status ${base}...HEAD`));
+      check(
+        shadowName,
+        hits.length === 0,
+        hits.length
+          ? `${hits.join(", ")} introduced by merge diff at workspace root — remove or rename (stdlib shadowing)`
+          : "",
+      );
+    }
+  } catch (err) {
+    check(shadowName, false, `merge diff unavailable: ${String(err).slice(0, 200)}`);
+  }
 
   // state file perms (production daemon state, if present)
   try {

@@ -21,6 +21,13 @@ constituição NÃO é mergeado — sem exceção, sem waiver.
 7. **Sem segredos commitados** — scan de padrões de chave/token no repositório.
 8. **Sem HTML injection** — `dangerouslySetInnerHTML` proibido no apps/web.
 9. **Portas documentadas** — nenhum listener novo sem documentação em README/docs.
+10. **Sem shadowing de stdlib** — o diff de merge (`origin/main...HEAD`) não
+    introduz na **raiz do workspace** arquivo com nome de módulo stdlib de
+    runtime (`struct.py`, `os.py`, `base64.py`, `json.py`, `types.py`,
+    `random.py`). Defesa em profundidade contra cadeias de hijack de agente
+    (RCE em Auto Mode, 26/08/2026): arquivo extraído na raiz sombreia o stdlib
+    de qualquer Python rodado depois. Se o diff não puder ser computado, o
+    check reprova (fail-closed).
 
 ## Mudanças na constituição
 

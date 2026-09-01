@@ -47,6 +47,15 @@ aborto quando o filho morre, e o caso "servidor 200-para-tudo na porta não é
 saudável" — sem token e mesmo com token, o challenge do healthOnce reprova). Empacotamento (DMG/notarização,
 `npm run dist`) fica fora do gate — é etapa de distribuição.
 
+O gate também roda a invariant **anti module-shadowing** (P2-014): o diff de
+merge (`origin/main...HEAD`) não pode introduzir na **raiz do workspace**
+arquivo com nome de módulo stdlib de runtime (`struct.py`, `os.py`, `base64.py`,
+`json.py`, `types.py`, `random.py`) — cadeias de hijack de agente (RCE em Auto
+Mode, 26/08/2026) extraem arquivos não-confiáveis e rodam código dentro deles,
+sombreando o stdlib de qualquer Python executado depois. Se o diff não puder
+ser computado, a invariant reprova (fail-closed). O parser do diff é puro
+(`scripts/stdlib-shadow.ts`) e coberto em `scripts/unit.test.ts`.
+
 Quando o diff da task toca `apps/desktop/` **ou `apps/web/`** (a UI que o smoke
 valida), o gate também roda o **render smoke** (`npm run test:desktop-render`):
 além do boot do processo, o driver (`scripts/desktop-render-driver.cjs`) sobe o
