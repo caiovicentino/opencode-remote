@@ -73,9 +73,28 @@ produção: `userData` do Electron é temporário e nenhum sidecar é spawnado.
 ## Budgets e kill switch
 
 - `~/.opencode-remote/pilot.json` (opcional): `maxTasksPerDay` (6), `maxDeploysPerDay` (6),
-  `maxReviewRounds` (3), `maxAttemptsPerTask` (4), `taskTimeoutMin` (45), `monitorMin` (10), `digest`.
+  `maxReviewRounds` (3), `maxAttemptsPerTask` (4), `slots` (1), `taskTimeoutMin` (45), `monitorMin` (10), `digest`.
 - **Freeze**: `touch ~/.opencode-remote/pilot.lock` para o loop (checado a cada ciclo).
 - Contadores diários em `~/.opencode-remote/pilot/state.json`.
+
+## Paralelismo com slots (P1-006)
+
+`slots` (pilot.json, default 1) controla quantos pipelines rodam **concorrentes**:
+
+- Cada slot tem um **workspace clone próprio**: `~/.opencode-remote/pilot/repo-1`,
+  `repo-2`… criado na primeira vez via `git clone --shared` do checkout de produção
+  (objetos compartilhados, clone barato) com o remote `origin` apontando pro GitHub.
+- O scheduler (`apps/pilot/src/index.ts`) lê a fila direto de `origin/main`
+  (`git show origin/main:BACKLOG.md`) — worktrees de slots ocupados nunca são
+  fontes de verdade. Tasks de **áreas diferentes** rodam em paralelo; **duas
+  tasks da mesma área nunca rodam juntas**. Task sem tag de área roda serial
+  (uma por vez). Os budgets diários (`maxTasksPerDay`, `maxDeploysPerDay`)
+  são **globais** a todos os slots.
+- **Área da task**: o strategist/researcher taggeia o **fim da linha** com
+  `(area: ui|daemon|desktop|infra|relay)`. A ui = apps/web, daemon = apps/daemon,
+  desktop = apps/desktop, infra = build/scripts/deploy/pilot, relay = apps/relay.
+- **Deploys continuam seriais**: `deployBusy` garante um deploy por vez; merge
+  concorrente fica na fila na main e o próximo deploy pega.
 
 ## Observabilidade
 
@@ -130,8 +149,11 @@ Atenção: vale o singleton do pidfile — subir uma segunda instância (foregro
 Formato das tasks (seção `## Ready`):
 
 ```md
-- [ ] (P2-001) Título curto — spec: o que fazer, onde, e critério de aceite
+- [ ] (P2-001) Título curto — spec: o que fazer, onde, e critério de aceite (area: daemon)
 ```
+
+O tag `(area: ui|daemon|desktop|infra|relay)` no fim da linha (P1-006) define em
+qual área a task roda no scheduler paralelo; task sem tag roda serial.
 
 O pilot pega a primeira task `Ready`, em ordem. Red team insere `(RT-###)` P0 no topo.
 

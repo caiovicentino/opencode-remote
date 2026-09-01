@@ -11,8 +11,9 @@ import { sessionTitleOf } from "../apps/web/src/lib/title";
 import { permissionPreview } from "../apps/web/src/lib/permission";
 import { applySessionFilters } from "../apps/web/src/lib/sessionFilter";
 import { taskMergedIn } from "../apps/pilot/src/pipeline";
-import { ensureSingleton, loadState, recordTaskFailure } from "../apps/pilot/src/state";
-import { blockTask, loadBacklog } from "../apps/pilot/src/backlog";
+import { clampSlots, ensureSingleton, loadState, recordTaskFailure } from "../apps/pilot/src/state";
+import { areaKey, pickTasks } from "../apps/pilot/src/scheduler";
+import { blockTask, loadBacklog, parseBacklog } from "../apps/pilot/src/backlog";
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { execSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -330,6 +331,39 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+// --- P1-006 parallel slots: area tags, scheduler picking, slot clamp -----------
+{
+  const md = [
+    "# BACKLOG",
+    "",
+    "## Ready",
+    "",
+    "- [ ] (T-101) [P1] UI task — spec: do ui things (area: ui)",
+    "- [ ] (T-102) [P1] Daemon task — spec: do daemon things (area: daemon)",
+    "- [ ] (T-103) [P2] Untagged task — spec: mystery",
+    "- [ ] (T-104) [P2] Second daemon — spec: more daemon (area: daemon)",
+    "- [ ] (T-105) [P3] Tricky — spec: mentions (area: ui) mid-spec (area: relay)",
+  ].join("\n");
+  const tasks = parseBacklog(md);
+  const byId = (id: string) => tasks.find((t) => t.id === id)!;
+  check("parseBacklog: trailing area tag parsed and stripped from spec", byId("T-101").area === "ui" && byId("T-101").spec === "do ui things");
+  check("parseBacklog: untagged task has empty area", byId("T-103").area === "" && byId("T-103").spec === "mystery");
+  check("parseBacklog: only the trailing tag counts", byId("T-105").area === "relay" && byId("T-105").spec === "mentions (area: ui) mid-spec");
+  check("parseBacklog: tagged task stays in the Ready queue", tasks.length === 5);
+
+  check("clampSlots: default/invalid go to 1", clampSlots(undefined) === 1 && clampSlots(0) === 1 && clampSlots(-2) === 1 && clampSlots(2.5) === 1);
+  check("clampSlots: accepts ints up to the hard cap", clampSlots(2) === 2 && clampSlots(99) === 8);
+
+  const queue = [byId("T-101"), byId("T-102"), byId("T-103"), byId("T-104")];
+  check("pickTasks: distinct areas run in parallel, same area waits", pickTasks(queue, 2, new Set()).map((t) => t.id).join(",") === "T-101,T-102");
+  check("pickTasks: busy area is skipped for new slots", pickTasks(queue, 2, new Set([areaKey(byId("T-101"))])).map((t) => t.id).join(",") === "T-102,T-103");
+  check("pickTasks: respects free slot count", pickTasks(queue, 1, new Set()).length === 1);
+  check("pickTasks: zero free slots picks nothing", pickTasks(queue, 0, new Set()).length === 0);
+  const untaggedPair = [byId("T-103"), { ...byId("T-103"), id: "T-106" }];
+  check("pickTasks: untagged tasks never run in parallel (safe default)", pickTasks(untaggedPair, 2, new Set()).map((t) => t.id).join(",") === "T-103");
+  check("pickTasks: queue order (priority) respected", pickTasks(queue, 3, new Set())[0].id === "T-101");
 }
 
 if (failures > 0) {
