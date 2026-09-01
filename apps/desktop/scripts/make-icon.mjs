@@ -126,3 +126,38 @@ mkdirSync(dirname(OUT), { recursive: true });
 const png = pngEncode(SIZE, rgba);
 writeFileSync(OUT, png);
 console.log(`wrote ${OUT} (${SIZE}x${SIZE}, ${png.length} bytes)`);
+
+// --- tray template image (P3-015) ---------------------------------------------
+// Monochrome `>_` glyph (same geometry as the app icon, scaled) rendered as
+// pure alpha — macOS template images ignore color and recolor the mask to
+// match the light/dark menu bar. Shipped as 16x16 + 32x32 @2x; Electron's
+// createFromPath auto-picks the sibling @2x file on Retina screens.
+const TRAY_SIZES = [
+  [16, "trayTemplate.png"],
+  [32, "trayTemplate@2x.png"],
+];
+
+function trayIconPng(size) {
+  const s = size / SIZE; // scale the 512px master geometry down
+  const out = Buffer.alloc(size * size * 4);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const d = Math.min(
+        ...[...GLYPH, CURSOR].map(({ a: [ax, ay], b: [bx, by] }) =>
+          segmentSDF(x + 0.5, y + 0.5, [ax * s, ay * s], [bx * s, by * s], STROKE * s),
+        ),
+      );
+      const cov = coverage(d);
+      const i = (y * size + x) * 4;
+      out[i + 3] = Math.round(cov * 255); // RGB stays 0: only alpha matters
+    }
+  }
+  return pngEncode(size, out);
+}
+
+for (const [size, name] of TRAY_SIZES) {
+  const path = join(dirname(OUT), name);
+  const buf = trayIconPng(size);
+  writeFileSync(path, buf);
+  console.log(`wrote ${path} (${size}x${size}, ${buf.length} bytes)`);
+}

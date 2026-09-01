@@ -55,7 +55,8 @@ import { connect as netConnect } from "node:net";
 import WebSocket, { WebSocketServer } from "ws";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
-import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { artifactMime, kindFor, listArtifacts, readArtifact, validSegment } from "../apps/daemon/src/artifacts";
 import { browseTarget, clickPoint, validSession, viewportFromParams } from "../apps/daemon/src/browse";
 import { createShutdown, DRAIN_MS, stopAccepting } from "../apps/daemon/src/shutdown";
@@ -69,7 +70,7 @@ import { DISK_MIN_FREE_BYTES, diskGuardDetail, freeDiskBytes } from "../apps/pil
 import { deploy } from "../apps/pilot/src/deploy";
 import type { PilotConfig } from "../apps/pilot/src/state";
 import { overlayVisible, phonePaired } from "../apps/desktop/src/pairing";
-import { daemonTooltip, loginItemSupported } from "../apps/desktop/src/tray";
+import { daemonTooltip, loginItemSupported, trayIconSource } from "../apps/desktop/src/tray";
 import { daemonNotify, NOTIFY_BACK_BODY, NOTIFY_DOWN_BODY } from "../apps/desktop/src/notify";
 import { DEEP_LINK_QUERY_MAX, deepLinkFromArgv, parseDeepLink } from "../apps/desktop/src/deeplink";
 import {
@@ -1277,6 +1278,25 @@ check(
       daemonTooltip(true).endsWith("daemon ok") &&
       daemonTooltip(false).endsWith("daemon down"),
   );
+}
+
+// --- desktop tray: template-image source decision (P3-015) ---------------------
+{
+  const asset = "/abs/path/build/trayTemplate.png";
+  const src = (platform: string, usable: boolean) => trayIconSource(platform, asset, usable);
+  check("tray: usable asset wins over the data-URL fallback", src("darwin", true).kind === "asset" && src("darwin", true).path === asset);
+  check("tray: missing/empty asset falls back to the data-URL glyph", src("darwin", false).kind === "fallback" && src("darwin", false).path === "");
+  check("tray: fallback is never a template image", src("darwin", false).template === false);
+  check("tray: template set on darwin only", src("darwin", true).template === true && src("win32", true).template === false && src("linux", true).template === false);
+  // The committed asset is what createFromPath loads in buildTray(); guard its
+  // format (16x16 + 32x32 @2x) and the electron-builder `files` entry so a
+  // packaged build keeps the auto-Retina pairing.
+  const desktopRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "apps", "desktop");
+  const tray16 = join(desktopRoot, "build", "trayTemplate.png");
+  const tray32 = join(desktopRoot, "build", "trayTemplate@2x.png");
+  check("tray: template asset committed at 16px with 2x variant", pngSize(tray16)?.w === 16 && pngSize(tray16)?.h === 16 && pngSize(tray32)?.w === 32 && pngSize(tray32)?.h === 32);
+  const builderYml = readFileSync(join(desktopRoot, "electron-builder.yml"), "utf8");
+  check("tray: template assets packaged via electron-builder files", builderYml.includes("build/trayTemplate.png") && builderYml.includes("build/trayTemplate@2x.png"));
 }
 
 // --- desktop native daemon notifications (P3-013) -------------------------------
