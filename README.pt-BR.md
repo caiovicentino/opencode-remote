@@ -153,6 +153,12 @@ daemon, rota read-only em loopback com o mesmo bearer token). O shell checa a
 allowlist a cada 3s — quando o celular pareia, o overlay sai e o chat aparece.
 "Pair later" dispensa o overlay pela sessão.
 
+**A janela lembra tamanho e posição**: mexeu, fechou e reabriu — os bounds
+voltam como estavam. Ficam em `userData/window-state.json`, gravados no close,
+e são validados contra os displays conectados no boot: janela esquecida num
+monitor desconectado (ou arquivo corrompido) cai no padrão 1280×820 em vez de
+abrir off-screen ou travar.
+
 ## Roadmap
 
 Próximos: relay hospedado

@@ -65,6 +65,15 @@ import { deploy } from "../apps/pilot/src/deploy";
 import type { PilotConfig } from "../apps/pilot/src/state";
 import { overlayVisible, phonePaired } from "../apps/desktop/src/pairing";
 import { daemonTooltip, loginItemSupported } from "../apps/desktop/src/tray";
+import {
+  DEFAULT_WINDOW_BOUNDS,
+  loadWindowBounds,
+  saveWindowBounds,
+  sanitizeWindowBounds,
+  WINDOW_MIN,
+  windowStateFile,
+  type WindowBounds,
+} from "../apps/desktop/src/window-state";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -1232,6 +1241,72 @@ check(
     daemonTooltip(true) !== daemonTooltip(false) &&
       daemonTooltip(true).endsWith("daemon ok") &&
       daemonTooltip(false).endsWith("daemon down"),
+  );
+}
+
+// --- desktop window-state persistence (P3-008) ---------------------------------
+{
+  // A single 1920x1080 display at origin, plus a second one to its right.
+  const displays = [
+    { workArea: { x: 0, y: 0, width: 1920, height: 1080 } },
+    { workArea: { x: 1920, y: 0, width: 1920, height: 1080 } },
+  ];
+  const partial = (o: Partial<WindowBounds>): WindowBounds => ({ ...DEFAULT_WINDOW_BOUNDS, ...o });
+
+  // Field-wise compares: JSON key order is not part of the contract.
+  const eq = (a: WindowBounds, b: WindowBounds): boolean =>
+    a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
+
+  check(
+    "window-state: valid on-screen bounds pass through",
+    eq(sanitizeWindowBounds(partial({ x: 10, y: 20, width: 1600, height: 900 }), displays), { x: 10, y: 20, width: 1600, height: 900 }),
+  );
+  check(
+    "window-state: second display counts as on-screen",
+    sanitizeWindowBounds(partial({ x: 2000, y: 50, width: 1280, height: 820 }), displays).x === 2000,
+  );
+  check(
+    "window-state: off-screen (display disconnected) → default",
+    eq(sanitizeWindowBounds(partial({ x: 9999, y: 20, width: 1600, height: 900 }), displays), DEFAULT_WINDOW_BOUNDS),
+  );
+  check(
+    "window-state: fully beyond right edge → default",
+    eq(sanitizeWindowBounds(partial({ x: 2000, y: 0, width: 1600, height: 900 }), [displays[0]]), DEFAULT_WINDOW_BOUNDS),
+  );
+  check(
+    "window-state: size-only state is valid (x/y omitted → Electron centers)",
+    eq(sanitizeWindowBounds({ width: 1600, height: 900 }, displays), { width: 1600, height: 900 }),
+  );
+  check(
+    "window-state: sizes below the min are clamped",
+    sanitizeWindowBounds({ x: 0, y: 0, width: 10, height: 10 }, displays).width === WINDOW_MIN.width &&
+      sanitizeWindowBounds({ x: 0, y: 0, width: 10, height: 10 }, displays).height === WINDOW_MIN.height,
+  );
+  check(
+    "window-state: garbage shapes → default (non-object, non-numeric, zero/negative)",
+    eq(sanitizeWindowBounds(null, displays), DEFAULT_WINDOW_BOUNDS) &&
+      eq(sanitizeWindowBounds("corrupted", displays), DEFAULT_WINDOW_BOUNDS) &&
+      eq(sanitizeWindowBounds({ width: "big", height: true, x: 0, y: 0 }, displays), DEFAULT_WINDOW_BOUNDS) &&
+      eq(sanitizeWindowBounds({ width: 0, height: -5, x: 0, y: 0 }, displays), DEFAULT_WINDOW_BOUNDS),
+  );
+
+  // File roundtrip against a real temp file.
+  const wsd = mkdtempSync(join(tmpdir(), "ocr-winstate-"));
+  const stateFile = windowStateFile(wsd);
+  check("window-state: state file lives in the given userData dir", stateFile.endsWith("window-state.json") && stateFile.includes(wsd));
+  check("window-state: missing file → default, no crash", eq(loadWindowBounds(stateFile, displays), DEFAULT_WINDOW_BOUNDS));
+  check("window-state: save then load roundtrips the bounds", saveWindowBounds(stateFile, { x: 33, y: 44, width: 1440, height: 900 }));
+  const loaded = loadWindowBounds(stateFile, displays);
+  check("window-state: loaded bounds match what was saved", loaded.x === 33 && loaded.y === 44 && loaded.width === 1440 && loaded.height === 900);
+  writeFileSync(stateFile, "{not json!!", "utf8");
+  check(
+    "window-state: corrupted JSON file → default without crashing",
+    eq(loadWindowBounds(stateFile, displays), DEFAULT_WINDOW_BOUNDS),
+  );
+  rmSync(wsd, { recursive: true, force: true });
+  check(
+    "window-state: write failure is log-only (unwritable dir)",
+    saveWindowBounds(join(wsd, "gone", "window-state.json"), DEFAULT_WINDOW_BOUNDS) === false,
   );
 }
 
