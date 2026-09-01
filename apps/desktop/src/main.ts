@@ -13,6 +13,7 @@ import {
   waitForDaemonHealth,
 } from "./daemon";
 import { phonePaired, type PairingState } from "./pairing";
+import { daemonTooltip, loginItemSupported } from "./tray";
 import { checkForUpdatesOnBoot } from "./update";
 
 // Data-URL PNG keeps the repo free of binary assets; replace with a proper
@@ -182,9 +183,25 @@ function setPairingState(next: PairingState | null): void {
   }
 }
 
+// --- tray tooltip as sidecar health indicator (P3-007) -----------------------
+// Fed by the pairing watcher's 3s poll below: the last authenticated request
+// against the daemon decides ok/down. Deduplicated so the tooltip is only
+// rewritten on actual transitions.
+
+let trayHealthy: boolean | null = null;
+
+function setTrayHealthy(healthy: boolean): void {
+  if (trayHealthy === healthy) return;
+  trayHealthy = healthy;
+  tray?.setToolTip(daemonTooltip(healthy));
+  console.log(`[desktop] tray tooltip: ${daemonTooltip(healthy)}`);
+}
+
 async function refreshPairingState(): Promise<void> {
   const token = readApiToken();
   if (!token) {
+    // Cannot prove health without the token — report down until proven ok.
+    setTrayHealthy(false);
     setPairingState(isDaemonDown() ? daemonDownState() : null);
     return;
   }
@@ -195,6 +212,7 @@ async function refreshPairingState(): Promise<void> {
     if (!devRes.ok) throw new Error(`devices ${devRes.status}`);
     const { devices } = (await devRes.json()) as { devices?: { pub: string; label?: string }[] };
     if (!Array.isArray(devices)) throw new Error("malformed devices payload");
+    setTrayHealthy(true);
 
     const paired = phonePaired(devices);
     let uri = pairingState?.uri ?? null;
@@ -217,6 +235,7 @@ async function refreshPairingState(): Promise<void> {
     // rebuilds everything from scratch. When the sidecar exhausted its
     // respawn budget (P2-017), tell the renderer instead of staying silent.
     console.error(`[desktop] pairing poll failed: ${err instanceof Error ? err.message : err}`);
+    setTrayHealthy(false);
     if (isDaemonDown()) {
       setPairingState(daemonDownState());
     } else {
@@ -333,19 +352,35 @@ function buildMenu(): void {
 function buildTray(): void {
   const icon = nativeImage.createFromDataURL(TRAY_ICON_PNG);
   tray = new Tray(icon);
-  tray.setToolTip("OpenCode Remote");
-  tray.setContextMenu(
-    Menu.buildFromTemplate([
-      { label: "Open OpenCode Remote", click: showMainWindow },
-      { type: "separator" },
-      {
-        label: "Quit",
-        click: () => {
-          tray = null;
-          app.quit();
-        },
+  // P3-007: tooltip doubles as the sidecar health indicator; starts pessimistic
+  // and is corrected by the first pairing-watcher poll (see setTrayHealthy).
+  trayHealthy = false;
+  tray.setToolTip(daemonTooltip(false));
+  const items: Electron.MenuItemConstructorOptions[] = [
+    { label: "Open OpenCode Remote", click: showMainWindow },
+  ];
+  // Login autostart is a no-op outside macOS/Windows — hide it elsewhere.
+  if (loginItemSupported(process.platform)) {
+    items.push({
+      label: "Start at login",
+      type: "checkbox",
+      checked: app.getLoginItemSettings().openAtLogin,
+      // For checkbox items `item.checked` is the state after the user toggled,
+      // which is exactly what setLoginItemSettings must persist (macOS launch
+      // services / Windows registry) — so the choice survives app restarts.
+      click: (item) => app.setLoginItemSettings({ openAtLogin: item.checked }),
+    });
+  }
+  items.push(
+    { type: "separator" },
+    {
+      label: "Quit",
+      click: () => {
+        tray = null;
+        app.quit();
       },
-    ]),
+    },
   );
+  tray.setContextMenu(Menu.buildFromTemplate(items));
   tray.on("click", showMainWindow);
 }

@@ -64,6 +64,7 @@ import { DISK_MIN_FREE_BYTES, diskGuardDetail, freeDiskBytes } from "../apps/pil
 import { deploy } from "../apps/pilot/src/deploy";
 import type { PilotConfig } from "../apps/pilot/src/state";
 import { overlayVisible, phonePaired } from "../apps/desktop/src/pairing";
+import { daemonTooltip, loginItemSupported } from "../apps/desktop/src/tray";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -1215,6 +1216,23 @@ check(
   check("pairing: overlay hidden once the phone pairs", overlayVisible({ ...state, phonePaired: true }) === false);
   check("pairing: overlay hidden without a QR", overlayVisible({ ...state, qrDataUrl: null }) === false);
   check("pairing: overlay hidden with no state (daemon down)", overlayVisible(null) === false);
+}
+
+// --- desktop tray: tooltip + login autostart (P3-007) -------------------------
+{
+  check("tray: healthy tooltip text", daemonTooltip(true) === "OpenCode Remote — daemon ok");
+  check("tray: down tooltip text", daemonTooltip(false) === "OpenCode Remote — daemon down");
+  check("tray: login item supported on macOS", loginItemSupported("darwin") === true);
+  check("tray: login item supported on Windows", loginItemSupported("win32") === true);
+  check("tray: login item hidden on Linux", loginItemSupported("linux") === false);
+  // The tooltip string is wired via setToolTip in buildTray(); guard against
+  // accidental rewording that would break the ok/down contract with the UI.
+  check(
+    "tray: tooltip strings are distinct and carry the daemon state",
+    daemonTooltip(true) !== daemonTooltip(false) &&
+      daemonTooltip(true).endsWith("daemon ok") &&
+      daemonTooltip(false).endsWith("daemon down"),
+  );
 }
 
 if (failures > 0) {
