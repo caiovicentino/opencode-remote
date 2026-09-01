@@ -199,6 +199,16 @@ sem spec.
   rewrite the spec" — desvios precisam ser justificados no commit.
 - O reviewer de **quality** ganha o critério explícito "does the diff fulfill
   `specs/<ID>.md`?" — desvio de abordagem/arquivos/critérios de aceite é finding.
+- **Exclusividade determinística**: "commita ONLY o spec" é enforced pelo runner,
+  não pelo prompt — `commitSpec` rebobina a branch para `origin/main` e replaya
+  exatamente 1 commit tocando `specs/<ID>.md`; qualquer outro arquivo que o
+  planner (read-only) tenha criado ou modificado é eliminado antes do builder
+  rodar, e o diff da branch é verificado contra `specs/<ID>.md` no final.
+- **Spec é dado, não instrução**: `validateSpec` rejeita spec > 400 linhas /
+  40k chars e qualquer corpo contendo markers de controle do pipeline
+  (`VERDICT:`, `PILOT:TASK-DONE`, `PLANNER:DONE`, `SCRIBE:DONE`).
+- O dashboard (`apps/pilot/dashboard`) conhece as fases `planner`/`planner-done`:
+  só o node backlog acende e o builder aparece como "working" durante o spec.
 - Se a task já está mergeada em `origin/main`, o planner é pulado (senão o
   commit do spec sozinho mascararia o self-heal de diff vazio).
 

@@ -74,8 +74,15 @@ Rules:
 When finished, your LAST line of output must be exactly: PLANNER:DONE`;
 }
 
-/** P2-008: deterministic check — every required section heading is present. */
+/**
+ * P2-008: deterministic check — every required section heading is present.
+ * The body is still LLM text (same trust level as a BACKLOG spec), so it is
+ * bounded (size caps) and must not contain the pipeline's own control markers
+ * (VERDICT:/...-DONE) which downstream output parsers trust.
+ */
 export function validateSpec(content: string): boolean {
+  if (content.split("\n").length > 400 || content.length > 40_000) return false;
+  if (/VERDICT:|PILOT:TASK-DONE|PLANNER:DONE|SCRIBE:DONE/i.test(content)) return false;
   const headings = content
     .split("\n")
     .filter((l) => l.startsWith("## "))
@@ -323,9 +330,11 @@ export function writeSandboxConfig(ws: string) {
 /**
  * P2-008: deterministically validate and commit the planner spec. The planner
  * agent only leaves the file on disk — the runner owns the commit (id is
- * TASK_ID_RE-checked, so the interpolation is safe). Returns true only when a
- * valid spec file exists and is part of the branch (committed either here or
- * by the agent itself — a "nothing to commit" is fine).
+ * TASK_ID_RE-checked, so the interpolation is safe). "Commit ONLY the spec" is
+ * enforced here, not just prompted: the branch is rewound to origin/main and
+ * replayed as exactly one commit touching specs/<ID>.md, so anything else the
+ * read-only planner created or modified (tracked, untracked or committed) is
+ * gone before the builder ever runs.
  */
 function commitSpec(ws: string, id: string): boolean {
   const path = specPathFor(id);
@@ -339,9 +348,21 @@ function commitSpec(ws: string, id: string): boolean {
     return false;
   }
   if (!validateSpec(content)) return false;
+  // rewind branch AND worktree to origin/main; keep the specs/ dir (validated
+  // content is rewritten from memory) and the agent sandbox config
+  exec("git reset -q --hard origin/main", { cwd: ws, allowFail: true });
+  exec(`git clean -qfd -e specs -e opencode.json`, { cwd: ws, allowFail: true });
+  try {
+    mkdirSync(dirname(abs), { recursive: true });
+    writeFileSync(abs, content);
+  } catch {
+    return false;
+  }
   exec(`git add ${path}`, { cwd: ws, allowFail: true });
   exec(`git commit -qm "pilot(${id}): planner spec"`, { cwd: ws, allowFail: true });
-  return true;
+  // airtight: the branch diff must be exactly the spec file, nothing else
+  const names = exec("git diff --name-only origin/main...HEAD", { cwd: ws, allowFail: true });
+  return names.ok && names.output.trim() === path;
 }
 
 export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState): Promise<PipelineResult> {
