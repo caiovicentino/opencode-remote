@@ -28,6 +28,7 @@ BACKLOG.md ──> BUILDER ────┬──> SECURITY REVIEWER ─┬──
 
 | Role | O que faz | Timeout |
 |---|---|---|
+| `planner` | para tasks **P0/P1**: agent read-only lê o código e escreve `specs/<ID>.md` na branch antes do builder | 10 min |
 | `builder` | implementa a task em branch `pilot/<id>`, commita | 45 min |
 | `security reviewer` | foco: crypto, auth, injection, secrets | 20 min |
 | `quality reviewer` | foco: regressão, UX, docs, testes | 20 min |
@@ -182,6 +183,39 @@ qual área a task roda no scheduler paralelo; task sem tag roda serial.
 
 O pilot pega a primeira task `Ready`, em ordem. Red team insere `(RT-###)` P0 no topo.
 
+
+## Spec-before-build (P2-008)
+
+Tasks de prioridade **P0/P1** ganham uma fase **PLANNER** antes do builder: um
+agent **read-only** lê o código no clone e escreve `specs/<ID>.md` na branch da
+task, com seções obrigatórias `## Problem`, `## Approach`, `## Touched files`,
+`## Edge cases`, `## Acceptance criteria` e `## Out of scope`. O runner valida
+deterministicamente as seções e commita o arquivo na branch (o agent nunca
+commita); se o spec válido não existir após 2 tentativas, o pipeline falha — o
+circuit breaker (P1-014) cuida do retry. Tasks **P2+ seguem direto pro builder**,
+sem spec.
+
+- O `builderPrompt` referência o spec: "read it FIRST ... do not delete or
+  rewrite the spec" — desvios precisam ser justificados no commit.
+- O reviewer de **quality** ganha o critério explícito "does the diff fulfill
+  `specs/<ID>.md`?" — desvio de abordagem/arquivos/critérios de aceite é finding.
+- **Exclusividade determinística**: "commita ONLY o spec" é enforced pelo runner,
+  não pelo prompt — `commitSpec` rebobina a branch para `origin/main` e replaya
+  exatamente 1 commit tocando `specs/<ID>.md`; qualquer outro arquivo que o
+  planner (read-only) tenha criado ou modificado é eliminado antes do builder
+  rodar, e o diff da branch é verificado contra `specs/<ID>.md` no final.
+  Cobertura real: `scripts/unit.test.ts` roda `commitSpec` contra um repo git
+  temporário com um planner que commita lixo.
+- **Diff vazio ignora o spec**: o check de empty-diff/self-heal usa
+  `codeChanges` — o diff name-only da branch menos `specs/<ID>.md` — então um
+  diff só-de-spec ainda dispara o self-heal de task já mergeada em P0/P1.
+- **Spec é dado, não instrução**: `validateSpec` rejeita spec > 400 linhas /
+  40k chars e qualquer corpo contendo markers de controle do pipeline
+  (`VERDICT:`, `PILOT:TASK-DONE`, `PLANNER:DONE`, `SCRIBE:DONE`).
+- O dashboard (`apps/pilot/dashboard`) conhece as fases `planner`/`planner-done`:
+  só o node backlog acende e o builder aparece como "working" durante o spec.
+- Se a task já está mergeada em `origin/main`, o planner é pulado (senão o
+  commit do spec sozinho mascararia o self-heal de diff vazio).
 
 ## Round efficiency + async deploy (31/08, v1.1)
 

@@ -426,19 +426,25 @@ function render(events) {
   const cur = tasks[tasks.length - 1];
   if (cur) {
     const e = last[cur];
-    const seq = ["builder","builder-done","reviewers","reviewers-done","gatekeeper","merge"];
+    // P2-008: planner phases precede the builder — buildIdx maps a phase back
+    // onto the original builder-timeline so node states stay honest
+    const seq = ["planner","planner-done","builder","builder-done","reviewers","reviewers-done","gatekeeper","merge"];
     const idx = seq.indexOf(e.phase);
+    const buildIdx = idx - 2;
     const phaseEl = document.getElementById("task-phase");
     phaseEl.textContent = (e.phase || "").toUpperCase();
     phaseEl.style.color = e.ok === false ? "var(--red)" : "var(--cyan)";
     document.getElementById("task-title").textContent = `(${cur}) — ${e.detail || ""}`;
     const bar = document.querySelector("#progress i");
-    if (bar) bar.style.width = `${Math.min((idx + 1) / 6, 1) * 100}%`;
+    // planner phases occupy the first quarter; the build itself stays on the
+    // original 6-step scale so P2 tasks (no planner) start at 16.7%, not 37.5%
+    if (bar) bar.style.width = `${buildIdx >= 0 ? ((buildIdx + 1) / 6) * 100 : ((idx + 1) / 8) * 50}%`;
 
     if (idx >= 0) {
       const order = ["backlog","builder","security","quality","gatekeeper","deploy"];
-      for (let i = 0; i < order.length; i++) setState(order[i], i <= Math.min(idx, 5) ? "ok" : "idle");
-      setState("builder", e.phase === "builder" ? "working" : idx > 0 ? "ok" : "idle");
+      const lit = buildIdx >= 0 ? Math.min(buildIdx, 5) : 0; // planner lights only the backlog
+      for (let i = 0; i < order.length; i++) setState(order[i], i <= lit ? "ok" : "idle");
+      setState("builder", buildIdx === 0 || buildIdx < 0 ? "working" : "ok");
       if (e.phase === "reviewers") { setState("security","working"); setState("quality","working"); }
       if (e.phase === "reviewers-done") { setState("security", e.ok ? "ok" : "fail"); setState("quality", e.ok ? "ok" : "fail"); }
       if (e.phase === "gatekeeper") setState("gatekeeper","working");
@@ -449,7 +455,7 @@ function render(events) {
         burst(nodeMap.gatekeeper.x, nodeMap.gatekeeper.y, "#fbbf24");
       }
       if (e.phase !== "builder") flow("backlog","builder","#22d3ee");
-      if (idx >= 2) { flow("builder","security","#818cf8"); flow("builder","quality","#38bdf8"); }
+      if (buildIdx >= 2) { flow("builder","security","#818cf8"); flow("builder","quality","#38bdf8"); }
       if (e.phase === "builder") flow("backlog","builder","#22d3ee");
     }
   }
