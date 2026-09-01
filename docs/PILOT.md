@@ -227,7 +227,13 @@ o que fez e o gate **re-executa** a prova:
   reais colados de `npm run typecheck --silent` e `npm run test:unit --silent`
   (`$ <comando>` + output colado), e — para tasks de UI — os paths de dois
   screenshots reais: `shot-1440x900:` (desktop) e `shot-390:` (phone), produzidos
-  via `tools/browse.mjs shot <path>.png --w 390 --h 844` ou `screencapture -x`.
+  com o browse CLI em sintaxe posicional `tools/browse.mjs shot <path>.png 1440 900`
+  e `tools/browse.mjs shot <path>.png 390 844` (as dimensões são verificadas no
+  header do PNG: 1440x900 exato — 2x Retina aceito — e largura 390/780; capture
+  de janela inteira via `screencapture` não tem dimensão garantida e normalmente
+  reprova). As linhas `shot-*:` aparecem no template de todo builder — para task
+  sem tag de UI, como bloco condicional ("if this round's diff touches
+  apps/web/ or apps/desktop/, also cite").
   Um único predicado (`needsUiEvidence`) comanda **prompt e gate**: task taggada
   `ui`/`desktop` recebe o bloco de shots explicitamente, e todo builder é avisado
   de que diff que toque `apps/web/`/`apps/desktop/` exige os dois shots mesmo
@@ -256,7 +262,10 @@ o que fez e o gate **re-executa** a prova:
   builder recebe o detalhe exato (ex.: "stale screenshot (predates this round)")
   e corrige sem redescobrir o problema.
 - **Barato por design**: os checks estáticos rodam antes de qualquer re-execução;
-  blocos patológicos (>400 linhas) são rejeitados no parse. Cobertura:
+  blocos patológicos (>600 linhas) são rejeitados no parse — folga calculada
+  contra a bateria de unit (~300 linhas hoje). Colar vazio só é honesto quando o
+  re-run não imprime nada (ex.: tsc silencioso no sucesso); citar comando
+  verboso sem colar output reprova com "no output pasted". Cobertura:
   `scripts/unit.test.ts` testa parse, contenção, allowlist, dimensões PNG,
   freshness por mtime, o predicado compartilhado prompt/gate e o caminho
   fim-a-fim com re-execução real (scripts `echo` num workspace temp).

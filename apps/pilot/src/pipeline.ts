@@ -127,7 +127,7 @@ Rules:
 - Keep the diff focused: one task, no drive-by refactors.
 ${round > 1 ? `- Rounds 1..${round - 1} already committed work on this branch. Inspect it first with \`git diff main...pilot/${t.id}\` and fix the findings INCREMENTALLY — do not restart from scratch or re-read files you already understand.` : ""}${
     uiTask
-      ? `\n- UI self-driving (P2-011): this task changes the UI. Validate your own output visually before finishing: build the app, then use the host browser CLI — \`node tools/browse.mjs open <url> ~/.opencode-remote/pilot/shots/builder/${t.id}-r${round}.png\` — and inspect the PNG. Produce TWO sized screenshots with the browse CLI (\`node tools/browse.mjs shot <path>.png --w 1440 --h 900\` desktop and \`--w 390 --h 844\` phone, or \`screencapture -x\`) and cite both paths in the EVIDENCE block below — their PNG dimensions are verified at the gate. This is YOUR pre-merge self-check; post-deploy evidence is captured separately by the pipeline.`
+      ? `\n- UI self-driving (P2-011): this task changes the UI. Validate your own output visually before finishing: build the app, then use the host browser CLI — \`node tools/browse.mjs open <url> ~/.opencode-remote/pilot/shots/builder/${t.id}-r${round}.png\` — and inspect the PNG. Produce TWO sized screenshots with the browse CLI — \`node tools/browse.mjs shot <path>.png 1440 900\` (desktop) and \`node tools/browse.mjs shot <path>.png 390 844\` (phone), positional width/height — and cite both paths in the EVIDENCE block below; PNG dimensions are verified at the gate (1440x900 exactly, 2x Retina accepted; width 390). This is YOUR pre-merge self-check; post-deploy evidence is captured separately by the pipeline.`
       : ""
   }
 
@@ -144,7 +144,11 @@ EVIDENCE:
 $ npm run typecheck --silent
 <paste the real command output here>
 $ npm run test:unit --silent
-<paste the real command output here>${uiTask ? `\nshot-1440x900: <absolute path of a real 1440x900 PNG screenshot>\nshot-390: <absolute path of a real 390px-wide PNG screenshot>` : ""}
+<paste the real command output here>${
+    uiTask
+      ? `\nshot-1440x900: <absolute path of a real 1440x900 PNG screenshot>\nshot-390: <absolute path of a real 390px-wide PNG screenshot>`
+      : `\n(if this round's diff touches apps/web/ or apps/desktop/, also cite:\nshot-1440x900: <absolute path of a real 1440x900 PNG screenshot>\nshot-390: <absolute path of a real 390px-wide PNG screenshot>)`
+  }
 
 Your LAST line of output must be exactly: PILOT:TASK-DONE`;
 }
@@ -465,7 +469,9 @@ export function parseEvidenceBlock(output: string): EvidenceBlock | null {
     }
   }
   const body = lines.slice(start + 1, end);
-  if (body.length > 400) return null;
+  // headroom pinned by the eval battery: the unit battery alone prints ~300
+  // lines today and keeps growing — 600 keeps honest full pastes parseable
+  if (body.length > 600) return null;
   const block: EvidenceBlock = { commands: [], shots: {} };
   let current: EvidenceCommand | null = null;
   for (const line of body) {
@@ -500,6 +506,9 @@ export function normalizeEvidenceLine(s: string): string {
  * the real re-run output. Subset semantics tolerate truncated pastes; a single
  * fabricated line — the thing this gate exists to catch — has no source in the
  * re-run and fails the merge.
+ * Round 3: an empty paste is only honest when the re-run itself printed nothing
+ * (e.g. silent tsc success) — citing a verbose command and pasting nothing must
+ * not pass on re-execution alone ("outputs reais colados").
  */
 export function evidenceMatches(pasted: string, actual: string): boolean {
   const actualLines = new Set(actual.split("\n").map(normalizeEvidenceLine).filter(Boolean));
@@ -507,8 +516,8 @@ export function evidenceMatches(pasted: string, actual: string): boolean {
     .split("\n")
     .map(normalizeEvidenceLine)
     .filter(Boolean)
-    .slice(0, 200);
-  if (pastedLines.length === 0) return true;
+    .slice(0, 600);
+  if (pastedLines.length === 0) return actualLines.size === 0;
   return pastedLines.every((l) => actualLines.has(l));
 }
 
@@ -599,9 +608,12 @@ export function verifyEvidence(
     const rerun = runCmd(c.cmd, ws);
     if (!rerun.ok) return { ok: false, detail: `cited command failed on re-run: ${c.cmd}` };
     if (!evidenceMatches(c.output, rerun.output)) {
+      const emptyPaste = !c.output.split("\n").some((l) => normalizeEvidenceLine(l));
       return {
         ok: false,
-        detail: `pasted output diverges from re-run of: ${c.cmd}\nre-run tail:\n${rerun.output.slice(-400)}`,
+        detail: emptyPaste
+          ? `no output pasted for: ${c.cmd} (the re-run produced output)`
+          : `pasted output diverges from re-run of: ${c.cmd}\nre-run tail:\n${rerun.output.slice(-400)}`,
       };
     }
   }
