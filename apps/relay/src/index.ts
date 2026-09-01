@@ -2,6 +2,7 @@ import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import { readFileSync } from "node:fs";
 import { WebSocketServer, type WebSocket } from "ws";
+import { healthzHandler } from "./healthz";
 import { TokenBucket } from "./ratelimit";
 
 /**
@@ -28,6 +29,17 @@ const MAX_PER_ROOM = 10;
 const RATE_PER_MIN = envNum("RELAY_RATE_PER_MIN", 600);
 const RATE_BURST = envNum("RELAY_RATE_BURST", 1000);
 const RATE_LIMIT_CLOSE = 4029; // custom 4xxx: "too many frames"
+
+// root package.json (monorepo) — same single source the web PWA generates from
+const VERSION = (() => {
+  try {
+    return (JSON.parse(readFileSync(new URL("../../../package.json", import.meta.url), "utf8")) as {
+      version: string;
+    }).version;
+  } catch {
+    return "unknown";
+  }
+})();
 
 /** Env number with validation: invalid values fall back loudly, never silently disable. */
 function envNum(name: string, dflt: number): number {
@@ -140,6 +152,13 @@ const server = tlsCert && tlsKey
   : createHttpServer();
 const wss = new WebSocketServer({ server, maxPayload: MAX_FRAME });
 let counter = 0;
+
+// public liveness probe for the hosted stage (no auth, counters only).
+// Sits on the plain-HTTP request path; the ws upgrade path is untouched.
+server.on(
+  "request",
+  healthzHandler({ version: VERSION, startedAt: m.startedAt, rooms: () => rooms.size }),
+);
 
 server.listen(PORT, () => {
   ev("info", "relay listening", {

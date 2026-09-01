@@ -17,12 +17,13 @@ Run `opencode-remote doctor` first — it checks everything below in one shot.
 | PWA won't open away from home | no TLS — use the tailscale path from `scripts/dev-iphone.sh` or a Caddy-fronted relay |
 | watch the logs | `tail -f ~/.opencode-remote/logs/daemon.log` (JSON lines; `OCR_LOG_LEVEL=debug` for frame-level) |
 
-## Health endpoints (localhost only)
+## Health endpoints
 
 ```
-curl 127.0.0.1:8792/metrics            # daemon, JSON
+curl 127.0.0.1:8787/healthz            # relay, public (safe for LB health checks): {ok,version,uptimeS,rooms}
+curl 127.0.0.1:8792/metrics            # daemon, localhost only, JSON
 curl '127.0.0.1:8792/metrics?format=prom'
-curl 127.0.0.1:8790/metrics            # relay, same contract
+curl 127.0.0.1:8790/metrics            # relay, localhost only, same contract
 ```
 
 ## Service control (macOS launchd)

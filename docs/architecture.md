@@ -27,7 +27,11 @@ client-controlled, so the relay grants no exemptions. Note the enforcement
 point is the connection, not the handshake pub key — the key stays inside
 the sealed E2E handshake, invisible to the relay by design. The bucket
 resets on reconnect, so a device can trade a reconnect for a fresh budget;
-total abuse stays bounded by the 1000-socket cap. Optional TLS (`wss://`)
+total abuse stays bounded by the 1000-socket cap. `GET /healthz` is the one
+public HTTP endpoint on the relay port — an unauthenticated liveness probe
+answering `{ok, version, uptimeS, rooms}` (counters only, never room ids) for
+load balancers in the hosted stage; `/metrics` stays loopback-only.
+Optional TLS (`wss://`)
 or termination via Caddy.
 
 ### apps/daemon
