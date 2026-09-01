@@ -171,6 +171,23 @@ route gated by the same bearer token). The shell polls the allowlist every 3s �
 once a phone pairs the overlay leaves and the chat appears. "Pair later"
 dismisses it for the session.
 
+**Staged update feed (spike P2-012)**: the shell can check for updates against
+a static feed you host — a loopback URL is enough. The check runs exactly once
+at boot and **only** when `OCR_UPDATE_FEED` is set; without it nothing happens:
+
+```bash
+OCR_UPDATE_FEED=http://127.0.0.1:9310/feed.json npm start --workspace @ocr/desktop
+```
+
+The feed directory can contain an electron-builder-style `latest-mac.yml`
+(`version: 0.2.1` + fake release notes) or a Squirrel.Mac JSON feed (`feed.json`
+with `url`/`name`/`notes`) — both are parsed and a newer release is logged as
+`update-available`. For JSON feeds the release is also handed to Electron's
+built-in `autoUpdater` (`setFeedURL` + `checkForUpdates`, `serverType: "json"`),
+which downloads it in the background; yml feeds are parse-and-log only, since
+the built-in updater cannot read `latest-mac.yml` (spike finding). Feed or
+network failures are strictly log-only and never block or crash the window.
+
 ## Roadmap
 
 Next up: hosted relay option,

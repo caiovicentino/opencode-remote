@@ -12,6 +12,7 @@ import {
   waitForDaemonHealth,
 } from "./daemon";
 import { phonePaired, type PairingState } from "./pairing";
+import { checkForUpdatesOnBoot } from "./update";
 
 // Data-URL PNG keeps the repo free of binary assets; replace with a proper
 // .png/.icns asset when the distribution stage lands (docs/VISION.md stage 5).
@@ -39,6 +40,12 @@ if (!gotLock) {
 async function onReady(): Promise<void> {
   buildMenu();
   buildTray();
+
+  // P2-012: staged update feed spike. Runs once at boot, fire-and-forget (a
+  // slow or dead feed must never delay window creation) and only acts when
+  // OCR_UPDATE_FEED is set — otherwise it is a silent no-op. All failures are
+  // log-only (see src/update.ts).
+  void checkForUpdatesOnBoot();
 
   ipcMain.handle("app:version", () => app.getVersion());
   // P2-011: narrow HTTP bridge to the local daemon's /api/browse surface so
