@@ -7,6 +7,6 @@ mais recentes primeiro); o red team noturno deduplica e poda acima de
 60 lições.
 
 ## Lessons
-- When a local test harness exposes a control socket or log file, do create every session artifact (socket, token file, log) inside a fresh 0700 session-owned dir and chmod the socket 0600 after bind — predictable paths in world-writable /tm… (fonte: P1-051)
-- When a gate's verdict is "CLI exited 0" against a well-named socket or endpoint, do use a unique per-run session name and require the server to prove identity (answer = sha256(token:nonce) over a per-request nonce) — an impostor binding th… (fonte: P1-051)
-- When hermetic tests need deterministic app behavior, do add explicit test-only env escape hatches (like OCR_DAEMON_FORCE_DOWN or OCR_USER_DATA_DIR) applied at the earliest possible point of the main process before anything reads the affect… (fonte: P1-051)
+- When a shell reuses an external (adopted) daemon it did not spawn, do not apply the owned-child respawn budget/give-up semantics — only your own children can exhaust a budget; for adopted ones probe health forever with capped backoff and s… (fonte: P1-053)
+- When arming a self-scheduling async watchdog, make start/stop idempotent, stop it before intentional stops or fresh spawns, and re-check the armed flag after every await — an in-flight probe must never schedule a timer or mutate state for… (fonte: P1-053)
+- When recovery from a daemon outage must not require re-pairing, never rewrite the 0600 state file or allowlist during reconnect, keep the degraded state's uri null so no QR overlay can open from it, and re-run auto-pair once when the banne… (fonte: P1-053)
