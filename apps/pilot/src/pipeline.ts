@@ -563,10 +563,19 @@ export function parseEvidenceBlock(output: string): EvidenceBlock | null {
   return block;
 }
 
-/** Whitespace/ANSI-insensitive line normalization for evidence comparison. */
+/** Whitespace/ANSI-insensitive line normalization for evidence comparison.
+ * Also neutralizes tokens that legitimately differ between two SUCCESSFUL runs:
+ * content-hashed asset names (index-BUzAmikJ.css), durations (694ms, duration_ms 12),
+ * file sizes (0.65 kB) and clock stamps — a fabricated line has no source in the
+ * re-run either way, so the anti-fabrication property is preserved. */
 export function normalizeEvidenceLine(s: string): string {
   return s
     .replace(/\x1b\[[0-9;]*[A-Za-z]/g, "")
+    .replace(/-[A-Za-z0-9_-]{8,}\.(css|js|mjs|cjs|map)\b/g, ".HASH")
+    .replace(/\b\d+(\.\d+)?\s?(kB|MB|GB)\b/g, "SIZE")
+    .replace(/\b\d+(\.\d+)?(ms|min|h|s)\b/g, "TIME")
+    .replace(/\b\d{2}:\d{2}(:\d{2})?\b/g, "TIME")
+    .replace(/(duration_ms|duration_total_ms)\s+\d+/g, "$1 T")
     .replace(/\s+/g, " ")
     .trim();
 }
