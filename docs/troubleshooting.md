@@ -21,7 +21,7 @@ Run `opencode-remote doctor` first — it checks everything below in one shot.
 ## Health endpoints
 
 ```
-curl 127.0.0.1:8787/healthz            # relay, public (safe for LB health checks): {ok,version,uptimeS,rooms}
+curl 127.0.0.1:8787/healthz            # relay, public (safe for LB health checks): {ok,version,uptimeS,rooms,roomsRejected}
 curl 127.0.0.1:8792/metrics            # daemon, localhost only, JSON
 curl '127.0.0.1:8792/metrics?format=prom'
 curl 127.0.0.1:8790/metrics            # relay, localhost only, same contract
