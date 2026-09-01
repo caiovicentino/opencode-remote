@@ -23,6 +23,11 @@ export interface PairingState {
   /** P2-017: sidecar respawn budget exhausted — the daemon is not coming
    * back until the app restarts (set only while no healthy daemon answers). */
   daemonDown?: boolean;
+  /** P1-053: adopted daemon lost, shell probing forever (yellow banner).
+   * Mutually exclusive with daemonDown by construction. */
+  reconnecting?: boolean;
+  /** P1-053: failed reconnect probes since the loss was detected. */
+  reconnectAttempts?: number;
 }
 
 /**

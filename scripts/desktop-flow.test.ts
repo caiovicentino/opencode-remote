@@ -15,6 +15,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -56,13 +57,13 @@ const shotPath = join(tmpdir(), "ocr-desktop-flow", `flow-${process.pid}.png`);
 // P1-051 round 2: session state (socket, token, log) lives in a 0700 dir.
 const logFile = join(tmpdir(), `ocr-desktop-${session}`, "keeper.log");
 
-function run(step: string, cliArgs: string[], timeoutMs: number): { ok: boolean; stdout: string } {
+function run(step: string, cliArgs: string[], timeoutMs: number, env: NodeJS.ProcessEnv = cliEnv): { ok: boolean; stdout: string } {
   const remaining = deadline();
   const res = spawnSync(process.execPath, ["tools/desktop.mjs", ...cliArgs], {
     cwd: repoRoot,
     encoding: "utf8",
     timeout: Math.min(timeoutMs, remaining),
-    env: cliEnv,
+    env,
   });
   const ok = res.status === 0;
   if (!ok) {
@@ -81,6 +82,12 @@ function deadline(): number {
     process.exit(1);
   }
   return remaining;
+}
+
+/** PNG width/height from the IHDR header (bytes 16..24). */
+function pngSize(path: string): [number, number] {
+  const buf = readFileSync(path);
+  return [buf.readUInt32BE(16), buf.readUInt32BE(20)];
 }
 
 let keeperBooted = false;
@@ -123,6 +130,62 @@ try {
     // Deterministic hermetic state (OCR_DAEMON_FORCE_DOWN): the sidecar report
     // is "down" — never the null state a previous gate race-depended on.
     check("pairingState is the deterministic daemon-down object", daemonDown === true);
+  }
+  // P1-053: the daemon-down banner carries the one-click recovery button
+  // (wired to app:reconnectDaemon → restartDaemon) instead of "reopen the app".
+  // Copy follows the machine locale (pt-BR on the gate host); the DOM query
+  // via ipc is the locale-proof version of the same assertion.
+  const btn = run("reconnect button present in the daemon-down banner", ["ipc", "!!document.querySelector('.daemon-reconnect-btn')"], 15_000);
+  if (btn.ok) check("reconnect button renders the pt-BR copy", /true/.test(btn.stdout));
+  run("daemon-down banner shows the reconnect button", ["see", "Reconectar agora"], 15_000);
+
+  // --- P1-053: the "reconnecting…" hermetic state (second launch) --------------
+  // An ADOPTED daemon going missing is never terminal: the yellow banner shows
+  // an active reconnecting state with the attempt counter and NO QR overlay.
+  // Recorded as evidence shots (1440x900 desktop + 390 mobile) in the builder
+  // shots dir per the spec.
+  const reconnEnv = {
+    ...process.env,
+    OCR_DESKTOP_SESSION: `${session}-reconn`,
+    OCR_DAEMON_FORCE_RECONNECTING: "1",
+  };
+  const shotsDir = join(homedir(), ".opencode-remote", "pilot", "shots", "builder");
+  const shot1440 = join(shotsDir, "P1-053-reconnecting.png");
+  const shot390 = join(shotsDir, "P1-053-reconnecting-390.png");
+  let reconnBooted = false;
+  try {
+    const reconnOpen = run("reconnect: open (hermetic launch)", ["open"], 45_000, reconnEnv);
+    reconnBooted = reconnOpen.ok;
+    if (reconnOpen.ok) {
+      // Locale-proof: the yellow banner element itself (class from index.css).
+      const dom = run("reconnect: .daemon-reconnecting banner rendered", ["ipc", "!!document.querySelector('.daemon-reconnecting')"], 15_000, reconnEnv);
+      if (dom.ok) check("reconnect: banner element present", /true/.test(dom.stdout));
+      // Machine locale is pt-BR; `see` is the real visible-text check.
+      run("reconnect: yellow banner text visible", ["see", "Reconectando ao daemon"], 15_000, reconnEnv);
+      const reconnState = run("reconnect: IPC app:pairingState", ["ipc", "window.ocrDesktop.getPairingState()"], 15_000, reconnEnv);
+      if (reconnState.ok) {
+        let parsed: { reconnecting?: boolean; reconnectAttempts?: number; uri?: string | null; qrDataUrl?: string | null } | null = null;
+        try {
+          parsed = JSON.parse(reconnState.stdout) as typeof parsed;
+        } catch {
+          parsed = null;
+        }
+        check(
+          "reconnect: pairingState is the reconnecting object without QR (no overlay, no re-pairing)",
+          parsed?.reconnecting === true &&
+            typeof parsed?.reconnectAttempts === "number" &&
+            parsed.reconnectAttempts >= 1 &&
+            parsed?.uri === null &&
+            parsed?.qrDataUrl === null,
+        );
+      }
+      const s1 = run("reconnect: 1440x900 evidence shot", ["shot", shot1440, "1440", "900"], 15_000, reconnEnv);
+      if (s1.ok) check("reconnect: 1440x900 shot is a real PNG", pngSize(shot1440).join("x") === "1440x900");
+      const s2 = run("reconnect: 390 evidence shot", ["shot", shot390, "390", "844"], 15_000, reconnEnv);
+      if (s2.ok) check("reconnect: 390 shot is a real PNG", pngSize(shot390)[0] === 390);
+    }
+  } finally {
+    if (reconnBooted) spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: reconnEnv });
   }
 } finally {
   if (keeperBooted) spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: cliEnv });

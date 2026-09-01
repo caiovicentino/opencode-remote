@@ -143,8 +143,11 @@ const dict = {
       "Scan this QR code with the OpenCode Remote app to control this machine from your phone. Traffic is end-to-end encrypted.",
     pairOverlayAlt: "Pairing QR code",
     pairOverlayLater: "Pair later",
-    // daemon sidecar gave up (desktop, P2-017)
-    daemonDown: "Local daemon is down — the app stopped retrying. Restart OpenCode Remote to recover.",
+    // daemon sidecar gave up (desktop, P2-017) — P1-053: the copy points to the
+    // in-banner recovery button; the reconnecting state is the active variant.
+    daemonDown: "Local daemon is down — the app stopped retrying.",
+    reconnectNow: "Reconnect now",
+    reconnecting: "Reconnecting to daemon… ({n})",
   },
   pt: {
     search: "Buscar conversas…",
@@ -239,7 +242,10 @@ const dict = {
       "Escaneie este QR code com o app OpenCode Remote para controlar esta máquina do celular. O tráfego é criptografado ponta a ponta.",
     pairOverlayAlt: "QR code de pareamento",
     pairOverlayLater: "Parear depois",
-    // daemon sidecar gave up (desktop, P2-017)
-    daemonDown: "Daemon local caiu — o app parou de tentar reiniciar. Reabra o OpenCode Remote para recuperar.",
+    // daemon sidecar gave up (desktop, P2-017) — P1-053: o copy aponta pro botão
+    // de recuperação no próprio banner; reconectando é a variante ativa.
+    daemonDown: "Daemon local caiu — o app parou de tentar reiniciar.",
+    reconnectNow: "Reconectar agora",
+    reconnecting: "Reconectando ao daemon… ({n})",
   },
 } satisfies Record<Lang, Record<string, string>>;

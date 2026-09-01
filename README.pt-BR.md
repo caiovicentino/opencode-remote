@@ -139,6 +139,19 @@ ele é reaproveitado — nunca duplicado. Para trocar a porta:
 `OCR_DAEMON_METRICS_PORT` (com fallback pro `OCR_METRICS_PORT`); o filho faz
 bind exatamente na porta que o shell verifica.
 
+**Reconexão infinita do daemon adotado**: se o daemon **adotado** (reuso de um
+launchd/CLI já rodando na porta de metrics) sumir no meio do run, o shell nunca
+desiste — não há filho nenhum pra respawnar e nenhum orçamento pra esgotar. Ele
+sonda a porta em backoff infinito (5s → 15s → cap 30s) e mostra um banner
+amarelo "Reconectando ao daemon… (n)" com o contador de tentativas, sem overlay
+de QR e sem spawnar filho brigando pela porta com o supervisor externo. Quando
+o daemon volta, o banner some e a sessão anterior é retomada **sem re-pairing**
+(o desktop nunca reescreve o state 0600 nem adiciona entradas de allowlist). O
+banner vermelho de "daemon down" agora vale só para o sidecar próprio (modo
+hosted) e ganhou um botão **Reconectar agora** que dispara o mesmo restart do
+tray — um `kickstart` no daemon a cada deploy não deixa mais o app preso na
+tela de pareamento.
+
 **Zero pairing na máquina host**: no desktop, o sidecar também captura o URI
 `opencode-remote://pair?v=2&…` que o daemon imprime no boot e a UI se pareia
 sozinha — na máquina que hospeda o daemon não existe scan de QR na primeira
@@ -169,7 +182,8 @@ disco encher, o app segue rodando e apenas para de gravar. No macOS:
 
 **Notificação nativa quando o daemon para**: se o orçamento de respawn do
 sidecar se esgota, o shell dispara uma notificação nativa única —
-`daemon parou — reabra o OpenCode Remote` — e `daemon de volta` quando um
+`daemon parou — use "Reconectar agora" no OpenCode Remote` — e `daemon de
+volta` quando um
 daemon saudável responde de novo. Cada transição notifica exatamente uma vez
 (dedup pelo mesmo poll de 3s que alimenta o tooltip do tray) e a feature é
 best-effort: em plataformas sem suporte a notificação o shell segue rodando

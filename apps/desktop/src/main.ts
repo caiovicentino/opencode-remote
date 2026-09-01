@@ -8,6 +8,7 @@ import {
   getPairUrl,
   isDaemonDown,
   readApiToken,
+  reconnectState,
   restartDaemon,
   startDaemonSidecar,
   stopDaemonSidecar,
@@ -175,6 +176,12 @@ async function onReady(): Promise<void> {
   // the sandboxed renderer only ever sees this derived state — never the
   // apiToken, allowlist file or raw HTTP responses.
   ipcMain.handle("app:pairingState", () => pairingState);
+  // P1-053: one-click recovery from the daemon-down banner — the same manual
+  // restart path the tray's "Restart daemon" action uses (P3-017).
+  ipcMain.handle("app:reconnectDaemon", () => {
+    void restartDaemon().catch((err) => logError("[desktop] banner reconnect failed:", err));
+    return true;
+  });
   // Host self-approval: the desktop shell runs on the same machine that owns
   // daemon.json, so it may add its own client identity to the allowlist. The
   // daemon re-reads the allowlist file on every handshake (fresh read), so
@@ -284,6 +291,22 @@ function daemonDownState(): PairingState {
   return { uri: null, qrDataUrl: null, devices: 0, phonePaired: false, daemonDown: true };
 }
 
+/** P1-053: adopted daemon (reused launchd/CLI install) lost mid-run — the
+ * shell keeps probing forever, so this is an active, recoverable state: the
+ * yellow "reconnecting…" banner with the attempt counter. uri stays null so
+ * the QR overlay can never open from it, and nothing re-pairs on recovery. */
+function reconnectingState(): PairingState {
+  const { attempts } = reconnectState();
+  return {
+    uri: null,
+    qrDataUrl: null,
+    devices: 0,
+    phonePaired: false,
+    reconnecting: true,
+    reconnectAttempts: attempts,
+  };
+}
+
 function setPairingState(next: PairingState | null): void {
   const changed = JSON.stringify(next) !== JSON.stringify(pairingState);
   pairingState = next;
@@ -343,7 +366,13 @@ async function refreshPairingState(): Promise<void> {
     // Cannot prove health without the token — report down until proven ok.
     setTrayHealthy(false);
     observeDaemonHealth(isDaemonDown());
-    setPairingState(isDaemonDown() ? daemonDownState() : null);
+    if (isDaemonDown()) {
+      setPairingState(daemonDownState());
+    } else if (reconnectState().reconnecting) {
+      setPairingState(reconnectingState());
+    } else {
+      setPairingState(null);
+    }
     return;
   }
   const base = `http://127.0.0.1:${DAEMON_METRICS_PORT}`;
@@ -382,6 +411,10 @@ async function refreshPairingState(): Promise<void> {
     observeDaemonHealth(isDaemonDown());
     if (isDaemonDown()) {
       setPairingState(daemonDownState());
+    } else if (reconnectState().reconnecting) {
+      // P1-053: adopted daemon still being probed — active reconnect state
+      // instead of silence, so the UI never falls back to the pairing screen.
+      setPairingState(reconnectingState());
     } else {
       setPairingState(null);
     }
