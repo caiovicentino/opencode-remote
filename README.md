@@ -164,6 +164,17 @@ QR scan on first run. The manual QR/paste screen remains as a fallback
 (machines switcher → add machine), for example when an already-running daemon
 was reused and never printed a URI to capture.
 
+**Self-healing sidecar**: if the spawned daemon dies at runtime (crash, OOM,
+stray kill), the shell respawns it automatically with a growing backoff —
+5s, then 15s, then 45s. The failure counter resets as soon as `/api/health`
+answers 200 again, so an isolated crash never escalates. After 3 consecutive
+failed attempts the shell gives up (logging
+`[desktop] daemon sidecar gave up after 3 attempts`), shows a persistent
+"local daemon is down" warning in the UI through the pairing-state channel,
+and an authenticated daemon that appears on the port (e.g. a launchd install)
+is adopted instead of spawned on top of. Restarting the app always resets the
+cycle.
+
 **First-run QR for your phone**: while no phone is paired yet, the desktop
 window shows a first-run overlay with a scannable pairing QR (rendered by the
 main process from the daemon's `GET /__ocr/pairing-uri`, a read-only loopback

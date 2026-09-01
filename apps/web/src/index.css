@@ -710,3 +710,24 @@ select {
   background: #fff; /* QR modules stay dark-on-light for scanner contrast */
   padding: 10px;
 }
+
+/* daemon sidecar gave up (desktop, P2-017): slim warning strip on top */
+.daemon-down {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 60;
+  padding: 9px 14px;
+  text-align: center;
+  font-size: 0.85rem;
+  color: var(--danger);
+  background: rgba(248, 113, 113, 0.12);
+  border-bottom: 1px solid var(--danger);
+}
+.has-daemon-down {
+  padding-top: 38px;
+}
+.pair-wrap {
+  height: 100%;
+}

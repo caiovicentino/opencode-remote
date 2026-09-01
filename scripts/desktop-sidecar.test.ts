@@ -1,7 +1,8 @@
 /**
- * Desktop sidecar tests: daemon spawn/reuse/health/stop wiring (P1-D02).
- * Runs the real spawn/stop paths against throwaway fixture scripts on a
- * throwaway port — never touches the production daemon on 8792.
+ * Desktop sidecar tests: daemon spawn/reuse/health/stop wiring (P1-D02),
+ * plus runtime-crash respawn with backoff and the give-up daemon-down state
+ * (P2-017). Runs the real spawn/stop paths against throwaway fixture scripts
+ * on a throwaway port — never touches the production daemon on 8792.
  * Run: npx tsx scripts/desktop-sidecar.test.ts
  */
 import { createServer } from "node:http";
@@ -31,6 +32,21 @@ async function until(cond: () => boolean, ms = 3000): Promise<boolean> {
     await new Promise((r) => setTimeout(r, 50));
   }
   return cond();
+}
+/** Resolves with the new pid once the fixture rewrites its pid file (a fresh
+ * child started), or null on timeout — how respawn is observed in tests. */
+async function pidChangesTo(file: string, not: number, ms: number): Promise<number | null> {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    try {
+      const p = Number(readFileSync(file, "utf8"));
+      if (p !== not && pidAlive(p)) return p;
+    } catch {
+      /* not written yet */
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return null;
 }
 
 const tmp = mkdtempSync(join(tmpdir(), "ocr-sidecar-"));
@@ -75,12 +91,30 @@ const fakeState = join(tmp, "daemon.json");
 writeFileSync(fakeState, JSON.stringify({ apiToken: TOKEN }));
 process.env.OCR_DAEMON_STATE_FILE = fakeState;
 delete process.env.OCR_DAEMON_ENTRY;
+// P2-017: shrink the respawn backoff (5s/15s/45s in production) so the
+// give-up path completes in ~1s instead of ~65s.
+process.env.OCR_DAEMON_RESPAWN_DELAYS = "200,200,200";
+
+// Capture the sidecar's log lines — the give-up message is part of the spec.
+const logLines: string[] = [];
+for (const stream of [process.stdout, process.stderr] as const) {
+  const original = stream.write.bind(stream);
+  stream.write = ((chunk: unknown, ...rest: unknown[]) => {
+    if (typeof chunk === "string") logLines.push(...chunk.split("\n"));
+    return original(chunk, ...rest);
+  }) as typeof stream.write;
+}
+function sawLog(needle: string): boolean {
+  return logLines.some((l) => l.includes(needle));
+}
 
 const {
   DAEMON_METRICS_PORT,
   getPairUrl,
   healthOnce,
+  isDaemonDown,
   resolveEntry,
+  respawnState,
   startDaemonSidecar,
   stopDaemonSidecar,
   waitForDaemonHealth,
@@ -224,15 +258,43 @@ await stopDaemonSidecar();
 const stopMs = Date.now() - t0;
 check("SIGKILL fallback after 3s grace", !pidAlive(pid2) && stopMs >= 2500);
 
-// --- already-dead child: fast stop + early health abort ----------------------
+// --- runtime crash → respawn with backoff (P2-017) ----------------------------
+// Criterion: killing the sidecar process must bring /api/health back within
+// 60s. Production backoff starts at 5s; here the delays are shrunk to 200ms
+// and the always-200 fixture server plays the recovering daemon.
+const crashEntry = fixture("crash.cjs", "setInterval(() => {}, 1000);");
+process.env.OCR_DAEMON_ENTRY = crashEntry;
+check("respawn: sidecar starts", (await startDaemonSidecar(tmp, undefined)) === true);
+check("respawn: child starts", await until(() => existsSync(crashEntry + ".pid")));
+const pidA = Number(readFileSync(crashEntry + ".pid", "utf8"));
+process.kill(pidA, "SIGKILL"); // simulate a runtime crash (crash/OOM/kill), not our stop
+const pidB = await pidChangesTo(crashEntry + ".pid", pidA, 10_000);
+check("respawn: killed sidecar is replaced by a fresh child", pidB !== null && pidAlive(pidB));
+check("respawn: backoff log line present", sawLog("daemon sidecar respawn in"));
+// Health comes back (fixture server re-listens) → the failure counter must
+// reset once waitForDaemonHealth() sees the authenticated 200.
+await new Promise<void>((r) => server.listen(port, "127.0.0.1", r));
+check("respawn: health 200 resets the failure counter", await until(() => respawnState().failures === 0, 5000));
+check("respawn: sidecar not reported down while healthy", !isDaemonDown());
+await stopDaemonSidecar();
+check("respawn: replacement child is stopped", pidB === null || !pidAlive(pidB));
+
+// --- 3 consecutive failures → give up + daemon-down state (P2-017) ------------
+// Port dead again so every respawn attempt also fails the health wait: an
+    // always-exiting child burns the 3-attempt budget and the shell gives up.
+await new Promise<void>((r) => server.close(r));
 const exiterEntry = fixture("exiter.cjs", "process.exit(0);");
 process.env.OCR_DAEMON_ENTRY = exiterEntry;
-check("exiter child spawns", (await startDaemonSidecar(tmp, undefined)) === true);
-check("exiter child runs", await until(() => existsSync(exiterEntry + ".pid")));
+check("give-up: child spawns", (await startDaemonSidecar(tmp, undefined)) === true);
+check("give-up: daemon reported down after 3 attempts", await until(() => isDaemonDown(), 10_000));
+check("give-up: spec log line present", sawLog("[desktop] daemon sidecar gave up after 3 attempts"));
+const lastPid = Number(readFileSync(exiterEntry + ".pid", "utf8"));
+await new Promise((r) => setTimeout(r, 1500));
 check(
-  "exiter child exits by itself",
-  await until(() => !pidAlive(Number(readFileSync(exiterEntry + ".pid", "utf8")))),
+  "give-up: no respawn after the budget is spent",
+  Number(readFileSync(exiterEntry + ".pid", "utf8")) === lastPid,
 );
+check("give-up: sidecar stays down", isDaemonDown());
 const t1 = Date.now();
 check(
   "waitForDaemonHealth aborts early when the child died",
@@ -244,6 +306,7 @@ check("stopDaemonSidecar skips 3s grace for dead child", Date.now() - t2 < 1000)
 const t3 = Date.now();
 await stopDaemonSidecar();
 check("stopDaemonSidecar is idempotent", Date.now() - t3 < 1000);
+check("give-up: intentional stop clears the down state", !isDaemonDown());
 
 // --- bundled artifact smoke (P2-006) -----------------------------------------
 // The packaged app runs dist-daemon/index.js (shipped as resources/daemon/
