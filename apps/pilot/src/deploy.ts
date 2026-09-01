@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { exec } from "./runner";
 import { emit } from "./events";
 import { log, nowLocalISO } from "./log";
+import { captureUiShot } from "./shot";
 import { touchHeartbeat, type PilotConfig } from "./state";
 
 export interface DeployResult {
@@ -16,8 +17,14 @@ export interface DeployResult {
  * Staged deploy of a merged SHA into the production checkout:
  * reset prod repo to SHA → install → build → restart services → health watch.
  * Any failure rolls back to the previous SHA automatically.
+ * `meta.ui` (P2-011): after a clean deploy of a UI-touching task, capture a
+ * screenshot of the deployed dashboard into the review log (pilot/shots).
  */
-export async function deploy(cfg: PilotConfig, sha: string): Promise<DeployResult> {
+export async function deploy(
+  cfg: PilotConfig,
+  sha: string,
+  meta?: { task?: string; ui?: boolean },
+): Promise<DeployResult> {
   emit("deploy", { phase: "start", detail: `sha ${sha.slice(0, 7)}` });
   const prev = exec("git rev-parse HEAD", { cwd: cfg.repo }).output.trim();
   try {
@@ -74,6 +81,17 @@ export async function deploy(cfg: PilotConfig, sha: string): Promise<DeployResul
     } else fails = 0;
   }
   emit("deploy", { phase: "done", ok: true, detail: `sha ${sha.slice(0, 7)} live` });
+  // P2-011: UI-changing cycles leave visual evidence in the review log — a
+  // post-deploy screenshot the reviewer agents cite in their verdicts.
+  if (meta?.ui && meta.task) {
+    const shotPath = await captureUiShot(meta.task, sha);
+    emit("phase", {
+      task: meta.task,
+      phase: "ui-shot",
+      ok: Boolean(shotPath),
+      detail: shotPath ?? "post-deploy screenshot unavailable",
+    });
+  }
   // self-update: if this deploy changed pilot code, reload ourselves (KeepAlive restarts)
   const pilotChanged = exec(`git diff --name-only ${sha} HEAD -- apps/pilot`, { cwd: cfg.repo, allowFail: true });
   if (String(pilotChanged.output || "").includes("apps/pilot")) {

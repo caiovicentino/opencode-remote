@@ -20,6 +20,7 @@ import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { artifactMime, kindFor, listArtifacts, readArtifact, validSegment } from "../apps/daemon/src/artifacts";
+import { browseTarget, validSession } from "../apps/daemon/src/browse";
 import { parseMarkdown, parseInline } from "../apps/web/src/lib/md";
 import { parseCsv } from "../apps/web/src/lib/csv";
 import { artifactMentions, fmtBytes } from "../apps/web/src/lib/artifacts";
@@ -531,6 +532,16 @@ check(
 check("parseCsv basic", JSON.stringify(parseCsv("a,b\n1,2")) === JSON.stringify([["a", "b"], ["1", "2"]]));
 check("parseCsv quoted comma", JSON.stringify(parseCsv('a,b\n"x, y",2')) === JSON.stringify([["a", "b"], ["x, y", "2"]]));
 check("parseCsv escaped quotes", parseCsv('"he said ""hi"""')[0]?.[0] === 'he said "hi"');
+
+// --- browser self-driving guards (P2-011) ------------------------------------
+check("browseTarget accepts http", browseTarget("http://127.0.0.1:8792/dashboard")?.protocol === "http:");
+check("browseTarget accepts https", browseTarget("https://example.com/x")?.hostname === "example.com");
+check("browseTarget rejects file:", browseTarget("file:///etc/passwd") === null);
+check("browseTarget rejects javascript:", browseTarget("javascript:alert(1)") === null);
+check("browseTarget rejects garbage", browseTarget("not a url") === null);
+check("browseTarget rejects oversize", browseTarget(`http://a.com/${"x".repeat(3000)}`) === null);
+check("validSession accepts simple", validSession("main_2-x"));
+check("validSession rejects empty/long/path", !validSession("") && !validSession("a".repeat(40)) && !validSession("../etc"));
 
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);

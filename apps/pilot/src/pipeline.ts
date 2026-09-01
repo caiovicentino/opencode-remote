@@ -5,6 +5,7 @@ import { exec, runAgent } from "./runner";
 import { nowLocalISO } from "./log";
 import { markDone, type Task } from "./backlog";
 import { emit } from "./events";
+import { latestUiShot } from "./shot";
 import { touchHeartbeat, type PilotConfig, type PilotState } from "./state";
 
 export const CONSTITUTION = `CONSTITUTION (never violate):
@@ -15,6 +16,7 @@ export const CONSTITUTION = `CONSTITUTION (never violate):
 5. Every user-visible change is documented (README/AGENTS/docs) and covered by the eval battery.`;
 
 function builderPrompt(t: Task, round: number, findings: string): string {
+  const uiTask = t.area === "ui" || t.area === "desktop";
   return `You are the BUILDER agent of the opencode-remote autonomous pipeline (round ${round}).
 Work inside this repository (your cwd is a dedicated clone; production runs elsewhere).
 
@@ -29,12 +31,16 @@ Rules:
 - Document user-visible changes in the relevant docs (README.md / AGENTS.md / docs/).
 - Do NOT push, do NOT touch production services, do NOT modify BACKLOG.md.
 - Keep the diff focused: one task, no drive-by refactors.
-${round > 1 ? `- Rounds 1..${round - 1} already committed work on this branch. Inspect it first with \`git diff main...pilot/${t.id}\` and fix the findings INCREMENTALLY — do not restart from scratch or re-read files you already understand.` : ""}
+${round > 1 ? `- Rounds 1..${round - 1} already committed work on this branch. Inspect it first with \`git diff main...pilot/${t.id}\` and fix the findings INCREMENTALLY — do not restart from scratch or re-read files you already understand.` : ""}${
+    uiTask
+      ? `\n- UI self-driving (P2-011): this task changes the UI. Validate your own output visually before finishing: build the app, then use the host browser CLI — \`node tools/browse.mjs open <url> ~/.opencode-remote/pilot/shots/${t.id}-r${round}.png\` — and inspect the PNG. Mention the screenshot path in your final output.`
+      : ""
+  }
 
 When finished, your LAST line of output must be exactly: PILOT:TASK-DONE`;
 }
 
-function reviewerPrompt(role: string, focus: string, t: Task, diff: string): string {
+function reviewerPrompt(role: string, focus: string, t: Task, diff: string, uiShot: string | null): string {
   return `You are the ${role} REVIEWER agent of the opencode-remote autonomous pipeline.
 A builder implemented TASK (${t.id}): ${t.title}
 spec: ${t.spec || "(none)"}
@@ -45,6 +51,11 @@ Rules:
 - ${CONSTITUTION}
 - Judge only this diff against the task and the constitution. Do not rewrite the code.
 - Be strict but concrete: every finding must reference a file and a problem.
+${
+  uiShot
+    ? `- UI evidence (P2-011): a post-deploy screenshot of the deployed UI is saved at "${uiShot}". Read it (it is an image) and cite it in your verdict — say explicitly whether the rendered layout matches what the diff promises. You can also take fresh screenshots: \`node tools/browse.mjs shot <path>.png\`.`
+    : ""
+}
 
 Your LAST lines must be exactly one of:
 VERDICT: APPROVE
@@ -62,6 +73,9 @@ export interface PipelineResult {
   ok: boolean;
   detail: string;
   sha?: string;
+  /** P2-011: true when the merged diff touched the UI (apps/web | apps/desktop)
+   * — triggers a post-deploy screenshot for the review log. */
+  touchedUi?: boolean;
 }
 
 /** Task IDs come from BACKLOG.md; only this charset ever reaches a shell command. */
@@ -123,6 +137,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
 
   // ── build ⇄ review loop ─────────────────────────────────────────────────
   let findings = "";
+  let touchedUi = false;
   let builderSession: string | undefined;
   // carry over the last gatekeeper failure for this task, so the builder can
   // fix the exact failing step instead of rediscovering it (per-task file)
@@ -169,6 +184,12 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
       return { ok: false, detail: `builder did not finish (round ${round}): ${build.output.slice(-300)}` };
     }
     const diff = exec(`git diff main...pilot/${t.id}`, { cwd: ws }).output;
+    // P2-011: UI tasks get visual evidence — reviewers cite the newest
+    // post-deploy screenshot (and can capture fresh ones) in their verdict.
+    touchedUi = diff
+      .split("\n")
+      .some((l) => l.startsWith("apps/web/") || l.startsWith("apps/desktop/"));
+    const uiShot = touchedUi ? latestUiShot() : null;
     if (!diff.trim()) {
       // empty-diff self-heal: builder ran after the task was already merged.
       // Refresh origin/main first so the merge check below isn't fooled by a
@@ -224,13 +245,13 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
     emit("phase", { task: t.id, phase: "reviewers" });
     console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "reviewers start", data: { task: t.id, round } }));
     const [sec, qual] = await Promise.all([
-      runAgent(reviewerPrompt("SECURITY", "crypto, auth, injection, secrets, permission surface", t, diff), {
+      runAgent(reviewerPrompt("SECURITY", "crypto, auth, injection, secrets, permission surface", t, diff, uiShot), {
         cwd: ws,
         timeoutMin: cfg.reviewTimeoutMin,
         label: `sec-${t.id}-r${round}`,
         onStdout: stream,
       }),
-      runAgent(reviewerPrompt("QUALITY", "regressions, UX, docs, test coverage, complexity", t, diff), {
+      runAgent(reviewerPrompt("QUALITY", "regressions, UX, docs, test coverage, complexity", t, diff, uiShot), {
         cwd: ws,
         timeoutMin: cfg.reviewTimeoutMin,
         label: `qual-${t.id}-r${round}`,
@@ -273,7 +294,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
       }
     }
   }
-  return { ok: true, detail: `task ${t.id} merged`, sha: headSha(ws) };
+  return { ok: true, detail: `task ${t.id} merged`, sha: headSha(ws), touchedUi };
 }
 
 function extractFindings(output: string): string[] {

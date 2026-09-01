@@ -31,6 +31,7 @@ import type {
   RelayFrame,
 } from "@ocr/protocol";
 import { log } from "./log.js";
+import { handleBrowse } from "./browse.js";
 import { detectWhisper, transcribeAudio, type WhisperTool } from "./whisper.js";
 import { metrics, startMetricsServer, VERSION } from "./metrics.js";
 import { loadRoutines, saveRoutines, type Routine } from "./routines.js";
@@ -1494,6 +1495,15 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     return true;
   }
   if (!url.pathname.startsWith("/api/")) return false;
+  // P2-011: /api/browse/* — host browser automation (Playwright), same Bearer gate
+  if (url.pathname.startsWith("/api/browse")) {
+    const seg = url.pathname.split("/").filter(Boolean);
+    if (req.headers.authorization !== `Bearer ${apiToken()}`) {
+      send401(res);
+      return true;
+    }
+    return await handleBrowse(req, res, url, seg);
+  }
   const expected = `Bearer ${apiToken()}`;
   if (req.headers.authorization !== expected) {
     send401(res);

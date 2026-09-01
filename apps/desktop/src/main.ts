@@ -38,6 +38,31 @@ async function onReady(): Promise<void> {
   buildTray();
 
   ipcMain.handle("app:version", () => app.getVersion());
+  // P2-011: narrow HTTP bridge to the local daemon's /api/browse surface so the
+  // renderer can drive the host browser without ever seeing the api token
+  // (the 0600 state file stays in this main process). Loopback only, browse
+  // routes only — the token never leaves this process.
+  ipcMain.handle("app:daemonBrowse", async (_e, req: { path?: string; method?: string; body?: unknown }) => {
+    if (!req || typeof req.path !== "string" || !req.path.startsWith("/api/browse")) return null;
+    const method = req.method === "POST" ? "POST" : "GET";
+    if (!/\/api\/browse(\/[a-z]*)?/.test(req.path)) return null;
+    try {
+      const stateFile = join(homedir(), ".opencode-remote", "daemon.json");
+      const token = (JSON.parse(readFileSync(stateFile, "utf8")) as { apiToken?: string }).apiToken;
+      if (!token) return null;
+      const res = await fetch(`http://127.0.0.1:${DAEMON_METRICS_PORT}${encodeURI(req.path)}`, {
+        method,
+        headers: { authorization: `Bearer ${token}` },
+        body: method === "POST" ? JSON.stringify(req.body ?? {}) : undefined,
+        signal: AbortSignal.timeout(45_000),
+      });
+      const buf = Buffer.from(await res.arrayBuffer());
+      return { status: res.status, contentType: res.headers.get("content-type") ?? "", body: buf.toString("base64") };
+    } catch (err) {
+      console.error("[desktop] daemonBrowse failed:", err);
+      return null;
+    }
+  });
   // Boot pairing URI captured from the daemon sidecar's stdout (null when the
   // daemon was reused or hasn't printed it yet) — lets the renderer auto-pair.
   ipcMain.handle("app:pairUrl", () => getPairUrl());
