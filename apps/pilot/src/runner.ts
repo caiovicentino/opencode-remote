@@ -32,6 +32,21 @@ export function scanIds(window: string): AgentIds {
 }
 
 /**
+ * Merge the per-stream scan results at exit. stdout and stderr each get their
+ * own idScanner (round-2 review): a single shared `tail + chunk` across two
+ * arbitrarily interleaved streams could fabricate an id that never appeared
+ * contiguously (stdout ending "…task_", stderr starting "abc1…"). Session
+ * preference is stdout-first — deterministic, and stderr only wins when
+ * stdout has none (--print-logs writes the session line to stderr).
+ */
+export function mergeAgentIds(a: AgentIds, b: AgentIds): AgentIds {
+  return {
+    sessionId: a.sessionId ?? b.sessionId,
+    taskIds: [...a.taskIds, ...b.taskIds.filter((t) => !a.taskIds.includes(t))],
+  };
+}
+
+/**
  * Streaming scanner behind runAgent: dedupes task ids in arrival order, keeps
  * the first session id and buffers a tail so an id split across two stdout
  * chunks is still captured whole. A match ending exactly at the chunk edge may
@@ -194,7 +209,8 @@ export async function runAgent(
     });
     let output = "";
     let timedOut = false;
-    const scanner = idScanner();
+    const outScan = idScanner();
+    const errScan = idScanner();
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill("SIGTERM");
@@ -202,21 +218,21 @@ export async function runAgent(
     }, opts.timeoutMin * 60_000);
     child.stdout.on("data", (c: Buffer) => {
       output += c.toString();
-      scanner.scan(c.toString());
+      outScan.scan(c.toString());
       opts.onStdout?.(c.toString());
     });
     child.stderr.on("data", (c: Buffer) => {
       output += c.toString();
-      scanner.scan(c.toString());
+      errScan.scan(c.toString());
     });
     child.on("exit", () => {
       clearTimeout(timer);
-      const ids = scanner.flush();
+      const ids = mergeAgentIds(outScan.flush(), errScan.flush());
       resolve({ ok: !timedOut, output, timedOut, sessionId: ids.sessionId, taskIds: ids.taskIds });
     });
     child.on("error", (err) => {
       clearTimeout(timer);
-      const ids = scanner.flush();
+      const ids = mergeAgentIds(outScan.flush(), errScan.flush());
       resolve({
         ok: false,
         output: output + `\nspawn error: ${String(err)}`,

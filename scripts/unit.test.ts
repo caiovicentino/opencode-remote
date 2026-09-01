@@ -25,9 +25,11 @@ import {
   plannerPrompt,
   pngSize,
   reviewerPrompt,
+  crashRoundDecision,
   resumeBlock,
   RESUME_MAX_TASK_IDS,
   specPathFor,
+  updateResumeState,
   parseScribeLessons,
   validateSpec,
   verifyEvidence,
@@ -44,7 +46,7 @@ import {
 import { clampSlots, ensureSingleton, loadState, recordTaskFailure } from "../apps/pilot/src/state";
 import { areaKey, pickBatch, pickTasks } from "../apps/pilot/src/scheduler";
 import { blockTask, loadBacklog, parseBacklog, type Task } from "../apps/pilot/src/backlog";
-import { API_PREFLIGHT, apiHealthy, OPENCODE_URL_DEFAULT, waitForApi, scanIds, idScanner } from "../apps/pilot/src/runner";
+import { API_PREFLIGHT, apiHealthy, idScanner, mergeAgentIds, OPENCODE_URL_DEFAULT, scanIds, waitForApi } from "../apps/pilot/src/runner";
 import { mkdtempSync, mkdirSync, readdirSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync, utimesSync } from "node:fs";
 import { execSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -965,6 +967,47 @@ check("viewport: garbage rejected", viewportFromParams("x", "800") === null);
   check(
     "resume: prompt keeps the mandatory evidence block intact",
     round2.includes("EVIDENCE:") && round2.includes("PILOT:TASK-DONE"),
+  );
+
+  // round-2 fixes: resume state transition + crash decision, pure and pinned
+  const st1 = updateResumeState(null, true, { sessionId: "ses_aaa", taskIds: ["task_1"] });
+  check(
+    "resume: failed round opens resume state with its ids",
+    st1?.sessionId === "ses_aaa" && JSON.stringify(st1.taskIds) === JSON.stringify(["task_1"]),
+  );
+  const st2 = updateResumeState(st1, true, { sessionId: "ses_bbb", taskIds: ["task_1", "task_2"] });
+  check(
+    "resume: a later failed round dedupes ids and tracks the latest session",
+    st2?.sessionId === "ses_bbb" && JSON.stringify(st2.taskIds) === JSON.stringify(["task_1", "task_2"]),
+  );
+  check(
+    "resume: successful round resets resume state (no false crash claim on review-fix rounds)",
+    updateResumeState(st2, false, { sessionId: "ses_bbb", taskIds: ["task_9"] }) === null,
+  );
+
+  const m = mergeAgentIds({ sessionId: undefined, taskIds: ["task_1"] }, { sessionId: "ses_a", taskIds: ["task_1", "task_2"] });
+  check(
+    "resume: per-stream scans merge without duplicate ids",
+    m.sessionId === "ses_a" && JSON.stringify(m.taskIds) === JSON.stringify(["task_1", "task_2"]),
+  );
+  check(
+    "resume: merge prefers the stdout session when both streams saw one",
+    mergeAgentIds({ sessionId: "ses_x", taskIds: [] }, { sessionId: "ses_y", taskIds: [] }).sessionId === "ses_x",
+  );
+
+  const retry = crashRoundDecision(1, 3, "P2-013", "prev");
+  check(
+    "resume: crash on a non-final round retries with a resume findings line",
+    retry.retry === true &&
+      retry.findings.includes("round 1 did not finish") &&
+      retry.findings.includes("pilot/P2-013") &&
+      retry.findings.endsWith("prev"),
+  );
+  check("resume: crash retry boundary is round < maxRounds", crashRoundDecision(2, 3, "P2-013", "").retry === true);
+  const abort = crashRoundDecision(3, 3, "P2-013", "prev");
+  check(
+    "resume: crash on the final round aborts with the pre-spike detail",
+    abort.retry === false && abort.detail === "builder did not finish (round 3)" && abort.findings === "prev",
   );
 }
 
