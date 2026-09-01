@@ -6,20 +6,39 @@ export interface Task {
   priority: string;
   title: string;
   spec: string;
+  /** P1-006 area tag `(area: ui|daemon|desktop|infra|relay)`; "" when untagged. */
+  area: string;
   line: string;
 }
 
 const BACKLOG = "BACKLOG.md";
 
-export function loadBacklog(repoDir: string): Task[] {
-  const md = readFileSync(join(repoDir, BACKLOG), "utf8");
+/** Trailing area tag appended by the strategist: `... (area: ui)`. */
+const AREA_RE = /\(area:\s*([A-Za-z][A-Za-z0-9_-]*)\)\s*$/;
+
+/** P1-006: documented area vocabulary; unknown tags fall back to serial "". */
+export const KNOWN_AREAS = new Set(["ui", "daemon", "desktop", "infra", "relay"]);
+
+export function parseBacklog(md: string): Task[] {
   const ready = md.split(/^## /m).find((s) => s.startsWith("Ready")) ?? "";
   const tasks: Task[] = [];
   for (const line of ready.split("\n")) {
-    const m = /^- \[ \] \(([^)]+)\) \[(P\d)\] (.+?)(?: — spec: (.+))?$/.exec(line.trim());
-    if (m && m[1] && m[2] && m[3]) tasks.push({ id: m[1], priority: m[2], title: m[3], spec: m[4] ?? "", line: line.trim() });
+    const trimmed = line.trim();
+    let body = trimmed;
+    let area = "";
+    const am = AREA_RE.exec(body);
+    if (am) {
+      area = KNOWN_AREAS.has(am[1] ?? "") ? am[1]! : "";
+      body = body.slice(0, am.index).trimEnd();
+    }
+    const m = /^- \[ \] \(([^)]+)\) \[(P\d)\] (.+?)(?: — spec: (.+))?$/.exec(body);
+    if (m && m[1] && m[2] && m[3]) tasks.push({ id: m[1], priority: m[2], title: m[3], spec: m[4] ?? "", area, line: trimmed });
   }
   return tasks;
+}
+
+export function loadBacklog(repoDir: string): Task[] {
+  return parseBacklog(readFileSync(join(repoDir, BACKLOG), "utf8"));
 }
 
 /** Mark a task as done: move its line from ## Ready to ## Done. */

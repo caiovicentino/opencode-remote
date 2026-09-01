@@ -73,9 +73,38 @@ produção: `userData` do Electron é temporário e nenhum sidecar é spawnado.
 ## Budgets e kill switch
 
 - `~/.opencode-remote/pilot.json` (opcional): `maxTasksPerDay` (6), `maxDeploysPerDay` (6),
-  `maxReviewRounds` (3), `maxAttemptsPerTask` (4), `taskTimeoutMin` (45), `monitorMin` (10), `digest`.
+  `maxReviewRounds` (3), `maxAttemptsPerTask` (4), `slots` (1), `taskTimeoutMin` (45), `monitorMin` (10), `digest`.
 - **Freeze**: `touch ~/.opencode-remote/pilot.lock` para o loop (checado a cada ciclo).
 - Contadores diários em `~/.opencode-remote/pilot/state.json`.
+
+## Paralelismo com slots (P1-006)
+
+`slots` (pilot.json, default 1) controla quantos pipelines rodam **concorrentes**:
+
+- Cada slot tem um **workspace clone próprio**: `~/.opencode-remote/pilot/repo-1`,
+  `repo-2`… criado na primeira vez via `git clone --shared` do checkout de produção
+  (objetos compartilhados, clone barato) com o remote `origin` apontando pro GitHub
+  e **deps bootstrapadas com npm ci** antes do slot ficar utilizável. A chave
+  `workspace` do pilot.json virou legada e é ignorada — os paths dos slots são
+  derivados do número do slot.
+- O scheduler (`apps/pilot/src/index.ts`) lê a fila direto de `origin/main`
+  (`git show origin/main:BACKLOG.md`) — worktrees de slots ocupados nunca são
+  fontes de verdade. Tasks de **áreas diferentes** rodam em paralelo; **duas
+  tasks da mesma área nunca rodam juntas**. Task sem tag de área roda serial
+  (uma por vez). Os budgets diários (`maxTasksPerDay`, `maxDeploysPerDay`)
+  são **globais** a todos os slots.
+- **Área da task**: o strategist/researcher taggeia o **fim da linha** com
+  `(area: ui|daemon|desktop|infra|relay)`. A ui = apps/web, daemon = apps/daemon,
+  desktop = apps/desktop, infra = build/scripts/deploy/pilot, relay = apps/relay.
+  Tag fora desse vocabulário vira serial (sem área).
+- **Gate serializado entre slots**: a bateria de eval usa portas fixas
+  (reconnect/integration) e o merge empurra pra main — o gatekeeper roda em
+  exclusão mútua; builders/reviewers continuam paralelos.
+- **Arquivos de diagnóstico por task**: `pilot/gate-fail/<ID>.json` (carryover
+  de falha do gate) e `pilot/builder-<ID>.log` (output do builder) — sem
+  last-writer-wins entre slots.
+- **Deploys continuam seriais**: `deployBusy` garante um deploy por vez; merge
+  concorrente fica na fila na main e o próximo deploy pega.
 
 ## Observabilidade
 
@@ -130,8 +159,11 @@ Atenção: vale o singleton do pidfile — subir uma segunda instância (foregro
 Formato das tasks (seção `## Ready`):
 
 ```md
-- [ ] (P2-001) Título curto — spec: o que fazer, onde, e critério de aceite
+- [ ] (P2-001) Título curto — spec: o que fazer, onde, e critério de aceite (area: daemon)
 ```
+
+O tag `(area: ui|daemon|desktop|infra|relay)` no fim da linha (P1-006) define em
+qual área a task roda no scheduler paralelo; task sem tag roda serial.
 
 O pilot pega a primeira task `Ready`, em ordem. Red team insere `(RT-###)` P0 no topo.
 
@@ -141,7 +173,8 @@ O pilot pega a primeira task `Ready`, em ordem. Red team insere `(RT-###)` P0 no
 - **Preflight typecheck**: after each builder round, a fast `tsc --noEmit` runs
   before the reviewers — broken code bounces straight back to the builder with
   the error tail instead of burning reviewer tokens.
-- **Gate-fail carryover**: the gatekeeper writes `last-gate-fail.json`; the
+- **Gate-fail carryover**: the gatekeeper writes `pilot/gate-fail/<ID>.json`
+  (per-task since P1-006); the
   retry pipeline seeds the builder prompt with the exact failing step + output.
 - **Incremental rounds**: builder prompt for round ≥ 2 instructs inspecting the
   existing branch diff and fixing findings incrementally.

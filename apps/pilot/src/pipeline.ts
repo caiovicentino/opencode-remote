@@ -1,5 +1,5 @@
-import { readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { exec, runAgent } from "./runner";
 import { nowLocalISO } from "./log";
@@ -67,6 +67,28 @@ export interface PipelineResult {
 /** Task IDs come from BACKLOG.md; only this charset ever reaches a shell command. */
 export const TASK_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
+/**
+ * P1-006: per-task gatekeeper failure file (path-safe: id is TASK_ID_RE-checked).
+ * Concurrent slots must not overwrite each other's carryover findings.
+ */
+function gateFailFile(taskId: string): string | null {
+  if (!TASK_ID_RE.test(taskId)) return null;
+  return join(homedir(), ".opencode-remote/pilot/gate-fail", `${taskId}.json`);
+}
+
+/**
+ * P1-006: the gate battery (reconnect/integration) binds fixed eval ports and
+ * the merge pushes to main — run the whole gatekeeper exclusively across
+ * concurrent slots. Builders/reviewers stay parallel; only the gate queues.
+ */
+let gateLock: Promise<void> = Promise.resolve();
+function runGateExclusive<T>(fn: () => Promise<T>): Promise<T> {
+  const prev = gateLock;
+  let release!: () => void;
+  gateLock = new Promise<void>((r) => (release = r));
+  return prev.then(fn).finally(release);
+}
+
 /** Sandbox permissions: agents in the clone get full tool access. Must exist for
  * EVERY headless run (builder, reviewers, strategist) or opencode aborts on the
  * first permission-requiring action — `git clean` removes it after each sync. */
@@ -103,11 +125,13 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
   let findings = "";
   let builderSession: string | undefined;
   // carry over the last gatekeeper failure for this task, so the builder can
-  // fix the exact failing step instead of rediscovering it
-  const failFile = join(homedir(), ".opencode-remote/pilot/last-gate-fail.json");
+  // fix the exact failing step instead of rediscovering it (per-task file)
+  const failFile = gateFailFile(t.id);
   try {
-    const prev = JSON.parse(readFileSync(failFile, "utf8")) as { task?: string; tail?: string };
-    if (prev.task === t.id && prev.tail) findings += `[previous gatekeeper failure]\n${prev.tail}\n`;
+    if (failFile) {
+      const prev = JSON.parse(readFileSync(failFile, "utf8")) as { task?: string; tail?: string };
+      if (prev.task === t.id && prev.tail) findings += `[previous gatekeeper failure]\n${prev.tail}\n`;
+    }
   } catch {}
   let merged = false;
   let lastStream = 0;
@@ -138,7 +162,8 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
     });
     if (build.sessionId) builderSession = build.sessionId;
     console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "builder done", data: { task: t.id, round } }));
-    writeFileSync(join(homedir(), ".opencode-remote/pilot", "last-builder-output.log"), build.output);
+    // per-task diagnostic log: concurrent slots would clobber a shared file
+    writeFileSync(join(homedir(), ".opencode-remote/pilot", `builder-${t.id}.log`), build.output);
     emit("phase", { task: t.id, phase: "builder-done", ok: build.output.includes("PILOT:TASK-DONE") });
     if (!build.output.includes("PILOT:TASK-DONE")) {
       return { ok: false, detail: `builder did not finish (round ${round}): ${build.output.slice(-300)}` };
@@ -225,8 +250,18 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
     emit("phase", { task: t.id, phase: "reviewers-done", ok: secOk && qualOk });
     if (secOk && qualOk) {
       emit("phase", { task: t.id, phase: "gatekeeper" });
-      merged = await gatekeeper(cfg, ws, t, state);
+      // serialized across slots: fixed battery ports + main push (P1-006)
+      merged = await runGateExclusive(() => gatekeeper(cfg, ws, t, state));
       emit("phase", { task: t.id, phase: "merge", ok: merged });
+      if (merged) {
+        // gate passed — the per-task carryover file has no reason to linger
+        const f = gateFailFile(t.id);
+        if (f) {
+          try {
+            rmSync(f);
+          } catch {}
+        }
+      }
       if (!merged) return { ok: false, detail: "gatekeeper rejected: eval battery or invariants failed" };
     } else {
       findings = [
@@ -284,12 +319,16 @@ async function gatekeeper(cfg: PilotConfig, ws: string, t: Task, state: PilotSta
     const r = exec(cmd, { cwd: ws, timeoutMin: 20, allowFail: true });
     if (!r.ok) {
       console.log(JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "gatekeeper fail", data: { task: t.id, step: name, tail: r.output.slice(-300) } }));
-      try {
-        writeFileSync(
-          join(homedir(), ".opencode-remote/pilot/last-gate-fail.json"),
-          JSON.stringify({ task: t.id, step: name, tail: r.output.slice(-1200), at: nowLocalISO() }, null, 2),
-        );
-      } catch {}
+      const failFile = gateFailFile(t.id);
+      if (failFile) {
+        try {
+          mkdirSync(dirname(failFile), { recursive: true });
+          writeFileSync(
+            failFile,
+            JSON.stringify({ task: t.id, step: name, tail: r.output.slice(-1200), at: nowLocalISO() }, null, 2),
+          );
+        } catch {}
+      }
       state.failures++;
       return false;
     }
@@ -309,9 +348,20 @@ async function gatekeeper(cfg: PilotConfig, ws: string, t: Task, state: PilotSta
     });
     if (!merge.ok) return false;
   } else {
-    // fallback: local merge to main and push
-    exec("git checkout -q main && git merge -q --no-ff --no-edit pilot/" + t.id, { cwd: ws });
-    exec("git push -q origin main", { cwd: ws });
+    // fallback: local merge to main and push. origin/main may have moved
+    // (concurrent slot/aux pushes): fetch + retry so a non-fast-forward never
+    // crashes a post-green pipeline with an unhandled exec error.
+    let pushed = false;
+    for (let i = 0; i < 3 && !pushed; i++) {
+      exec("git fetch -q origin", { cwd: ws, allowFail: true });
+      exec("git checkout -q main", { cwd: ws, allowFail: true });
+      // reset --hard also clears a conflicted-merge state from a prior attempt
+      const base = exec("git reset -q --hard origin/main", { cwd: ws, allowFail: true });
+      const merge = exec(`git merge -q --no-ff --no-edit pilot/${t.id}`, { cwd: ws, allowFail: true });
+      if (!base.ok || !merge.ok) break; // conflict — only a full pipeline round fixes it
+      pushed = exec("git push -q origin main", { cwd: ws, allowFail: true }).ok;
+    }
+    if (!pushed) return false; // branch is on origin; the next cycle re-runs the task
   }
   // bring workspace main up to date with the merge, then mark the task done
   exec("git checkout -q main", { cwd: ws, allowFail: true });

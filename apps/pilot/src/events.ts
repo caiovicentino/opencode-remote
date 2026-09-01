@@ -12,6 +12,8 @@ export interface PilotEvent {
   phase?: string;
   ok?: boolean;
   detail?: string;
+  /** P1-006: scheduler slot that produced the event (1-based). */
+  slot?: number;
 }
 
 /** Append a pipeline event for the dashboard/API. Keeps the file bounded. */

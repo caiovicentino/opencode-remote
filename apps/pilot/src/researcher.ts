@@ -44,9 +44,10 @@ new integration, new technique. Rules for a good spike:
 - NOT a duplicate of anything already in BACKLOG.md (read ## Ready and ## Done)
 
 Append them to BACKLOG.md under ## Ready using EXACTLY the existing line format:
-- [ ] (ID) [P2] [spike] Title — spec: what to build, where, acceptance criteria (fonte: <url>)
-IDs continue the sequence. Do NOT touch other sections. Commit with message
-"pilot(researcher): frontier scan ${today}" (no push).
+- [ ] (ID) [P2] [spike] Title — spec: what to build, where, acceptance criteria (fonte: <url>) (area: <area>)
+IDs continue the sequence. The trailing (area: ...) tag is mandatory — pick exactly one of
+ui|daemon|desktop|infra|relay (the area the task touches most). Do NOT touch other
+sections. Commit with message "pilot(researcher): frontier scan ${today}" (no push).
 
 Your LAST line of output must be exactly: RESEARCHER:DONE`;
 

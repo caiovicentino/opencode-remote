@@ -5,7 +5,9 @@ import { homedir } from "node:os";
 
 export interface PilotConfig {
   repo: string; // production checkout (runs the services)
-  workspace: string; // pilot clone where agents work
+  workspace: string; // pilot clone where agents work (slot 1 when slots > 1)
+  /** P1-006: concurrent pipeline slots; deploys stay serial. */
+  slots: number;
   maxTasksPerDay: number;
   maxDeploysPerDay: number;
   maxReviewRounds: number;
@@ -18,7 +20,11 @@ export interface PilotConfig {
 
 export const DEFAULTS: PilotConfig = {
   repo: process.env.OCR_PILOT_REPO ?? "/Volumes/SSD Major/Major/opencode-remote",
-  workspace: join(homedir(), ".opencode-remote/pilot/repo"),
+  // P1-006: legacy key — the scheduler derives per-slot paths (pilot/repo-1,
+  // repo-2…) and overwrites `workspace` in every PilotConfig it hands out.
+  // A `workspace` set in pilot.json is ignored.
+  workspace: join(homedir(), ".opencode-remote/pilot/repo-1"),
+  slots: 1,
   maxTasksPerDay: 6,
   maxDeploysPerDay: 6,
   maxReviewRounds: 3,
@@ -29,6 +35,13 @@ export const DEFAULTS: PilotConfig = {
   digest: true,
 };
 
+/** P1-006: scheduler slot count — 1 (serial, default) up to a hard cap of 8. */
+export function clampSlots(n: unknown): number {
+  const v = Number(n);
+  if (!Number.isInteger(v) || v < 1) return 1;
+  return Math.min(v, 8);
+}
+
 export function loadConfig(): PilotConfig {
   const p = join(homedir(), ".opencode-remote", "pilot.json");
   try {
@@ -36,6 +49,7 @@ export function loadConfig(): PilotConfig {
       const cfg = { ...DEFAULTS, ...JSON.parse(readFileSync(p, "utf8")) } as PilotConfig;
       if (!Number.isFinite(cfg.maxAttemptsPerTask) || cfg.maxAttemptsPerTask < 1)
         cfg.maxAttemptsPerTask = DEFAULTS.maxAttemptsPerTask;
+      cfg.slots = clampSlots(cfg.slots);
       return cfg;
     }
   } catch {}
