@@ -189,6 +189,9 @@ mergeadas pelo workflow sem intervenção humana.
 - Tasks com a tag `(size: L)` escalam os próprios budgets — ver a seção abaixo.
 - **Freeze**: `touch ~/.opencode-remote/pilot.lock` para o loop (checado a cada ciclo).
 - Contadores diários em `~/.opencode-remote/pilot/state.json`.
+- **Escrita atômica (P2-024)**: `state.json` é gravado via tmp+rename
+  (`writeJsonAtomic`) — um crash/OOM/disco cheio no meio da escrita não deixa
+  mais arquivo truncado (que zeraria o circuit breaker `taskAttempts`).
 
 ## Cognição em tiers (P1-059)
 

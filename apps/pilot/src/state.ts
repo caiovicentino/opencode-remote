@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, unlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { nowLocalISO } from "./log";
 import { homedir } from "node:os";
@@ -222,8 +222,42 @@ export function recordTaskFailure(state: PilotState, taskId: string, maxAttempts
   return n >= maxAttempts;
 }
 
-export function saveState(s: PilotState) {
-  writeFileSync(STATE_FILE, JSON.stringify(s, null, 2));
+/** P2-024: fs surface writeJsonAtomic needs — injectable so unit tests are
+ * hermetic (P3-013 pattern: fs wrappers with injectable io). */
+export interface AtomicWriteIo {
+  writeFileSync(file: string, data: string): void;
+  renameSync(from: string, to: string): void;
+  unlinkSync(file: string): void;
+}
+
+const realWriteIo: AtomicWriteIo = {
+  writeFileSync: (file, data) => writeFileSync(file, data),
+  renameSync: (from, to) => renameSync(from, to),
+  unlinkSync: (file) => unlinkSync(file),
+};
+
+/**
+ * P2-024: atomic JSON write — the payload lands in `<file>.tmp` and a rename
+ * moves it over the destination (rename is atomic within the same filesystem),
+ * so a crash/OOM/full disk mid-write can never leave a truncated file behind.
+ * On any failure the .tmp is removed and the error rethrown: the caller decides
+ * whether to retry or keep running with the last good state.
+ */
+export function writeJsonAtomic(file: string, value: unknown, io: AtomicWriteIo = realWriteIo): void {
+  const tmp = `${file}.tmp`;
+  try {
+    io.writeFileSync(tmp, JSON.stringify(value, null, 2));
+    io.renameSync(tmp, file);
+  } catch (err) {
+    try {
+      io.unlinkSync(tmp);
+    } catch {}
+    throw err;
+  }
+}
+
+export function saveState(s: PilotState, file: string = STATE_FILE) {
+  writeJsonAtomic(file, s);
 }
 
 export function frozen(): boolean {
