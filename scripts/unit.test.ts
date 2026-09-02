@@ -139,6 +139,12 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { artifactMime, kindFor, listArtifacts, readArtifact, validSegment } from "../apps/daemon/src/artifacts";
+import {
+  ARTIFACTS_MARKER,
+  buildArtifactsPrompt,
+  injectArtifactsSystem,
+  workspaceCoversArtifacts,
+} from "../apps/daemon/src/sessionctx";
 import { browseTarget, clickPoint, validSession, viewportFromParams } from "../apps/daemon/src/browse";
 import { createShutdown, DRAIN_MS, stopAccepting } from "../apps/daemon/src/shutdown";
 import {
@@ -1126,6 +1132,50 @@ try {
   check("listArtifacts filters by session", listArtifacts("other", aroot).length === 0);
 } finally {
   rmSync(aroot, { recursive: true, force: true });
+}
+
+// --- artifacts protocol injection into daemon sessions (P1-068) -----------------
+{
+  const block = buildArtifactsPrompt("ses_x");
+  check(
+    "artifacts prompt: marker, real session dir and the [file: download line",
+    block.includes(ARTIFACTS_MARKER) &&
+      block.includes(join(homedir(), ".opencode-remote", "artifacts", "ses_x")) &&
+      block.includes("[file:"),
+  );
+  const wroot = mkdtempSync(join(tmpdir(), "ocr-sessionctx-"));
+  try {
+    mkdirSync(join(wroot, "covered"));
+    writeFileSync(join(wroot, "covered", "AGENTS.md"), "escreva em ~/.opencode-remote/artifacts/<sessionId>/");
+    check("workspaceCoversArtifacts: AGENTS.md with the artifacts path → true", workspaceCoversArtifacts(join(wroot, "covered")));
+    mkdirSync(join(wroot, "marker"));
+    writeFileSync(join(wroot, "marker", "agents.md"), `bloco com ${ARTIFACTS_MARKER} presente`);
+    check("workspaceCoversArtifacts: lowercase agents.md with the marker → true", workspaceCoversArtifacts(join(wroot, "marker")));
+    mkdirSync(join(wroot, "uncovered"));
+    writeFileSync(join(wroot, "uncovered", "AGENTS.md"), "# regras\n- fuso GMT-3\n");
+    check("workspaceCoversArtifacts: AGENTS.md without the protocol → false", !workspaceCoversArtifacts(join(wroot, "uncovered")));
+    check("workspaceCoversArtifacts: no AGENTS.md → false (fail-open)", !workspaceCoversArtifacts(join(wroot, "missing")));
+    check("workspaceCoversArtifacts: empty directory → false", !workspaceCoversArtifacts(""));
+
+    const bare: { parts: unknown[]; system?: string } = { parts: [{ type: "text", text: "oi" }] };
+    injectArtifactsSystem(bare, "ses_x");
+    check(
+      "inject: body without system gains the block; parts untouched",
+      bare.system?.includes(ARTIFACTS_MARKER) === true &&
+        bare.system?.includes("ses_x") === true &&
+        JSON.stringify(bare.parts) === JSON.stringify([{ type: "text", text: "oi" }]),
+    );
+    const client: { system?: string } = { system: "SYS" };
+    injectArtifactsSystem(client, "ses_x");
+    check(
+      "inject: appends after a client-provided system prompt",
+      client.system!.startsWith("SYS") && client.system!.includes(ARTIFACTS_MARKER),
+    );
+    injectArtifactsSystem(client, "ses_x");
+    check("inject: second call is a no-op (marker dedupe)", client.system!.split(ARTIFACTS_MARKER).length - 1 === 1);
+  } finally {
+    rmSync(wroot, { recursive: true, force: true });
+  }
 }
 
 // --- artifacts web lib (P1-010) -----------------------------------------------
