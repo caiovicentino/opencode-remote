@@ -16,7 +16,7 @@ export function buildArtifactsPrompt(sessionId: string): string {
     `- Todo documento/preview gerado (html, md, csv, pdf…) vira um arquivo self-contained gravado em ${dir}/ (crie o diretório se não existir).`,
     `- Mencione o filename do artifact na sua resposta — o app lista os arquivos no pane "Artifacts" e anexa um card na mensagem.`,
     `- Para o usuário baixar no celular, salve em ~/.opencode-remote/uploads/ e inclua na resposta uma linha no formato exato [file: <caminho absoluto>] — ela vira um card de download.`,
-    `- Nunca sirva preview com http.server, porta local ou link solto: sem o protocolo acima o usuário não recebe card nem pane.`,
+    `- Sites/servidores locais são permitidos (http.server, vite, dev servers): ao subir um, mencione na resposta a URL http://localhost:<porta> — o app abre o preview interativo sozinho no pane Browser.`,
   ].join("\n");
 }
 

@@ -122,6 +122,15 @@ sua resposta** — o app desktop lista esses arquivos no pane "Artifacts"
 um card anexado na mensagem que cita o artifact. Use `uploads/` (método acima)
 quando o objetivo for o usuário baixar o arquivo no celular.
 
+## Auto-preview (site local abre sozinho no app)
+
+Quando você subir um servidor/site local (http.server, vite, dev server…),
+**mencione a URL `http://localhost:<porta>` na sua resposta** — o app desktop
+abre o pane Browser sozinho (webview interativo, lado a lado com o chat).
+A detecção é um parse determinístico de URLs loopback com porta explícita
+(1..65535, exceto a própria porta do daemon 8792), dedupado por 10 minutos;
+URLs não-loopback não disparam preview.
+
 ## Browser self-driving (validação visual de UI)
 
 O daemon controla um Chromium headless no host via `/api/browse` (Playwright).

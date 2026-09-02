@@ -32,6 +32,7 @@ import FilesView from "./components/FilesView";
 import ArtifactsView from "./components/ArtifactsView";
 import SendToAgentView from "./components/SendToAgentView";
 import BrowserView, { type BrowseFn } from "./components/BrowserView";
+import { previewFromEvent } from "./lib/preview";
 import MissionControlView, { type DaemonApiFn } from "./components/MissionControlView";
 import CommandPalette from "./components/CommandPalette";
 import {
@@ -177,6 +178,11 @@ export default function App() {
       return {};
     }
   });
+  // P1-072: auto-preview — URL the daemon's ocr.preview event pointed at, plus
+  // the maximize state of the Browser pane and a client-side dedupe ref.
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [browserMaximized, setBrowserMaximized] = useState(false);
+  const lastPreviewUrlRef = useRef<string | null>(null);
   const activeSessionRef = useRef<string | null>(null);
 
   // P2-007: first-run pairing overlay (desktop shell only). The main process
@@ -260,6 +266,15 @@ export default function App() {
       client.onEvent((evt) => {
         setEvents((prev) => [...prev.slice(-500), evt]);
         bumpUnread(evt);
+        // P1-072: auto-preview — desktop shell only. In the PWA the event is
+        // ignored: the Mac's localhost is unreachable from the phone anyway.
+        const preview = previewFromEvent(evt);
+        if (preview && browseFn && preview.url !== lastPreviewUrlRef.current) {
+          lastPreviewUrlRef.current = preview.url;
+          setBrowserMaximized(false);
+          setPreviewUrl(preview.url);
+          dispatchView({ type: "open", slot: "browser" });
+        }
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -809,12 +824,22 @@ export default function App() {
               </div>
             )}
           </main>
-          <section className="desk-pane" style={{ display: isPaneOpen(view) ? "block" : "none" }}>
+          <section
+            className={`desk-pane${browserMaximized ? " maximized" : ""}`}
+            style={{ display: isPaneOpen(view) ? "block" : "none" }}
+          >
             {/* Browser pane stays mounted (hidden) so the user's current page,
-                URL input and text panel survive tab switches. */}
+                URL input and text panel survive tab switches. P1-072: it renders
+                a real webview in the desktop shell and auto-opens on ocr.preview. */}
             {(browseFn || top === "browser") && (
               <div style={{ display: top === "browser" ? "block" : "none", height: "100%" }}>
-                <BrowserView browse={browseFn} onBack={goBack} />
+                <BrowserView
+                  browse={browseFn}
+                  onBack={goBack}
+                  previewUrl={previewUrl}
+                  maximized={browserMaximized}
+                  onToggleMaximize={() => setBrowserMaximized((v) => !v)}
+                />
               </div>
             )}
             {top === "artifacts" && artifactsNode}

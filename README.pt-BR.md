@@ -85,9 +85,16 @@ remoto, zero confiança**.
   de sessões injetadas vive em memória: sessões criadas antes de um restart
   do daemon não são re-injetadas depois — apenas as criadas pelo daemon novo
 - **App desktop (inicial)** — shell Electron com a mesma UI, com tray e menu nativo;
-  inclui um **pane Browser** que controla um Chromium headless no host via daemon
-  (`/api/browse` — navegar, clicar, extrair texto, screenshot) para agentes validarem
-  visualmente o próprio output
+  inclui um **pane Browser**: no shell desktop ele renderiza um `<webview>` Electron real e
+  sandboxed (scroll, click e edit funcionam como num navegador; `contextIsolation`/`sandbox`
+  ligados, `nodeIntegration` desligado, popups desligados), com barra de URL editável, reload
+  e botão maximizar (~80% de largura). O modo screenshot via Playwright (`/api/browse`) segue
+  como fallback no PWA e como superfície de browse dos reviewers (`tools/browse.mjs`)
+- **Auto-preview** — quando o agent menciona uma URL `http(s)://localhost:<porta>` /
+  `127.0.0.1:<porta>` na resposta, o daemon emite um evento sintético `ocr.preview`
+  (parse determinístico de URL, dedupe por sessão por 10 minutos) e o app desktop abre o
+  pane Browser lado a lado com o chat, apontando pra URL, com botão de voltar pro chat.
+  No PWA o evento é ignorado (o localhost da máquina não é alcançável do celular)
 - **Mission Control** — pós-mortem navegável das runs autônomas do pilot no app desktop:
   um card por tarefa de agente (objetivo, progresso, esforço, ETA) e uma timeline forense
   lida do `pilot.log`/`events.jsonl` real (decisões, vereditos de reviewers, falhas de gate
@@ -161,6 +168,14 @@ destrói o chat), e toda a navegação vive numa única view stack. Atalhos de
 teclado (também no menu **Go**): `Cmd+T` nova conversa, `Cmd+K` command
 palette (busca conversas e ações), `Cmd+1..6` troca para chat / Artifacts /
 Browser / Arquivos / Configurações / Mission Control.
+
+**Auto-preview (P1-072)**: quando o agent sobe um site local (http.server,
+vite, dev server…) e menciona `http://localhost:<porta>` na resposta, o pane
+Browser abre sozinho ao lado do chat apontando pra URL, renderizado como um
+webview real e sandboxed — scroll, click e edição de formulário funcionam de
+verdade. A barra de URL é editável, `↻` recarrega, `⤢` alterna o pane para
+~80% da largura e volta, e `←` retorna pro chat. Falha de carregamento mostra
+o erro e o botão de reload, nunca um pane em branco.
 
 O **Mission Control** (Cmd+6) é o pós-mortem navegável das runs autônomas do
 pilot: um card por tarefa de agente (objetivo, progresso, esforço em minuto,

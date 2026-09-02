@@ -55,6 +55,7 @@ import { artifactMime, kindFor, listArtifacts, readArtifact } from "./artifacts.
 import { createShutdown, stopAccepting } from "./shutdown.js";
 import { localUpgradeAllowed } from "./localws.js";
 import { injectArtifactsSystem, workspaceCoversArtifacts } from "./sessionctx.js";
+import { extractLocalUrls, PreviewDedupe } from "./preview.js";
 import { UPDATE_CONTENT_TYPES, resolveUpdatePath, updatesDir } from "./updates.js";
 // P2-045: dashboard v2 metrics — aggregations shared with the pilot's eval battery
 import { avgPhaseDurations, burnDown, countFailSteps, rollbackHealthAlert, type HistoryEntry } from "../../pilot/src/metrics";
@@ -1244,6 +1245,11 @@ async function autoApprove(sessionID: string, permissionID: string, action: stri
 
 async function forwardEvents() {
   let attempt = 0;
+  // P1-072: auto-preview state — messageID→role map (user parts are echoed
+  // back as message.part.updated too; only assistant text opens previews) and
+  // the per-session URL dedupe. Both survive stream reconnects on purpose.
+  const messageRoles = new Map<string, string>();
+  const previewDedupe = new PreviewDedupe();
   for (;;) {
     try {
       const url = new URL("/event", OPENCODE_URL);
@@ -1316,6 +1322,44 @@ async function forwardEvents() {
                   url: sessionID ? `#/session/${sessionID}` : "#/",
                 });
             }
+
+            // P1-072: auto-preview — assistant text mentioning a loopback
+            // http(s) URL with an explicit port emits a synthetic `ocr.preview`
+            // event so the desktop app opens its Browser pane on it. The relay
+            // stays a blind router: this rides the existing sealed envelope.
+            if (evt.type === "message.updated") {
+              const info = ((evt.properties ?? {}) as { info?: { id?: string; role?: string } }).info;
+              if (info?.id) {
+                messageRoles.set(info.id, info.role ?? "assistant");
+                if (messageRoles.size > 1000) {
+                  const oldest = messageRoles.keys().next().value;
+                  if (oldest !== undefined) messageRoles.delete(oldest);
+                }
+              }
+            } else if (evt.type === "message.part.updated") {
+              const part = ((evt.properties ?? {}) as {
+                part?: { type?: string; text?: string; messageID?: string };
+              }).part;
+              if (part?.type === "text" && typeof part.text === "string" && part.messageID) {
+                // unknown role ⇒ fail-open as assistant (a missed message.updated
+                // must not suppress the preview; user parts are tagged as "user")
+                if ((messageRoles.get(part.messageID) ?? "assistant") !== "user") {
+                  for (const url of extractLocalUrls(part.text)) {
+                    if (!previewDedupe.firstSeen(sessionID, url)) continue;
+                    log("info", "preview detected", { sessionID, url });
+                    broadcast({
+                      type: "event",
+                      event: {
+                        id: randomUUID(),
+                        type: "ocr.preview",
+                        properties: { sessionID, url },
+                      },
+                    });
+                  }
+                }
+              }
+            }
+
             broadcast({
               type: "event",
               event: { id: randomUUID(), type: evt.type, properties: evt.properties },

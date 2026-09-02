@@ -14,7 +14,7 @@
  * Run: npx tsx scripts/desktop-flow.test.ts
  */
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -136,6 +136,88 @@ function pngSize(path: string): [number, number] {
   return [buf.readUInt32BE(16), buf.readUInt32BE(20)];
 }
 
+// --- P1-072: interactive webview against a local fake server -------------------
+// The Browser pane itself is only reachable when the app is PAIRED (see the
+// P1-051 note), but the <webview> element is a property of the Electron shell
+// (webviewTag in main.ts). Mounting one dynamically in the real renderer
+// proves: the tag is enabled, the sandboxed webpreferences hold, a local page
+// loads, and scroll/click inside it reach the page — the pane is interactive,
+// not a screenshot. Fake server listens on 127.0.0.1:<random port>.
+//
+// The server MUST live in a child process: every harness command below is a
+// spawnSync, which blocks this test's event loop — a same-process server
+// would starve exactly while the webview asks it for the page (15s load
+// timeout, then the next evaluate finds the target gone).
+async function testWebviewPane(): Promise<void> {
+  const probe = spawnSync(
+    process.execPath,
+    ["-e", "const s=require('node:http').createServer();s.listen(0,'127.0.0.1',()=>{console.log('PORT='+s.address().port);s.close()})"],
+    { encoding: "utf8" },
+  );
+  const port = Number((probe.stdout.match(/PORT=(\d+)/) ?? [])[1]);
+  check("P1-072: fake server picked a free port", Number.isInteger(port) && port > 0, probe.stdout + probe.stderr);
+  if (!Number.isInteger(port) || port <= 0) return;
+  const marker = `ocr-webview-marker-${process.pid}`;
+  const childScript = [
+    "const http = require('node:http');",
+    `const marker = ${JSON.stringify(marker)};`,
+    "http.createServer((req, res) => {",
+    "  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });",
+    "  res.end('<!doctype html><html><body><h1 id=\"flow-marker\">' + marker + '</h1>' +",
+    "    '<div style=\"height:4000px\"></div>' +",
+    "    '<button id=\"flow-btn\" onclick=\"document.getElementById(\\'flow-out\\').textContent=\\'clicked\\'\">go</button>' +",
+    "    '<p id=\"flow-out\"></p></body></html>');",
+    `}).listen(${port}, '127.0.0.1');`,
+  ].join("\n");
+  const server = spawn(process.execPath, ["-e", childScript], { stdio: "ignore", detached: true });
+  server.unref();
+  const url = `http://127.0.0.1:${port}/`;
+  try {
+    const mount = `(async () => {
+      let wv = document.getElementById("flow-webview");
+      if (wv) wv.remove();
+      wv = document.createElement("webview");
+      wv.id = "flow-webview";
+      wv.src = ${JSON.stringify(url)};
+      wv.webpreferences = "contextIsolation=yes, sandbox=yes";
+      document.body.appendChild(wv);
+      await new Promise((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error("webview load timeout")), 15000);
+        wv.addEventListener("dom-ready", () => { clearTimeout(t); resolve(); }, { once: true });
+      });
+      return wv.executeJavaScript("document.body.innerText");
+    })()`;
+    const loaded = run("P1-072: webview loads the fake server (executeJavaScript)", ["ipc", mount], 25_000);
+    if (loaded.ok) {
+      check(
+        "P1-072: real page text reaches the renderer (interactive pane, not a shot)",
+        loaded.stdout.includes(marker),
+        loaded.stdout,
+      );
+    }
+    const scroll = run(
+      "P1-072: webview scroll",
+      ["ipc", `(async () => {
+        const wv = document.getElementById("flow-webview");
+        return wv.executeJavaScript("window.scrollTo(0, 500); document.documentElement.scrollTop");
+      })()`],
+      15_000,
+    );
+    if (scroll.ok) check("P1-072: scrollTo reaches the page (scrollTop=500)", /500/.test(scroll.stdout), scroll.stdout);
+    const click = run(
+      "P1-072: webview click",
+      ["ipc", `(async () => {
+        const wv = document.getElementById("flow-webview");
+        return wv.executeJavaScript("document.getElementById('flow-btn').click(); document.getElementById('flow-out').textContent");
+      })()`],
+      15_000,
+    );
+    if (click.ok) check("P1-072: in-page button click works", /clicked/.test(click.stdout), click.stdout);
+  } finally {
+    server.kill();
+  }
+}
+
 let keeperBooted = false;
 try {
   const opened = run("open (hermetic launch)", ["open"], 45_000);
@@ -231,6 +313,9 @@ try {
   run("P3-053: clear the badge (unread=0)", ["ipc", "window.ocrDesktop.sendUnread(0)"], 15_000);
   const badge0 = run("P3-053: read app:unreadBadge after clear", ["ipc", "window.ocrDesktop.getUnreadBadge()"], 15_000);
   if (badge0.ok) check("P3-053: badge clears to 0", badge0.stdout.trim() === "0");
+
+  // --- P1-072: the shell must expose the real <webview> tag --------------------
+  await testWebviewPane();
 
   // --- P1-053: the "reconnecting…" hermetic state (second launch) --------------
   // An ADOPTED daemon going missing is never terminal: the yellow banner shows

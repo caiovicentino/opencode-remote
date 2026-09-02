@@ -675,6 +675,10 @@ function createWindow(): BrowserWindow {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // P1-072: the Browser pane renders real pages through a sandboxed
+      // <webview> (interactive scroll/click/edit) instead of screenshots.
+      // contextIsolation/sandbox stay on; nodeIntegration stays off.
+      webviewTag: true,
     },
   });
   win.once("ready-to-show", () => win.show());
