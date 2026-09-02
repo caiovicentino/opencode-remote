@@ -9,7 +9,7 @@ import { latestUiShot } from "./shot";
 import { defaultVerifiedMergesFile, recordVerifiedMerge } from "./deployguard";
 import { touchHeartbeat, type PilotConfig, type PilotState } from "./state";
 import { appendLessonsToWorkspace, pickRelevantLessons, readExperienceFile } from "./experience";
-import { captureGateCorpus } from "./gate-corpus";
+import { captureGateCorpus, CORPUS_COMMANDS, CORPUS_DIR, loadGateCorpus } from "./gate-corpus";
 
 export const CONSTITUTION = `CONSTITUTION (never violate):
 1. E2E crypto stays E2E: the relay must remain a blind router; never log plaintext frames.
@@ -560,6 +560,56 @@ export function touchedUiFromDiff(nameOnly: string): boolean {
   return nameOnly
     .split("\n")
     .some((l) => l.trim().startsWith("apps/web/") || l.trim().startsWith("apps/desktop/"));
+}
+
+/**
+ * P1-044 autocatalysis lane: does this diff touch the pilot's own code?
+ * Tasks that edit the brain that edits the code (apps/pilot/**) get the
+ * reinforced gate (golden corpus) and the reinforced deploy (doubled soak,
+ * extra live invariants, failure-rate rollback). Pure like touchedUiFromDiff.
+ */
+export function touchedPilotInfraFromDiff(nameOnly: string): boolean {
+  return nameOnly
+    .split("\n")
+    .some((l) => l.trim().startsWith("apps/pilot/"));
+}
+
+/** P1-044 (a): the corpus must hold at least this many samples per command to
+ * count as green — mirrors the P3-033 acceptance criterion (>=3 per command). */
+export const MIN_CORPUS_SAMPLES = 3;
+
+/**
+ * P1-044 (a): deterministic golden-corpus gate for self-modifying changes.
+ * The pilot editing itself is exactly when the gate's own calibration
+ * (evidence matcher + corpus, P3-033) could silently regress, so the gate
+ * re- verifies the corpus is present and still green: >= MIN_CORPUS_SAMPLES
+ * samples per evidence command, every real sample matches itself and its
+ * truncated form, and a fabricated line over a real sample is still rejected.
+ * `matches` is injectable so the eval battery can drive the tamper branches
+ * (permissive/rejecting matcher regressions) without fixtures that could never
+ * occur naturally. Returns null when green, else the reason.
+ */
+export function corpusGateDetail(
+  dir = CORPUS_DIR,
+  matches: (pasted: string, actual: string) => boolean = evidenceMatches,
+): string | null {
+  const corpus = loadGateCorpus(dir);
+  for (const cmd of CORPUS_COMMANDS) {
+    const samples = corpus.filter((s) => s.cmd === cmd);
+    if (samples.length < MIN_CORPUS_SAMPLES) {
+      return `golden corpus too thin for ${cmd}: ${samples.length}/${MIN_CORPUS_SAMPLES} samples`;
+    }
+    for (const s of samples) {
+      if (!matches(s.output, s.output)) return `corpus sample no longer matches itself: ${s.file}`;
+      const truncated = s.output.split("\n").slice(0, Math.ceil(s.output.split("\n").length / 2)).join("\n");
+      if (!matches(truncated, s.output)) return `corpus sample no longer matches truncated: ${s.file}`;
+      // prepended: appended lines beyond the 600-line paste cap are sliced away
+      if (matches(`FABRICATED-CORPUS-PROBE-LINE\n${s.output}`, s.output)) {
+        return `corpus sample accepts a fabricated line: ${s.file}`;
+      }
+    }
+  }
+  return null;
 }
 
 /**
@@ -1354,7 +1404,12 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
       }
     }
   }
-  return { ok: true, detail: `task ${t.id} merged`, sha: headSha(ws), touchedUi };
+  return {
+    ok: true,
+    detail: `task ${t.id} merged`,
+    sha: headSha(ws),
+    touchedUi,
+  };
 }
 
 /** P2-015: findings are the bullet lines after (or near) the verdict marker.
@@ -1596,6 +1651,17 @@ async function gatekeeper(
     const r = rerunResults.get(cmd) ?? exec(cmd, { cwd: ws, timeoutMin: 20, allowFail: true });
     if (!r.ok) {
       recordGateFail(state, t.id, name, r.output);
+      return false;
+    }
+  }
+  // P1-044 (a): a task that edits the pipeline's own code must leave the golden
+  // corpus green — the gate's own calibration cannot regress through a merge.
+  // Unknown diff → fail-closed (the corpus check is cheap and deterministic).
+  const pilotInfraTouched = !diff.ok || touchedPilotInfraFromDiff(diff.output);
+  if (pilotInfraTouched) {
+    const corpus = corpusGateDetail();
+    if (corpus) {
+      recordGateFail(state, t.id, "corpus", corpus);
       return false;
     }
   }
