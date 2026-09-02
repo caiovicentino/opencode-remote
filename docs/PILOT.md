@@ -160,7 +160,13 @@ mergeadas pelo workflow sem intervenção humana.
 4. Soak: checagens a cada 60s por `monitorMin`; 3 falhas seguidas = rollback
    (deploy que toca `apps/pilot/**` dobra a janela, roda `invariants --live`
    extra e ganha rollback por taxa de falha — ver Lane de auto-modificação)
-5. Rollback: reset para o SHA anterior + rebuild + kickstart (idempotente)
+5. Rollback: reset para o SHA anterior + rebuild + kickstart (idempotente).
+   **P2-041**: em vez de um `sleep` às cegas, o rollback fecha com a verificação
+   `verifyRollbackHealth` — sondas a cada 5s por até 30s no `/api/health`, estado
+   logado no pilot.log (`rollback-health`) e evento `rollback-health` no feed.
+   Prod ainda unhealthy após o rollback acende o chip vermelho "PROD UNHEALTHY"
+   no dashboard (o veredito mais recente vence; um deploy limpo posterior apaga)
+   e notifica o supervisor — nunca mais silêncio pós-rollback.
 
 ## Budgets e kill switch
 

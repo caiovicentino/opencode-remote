@@ -212,6 +212,9 @@ export interface DeployOpts {
  * `opts.pilotInfra` forced by tests), the soak doubles with extra live
  * invariant runs and a failure-rate regression against the pre-deploy
  * baseline rolls back automatically.
+ * P2-041: every rollback ends with a bounded health watch — an unhealthy prod
+ * after rollback is logged, emitted (`rollback-health` deploy event → red
+ * dashboard chip) and escalated to the supervisor instead of failing silently.
  */
 export async function deploy(
   cfg: PilotConfig,
@@ -220,6 +223,14 @@ export async function deploy(
   opts?: DeployOpts,
 ): Promise<DeployResult> {
   const emitEvent = opts?.emitEvent ?? emit;
+  // P2-041: post-rollback health watch deps — reuses the deploy's injectable
+  // probe/event sink/notify so the eval battery can pin the wiring hermetically.
+  const rollbackHealth = (task: string): RollbackHealthHooks => ({
+    task,
+    probe: opts?.probeHealth,
+    onEvent: (fields) => emitEvent("deploy", fields),
+    notify: opts?.notify,
+  });
   emitEvent("deploy", { phase: "start", detail: `sha ${sha.slice(0, 7)}` });
   // P2-058 sha guard: first gate of all — a SHA the gatekeeper did not verify
   // (or that failed a previous deploy) must not reach production, even before
@@ -278,21 +289,21 @@ export async function deploy(
     kickstart(cfg, "com.ocr.relay");
     kickstart(cfg, "com.ocr.daemon");
   } catch (err) {
-    await banAndRollback(cfg, sha, prev, `deploy steps failed: ${String(err).slice(0, 200)}`, meta?.task ?? "deploy", opts?.notify ?? notifySupervisor);
+    await banAndRollback(cfg, sha, prev, `deploy steps failed: ${String(err).slice(0, 200)}`, meta?.task ?? "deploy", opts?.notify ?? notifySupervisor, rollbackHealth(meta?.task ?? "deploy"));
     return { ok: false, rolledBack: true, detail: String(err).slice(0, 200) };
   }
 
   // health watch: services must come up healthy
   const healthy = await pollHealth(cfg, 90);
   if (!healthy) {
-    await banAndRollback(cfg, sha, prev, "health check failed after deploy", meta?.task ?? "deploy", opts?.notify ?? notifySupervisor);
+    await banAndRollback(cfg, sha, prev, "health check failed after deploy", meta?.task ?? "deploy", opts?.notify ?? notifySupervisor, rollbackHealth(meta?.task ?? "deploy"));
     return { ok: false, rolledBack: true, detail: "health check failed" };
   }
 
   // live invariants against production (replay, tunnel, state perms)
   const inv = exec("npx tsx scripts/invariants.ts --live", { cwd: cfg.repo, timeoutMin: 5, allowFail: true });
   if (!inv.ok) {
-    await banAndRollback(cfg, sha, prev, `live invariants failed: ${inv.output.slice(-200)}`, meta?.task ?? "deploy", opts?.notify ?? notifySupervisor);
+    await banAndRollback(cfg, sha, prev, `live invariants failed: ${inv.output.slice(-200)}`, meta?.task ?? "deploy", opts?.notify ?? notifySupervisor, rollbackHealth(meta?.task ?? "deploy"));
     return { ok: false, rolledBack: true, detail: "live invariants failed" };
   }
 
@@ -324,7 +335,7 @@ export async function deploy(
       ok: false,
       detail: soak.outcome === "health" ? "soak failed" : soak.outcome === "live" ? "live invariants failed during soak" : "soak failure rate above pre-deploy baseline",
     });
-    await banAndRollback(cfg, sha, prev, soak.why, meta?.task ?? "deploy", opts?.notify ?? notifySupervisor);
+    await banAndRollback(cfg, sha, prev, soak.why, meta?.task ?? "deploy", opts?.notify ?? notifySupervisor, rollbackHealth(meta?.task ?? "deploy"));
     return { ok: false, rolledBack: true, detail };
   }
   emit("deploy", { phase: "done", ok: true, detail: `sha ${sha.slice(0, 7)} live` });
@@ -364,7 +375,64 @@ function npmInstall(cfg: PilotConfig) {
   exec("npm ci --no-audit --no-fund --ignore-scripts --loglevel=error", { cwd: cfg.repo, timeoutMin: 15 });
 }
 
-async function rollback(cfg: PilotConfig, prevSha: string, why: string) {
+/** P2-041: window the rolled-back build gets to come up healthy (30s ≈ 6 probes). */
+export const ROLLBACK_HEALTH_WINDOW_SEC = 30;
+/** P2-041: interval between post-rollback health probes (same cadence as pollHealth). */
+export const ROLLBACK_HEALTH_PROBE_SEC = 5;
+
+/**
+ * P2-041: injectable deps of the post-rollback health watch, following the
+ * P1-044/P3-052 pattern — probe/clock/event/notify fakes keep the unit tests
+ * hermetic (no real fetch, no real timers). Absent fields fall back to the
+ * production behavior (real health endpoint, events.jsonl, supervisor notify).
+ */
+export interface RollbackHealthHooks {
+  /** Task id carried into the supervisor notify. */
+  task: string;
+  /** Health probe override (tests); default = the daemon /api/health endpoint. */
+  probe?: () => Promise<boolean>;
+  /** Event sink override (tests); default = emit on the "deploy" channel. */
+  onEvent?: (fields: { phase: string; ok: boolean; detail?: string }) => void;
+  /** Supervisor notify override (tests); default = notifySupervisor. */
+  notify?: typeof notifySupervisor;
+  /** Injectable clock (tests); default = real setTimeout. */
+  sleep?: (ms: number) => Promise<void>;
+  /** Window override (tests); default = ROLLBACK_HEALTH_WINDOW_SEC. */
+  windowSec?: number;
+}
+
+/**
+ * P2-041: post-rollback health verification. A rollback used to end in a blind
+ * sleep(15s) — prod could stay unhealthy silently. This probes the health
+ * endpoint (immediately, then every ROLLBACK_HEALTH_PROBE_SEC until the window
+ * is exhausted), logs the observed state and emits a `rollback-health` deploy
+ * event: ok=true clears any prior alert, ok=false lights the dashboard's red
+ * "prod unhealthy" chip and notifies the supervisor. Returns the final verdict.
+ */
+export async function verifyRollbackHealth(cfg: PilotConfig, hooks?: RollbackHealthHooks): Promise<boolean> {
+  const probe = hooks?.probe ?? (() => isHealthy(cfg));
+  const onEvent = hooks?.onEvent ?? ((fields: { phase: string; ok: boolean; detail?: string }) => emit("deploy", fields));
+  const notify = hooks?.notify ?? notifySupervisor;
+  const sleep = hooks?.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const windowSec = hooks?.windowSec ?? ROLLBACK_HEALTH_WINDOW_SEC;
+  const retries = Math.max(0, Math.round(windowSec / ROLLBACK_HEALTH_PROBE_SEC));
+  let healthy = await probe();
+  for (let i = 0; !healthy && i < retries; i++) {
+    await sleep(ROLLBACK_HEALTH_PROBE_SEC * 1000);
+    healthy = await probe();
+  }
+  console.log(JSON.stringify({ ts: nowLocalISO(), level: healthy ? "info" : "warn", msg: "rollback-health", data: { healthy, windowSec } }));
+  const detail = healthy ? "prod healthy after rollback" : "prod UNHEALTHY after rollback — manual check needed";
+  onEvent({ phase: "rollback-health", ok: healthy, detail });
+  if (!healthy) {
+    try {
+      await notify(hooks?.task ?? "deploy", false, detail);
+    } catch {}
+  }
+  return healthy;
+}
+
+async function rollback(cfg: PilotConfig, prevSha: string, why: string, hooks?: RollbackHealthHooks) {
   exec("git checkout -q main", { cwd: cfg.repo, allowFail: true });
   exec(`git reset -q --hard ${prevSha}`, { cwd: cfg.repo, allowFail: true });
   exec("npm ci --silent --ignore-scripts", { cwd: cfg.repo, timeoutMin: 15, allowFail: true });
@@ -372,7 +440,10 @@ async function rollback(cfg: PilotConfig, prevSha: string, why: string) {
   kickstart(cfg, "com.ocr.relay");
   kickstart(cfg, "com.ocr.daemon");
   console.log(JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "rollback", data: { prevSha, why } }));
-  await sleep(15_000);
+  // P2-041: the old blind sleep(15s) never verified that the rolled-back build
+  // came up — prod could stay unhealthy silently. Watch the health endpoint and
+  // surface the verdict (red dashboard chip + supervisor notify when bad).
+  await verifyRollbackHealth(cfg, hooks);
 }
 
 /**
@@ -390,9 +461,10 @@ async function banAndRollback(
   why: string,
   task: string,
   notify: typeof notifySupervisor,
+  healthHooks?: RollbackHealthHooks,
 ) {
   await quarantineWithEscalation(defaultQuarantineFile(), badSha, why, task, notify);
-  await rollback(cfg, prevSha, why);
+  await rollback(cfg, prevSha, why, { ...healthHooks, notify, task });
 }
 
 /**
