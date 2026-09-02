@@ -94,8 +94,10 @@ import {
   parseAuxTaskLines,
   parseBacklog,
   addTask,
+  type AuxPushIo,
   type Task,
 } from "../apps/pilot/src/backlog";
+import { clearPendingRefill, readPendingRefill, relandDetail, relandPendingRefill, savePendingRefill } from "../apps/pilot/src/refill";
 import { EXPLORER_MAX_FINDINGS, EXPLORER_MAX_STEPS, EXPLORER_TIMEOUT_MIN, EXPLORER_PUSH_RETRIES, EXPLORER_PUSH_WAIT_MS, commitAndPushFindings, explorerSpec, parseExplorerFindings, type ExplorerFinding } from "../apps/pilot/src/explorer";
 import { runAgent, API_PREFLIGHT, apiHealthy, claudeArgs, idScanner, mergeAgentIds, OPENCODE_URL_DEFAULT, scanIds, shouldFallbackTierB, waitForApi } from "../apps/pilot/src/runner";
 import { mkdtempSync, mkdirSync, readdirSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync, utimesSync } from "node:fs";
@@ -628,6 +630,79 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
     );
   } finally {
     rmSync(sandboxDir, { recursive: true, force: true });
+  }
+}
+
+// --- P1-037 pending refill: drafted tasks survive a failed push ------------------
+{
+  const line1 = "- [ ] (P3-951) [P3] Refill survivor — spec: x (area: infra)";
+  const line2 = "- [ ] (P3-952) [P3] Refill second — spec: y (area: ui)";
+  const dir = mkdtempSync(join(tmpdir(), "pilot-refill-"));
+  try {
+    const file = join(dir, "pending-refill.json");
+    check(
+      "pendingRefill: save/read round-trip preserves lines + message",
+      (() => {
+        if (!savePendingRefill(file, [line1, line2], "refill-msg")) return false;
+        const r = readPendingRefill(file);
+        return !!r && r.lines.join("\n") === `${line1}\n${line2}` && r.message === "refill-msg" && r.ts.length > 0;
+      })(),
+    );
+    writeFileSync(file, "{corrupt");
+    check("pendingRefill: corrupt JSON reads as null without throwing", readPendingRefill(file) === null);
+    clearPendingRefill(file);
+    check("pendingRefill: clear removes the store", readPendingRefill(file) === null);
+    check("pendingRefill: relandDetail summaries", relandDetail("pushed", 2) === "pending refill landed (2 lines)" && relandDetail("empty", 1) === "pending refill already landed on origin/main" && relandDetail("failed", 1) === "pending refill still failing");
+
+    // real bare remote: the push outage + recovery story of a real idle cycle
+    const gdir = mkdtempSync(join(tmpdir(), "pilot-refill-git-"));
+    try {
+      const remote = join(gdir, "remote.git");
+      const work = join(gdir, "work");
+      execSync(`git init -q --bare -b main ${JSON.stringify(remote)}`);
+      execSync(`git clone -q ${JSON.stringify(remote)} ${JSON.stringify(work)}`);
+      writeFileSync(join(work, "BACKLOG.md"), "# BACKLOG\n\n## Ready\n\n## Done\n");
+      execSync(`git -C ${JSON.stringify(work)} add BACKLOG.md`);
+      execSync(`git -C ${JSON.stringify(work)} -c user.name=t -c user.email=t@t commit -qm init`);
+      execSync(`git -C ${JSON.stringify(work)} push -q origin main`);
+      const realIo = auxPushIo(work);
+      const pushDownIo: AuxPushIo = {
+        exec: (cmd) => (cmd.startsWith("git push") ? { ok: false, output: "" } : realIo.exec(cmd)),
+        sleep: () => Promise.resolve(),
+      };
+      let pushes = 0;
+      const countingIo: AuxPushIo = {
+        exec: (cmd) => {
+          if (cmd.startsWith("git push")) pushes++;
+          return realIo.exec(cmd);
+        },
+        sleep: () => Promise.resolve(),
+      };
+      check("pendingRefill: push outage lands nothing", (await appendCommitAndPush(work, [line1], "m1", pushDownIo)) === "failed");
+      check("pendingRefill: failed landing is saved as pending", savePendingRefill(file, [line1], "m1") === true);
+      // the very next syncWorkspace: reset --hard + clean against origin/main
+      execSync(`git -C ${JSON.stringify(work)} reset -q --hard origin/main`);
+      execSync(`git -C ${JSON.stringify(work)} clean -qfd`);
+      check("pendingRefill: syncWorkspace reset does not lose drafted tasks", (readPendingRefill(file)?.lines ?? []).join("\n") === line1);
+      check("pendingRefill: reland pushes when git recovers", (await relandPendingRefill(work, file, countingIo)) === "pushed");
+      check("pendingRefill: reland clears the store", readPendingRefill(file) === null);
+      const shown = execSync(`git -C ${JSON.stringify(work)} show origin/main:BACKLOG.md`, { encoding: "utf8" });
+      check("pendingRefill: relanded line is on origin/main", shown.includes("(P3-951)"));
+      savePendingRefill(file, [line1], "m2");
+      pushes = 0;
+      check("pendingRefill: already-landed ids reland as empty", (await relandPendingRefill(work, file, countingIo)) === "empty");
+      check("pendingRefill: empty reland clears the store", readPendingRefill(file) === null);
+      check("pendingRefill: empty reland never pushes", pushes === 0);
+      savePendingRefill(file, [line2], "m3");
+      check(
+        "pendingRefill: reland with push down keeps the store",
+        (await relandPendingRefill(work, file, pushDownIo)) === "failed" && readPendingRefill(file)?.lines[0] === line2,
+      );
+    } finally {
+      rmSync(gdir, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 }
 

@@ -714,6 +714,15 @@ reavalia o guard a cada tentativa. O `npm ci` do deploy roda com `--ignore-scrip
 (lifecycle scripts de dependências são vetor de supply chain; o deploy só precisa de
 tsc/esbuild — rollback existente cobre falha de build num lock novo).
 
+**Refill durável (P1-037)**: se o push do refill do strategist falha nas 3 tentativas,
+as linhas draftadas são gravadas atomicamente em
+`~/.opencode-remote/pilot/pending-refill.json` — fora de qualquer worktree, imune ao
+`reset --hard` + `clean` do `syncWorkspace`. No próximo ciclo ocioso o dispatcher relê o
+arquivo, descarta ids já presentes em `origin/main:BACKLOG.md` (nunca empurra
+duplicado) e tenta relanding com o mesmo `appendCommitAndPush` (mesmo guard `mayPush`):
+`pushed`/`empty`/`refused` limpam o arquivo; `failed` o mantém e re-tenta no ciclo
+seguinte — a fila nunca mais seca porque um push lento comeu o refill.
+
 ## Dashboard sem token no HTML (P1-057)
 
 `GET /dashboard` nunca mais embute o apiToken no HTML (`__APITOKEN__` vira `""`). O
