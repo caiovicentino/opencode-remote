@@ -362,9 +362,11 @@ route gated by the same bearer token). The shell polls the allowlist every 3s �
 once a phone pairs the overlay leaves and the chat appears. "Pair later"
 dismisses it for the session.
 
-**Staged update feed (spike P2-012)**: the shell can check for updates against
-a static feed you host — a loopback URL is enough. The check runs exactly once
-at boot and **only** when `OCR_UPDATE_FEED` is set; without it nothing happens:
+**Staged update feed (spike P2-012, real flow since P1-050)**: the shell checks
+for updates against a static feed you host — a loopback URL is enough. The
+check runs at boot and on demand from the tray, and only acts when a feed is
+configured: an explicit `OCR_UPDATE_FEED` (dev/staging) or, in packaged builds,
+the daemon's loopback updates folder by default:
 
 ```bash
 OCR_UPDATE_FEED=http://127.0.0.1:9310/feed.json npm start --workspace @ocr/desktop
@@ -379,11 +381,13 @@ which downloads it in the background; yml feeds are parse-and-log only, since
 the built-in updater cannot read `latest-mac.yml` (spike finding). Feed or
 network failures are strictly log-only and never block or crash the window.
 
-When `OCR_UPDATE_FEED` is set, the tray menu also gains two items (P3-019):
-a disabled status line reflecting the latest check ("Update available —
-restart to install", "Up to date", or the failure reason) and a clickable
-"Check for updates" item that re-runs the check and refreshes the menu in
-place. Without the env var the tray stays exactly as before.
+Whenever a feed is configured, the tray menu also gains two items (P3-019): a
+disabled status line reflecting the latest check ("Update available — check for
+updates", "Update ready — restart to install", "Up to date", or the failure
+reason) and a clickable "Check for updates" item that re-runs the check and
+refreshes the menu in place. Applying a release always goes through the
+consent dialog (P1-050): the updater asks "Restart now / Later" once the
+download finishes — a deferred version is not re-offered in the same session.
 
 ## Roadmap
 

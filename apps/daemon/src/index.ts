@@ -1,4 +1,5 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, statSync, readdirSync, openSync, readSync, closeSync, appendFileSync, copyFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, statSync, readdirSync, openSync, readSync, closeSync, appendFileSync, copyFileSync, createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { IncomingMessage, ServerResponse, Server as HttpServer } from "node:http";
@@ -1669,13 +1670,22 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       return true;
     }
     try {
-      const body = readFileSync(file);
+      // P1-050 r2: stream, don't buffer. Update artifacts are multi-MB; a
+      // readFileSync here would block the shared event loop (relay WS client,
+      // /api/*) for the whole read and hold the entire file in memory.
+      // stat() is async (404 fallback preserved), content-length helps the
+      // desktop's download progress, and errors mid-stream just tear the
+      // response down — headers are already sent at that point.
+      const size = (await stat(file)).size;
       const ext = (file.match(/(\.[a-z0-9]+)$/i)?.[1] ?? "").toLowerCase();
       res.writeHead(200, {
         "content-type": UPDATE_CONTENT_TYPES[ext] ?? "application/octet-stream",
+        "content-length": String(size),
         "cache-control": "no-store",
       });
-      res.end(body);
+      const stream = createReadStream(file);
+      stream.on("error", () => res.destroy());
+      stream.pipe(res);
     } catch {
       res.writeHead(404, { "content-type": "text/plain" });
       res.end("not found");

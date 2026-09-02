@@ -60,7 +60,10 @@ export type UpdateStatus =
 export function updateMenuLabel(status: UpdateStatus): string | null {
   switch (status) {
     case "update-available":
-      return "Update available — restart to install";
+      // Not "restart to install": at this point nothing has been downloaded
+      // yet, and under the consent flow a plain restart never installs — the
+      // dialog (update-downloaded → quitAndInstall) is the only apply path.
+      return "Update available — check for updates";
     case "update-downloaded":
       return "Update ready — restart to install";
     case "update-not-available":
