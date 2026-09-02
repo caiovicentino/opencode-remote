@@ -20,7 +20,7 @@
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { exec } from "./runner";
+import { exec, rerunKey } from "./runner";
 
 export const CORPUS_DIR = join(dirname(fileURLToPath(import.meta.url)), "__fixtures__", "gate-corpus");
 
@@ -123,7 +123,8 @@ export function captureGateCorpus(
   const dir = join(ws, "apps", "pilot", "src", "__fixtures__", "gate-corpus");
   const sanitized = new Map<string, string>();
   for (const cmd of CORPUS_COMMANDS) {
-    const r = reruns.get(cmd);
+    // P2-040: the map is the round's shared cache keyed by command+workspace
+    const r = reruns.get(rerunKey(cmd, ws));
     if (r?.ok) sanitized.set(cmd, sanitizeForCorpus(r.output).trimEnd() + "\n");
   }
   if (!sanitized.size) return [];

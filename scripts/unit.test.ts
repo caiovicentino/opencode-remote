@@ -13,6 +13,7 @@ import { dict } from "../apps/web/src/lib/i18n";
 import { permissionPreview } from "../apps/web/src/lib/permission";
 import { applySessionFilters } from "../apps/web/src/lib/sessionFilter";
 import { taskMergedIn } from "../apps/pilot/src/pipeline";
+import { cachedExec, rerunKey, type RerunResults } from "../apps/pilot/src/runner";
 import { CORPUS_COMMANDS, appendCorpusSample, captureGateCorpus, corpusSlug, loadGateCorpus, sanitizeForCorpus } from "../apps/pilot/src/gate-corpus";
 import {
   builderPrompt,
@@ -1414,9 +1415,9 @@ check("stdlibShadow: non-stdlib root file passes", stdlibShadowHits("A\tmain.py\
       execSync(`git -C "${ws}" add README.md && git -C "${ws}" commit -qm init`);
       execSync(`git -C "${ws}" remote add origin "${join(dir, "origin.git")}" && git -C "${ws}" push -q -u origin main`);
       const reruns = new Map([
-        ["npm run typecheck --silent", { ok: true, output: "" }],
-        ["npm run test:unit --silent", { ok: true, output: "OK   a\n" }],
-        ["npm run build --silent", { ok: true, output: "built in 1.2s\n" }],
+        [rerunKey("npm run typecheck --silent", ws), { ok: true, output: "" }],
+        [rerunKey("npm run test:unit --silent", ws), { ok: true, output: "OK   a\n" }],
+        [rerunKey("npm run build --silent", ws), { ok: true, output: "built in 1.2s\n" }],
       ]);
       const written = captureGateCorpus(ws, "P3-033", reruns);
       check("corpus: capture records the gate re-runs and pushes to main", written.length === 3);
@@ -1425,7 +1426,7 @@ check("stdlibShadow: non-stdlib root file passes", stdlibShadowHits("A\tmain.py\
       check("corpus: capture commit is on origin/main", pushed.includes(head));
       const again = captureGateCorpus(ws, "P3-033", reruns);
       check("corpus: identical re-capture dedupes away", again.length === 0);
-      const hostileReruns = new Map([["npm run build --silent", { ok: true, output: "hostile-id output\n" }]]);
+      const hostileReruns = new Map([[rerunKey("npm run build --silent", ws), { ok: true, output: "hostile-id output\n" }]]);
       const hFiles = captureGateCorpus(ws, 'x" ; rm -rf /; echo "', hostileReruns);
       const subjects = execSync(`git -C "${ws}" log --format=%s -5 main`).toString();
       check(
@@ -1541,6 +1542,63 @@ check("stdlibShadow: non-stdlib root file passes", stdlibShadowHits("A\tmain.py\
   writeFileSync(join(ws, "tiny.png"), "not a png");
   const uiBad = uiOk.replace(realPng, join(ws, "tiny.png"));
   check("evidence: unreadable shot rejected", verifyEvidence(ws, uiBad, true).detail.includes("not a readable PNG"));
+  rmSync(ws, { recursive: true, force: true });
+}
+
+// --- P2-040: shared preflight ⇄ gate re-run cache ----------------------------
+{
+  // pure cache semantics: same (command, workspace) executes once
+  const calls: string[] = [];
+  const run = (cmd: string, cwd: string) => {
+    calls.push(`${cmd}@${cwd}`);
+    return { ok: true, output: `out-of-${cmd}` };
+  };
+  const cache: RerunResults = new Map();
+  const wsA = "/ws/slot-1";
+  const pre = cachedExec(cache, "npm run typecheck --silent", wsA, { timeoutMin: 10 }, run);
+  const viaEvidence = cachedExec(cache, "npm run typecheck --silent", wsA, { timeoutMin: 20 }, run);
+  const viaStep = cachedExec(cache, "npm run typecheck --silent", wsA, { timeoutMin: 20 }, run);
+  check("rerun cache: preflight + evidence re-run + gate step share ONE execution", calls.length === 1 && pre === viaEvidence && viaEvidence === viaStep);
+  cachedExec(cache, "npm run typecheck --silent", "/ws/slot-2", {}, run);
+  check("rerun cache: same command in another slot workspace runs again", calls.length === 2 && calls[1] === `npm run typecheck --silent@/ws/slot-2`);
+  cachedExec(cache, "npm run build --silent", wsA, {}, run);
+  check("rerun cache: other command in the same workspace runs again", calls.length === 3 && calls[2]!.startsWith("npm run build"));
+  check("rerun key: workspace and command are not aliased into one key", rerunKey("a", "b") !== rerunKey("a", "c") && rerunKey("a", "b") !== rerunKey("b", "b"));
+  // a failed result caches too — same code, deterministic failure, no re-roll
+  const failCache: RerunResults = new Map();
+  let failRuns = 0;
+  const failRun = () => {
+    failRuns++;
+    return { ok: false, output: "error TS9999" };
+  };
+  const f1 = cachedExec(failCache, "npm run typecheck --silent", wsA, {}, failRun);
+  const f2 = cachedExec(failCache, "npm run typecheck --silent", wsA, {}, failRun);
+  check("rerun cache: failure is cached — no second execution either", failRuns === 1 && !f1.ok && f2 === f1);
+
+  // full round simulation: preflight populates the round's shared map, the
+  // gate (verifyEvidence re-run + step battery) reuses it — each command runs
+  // exactly 1x per round, not 3x.
+  const ws = mkdtempSync(join(tmpdir(), "p2-040-"));
+  writeFileSync(ws + "/package.json", JSON.stringify({ name: "p2-040", scripts: { typecheck: "echo TS-OK", "test:unit": "echo UNIT-OK" } }));
+  const counts = new Map<string, number>();
+  const roundCache: RerunResults = new Map();
+  const roundRun = (cmd: string, cwd: string) =>
+    cachedExec(roundCache, cmd, cwd, {}, (c) => {
+      counts.set(c, (counts.get(c) ?? 0) + 1);
+      return { ok: true, output: c.includes("typecheck") ? "TS-OK" : "UNIT-OK" };
+    });
+  // preflight (round loop) runs first and populates the shared map
+  roundRun("npm run typecheck --silent", ws);
+  // gate: verifyEvidence re-runs the cited commands through the same cache
+  const block = `EVIDENCE:\n$ npm run typecheck --silent\nTS-OK\n$ npm run test:unit --silent\nUNIT-OK\nPILOT:TASK-DONE`;
+  const ev = verifyEvidence(ws, block, false, 0, roundRun);
+  // gate step battery reads the same canonical command strings from the cache
+  roundRun("npm run typecheck --silent", ws);
+  roundRun("npm run test:unit --silent", ws);
+  check(
+    "rerun cache: full round — typecheck executes 1x per round, not 3x (P2-040)",
+    ev.ok === true && counts.get("npm run typecheck --silent") === 1 && counts.get("npm run test:unit --silent") === 1,
+  );
   rmSync(ws, { recursive: true, force: true });
 }
 
