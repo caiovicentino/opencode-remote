@@ -47,7 +47,11 @@ está wired (spawn com `ELECTRON_RUN_AS_NODE`, espera `/api/health` com 200 aute
 cleanup no quit). O gate também roda `scripts/desktop-sidecar.test.ts` (spawn/reuse, SIGTERM→SIGKILL,
 aborto quando o filho morre, e o caso "servidor 200-para-tudo na porta não é
 saudável" — sem token e mesmo com token, o challenge do healthOnce reprova). Empacotamento (DMG/notarização,
-`npm run dist`) fica fora do gate — é etapa de distribuição.
+`npm run dist`) fica fora do gate — é etapa de distribuição. O smoke determinístico
+desse output (`npm run dist:smoke --workspace @ocr/desktop`, P3-010) valida sem
+abrir o app que o bundle empacotado carrega `web-dist/index.html`, o sidecar
+`daemon/index.js` e o binário (layouts mac/win/linux) — também fora do gate por
+design; é o chão do estágio 5 (instaladores assinados).
 
 O gate também roda a invariant **anti module-shadowing** (P2-014): o diff de
 merge (`origin/main...HEAD`) não pode introduzir na **raiz do workspace**

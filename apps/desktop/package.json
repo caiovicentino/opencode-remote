@@ -10,7 +10,8 @@
     "build:daemon": "node scripts/bundle-daemon.mjs",
     "typecheck": "tsc --noEmit",
     "start": "electron .",
-    "dist": "npm run build --prefix ../web && npm run build && electron-builder"
+    "dist": "npm run build --prefix ../web && npm run build && electron-builder",
+    "dist:smoke": "node scripts/dist-smoke.mjs"
   },
   "dependencies": {
     "qrcode": "^1.5.4"

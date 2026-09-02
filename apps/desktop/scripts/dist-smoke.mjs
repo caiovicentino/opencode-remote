@@ -1,0 +1,162 @@
+#!/usr/bin/env node
+/**
+ * P3-010: deterministic smoke check for the electron-builder output.
+ *
+ * Verifies, purely by inspecting the filesystem (no app launch, no network),
+ * that a packaged bundle actually carries the two extraResources the shell
+ * needs at runtime plus its own executable:
+ *
+ *   - <resources>/web-dist/index.html  (web UI, loaded via file://)
+ *   - <resources>/daemon/index.js      (daemon sidecar bundle, resolveEntry())
+ *   - the app binary                   (Contents/MacOS/*, *.exe, ELF stub)
+ *
+ * Layouts vary per platform (electron-builder):
+ *   mac    dist/mac-arm64/OpenCode Remote.app → resources at Contents/Resources
+ *   win    dist/win-unpacked                → resources at resources/, *.exe
+ *   linux  dist/linux-unpacked              → resources at resources/, exec
+ *
+ * Exit 0 when every check passes; exit 1 with one line per missing piece
+ * (all problems listed, not just the first). Out of the pilot gate by design
+ * (docs/PILOT.md) — this is the floor stage 5 (signed installers) builds on.
+ *
+ * Usage: npm run dist:smoke --workspace @ocr/desktop [-- --dir <path>]
+ * Run:   node scripts/dist-smoke.mjs [--dir <bundle>]
+ */
+import { existsSync, readdirSync, statSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+const scripts = fileURLToPath(new URL(".", import.meta.url)); // apps/desktop/scripts
+const desktopDir = resolve(scripts, ".."); // apps/desktop
+
+/** True when path points at a regular file (not a dir/symlink-to-dir). */
+function isFile(path) {
+  return existsSync(path) && statSync(path).isFile();
+}
+
+/** True when path is a dir containing at least one entry. */
+function hasAnyEntry(path) {
+  return existsSync(path) && statSync(path).isDirectory() && readdirSync(path).length > 0;
+}
+
+/**
+ * All regular files directly under dir that are executable by mode bits.
+ * (linux-unpacked ships the ELF binary named after the executableName.)
+ */
+function executableFiles(dir) {
+  return readdirSync(dir).filter((name) => {
+    const path = join(dir, name);
+    return isFile(path) && statSync(path).mode & 0o111;
+  });
+}
+
+/**
+ * Validate one packaged bundle dir (a .app bundle or a win/linux -unpacked
+ * dir). Returns the list of problems; empty means the bundle is complete.
+ */
+export function listProblems(bundleDir) {
+  const isMacBundle = basename(bundleDir).endsWith(".app") && existsSync(join(bundleDir, "Contents"));
+  const resources = isMacBundle ? join(bundleDir, "Contents", "Resources") : join(bundleDir, "resources");
+  const rel = isMacBundle ? "Contents/Resources" : "resources";
+
+  const problems = [];
+  if (!existsSync(bundleDir)) return [`bundle dir does not exist: ${bundleDir}`];
+  if (!existsSync(join(resources, "web-dist", "index.html"))) {
+    problems.push(`missing file: ${rel}/web-dist/index.html`);
+  }
+  if (!isFile(join(resources, "daemon", "index.js"))) {
+    problems.push(`missing file: ${rel}/daemon/index.js`);
+  }
+  if (isMacBundle) {
+    if (!hasAnyEntry(join(bundleDir, "Contents", "MacOS"))) {
+      problems.push("no app binary in Contents/MacOS");
+    }
+  } else {
+    const exes = readdirSync(bundleDir).filter((name) => name.endsWith(".exe") && isFile(join(bundleDir, name)));
+    let binaryOk = exes.length > 0;
+    if (!binaryOk && existsSync(bundleDir) && statSync(bundleDir).isDirectory()) {
+      // linux-unpacked: executable file at the root (no .exe suffix)
+      try {
+        binaryOk = executableFiles(bundleDir).length > 0;
+      } catch {
+        binaryOk = false;
+      }
+    }
+    if (!binaryOk) problems.push("no app binary at bundle root (expected *.exe or an executable)");
+  }
+  return problems;
+}
+
+/**
+ * Default resolution: pick the first electron-builder output under distRoot
+ * (mac .app bundles preferred over win/linux-unpacked; lexicographic order
+ * keeps it deterministic across arches). Returns an absolute path or null.
+ */
+export function resolveBundleDir(distRoot) {
+  if (!existsSync(distRoot)) return null;
+  const candidates = [];
+  for (const entry of readdirSync(distRoot).sort()) {
+    const path = join(distRoot, entry);
+    if (entry.endsWith(".app")) {
+      candidates.push(path);
+      continue;
+    }
+    if (statSync(path).isDirectory()) {
+      for (const nested of readdirSync(path).sort()) {
+        if (nested.endsWith(".app")) candidates.push(join(path, nested));
+      }
+      candidates.push(path);
+    }
+  }
+  for (const candidate of candidates) {
+    if (basename(candidate).endsWith(".app")) return candidate;
+  }
+  for (const candidate of candidates) {
+    if (existsSync(join(candidate, "resources"))) return candidate;
+  }
+  return null;
+}
+
+function main() {
+  const argv = process.argv.slice(2);
+  let dir = null;
+  const dirIndex = argv.indexOf("--dir");
+  if (dirIndex !== -1 && argv[dirIndex + 1]) dir = resolve(argv[dirIndex + 1]);
+  if (!dir) {
+    const explicit = argv.find((a) => a.startsWith("--dir="));
+    if (explicit) dir = resolve(explicit.slice("--dir=".length));
+  }
+
+  if (!dir) {
+    dir = resolveBundleDir(join(desktopDir, "dist"));
+    if (!dir) {
+      console.error(
+        "dist-smoke: no electron-builder output found under apps/desktop/dist —\n" +
+          "run `npm run dist --workspace @ocr/desktop` or pass --dir <path to .app / *-unpacked>",
+      );
+      process.exitCode = 1;
+      return;
+    }
+  } else if (!existsSync(dir)) {
+    console.error(`dist-smoke: --dir does not exist: ${dir}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const problems = listProblems(dir);
+  if (problems.length > 0) {
+    console.error(`dist-smoke: FAIL ${dir}`);
+    for (const problem of problems) console.error(`  - ${problem}`);
+    console.error(`dist-smoke: ${problems.length} problem(s) found`);
+    process.exitCode = 1;
+    return;
+  }
+  console.log(`dist-smoke: OK ${dir}`);
+  console.log("  web-dist/index.html present");
+  console.log("  daemon/index.js present");
+  console.log("  app binary present");
+}
+
+// CLI guard: skip main() when imported by the unit test.
+const invoked = process.argv[1] ? pathToFileURL(process.argv[1]).href : "";
+if (import.meta.url === invoked) main();
