@@ -587,8 +587,10 @@ async function refreshPairingState(): Promise<void> {
     // P3-054: keep the live daemon's version in the state so the renderer can
     // flag a stale adopted daemon (older or different major than the shell).
     // One loopback call per poll; unknown version degrades to "no banner".
+    // (The FORCE_VERSION_MISMATCH hatch never reaches this path — it returns
+    // the deterministic forced state at the top of refreshPairingState.)
     const appVersion = app.getVersion();
-    const daemonVersion = FORCE_VERSION_MISMATCH ? "0.0.1-force" : await fetchDaemonVersion(token);
+    const daemonVersion = await fetchDaemonVersion(token);
     const mismatch = versionMismatch(appVersion, daemonVersion);
     if (mismatch) {
       log(`[desktop] daemon version mismatch: daemon ${daemonVersion ?? "?"} · app ${appVersion}`);
