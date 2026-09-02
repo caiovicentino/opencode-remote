@@ -178,3 +178,62 @@ export function shaGuardDetail(sha: string, verified: VerifiedMerge[], quarantin
   if (quarantine.some((q) => q.sha === sha)) return "sha quarantined after a failed deploy — deploy refused";
   return null;
 }
+
+// ── P1-021: last-install state — skip npm ci when the lockfile is unchanged ─
+
+/** sha256 hex digest — the package-lock.json hash persisted in last-install.json. */
+export const LOCK_HASH_RE = /^[0-9a-f]{64}$/;
+
+export interface LastInstall {
+  sha256: string;
+  at: string;
+}
+
+export function defaultLastInstallFile(): string {
+  return join(homedir(), ".opencode-remote", "pilot", "last-install.json");
+}
+
+/**
+ * Tolerant read: a missing, corrupt or partially-written file (and any record
+ * whose hash is not a full sha256 hex digest) yields null — the caller falls
+ * back to a full `npm ci`, which is today's behavior. A bad state file must
+ * never break the deploy.
+ */
+export function readLastInstall(file: string): LastInstall | null {
+  let raw: string;
+  try {
+    raw = readFileSync(file, "utf8");
+  } catch {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw) as Partial<LastInstall>;
+    if (typeof parsed?.sha256 !== "string" || !LOCK_HASH_RE.test(parsed.sha256)) return null;
+    return { sha256: parsed.sha256, at: typeof parsed.at === "string" ? parsed.at : "" };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Persist the hash of the lock the last successful install reproduced.
+ * Single write (deploys are serial, P1-006), same tolerant pattern as saveState;
+ * an invalid hash is rejected so a broken caller can never poison the state.
+ */
+export function writeLastInstall(file: string, sha256: string, at: string): boolean {
+  if (!LOCK_HASH_RE.test(sha256)) return false;
+  return writeAll(file, `${JSON.stringify({ sha256, at })}\n`);
+}
+
+export type InstallMode = "ci" | "fast";
+
+/**
+ * Pure install decision — fail-closed: only an exact match between the
+ * current lock hash and the last successfully installed hash runs the fast
+ * path; a missing/corrupt state file, a changed lock or an unusable current
+ * hash (empty — no lockfile at HEAD) all fall back to a full `npm ci`.
+ */
+export function installModeFor(currentHash: string, saved: LastInstall | null): InstallMode {
+  if (!LOCK_HASH_RE.test(currentHash)) return "ci";
+  return saved?.sha256 === currentHash ? "fast" : "ci";
+}

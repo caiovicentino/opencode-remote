@@ -128,6 +128,7 @@ import {
   baselineFailureRate,
   baselineHealthRate,
   deploy,
+  FAST_INSTALL_CMD,
   LIVE_INVARIANT_EVERY,
   quarantineWithEscalation,
   ROLLBACK_HEALTH_WINDOW_SEC,
@@ -140,6 +141,8 @@ import {
   verifyRollbackHealth,
 } from "../apps/pilot/src/deploy";
 import {
+  installModeFor,
+  LOCK_HASH_RE,
   MAX_QUARANTINE_ENTRIES,
   MAX_VERIFIED_ENTRIES,
   MAX_WALK_COMMITS,
@@ -147,10 +150,12 @@ import {
   parseVerifiedMerges,
   pickDeployableSha,
   quarantineSha,
+  readLastInstall,
   readQuarantine,
   readVerifiedMerges,
   recordVerifiedMerge,
   shaGuardDetail,
+  writeLastInstall,
 } from "../apps/pilot/src/deployguard";
 import type { PilotConfig } from "../apps/pilot/src/state";
 import { overlayVisible, phonePaired } from "../apps/desktop/src/pairing";
@@ -2179,6 +2184,55 @@ check("disk guard: statfs probe returns bytes on a real dir", realFree !== null 
   check(
     "deploy guard: quarantined sha refused before any git step",
     banned.ok === false && banned.rolledBack === false && banned.detail.startsWith("sha quarantined"),
+  );
+}
+
+// --- P1-021 fast install: skip npm ci when the lockfile is unchanged ----------
+{
+  const h = "a".repeat(64);
+  const h2 = "b".repeat(64);
+  check("fast install: identical persisted hash → fast", installModeFor(h, { sha256: h, at: "t" }) === "fast");
+  check("fast install: different persisted hash → ci", installModeFor(h2, { sha256: h, at: "t" }) === "ci");
+  check("fast install: no persisted state → ci (fail-closed)", installModeFor(h, null) === "ci");
+  check("fast install: empty/unusable current hash → ci", installModeFor("", { sha256: h, at: "t" }) === "ci" && installModeFor("nope", null) === "ci");
+  check("fast install: LOCK_HASH_RE pins full sha256 hex", LOCK_HASH_RE.test(h) === true && LOCK_HASH_RE.test(h.slice(0, 63)) === false && LOCK_HASH_RE.test("A".repeat(64)) === false);
+
+  const dir = mkdtempSync(join(tmpdir(), "ocr-last-install-"));
+  const lf = join(dir, "last-install.json");
+  check("fast install: readLastInstall on a missing file → null", readLastInstall(lf) === null);
+  check(
+    "fast install: writeLastInstall/readLastInstall roundtrip",
+    writeLastInstall(lf, h, "2026-09-02T00:00:00-03:00") && readLastInstall(lf)?.sha256 === h && readLastInstall(lf)?.at === "2026-09-02T00:00:00-03:00",
+  );
+  writeFileSync(lf, "{corrupt json");
+  check("fast install: corrupt json → null", readLastInstall(lf) === null);
+  writeFileSync(lf, JSON.stringify({ sha256: "z".repeat(64), at: "t" }));
+  check("fast install: non-hex hash → null", readLastInstall(lf) === null);
+  writeFileSync(lf, JSON.stringify({ sha256: h.slice(1), at: "t" }));
+  check("fast install: truncated hash → null", readLastInstall(lf) === null);
+  check("fast install: writeLastInstall rejects an invalid hash", writeLastInstall(lf, "nope", "t") === false && readLastInstall(lf) === null);
+  rmSync(dir, { recursive: true, force: true });
+
+  check(
+    "fast install: FAST_INSTALL_CMD is an offline no-wipe install with scripts ignored",
+    FAST_INSTALL_CMD.includes("npm install --prefer-offline --no-audit --no-fund --ignore-scripts") &&
+      FAST_INSTALL_CMD.startsWith('ELECTRON_CACHE="$HOME/.cache/electron"') &&
+      !FAST_INSTALL_CMD.includes("npm ci"),
+  );
+  // P1-021 acceptance: `npm ci` appears ONLY in the changed-lock path (npmInstall,
+  // both attempts) and in the rollback — never on the fast path.
+  const deploySrc = readFileSync(join(import.meta.dirname, "..", "apps", "pilot", "src", "deploy.ts"), "utf8");
+  check(
+    "fast install: ELECTRON_CACHE + --ignore-scripts pinned on both npm ci attempts",
+    deploySrc.includes('ELECTRON_CACHE="$HOME/.cache/electron" npm ci --no-audit --no-fund --ignore-scripts --loglevel=error'),
+  );
+  check(
+    "fast install: rollback npm ci also uses the electron cache + --ignore-scripts",
+    deploySrc.includes('ELECTRON_CACHE="$HOME/.cache/electron" npm ci --silent --ignore-scripts'),
+  );
+  check(
+    "fast install: deploy emits an install event with mode + duration",
+    deploySrc.includes('phase: "install"') && deploySrc.includes("fast-install (lock unchanged) in") && deploySrc.includes("npm ci in"),
   );
 }
 

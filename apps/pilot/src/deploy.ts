@@ -9,14 +9,18 @@ import { touchHeartbeat, type PilotConfig } from "./state";
 import { notifySupervisor } from "./notify";
 import { DISK_MIN_FREE_BYTES, diskGuardDetail, freeDiskBytes } from "./disk";
 import {
+  defaultLastInstallFile,
   defaultQuarantineFile,
   defaultVerifiedMergesFile,
+  installModeFor,
   pickDeployableSha,
   quarantineSha,
+  readLastInstall,
   readQuarantine,
   readVerifiedMerges,
   shaGuardDetail,
   SHA_RE,
+  writeLastInstall,
   type QuarantinedSha,
   type VerifiedMerge,
 } from "./deployguard";
@@ -274,16 +278,36 @@ export async function deploy(
     });
   }
   try {
-    const prevLock = exec("git show HEAD:package-lock.json | shasum -a 256 | cut -d' ' -f1", { cwd: cfg.repo }).output.trim();
     exec(`git fetch origin`, { cwd: cfg.repo });
     exec("git checkout -q main", { cwd: cfg.repo, allowFail: true });
     exec(`git reset -q --hard ${sha}`, { cwd: cfg.repo });
-    // npm ci wipes node_modules — skip when the lock didn't change (services boot from it)
-    const newLock = exec("git show HEAD:package-lock.json | shasum -a 256 | cut -d' ' -f1", { cwd: cfg.repo }).output.trim();
-    if (newLock !== prevLock) {
-      npmInstall(cfg);
+    // P1-021: install decision from the persisted last-install state. The hash
+    // is computed once, after the reset, from HEAD's lockfile; a full `npm ci`
+    // runs unless this exact lock was already installed successfully (missing/
+    // corrupt state and empty hashes fail closed to "ci").
+    const lockHash = exec("git show HEAD:package-lock.json | shasum -a 256 | cut -d' ' -f1", { cwd: cfg.repo, allowFail: true }).output.trim();
+    const mode = installModeFor(lockHash, readLastInstall(defaultLastInstallFile()));
+    const installStart = Date.now();
+    let installed = false;
+    if (mode === "fast") {
+      console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "lock unchanged — fast install (no wipe)" }));
+      const fast = exec(FAST_INSTALL_CMD, { cwd: cfg.repo, timeoutMin: 5, allowFail: true });
+      if (fast.ok) {
+        emitEvent("deploy", { phase: "install", ok: true, detail: `fast-install (lock unchanged) in ${Math.max(1, Math.round((Date.now() - installStart) / 1000))}s` });
+        installed = true;
+      } else {
+        // Repair ladder: the fast path repairs ordinary node_modules drift; a
+        // failure here means something deeper — fall through to a full ci
+        // (which has its own retry) before declaring the deploy failed.
+        console.log(JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "fast install failed — falling back to npm ci", data: fast.output.slice(-300) }));
+      }
     } else {
-      console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "lock unchanged — skipping npm ci" }));
+      console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "lock changed (or no install state) — full npm ci" }));
+    }
+    if (!installed) {
+      npmInstall(cfg); // throws on final failure → rollback path
+      emitEvent("deploy", { phase: "install", ok: true, detail: `npm ci in ${Math.max(1, Math.round((Date.now() - installStart) / 1000))}s` });
+      writeLastInstall(defaultLastInstallFile(), lockHash, nowLocalISO());
     }
     exec("npm run build --silent", { cwd: cfg.repo, timeoutMin: 15 });
     kickstart(cfg, "com.ocr.relay");
@@ -365,14 +389,25 @@ export async function deploy(
   return { ok: true, rolledBack: false, detail: `deployed ${sha.slice(0, 7)} (prev ${prev.slice(0, 7)})` };
 }
 
+/**
+ * P1-021: fast install for an unchanged lockfile — no node_modules wipe, reads
+ * from the local npm cache, seconds instead of minutes. Kept as an exported
+ * literal so the eval battery can pin the flags exactly (P1-057 lesson:
+ * --ignore-scripts is a supply-chain requirement, not optional).
+ */
+export const FAST_INSTALL_CMD =
+  'ELECTRON_CACHE="$HOME/.cache/electron" npm install --prefer-offline --no-audit --no-fund --ignore-scripts --loglevel=error';
+
 /** npm ci with visible errors and one retry (transient cache/lock races happen).
  * P1-057: --ignore-scripts — dependency lifecycle scripts are a supply-chain
- * vector; the deploy only needs tsc/esbuild (no electron binary, no packaging). */
+ * vector; the deploy only needs tsc/esbuild (no electron binary, no packaging).
+ * P1-021: ELECTRON_CACHE keeps electron/ffmpeg binaries in a local cache so a
+ * re-install never re-downloads them. */
 function npmInstall(cfg: PilotConfig) {
-  const r = exec("npm ci --no-audit --no-fund --ignore-scripts --loglevel=error", { cwd: cfg.repo, timeoutMin: 15, allowFail: true });
+  const r = exec('ELECTRON_CACHE="$HOME/.cache/electron" npm ci --no-audit --no-fund --ignore-scripts --loglevel=error', { cwd: cfg.repo, timeoutMin: 15, allowFail: true });
   if (r.ok) return;
   console.log(JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "npm ci retry", data: r.output.slice(-300) }));
-  exec("npm ci --no-audit --no-fund --ignore-scripts --loglevel=error", { cwd: cfg.repo, timeoutMin: 15 });
+  exec('ELECTRON_CACHE="$HOME/.cache/electron" npm ci --no-audit --no-fund --ignore-scripts --loglevel=error', { cwd: cfg.repo, timeoutMin: 15 });
 }
 
 /** P2-041: window the rolled-back build gets to come up healthy (30s ≈ 6 probes). */
@@ -435,7 +470,15 @@ export async function verifyRollbackHealth(cfg: PilotConfig, hooks?: RollbackHea
 async function rollback(cfg: PilotConfig, prevSha: string, why: string, hooks?: RollbackHealthHooks) {
   exec("git checkout -q main", { cwd: cfg.repo, allowFail: true });
   exec(`git reset -q --hard ${prevSha}`, { cwd: cfg.repo, allowFail: true });
-  exec("npm ci --silent --ignore-scripts", { cwd: cfg.repo, timeoutMin: 15, allowFail: true });
+  const ci = exec('ELECTRON_CACHE="$HOME/.cache/electron" npm ci --silent --ignore-scripts', { cwd: cfg.repo, timeoutMin: 15, allowFail: true });
+  // P1-021: keep the "persisted hash == lock of the node_modules on disk"
+  // invariant honest after a rollback — re-record only when the rollback ci
+  // actually succeeded; a failed ci leaves the state stale on purpose (the
+  // next deploy's fast install repairs it or the ladder falls back to ci).
+  if (ci.ok) {
+    const h = exec("git show HEAD:package-lock.json | shasum -a 256 | cut -d' ' -f1", { cwd: cfg.repo, allowFail: true }).output.trim();
+    writeLastInstall(defaultLastInstallFile(), h, nowLocalISO());
+  }
   exec("npm run build --silent", { cwd: cfg.repo, timeoutMin: 15, allowFail: true });
   kickstart(cfg, "com.ocr.relay");
   kickstart(cfg, "com.ocr.daemon");
