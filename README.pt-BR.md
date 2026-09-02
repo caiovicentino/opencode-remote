@@ -253,15 +253,18 @@ hosted) e ganhou um botão **Reconectar agora** que dispara o mesmo restart do
 tray — um `kickstart` no daemon a cada deploy não deixa mais o app preso na
 tela de pareamento.
 
-**Zero pairing na máquina host**: no desktop, o sidecar também captura o URI
-`opencode-remote://pair?v=2&…` que o daemon imprime no boot e a UI se pareia
-sozinha — na máquina que hospeda o daemon não existe scan de QR na primeira
-execução. Quando um celular ainda precisa parear, a primeira execução abre com
-um **splash de boas-vindas** (pt/en): o valor do produto logo de cara, o QR de
-pareamento e um onboarding de 3 passos prometendo o primeiro valor real em
-menos de 1 minuto. A tela manual de QR/colar continua disponível como fallback
-(troca de máquinas → add machine), por exemplo quando um daemon já rodando foi
-reaproveitado e nenhum URI foi capturado.
+**Zero pairing na máquina host**: o shell do desktop trata o daemon da mesma
+máquina como um único domínio de confiança (loopback, mesmo usuário,
+`daemon.json` 0600). Se esse daemon prova saúde no boot — desafio 401
+anti-squatter seguido de 200 autenticado — o app abre direto no chat: sem tela
+de pareamento, sem QR, nada para escanear (P1-070). A cerimônia de QR só
+existe para clientes remotos: aparece quando nenhum daemon local é alcançável
+ou sob demanda em **Config → Parear um celular (dispositivo remoto)** ou via
+deep link `opencode-remote://`. Quando um celular ainda precisa parear na
+primeira execução, o QR abre com um **splash de boas-vindas** (pt/en): o valor
+do produto logo de cara e um onboarding de 3 passos prometendo o primeiro
+valor real em menos de 1 minuto. A tela manual de QR/colar continua disponível
+como fallback (troca de máquinas → add machine).
 
 **Conexão local direta (P1-061)**: na máquina host, o app desktop dispensa o
 relay — ele fala direto com o WebSocket local do daemon
@@ -272,12 +275,13 @@ produzidas na lacuna aparecem sem reenvio. Acesso remoto (celular, fora de
 casa) continua via relay; o fio em uso aparece em Config → About ("Conexão:
 direta (local) / via relay").
 
-**QR de primeira execução pro celular**: enquanto nenhum celular estiver
-pareado, a janela do desktop mostra um overlay com o QR de pareamento
-(renderizado pelo processo main a partir do `GET /__ocr/pairing-uri` do
-daemon, rota read-only em loopback com o mesmo bearer token). O shell checa a
-allowlist a cada 3s — quando o celular pareia, o overlay sai e o chat aparece.
-"Pair later" dispensa o overlay pela sessão.
+**QR de primeira execução pro celular**: o overlay com o QR de pareamento
+(renderizado pelo processo main a partir do `GET /__ocr/pairing-uri` do daemon,
+rota read-only em loopback com o mesmo bearer token) só existe para clientes
+remotos — aparece quando nenhum daemon local é alcançável ou quando você pede
+explicitamente em Config → "Parear um celular (dispositivo remoto)". O shell
+checa a allowlist a cada 3s — quando o celular pareia, o overlay sai e o chat
+aparece. "Pair later" dispensa o overlay pela sessão.
 
 **A janela lembra tamanho e posição**: mexeu, fechou e reabriu — os bounds
 voltam como estavam. Ficam em `userData/window-state.json`, gravados no close,

@@ -18,6 +18,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { createServer, type AddressInfo } from "node:net";
 import { fileURLToPath } from "node:url";
 import {
   ARTIFACTS_MARKER,
@@ -96,9 +97,12 @@ check("desktop shell built (dist-electron/preload.js)", existsSync(preload));
 const session = `desktop-flow-${process.pid}-${Date.now()}`;
 const cliEnv = { ...process.env, OCR_DESKTOP_SESSION: session };
 
-// Hard budget: the whole flow must fit in 60s (spec criterion).
+// Hard budget: the whole flow must fit (spec criterion). P1-070 added the
+// "local boot" block (real hermetic daemon + fresh instance + degradation
+// probe), so the original 60s grew to 90s — documented in the commit per the
+// spec and reflected in the <90s note in AGENTS.md.
 const startedAt = Date.now();
-const DEADLINE_MS = 60_000;
+const DEADLINE_MS = 90_000;
 const shotPath = join(tmpdir(), "ocr-desktop-flow", `flow-${process.pid}.png`);
 // P1-051 round 2: session state (socket, token, log) lives in a 0700 dir.
 const logFile = join(tmpdir(), `ocr-desktop-${session}`, "keeper.log");
@@ -128,6 +132,40 @@ function deadline(): number {
     process.exit(1);
   }
   return remaining;
+}
+
+/** Like run(), but silent: for polling loops where intermediate misses are
+ * expected and must not be recorded as failures. */
+function probe(cliArgs: string[], timeoutMs: number, env: NodeJS.ProcessEnv): { ok: boolean; stdout: string } {
+  const res = spawnSync(process.execPath, ["tools/desktop.mjs", ...cliArgs], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    timeout: Math.min(timeoutMs, deadline()),
+    env,
+  });
+  return { ok: res.status === 0, stdout: res.stdout ?? "" };
+}
+
+/** Poll a harness ipc expression until `predicate` holds (or the tries run
+ * out); one final verdict is recorded by the caller. */
+async function waitProbe(
+  name: string,
+  expr: string,
+  predicate: (value: string) => boolean,
+  env: NodeJS.ProcessEnv,
+  tries = 12,
+  delayMs = 1_000,
+): Promise<string | null> {
+  for (let i = 0; i < tries; i++) {
+    const res = probe(["ipc", expr], 15_000, env);
+    if (res.ok && predicate(res.stdout)) {
+      check(name, true);
+      return res.stdout;
+    }
+    await new Promise((r) => setTimeout(r, delayMs));
+  }
+  check(name, false, `condition never held (${tries} probes)`);
+  return null;
 }
 
 /** PNG width/height from the IHDR header (bytes 16..24). */
@@ -274,6 +312,27 @@ try {
   const btn = run("reconnect button present in the daemon-down banner", ["ipc", "!!document.querySelector('.daemon-reconnect-btn')"], 15_000);
   if (btn.ok) check("reconnect button renders the pt-BR copy", /true/.test(btn.stdout));
   run("daemon-down banner shows the reconnect button", ["see", "Reconectar agora"], 15_000);
+
+  // --- P1-070: the new local-first copy is visible with no daemon at all ------
+  // Reviewer gap (round 1): the new i18n copy must be exercised here, not only
+  // in the local/paired phase — a fresh instance with no reachable daemon is
+  // where the updated intro and the explicit remote-pairing entry show first.
+  const intro = run("P1-070: updated pairIntro rendered", ["ipc", "document.querySelector('.pair-intro')?.textContent ?? ''"], 15_000);
+  if (intro.ok) {
+    check(
+      "P1-070: pairIntro is the new local-first copy (en|pt)",
+      /pairs with the daemon on this machine automatically|se conecta sozinho ao daemon desta máquina/.test(intro.stdout),
+      intro.stdout,
+    );
+  }
+  const remoteEntry = run("P1-070: .pair-remote-entry present", ["ipc", "document.querySelector('.pair-remote-entry')?.textContent ?? ''"], 15_000);
+  if (remoteEntry.ok) {
+    check(
+      "P1-070: pairRemoteTitle copy rendered on the unpaired screen",
+      /Pair a phone \(remote device\)|Parear um celular \(dispositivo remoto\)/.test(remoteEntry.stdout),
+      remoteEntry.stdout,
+    );
+  }
 
   // --- P1-046: Go menu + shortcut bridge --------------------------------------
   // The paired two-column layout can't render hermetically (needs real E2E
@@ -425,6 +484,158 @@ try {
     }
   } finally {
     if (mismatchBooted) spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: mismatchEnv });
+  }
+
+  // --- P1-070: local boot — real hermetic daemon + fresh instance ⇒ chat ------
+  // The exact repro this task fixes: empty pairing storage + a healthy daemon
+  // on the same disk used to open the QR overlay. Now the shell proves the
+  // daemon's identity (401 challenge + Bearer from the 0600 state file) and
+  // the app lands straight in the chat — mode:"local", uri/qr null, no
+  // overlay, no pairing form. The daemon follows the localws.test.ts pattern:
+  // HOME=<tmp> (own state file), free port, dead relay — E2E intact.
+  const localShot = join(shotsDir, "P1-070-local-boot.png");
+  const localShot390 = join(shotsDir, "P1-070-local-boot-390.png");
+  const daemonHome = mkdtempSync(join(tmpdir(), "ocr-flow-daemon-"));
+  const localStateFile = join(daemonHome, ".opencode-remote", "daemon.json");
+  const localPort = await new Promise<number>((resolve, reject) => {
+    const srv = createServer();
+    srv.listen(0, "127.0.0.1", () => {
+      const { port } = srv.address() as AddressInfo;
+      srv.close(() => resolve(port));
+    });
+    srv.on("error", reject);
+  });
+  const localDaemon = spawn(
+    "npx",
+    ["tsx", "apps/daemon/src/index.ts"],
+    {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        HOME: daemonHome,
+        OCR_METRICS_PORT: String(localPort),
+        RELAY_URL: "ws://127.0.0.1:1", // dead: relay must be irrelevant in local mode
+        OPENCODE_URL: "http://127.0.0.1:1",
+        OCR_LOG_LEVEL: "error",
+      },
+      stdio: ["ignore", "ignore", "ignore"],
+      detached: true, // own process group — the kill below hits tsx's child too
+    },
+  );
+  const killDaemon = (signal: NodeJS.Signals = "SIGTERM"): void => {
+    if (!localDaemon.pid) return;
+    try {
+      process.kill(-localDaemon.pid, signal);
+    } catch {
+      /* already gone */
+    }
+  };
+  process.on("exit", () => killDaemon("SIGKILL"));
+  const localEnv = {
+    ...process.env,
+    OCR_DESKTOP_SESSION: `${session}-local`,
+    // harness hatch: adopt this state file (drops OCR_DAEMON_FORCE_DOWN)
+    OCR_DESKTOP_LOCAL_STATE: localStateFile,
+    OCR_DAEMON_METRICS_PORT: String(localPort),
+  };
+  let localBooted = false;
+  try {
+    // Wait for the daemon to publish its 0600 state file, mint the apiToken
+    // (lazy — poke any Bearer-gated route) and prove the health challenge.
+    let token = "";
+    for (let i = 0; i < 25; i++) {
+      try {
+        token = (JSON.parse(readFileSync(localStateFile, "utf8")) as { apiToken?: string }).apiToken ?? "";
+      } catch {}
+      if (token) break;
+      await fetch(`http://127.0.0.1:${localPort}/api/health`, { headers: { authorization: "Bearer warmup" } }).catch(() => {});
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    check("local: hermetic daemon published the 0600 state file", !!token);
+    if (token) {
+      const health = await fetch(`http://127.0.0.1:${localPort}/api/health`, {
+        headers: { authorization: `Bearer ${token}` },
+      }).catch(() => null);
+      check("local: hermetic daemon answers /api/health 200", health?.status === 200);
+      const open = run("local: open (hermetic local-boot launch)", ["open"], 45_000, localEnv);
+      localBooted = open.ok;
+      if (open.ok) {
+        const state = run("local: IPC app:pairingState", ["ipc", "window.ocrDesktop.getPairingState()"], 15_000, localEnv);
+        if (state.ok) {
+          let parsed: { mode?: string; uri?: string | null; qrDataUrl?: string | null } | null = null;
+          try {
+            parsed = JSON.parse(state.stdout) as typeof parsed;
+          } catch {
+            parsed = null;
+          }
+          check(
+            "local: pairingState is mode=local with no URI and no QR",
+            parsed?.mode === "local" && parsed?.uri === null && parsed?.qrDataUrl === null,
+            state.stdout,
+          );
+        }
+        // The chat renders (auto-connect over the loopback WS); poll because the
+        // local handshake takes a beat after the first paint.
+        await waitProbe(
+          "local: data-phase=paired hook rendered",
+          "document.querySelector('[data-phase]')?.getAttribute('data-phase') ?? ''",
+          (v) => v.includes("paired"),
+          localEnv,
+        );
+        const noOverlay = run("local: QR overlay absent", ["ipc", "!!document.querySelector('.pair-overlay')"], 15_000, localEnv);
+        if (noOverlay.ok) check("local: .pair-overlay not rendered", /false/.test(noOverlay.stdout));
+        const noForm = run("local: pairing form absent", ["ipc", "!!document.querySelector('.pair-submit')"], 15_000, localEnv);
+        if (noForm.ok) check("local: .pair-submit not rendered", /false/.test(noForm.stdout));
+        // Phone pairing stays possible (spec criterion 5): Settings carries the
+        // explicit remote-pairing entry with the new title copy. Runs before the
+        // shots (the 390px shot shrinks the window below the desktop layout).
+        run("local: open Settings pane", ["menu-click", "go-pane-settings"], 15_000, localEnv);
+        const entry = run(
+          "local: remote-pairing card in Settings",
+          ["ipc", "(() => { const el = document.querySelector('.pair-remote-entry'); if (!el) return ''; const card = el.closest('.card'); return (card?.querySelector('h3')?.textContent ?? '') + '|' + (el.textContent ?? ''); })()"],
+          15_000,
+          localEnv,
+        );
+        if (entry.ok) {
+          check(
+            "local: pairRemoteTitle + action copy rendered in Settings",
+            /Pair a phone \(remote device\)|Parear um celular \(dispositivo remoto\)/.test(entry.stdout) &&
+              /Show pairing QR|Mostrar QR de pareamento/.test(entry.stdout),
+            entry.stdout,
+          );
+        }
+        const s1 = run("local: 1440x900 evidence shot", ["shot", localShot, "1440", "900"], 15_000, localEnv);
+        if (s1.ok) check("local: 1440x900 shot is a real PNG", pngSize(localShot).join("x") === "1440x900");
+        const s2 = run("local: 390 evidence shot", ["shot", localShot390, "390", "844"], 15_000, localEnv);
+        if (s2.ok) check("local: 390 shot is a real PNG", pngSize(localShot390)[0] === 390);
+        // Stop the daemon ⇒ the existing degradation (yellow reconnecting
+        // banner), never the QR ceremony.
+        killDaemon("SIGKILL");
+        const degraded = await waitProbe(
+          "local: daemon loss degrades without QR",
+          "window.ocrDesktop.getPairingState()",
+          (v) => {
+            try {
+              const p = JSON.parse(v) as { reconnecting?: boolean; daemonDown?: boolean; uri?: string | null; qrDataUrl?: string | null };
+              return (p.reconnecting === true || p.daemonDown === true) && p.uri === null && p.qrDataUrl === null;
+            } catch {
+              return false;
+            }
+          },
+          localEnv,
+          12,
+          2_500,
+        );
+        if (degraded) {
+          const banner = run("local: degradation banner rendered", ["ipc", "!!(document.querySelector('.daemon-reconnecting') || document.querySelector('.daemon-down'))"], 15_000, localEnv);
+          if (banner.ok) check("local: reconnecting/down banner present", /true/.test(banner.stdout));
+        }
+      }
+    }
+  } finally {
+    if (localBooted) spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: localEnv });
+    killDaemon("SIGKILL");
+    rmSync(daemonHome, { recursive: true, force: true });
   }
 } finally {
   if (keeperBooted) spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: cliEnv });

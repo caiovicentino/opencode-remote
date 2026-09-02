@@ -23,10 +23,14 @@ export type Status = "connecting" | "paired" | "rejected" | "closed";
 /** P1-061: which wire the client is currently dialed on. */
 export type Transport = "local" | "relay";
 
-/** Shape returned by the desktop bridge's app:localLink IPC. */
+/** Shape returned by the desktop bridge's app:localLink IPC. P1-070: room +
+ * ecdhPub ride along (same 0600 state file) so the renderer can derive the
+ * local pairing without any pairing-uri round-trip. */
 export interface LocalLink {
   port: number;
   token: string;
+  room?: string;
+  ecdhPub?: string;
 }
 
 /** Options for OcrClient.connect — absent in the browser (PWA stays relay-only). */

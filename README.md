@@ -267,15 +267,18 @@ token box (or `?token=`, stored in localStorage) or exchange the Bearer token
 once via `POST /api/session` for a 12-hour HttpOnly `ocr_session` cookie that
 authorizes `/api/*` until the daemon restarts.
 
-**Zero pairing on the host machine**: on the desktop, the sidecar also captures
-the `opencode-remote://pair?v=2&…` URI the daemon prints at boot and the UI
-pairs itself automatically — on the machine that hosts the daemon there is no
-QR scan on first run. When a phone still needs to pair, the first run opens
-with a proper **welcome splash** (pt/en): the product value up front, the
-pairing QR and a three-step onboarding promising the first real value in
-under a minute. The manual QR/paste screen remains as a fallback
-(machines switcher → add machine), for example when an already-running daemon
-was reused and never printed a URI to capture.
+**Zero pairing on the host machine**: the desktop shell treats the daemon on
+the same machine as one trust domain (loopback, same user, 0600
+`daemon.json`). If that daemon proves healthy at boot — the shell's
+anti-squatter 401 challenge followed by an authenticated 200 — the app opens
+straight into the chat: no pairing screen, no QR, nothing to scan (P1-070).
+The QR ceremony only exists for remote clients: it appears when no local
+daemon is reachable, or on demand via **Settings → Pair a phone (remote
+device)** or an `opencode-remote://` deep link. When a phone still needs to
+pair on first run, the QR opens with a proper **welcome splash** (pt/en): the
+product value up front and a three-step onboarding promising the first real
+value in under a minute. The manual QR/paste screen remains as a fallback
+(machines switcher → add machine).
 
 **Direct local connection (P1-061)**: on the host machine the desktop app
 skips the relay entirely — it dials the daemon's loopback WebSocket
@@ -413,12 +416,13 @@ ignored). In the packaged app the daemon's stdout/stderr used to be forwarded
 to a console that does not exist; the tray's **Open logs folder** item now
 logs which file holds what.
 
-**First-run QR for your phone**: while no phone is paired yet, the desktop
-window shows a first-run overlay with a scannable pairing QR (rendered by the
-main process from the daemon's `GET /__ocr/pairing-uri`, a read-only loopback
-route gated by the same bearer token). The shell polls the allowlist every 3s —
-once a phone pairs the overlay leaves and the chat appears. "Pair later"
-dismisses it for the session.
+**First-run QR for your phone**: the first-run overlay with a scannable pairing
+QR (rendered by the main process from the daemon's `GET /__ocr/pairing-uri`, a
+read-only loopback route gated by the same bearer token) is reserved for remote
+clients — it appears when no local daemon is reachable, or on explicit request
+from **Settings → Pair a phone (remote device)** (P1-070). The shell polls the
+allowlist every 3s — once a phone pairs the overlay leaves and the chat
+appears. "Pair later" dismisses it for the session.
 
 **Staged update feed (spike P2-012, real flow since P1-050)**: the shell checks
 for updates against a static feed you host — a loopback URL is enough. The

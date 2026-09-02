@@ -7,9 +7,14 @@ interface Props {
   error: string;
   onPair: (uri: string) => void;
   onRetry: () => void;
+  /** P1-070: desktop shell only — explicit "pair a remote phone" action that
+   * turns the QR ceremony back on (app:setRemotePairing). */
+  onPairRemote?: () => void;
+  /** P1-070: the shell is auto-connecting to the daemon on this machine. */
+  localMode?: boolean;
 }
 
-export default function PairingView({ phase, error, onPair, onRetry }: Props) {
+export default function PairingView({ phase, error, onPair, onRetry, onPairRemote, localMode }: Props) {
   const t = useT();
   const [code, setCode] = useState("");
   const [scanning, setScanning] = useState(false);
@@ -34,7 +39,7 @@ export default function PairingView({ phase, error, onPair, onRetry }: Props) {
       <header>
         <h1 style={{ fontSize: "1rem", margin: 0 }}>OpenCode Remote</h1>
       </header>
-      <p className="muted">{t("pairIntro")}</p>
+      <p className="muted pair-intro">{t("pairIntro")}</p>
       <button
         className="primary"
         disabled={busy}
@@ -55,13 +60,19 @@ export default function PairingView({ phase, error, onPair, onRetry }: Props) {
         disabled={busy || !code.trim()}
         onClick={() => onPair(code)}
       >
-        {busy ? t("connecting") : t("pairBtn")}
+        {busy ? (localMode ? t("localConnecting") : t("connecting")) : t("pairBtn")}
       </button>
       {phase === "error" && (
         <>
           <p className="pair-error" style={{ color: "var(--danger)" }}>{error}</p>
           <button onClick={onRetry}>{t("retry")}</button>
         </>
+      )}
+      {onPairRemote && (
+        <button className="pair-remote-entry" onClick={onPairRemote} disabled={busy}>
+          <b>{t("pairRemoteTitle")}</b>
+          <span className="muted">{t("pairRemoteHint")}</span>
+        </button>
       )}
     </div>
   );

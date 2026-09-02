@@ -14,6 +14,9 @@ interface Props {
   transport?: "local" | "relay";
   /** P1-050: desktop shell only — full support bundle for "Copy diagnostic". */
   getDiagnostics?: () => Promise<string>;
+  /** P1-070: desktop shell only — explicit "pair a remote phone" action that
+   * turns the QR ceremony on (app:setRemotePairing). */
+  onPairRemote?: () => void;
 }
 
 interface Device {
@@ -102,7 +105,7 @@ export function applyTheme() {
   document.documentElement.style.fontSize = font === "small" ? "14px" : font === "large" ? "19px" : "16.5px";
 }
 
-export default function SettingsView({ request, onBack, transport, getDiagnostics }: Props) {
+export default function SettingsView({ request, onBack, transport, getDiagnostics, onPairRemote }: Props) {
   const [devices, setDevices] = useState<Device[]>([]);
   const [name, setName] = useState("");
   const [notify, setNotify] = useState({ permission: true, idle: true });
@@ -256,6 +259,18 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
             {t("diagCopy")}
           </button>
         </div>
+
+        {onPairRemote && (
+          <div className="card">
+            <h3>{t("pairRemoteTitle")}</h3>
+            <p className="muted" style={{ margin: "0 0 6px" }}>
+              {t("pairRemoteHint")}
+            </p>
+            <button className="pair-remote-entry" onClick={onPairRemote}>
+              {t("pairRemoteAction")}
+            </button>
+          </div>
+        )}
 
         <div className="card">
           <h3>{t("language")}</h3>

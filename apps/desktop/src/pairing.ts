@@ -14,6 +14,11 @@ export interface AllowlistEntry {
 export interface PairingState {
   /** Boot pairing URI (`opencode-remote://pair?v=2&…`), null when unknown. */
   uri: string | null;
+  /** P1-070: which pairing surface the shell is serving — "local" (the daemon
+   * on this machine is auto-connected; uri/qrDataUrl are always null),
+   * "remote" (the user explicitly asked for the QR ceremony) or undefined
+   * (legacy: no local daemon was reachable at boot). */
+  mode?: "local" | "remote";
   /** PNG data-URL rendering of `uri`, null when not generated yet. */
   qrDataUrl: string | null;
   /** Total allowlist size (fresh read from the daemon). */
@@ -50,4 +55,58 @@ export function phonePaired(devices: AllowlistEntry[]): boolean {
 /** Overlay is shown only when there is something to scan and no phone yet. */
 export function overlayVisible(state: PairingState | null): boolean {
   return !!state && !state.phonePaired && !!state.uri && !!state.qrDataUrl;
+}
+
+/** Loopback credentials the shell's app:localLink IPC hands to the renderer
+ * (read from the 0600 daemon.json — same trust domain, docs/security.md 9).
+ * Every field is optional at the boundary: the helper rejects partial links. */
+export interface LocalPairingLink {
+  port?: number;
+  token?: string;
+  room?: string;
+  ecdhPub?: string;
+}
+
+/** The Pairing shape the renderer's OcrClient.connect expects. Kept structural
+ * here so apps/desktop stays decoupled from apps/web sources. */
+export interface LocalPairing {
+  v: 2;
+  relay: string;
+  room: string;
+  k: string;
+  name: string;
+}
+
+/**
+ * P1-070: derive a Pairing that connects the desktop UI straight to the daemon
+ * on this same machine — the exact recipe scripts/localws.test.ts proves:
+ * room + k come from the 0600 state file (k is the daemon's ECDH public key)
+ * and "relay" is the daemon's own loopback WS. The E2E handshake is identical
+ * to a relay pairing; only the transport differs. Returns null when any field
+ * is missing (malformed/partial state file) so the caller falls back to the
+ * legacy pairing flow instead of dialing a broken object.
+ */
+export function localPairing(link: LocalPairingLink | null | undefined): LocalPairing | null {
+  if (!link) return null;
+  const { port, token, room, ecdhPub } = link;
+  if (
+    typeof port !== "number" ||
+    !Number.isFinite(port) ||
+    port <= 0 ||
+    typeof token !== "string" ||
+    !token ||
+    typeof room !== "string" ||
+    !room ||
+    typeof ecdhPub !== "string" ||
+    !ecdhPub
+  ) {
+    return null;
+  }
+  return {
+    v: 2,
+    relay: `ws://127.0.0.1:${port}/ws?token=${encodeURIComponent(token)}`,
+    room,
+    k: ecdhPub,
+    name: "local",
+  };
 }

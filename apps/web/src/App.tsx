@@ -13,6 +13,7 @@ import {
   type Status,
 } from "./lib/client";
 import type { OpResponse, EventEnvelope } from "@ocr/protocol";
+import { localPairing } from "../../desktop/src/pairing";
 import { gateVerify, gateEnroll } from "./lib/gate";
 import { useT } from "./lib/i18n";
 import {
@@ -50,6 +51,9 @@ type TabId = "sessions" | "files" | "settings";
 
 /** Mirrors apps/desktop/src/preload.ts PairingState (kept in sync by tests). */
 interface PairingState {
+  /** P1-070: "local" (auto-connected to the daemon on this machine, uri/qr
+   * always null), "remote" (explicit QR ceremony) or undefined (legacy). */
+  mode?: "local" | "remote";
   uri: string | null;
   qrDataUrl: string | null;
   devices: number;
@@ -83,8 +87,11 @@ interface DesktopBridge {
   onDeepLink?: (cb: (uri: string) => void) => () => void;
   /** P1-053: one-click recovery from the daemon-down banner. */
   reconnectDaemon?: () => Promise<boolean>;
-  /** P1-061: loopback WS credentials for the direct local transport. */
-  getLocalLink?: () => Promise<{ port: number; token: string } | null>;
+  /** P1-061/P1-070: loopback WS credentials (+ room/ecdhPub) for the direct
+   * local transport and the zero-ceremony local pairing. */
+  getLocalLink?: () => Promise<{ port: number; token: string; room?: string; ecdhPub?: string } | null>;
+  /** P1-070: explicit remote-pairing opt-in/out (Settings + overlay dismiss). */
+  setRemotePairing?: (on: boolean) => Promise<boolean>;
   /** P2-048: narrow /api/pilot-* bridge for the Mission Control pane. */
   daemonApi?: DaemonApiFn;
   /** P1-046: Go-menu accelerators (Cmd+T/K/1..5) pushed from the main process. */
@@ -191,15 +198,27 @@ export default function App() {
   // phone pairs.
   const [pairingState, setPairingState] = useState<PairingState | null>(null);
   const [pairingDismissed, setPairingDismissed] = useState(false);
+  // P1-070: tryAutoPair reads the latest pairing state synchronously (the
+  // effect ref below would still be null on the very first mount run).
+  const pairingStateRef = useRef<PairingState | null>(null);
+  useEffect(() => {
+    pairingStateRef.current = pairingState;
+  }, [pairingState]);
   useEffect(() => {
     const bridge = desktopBridge();
     if (!bridge?.getPairingState) return;
     let alive = true;
     bridge.getPairingState().then((s) => {
-      if (alive) setPairingState(s);
+      if (alive) {
+        pairingStateRef.current = s;
+        setPairingState(s);
+      }
     }).catch(() => {});
     const un = bridge.onPairingState?.((s) => {
-      if (alive) setPairingState(s);
+      if (alive) {
+        pairingStateRef.current = s;
+        setPairingState(s);
+      }
     });
     return () => {
       alive = false;
@@ -357,6 +376,30 @@ export default function App() {
       try {
         const deep = await bridge.getDeepLink?.();
         if (applyDeepLink(deep)) return;
+        // P1-070: local mode — the shell already proved the daemon's identity
+        // (401 challenge + Bearer from the 0600 file), so no pairing ceremony
+        // at all: derive the local pairing and connect. Nothing is persisted
+        // (the loopback token stays out of localStorage; re-derived per boot).
+        let state = pairingStateRef.current;
+        if (!state && bridge.getPairingState) {
+          state = (await bridge.getPairingState().catch(() => null)) ?? null;
+          pairingStateRef.current = state;
+        }
+        if (state?.mode === "local" && bridge.getLocalLink) {
+          const pairing = localPairing(await bridge.getLocalLink());
+          if (pairing) {
+            // Host self-approval (P0-003) applies to the local transport too:
+            // a fresh daemon's allowlist doesn't know our sticky identity yet.
+            // Additive only — nothing is ever removed or rewritten.
+            if (bridge.approveClient) {
+              const identity = await getOrCreateIdentity();
+              await bridge.approveClient(identity.publicKey);
+            }
+            void connect(pairing, false);
+            return;
+          }
+          // malformed state file → fall through to the legacy paths below
+        }
         const uri = await getPairUrl();
         if (!uri) return;
         const pairing = parsePairingUri(uri);
@@ -383,13 +426,16 @@ export default function App() {
   // P1-053: when the daemon's health comes back (reconnecting/daemon-down
   // banner clears) while we are still sitting unpaired, retry the auto-pair
   // once — the pairing URI is reachable again and no user re-pairing is needed.
+  // P1-070: a pairing state that lands (or degrades) with mode="local" also
+  // re-runs the auto-pair — the mount-time run may have raced ahead of the
+  // shell's first poll and found no state to decide on.
   const sawOutageRef = useRef(false);
   useEffect(() => {
     if (pairingState?.reconnecting || pairingState?.daemonDown) {
       sawOutageRef.current = true;
       return;
     }
-    if (sawOutageRef.current && phase === "unpaired" && !loadState()) {
+    if (phase === "unpaired" && !loadState() && (pairingState?.mode === "local" || sawOutageRef.current)) {
       sawOutageRef.current = false;
       tryAutoPair();
     }
@@ -588,7 +634,12 @@ export default function App() {
     !pairingDismissed && pairingState?.qrDataUrl && !pairingState.phonePaired ? (
       <PairingOverlay
         qrDataUrl={pairingState.qrDataUrl}
-        onDismiss={() => setPairingDismissed(true)}
+        onDismiss={() => {
+          setPairingDismissed(true);
+          // P1-070: leaving the overlay returns the shell to the quiet local
+          // state on the next poll instead of hunting for pairing URIs.
+          void desktopBridge()?.setRemotePairing?.(false);
+        }}
       />
     ) : null;
 
@@ -636,7 +687,7 @@ export default function App() {
 
   if (addingMachine) {
     return (
-      <div className={banner ? "pair-wrap has-daemon-down" : "pair-wrap"}>
+      <div className={banner ? "pair-wrap has-daemon-down" : "pair-wrap"} data-phase={phase}>
         {banner}
         {pairingOverlay}
         <PairingView
@@ -653,6 +704,8 @@ export default function App() {
             void connect(pairing, true);
           }}
           onRetry={() => setAddingMachine(false)}
+          onPairRemote={desktopBridge()?.setRemotePairing ? () => void desktopBridge()?.setRemotePairing?.(true) : undefined}
+          localMode={pairingState?.mode === "local"}
         />
       </div>
     );
@@ -660,7 +713,7 @@ export default function App() {
 
   if (phase !== "paired") {
     return (
-      <div className={banner ? "pair-wrap has-daemon-down" : "pair-wrap"}>
+      <div className={banner ? "pair-wrap has-daemon-down" : "pair-wrap"} data-phase={phase}>
         {banner}
         {pairingOverlay}
         <PairingView
@@ -680,6 +733,8 @@ export default function App() {
             if (stored) void connect(stored.pairing, false);
             else setPhase("unpaired");
           }}
+          onPairRemote={desktopBridge()?.setRemotePairing ? () => void desktopBridge()?.setRemotePairing?.(true) : undefined}
+          localMode={pairingState?.mode === "local"}
         />
       </div>
     );
@@ -702,6 +757,7 @@ export default function App() {
       onBack={goBack}
       transport={clientRef.current?.transport}
       getDiagnostics={desktopBridge()?.getDiagnostics}
+      onPairRemote={desktopBridge()?.setRemotePairing ? () => void desktopBridge()?.setRemotePairing?.(true) : undefined}
     />
   );
   const filesNode = <FilesView request={request} onBack={goBack} />;
@@ -786,6 +842,7 @@ export default function App() {
       ref={appRootRef}
       className={`app-root${chatActive ? "" : " has-tabbar"}${banner ? " has-daemon-down" : ""}`}
       data-nav={navDir}
+      data-phase={phase}
       onTouchStart={isDesktop ? undefined : onTouchStart}
       onTouchMove={isDesktop ? undefined : onTouchMove}
       onTouchEnd={isDesktop ? undefined : onTouchEnd}

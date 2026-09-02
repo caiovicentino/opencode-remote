@@ -251,7 +251,7 @@ function hermeticEnv() {
   const dir = mkdtempSync(join(tmpdir(), "ocr-desktop-app-"));
   const stateFile = join(dir, "daemon-state.json");
   writeFileSync(stateFile, "{}");
-  return {
+  const env = {
     ...process.env,
     ELECTRON_DISABLE_SECURITY_WARNINGS: "1",
     OCR_USER_DATA_DIR: dir,
@@ -259,6 +259,18 @@ function hermeticEnv() {
     OCR_DAEMON_ENTRY: join(dir, "no-daemon-entry.js"),
     OCR_DAEMON_FORCE_DOWN: "1",
   };
+  // P1-070: local-boot mode — the caller booted a REAL hermetic daemon on a
+  // free port and hands over its 0600 state file via OCR_DESKTOP_LOCAL_STATE.
+  // The shell adopts it (health challenge + Bearer) and boots straight into
+  // local mode; FORCE_DOWN would defeat the purpose and is dropped. userData
+  // stays a fresh temp dir, so the instance has no pairing in localStorage.
+  // Test-only hatch, same policy as the other OCR_DESKTOP_* variables.
+  const localState = process.env.OCR_DESKTOP_LOCAL_STATE;
+  if (localState) {
+    env.OCR_DAEMON_STATE_FILE = localState;
+    delete env.OCR_DAEMON_FORCE_DOWN;
+  }
+  return env;
 }
 
 async function keeperMain() {

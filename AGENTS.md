@@ -153,5 +153,6 @@ Desktop app: para interagir com o app Electron real use o harness
 `tools/desktop.mjs` (`open/see/click/type/shot/ipc/close`, mesma DX do
 browse.mjs) — launch hermético, sem daemon de produção. Quando o diff toca
 `apps/desktop/` ou `apps/web/`, o gate roda `npm run test:desktop-flow` (fluxo
-de interação real, <60s); use `OCR_DESKTOP_SESSION` próprio para não colidir
+de interação real, <90s — P1-070 adicionou o bloco "local boot" com daemon
+hermético real); use `OCR_DESKTOP_SESSION` próprio para não colidir
 com a sessão de outro processo.
