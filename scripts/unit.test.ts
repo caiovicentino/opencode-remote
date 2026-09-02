@@ -1417,6 +1417,46 @@ check("stdlibShadow: non-stdlib root file passes", stdlibShadowHits("A\tmain.py\
   rmSync(ws2, { recursive: true, force: true });
 }
 
+// --- union symbol semantics + two-tier rule (P1-065) ---------------------------
+{
+  const ws = mkdtempSync(join(tmpdir(), "p1-065-"));
+  mkdirSync(join(ws, "apps", "pilot", "src"), { recursive: true });
+  // doctor.ts: DOCTOR_ID_RE lives at line 34, runDoctor further down — TASK_ID_RE nowhere.
+  const doctorLines = Array.from({ length: 40 }, (_, i) => `// filler ${i + 1}`);
+  doctorLines[33] = "export const DOCTOR_ID_RE = /P\\d+-\\d+:/;";
+  doctorLines[39] = "export function runDoctor() { return DOCTOR_ID_RE.test(\"P1-065\"); }";
+  writeFileSync(join(ws, "apps", "pilot", "src", "doctor.ts"), doctorLines.join("\n"));
+  // pipeline.ts: TASK_ID_RE lives at line 589 — DOCTOR_ID_RE nowhere.
+  const pipelineLines = Array.from({ length: 600 }, (_, i) => `// filler ${i + 1}`);
+  pipelineLines[588] = "export const TASK_ID_RE = /P\\d+-\\d+:/;";
+  writeFileSync(join(ws, "apps", "pilot", "src", "pipeline.ts"), pipelineLines.join("\n"));
+  // unit.test.ts: no mention of runDoctor (the finding is about its absence).
+  writeFileSync(join(ws, "apps", "pilot", "src", "unit.test.ts"), "// no coverage here\n");
+  const diff = "";
+
+  const out = [
+    "- `apps/pilot/src/doctor.ts:34` and `apps/pilot/src/pipeline.ts:589` — `DOCTOR_ID_RE` and `TASK_ID_RE` disagree",
+    "- `apps/pilot/src/unit.test.ts` has no coverage of `runDoctor` (defined in `apps/pilot/src/doctor.ts`)",
+    "- `apps/pilot/src/doctor.ts:34` — `totallyFakeSymbol` is unused",
+    "- `apps/pilot/src/ghost.ts:1` — anything",
+  ].join("\n");
+  const v = verifyFindings(parseFindings(out), ws, diff);
+  check("p1-065: cross-file finding with symbols spread across citations KEPT", v.kept.length === 2);
+  check("p1-065: cross-file repro (DOCTOR_ID_RE + TASK_ID_RE) kept verbatim", v.kept.some((f) => f.includes("DOCTOR_ID_RE") && f.includes("TASK_ID_RE")));
+  check("p1-065: absence finding kept (symbol resolves via the union)", v.kept.some((f) => f.includes("runDoctor")));
+  check("p1-065: nonexistent symbol dropped (0 union matches)", v.dropped.some((f) => f.includes("totallyFakeSymbol")));
+  check("p1-065: nonexistent file dropped", v.dropped.some((f) => f.includes("ghost.ts")));
+  check(
+    "p1-065: tier-2 — one real >=6-char span keeps the finding even when the full set fails",
+    verifyFindings(["- `apps/pilot/src/doctor.ts:34` — `DOCTOR_ID_RE` and `totallyFakeSymbol` disagree"], ws, diff).kept.length === 1,
+  );
+  check(
+    "p1-065: short (<6 chars) quoted spans never trigger tier-2",
+    verifyFindings(["- `apps/pilot/src/doctor.ts:34` — `fake` and `totallyFakeSymbol` disagree"], ws, diff).dropped.length === 1,
+  );
+  rmSync(ws, { recursive: true, force: true });
+}
+
 // --- mandatory builder evidence (P2-009) --------------------------------------
 {
   const UI_TASK: Task = { id: "P2-009", priority: "P2", title: "Evidence", spec: "", area: "ui", line: "" };

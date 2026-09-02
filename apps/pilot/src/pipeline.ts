@@ -1516,16 +1516,22 @@ const SNIPPET_RES = [/"([^"\n]{6,})"/g, /`([^`\n]{6,})`/g];
  * thing to verify. File-path-shaped spans stay the business of FILE_CITE_RE. */
 const SYMBOL_RES = [/"([^"\n]{2,})"/g, /`([^`\n]{2,})`/g];
 
-function symbolCites(finding: string): string[] {
+/** Quoted spans (double quotes or backticks) of at least `minLen` chars that
+ * are not file-path-shaped — symbol or snippet citations inside a finding. */
+function quotedSpans(finding: string, minLen: number): string[] {
   const out: string[] = [];
   for (const re of SYMBOL_RES) {
     for (const m of finding.matchAll(re)) {
       const sym = (m[1] ?? "").trim();
-      if (sym.length < 2 || FILE_PATH_SHAPE_RE.test(sym)) continue;
+      if (sym.length < minLen || FILE_PATH_SHAPE_RE.test(sym)) continue;
       out.push(sym);
     }
   }
   return out;
+}
+
+function symbolCites(finding: string): string[] {
+  return quotedSpans(finding, 2);
 }
 
 /** P2-038: workspace-relative paths of all scannable files (no .git /
@@ -1558,24 +1564,40 @@ function findingResolves(finding: string, ws: string, diff: string, wsFiles: str
     line: m[2] !== undefined ? Number(m[2]) : undefined,
   }));
   if (fileCites.length > 0) {
-    // P2-038 (requirement d): a code observation is verified deterministically —
-    // every cited file:line must exist in the workspace AND every quoted symbol
-    // must exist in a cited file or in the reviewed diff. Hallucinated only
-    // when the cited file, line or symbol does not exist.
+    // P2-038 (requirement d) + P1-065: a code observation is verified
+    // deterministically — every cited file:line must exist in the workspace,
+    // and quoted symbols are checked against the UNION of all resolved
+    // citations' contents plus the reviewed diff (not per-citation: a
+    // cross-file finding whose symbols are spread across its own citations
+    // is valid). Tier-2: when the full symbol set does not resolve, the
+    // finding is still kept if at least one quoted span of >=6 chars
+    // (symbol or snippet) matches the union. Dropped only when a cited
+    // file/line fails to resolve or zero >=6-char spans match.
+    const contents: string[] = [];
+    for (const c of fileCites) {
+      const content = resolveCite(ws, c, wsFiles);
+      if (content === null) return false;
+      contents.push(content);
+    }
     const symbols = symbolCites(cleaned);
-    return fileCites.every((c) => citeResolves(ws, c, symbols, diff, wsFiles));
+    if (symbols.length === 0) return true;
+    const union = `${contents.join("\n")}\n${diff}`;
+    if (symbols.every((s) => union.includes(s))) return true;
+    return quotedSpans(cleaned, 6).some((s) => union.includes(s));
   }
   return SNIPPET_RES.some((re) => [...cleaned.matchAll(re)].some((m) => m[1] !== undefined && diff.includes(m[1])));
 }
 
-/** P2-038: one file citation resolves when the cited file exists (at the cited
- * ws-relative path, or anywhere in the workspace for bare-name citations) and
- * the cited line, when present, is non-empty, and every quoted symbol appears
- * in a cited file or in the diff. */
-function citeResolves(ws: string, cite: FileCite, symbols: string[], diff: string, wsFiles: string[]): boolean {
+/** P2-038 + P1-065: one file citation resolves when the cited file exists (at
+ * the cited ws-relative path, or anywhere in the workspace for bare-name
+ * citations) and the cited line, when present, is non-empty. Returns the file
+ * content so the symbol check can run against the union of all citations
+ * instead of each citation in isolation; the first candidate (in sorted
+ * workspace order) whose cited line is non-empty wins. */
+function resolveCite(ws: string, cite: FileCite, wsFiles: string[]): string | null {
   // unified-diff prefixes + traversal attempts are never valid citations
   const rel = cite.path.replace(/^(?:\.\/)+/, "").replace(/^(?:a|b)\//, "");
-  if (rel.includes("..")) return false;
+  if (rel.includes("..")) return null;
   const candidates = existsSync(join(ws, rel)) ? [rel] : wsFiles.filter((f) => f.endsWith(`/${rel}`));
   for (const cand of candidates) {
     let lines: string[];
@@ -1588,13 +1610,9 @@ function citeResolves(ws: string, cite: FileCite, symbols: string[], diff: strin
       const l = lines[cite.line - 1];
       if (l === undefined || l.trim().length === 0) continue;
     }
-    if (symbols.length > 0) {
-      const content = lines.join("\n");
-      if (!symbols.every((s) => content.includes(s) || diff.includes(s))) continue;
-    }
-    return true;
+    return lines.join("\n");
   }
-  return false;
+  return null;
 }
 
 function logHallucination(task: string, reviewer: string, finding: string) {
