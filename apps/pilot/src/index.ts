@@ -8,7 +8,7 @@ import { notifySupervisor } from "./notify";
 import { runResearcher } from "./researcher";
 import { runExplorer } from "./explorer";
 import { runPipeline, TASK_ID_RE, writeSandboxConfig, writeAuxSandboxConfig, lessonsBlock, budgetsFor, isOverCap } from "./pipeline";
-import { deploy } from "./deploy";
+import { deploy, latestDeployableSha } from "./deploy";
 import { digest } from "./push";
 import { addTask, appendCommitAndPush, auxPushIo, blockTask, mayPush, nextId, parseAuxTaskLines, parseBacklog, type Task } from "./backlog";
 import { appendFailureLesson, defaultLessonsFile, failureLessonsBlock, readRecentFailureLessons } from "./failureLessons";
@@ -146,17 +146,20 @@ async function main() {
     // nightly redteam (03:xx) + weekly maintenance — best effort, slots idle
     if (running.size === 0) await maybeNightly(slotCfg.get(1)!, state);
 
-    // pending deploy: production is behind origin/main (e.g. after a rollback).
-    // Serial by construction: only checked while slots are idle and no
-    // fire-and-forget deploy is in flight.
+    // pending deploy: production is behind a gate-verified merge on origin/main
+    // (e.g. after a rollback). Serial by construction: only checked while slots
+    // are idle and no fire-and-forget deploy is in flight.
     if (running.size === 0 && !deployBusy && state.deploys < cfg.maxDeploysPerDay) {
       const prodSha = exec("git rev-parse HEAD", { cwd: cfg.repo, allowFail: true }).output.trim();
-      const originSha = exec("git rev-parse origin/main", { cwd: cfg.repo, allowFail: true }).output.trim();
-      if (prodSha && originSha && prodSha !== originSha) {
-        log("info", "pending deploy: prod behind origin/main", { prod: prodSha.slice(0, 7), origin: originSha.slice(0, 7) });
+      // P2-058: the target is the newest gate-verified, non-quarantined merge
+      // sha on origin/main — a direct push to main (bookkeeping or hostile) is
+      // walked past and can never become a deploy target.
+      const target = latestDeployableSha(cfg.repo);
+      if (prodSha && target && prodSha !== target) {
+        log("info", "pending deploy: prod behind a gate-verified merge", { prod: prodSha.slice(0, 7), target: target.slice(0, 7) });
         state.deploys++;
         saveState(state);
-        const dep = await deploy(cfg, originSha);
+        const dep = await deploy(cfg, target);
         log("info", "deploy result", { ok: dep.ok, rolledBack: dep.rolledBack, detail: dep.detail.slice(0, 200) });
         if (!dep.ok) {
           state.failures++;
@@ -293,9 +296,12 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
 }
 
 /**
- * Fire-and-forget deploy of a merged SHA. `deployBusy` serializes deploys:
- * when one is in flight the merge stays queued on main and the next deploy
- * picks it up. The deploy budget is global (all slots share it).
+ * Fire-and-forget deploy of a gate-verified merge SHA. `deployBusy` serializes
+ * deploys: when one is in flight the merge stays queued on main and the next
+ * deploy picks it up. The deploy budget is global (all slots share it).
+ * P2-058: `sha` (pipeline HEAD) may carry bookkeeping commits on top of the
+ * merge — the actual target is resolved by walking origin/main back to the
+ * newest gate-verified, non-quarantined sha; without one, nothing deploys.
  */
 function launchDeploy(cfg: PilotConfig, task: Task, sha: string, touchedUi: boolean) {
   if (deployBusy) {
@@ -306,12 +312,17 @@ function launchDeploy(cfg: PilotConfig, task: Task, sha: string, touchedUi: bool
     log("info", "deploy budget reached — merge left on main for manual deploy", { deploys: state.deploys });
     return;
   }
+  const target = latestDeployableSha(cfg.repo);
+  if (!target) {
+    log("warn", "no gate-verified merge sha on origin/main — deploy skipped", { task: task.id, sha: sha.slice(0, 7) });
+    return;
+  }
   state.deploys++;
   saveState(state);
   // fire-and-forget: the deploy (npm ci/build/soak) runs in the prod repo
   // while builders work in their slot clones — independent file systems
   deployBusy = true;
-  void deploy(cfg, sha, { task: task.id, ui: touchedUi })
+  void deploy(cfg, target, { task: task.id, ui: touchedUi })
     .then((dep) => {
       log("info", "deploy result", { task: task.id, ...dep });
       if (!dep.ok) state.failures++;

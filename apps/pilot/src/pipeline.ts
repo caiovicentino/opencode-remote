@@ -6,6 +6,7 @@ import { nowLocalISO } from "./log";
 import { markDone, mayPush, type Task } from "./backlog";
 import { emit } from "./events";
 import { latestUiShot } from "./shot";
+import { defaultVerifiedMergesFile, recordVerifiedMerge } from "./deployguard";
 import { touchHeartbeat, type PilotConfig, type PilotState } from "./state";
 import { appendLessonsToWorkspace, pickRelevantLessons, readExperienceFile } from "./experience";
 import { captureGateCorpus } from "./gate-corpus";
@@ -1501,6 +1502,9 @@ async function gatekeeper(
   }
   // merge via GitHub PR for audit trail
   const title = `pilot(${t.id}): ${t.title}`;
+  // P2-058 (round 2): HEAD before the merge attempt — the post-merge record
+  // must prove HEAD actually moved past this tip
+  const preMergeHead = headSha(ws);
   exec(`git push -q origin pilot/${t.id}`, { cwd: ws, allowFail: true });
   const pr = exec(
     `gh pr create --head pilot/${t.id} --title ${JSON.stringify(title)} --body ${JSON.stringify("Autonomous pipeline merge — gatekeeper green (typecheck, build, reconnect, integration, invariants, download).")}`,
@@ -1532,6 +1536,22 @@ async function gatekeeper(
   // bring workspace main up to date with the merge, then mark the task done
   exec("git checkout -q main", { cwd: ws, allowFail: true });
   exec("git pull -q origin main", { cwd: ws, allowFail: true });
+  // P2-058: record the gate-green merge so deploy() only ever ships SHAs this
+  // gatekeeper produced. Round-2 hardening: `gh pr merge --auto` can return
+  // success while the squash is still QUEUED — recording blind HEAD would pin
+  // the pre-merge tip (e.g. a bookkeeping mark-done commit) as a deployable
+  // "verified merge", the exact path this task blocks. Only a HEAD that moved
+  // past the pre-merge tip AND carries the task's canonical merge identity is
+  // recorded; anything else stays unverified (fail-closed — the code ships
+  // with the next verified merge).
+  const postMergeHead = headSha(ws);
+  if (postMergeHead !== preMergeHead && isTaskMergeSha(ws, postMergeHead, t.id)) {
+    if (!recordVerifiedMerge(defaultVerifiedMergesFile(), postMergeHead, t.id, nowLocalISO())) {
+      console.log(JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "verified-merge recording failed — deploy will stay refused for this sha", data: { task: t.id, sha: postMergeHead.slice(0, 7) } }));
+    }
+  } else {
+    console.log(JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "merge sha not identifiable on main — deploy stays refused until the next verified merge", data: { task: t.id, sha: postMergeHead.slice(0, 7), moved: postMergeHead !== preMergeHead } }));
+  }
   markDone(ws, t.id, `merged by pilot ${nowLocalISO().slice(0, 10)}`);
   exec(`git add BACKLOG.md && git commit -qm "pilot(${t.id}): mark done" && git push -q origin main`, {
     cwd: ws,
@@ -1581,4 +1601,21 @@ export function taskMergedIn(ws: string, id: string): boolean {
     allowFail: true,
   });
   return r.ok && r.output.trim().length > 0;
+}
+
+/**
+ * P2-058 (round 2): does this commit on main carry the task's canonical merge
+ * identity? Two shapes count: the PR squash commit (subject starts with the
+ * anchored `pilot(<id>):` format — same rule as taskMergedIn) and the local
+ * `--no-ff` fallback merge commit (two parents, subject `Merge branch
+ * 'pilot/<id>'`). Any other commit — bookkeeping or a hostile direct push —
+ * is never recorded as a verified merge.
+ */
+export function isTaskMergeSha(ws: string, sha: string, id: string): boolean {
+  if (!TASK_ID_RE.test(id) || !/^[0-9a-f]{7,40}$/.test(sha)) return false;
+  const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const subject = exec(`git log -1 --format=%s ${sha}`, { cwd: ws, allowFail: true }).output.trim();
+  if (new RegExp(`^pilot\\(${escaped}\\):`).test(subject)) return true;
+  const parents = exec(`git log -1 --format=%P ${sha}`, { cwd: ws, allowFail: true }).output.trim();
+  return parents.split(" ").filter(Boolean).length === 2 && subject.includes(`'pilot/${id}'`);
 }

@@ -99,7 +99,20 @@ escopo hermético por design (chaves E2E reais).
 
 ## Deploy staged + rollback
 
-0. **Guard de disco (P3-006)**: antes de qualquer mutação (git/npm), `statfs` no
+0. **Guard de SHA verificado (P2-058)**: o `deploy()` só aceita SHA que o
+   gatekeeper gravou em `~/.opencode-remote/pilot/verified-merges.jsonl` no
+   momento do merge (squash de PR ou merge local `--no-ff`, ambos pós-gate
+   verde, gravados por código determinístico sob a gate lock). Commit direto em
+   main — bookkeeping (mark-done, scribe, refill do strategist) ou hostil — é
+   pulado pela caminhada first-parent em `origin/main` e **nunca dispara
+   deploy** (caminho da fábula de segurança #2/#3). Sem nenhum SHA verificado
+   alcançável, não há deploy (fail-closed).
+0b. **Quarentena (P2-058)**: deploy que falha (steps, health, invariants live,
+   soak) quarentena o SHA em `~/.opencode-remote/pilot/quarantine.jsonl` antes
+   do rollback — o self-heal de "pending deploy" pula o SHA ruim e production
+   fica no último SHA verificado bom, em vez de re-deployar em loop o mesmo
+   cérebro defeituoso. Um merge posterior (com a correção) volta a destravar.
+0c. **Guard de disco (P3-006)**: antes de qualquer mutação (git/npm), `statfs` no
    repo de produção — com menos de **5GB livres** o deploy aborta com detail
    claro (`disk low: Xgb free (need 5.0gb) — deploy aborted before npm ci/build`),
    evento `disk-guard` no feed e `notifySupervisor` em vez de falhar depois com
@@ -713,3 +726,35 @@ Sonda indisponível = fail-open (nunca bloqueia deploy saudável). Sondas,
 threshold, notify e emit são injetáveis (`DeployOpts`) — a bateria de eval
 (`scripts/unit.test.ts`) testa o abort com threshold mockado provando que ele
 acontece antes do `npm ci`.
+
+## Deploy só de SHA verificado + quarentena (P2-058, 02/09)
+
+Antes o `deploy()` aceitava qualquer HEAD de `origin/main`: um push direto em
+main (bookkeeping do pipeline ou, pior, um commit hostil) virava deploy. Agora:
+
+- **Merge verificado**: o gatekeeper grava o SHA do merge (squash de PR ou
+  merge local `--no-ff`, sempre pós-gate verde) em
+  `~/.opencode-remote/pilot/verified-merges.jsonl` — código determinístico sob
+  a gate lock, nunca um agente. Round 2: a gravação só acontece quando o HEAD
+  de main **andou** desde a ponta pré-merge **e** carrega a identidade de
+  merge da task (subject `pilot(<id>): ...` no squash, ou o commit de merge
+  `--no-ff` do branch no fallback) — merge enfileirado pelo `--auto` não
+  grava nada (fail-closed; o código embarca no próximo merge verificado).
+  As duas call sites de deploy resolvem o alvo com `latestDeployableSha()`:
+  caminhada first-parent em `origin/main` que retorna o SHA verificado
+  **mais recente não-quarentenado** e ignora commits de bookkeeping
+  (mark-done, scribe, refill). Critério do backlog: **push direto em main não
+  dispara deploy**.
+- **Quarentena**: deploy que falha (steps/health/invariants/soak) grava o SHA
+  ruim em `~/.opencode-remote/pilot/quarantine.jsonl` **antes** do rollback —
+  o loop de redeploy do mesmo SHA quebrado acabou; produção fica no último
+  SHA verificado bom até um merge posterior destravar. Round 2: falha de
+  escrita da quarentena (anti-loop degradado) notifica o supervisor
+  best-effort em vez de ficar só no log.
+- `deploy()` re-checa o SHA recebido contra as duas listas (`shaGuardDetail`)
+  como segunda camada — recusa com `{ ok: false, rolledBack: false }` e evento
+  `deploy/sha-guard`, sem `notifySupervisor` (recusa esperada ≠ falha).
+- Escolha de design: lista em state (determinística, offline, testável na
+  bateria de eval) em vez de `gh api` no caminho crítico do deploy.
+- Perda do arquivo (ex.: máquina nova) = fail-closed: nada deploya até o
+  próximo merge do pilot regravar a lista.
