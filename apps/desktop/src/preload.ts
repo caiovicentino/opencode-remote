@@ -8,14 +8,21 @@ export interface DaemonBrowseResponse {
   body: string;
 }
 
-/** P1-061: loopback WS credentials for the direct local transport. */
+/** P1-061: loopback WS credentials for the direct local transport. P1-070:
+ * room + ecdhPub ride along so the renderer can derive the local pairing
+ * (they come from the same 0600 state file — no new trust domain). */
 export interface LocalLink {
   port: number;
   token: string;
+  room?: string;
+  ecdhPub?: string;
 }
 
 /** First-run pairing state pushed/pulled from the main process (P2-007). */
 export interface PairingState {
+  /** P1-070: "local" (auto-connected to the daemon on this machine, uri/qr
+   * always null), "remote" (explicit QR ceremony) or undefined (legacy). */
+  mode?: "local" | "remote";
   uri: string | null;
   qrDataUrl: string | null;
   devices: number;
@@ -48,6 +55,9 @@ contextBridge.exposeInMainWorld("ocrDesktop", {
     ipcRenderer.invoke("app:daemonApi", req),
   // P2-007: first-run QR overlay — current snapshot plus change pushes.
   getPairingState: (): Promise<PairingState | null> => ipcRenderer.invoke("app:pairingState"),
+  // P1-070: explicit remote-pairing opt-in/out (Settings action + overlay
+  // dismiss). Main re-publishes the pairing state right away.
+  setRemotePairing: (on: boolean): Promise<boolean> => ipcRenderer.invoke("app:setRemotePairing", on),
   // P1-053: banner button — manual daemon restart (same path as the tray).
   reconnectDaemon: (): Promise<boolean> => ipcRenderer.invoke("app:reconnectDaemon"),
   // P3-053: dock unread badge — the web UI derives the count (lib/unread.ts)

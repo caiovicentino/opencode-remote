@@ -9,9 +9,11 @@ import {
   getPairUrl,
   isDaemonDown,
   readApiToken,
+  readDaemonState,
   reconnectState,
   restartDaemon,
   startDaemonSidecar,
+  stateFilePath,
   stopDaemonSidecar,
   waitForDaemonHealth,
 } from "./daemon";
@@ -304,18 +306,32 @@ async function onReady(): Promise<void> {
   // the renderer is a same-user process, the token is only valid on loopback
   // and the E2E client is an authorized peer of the daemon anyway (the
   // handshake crypto stays intact). Trade-off documented in docs/security.md.
+  // P1-070: the link now also carries room + ecdhPub so the renderer can
+  // derive the local pairing with zero pairing-uri round-trips — still
+  // loopback-only, same-user trust domain (the 0600 state file).
   ipcMain.handle("app:localLink", () => {
-    try {
-      const file = join(homedir(), ".opencode-remote", "daemon.json");
-      const raw = JSON.parse(readFileSync(file, "utf8")) as { apiToken?: string };
-      return raw.apiToken ? { port: DAEMON_METRICS_PORT, token: raw.apiToken } : null;
-    } catch {
-      return null;
-    }
+    const raw = readDaemonState();
+    if (!raw?.apiToken) return null;
+    return { port: DAEMON_METRICS_PORT, token: raw.apiToken, room: raw.room, ecdhPub: raw.ecdhPub };
   });
   // Boot pairing URI captured from the daemon sidecar's stdout (null when the
   // daemon was reused or hasn't printed it yet) — lets the renderer auto-pair.
-  ipcMain.handle("app:pairUrl", () => getPairUrl());
+  // P1-070: in local mode the URI hunt is exactly the bug this fixes — a fresh
+  // instance must open the chat, never the QR ceremony. It stays null until
+  // the user explicitly opts into remote pairing (Settings / deep link).
+  ipcMain.handle("app:pairUrl", () => {
+    if (localMode && !remotePairingRequested) return null;
+    return getPairUrl();
+  });
+  // P1-070: explicit remote-pairing opt-in/out (Settings action; the QR
+  // overlay's dismiss turns it back off). In-memory only — a restart always
+  // boots back into local mode.
+  ipcMain.handle("app:setRemotePairing", (_e, on: unknown) => {
+    remotePairingRequested = on === true;
+    log(`[desktop] remote pairing requested: ${remotePairingRequested}`);
+    void refreshPairingState();
+    return true;
+  });
   // P3-014: late pull for opencode-remote:// pair links. A renderer mounting
   // after the OS already handed over the URL (cold start via open-url) reads
   // the cached value here; consumed once so a stale link can't loop around.
@@ -362,7 +378,10 @@ async function onReady(): Promise<void> {
       return false;
     }
     try {
-      const file = join(homedir(), ".opencode-remote", "daemon.json");
+      // P1-070: resolve through stateFilePath() (same file readApiToken/
+      // readDaemonState use) so the hermetic gate's OCR_DAEMON_STATE_FILE
+      // override is honored everywhere — production paths are identical.
+      const file = stateFilePath();
       const raw = JSON.parse(readFileSync(file, "utf8")) as {
         clients?: { pub: string; label?: string; addedAt: string }[];
       };
@@ -385,9 +404,23 @@ async function onReady(): Promise<void> {
     app.getAppPath(),
     app.isPackaged ? process.resourcesPath : undefined,
   );
-  if (!daemonReady || !(await waitForDaemonHealth())) {
+  const healthOK = daemonReady && (await waitForDaemonHealth());
+  if (!healthOK) {
     logError(`[desktop] daemon health not confirmed on :${DAEMON_METRICS_PORT} — continuing`);
   }
+  // P1-070: boot-time local-mode decision. The daemon on this machine shares
+  // the trust domain (loopback, same user, 0600 daemon.json) and healthOnce
+  // already ran the anti-squatter 401 challenge before the Bearer probe — so
+  // when it answers, the pairing ceremony (QR/URI hunt) is a mental-model bug,
+  // not a feature. The test-only OCR_DAEMON_FORCE_* hatches keep precedence so
+  // hermetic gate runs stay deterministic even on a machine with a real daemon.
+  localMode =
+    healthOK &&
+    readApiToken() !== null &&
+    !FORCE_VERSION_MISMATCH &&
+    !isDaemonDown() &&
+    !reconnectState().reconnecting;
+  if (localMode) log("[desktop] local daemon proved healthy — pairing ceremony skipped (P1-070)");
 
   createWindow();
   startPairingWatcher();
@@ -460,6 +493,18 @@ const FORCE_VERSION_MISMATCH = process.env.OCR_DAEMON_FORCE_VERSION_MISMATCH ===
 
 let pairingState: PairingState | null = null;
 let pairingTimer: NodeJS.Timeout | null = null;
+
+// P1-070: local mode is decided once at boot (see onReady); the explicit
+// remote-pairing request lives in memory only — a restart boots back local.
+let localMode = false;
+let remotePairingRequested = false;
+
+/** P1-070: degraded states keep the local marker so a failed poll never
+ * resurrects the QR ceremony in local mode — the renderer keeps auto-connecting
+ * once the daemon answers again (P1-053 semantics, no re-pairing). */
+function withLocalMode(state: PairingState): PairingState {
+  return localMode && !remotePairingRequested ? { ...state, mode: "local" } : state;
+}
 
 /** Placeholder state while the sidecar is down for good (P2-017): no QR (the
  * old room/keys are dead with the daemon), just the "daemon down" flag. */
@@ -565,9 +610,9 @@ async function refreshPairingState(): Promise<void> {
     setTrayHealthy(false);
     observeDaemonHealth(isDaemonDown());
     if (isDaemonDown()) {
-      setPairingState(daemonDownState());
+      setPairingState(withLocalMode(daemonDownState()));
     } else if (reconnectState().reconnecting) {
-      setPairingState(reconnectingState());
+      setPairingState(withLocalMode(reconnectingState()));
     } else {
       setPairingState(null);
     }
@@ -597,9 +642,18 @@ async function refreshPairingState(): Promise<void> {
     }
 
     const paired = phonePaired(devices);
-    let uri = pairingState?.uri ?? null;
-    let qrDataUrl = pairingState?.qrDataUrl ?? null;
-    if (!paired && !uri) {
+    // P1-070: a phone joining the allowlist ends the explicit remote request —
+    // the next tick returns to the quiet local state.
+    if (paired) remotePairingRequested = false;
+    // Local mode never hunts for a pairing URI: uri/qrDataUrl stay null so the
+    // QR overlay can never open from it (the boot-ceremony bug this fixes).
+    // The explicit remote request (Settings) restores the legacy fetch below.
+    const quietLocal = localMode && !remotePairingRequested;
+    let uri: string | null = null;
+    let qrDataUrl: string | null = null;
+    if (!quietLocal && !paired) {
+      uri = pairingState?.uri ?? null;
+      qrDataUrl = pairingState?.qrDataUrl ?? null;
       // Only fetch/refresh while the overlay may still be needed; once a phone
       // is paired the QR is dead weight.
       const uriRes = await fetch(`${base}/__ocr/pairing-uri`, {
@@ -611,6 +665,7 @@ async function refreshPairingState(): Promise<void> {
       if (uri) qrDataUrl = await QRCode.toDataURL(uri, { margin: 1, width: 480 });
     }
     setPairingState({
+      mode: quietLocal ? "local" : remotePairingRequested ? "remote" : undefined,
       uri,
       qrDataUrl,
       devices: devices.length,
@@ -628,11 +683,11 @@ async function refreshPairingState(): Promise<void> {
     setTrayHealthy(false);
     observeDaemonHealth(isDaemonDown());
     if (isDaemonDown()) {
-      setPairingState(daemonDownState());
+      setPairingState(withLocalMode(daemonDownState()));
     } else if (reconnectState().reconnecting) {
       // P1-053: adopted daemon still being probed — active reconnect state
       // instead of silence, so the UI never falls back to the pairing screen.
-      setPairingState(reconnectingState());
+      setPairingState(withLocalMode(reconnectingState()));
     } else {
       setPairingState(null);
     }

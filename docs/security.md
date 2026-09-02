@@ -38,6 +38,13 @@ identity servers, no accounts.
    and every application payload stays E2E-sealed end to end — the local WS
    speaks the exact same sealed-frame protocol as the relay. The token is
    never logged and the daemon never logs the upgrade URL.
+   **Local auto-connect (P1-070).** The same read now also surfaces `room` +
+   `ecdhPub` to the renderer so it can derive the local pairing itself and
+   boot straight into the chat with no QR ceremony. The trust domain is
+   unchanged: same 0600 file, loopback-only credentials, same-user renderer.
+   The local pairing is re-derived on every boot and never persisted to
+   localStorage, and the pairing URI/QR hunt stays disabled unless the user
+   explicitly opts into remote pairing.
 
 ## Threat notes
 

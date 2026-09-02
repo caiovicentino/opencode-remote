@@ -200,7 +200,7 @@ import {
   writeLastInstall,
 } from "../apps/pilot/src/deployguard";
 import type { PilotConfig } from "../apps/pilot/src/state";
-import { overlayVisible, phonePaired } from "../apps/desktop/src/pairing";
+import { overlayVisible, phonePaired, localPairing } from "../apps/desktop/src/pairing";
 import { versionMismatch } from "../apps/desktop/src/versions";
 import { daemonTooltip, loginItemSupported, logsDirPath, openLogsFolder, trayIconSource } from "../apps/desktop/src/tray";
 import { updateMenuLabel } from "../apps/desktop/src/update";
@@ -2961,6 +2961,39 @@ check(
   check("pairing: overlay hidden once the phone pairs", overlayVisible({ ...state, phonePaired: true }) === false);
   check("pairing: overlay hidden without a QR", overlayVisible({ ...state, qrDataUrl: null }) === false);
   check("pairing: overlay hidden with no state (daemon down)", overlayVisible(null) === false);
+}
+
+// --- P1-070: local pairing derivation + new pairing copy ----------------------
+{
+  const link = { port: 8792, token: "a/b c", room: "room-1", ecdhPub: "KEY" };
+  const p = localPairing(link);
+  check(
+    "p1-070 localPairing: full link → loopback relay + room + daemon key",
+    !!p &&
+      p.v === 2 &&
+      p.relay === "ws://127.0.0.1:8792/ws?token=a%2Fb%20c" &&
+      p.room === "room-1" &&
+      p.k === "KEY" &&
+      p.name === "local",
+  );
+  check("p1-070 localPairing: null link → null", localPairing(null) === null);
+  check("p1-070 localPairing: missing token → null", localPairing({ ...link, token: "" }) === null);
+  check("p1-070 localPairing: missing room → null", localPairing({ ...link, room: "" }) === null);
+  check("p1-070 localPairing: missing ecdhPub → null", localPairing({ ...link, ecdhPub: "" }) === null);
+  check("p1-070 localPairing: non-finite port → null", localPairing({ ...link, port: Number.NaN }) === null);
+  check(
+    "p1-070 local-mode state (uri/qr null) can never render the QR overlay",
+    overlayVisible({ uri: null, qrDataUrl: null, devices: 1, phonePaired: false, mode: "local" }) === false,
+  );
+  for (const lang of ["en", "pt"] as const) {
+    const d = dict[lang] as Record<string, string>;
+    check(`p1-070 i18n ${lang}: pairRemoteTitle + pairRemoteAction present`, !!d.pairRemoteTitle && !!d.pairRemoteAction);
+    check(`p1-070 i18n ${lang}: localConnecting names the local daemon`, /local/i.test(d.localConnecting));
+    check(
+      `p1-070 i18n ${lang}: pairIntro explains the zero-ceremony local auto-connect`,
+      /automatically|sozinho/.test(d.pairIntro),
+    );
+  }
 }
 
 // --- desktop daemon/app version mismatch (P3-054) -----------------------------

@@ -163,6 +163,12 @@ export const dict = {
     // version mismatch banner (desktop, P3-054): healthy but stale daemon.
     // Key is daemonMismatch: versionMismatch already names the PWA copy above.
     daemonMismatch: "Daemon v{d} · app v{a} — restart the daemon.",
+    // explicit remote-pairing entry + local auto-connect (desktop, P1-070)
+    pairRemoteTitle: "Pair a phone (remote device)",
+    pairRemoteHint:
+      "Show the pairing QR to control this machine from your phone — traffic is end-to-end encrypted.",
+    pairRemoteAction: "Show pairing QR",
+    localConnecting: "Connecting to the local daemon…",
     // command palette (desktop, P1-046)
     palettePlaceholder: "Search conversations and actions…",
     paletteEmpty: "No matches",
@@ -198,9 +204,10 @@ export const dict = {
     missionLiveShot: "Live dashboard shot",
     missionLive: "Live",
     unitMin: "min",
-    // pairing screen (P2-049)
+    // pairing screen (P2-049). P1-070: local-first wording — the desktop
+    // auto-connects to the daemon on the same machine, no code needed there.
     pairIntro:
-      "Run the daemon on your machine and scan the QR code it prints, or paste the pairing code. Traffic is end-to-end encrypted; the relay cannot read it.",
+      "OpenCode Remote pairs with the daemon on this machine automatically — no code needed here. To connect from another device, scan the daemon's QR or paste a pairing code. Traffic is end-to-end encrypted; the relay cannot read it.",
     scanQr: "Scan QR code",
     orPaste: "— or paste manually —",
     pairBtn: "Pair",
@@ -356,6 +363,12 @@ export const dict = {
     reconnecting: "Reconectando ao daemon… ({n})",
     // banner de mismatch de versão (desktop, P3-054): daemon vivo, mas velho.
     daemonMismatch: "Daemon v{d} · app v{a} — reinicie o daemon.",
+    // entrada explícita de pareamento remoto + auto-conexão local (P1-070)
+    pairRemoteTitle: "Parear um celular (dispositivo remoto)",
+    pairRemoteHint:
+      "Mostra o QR de pareamento para controlar esta máquina do celular — tráfego criptografado ponta a ponta.",
+    pairRemoteAction: "Mostrar QR de pareamento",
+    localConnecting: "Conectando ao daemon local…",
     // command palette (desktop, P1-046)
     palettePlaceholder: "Buscar conversas e ações…",
     paletteEmpty: "Nada encontrado",
@@ -391,9 +404,10 @@ export const dict = {
     missionLiveShot: "Shot ao vivo do dashboard",
     missionLive: "Ao vivo",
     unitMin: "min",
-    // pairing screen (P2-049)
+    // pairing screen (P2-049). P1-070: copy local-first — o desktop se conecta
+    // sozinho ao daemon da mesma máquina, sem código aqui.
     pairIntro:
-      "Rode o daemon na sua máquina e escaneie o QR code que ele imprime, ou cole o código de pareamento. O tráfego é criptografado ponta a ponta; o relay não consegue lê-lo.",
+      "O OpenCode Remote se conecta sozinho ao daemon desta máquina — nenhum código é necessário aqui. Para conectar de outro dispositivo, escaneie o QR do daemon ou cole um código de pareamento. O tráfego é criptografado ponta a ponta; o relay não consegue lê-lo.",
     scanQr: "Escanear QR code",
     orPaste: "— ou cole manualmente —",
     pairBtn: "Parear",

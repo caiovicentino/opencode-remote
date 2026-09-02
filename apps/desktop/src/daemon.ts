@@ -143,6 +143,29 @@ export function readApiToken(): string | null {
   }
 }
 
+/** P1-070: the 0600 state file path — test-only override honored, the same
+ * file every other shell read/write resolves through stateFile(). */
+export function stateFilePath(): string {
+  return stateFile();
+}
+
+/** P1-070: parsed view of the 0600 state file for the local-mode IPCs —
+ * app:localLink now needs room + ecdhPub besides the token so the renderer can
+ * derive the local pairing without any pairing-uri round-trip. Same file and
+ * same test-only OCR_DAEMON_STATE_FILE override as readApiToken (in production
+ * the shell and the daemon agree on the path by construction). */
+export function readDaemonState(): { apiToken?: string; room?: string; ecdhPub?: string } | null {
+  try {
+    return JSON.parse(readFileSync(stateFile(), "utf8")) as {
+      apiToken?: string;
+      room?: string;
+      ecdhPub?: string;
+    };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Local-squatter token exposure (threat model, documented per round-3 review):
  *
