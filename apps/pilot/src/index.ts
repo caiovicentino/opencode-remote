@@ -12,6 +12,7 @@ import { deploy, latestDeployableSha } from "./deploy";
 import { digest } from "./push";
 import { addTask, appendCommitAndPush, auxPushIo, blockTask, mayPush, nextId, parseAuxTaskLines, parseBacklog, type Task } from "./backlog";
 import { appendFailureLesson, defaultLessonsFile, failureLessonsBlock, readRecentFailureLessons } from "./failureLessons";
+import { defaultPendingRefillFile, readPendingRefill, relandDetail, relandPendingRefill, savePendingRefill } from "./refill";
 import { forensicDue, runForensic } from "./forensic";
 import { areaKey, pickBatch } from "./scheduler";
 import {
@@ -184,6 +185,18 @@ async function main() {
       const aux = slotCfg.get(1)!;
       syncWorkspace(aux.workspace);
       writeSandboxConfig(aux.workspace); // headless runs abort without sandbox perms
+      // P1-037: a refill whose push failed is persisted outside the worktree
+      // and re-landed here — the sync reset above must never eat drafted tasks.
+      const pendingFile = defaultPendingRefillFile();
+      const pending = readPendingRefill(pendingFile);
+      if (pending) {
+        const reland = await relandPendingRefill(aux.workspace, pendingFile, auxPushIo(aux.workspace));
+        log("info", "pending refill reland", { result: reland, lines: pending.lines.length });
+        emit("phase", { task: "strategist", phase: "refill", ok: reland === "pushed" || reland === "empty", detail: relandDetail(reland, pending.lines.length) });
+        if (reland !== "failed") continue; // backlog changed or snapshot is stale — re-read fresh
+        // still failing: fall through so a push outage can't starve the
+        // scheduler; the reland retries every idle cycle until git recovers.
+      }
       if (queue.length < 2 && Date.now() - lastStrategistRun > 10 * 60_000) {
         log("info", "queue low — strategist drafting next tasks", { ready: queue.length });
         await runStrategist(aux, queue);
@@ -518,17 +531,19 @@ Your LAST line must be exactly: STRATEGIST:DONE`,
       emit("phase", { task: "strategist", phase: "refill", ok: false, detail: "no valid task lines" });
       return;
     }
-    const result = await appendCommitAndPush(
-      cfg.workspace,
-      lines,
-      `pilot(strategist): queue refill ${nowLocalISO().slice(11, 16)}`,
-      auxPushIo(cfg.workspace),
-    );
+    const message = `pilot(strategist): queue refill ${nowLocalISO().slice(11, 16)}`;
+    const result = await appendCommitAndPush(cfg.workspace, lines, message, auxPushIo(cfg.workspace));
     if (result === "pushed") {
       log("info", "strategist refilled queue", { lines: lines.length });
       emit("phase", { task: "strategist", phase: "refill", ok: true, detail: `queue refill pushed (${lines.length} lines)` });
+    } else if (result === "failed") {
+      // P1-037: persist the refill outside the worktree — the next
+      // syncWorkspace reset --hard would otherwise destroy it silently.
+      const saved = savePendingRefill(defaultPendingRefillFile(), lines, message);
+      log("warn", saved ? "refill saved as pending — relanding next idle cycle" : "pending refill save failed", { lines: lines.length });
+      emit("phase", { task: "strategist", phase: "refill", ok: false, detail: saved ? `pending refill saved (${lines.length} lines)` : "pending refill save failed" });
     } else {
-      log("warn", result === "refused" ? "aux push refused" : "strategist landing failed", { lines: lines.length });
+      log("warn", "aux push refused", { lines: lines.length });
       emit("phase", { task: "strategist", phase: "refill", ok: false, detail: result });
     }
   } else {
