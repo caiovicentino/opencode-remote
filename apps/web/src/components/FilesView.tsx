@@ -160,7 +160,7 @@ export default function FilesView({
           style={{
             position: "fixed",
             inset: 0,
-            background: "rgba(0,0,0,0.94)",
+            background: "var(--scrim)",
             zIndex: 50,
             display: "flex",
             flexDirection: "column",
@@ -218,7 +218,7 @@ export default function FilesView({
                 src={preview.url}
                 sandbox=""
                 title={preview.name}
-                style={{ flex: 1, border: "none", borderRadius: 8, background: "#fff" }}
+                style={{ flex: 1, border: "none", borderRadius: 8, background: "var(--preview-bg)" }}
               />
             )}
             {preview.kind === "text" && (

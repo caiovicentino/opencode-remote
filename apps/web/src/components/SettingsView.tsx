@@ -71,10 +71,32 @@ export function getVoiceSettings(): { autoSend: boolean; lang: string } {
   }
 }
 
+/** Persisted theme choice: explicit override or follow the OS (P1-047). */
+type ThemeChoice = "dark" | "light" | "system";
+
+/** MediaQueryList of the active `(prefers-color-scheme: light)` probe while
+ * the theme is "system", so a live OS switch flips the shell without reload.
+ * Re-calling applyTheme() always drops the previous listener — no leaks. */
+let schemeQuery: MediaQueryList | null = null;
+
+function onSchemeChange() {
+  document.documentElement.dataset.theme = schemeQuery?.matches ? "light" : "dark";
+}
+
 export function applyTheme() {
-  const theme = localStorage.getItem(THEME_KEY) ?? "dark";
+  const theme = (localStorage.getItem(THEME_KEY) as ThemeChoice | null) ?? "system";
   const font = localStorage.getItem(FONT_KEY) ?? "normal";
-  document.documentElement.dataset.theme = theme;
+  if (schemeQuery) {
+    schemeQuery.removeEventListener("change", onSchemeChange);
+    schemeQuery = null;
+  }
+  if (theme === "dark" || theme === "light") {
+    document.documentElement.dataset.theme = theme;
+  } else {
+    schemeQuery = window.matchMedia("(prefers-color-scheme: light)");
+    onSchemeChange();
+    schemeQuery.addEventListener("change", onSchemeChange);
+  }
   document.documentElement.style.fontSize = font === "small" ? "14px" : font === "large" ? "19px" : "16.5px";
 }
 
@@ -90,7 +112,12 @@ export default function SettingsView({ request, onBack, transport }: Props) {
   const [newMcp, setNewMcp] = useState({ name: "", type: "local", value: "" });
   const [voice, setVoice] = useState(getVoiceSettings());
   const [style, setStyle] = useState<Record<string, unknown>>({});
-  const [theme, setTheme] = useState(localStorage.getItem(THEME_KEY) ?? "dark");
+  const [theme, setTheme] = useState<ThemeChoice>(
+    (() => {
+      const stored = localStorage.getItem(THEME_KEY);
+      return stored === "dark" || stored === "light" ? stored : "system";
+    })(),
+  );
   const [font, setFont] = useState(localStorage.getItem(FONT_KEY) ?? "normal");
   const [msg, setMsg] = useState("");
   const [pushTesting, setPushTesting] = useState(false);
@@ -161,7 +188,7 @@ export default function SettingsView({ request, onBack, transport }: Props) {
     localStorage.setItem(VOICE_KEY, JSON.stringify(v));
   }
 
-  function saveTheme(t: string, f: string) {
+  function saveTheme(t: ThemeChoice, f: string) {
     setTheme(t);
     setFont(f);
     localStorage.setItem(THEME_KEY, t);
@@ -392,7 +419,11 @@ export default function SettingsView({ request, onBack, transport }: Props) {
           <h3>Appearance</h3>
           <label style={{ display: "block" }}>
             Theme:{" "}
-            <select value={theme} onChange={(e) => saveTheme(e.target.value, font)}>
+            <select
+              value={theme}
+              onChange={(e) => saveTheme(e.target.value as ThemeChoice, font)}
+            >
+              <option value="system">System</option>
               <option value="dark">Dark</option>
               <option value="light">Light</option>
             </select>
@@ -627,7 +658,7 @@ export default function SettingsView({ request, onBack, transport }: Props) {
                     padding: 0,
                     border: nrDays.includes(i) ? "1px solid var(--accent)" : "1px solid var(--border)",
                     background: nrDays.includes(i) ? "var(--accent)" : "transparent",
-                    color: nrDays.includes(i) ? "#fff" : "inherit",
+                    color: nrDays.includes(i) ? "var(--on-accent)" : "inherit",
                   }}
                   aria-label={DAY_NAMES[i]}
                 >

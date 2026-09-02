@@ -1,0 +1,85 @@
+/* P1-047: single source of every color literal in apps/web/src.
+   Dark values are the pre-existing palette, unchanged; light values are the
+   tuned per-theme counterparts. index.css imports this file first. */
+:root {
+  --bg: #0a0a0a;
+  --surface: #161616;
+  --border: #262626;
+  --text: #ededed;
+  --muted: #8a8a8a;
+  --accent: #4ade80;
+  --danger: #f87171;
+  --warn: #fbbf24;
+  --user-bubble: #1d3b26;
+  /* shell tokens (P2-055) */
+  --panel: #101014;
+  --bg2: #1a1a20;
+  --fg: #ededed;
+  /* semantic status colors (connection dot, banners, session tones) */
+  --status-ok: #2ecc71;
+  --status-wait: #f59e0b;
+  --status-work: #3b82f6;
+  --status-done: #9ca3af;
+  --status-err: #f87171;
+  /* text/icons that sit on top of accent/danger/scrim fills */
+  --on-accent: #06280f;
+  --on-danger: #ffffff;
+  --on-scrim: #ffffff;
+  /* modal/diff overlay backdrops */
+  --scrim: rgba(0, 0, 0, 0.94);
+  --scrim-soft: rgba(0, 0, 0, 0.35);
+  --shadow-overlay: 0 18px 48px rgba(0, 0, 0, 0.35);
+  --banner-danger-bg: rgba(248, 113, 113, 0.12);
+  /* scanner/document surfaces stay white in both themes (QR contrast,
+     unstyled html artifacts and PDF pages render black-on-white) */
+  --qr-bg: #ffffff;
+  --preview-bg: #ffffff;
+  /* spacing scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  /* typography scale */
+  --font-size-xs: 0.72rem;
+  --font-size-sm: 0.85rem;
+  --font-size-md: 0.95rem;
+  --font-size-lg: 1.15rem;
+  --font-weight-medium: 500;
+  /* radius scale */
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 12px;
+  --radius-pill: 999px;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Segoe UI", sans-serif;
+}
+
+:root[data-theme="light"] {
+  --bg: #f4f4f5;
+  --surface: #ffffff;
+  --border: #d4d4d8;
+  --text: #18181b;
+  --muted: #71717a;
+  --accent: #16a34a;
+  --danger: #dc2626;
+  --warn: #b45309;
+  --user-bubble: #dcfce7;
+  --panel: #ffffff;
+  --bg2: #e4e4e7;
+  --fg: #18181b;
+  --status-ok: #16a34a;
+  --status-wait: #b45309;
+  --status-work: #2563eb;
+  --status-done: #6b7280;
+  --status-err: #dc2626;
+  --on-accent: #06280f;
+  --on-danger: #ffffff;
+  --on-scrim: #ffffff;
+  --scrim: rgba(24, 24, 27, 0.92);
+  --scrim-soft: rgba(24, 24, 27, 0.4);
+  --shadow-overlay: 0 18px 48px rgba(0, 0, 0, 0.18);
+  --banner-danger-bg: rgba(220, 38, 38, 0.1);
+  --qr-bg: #ffffff;
+  --preview-bg: #ffffff;
+}

@@ -1,48 +1,4 @@
-:root {
-  --bg: #0a0a0a;
-  --surface: #161616;
-  --border: #262626;
-  --text: #ededed;
-  --muted: #8a8a8a;
-  --accent: #4ade80;
-  --danger: #f87171;
-  --warn: #fbbf24;
-  --user-bubble: #1d3b26;
-  /* shell tokens (P2-055; previously used-but-undefined, see P1-047) */
-  --panel: #101014;
-  --bg2: #1a1a20;
-  --fg: #ededed;
-  /* semantic status colors (connection dot, banners, session tones) */
-  --status-ok: #2ecc71;
-  --status-wait: #f59e0b;
-  --status-work: #3b82f6;
-  --status-done: #9ca3af;
-  /* radius scale */
-  --radius-sm: 8px;
-  --radius-md: 10px;
-  --radius-lg: 12px;
-  --radius-pill: 999px;
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Segoe UI", sans-serif;
-}
-
-:root[data-theme="light"] {
-  --bg: #f4f4f5;
-  --surface: #ffffff;
-  --border: #d4d4d8;
-  --text: #18181b;
-  --muted: #71717a;
-  --accent: #16a34a;
-  --danger: #dc2626;
-  --warn: #b45309;
-  --user-bubble: #dcfce7;
-  --panel: #ffffff;
-  --bg2: #e4e4e7;
-  --fg: #18181b;
-  --status-ok: #16a34a;
-  --status-wait: #b45309;
-  --status-work: #2563eb;
-  --status-done: #6b7280;
-}
+@import "./tokens.css";
 
 /* shared status dot chrome (connection indicator, routine status) */
 .status-dot {
@@ -59,7 +15,7 @@
   background: var(--status-wait);
 }
 .status-dot.err {
-  background: var(--danger);
+  background: var(--status-err);
 }
 .status-dot.idle {
   background: var(--border);
@@ -107,7 +63,7 @@ button.primary:active {
 }
 button.primary {
   background: var(--accent);
-  color: #06280f;
+  color: var(--on-accent);
   border: none;
   font-weight: 600;
 }
@@ -266,6 +222,57 @@ textarea {
 .session-card h3 {
   margin: 0 0 4px;
   font-size: 0.95rem;
+}
+
+/* grid-variant session card (mobile): real class hooks instead of inline
+   styles so the desktop sidebar can restyle rows by specificity alone */
+.card.session-card {
+  flex-direction: column;
+  gap: var(--space-1);
+  min-height: 84px;
+}
+.session-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.session-title {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  font-size: var(--font-size-sm);
+  line-height: 1.2;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.session-snippet {
+  flex: 1;
+  min-height: 0;
+  font-size: 0.75rem;
+  color: var(--muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.session-meta {
+  font-size: var(--font-size-xs);
+}
+.session-when {
+  font-size: 0.68rem;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.session-actions {
+  display: flex;
+  gap: var(--space-1);
+}
+.session-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(165px, 1fr));
+  gap: var(--space-2);
 }
 
 select {
@@ -439,7 +446,7 @@ select {
 }
 .unread-badge {
   background: var(--accent);
-  color: #052e12;
+  color: var(--on-accent);
   border-radius: var(--radius-pill);
   padding: 2px 8px;
   font-size: 0.75rem;
@@ -597,100 +604,102 @@ select {
 }
 
 /* ── Claude-clean desktop polish: flat sidebar rows, no boxes ── */
+/* P1-047: targets real classes emitted by SessionsView (forced specificity,
+   no positional child selectors), so card markup can evolve without silently
+   breaking the shell */
 /* sessions grid → single flat column of rows */
-.desk-side .list > div:last-child {
-  display: flex !important;
+.desk-side .session-grid {
+  display: flex;
   flex-direction: column;
-  gap: 0 !important;
-}
-.desk-side .card.session-card > div:first-child {
-  overflow: hidden;
+  gap: 0;
 }
 .desk-side .card.session-card {
   overflow: hidden;
-  background: transparent !important;
-  border: none !important;
+  background: transparent;
+  border: none;
   border-radius: var(--radius-sm);
-  padding: 8px 10px !important;
-  min-height: 0 !important;
-  gap: 2px !important;
+  padding: var(--space-2) 10px;
+  min-height: 0;
+  gap: 2px;
 }
 .desk-side .card.session-card:hover {
-  background: var(--bg2) !important;
+  background: var(--bg2);
 }
 /* status label ("pronto") and edit/delete row hidden — status lives in the dot */
-.desk-side .card.session-card > div:nth-child(3),
-.desk-side .card.session-card > div:nth-child(4) {
-  display: none !important;
+.desk-side .session-meta,
+.desk-side .session-actions {
+  display: none;
 }
 /* title: lighter weight, single line */
-.desk-side .card.session-card > div:first-child > div:nth-child(2) {
-  font-weight: 450 !important;
-  font-size: 0.92rem !important;
-  display: block !important;
-  white-space: nowrap !important;
-  overflow: hidden !important;
-  text-overflow: ellipsis !important;
+.desk-side .session-head {
+  overflow: hidden;
+}
+.desk-side .session-title {
+  display: block;
+  font-weight: 450;
+  font-size: 0.92rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 /* snippet: one muted line, ellipsis */
-.desk-side .card.session-card > div:nth-child(2) {
-  display: block !important;
-  white-space: nowrap !important;
-  overflow: hidden !important;
-  text-overflow: ellipsis !important;
-  font-size: 0.78rem !important;
-  color: var(--muted) !important;
+.desk-side .session-snippet {
+  display: block;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 0.78rem;
 }
 /* search: borderless with underline, subtle */
 .desk-side .list input {
-  background: transparent !important;
-  border: none !important;
-  border-bottom: 1px solid var(--border) !important;
-  border-radius: 0 !important;
-  padding: 6px 2px !important;
-  font-size: 0.9rem !important;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  padding: 6px 2px;
+  font-size: 0.9rem;
 }
 /* filter chips: tiny ghost pills */
 .desk-side .chip {
-  background: transparent !important;
-  border: 1px solid var(--border) !important;
-  border-radius: 999px !important;
-  font-size: 0.7rem !important;
-  padding: 2px 10px !important;
-  color: var(--muted) !important;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  font-size: 0.7rem;
+  padding: 2px 10px;
+  color: var(--muted);
 }
 .desk-side .chip[aria-pressed="true"] {
-  color: var(--fg) !important;
-  border-color: var(--fg) !important;
+  color: var(--fg);
+  border-color: var(--fg);
 }
-/* nav: Claude-like text rows instead of icon squares */
+/* nav: Claude-like text rows instead of icon squares (merged with the
+   .desk-nav base above — vertical stack of left-aligned rows) */
 .desk-nav {
-  flex-direction: column !important;
-  gap: 1px !important;
-  padding: 8px !important;
+  flex-direction: column;
+  gap: 1px;
+  padding: var(--space-2);
 }
 .desk-nav button {
-  display: flex !important;
+  display: flex;
   align-items: center;
   gap: 10px;
   text-align: left;
-  padding: 8px 10px !important;
-  font-size: 0.9rem !important;
-  color: var(--muted) !important;
-  background: transparent !important;
-  border: none !important;
-  border-radius: var(--radius-sm) !important;
+  padding: 8px 10px;
+  font-size: 0.9rem;
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
 }
 .desk-nav button:hover,
 .desk-nav button.active {
-  color: var(--fg) !important;
-  background: var(--bg2) !important;
+  color: var(--fg);
+  background: var(--bg2);
 }
 /* greeting like the reference: serif, centered, warm mark */
 .desk-empty h2 {
   font-family: ui-serif, Georgia, "Times New Roman", serif;
   font-size: 2.4rem;
-  font-weight: 500;
+  font-weight: var(--font-weight-medium);
   letter-spacing: -0.01em;
 }
 .desk-greet-mark {
@@ -776,7 +785,7 @@ select {
   padding: 28px;
   border-radius: 16px;
   border: 1px solid var(--border);
-  background: var(--panel, var(--bg));
+  background: var(--panel);
 }
 .pair-overlay-card h2 {
   margin: 0;
@@ -788,7 +797,7 @@ select {
 }
 .pair-overlay-qr {
   border-radius: var(--radius-lg);
-  background: #fff; /* QR modules stay dark-on-light for scanner contrast */
+  background: var(--qr-bg); /* QR modules stay dark-on-light for scanner contrast */
   padding: 10px;
 }
 
@@ -803,7 +812,7 @@ select {
   text-align: center;
   font-size: 0.85rem;
   color: var(--danger);
-  background: rgba(248, 113, 113, 0.12);
+  background: var(--banner-danger-bg);
   border-bottom: 1px solid var(--danger);
 }
 /* P1-053: adopted daemon lost — active, recoverable state (yellow variant). */
@@ -832,7 +841,7 @@ select {
   cursor: pointer;
 }
 .daemon-reconnect-btn:hover {
-  background: rgba(248, 113, 113, 0.12);
+  background: var(--banner-danger-bg);
 }
 .has-daemon-down {
   padding-top: 38px;
@@ -896,10 +905,10 @@ select {
   max-height: 60vh;
   display: flex;
   flex-direction: column;
-  background: var(--panel, var(--bg));
+  background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--shadow-overlay);
   overflow: hidden;
 }
 .palette-input {

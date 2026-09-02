@@ -62,7 +62,7 @@ export default function FileCard({
           position: "fixed",
           inset: 0,
           zIndex: 1000,
-          background: "#fff",
+          background: "var(--preview-bg)",
           display: "flex",
           flexDirection: "column",
         }}
@@ -194,7 +194,7 @@ function codeBlock(code: string, lang: string, key: string): ReactElement {
       key={key}
       style={{
         background: "var(--surface)",
-        border: "1px solid var(--border, rgba(255,255,255,0.1))",
+        border: "1px solid var(--border)",
         borderRadius: 8,
         padding: "8px 10px",
         overflowX: "auto",
@@ -206,7 +206,7 @@ function codeBlock(code: string, lang: string, key: string): ReactElement {
       {lang && (
         <div
           style={{
-            color: "var(--text-muted, #888)",
+            color: "var(--muted)",
             fontSize: "0.62rem",
             letterSpacing: "0.08em",
             textTransform: "uppercase",

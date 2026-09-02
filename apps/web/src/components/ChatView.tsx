@@ -1488,7 +1488,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
           </div>
         )}
         {autoNote && (
-          <p style={{ color: "var(--muted, #8a8f98)", margin: 0 }}>✔ {autoNote}</p>
+          <p style={{ color: "var(--muted)", margin: 0 }}>✔ {autoNote}</p>
         )}
         {canUnrevert && (
           <button style={{ margin: "2px 0" }} onClick={() => void unrevert()}>
@@ -1585,8 +1585,8 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
                     height: 18,
                     borderRadius: 9,
                     border: "none",
-                    background: "var(--danger, #c0392b)",
-                    color: "#fff",
+                    background: "var(--danger)",
+                    color: "var(--on-danger)",
                     fontSize: 11,
                     lineHeight: 1,
                     cursor: "pointer",
@@ -1749,7 +1749,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
           style={{
             position: "fixed",
             inset: 0,
-            background: "rgba(0,0,0,0.94)",
+            background: "var(--scrim)",
             zIndex: 55,
             display: "flex",
             flexDirection: "column",
@@ -1808,7 +1808,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
                       maxHeight: 120,
                       whiteSpace: "pre-wrap",
                       wordBreak: "break-word",
-                      color: "var(--text-muted, #aaa)",
+                      color: "var(--muted)",
                     }}
                   >
                     {a.output.length > 400 ? `…${a.output.slice(-400)}` : a.output}
@@ -1825,7 +1825,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
           style={{
             position: "fixed",
             inset: 0,
-            background: "rgba(0,0,0,0.94)",
+            background: "var(--scrim)",
             zIndex: 60,
             display: "flex",
             flexDirection: "column",
@@ -1889,7 +1889,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
                 <pre
                   style={{
                     background: "var(--surface)",
-                    border: "1px solid var(--border, rgba(255,255,255,0.1))",
+                    border: "1px solid var(--border)",
                     borderRadius: 8,
                     padding: "8px 10px",
                     overflowX: "auto",
@@ -1900,9 +1900,9 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
                 >
                   {f.patch.split("\n").map((l, i) => {
                     const bg = l.startsWith("+")
-                      ? "rgba(46,160,67,0.18)"
+                      ? "color-mix(in srgb, var(--status-ok) 18%, transparent)"
                       : l.startsWith("-")
-                        ? "rgba(248,81,73,0.18)"
+                        ? "color-mix(in srgb, var(--status-err) 18%, transparent)"
                         : undefined;
                     return (
                       <div

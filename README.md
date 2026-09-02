@@ -66,8 +66,9 @@ private. That is the product: **local power, remote control, zero trust**.
   their own UI output
 - **Consistent icon language** — every chrome icon (desktop nav rail, tab bar, chat header,
   artifact cards, status dots) is the same inline-SVG stroke set on top of CSS design tokens;
-  no emoji as icons, and the missing `--panel`/`--bg2`/`--fg` tokens are now defined so the
-  light theme renders correctly in the desktop shell
+  every color literal lives in `apps/web/src/tokens.css` (dark + light theme), and
+  Settings → Appearance accepts **System/Dark/Light** — System follows the OS
+  `prefers-color-scheme` live, with no reload
 
 ## Quick Start (Mac → iPhone, ~5 min)
 
