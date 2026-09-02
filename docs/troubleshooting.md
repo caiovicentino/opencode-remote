@@ -17,6 +17,7 @@ Run `opencode-remote doctor` first — it checks everything below in one shot.
 | PWA won't open away from home | no TLS — use the tailscale path from `scripts/dev-iphone.sh` or a Caddy-fronted relay |
 | watch the logs | `tail -f ~/.opencode-remote/logs/daemon.log` (JSON lines; `OCR_LOG_LEVEL=debug` for frame-level) |
 | watch the desktop app logs | tray → **Open logs folder**, then `tail -f ~/Library/Application\ Support/OpenCode\ Remote/logs/desktop.log` (`userData/logs/desktop.log`, ~1MB cap, rotates to `desktop.log.1`) — the packaged app writes here instead of the console |
+| watch the daemon sidecar's own output | same folder, `userData/logs/daemon-sidecar.log` (JSONL; rotates to `daemon-sidecar.log.1`, ~1MB cap) — the desktop shell tees the spawned daemon's stdout/stderr there; the tray's **Open logs folder** click cites both files in `desktop.log` |
 
 ## Health endpoints
 

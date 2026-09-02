@@ -321,6 +321,13 @@ folder, use the tray's **Open logs folder** item (it creates and reveals the
 folder even if it was deleted); on macOS it is
 `~/Library/Application Support/OpenCode Remote/logs/`.
 
+**Daemon sidecar log**: the daemon the desktop app spawns writes its JSONL
+output to the same `userData/logs/daemon-sidecar.log` (rotating to
+`daemon-sidecar.log.1`, ~1MB cap, 2 files kept — write failures are silently
+ignored). In the packaged app the daemon's stdout/stderr used to be forwarded
+to a console that does not exist; the tray's **Open logs folder** item now
+logs which file holds what.
+
 **First-run QR for your phone**: while no phone is paired yet, the desktop
 window shows a first-run overlay with a scannable pairing QR (rendered by the
 main process from the daemon's `GET /__ocr/pairing-uri`, a read-only loopback

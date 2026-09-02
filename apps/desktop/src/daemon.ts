@@ -7,6 +7,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { log, logError } from "./desktop-log";
+import { teeSidecarChunk } from "./sidecar-log";
 
 // Single source of truth for the daemon API port: the desktop polls the exact
 // port the spawned child binds. OCR_DAEMON_METRICS_PORT is the desktop-facing
@@ -315,7 +316,10 @@ function spawnChild(entry: DaemonEntry): void {
     },
     // stdout is piped (not inherited) so we can capture the boot pairing URI;
     // each chunk is forwarded to our own stdout, preserving the old behavior.
-    stdio: ["ignore", "pipe", "inherit"],
+    // stderr switched from "inherit" to "pipe" (P3-018) so both streams can be
+    // teed into userData/logs/daemon-sidecar.log — inherit is invisible in the
+    // packaged app, where the stage-5 user has no terminal at all.
+    stdio: ["ignore", "pipe", "pipe"],
   });
   sidecar.child = child;
   sidecar.spawned = true;
@@ -331,9 +335,24 @@ function spawnChild(entry: DaemonEntry): void {
     } catch {
       /* packaged headless runs may have no stdout attached */
     }
+    // P3-018: raw chunk also lands in userData/logs/daemon-sidecar.log (no-op
+    // until main.ts installs the tee). Never throws.
+    teeSidecarChunk(chunk);
     if (sidecar.pairUrl) return;
     sidecar.stdoutTail = (sidecar.stdoutTail + chunk).slice(-STDOUT_TAIL_MAX);
     sidecar.pairUrl = PAIR_URL_RE.exec(sidecar.stdoutTail)?.[0] ?? null;
+  });
+  // P3-018: stderr was inherited before — same packaged-app invisibility as
+  // stdout had. Forward to our own stderr (dev keeps the terminal view) and
+  // tee into the same sidecar log file the stdout chunks go to.
+  child.stderr?.setEncoding("utf8");
+  child.stderr?.on("data", (chunk: string) => {
+    try {
+      process.stderr.write(chunk);
+    } catch {
+      /* packaged headless runs may have no stderr attached */
+    }
+    teeSidecarChunk(chunk);
   });
   child.on("exit", () => {
     sidecar.exited = true;

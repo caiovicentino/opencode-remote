@@ -225,6 +225,13 @@ arquivo tem cap de ~1MB e rotaciona para `desktop.log.1` (só 2 arquivos); se o
 disco encher, o app segue rodando e apenas para de gravar. No macOS:
 `~/Library/Application Support/OpenCode Remote/logs/`.
 
+**Log do sidecar de daemon**: o daemon que o app desktop spawna escreve sua
+saída JSONL no mesmo `userData/logs/daemon-sidecar.log` (rotaciona para
+`daemon-sidecar.log.1`, cap ~1MB, 2 arquivos — falha de escrita é ignorada em
+silêncio). No app empacotado o stdout/stderr do daemon ia para um console que
+não existe; o item **Open logs folder** do tray agora registra qual arquivo
+guarda o quê.
+
 **Notificação nativa quando o daemon para**: se o orçamento de respawn do
 sidecar se esgota, o shell dispara uma notificação nativa única —
 `daemon parou — use "Reconectar agora" no OpenCode Remote` — e `daemon de
