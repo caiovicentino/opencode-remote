@@ -730,13 +730,21 @@ end tell`;
       const page = capMessagePage(rows, limit, before);
       metrics.inc("ocr_message_pages_total");
       // P1-064: observable trail for the paged fetch contract (acceptance: the
-      // client opens a session with exactly one ?limit=50 op)
-      audit("session.historyPage", { sessionId, limit, before: before ?? null });
-      return {
-        id: req.id,
-        status: 200,
-        body: { rows: page.rows, hasMore: page.hasMore, oldest: page.oldest, total: page.total },
+      // client opens a session with exactly one ?limit=50 op). `bytes` is the
+      // size of the body actually served — the thing that must fit the relay frame.
+      const body = {
+        rows: page.rows,
+        hasMore: page.hasMore,
+        oldest: page.oldest,
+        total: page.total,
       };
+      audit("session.historyPage", {
+        sessionId,
+        limit,
+        before: before ?? null,
+        bytes: Buffer.byteLength(JSON.stringify(body), "utf8"),
+      });
+      return { id: req.id, status: 200, body };
     } catch (err) {
       return {
         id: req.id,

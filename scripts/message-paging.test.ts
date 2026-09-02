@@ -15,7 +15,7 @@
  * for the opencode binary).
  * Run: npx tsx scripts/message-paging.test.ts
  */
-import { createServer } from "node:http";
+import { createServer, type Server } from "node:http";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -47,8 +47,6 @@ const rows = Array.from({ length: TOTAL }, (_, i) => ({
     { type: "text", text: `hello-${i + 1}` },
   ],
 }));
-// acceptance 4: a 50-row tail page must stay under 100KB on the wire
-const tailPageBytes = Buffer.byteLength(JSON.stringify(rows.slice(TOTAL - 50)), "utf8");
 
 // --- fake opencode server ----------------------------------------------------
 const hits: { path: string }[] = [];
@@ -208,7 +206,10 @@ if (!browser) {
   process.exit(0);
 }
 
-type AuditEntry = { event: string; data?: { limit?: number; before?: string | null } };
+type AuditEntry = {
+  event: string;
+  data?: { limit?: number; before?: string | null; bytes?: number };
+};
 function historyPageEntries(): AuditEntry[] {
   try {
     return readFileSync(auditFile, "utf8")
@@ -258,7 +259,6 @@ try {
   });
   const paintMs = Date.now() - t0;
   check(`P1-064 e2e: 500-message session tail paints in <2s (${paintMs}ms)`, paintMs < 2000);
-  check("P1-064 e2e: tail page stays under 100KB", tailPageBytes < 100_000, `${tailPageBytes} bytes`);
 
   // acceptance 3: exactly ONE paged fetch, no integral fetch beside it
   await new Promise((r) => setTimeout(r, 800)); // let stray effects surface
@@ -270,6 +270,11 @@ try {
     JSON.stringify(fresh),
   );
   check("P1-064 e2e: exactly one opencode history fetch behind it", hits1 === 1, `${hits1} fetches`);
+
+  // acceptance 4, measured on the body the daemon ACTUALLY served (audit
+  // envelope), not on the synthetic input array
+  const servedBytes = fresh[0]?.data?.bytes ?? Number.MAX_SAFE_INTEGER;
+  check(`P1-064 e2e: served page stays under 100KB (${servedBytes}B)`, servedBytes < 100_000);
 
   // acceptance 3: the tool drawer must not refetch while historyTools has data
   await page.locator('button[aria-label*="tool" i]').first().click();

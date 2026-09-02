@@ -5,6 +5,7 @@ import { timeAgo, sessionUpdatedTs } from "../lib/time";
 import type { EventEnvelope } from "@ocr/protocol";
 import type { Pairing } from "../lib/client";
 import { applySessionFilters, splitPilotSessions, type BadgeFilter } from "../lib/sessionFilter";
+import { dropCachedSession } from "../lib/sessionCache";
 
 interface Session {
   id: string;
@@ -149,7 +150,9 @@ export default function SessionsView({
 
   async function deleteSession(id: string) {
     if (!window.confirm(t("deleteConfirm"))) return;
-    await request("DELETE", `/session/${id}`);
+    const res = await request("DELETE", `/session/${id}`);
+    // P1-064: a deleted conversation must not linger in the warm cache
+    if (res.status === 200) dropCachedSession(id);
     void load();
   }
 
