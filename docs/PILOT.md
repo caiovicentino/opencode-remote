@@ -462,7 +462,10 @@ npx tsx apps/pilot/src/doctor.ts state
 ```
 
 Cobertura: um bloco por subcomando em `scripts/unit.test.ts` (sequência exata de
-comandos do refs, idempotência, fail-safe do branches, reparo de state corrompido).
+comandos do refs, idempotência, fail-safe do branches, refnames fora do padrão
+`pilot/<ID>` pulados antes de tocar shell, deleção que falha → `ok: false`,
+reparo de state corrompido e tabela de dispatch do CLI `attempts` contra
+state.json descartável).
 
 ## Rodar manualmente
 
