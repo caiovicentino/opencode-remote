@@ -38,9 +38,32 @@ extraResources:
       - "index.js"
       - "dashboard.html"
 mac:
-  target: dir
+  # P1-050: client-ready packaging. `dmg` produces the distributable
+  # OpenCode Remote-<version>.dmg; `dir` keeps a plain .app around for the
+  # deterministic smoke check (npm run dist:smoke --workspace @ocr/desktop).
+  # Builds stay ad-hoc signed (no notarization credentials in this repo); the
+  # user-visible effect is a standard Gatekeeper "unidentified developer"
+  # right-click → Open on first launch, documented in README/troubleshooting.
+  target:
+    - target: dmg
+    - target: dir
   category: public.app-category.developer-tools
   icon: build/icon.png
+dmg:
+  # Craft: branded installer window, no license/EULA noise.
+  title: OpenCode Remote ${version}
+  window:
+    width: 560
+    height: 340
+  contents:
+    - x: 144
+      y: 200
+      type: file
+      path: "*.app"
+    - x: 416
+      y: 200
+      type: link
+      path: /Applications
 win:
   target: dir
   icon: build/icon.png

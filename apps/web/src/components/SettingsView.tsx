@@ -12,6 +12,8 @@ interface Props {
   onBack: () => void;
   /** P1-061: current wire — "local" loopback WS or the relay (PWA default). */
   transport?: "local" | "relay";
+  /** P1-050: desktop shell only — full support bundle for "Copy diagnostic". */
+  getDiagnostics?: () => Promise<string>;
 }
 
 interface Device {
@@ -100,7 +102,7 @@ export function applyTheme() {
   document.documentElement.style.fontSize = font === "small" ? "14px" : font === "large" ? "19px" : "16.5px";
 }
 
-export default function SettingsView({ request, onBack, transport }: Props) {
+export default function SettingsView({ request, onBack, transport, getDiagnostics }: Props) {
   const [devices, setDevices] = useState<Device[]>([]);
   const [name, setName] = useState("");
   const [notify, setNotify] = useState({ permission: true, idle: true });
@@ -232,6 +234,27 @@ export default function SettingsView({ request, onBack, transport }: Props) {
           <p className="muted" style={{ margin: "2px 0 0" }}>
             {transport === "local" ? t("connLocal") : t("connRelay")}
           </p>
+        </div>
+
+        <div className="card">
+          <h3>{t("diagTitle")}</h3>
+          <button
+            className="primary"
+            onClick={() =>
+              void (async () => {
+                if (!getDiagnostics) return;
+                try {
+                  const { copyText } = await import("../lib/clipboard");
+                  const ok = await copyText(await getDiagnostics());
+                  setMsg(ok ? t("diagCopied") : t("diagCopy"));
+                } catch {
+                  setMsg(t("diagCopy"));
+                }
+              })()
+            }
+          >
+            {t("diagCopy")}
+          </button>
         </div>
 
         <div className="card">

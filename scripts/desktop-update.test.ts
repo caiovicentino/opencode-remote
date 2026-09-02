@@ -186,6 +186,131 @@ check(
   })) === "unrecognized-feed",
 );
 
+// --- P1-050: listener-once + consent flow (round-1 review regression) --------
+import {
+  attachUpdateListeners,
+  resolvedFeedUrl,
+  shouldOfferInstall,
+  versionFromDownloadedArgs,
+  type UpdateDialogSinks,
+} from "../apps/desktop/src/update.ts";
+
+/**
+ * Fake with real EventEmitter counting: models the Electron autoUpdater
+ * singleton (a second check MUST NOT re-attach — that was the regression).
+ */
+function fakeEmitter() {
+  const listeners: Record<string, ((...a: unknown[]) => void)[]> = {};
+  const api = {
+    installs: 0,
+    feedURLs: [] as string[],
+    setFeedURL(o: { url: string }): void {
+      api.feedURLs.push(o.url);
+    },
+    checkForUpdates(): void {
+      (listeners["update-available"] ?? []).forEach((f) => f());
+    },
+    on(event: string, l: (...a: unknown[]) => void): unknown {
+      (listeners[event] ??= []).push(l);
+      return api;
+    },
+    listenerCount(event: string): number {
+      return (listeners[event] ?? []).length;
+    },
+    emit(event: string, ...args: unknown[]): void {
+      for (const l of [...(listeners[event] ?? [])]) l(...args);
+    },
+    quitAndInstall(): void {
+      api.installs++;
+    },
+  };
+  return api;
+}
+
+const repeatUpdater = fakeEmitter();
+const repeatOpts = {
+  feedUrl: "http://127.0.0.1:9/feed.json",
+  currentVersion: "0.2.0",
+  updater: repeatUpdater as never,
+  fetchImpl: fakeFetcher(JSON.stringify({ url: "http://x/y.zip", name: "0.4.0", notes: "" })),
+  log: () => {},
+};
+await checkForUpdatesOnBoot(repeatOpts);
+await checkForUpdatesOnBoot(repeatOpts);
+await checkForUpdatesOnBoot(repeatOpts);
+check(
+  "P1-050: 3 checks on the SAME updater attach each listener exactly once",
+  repeatUpdater.listenerCount("error") === 1 &&
+    repeatUpdater.listenerCount("update-available") === 1 &&
+    repeatUpdater.listenerCount("update-downloaded") === 1,
+);
+check(
+  "P1-050: 3 checks still call Squirrel checkForUpdates every time (download re-armed)",
+  repeatUpdater.feedURLs.length === 3,
+);
+
+check("versionFromDownloadedArgs: releaseName string", versionFromDownloadedArgs([null, "notes", "0.2.1"]) === "0.2.1");
+check("versionFromDownloadedArgs: v-prefix", versionFromDownloadedArgs(["v0.3.0"]) === "v0.3.0");
+check("versionFromDownloadedArgs: info object", versionFromDownloadedArgs([{ version: "0.4.0" }]) === "0.4.0");
+check("versionFromDownloadedArgs: prose is not a version", versionFromDownloadedArgs(["release notes text"]) === null);
+check("versionFromDownloadedArgs: empty → null", versionFromDownloadedArgs([]) === null);
+
+check(
+  "shouldOfferInstall: fresh version offered",
+  shouldOfferInstall({ offering: null, declined: new Set(), version: null }, "0.3.0") === true,
+);
+check(
+  "shouldOfferInstall: same-version dialog already open → false",
+  shouldOfferInstall({ offering: "0.3.0", declined: new Set(), version: null }, "0.3.0") === false,
+);
+check(
+  "shouldOfferInstall: declined this session → false",
+  shouldOfferInstall({ offering: null, declined: new Set(["0.3.0"]), version: null }, "0.3.0") === false,
+);
+
+// Consent end-to-end through the module: downloaded event → dialog once per
+// version, "later" defers re-offers, "install" applies via quitAndInstall.
+const dialogLog: string[] = [];
+const consentUpdater = fakeEmitter();
+let dialogAnswer: "install" | "later" = "later";
+const dialogSinks: UpdateDialogSinks = {
+  askInstall: (version) => {
+    dialogLog.push(version);
+    return Promise.resolve(dialogAnswer);
+  },
+};
+attachUpdateListeners(consentUpdater, { log: () => {}, dialog: dialogSinks });
+consentUpdater.emit("update-downloaded", null, "release notes", "0.3.0");
+await new Promise((r) => setTimeout(r, 5));
+consentUpdater.emit("update-downloaded", null, "release notes", "0.3.0");
+await new Promise((r) => setTimeout(r, 5));
+check(
+  "P1-050: declined version is offered exactly once, stale repeats never re-prompt",
+  dialogLog.length === 1 && dialogLog[0] === "0.3.0" && consentUpdater.installs === 0,
+);
+dialogAnswer = "install";
+consentUpdater.emit("update-downloaded", null, "release notes", "0.4.0");
+await new Promise((r) => setTimeout(r, 5));
+check(
+  "P1-050: accepting a NEW version applies it via quitAndInstall",
+  dialogLog.length === 2 && dialogLog[1] === "0.4.0" && consentUpdater.installs === 1,
+);
+
+check(
+  "resolvedFeedUrl: explicit env wins over packaged default",
+  resolvedFeedUrl({ OCR_UPDATE_FEED: "http://x/feed.json" }, true) === "http://x/feed.json",
+);
+check(
+  "resolvedFeedUrl: packaged default = daemon loopback updates folder",
+  resolvedFeedUrl({}, true) === "http://127.0.0.1:8792/__ocr/updates/feed.json",
+);
+check(
+  "resolvedFeedUrl: packaged default honors the metrics port override",
+  resolvedFeedUrl({ OCR_DAEMON_METRICS_PORT: "9321" }, true) === "http://127.0.0.1:9321/__ocr/updates/feed.json",
+);
+check("resolvedFeedUrl: dev unpackaged stays disabled", resolvedFeedUrl({}, false) === null);
+
+
 // --- e2e: compiled update.js inside the real Electron ------------------------
 const req = createRequire(join(repoRoot, "package.json"));
 const electronBin = req("electron") as unknown as string;

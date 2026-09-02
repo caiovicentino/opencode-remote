@@ -52,6 +52,7 @@ import { loadRoutines, saveRoutines, type Routine } from "./routines.js";
 import { artifactMime, kindFor, listArtifacts, readArtifact } from "./artifacts.js";
 import { createShutdown, stopAccepting } from "./shutdown.js";
 import { localUpgradeAllowed } from "./localws.js";
+import { UPDATE_CONTENT_TYPES, resolveUpdatePath, updatesDir } from "./updates.js";
 // P2-045: dashboard v2 metrics — aggregations shared with the pilot's eval battery
 import { avgPhaseDurations, burnDown, countFailSteps, rollbackHealthAlert, type HistoryEntry } from "../../pilot/src/metrics";
 import type { PilotEvent } from "../../pilot/src/events";
@@ -1651,6 +1652,33 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     } catch {
       res.writeHead(500, { "content-type": "text/plain" });
       res.end("dashboard file missing");
+    }
+    return true;
+  }
+  // P1-050: staged auto-update feed — GET /__ocr/updates/<version>/<file>.
+  // Serves ONLY files under ~/.opencode-remote/updates (resolveUpdatePath is
+  // strict: charset + extension allowlist + resolved-path containment). The
+  // route is intentionally unauthenticated like /dashboard because the
+  // desktop's autoUpdater cannot attach the Bearer token; the metrics server
+  // binds 127.0.0.1 only, so the folder is unreachable off-machine.
+  if (req.method === "GET" && url.pathname.startsWith("/__ocr/updates/")) {
+    const file = resolveUpdatePath(updatesDir(), url.pathname.slice("/__ocr/updates".length));
+    if (!file) {
+      res.writeHead(404, { "content-type": "text/plain" });
+      res.end("not found");
+      return true;
+    }
+    try {
+      const body = readFileSync(file);
+      const ext = (file.match(/(\.[a-z0-9]+)$/i)?.[1] ?? "").toLowerCase();
+      res.writeHead(200, {
+        "content-type": UPDATE_CONTENT_TYPES[ext] ?? "application/octet-stream",
+        "cache-control": "no-store",
+      });
+      res.end(body);
+    } catch {
+      res.writeHead(404, { "content-type": "text/plain" });
+      res.end("not found");
     }
     return true;
   }

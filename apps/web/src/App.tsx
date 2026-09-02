@@ -84,6 +84,8 @@ interface DesktopBridge {
   daemonApi?: DaemonApiFn;
   /** P1-046: Go-menu accelerators (Cmd+T/K/1..5) pushed from the main process. */
   onMenuAction?: (cb: (id: string) => void) => () => void;
+  /** P1-050: Settings "Copy diagnostic" support bundle (text, no secrets). */
+  getDiagnostics?: () => Promise<string>;
 }
 
 function desktopBridge(): DesktopBridge | null {
@@ -658,7 +660,12 @@ export default function App() {
     />
   );
   const settingsNode = (
-    <SettingsView request={request} onBack={goBack} transport={clientRef.current?.transport} />
+    <SettingsView
+      request={request}
+      onBack={goBack}
+      transport={clientRef.current?.transport}
+      getDiagnostics={desktopBridge()?.getDiagnostics}
+    />
   );
   const filesNode = <FilesView request={request} onBack={goBack} />;
   const artifactsNode = <ArtifactsView request={request} onBack={goBack} />;

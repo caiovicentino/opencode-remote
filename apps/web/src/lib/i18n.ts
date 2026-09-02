@@ -145,6 +145,16 @@ export const dict = {
       "Scan this QR code with the OpenCode Remote app to control this machine from your phone. Traffic is end-to-end encrypted.",
     pairOverlayAlt: "Pairing QR code",
     pairOverlayLater: "Pair later",
+    // first-run splash (desktop, P1-050): promise the first value in <60s
+    splashValue: "Control this machine from your phone. Your agent, your code — end-to-end encrypted.",
+    splashStep1: "Open OpenCode Remote on your phone",
+    splashStep2: "Scan this pairing code",
+    splashStep3: "Send your first message — audio, photo or text",
+    splashUnder: "First value in under a minute.",
+    // diagnostics (desktop settings, P1-050)
+    diagTitle: "Diagnostics",
+    diagCopy: "Copy diagnostic",
+    diagCopied: "Diagnostic copied — paste it into your support message",
     // daemon sidecar gave up (desktop, P2-017) — P1-053: the copy points to the
     // in-banner recovery button; the reconnecting state is the active variant.
     daemonDown: "Local daemon is down — the app stopped retrying.",
@@ -322,6 +332,16 @@ export const dict = {
       "Escaneie este QR code com o app OpenCode Remote para controlar esta máquina do celular. O tráfego é criptografado ponta a ponta.",
     pairOverlayAlt: "QR code de pareamento",
     pairOverlayLater: "Parear depois",
+    // first-run splash (desktop, P1-050): promessa do 1º valor em <60s
+    splashValue: "Controle esta máquina do celular. Seu agente, seu código — criptografia ponta a ponta.",
+    splashStep1: "Abra o OpenCode Remote no celular",
+    splashStep2: "Escaneie este código de pareamento",
+    splashStep3: "Mande a primeira mensagem — áudio, foto ou texto",
+    splashUnder: "Primeiro valor em menos de 1 minuto.",
+    // diagnostics (desktop settings, P1-050)
+    diagTitle: "Diagnóstico",
+    diagCopy: "Copiar diagnóstico",
+    diagCopied: "Diagnóstico copiado — cole na sua mensagem de suporte",
     // daemon sidecar gave up (desktop, P2-017) — P1-053: o copy aponta pro botão
     // de recuperação no próprio banner; reconectando é a variante ativa.
     daemonDown: "Daemon local caiu — o app parou de tentar reiniciar.",

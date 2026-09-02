@@ -159,7 +159,34 @@ npm start  --workspace @ocr/desktop      # abre a janela
 
 Durante o desenvolvimento do web, aponte o shell pro dev server do Vite:
 `OCR_WEB_URL=http://localhost:5173 npm start --workspace @ocr/desktop`.
-Empacotamento (DMG, notarização) vem com a etapa de distribuição.
+`npm run dist` é auto-suficiente: ele gera a UI web e o shell (TypeScript +
+bundle do daemon) antes de empacotar, então funciona também num checkout limpo.
+
+**Empacotamento (P1-050)**: `npm run dist --workspace @ocr/desktop` agora
+também produz um **`OpenCode Remote-<versão>.dmg`** distribuível (janela de
+instalação com branding, versão semântica no About e no nome do arquivo).
+Builds são assinados ad-hoc — no primeiro abre, clique direito → **Abrir**
+para passar pelo Gatekeeper; depois o app se comporta como qualquer app
+instalado.
+
+**Auto-update com consentimento (P1-050)**: o shell empacotado checa a pasta
+versionada de updates do daemon (`http://127.0.0.1:8792/__ocr/updates/`
+— servida pelo próprio daemon local, sem nova superfície de rede) no boot e
+sob demanda pelo tray (**Check for updates**). Achando um `feed.json` mais
+novo, o release baixa em segundo plano e um diálogo de consentimento oferece
+**Reiniciar agora / Depois** — nada instala sem clique explícito, versão
+adiada não é re-oferecida na sessão, e checagens repetidas nunca empilham
+ofertas velhas. Publicar um release é copiar arquivos: solte `<versão>/` com
+o artefato em `~/.opencode-remote/updates/` e reescreva `feed.json` (ver
+`docs/troubleshooting.md`). Em dev, o update segue opt-in via `OCR_UPDATE_FEED`.
+
+**Relatórios de crash & diagnóstico (P1-050)**: erros fatais do main process e
+crashes do renderer viram arquivos com timestamp em
+`~/.opencode-remote/pilot/client-logs/` (20 mais recentes mantidos). O
+Settings ganha o card **Diagnóstico → Copiar diagnóstico**, que põe no
+clipboard um bundle de suporte — versões app/electron, plataforma, estado do
+daemon, últimas linhas do desktop.log e nomes dos arquivos de crash. Sem
+segredos: apiToken, allowlist e URI de pareamento nunca são incluídos.
 
 O shell desktop sobe o daemon como **sidecar**: ao abrir, ele faz spawn do
 daemon — em apps empacotados, um bundle CJS single-file embarcado em
@@ -191,7 +218,10 @@ tela de pareamento.
 **Zero pairing na máquina host**: no desktop, o sidecar também captura o URI
 `opencode-remote://pair?v=2&…` que o daemon imprime no boot e a UI se pareia
 sozinha — na máquina que hospeda o daemon não existe scan de QR na primeira
-execução. A tela manual de QR/colar continua disponível como fallback
+execução. Quando um celular ainda precisa parear, a primeira execução abre com
+um **splash de boas-vindas** (pt/en): o valor do produto logo de cara, o QR de
+pareamento e um onboarding de 3 passos prometendo o primeiro valor real em
+menos de 1 minuto. A tela manual de QR/colar continua disponível como fallback
 (troca de máquinas → add machine), por exemplo quando um daemon já rodando foi
 reaproveitado e nenhum URI foi capturado.
 

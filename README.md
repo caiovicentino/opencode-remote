@@ -170,11 +170,35 @@ npm run dist --workspace @ocr/desktop -- --dir  # package web UI + daemon sideca
 
 During web development, point the shell at the Vite dev server:
 `OCR_WEB_URL=http://localhost:5173 npm start --workspace @ocr/desktop`.
-Packaging (DMG, notarization) comes with the distribution stage.
-
 `npm run dist` is self-sufficient: it builds the web UI and the shell
 (TypeScript + daemon bundle) before packaging, so the command also works on a
 clean checkout.
+
+**Packaging (P1-050)**: `npm run dist --workspace @ocr/desktop` now also
+produces a distributable **`OpenCode Remote-<version>.dmg`** (branded
+installer window, semantic version in the About panel and in the DMG file
+name). Builds are ad-hoc signed — on first launch, right-click → **Open** once
+to pass Gatekeeper; afterwards the app behaves like any installed app.
+
+**Auto-updates with consent (P1-050)**: the packaged shell checks the daemon's
+loopback updates folder (`http://127.0.0.1:8792/__ocr/updates/` — a versioned
+folder served by the same local daemon, no new network surface) at boot and on
+demand from the tray (**Check for updates**). When a newer `feed.json` is
+found, the release downloads in the background and a consent dialog offers
+**Restart now / Later** — nothing installs without an explicit click, a
+deferred version is not re-offered during the session, and repeated checks
+never stack stale offers. Staging a release is a plain copy:
+drop `<version>/` with the artifact under `~/.opencode-remote/updates/` and
+rewrite `feed.json` (see `docs/troubleshooting.md`). Dev runs stay opt-in via
+`OCR_UPDATE_FEED`.
+
+**Crash reports & diagnostics (P1-050)**: fatal main-process errors and
+renderer crashes land as timestamped files under
+`~/.opencode-remote/pilot/client-logs/` (newest 20 kept). Settings gains a
+**Diagnostics → Copy diagnostic** card that puts a support bundle on the
+clipboard — app/electron versions, platform, daemon state, the last desktop.log
+lines and the crash-file names. No secrets: the apiToken, allowlist and
+pairing URI are never included.
 
 The desktop shell boots the daemon as a **sidecar**: on launch it spawns the
 daemon — in packaged apps a single-file CJS bundle shipped at
@@ -199,7 +223,10 @@ authorizes `/api/*` until the daemon restarts.
 **Zero pairing on the host machine**: on the desktop, the sidecar also captures
 the `opencode-remote://pair?v=2&…` URI the daemon prints at boot and the UI
 pairs itself automatically — on the machine that hosts the daemon there is no
-QR scan on first run. The manual QR/paste screen remains as a fallback
+QR scan on first run. When a phone still needs to pair, the first run opens
+with a proper **welcome splash** (pt/en): the product value up front, the
+pairing QR and a three-step onboarding promising the first real value in
+under a minute. The manual QR/paste screen remains as a fallback
 (machines switcher → add machine), for example when an already-running daemon
 was reused and never printed a URI to capture.
 
