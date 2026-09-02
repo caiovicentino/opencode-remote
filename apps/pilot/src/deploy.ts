@@ -69,6 +69,100 @@ export function soakFailureRateExceeded(window: boolean[], baselineRate: number,
   return rate - baselineRate > tolerance;
 }
 
+/** P1-044: interval between soak health checks (the soak loop's clock). */
+export const SOAK_INTERVAL_SEC = 60;
+export const SOAK_INTERVAL_MS = SOAK_INTERVAL_SEC * 1000;
+
+/**
+ * P1-044 (round 2): pre-deploy health baseline, extracted with an injectable
+ * probe/clock so the eval battery can pin the sampling without touching git/npm.
+ */
+export async function baselineHealthRate(
+  probe: () => Promise<boolean>,
+  samples = BASELINE_SAMPLES,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise<void>((r) => setTimeout(r, ms)),
+): Promise<number> {
+  const out: boolean[] = [];
+  for (let i = 0; i < samples; i++) {
+    out.push(await probe());
+    if (i < samples - 1) await sleep(1_000);
+  }
+  return baselineFailureRate(out);
+}
+
+export type SoakOutcome = "ok" | "health" | "live" | "rate";
+
+export interface SoakResult {
+  outcome: SoakOutcome;
+  /** 1-based index of the check where a failure surfaced (checks count when ok). */
+  at: number;
+  /** Human reason for the rollback — empty when outcome === "ok". */
+  why: string;
+}
+
+export interface SoakOpts {
+  checks: number;
+  pilotInfra: boolean;
+  baselineRate: number;
+  probe: () => Promise<boolean>;
+  heartbeat: () => void;
+  /** Extra live-invariant runner (autocatalysis lane). Runs synchronously and
+   * may take minutes — the caller must keep the heartbeat fresh around it. */
+  live?: () => { ok: boolean; output: string };
+  /** Injectable clock (tests); default = real setTimeout. */
+  sleep?: (ms: number) => Promise<void>;
+  /** Injectable event sink (tests); default = no-op. */
+  onEvent?: (fields: { phase: string; ok: boolean; detail?: string }) => void;
+}
+
+/**
+ * P1-044: the post-deploy soak watch loop, extracted from deploy() so the eval
+ * battery can pin the wiring (window push/shift, live-invariant scheduling,
+ * rollback triggers) instead of only the pure helpers. 3 consecutive health
+ * failures, a failed extra live-invariant run or a failure-rate regression
+ * against the pre-deploy baseline each stop the loop with the matching
+ * outcome; the caller owns quarantine + rollback.
+ */
+export async function soakWatch(o: SoakOpts): Promise<SoakResult> {
+  const sleep = o.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  let fails = 0;
+  const window: boolean[] = [];
+  for (let i = 0; i < o.checks; i++) {
+    await sleep(SOAK_INTERVAL_MS);
+    o.heartbeat();
+    const healthy = await o.probe();
+    console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "soak", data: { check: i + 1, of: o.checks, healthy } }));
+    o.onEvent?.({ phase: `soak ${i + 1}/${o.checks}`, ok: healthy });
+    window.push(healthy);
+    if (window.length > SOAK_WINDOW) window.shift();
+    if (!healthy) {
+      fails++;
+      if (fails >= 3) return { outcome: "health", at: i + 1, why: `soak failed after ${i + 1} checks` };
+    } else fails = 0;
+    if (o.pilotInfra && (i + 1) % LIVE_INVARIANT_EVERY === 0) {
+      // Round 2: this exec blocks the event loop for up to 5min (execSync) —
+      // touch the heartbeat on BOTH sides or the watchdog (same process) exits
+      // before the caller can quarantine + roll back, leaving an unsoaked SHA.
+      o.heartbeat();
+      const live = o.live?.() ?? { ok: true, output: "" };
+      o.onEvent?.({
+        phase: `live-invariants ${i + 1}/${o.checks}`,
+        ok: live.ok,
+        detail: live.ok ? undefined : live.output.slice(-200),
+      });
+      o.heartbeat();
+      if (!live.ok) {
+        return { outcome: "live", at: i + 1, why: `live invariants failed during soak (check ${i + 1}): ${live.output.slice(-200)}` };
+      }
+    }
+    if (o.pilotInfra && soakFailureRateExceeded(window, o.baselineRate)) {
+      const f = window.filter((h) => !h).length;
+      return { outcome: "rate", at: i + 1, why: `soak failure rate ${f}/${window.length} above baseline ${o.baselineRate.toFixed(2)}` };
+    }
+  }
+  return { outcome: "ok", at: o.checks, why: "" };
+}
+
 /**
  * P3-006: injectable disk-guard dependencies — tests mock the free-space probe,
  * the threshold, the event stream and the supervisor notify to pin the
@@ -146,19 +240,14 @@ export async function deploy(
     (exec(`git diff --name-only ${prev} ${sha} -- apps/pilot`, { cwd: cfg.repo, allowFail: true }).output.trim().length > 0);
   // P1-044 (c): pre-deploy health baseline, sampled before any mutation — the
   // window comparison during soak needs the old deployment's own failure rate.
+  // ok:false on a fully failing baseline (dashboard must not read green).
   let baselineRate = 0;
   if (pilotInfra) {
-    const probeHealth = opts?.probeHealth ?? (() => isHealthy(cfg));
-    const samples: boolean[] = [];
-    for (let i = 0; i < BASELINE_SAMPLES; i++) {
-      samples.push(await probeHealth());
-      if (i < BASELINE_SAMPLES - 1) await sleep(1_000);
-    }
-    baselineRate = baselineFailureRate(samples);
+    baselineRate = await baselineHealthRate(opts?.probeHealth ?? (() => isHealthy(cfg)));
     emitEvent("deploy", {
       phase: "baseline",
-      ok: true,
-      detail: `${samples.filter((h) => !h).length}/${BASELINE_SAMPLES} failing (autocatalysis lane)`,
+      ok: baselineRate < 1,
+      detail: `${Math.round(baselineRate * BASELINE_SAMPLES)}/${BASELINE_SAMPLES} failing (autocatalysis lane)`,
     });
   }
   try {
@@ -197,42 +286,34 @@ export async function deploy(
 
   // soak: keep watching for the monitor window; 3 consecutive failures = rollback
   // P1-044: autocatalysis lane — doubled window, extra live invariant runs and
-  // a failure-rate rollback against the pre-deploy baseline.
-  const soakEverySec = 60;
+  // a failure-rate rollback against the pre-deploy baseline. All soak-loop
+  // events flow through the injectable emitEvent (P3-006 pattern).
   const soakMin = soakMinutesFor(cfg.monitorMin, pilotInfra);
-  const checks = Math.floor((soakMin * 60) / soakEverySec);
-  let fails = 0;
-  const window: boolean[] = [];
-  for (let i = 0; i < checks; i++) {
-    await sleep(soakEverySec * 1000);
-    touchHeartbeat();
-    const healthyNow = await isHealthy(cfg);
-    console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "soak", data: { check: i + 1, of: checks, healthy: healthyNow } }));
-    emit("deploy", { phase: `soak ${i + 1}/${checks}`, ok: healthyNow });
-    window.push(healthyNow);
-    if (window.length > SOAK_WINDOW) window.shift();
-    if (!healthyNow) {
-      fails++;
-      if (fails >= 3) {
-        emit("deploy", { phase: "rollback", ok: false, detail: "soak failed" });
-        await banAndRollback(cfg, sha, prev, `soak failed after ${i + 1} checks`, meta?.task ?? "deploy", opts?.notify ?? notifySupervisor);
-        return { ok: false, rolledBack: true, detail: "soak failed" };
-      }
-    } else fails = 0;
-    if (pilotInfra && (i + 1) % LIVE_INVARIANT_EVERY === 0) {
-      const live = exec("npx tsx scripts/invariants.ts --live", { cwd: cfg.repo, timeoutMin: 5, allowFail: true });
-      emit("deploy", { phase: `live-invariants ${i + 1}/${checks}`, ok: live.ok });
-      if (!live.ok) {
-        emit("deploy", { phase: "rollback", ok: false, detail: "live invariants failed during soak" });
-        await banAndRollback(cfg, sha, prev, `live invariants failed during soak (check ${i + 1}): ${live.output.slice(-200)}`, meta?.task ?? "deploy", opts?.notify ?? notifySupervisor);
-        return { ok: false, rolledBack: true, detail: "live invariants failed during soak" };
-      }
-    }
-    if (pilotInfra && soakFailureRateExceeded(window, baselineRate)) {
-      emit("deploy", { phase: "rollback", ok: false, detail: "soak failure rate above pre-deploy baseline" });
-      await banAndRollback(cfg, sha, prev, `soak failure rate ${window.filter((h) => !h).length}/${window.length} above baseline ${baselineRate.toFixed(2)}`, meta?.task ?? "deploy", opts?.notify ?? notifySupervisor);
-      return { ok: false, rolledBack: true, detail: "soak failure rate regression" };
-    }
+  const checks = Math.floor((soakMin * 60) / SOAK_INTERVAL_SEC);
+  const soak = await soakWatch({
+    checks,
+    pilotInfra,
+    baselineRate,
+    probe: () => isHealthy(cfg),
+    heartbeat: touchHeartbeat,
+    live: () => {
+      touchHeartbeat(); // before: the exec below blocks the loop for minutes
+      const r = exec("npx tsx scripts/invariants.ts --live", { cwd: cfg.repo, timeoutMin: 5, allowFail: true });
+      touchHeartbeat(); // after: the watchdog timer fires as soon as the loop unblocks
+      return r;
+    },
+    onEvent: (e) => emitEvent("deploy", e),
+  });
+  if (soak.outcome !== "ok") {
+    const detail =
+      soak.outcome === "health" ? "soak failed" : soak.outcome === "live" ? "live invariants failed during soak" : "soak failure rate regression";
+    emitEvent("deploy", {
+      phase: "rollback",
+      ok: false,
+      detail: soak.outcome === "health" ? "soak failed" : soak.outcome === "live" ? "live invariants failed during soak" : "soak failure rate above pre-deploy baseline",
+    });
+    await banAndRollback(cfg, sha, prev, soak.why, meta?.task ?? "deploy", opts?.notify ?? notifySupervisor);
+    return { ok: false, rolledBack: true, detail };
   }
   emit("deploy", { phase: "done", ok: true, detail: `sha ${sha.slice(0, 7)} live` });
   // P2-011: UI-changing cycles leave visual evidence in the review log — a

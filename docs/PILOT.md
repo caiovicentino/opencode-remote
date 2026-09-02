@@ -115,7 +115,10 @@ cérebro — o merge recebe um caminho reforçado no gate e no deploy:
   `apps/pilot/**`, dobra a janela de soak (`soakMinutesFor` — mínimo 20min,
   `2×monitorMin` quando maior) e roda `scripts/invariants.ts --live` adicional a
   cada 5 checagens (~5min); falha em qualquer rodada extra quarentena o SHA e rola
-  back imediatamente.
+  back imediatamente. O probe extra toca o heartbeat do watchdog **antes e depois**
+  da execução (que bloqueia o event loop por até 5min) — sem isso o watchdog mataria
+  o próprio processo no meio do soak, antes da quarentena, deixando o SHA sem soak
+  rodando (achado do review round 2).
 - **Rollback por taxa de falha (c)**: antes de qualquer mutação o deploy amostra a
   saúde do deploy antigo 3× (`BASELINE_SAMPLES`) e calcula a taxa de falha
   baseline. Durante o soak, uma janela deslizante de 5 checagens

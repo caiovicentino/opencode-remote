@@ -585,9 +585,14 @@ export const MIN_CORPUS_SAMPLES = 3;
  * re- verifies the corpus is present and still green: >= MIN_CORPUS_SAMPLES
  * samples per evidence command, every real sample matches itself and its
  * truncated form, and a fabricated line over a real sample is still rejected.
- * Returns null when green, else the reason. Pure (fs reads on the corpus dir).
+ * `matches` is injectable so the eval battery can drive the tamper branches
+ * (permissive/rejecting matcher regressions) without fixtures that could never
+ * occur naturally. Returns null when green, else the reason.
  */
-export function corpusGateDetail(dir = CORPUS_DIR): string | null {
+export function corpusGateDetail(
+  dir = CORPUS_DIR,
+  matches: (pasted: string, actual: string) => boolean = evidenceMatches,
+): string | null {
   const corpus = loadGateCorpus(dir);
   for (const cmd of CORPUS_COMMANDS) {
     const samples = corpus.filter((s) => s.cmd === cmd);
@@ -595,11 +600,11 @@ export function corpusGateDetail(dir = CORPUS_DIR): string | null {
       return `golden corpus too thin for ${cmd}: ${samples.length}/${MIN_CORPUS_SAMPLES} samples`;
     }
     for (const s of samples) {
-      if (!evidenceMatches(s.output, s.output)) return `corpus sample no longer matches itself: ${s.file}`;
+      if (!matches(s.output, s.output)) return `corpus sample no longer matches itself: ${s.file}`;
       const truncated = s.output.split("\n").slice(0, Math.ceil(s.output.split("\n").length / 2)).join("\n");
-      if (!evidenceMatches(truncated, s.output)) return `corpus sample no longer matches truncated: ${s.file}`;
+      if (!matches(truncated, s.output)) return `corpus sample no longer matches truncated: ${s.file}`;
       // prepended: appended lines beyond the 600-line paste cap are sliced away
-      if (evidenceMatches(`FABRICATED-CORPUS-PROBE-LINE\n${s.output}`, s.output)) {
+      if (matches(`FABRICATED-CORPUS-PROBE-LINE\n${s.output}`, s.output)) {
         return `corpus sample accepts a fabricated line: ${s.file}`;
       }
     }

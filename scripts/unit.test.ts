@@ -121,11 +121,13 @@ import { DISK_MIN_FREE_BYTES, diskGuardDetail, freeDiskBytes } from "../apps/pil
 import {
   BASELINE_SAMPLES,
   baselineFailureRate,
+  baselineHealthRate,
   deploy,
   LIVE_INVARIANT_EVERY,
   quarantineWithEscalation,
   soakFailureRateExceeded,
   soakMinutesFor,
+  soakWatch,
   SOAK_RATE_TOLERANCE,
   SOAK_WINDOW,
 } from "../apps/pilot/src/deploy";
@@ -1322,6 +1324,15 @@ check("stdlibShadow: non-stdlib root file passes", stdlibShadowHits("A\tmain.py\
         "corpus gate: fabrication probe matches the matcher's rejection rule",
         evidenceMatches(`FABRICATED-CORPUS-PROBE-LINE\n${real}`, real) === false && evidenceMatches(real, real) === true,
       );
+      // the tamper branches themselves, driven via the injectable matcher
+      check(
+        "corpus gate: a permissive matcher regression is caught (fabricated line accepted)",
+        corpusGateDetail(dir, () => true)?.includes("accepts a fabricated line") === true,
+      );
+      check(
+        "corpus gate: a rejecting matcher regression is caught (self-match fails)",
+        corpusGateDetail(dir, () => false)?.includes("no longer matches itself") === true,
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1728,6 +1739,105 @@ check("disk guard: statfs probe returns bytes on a real dir", realFree !== null 
   check("soak rate: degradation beyond a flaky baseline rolls back", soakFailureRateExceeded(w(3), baselineFailureRate([true, false, true])) === true);
   check("soak rate: tolerance constant pins the 20% margin", SOAK_RATE_TOLERANCE === 0.2 && SOAK_WINDOW === 5);
   check("soak lane: baseline is 3 probes; extra live invariants every 5 checks", BASELINE_SAMPLES === 3 && LIVE_INVARIANT_EVERY === 5);
+}
+
+// --- P1-044 round 2: soak-loop wiring (baseline, window, scheduling, rollback) ---
+{
+  const noSleep = () => Promise.resolve();
+  const events: Array<{ phase: string; ok: boolean; detail?: string }> = [];
+  const base = { heartbeat: () => {}, sleep: noSleep, onEvent: (e: { phase: string; ok: boolean; detail?: string }) => events.push(e) };
+
+  // baseline sampling: 3 probes, rate from the failures
+  const probeSeq = [false, true, true];
+  let p = 0;
+  const rate = await baselineHealthRate(async () => probeSeq[p++] ?? true, 3, noSleep);
+  check("soak lane: baseline rate is the failing fraction of the sampled probes", Math.abs(rate - 1 / 3) < 1e-9 && p === 3);
+
+  // full green lane run: 20 checks (20min), live invariants exactly at 5/10/15/20
+  let liveRuns = 0;
+  events.length = 0;
+  const okRun = await soakWatch({
+    ...base,
+    checks: 20,
+    pilotInfra: true,
+    baselineRate: 0,
+    probe: async () => true,
+    live: () => {
+      liveRuns++;
+      return { ok: true, output: "" };
+    },
+  });
+  check(
+    "soak lane: green 20-check run schedules live invariants exactly at 5/10/15/20",
+    okRun.outcome === "ok" && okRun.at === 20 && liveRuns === 4 && events.some((e) => e.phase === "live-invariants 5/20" && e.ok === true),
+  );
+  check("soak lane: every check emits a soak event through the injectable sink", events.filter((e) => e.phase.startsWith("soak ")).length === 20);
+
+  // rate rollback: 2 failures fill 2/5 of the first full window (check 5) — the
+  // live run at check 5 happens first and must not mask the rate trip
+  const seq = [true, true, true, false, false];
+  let idx = 0;
+  const rateRun = await soakWatch({
+    ...base,
+    checks: 20,
+    pilotInfra: true,
+    baselineRate: 0,
+    probe: async () => seq[idx++ % seq.length]!,
+    live: () => ({ ok: true, output: "" }),
+  });
+  check(
+    "soak lane: 2/5 failing window trips the rate rollback at check 5 (live ran first)",
+    rateRun.outcome === "rate" && rateRun.at === 5 && rateRun.why.includes("2/5") && rateRun.why.includes("baseline 0.00"),
+  );
+
+  // health rollback: 3 consecutive failures, before live/rate logic applies
+  const healthRun = await soakWatch({
+    ...base,
+    checks: 10,
+    pilotInfra: true,
+    baselineRate: 0,
+    probe: async () => false,
+    live: () => ({ ok: true, output: "" }),
+  });
+  check("soak lane: 3 consecutive failures roll back as health at check 3", healthRun.outcome === "health" && healthRun.at === 3);
+
+  // live rollback: failed extra invariant stops the loop with the output tail
+  let liveCalls = 0;
+  const liveRun = await soakWatch({
+    ...base,
+    checks: 10,
+    pilotInfra: true,
+    baselineRate: 0,
+    probe: async () => true,
+    live: () => {
+      liveCalls++;
+      return { ok: false, output: "ERR boom" };
+    },
+  });
+  check(
+    "soak lane: failed live invariant rolls back at its check with the output tail",
+    liveRun.outcome === "live" && liveRun.at === 5 && liveRun.why.includes("ERR boom") && liveCalls === 1,
+  );
+
+  // non-lane deploy: no live runs, no rate rollback (only 3-consecutive applies)
+  const pat = [true, true, false, true, false, true, true, false, true, true];
+  let j = 0;
+  let laneLiveCalls = 0;
+  const plainRun = await soakWatch({
+    ...base,
+    checks: 10,
+    pilotInfra: false,
+    baselineRate: 0,
+    probe: async () => pat[j++ % pat.length]!,
+    live: () => {
+      laneLiveCalls++;
+      return { ok: true, output: "" };
+    },
+  });
+  check(
+    "soak lane: regular deploy never runs live invariants nor the rate rule",
+    plainRun.outcome === "ok" && laneLiveCalls === 0,
+  );
 }
 
 // --- P2-058 deploy sha guard: only gate-verified merges deploy ----------------
