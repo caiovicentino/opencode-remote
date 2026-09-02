@@ -280,7 +280,7 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
       log("warn", "task cost reconciliation failed", { task: task.id, err: String(err).slice(0, 200) });
     }
     state.tasks++;
-    recordCycle(state, result.ok); // P2-032 fever window
+    recordCycle(state, result.ok, task.id); // P2-032 fever window (P2-063: attributed to the task)
     let blockedAttempts: number | null = null;
     if (result.ok) {
       delete state.taskAttempts[task.id]; // gate passed — breaker reset
@@ -311,7 +311,9 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
     saveState(state);
   } catch (err) {
     state.failures++;
-    recordCycle(state, false); // P2-032: a crashed pipeline is fever evidence too
+    // P2-032: a crashed pipeline is fever evidence too — un-attributed
+    // (P2-063: each crash counts as its own distinct entry, never as the task's)
+    recordCycle(state, false, undefined);
     const detail = String(err).slice(0, 300);
     tripCircuitBreaker(taskCfg, state, task, `pipeline crashed: ${detail}`);
     saveState(state);

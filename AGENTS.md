@@ -29,8 +29,10 @@ reviewed on the incremental diff since the round checkpoint (`~/.opencode-remote
 instead of the truncated whole-branch diff. Branch preservation across attempts is all-task behavior
 (P1-060/P1-036): after any failed attempt the retry keeps the existing `pilot/<ID>` branch (the builder continues
 the preserved history); only the first attempt starts clean at origin/main. A global
-"fever" breaker (P2-032) pauses the whole queue in audit mode when >=60% of the last 10
-pipeline cycles fail or 2 tasks get blocked within 30min — it posts a diagnostic summary to
+"fever" breaker (P2-032) pauses the whole queue in audit mode when >=3 DISTINCT tasks
+fail within the last 10 pipeline cycles (P2-063: failures are aggregated by task id, so
+one stubborn task burning through its own maxAttemptsPerTask breaker never pauses the
+queue) or 2 tasks get blocked within 30min — it posts a diagnostic summary to
 the log and resumes after external intervention (`touch ~/.opencode-remote/pilot/audit-clear`)
 or 2h without a new failure. Once per day, alongside the red-team pass, a non-blocking
 nightly EXPLORER agent (P3-052) drives the real desktop app through the P1-051 harness
