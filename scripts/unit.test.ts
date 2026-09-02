@@ -52,6 +52,7 @@ import {
   appendLessons,
   dedupeAndPrune,
   EXPERIENCE_CAP,
+  experienceTemplate,
   maintainExperienceFile,
   normalizeLesson,
   parseLessons,
@@ -2441,6 +2442,11 @@ check(
   "experience: builder prompt carries the injected lessons",
   builderPrompt(EXP_TASK, 1, "", ["- When X, do Y (fonte: P0-001)"]).includes("EXPERIENCE — relevant lessons from past merges") &&
     builderPrompt(EXP_TASK, 1, "", ["- When X, do Y (fonte: P0-001)"]).includes("(fonte: P0-001)"),
+);
+check(
+  "experience: template + landed doc name the planner audience (P2-042, no stale claim)",
+  experienceTemplate().includes("de planner, builder e strategist") &&
+    readFileSync(join(import.meta.dirname, "..", "docs", "EXPERIENCE.md"), "utf8").includes("de planner, builder e strategist"),
 );
 
 {
