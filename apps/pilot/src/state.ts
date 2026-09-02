@@ -259,6 +259,22 @@ export function touchHeartbeat() {
   } catch {}
 }
 
+/**
+ * P1-035: arms a periodic heartbeat feeder for long aux-agent awaits (the main
+ * loop is blocked while a strategist/researcher/redteam run, so nothing else
+ * touches the heartbeat). Returns an idempotent stop function. The injectable
+ * `touch` keeps unit tests hermetic — no writes to the real heartbeat file.
+ */
+export function startHeartbeat(everyMs = 60_000, touch: () => void = touchHeartbeat): () => void {
+  const timer = setInterval(touch, everyMs);
+  let stopped = false;
+  return () => {
+    if (stopped) return;
+    stopped = true;
+    clearInterval(timer);
+  };
+}
+
 /** Self-watchdog: exits the process if the heartbeat went silent. KeepAlive restarts it. */
 export function startWatchdog(maxSilenceMin = 3) {
   touchHeartbeat();

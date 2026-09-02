@@ -65,7 +65,7 @@ import {
   readRecentFailureLessons,
   type FailureLesson,
 } from "../apps/pilot/src/failureLessons";
-import { clampSlots, ensureSingleton, loadState, normalizeModels, recordTaskFailure, tierBModelFor } from "../apps/pilot/src/state";
+import { clampSlots, ensureSingleton, loadState, normalizeModels, recordTaskFailure, startHeartbeat, tierBModelFor } from "../apps/pilot/src/state";
 import { avgPhaseDurations, burnDown, countFailSteps } from "../apps/pilot/src/metrics";
 import type { PilotEvent } from "../apps/pilot/src/events";
 import { areaKey, pickBatch, pickTasks } from "../apps/pilot/src/scheduler";
@@ -96,7 +96,7 @@ import {
   type Task,
 } from "../apps/pilot/src/backlog";
 import { EXPLORER_MAX_FINDINGS, EXPLORER_MAX_STEPS, EXPLORER_TIMEOUT_MIN, EXPLORER_PUSH_RETRIES, EXPLORER_PUSH_WAIT_MS, commitAndPushFindings, explorerSpec, parseExplorerFindings, type ExplorerFinding } from "../apps/pilot/src/explorer";
-import { API_PREFLIGHT, apiHealthy, claudeArgs, idScanner, mergeAgentIds, OPENCODE_URL_DEFAULT, scanIds, shouldFallbackTierB, waitForApi } from "../apps/pilot/src/runner";
+import { runAgent, API_PREFLIGHT, apiHealthy, claudeArgs, idScanner, mergeAgentIds, OPENCODE_URL_DEFAULT, scanIds, shouldFallbackTierB, waitForApi } from "../apps/pilot/src/runner";
 import { mkdtempSync, mkdirSync, readdirSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync, utimesSync } from "node:fs";
 import { execSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
@@ -2919,6 +2919,55 @@ check("p1-059 listGateFails: missing dir → []", listGateFails(join(tmpdir(), `
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+// --- P1-035: aux agents feed the self-watchdog (silent strategist must not kill the pilot) ---
+
+{
+  const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+  let beats = 0;
+  const stop = startHeartbeat(20, () => beats++);
+  await sleep(70);
+  stop();
+  const armedBeats = beats;
+  stop(); // idempotent — a second call must not throw or double-clear
+  await sleep(70);
+  check("p1-035 startHeartbeat: touches >=2x while armed", armedBeats >= 2);
+  check("p1-035 startHeartbeat: stop() halts all touches", beats === armedBeats);
+}
+
+{
+  // Backlog criterion: a 6min-silent strategist must not starve the watchdog.
+  // Scale 1:1 — silent child for 300ms, heartbeat every 20ms.
+  let beats = 0;
+  const silentSpawn = (() => spawn(process.execPath, ["-e", "setTimeout(()=>process.exit(0),300)"])) as unknown as typeof spawn;
+  const r = await runAgent("p1-035 silent strategist", {
+    cwd: tmpdir(),
+    timeoutMin: 5,
+    label: "t",
+    preflight: async () => true,
+    spawnImpl: silentSpawn,
+    heartbeatMs: 20,
+    heartbeatTouch: () => beats++,
+  });
+  check("p1-035 runAgent: silent agent resolves ok with empty output", r.ok === true && r.output === "" && !r.timedOut);
+  check("p1-035 runAgent: silent agent fed the watchdog (>=2 beats in 300ms)", beats >= 2);
+}
+
+{
+  // Edge case: preflight failure must not leak a heartbeat interval (nothing armed, no touches).
+  let beats = 0;
+  const r = await runAgent("p1-035 preflight down", {
+    cwd: tmpdir(),
+    timeoutMin: 5,
+    label: "t",
+    preflight: async () => false,
+    heartbeatMs: 20,
+    heartbeatTouch: () => beats++,
+  });
+  await new Promise<void>((r2) => setTimeout(r2, 70));
+  check("p1-035 runAgent: preflight failure aborts before spawn", r.ok === false && r.output.includes("[preflight]"));
+  check("p1-035 runAgent: no heartbeat armed on preflight failure", beats === 0);
 }
 
 // --- P1-061: local direct-mode transport ------------------------------------

@@ -1,6 +1,6 @@
 import { spawn, execSync } from "node:child_process";
 import { nowLocalISO } from "./log";
-import { tierBModelFor, touchHeartbeat, type TierBRole } from "./state";
+import { tierBModelFor, startHeartbeat, touchHeartbeat, type TierBRole } from "./state";
 
 export interface RunResult {
   ok: boolean;
@@ -195,9 +195,20 @@ export function agentStream(role: string): (chunk: string) => void {
  */
 export async function runAgent(
   prompt: string,
-  opts: { cwd: string; timeoutMin: number; label: string; sessionId?: string; printLogs?: boolean; onStdout?: (chunk: string) => void },
+  opts: {
+    cwd: string;
+    timeoutMin: number;
+    label: string;
+    sessionId?: string;
+    printLogs?: boolean;
+    onStdout?: (chunk: string) => void;
+    preflight?: () => Promise<boolean>;
+    spawnImpl?: typeof spawn;
+    heartbeatMs?: number;
+    heartbeatTouch?: () => void;
+  },
 ): Promise<RunResult> {
-  if (!(await waitForApi())) {
+  if (!(await (opts.preflight ?? waitForApi)())) {
     return {
       ok: false,
       timedOut: false,
@@ -210,7 +221,8 @@ export async function runAgent(
     if (opts.printLogs) args.push("--print-logs"); // exposes the session id for context-cache resumes
     if (opts.sessionId) args.push("-s", opts.sessionId);
     args.push(prompt);
-    const child = spawn("opencode", args, {
+    const spawnFn = opts.spawnImpl ?? spawn;
+    const child = spawnFn("opencode", args, {
       cwd: opts.cwd,
       env: process.env,
       stdio: ["ignore", "pipe", "pipe"], // stdin MUST be closed: opencode waits for EOF
@@ -219,6 +231,11 @@ export async function runAgent(
     let timedOut = false;
     const outScan = idScanner();
     const errScan = idScanner();
+    // P1-035: the self-watchdog must be fed even when the agent stays silent
+    // on stdout (a slow strategist/researcher/redteam used to starve the
+    // heartbeat and kill the pilot with slots in flight) — hence a timer, not
+    // a stdout hook.
+    const stopHeartbeat = startHeartbeat(opts.heartbeatMs ?? 60_000, opts.heartbeatTouch ?? touchHeartbeat);
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill("SIGTERM");
@@ -234,11 +251,13 @@ export async function runAgent(
       errScan.scan(c.toString());
     });
     child.on("exit", () => {
+      stopHeartbeat();
       clearTimeout(timer);
       const ids = mergeAgentIds(outScan.flush(), errScan.flush());
       resolve({ ok: !timedOut, output, timedOut, sessionId: ids.sessionId, taskIds: ids.taskIds });
     });
     child.on("error", (err) => {
+      stopHeartbeat();
       clearTimeout(timer);
       const ids = mergeAgentIds(outScan.flush(), errScan.flush());
       resolve({
@@ -329,10 +348,11 @@ export async function runTierB(
     let output = "";
     let timedOut = false;
     let done = false;
+    const stopHeartbeat = startHeartbeat();
     const finish = (r: RunResult) => {
       if (done) return;
       done = true;
-      clearInterval(hb);
+      stopHeartbeat();
       clearTimeout(timer);
       resolve(r);
     };
@@ -341,7 +361,6 @@ export async function runTierB(
       child.kill("SIGTERM");
       setTimeout(() => child.kill("SIGKILL"), 10_000);
     }, opts.timeoutMin * 60_000);
-    const hb = setInterval(touchHeartbeat, 60_000);
     child.stdout.on("data", (c: Buffer) => {
       output += c.toString();
     });
