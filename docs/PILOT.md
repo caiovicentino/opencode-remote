@@ -735,15 +735,22 @@ main (bookkeeping do pipeline ou, pior, um commit hostil) virava deploy. Agora:
 - **Merge verificado**: o gatekeeper grava o SHA do merge (squash de PR ou
   merge local `--no-ff`, sempre pós-gate verde) em
   `~/.opencode-remote/pilot/verified-merges.jsonl` — código determinístico sob
-  a gate lock, nunca um agente. As duas call sites de deploy resolvem o alvo
-  com `latestDeployableSha()`: caminhada first-parent em `origin/main` que
-  retorna o SHA verificado **mais recente não-quarentenado** e ignora commits
-  de bookkeeping (mark-done, scribe, refill). Critério do backlog: **push
-  direto em main não dispara deploy**.
+  a gate lock, nunca um agente. Round 2: a gravação só acontece quando o HEAD
+  de main **andou** desde a ponta pré-merge **e** carrega a identidade de
+  merge da task (subject `pilot(<id>): ...` no squash, ou o commit de merge
+  `--no-ff` do branch no fallback) — merge enfileirado pelo `--auto` não
+  grava nada (fail-closed; o código embarca no próximo merge verificado).
+  As duas call sites de deploy resolvem o alvo com `latestDeployableSha()`:
+  caminhada first-parent em `origin/main` que retorna o SHA verificado
+  **mais recente não-quarentenado** e ignora commits de bookkeeping
+  (mark-done, scribe, refill). Critério do backlog: **push direto em main não
+  dispara deploy**.
 - **Quarentena**: deploy que falha (steps/health/invariants/soak) grava o SHA
   ruim em `~/.opencode-remote/pilot/quarantine.jsonl` **antes** do rollback —
   o loop de redeploy do mesmo SHA quebrado acabou; produção fica no último
-  SHA verificado bom até um merge posterior destravar.
+  SHA verificado bom até um merge posterior destravar. Round 2: falha de
+  escrita da quarentena (anti-loop degradado) notifica o supervisor
+  best-effort em vez de ficar só no log.
 - `deploy()` re-checa o SHA recebido contra as duas listas (`shaGuardDetail`)
   como segunda camada — recusa com `{ ok: false, rolledBack: false }` e evento
   `deploy/sha-guard`, sem `notifySupervisor` (recusa esperada ≠ falha).

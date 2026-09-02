@@ -102,21 +102,21 @@ export async function deploy(
     kickstart(cfg, "com.ocr.relay");
     kickstart(cfg, "com.ocr.daemon");
   } catch (err) {
-    await banAndRollback(cfg, sha, prev, `deploy steps failed: ${String(err).slice(0, 200)}`, meta?.task ?? "deploy");
+    await banAndRollback(cfg, sha, prev, `deploy steps failed: ${String(err).slice(0, 200)}`, meta?.task ?? "deploy", opts?.notify ?? notifySupervisor);
     return { ok: false, rolledBack: true, detail: String(err).slice(0, 200) };
   }
 
   // health watch: services must come up healthy
   const healthy = await pollHealth(cfg, 90);
   if (!healthy) {
-    await banAndRollback(cfg, sha, prev, "health check failed after deploy", meta?.task ?? "deploy");
+    await banAndRollback(cfg, sha, prev, "health check failed after deploy", meta?.task ?? "deploy", opts?.notify ?? notifySupervisor);
     return { ok: false, rolledBack: true, detail: "health check failed" };
   }
 
   // live invariants against production (replay, tunnel, state perms)
   const inv = exec("npx tsx scripts/invariants.ts --live", { cwd: cfg.repo, timeoutMin: 5, allowFail: true });
   if (!inv.ok) {
-    await banAndRollback(cfg, sha, prev, `live invariants failed: ${inv.output.slice(-200)}`, meta?.task ?? "deploy");
+    await banAndRollback(cfg, sha, prev, `live invariants failed: ${inv.output.slice(-200)}`, meta?.task ?? "deploy", opts?.notify ?? notifySupervisor);
     return { ok: false, rolledBack: true, detail: "live invariants failed" };
   }
 
@@ -134,7 +134,7 @@ export async function deploy(
       fails++;
       if (fails >= 3) {
         emit("deploy", { phase: "rollback", ok: false, detail: "soak failed" });
-        await banAndRollback(cfg, sha, prev, `soak failed after ${i + 1} checks`, meta?.task ?? "deploy");
+        await banAndRollback(cfg, sha, prev, `soak failed after ${i + 1} checks`, meta?.task ?? "deploy", opts?.notify ?? notifySupervisor);
         return { ok: false, rolledBack: true, detail: "soak failed" };
       }
     } else fails = 0;
@@ -185,11 +185,42 @@ async function rollback(cfg: PilotConfig, prevSha: string, why: string) {
  * P2-058: quarantine before rolling back — the failed SHA is banned so the
  * pending-deploy self-heal walks past it (last good verified state) instead of
  * re-deploying and re-executing the same defective brain in a loop.
+ * Round 2: a failed quarantine WRITE must not stay silent — it silently
+ * disables the anti-loop guarantee, so the supervisor is notified (best-effort)
+ * to make the degraded state visible to a human.
  */
-async function banAndRollback(cfg: PilotConfig, badSha: string, prevSha: string, why: string, task: string) {
-  const recorded = quarantineSha(defaultQuarantineFile(), badSha, why, task, nowLocalISO());
-  if (!recorded) log("warn", "quarantine write failed — sha remains deployable", { sha: badSha.slice(0, 7) });
+async function banAndRollback(
+  cfg: PilotConfig,
+  badSha: string,
+  prevSha: string,
+  why: string,
+  task: string,
+  notify: typeof notifySupervisor,
+) {
+  await quarantineWithEscalation(defaultQuarantineFile(), badSha, why, task, notify);
   await rollback(cfg, prevSha, why);
+}
+
+/**
+ * P2-058 (round 2): record a quarantine entry and escalate when the write
+ * fails. Exported so the eval battery can pin the escalation contract with a
+ * mocked notify.
+ */
+export async function quarantineWithEscalation(
+  file: string,
+  sha: string,
+  why: string,
+  task: string,
+  notify: typeof notifySupervisor,
+): Promise<boolean> {
+  const recorded = quarantineSha(file, sha, why, task, nowLocalISO());
+  if (!recorded) {
+    log("warn", "quarantine write failed — sha remains deployable", { sha: sha.slice(0, 7) });
+    try {
+      await notify(task, false, `quarantine write failed for ${sha.slice(0, 7)} — redeploy-loop guard degraded, manual check needed`);
+    } catch {}
+  }
+  return recorded;
 }
 
 /**

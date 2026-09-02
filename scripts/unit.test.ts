@@ -106,7 +106,7 @@ import { dirname, join } from "node:path";
 import { artifactMime, kindFor, listArtifacts, readArtifact, validSegment } from "../apps/daemon/src/artifacts";
 import { browseTarget, clickPoint, validSession, viewportFromParams } from "../apps/daemon/src/browse";
 import { createShutdown, DRAIN_MS, stopAccepting } from "../apps/daemon/src/shutdown";
-import { touchedUiFromDiff, needsEscalation, parseFindings, verifyFindings } from "../apps/pilot/src/pipeline";
+import { touchedUiFromDiff, needsEscalation, parseFindings, verifyFindings, isTaskMergeSha } from "../apps/pilot/src/pipeline";
 import { stdlibShadowHits } from "./stdlib-shadow";
 import { latestUiShot, pruneShots } from "../apps/pilot/src/shot";
 import { parseMarkdown, parseInline } from "../apps/web/src/lib/md";
@@ -114,7 +114,7 @@ import { parseCsv } from "../apps/web/src/lib/csv";
 import { artifactMentions, fmtBytes } from "../apps/web/src/lib/artifacts";
 import { clampSplitPct, isSplitViewport, SPLIT_MIN_PX } from "../apps/web/src/lib/split";
 import { DISK_MIN_FREE_BYTES, diskGuardDetail, freeDiskBytes } from "../apps/pilot/src/disk";
-import { deploy } from "../apps/pilot/src/deploy";
+import { deploy, quarantineWithEscalation } from "../apps/pilot/src/deploy";
 import {
   MAX_QUARANTINE_ENTRIES,
   MAX_VERIFIED_ENTRIES,
@@ -1682,6 +1682,80 @@ check("disk guard: statfs probe returns bytes on a real dir", realFree !== null 
     "deploy guard: quarantined sha refused before any git step",
     banned.ok === false && banned.rolledBack === false && banned.detail.startsWith("sha quarantined"),
   );
+}
+
+// --- P2-058 round 2: quarantine-write escalation + merge-identity validation --
+{
+  const dir = mkdtempSync(join(tmpdir(), "ocr-qesc-"));
+  const qf = join(dir, "q.jsonl");
+  const calls: Array<{ task: string; ok: boolean; detail: string }> = [];
+  const notify = async (task: string, ok: boolean, detail: string) => {
+    calls.push({ task, ok, detail });
+    return true;
+  };
+  const GOOD = "2222222222222222222222222222222222222222";
+  const recorded = await quarantineWithEscalation(qf, GOOD, "soak failed", "P2-058", notify);
+  check(
+    "quarantine escalation: successful write stays silent",
+    recorded === true && calls.length === 0 && readQuarantine(qf).length === 1,
+  );
+  const rejected = await quarantineWithEscalation(qf, "not-a-sha", "why", "P2-058", notify);
+  check(
+    "quarantine escalation: write failure notifies the supervisor",
+    rejected === false &&
+      calls.length === 1 &&
+      calls[0]!.task === "P2-058" &&
+      calls[0]!.ok === false &&
+      calls[0]!.detail.includes("quarantine write failed"),
+  );
+  check("quarantine escalation: failed write leaves no file entry", readQuarantine(qf).length === 1);
+  const throwing = async (): Promise<boolean> => {
+    throw new Error("net down");
+  };
+  let escalated = false;
+  try {
+    await quarantineWithEscalation(qf, "zz", "why", "T", throwing);
+  } catch {
+    escalated = true;
+  }
+  check("quarantine escalation: notify crash is best-effort, never rejects", escalated === false);
+  rmSync(dir, { recursive: true, force: true });
+}
+
+{
+  const repo = mkdtempSync(join(tmpdir(), "ocr-mergeid-"));
+  const g = (c: string) => execSync(c, { cwd: repo, stdio: "pipe" });
+  const shaOf = () => execSync("git rev-parse HEAD", { cwd: repo, encoding: "utf8" }).trim();
+  g("git init -q -b main .");
+  g("git config user.email t@t.local");
+  g("git config user.name tester");
+  g("git commit -q --allow-empty -m base");
+  g("git checkout -qb pilot/T1");
+  g("git commit -q --allow-empty -m 'pilot(T1): feature work'");
+  g("git checkout -q main");
+  // PR squash shape: canonical subject (GitHub may append the PR number)
+  g("git commit -q --allow-empty -m 'pilot(T1): feature work (#62)'");
+  const squashSha = shaOf();
+  g("git commit -q --allow-empty -m 'bookkeeping between tasks'");
+  const bookkeepingSha = shaOf();
+  // local --no-ff fallback shape
+  g("git merge -q --no-ff --no-edit pilot/T1");
+  const fallbackMergeSha = shaOf();
+  g("git commit -q --allow-empty -m 'pilot(T9): other task'");
+  const otherTaskSha = shaOf();
+  g("git commit -q --allow-empty -m 'pilot(T1-9): id-prefix confusion'");
+  const prefixTrapSha = shaOf();
+
+  check("merge identity: squash commit subject matches the task", isTaskMergeSha(repo, squashSha, "T1") === true);
+  check("merge identity: --no-ff fallback merge commit matches the task", isTaskMergeSha(repo, fallbackMergeSha, "T1") === true);
+  check("merge identity: bookkeeping commit is never a verified merge", isTaskMergeSha(repo, bookkeepingSha, "T1") === false);
+  check("merge identity: another task's subject does not match", isTaskMergeSha(repo, otherTaskSha, "T1") === false);
+  check("merge identity: id-prefix confusion rejected", isTaskMergeSha(repo, prefixTrapSha, "T1") === false);
+  check(
+    "merge identity: invalid sha/id charset refused",
+    isTaskMergeSha(repo, "../../etc", "T1") === false && isTaskMergeSha(repo, squashSha, "T1/../x") === false,
+  );
+  rmSync(repo, { recursive: true, force: true });
 }
 
 // --- P1-007 experience memory (IER) ------------------------------------------
