@@ -84,9 +84,16 @@ private. That is the product: **local power, remote control, zero trust**.
   created before a daemon restart are not re-injected after it — only
   sessions created from the fresh daemon are
 - **Desktop shell (early)** — Electron app wrapping the same UI, with tray and native menu;
-  includes a **Browser pane** that drives a headless Chromium on the host through the daemon
-  (`/api/browse` — navigate, click, extract text, screenshot) so agents can visually validate
-  their own UI output
+  includes a **Browser pane**: in the desktop shell it renders a real sandboxed Electron
+  `<webview>` (scroll, click and edit work like in a browser; `contextIsolation`/`sandbox` on,
+  `nodeIntegration` off, popups off), with an editable URL bar, reload and a maximize toggle
+  (~80% width). The Playwright screenshot mode (`/api/browse`) remains the fallback in the PWA
+  and the reviewer-driving path (`tools/browse.mjs`)
+- **Auto-preview** — when the agent mentions a `http(s)://localhost:<port>` / `127.0.0.1:<port>`
+  URL in a reply, the daemon emits a synthetic `ocr.preview` event (deterministic URL parse,
+  deduped per session for 10 minutes) and the desktop app opens the Browser pane side-by-side
+  with the chat, pointed at that URL, with a back button to the chat. In the PWA the event is
+  ignored (the machine's localhost is unreachable from the phone)
 - **Mission Control** — navigable post-mortem of the pilot's autonomous runs in the desktop
   app: a card per agent task (goal, progress, effort, ETA) and a forensic timeline parsed
   from the real `pilot.log`/`events.jsonl` (decisions, reviewer verdicts, gate failures with
@@ -172,6 +179,14 @@ the whole navigation lives behind a single view stack. Keyboard shortcuts
 (also in the **Go** menu): `Cmd+T` new conversation, `Cmd+K` command palette
 (search conversations and actions), `Cmd+1..6` switch to chat / Artifacts /
 Browser / Files / Settings / Mission Control.
+
+**Auto-preview (P1-072)**: when the agent brings up a local site (http.server,
+vite, a dev server…) and mentions `http://localhost:<port>` in its reply, the
+Browser pane opens by itself next to the chat, pointed at that URL, rendered
+as a real sandboxed webview — scroll, click and form edits are live. The URL
+bar is editable, `↻` reloads, `⤢` toggles the pane to ~80% width and back, and
+`←` returns to the chat. A load failure shows an error and the reload button
+instead of a blank pane.
 
 **Mission Control** (Cmd+6) is a navigable post-mortem of the pilot's
 autonomous runs: one card per agent task (goal, progress, wall-clock effort,
