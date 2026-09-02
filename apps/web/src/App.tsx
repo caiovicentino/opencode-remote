@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useReducer, useRef, useState, type ReactNode } from "react";
 import {
   OcrClient,
   loadState,
@@ -15,6 +15,14 @@ import {
 import type { OpResponse, EventEnvelope } from "@ocr/protocol";
 import { gateVerify, gateEnroll } from "./lib/gate";
 import { useT } from "./lib/i18n";
+import {
+  activeSlots,
+  initialViewState,
+  isPaneOpen,
+  topSlot,
+  viewReducer,
+  type Slot,
+} from "./lib/viewState";
 import PairingView from "./components/PairingView";
 import PairingOverlay from "./components/PairingOverlay";
 import SessionsView from "./components/SessionsView";
@@ -24,6 +32,7 @@ import FilesView from "./components/FilesView";
 import ArtifactsView from "./components/ArtifactsView";
 import SendToAgentView from "./components/SendToAgentView";
 import BrowserView, { type BrowseFn } from "./components/BrowserView";
+import CommandPalette from "./components/CommandPalette";
 import {
   IconChat,
   IconFolder,
@@ -69,12 +78,17 @@ interface DesktopBridge {
   reconnectDaemon?: () => Promise<boolean>;
   /** P1-061: loopback WS credentials for the direct local transport. */
   getLocalLink?: () => Promise<{ port: number; token: string } | null>;
+  /** P1-046: Go-menu accelerators (Cmd+T/K/1..5) pushed from the main process. */
+  onMenuAction?: (cb: (id: string) => void) => () => void;
 }
 
 function desktopBridge(): DesktopBridge | null {
   const bridge = (window as unknown as { ocrDesktop?: DesktopBridge }).ocrDesktop;
   return bridge && typeof bridge.getPairUrl === "function" ? bridge : null;
 }
+
+/** Slot each Cmd+1..5 accelerator (and Go menu item) maps to. */
+const PANE_ACCELERATORS = ["chat", "artifacts", "browser", "files", "settings"] as const;
 
 function TabBar({
   active,
@@ -126,11 +140,11 @@ export default function App() {
   const [machineName, setMachineName] = useState("");
   const [events, setEvents] = useState<EventEnvelope[]>([]);
   const clientRef = useRef<OcrClient | null>(null);
-  const [session, setSession] = useState<string | null>(null);
-  const [settings, setSettings] = useState(false);
-  const [filesView, setFilesView] = useState(false);
-  const [artifactsView, setArtifactsView] = useState(false);
-  const [browserView, setBrowserView] = useState(false);
+  // P1-046: one reducer owns ALL navigation (the old five booleans are gone).
+  const [view, dispatchView] = useReducer(viewReducer, initialViewState);
+  const session = view.chatSession;
+  const top = topSlot(view);
+  const slots = activeSlots(view);
   // stable handle: the bridge returns a fresh fn each render, which would
   // re-trigger the BrowserView's open-on-mount effect forever
   const [browseFn] = useState<BrowseFn | null>(() => desktopBridge()?.daemonBrowse ?? null);
@@ -141,6 +155,7 @@ export default function App() {
   const [addingMachine, setAddingMachine] = useState(false);
   // navigation direction drives the slide-in animation of the next screen
   const [navDir, setNavDir] = useState<"fwd" | "back">("fwd");
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const appRootRef = useRef<HTMLDivElement>(null);
   const swipe = useRef({ x: 0, y: 0, dx: 0, active: false });
   const [unread, setUnread] = useState<Record<string, number>>(() => {
@@ -240,7 +255,9 @@ export default function App() {
     }
   }
 
-  // deep-link routing: notifications open #/session/<id> or #/files
+  // deep-link routing: notifications open #/session/<id>, #/files, #/artifacts
+  // or the #/send share target. P1-046: routes dispatch reducer actions — the
+  // chat is no longer destroyed by an incoming deep link.
   useEffect(() => {
     function applyHash() {
       const h = location.hash;
@@ -251,28 +268,20 @@ export default function App() {
         const payload = { title: sp.get("title") ?? "", text: sp.get("text") ?? "", url: sp.get("url") ?? "" };
         if (payload.title || payload.text || payload.url) {
           setShare(payload);
-          setSession(null);
+          dispatchView({ type: "open", slot: "share" });
         }
         return;
       }
       const sid = /^#\/session\/([\w-]+)/.exec(h)?.[1];
       if (sid && clientRef.current) {
-        setSession(sid);
-        setFilesView(false);
-        setSettings(false);
+        dispatchView({ type: "openChat", sessionId: sid });
         return;
       }
       if (h === "#/files" && clientRef.current) {
-        setFilesView(true);
-        setSession(null);
-        setSettings(false);
-        setArtifactsView(false);
+        dispatchView({ type: "open", slot: "files" });
       }
       if (h === "#/artifacts" && clientRef.current) {
-        setArtifactsView(true);
-        setSession(null);
-        setSettings(false);
-        setFilesView(false);
+        dispatchView({ type: "open", slot: "artifacts" });
       }
     }
     applyHash();
@@ -390,7 +399,7 @@ export default function App() {
     clientRef.current = null;
     setActiveRoom(null);
     setPhase("unpaired");
-    setSession(null);
+    dispatchView({ type: "reset" });
     setEvents([]);
     setTick((t) => t + 1);
   }
@@ -403,7 +412,7 @@ export default function App() {
   async function switchMachine(p: Pairing) {
     clientRef.current?.close();
     clientRef.current = null;
-    setSession(null);
+    dispatchView({ type: "reset" });
     setEvents([]);
     setActiveRoom(p.room);
     await connect(p, false);
@@ -420,31 +429,100 @@ export default function App() {
     return client.request(method as "GET", path, body, query);
   }
 
-  function goBack() {
-    setNavDir("back");
-    if (session) {
-      setSession(null);
-      history.replaceState(null, "", "#/");
-    } else if (settings) {
-      setSettings(false);
-      setTick((t) => t + 1);
-    } else if (artifactsView) {
-      setArtifactsView(false);
-    } else if (browserView) {
-      setBrowserView(false);
-    } else if (filesView) {
-      setFilesView(false);
-    } else if (share) {
-      setShare(null);
+  // P1-046: session creation lifted out of SessionsView so Cmd+T and the
+  // command palette reuse the exact same path as the "+ Nova conversa" button.
+  const [creating, setCreating] = useState(false);
+  async function createSession(): Promise<string | null> {
+    if (creating) return null;
+    setCreating(true);
+    try {
+      const res = await request("POST", "/session", {});
+      const created = res.body as { id?: string };
+      if (res.status === 200 && created.id) {
+        dispatchView({ type: "openChat", sessionId: created.id });
+        setTick((t) => t + 1); // refresh the sidebar list
+        return null;
+      }
+      return `create failed (${res.status}): ${JSON.stringify(res.body).slice(0, 140)}`;
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    } finally {
+      setCreating(false);
     }
   }
+
+  function openPane(slot: Slot) {
+    setNavDir("fwd");
+    dispatchView({ type: "open", slot });
+  }
+
+  /** Rail "Conversas" button + Cmd+1: raise the chat, close any pane. */
+  function goChat() {
+    setNavDir("fwd");
+    if (session) dispatchView({ type: "openChat", sessionId: session });
+    else dispatchView({ type: "reset" });
+  }
+
+  function goBack() {
+    setNavDir("back");
+    if (top === "share") setShare(null);
+    if (top === "settings") setTick((t) => t + 1);
+    if (session) history.replaceState(null, "", "#/");
+    dispatchView({ type: "back" });
+  }
+
+  // P1-046: keyboard navigation. Inside the Electron shell the Go menu pushes
+  // ocr:menu-action (accelerators are OS-level there); in the plain browser a
+  // keydown fallback covers the same keys. Registered only when the bridge is
+  // absent so actions never fire twice inside Electron.
+  useEffect(() => {
+    function runMenuAction(id: string) {
+      if (phase !== "paired") return; // no client yet — nothing to open
+      if (id === "newChat") {
+        void createSession();
+        return;
+      }
+      if (id === "palette") {
+        setPaletteOpen(true);
+        return;
+      }
+      if (id === "pane:chat") {
+        goChat();
+        return;
+      }
+      if (id.startsWith("pane:")) {
+        const slot = id.slice(5) as Slot;
+        openPane(slot);
+      }
+    }
+    const bridge = desktopBridge();
+    if (bridge?.onMenuAction) {
+      return bridge.onMenuAction(runMenuAction);
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return;
+      const k = e.key.toLowerCase();
+      if (k === "t") {
+        e.preventDefault();
+        runMenuAction("newChat");
+      } else if (k === "k") {
+        e.preventDefault();
+        runMenuAction("palette");
+      } else if (k >= "1" && k <= "5") {
+        e.preventDefault();
+        runMenuAction(`pane:${PANE_ACCELERATORS[Number(k) - 1]}`);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [phase, session, creating]);
 
   // iOS-style swipe-back: drag from the right edge slides the current screen;
   // releasing past the threshold pops the view.
   function onTouchStart(e: React.TouchEvent) {
     const t = e.touches[0];
     if (!t || e.touches.length !== 1) return;
-    if (!session && !settings && !filesView && !artifactsView && !share) return;
+    if (view.stack.length === 0) return;
     swipe.current = { x: t.clientX, y: t.clientY, dx: 0, active: t.clientX > window.innerWidth - 28 };
   }
   function onTouchMove(e: React.TouchEvent) {
@@ -562,6 +640,7 @@ export default function App() {
     );
   }
 
+  const chatActive = top === "chat" && !!session;
   const chatNode = (
     <ChatView
       sessionId={session!}
@@ -578,17 +657,17 @@ export default function App() {
   const filesNode = <FilesView request={request} onBack={goBack} />;
   const artifactsNode = <ArtifactsView request={request} onBack={goBack} />;
   const browseNode = <BrowserView browse={browseFn} onBack={goBack} />;
-  const shareNode = (
+  const shareNode = share ? (
     <SendToAgentView
       request={request}
-      payload={share!}
+      payload={share}
       onBack={goBack}
       onOpenSession={(id) => {
         setShare(null);
-        setSession(id);
+        dispatchView({ type: "openChat", sessionId: id });
       }}
     />
-  );
+  ) : null;
   const sessionsNode = (
     <SessionsView
       request={request}
@@ -603,7 +682,7 @@ export default function App() {
       onAddMachine={() => setAddingMachine(true)}
       onOpen={(id) => {
         setNavDir("fwd");
-        setSession(id);
+        dispatchView({ type: "openChat", sessionId: id });
       }}
       onDisconnect={disconnect}
       onEnablePush={async () => {
@@ -612,34 +691,46 @@ export default function App() {
       }}
       onOpenSettings={() => {
         setNavDir("fwd");
-        setSettings(true);
+        dispatchView({ type: "open", slot: "settings" });
       }}
       onOpenFiles={() => {
         setNavDir("fwd");
-        setFilesView(true);
+        dispatchView({ type: "open", slot: "files" });
       }}
       tick={tick}
+      creating={creating}
+      onCreateSession={createSession}
       variant={isDesktop ? "rows" : "grid"}
     />
   );
-  const mainContent = session
+
+  // Mobile keeps a single main surface driven by the top of the view stack.
+  const mainContent = chatActive
     ? chatNode
-    : settings
+    : top === "settings"
       ? settingsNode
-      : artifactsView
+      : top === "artifacts"
         ? artifactsNode
-        : browserView
+        : top === "browser"
           ? browseNode
-          : filesView
+          : top === "files"
             ? filesNode
-            : share
+            : top === "share" && shareNode
               ? shareNode
               : null;
+
+  const railButtons: { slot: Slot; label: string; icon: ReactNode }[] = [
+    { slot: "chat", label: "Conversas", icon: <IconChat /> },
+    { slot: "artifacts", label: "Artifacts", icon: <IconLayers /> },
+    { slot: "browser", label: "Browser", icon: <IconGlobe /> },
+    { slot: "files", label: "Arquivos", icon: <IconFolder /> },
+    { slot: "settings", label: "Configurações", icon: <IconSettings /> },
+  ];
 
   return (
     <div
       ref={appRootRef}
-      className={`app-root${session ? "" : " has-tabbar"}${banner ? " has-daemon-down" : ""}`}
+      className={`app-root${chatActive ? "" : " has-tabbar"}${banner ? " has-daemon-down" : ""}`}
       data-nav={navDir}
       onTouchStart={isDesktop ? undefined : onTouchStart}
       onTouchMove={isDesktop ? undefined : onTouchMove}
@@ -651,122 +742,79 @@ export default function App() {
         <div className="desk">
           <aside className="desk-side">
             <div className="desk-side-scroll">{sessionsNode}</div>
-            <div className="desk-nav">
-              <button
-                className={!settings && !filesView && !artifactsView && !browserView ? "active" : ""}
-                onClick={() => {
-                  setSettings(false);
-                  setFilesView(false);
-                  setArtifactsView(false);
-                  setBrowserView(false);
-                  setSession(null);
-                }}
-                title="Conversas"
-              >
-                <IconChat />
-                <span>Conversas</span>
-              </button>
-              <button
-                className={artifactsView ? "active" : ""}
-                onClick={() => {
-                  setNavDir("fwd");
-                  setArtifactsView(true);
-                  setSession(null);
-                  setSettings(false);
-                  setFilesView(false);
-                  setBrowserView(false);
-                }}
-                title="Artifacts"
-              >
-                <IconLayers />
-                <span>Artifacts</span>
-              </button>
-              <button
-                className={browserView ? "active" : ""}
-                onClick={() => {
-                  setNavDir("fwd");
-                  setBrowserView(true);
-                  setSession(null);
-                  setSettings(false);
-                  setFilesView(false);
-                  setArtifactsView(false);
-                }}
-                title="Browser"
-              >
-                <IconGlobe />
-                <span>Browser</span>
-              </button>
-              <button
-                className={filesView ? "active" : ""}
-                onClick={() => {
-                  setNavDir("fwd");
-                  setFilesView(true);
-                  setBrowserView(false);
-                }}
-                title="Arquivos"
-              >
-                <IconFolder />
-                <span>Arquivos</span>
-              </button>
-              <button
-                className={settings ? "active" : ""}
-                onClick={() => {
-                  setNavDir("fwd");
-                  setSettings(true);
-                  setBrowserView(false);
-                }}
-                title="Config"
-              >
-                <IconSettings />
-                <span>Configurações</span>
-              </button>
-            </div>
+            <nav className="desk-nav">
+              {railButtons.map((b) => (
+                <button
+                  key={b.slot}
+                  className={slots.has(b.slot) ? "active" : ""}
+                  onClick={() => (b.slot === "chat" ? goChat() : openPane(b.slot))}
+                  data-pane={b.slot}
+                  title={b.label}
+                >
+                  {b.icon}
+                  <span>{b.label}</span>
+                </button>
+              ))}
+            </nav>
           </aside>
-          <main className="desk-main">
+          <main className="desk-chat">
+            {/* P1-046: the chat is persistent — opening Artifacts/Browser/
+                Files/Settings never unmounts it. */}
+            {session ? chatNode : (
+              <div className="desk-empty">
+                <div>
+                  <div className="desk-greet-mark">✻</div>
+                  <h2>olá{machineName ? `, ${machineName.toLowerCase()}` : ""}!</h2>
+                  <p>Selecione uma conversa na barra lateral</p>
+                </div>
+              </div>
+            )}
+          </main>
+          <section className="desk-pane" style={{ display: isPaneOpen(view) ? "block" : "none" }}>
             {/* Browser pane stays mounted (hidden) so the user's current page,
                 URL input and text panel survive tab switches. */}
-            {browseFn && (
-              <div style={{ display: browserView ? "block" : "none", height: "100%" }}>
+            {(browseFn || top === "browser") && (
+              <div style={{ display: top === "browser" ? "block" : "none", height: "100%" }}>
                 <BrowserView browse={browseFn} onBack={goBack} />
               </div>
             )}
-            {!browserView &&
-              (mainContent ?? (
-                <div className="desk-empty">
-                  <div>
-                    <div className="desk-greet-mark">✻</div>
-                    <h2>olá{machineName ? `, ${machineName.toLowerCase()}` : ""}!</h2>
-                    <p>Selecione uma conversa na barra lateral</p>
-                  </div>
-                </div>
-              ))}
-          </main>
+            {top === "artifacts" && artifactsNode}
+            {top === "files" && filesNode}
+            {top === "settings" && settingsNode}
+            {top === "share" && shareNode}
+          </section>
         </div>
       ) : (
         <>
           {mainContent ?? sessionsNode}
-          {!session && (
+          {!chatActive && (
             <TabBar
-              active={settings ? "settings" : filesView ? "files" : "sessions"}
+              active={top === "settings" ? "settings" : top === "files" ? "files" : "sessions"}
               t={t}
               onSelect={(id) => {
                 if (id === "sessions") {
-                  if (settings || filesView) {
+                  if (top !== "chat") {
                     setNavDir("back");
-                    setSettings(false);
-                    setFilesView(false);
-                    setTick((t) => t + 1);
+                    dispatchView({ type: "reset" });
                   }
                   return;
                 }
                 setNavDir("fwd");
-                setSettings(id === "settings");
-                setFilesView(id === "files");
+                dispatchView({ type: "replace", slot: id === "settings" ? "settings" : "files" });
                 if (id === "settings") setTick((t) => t + 1);
               }}
             />
           )}
         </>
+      )}
+      {paletteOpen && (
+        <CommandPalette
+          request={request}
+          onClose={() => setPaletteOpen(false)}
+          onOpenSession={(id) => dispatchView({ type: "openChat", sessionId: id })}
+          onNewChat={() => void createSession()}
+          onOpenPane={(slot) => openPane(slot)}
+        />
       )}
       {pairingOverlay}
     </div>

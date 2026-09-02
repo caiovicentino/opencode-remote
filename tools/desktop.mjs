@@ -91,7 +91,7 @@ async function clientMain() {
   if (!cmd || cmd === "help") {
     console.log(
       "usage: node tools/desktop.mjs open [shot.png [w h]] | see <texto> | click <sel> | " +
-        "type <sel> <texto> | shot <out.png> [w h] | ipc <expr> | close",
+        "type <sel> <texto> | shot <out.png> [w h] | ipc <expr> | menu <id> | menu-click <id> | close",
     );
     process.exit(cmd ? 0 : 2);
   }
@@ -128,6 +128,10 @@ async function clientMain() {
     fail(await send({ cmd: "shot", out: args[0] ?? "shot.png", w: args[1], h: args[2] }));
   } else if (cmd === "ipc") {
     fail(await send({ cmd: "ipc", expr: args[0] }));
+  } else if (cmd === "menu") {
+    fail(await send({ cmd: "menu", id: args[0] }));
+  } else if (cmd === "menu-click") {
+    fail(await send({ cmd: "menu-click", id: args[0] }));
   } else if (cmd === "close") {
     fail(await send({ cmd: "close" }, CLOSE_DEADLINE_MS + 5_000));
   } else {
@@ -413,6 +417,32 @@ async function handle(electronApp, page, msg) {
     case "ipc": {
       const result = await page.evaluate(msg.expr);
       return { ok: true, result };
+    }
+    case "menu": {
+      // P1-046: assert a Go-menu item exists (id registered in main.ts).
+      const item = await electronApp.evaluate(({ Menu }, id) => {
+        const entry = Menu.getApplicationMenu()?.getMenuItemById(id);
+        if (!entry) return null;
+        let accelerator = null;
+        try {
+          accelerator = entry.accelerator ?? null;
+        } catch {}
+        return { label: entry.label, enabled: entry.enabled, accelerator };
+      }, msg.id);
+      if (!item) throw new Error(`menu item not found: ${msg.id}`);
+      return { ok: true, result: item };
+    }
+    case "menu-click": {
+      // Executes the item's click handler in the main process — for the Go
+      // menu this exercises the real ocr:menu-action broadcast path.
+      const sent = await electronApp.evaluate(({ Menu }, id) => {
+        const entry = Menu.getApplicationMenu()?.getMenuItemById(id);
+        if (!entry) return false;
+        entry.click();
+        return true;
+      }, msg.id);
+      if (!sent) throw new Error(`menu item not found: ${msg.id}`);
+      return { ok: true };
     }
     default:
       throw new Error(`unknown command: ${msg.cmd}`);

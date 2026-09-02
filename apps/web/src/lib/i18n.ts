@@ -150,6 +150,16 @@ const dict = {
     daemonDown: "Local daemon is down — the app stopped retrying.",
     reconnectNow: "Reconnect now",
     reconnecting: "Reconnecting to daemon… ({n})",
+    // command palette (desktop, P1-046)
+    palettePlaceholder: "Search conversations and actions…",
+    paletteEmpty: "No matches",
+    paletteNewChat: "New conversation",
+    paletteOpenArtifacts: "Open Artifacts",
+    paletteOpenBrowser: "Open Browser",
+    paletteOpenFiles: "Open Files",
+    paletteOpenSettings: "Open Settings",
+    paletteKindAction: "action",
+    paletteKindSession: "conversation",
   },
   pt: {
     search: "Buscar conversas…",
@@ -251,5 +261,15 @@ const dict = {
     daemonDown: "Daemon local caiu — o app parou de tentar reiniciar.",
     reconnectNow: "Reconectar agora",
     reconnecting: "Reconectando ao daemon… ({n})",
+    // command palette (desktop, P1-046)
+    palettePlaceholder: "Buscar conversas e ações…",
+    paletteEmpty: "Nada encontrado",
+    paletteNewChat: "Nova conversa",
+    paletteOpenArtifacts: "Abrir Artifacts",
+    paletteOpenBrowser: "Abrir Browser",
+    paletteOpenFiles: "Abrir Arquivos",
+    paletteOpenSettings: "Abrir Configurações",
+    paletteKindAction: "ação",
+    paletteKindSession: "conversa",
   },
 } satisfies Record<Lang, Record<string, string>>;

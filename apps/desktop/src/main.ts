@@ -546,6 +546,15 @@ function showMainWindow(): void {
   mainWindow.focus();
 }
 
+// P1-046: Go-menu accelerators. Each item broadcasts its action id to every
+// window on "ocr:menu-action"; the renderer routes it through the view
+// reducer (the same ids the web keydown fallback dispatches).
+function sendMenuAction(id: string): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send("ocr:menu-action", id);
+  }
+}
+
 function buildMenu(): void {
   const template: Electron.MenuItemConstructorOptions[] = [
     ...(process.platform === "darwin"
@@ -562,6 +571,19 @@ function buildMenu(): void {
         ]
       : []),
     { role: "editMenu" },
+    {
+      label: "Go",
+      submenu: [
+        { id: "go-new-chat", label: "New conversation", accelerator: "CmdOrCtrl+T", click: () => sendMenuAction("newChat") },
+        { id: "go-palette", label: "Command palette", accelerator: "CmdOrCtrl+K", click: () => sendMenuAction("palette") },
+        { type: "separator" },
+        { id: "go-pane-chat", label: "Chat", accelerator: "CmdOrCtrl+1", click: () => sendMenuAction("pane:chat") },
+        { id: "go-pane-artifacts", label: "Artifacts", accelerator: "CmdOrCtrl+2", click: () => sendMenuAction("pane:artifacts") },
+        { id: "go-pane-browser", label: "Browser", accelerator: "CmdOrCtrl+3", click: () => sendMenuAction("pane:browser") },
+        { id: "go-pane-files", label: "Files", accelerator: "CmdOrCtrl+4", click: () => sendMenuAction("pane:files") },
+        { id: "go-pane-settings", label: "Settings", accelerator: "CmdOrCtrl+5", click: () => sendMenuAction("pane:settings") },
+      ],
+    },
     {
       label: "View",
       submenu: [

@@ -547,7 +547,8 @@ select {
   border-color: var(--border);
   background: var(--bg2);
 }
-.desk-main {
+/* P1-046: persistent chat column — opening a pane never unmounts the chat */
+.desk-chat {
   flex: 1;
   min-width: 0;
   height: 100%;
@@ -555,9 +556,23 @@ select {
   overflow: hidden;
 }
 /* keep the reading column pleasant inside the wide pane, like Claude Desktop */
-.desk-main .screen {
+.desk-chat .screen {
   max-width: 860px;
   margin: 0 auto;
+  height: 100%;
+}
+/* P1-046: contextual right-hand pane (Artifacts/Browser/Files/Settings) */
+.desk-pane {
+  width: clamp(360px, 36vw, 520px);
+  min-width: 360px;
+  height: 100%;
+  border-left: 1px solid var(--border);
+  background: var(--bg);
+  position: relative;
+  overflow: hidden;
+}
+.desk-pane .screen {
+  max-width: none;
   height: 100%;
 }
 .desk-empty {
@@ -836,7 +851,7 @@ select {
 }
 /* the split view needs the full row — the reading column no longer applies */
 .screen.artifact-split,
-.desk-main .screen.artifact-split {
+.desk-pane .screen.artifact-split {
   max-width: none;
 }
 .screen.artifact-split .chat {
@@ -862,4 +877,89 @@ select {
   min-width: 0;
   display: flex;
   flex-direction: column;
+}
+
+/* ── command palette (P1-046): flat Raycast/Linear-style overlay ── */
+.palette-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 150;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 12vh 16px 0;
+}
+.palette {
+  width: 100%;
+  max-width: 560px;
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel, var(--bg));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+.palette-input {
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  padding: 12px 14px;
+  font-size: 0.95rem;
+  color: var(--fg);
+  outline: none;
+}
+.palette-input::placeholder {
+  color: var(--muted);
+}
+.palette-list {
+  overflow-y: auto;
+  padding: 6px;
+}
+.palette-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  font-size: 0.9rem;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.palette-item.active {
+  background: var(--bg2);
+}
+.palette-ico {
+  color: var(--muted);
+  display: inline-flex;
+  flex-shrink: 0;
+}
+.palette-item.active .palette-ico {
+  color: var(--fg);
+}
+.palette-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.palette-kind {
+  flex-shrink: 0;
+  font-size: 0.66rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.palette-empty {
+  padding: 14px;
+  font-size: 0.85rem;
+  color: var(--muted);
 }

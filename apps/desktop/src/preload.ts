@@ -58,4 +58,11 @@ contextBridge.exposeInMainWorld("ocrDesktop", {
     ipcRenderer.on("ocr:deep-link", listener);
     return () => ipcRenderer.removeListener("ocr:deep-link", listener);
   },
+  // P1-046: Go-menu accelerators (Cmd+T / Cmd+K / Cmd+1..5) — the main menu
+  // pushes the action id; the renderer routes it through the view reducer.
+  onMenuAction: (cb: (id: string) => void): (() => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, id: string): void => cb(id);
+    ipcRenderer.on("ocr:menu-action", listener);
+    return () => ipcRenderer.removeListener("ocr:menu-action", listener);
+  },
 });
