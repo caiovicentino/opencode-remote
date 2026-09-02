@@ -6,6 +6,7 @@ import { nowLocalISO } from "./log";
 import { markDone, mayPush, type Task } from "./backlog";
 import { emit } from "./events";
 import { latestUiShot } from "./shot";
+import { defaultVerifiedMergesFile, recordVerifiedMerge } from "./deployguard";
 import { touchHeartbeat, type PilotConfig, type PilotState } from "./state";
 import { appendLessonsToWorkspace, pickRelevantLessons, readExperienceFile } from "./experience";
 import { captureGateCorpus } from "./gate-corpus";
@@ -1532,6 +1533,14 @@ async function gatekeeper(
   // bring workspace main up to date with the merge, then mark the task done
   exec("git checkout -q main", { cwd: ws, allowFail: true });
   exec("git pull -q origin main", { cwd: ws, allowFail: true });
+  // P2-058: right here HEAD is the just-merged, gate-green commit (PR squash or
+  // local --no-ff fallback) — record it as a verified merge so deploy() only
+  // ever ships SHAs this gatekeeper produced. Deterministic code under the
+  // cross-slot gate lock; agents never touch the verified list.
+  const verifiedSha = headSha(ws);
+  if (!recordVerifiedMerge(defaultVerifiedMergesFile(), verifiedSha, t.id, nowLocalISO())) {
+    console.log(JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "verified-merge recording failed — deploy will stay refused for this sha", data: { task: t.id, sha: verifiedSha.slice(0, 7) } }));
+  }
   markDone(ws, t.id, `merged by pilot ${nowLocalISO().slice(0, 10)}`);
   exec(`git add BACKLOG.md && git commit -qm "pilot(${t.id}): mark done" && git push -q origin main`, {
     cwd: ws,

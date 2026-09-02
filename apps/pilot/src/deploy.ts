@@ -8,6 +8,17 @@ import { captureUiShot } from "./shot";
 import { touchHeartbeat, type PilotConfig } from "./state";
 import { notifySupervisor } from "./notify";
 import { DISK_MIN_FREE_BYTES, diskGuardDetail, freeDiskBytes } from "./disk";
+import {
+  defaultQuarantineFile,
+  defaultVerifiedMergesFile,
+  pickDeployableSha,
+  quarantineSha,
+  readQuarantine,
+  readVerifiedMerges,
+  shaGuardDetail,
+  type QuarantinedSha,
+  type VerifiedMerge,
+} from "./deployguard";
 
 export interface DeployResult {
   ok: boolean;
@@ -19,12 +30,17 @@ export interface DeployResult {
  * P3-006: injectable disk-guard dependencies — tests mock the free-space probe,
  * the threshold, the event stream and the supervisor notify to pin the
  * abort-before-npm-ci path without touching the production event log.
+ * P2-058: the sha guard lists are injectable too — the eval battery pins the
+ * refuse-unverified / refuse-quarantined rules without touching pilot state.
  */
 export interface DeployOpts {
   minFreeBytes?: number;
   probeFreeBytes?: (path: string) => Promise<number | null>;
   notify?: typeof notifySupervisor;
   emitEvent?: typeof emit;
+  /** P2-058: pre-loaded guard lists; absent = read the default pilot state files. */
+  verifiedMerges?: VerifiedMerge[];
+  quarantine?: QuarantinedSha[];
 }
 
 /**
@@ -35,6 +51,9 @@ export interface DeployOpts {
  * screenshot of the deployed dashboard into the review log (pilot/shots).
  * P3-006: aborts with a clear detail (and a supervisor notify) before touching
  * anything when free disk space is below the 5GB ceiling.
+ * P2-058: refuses any SHA the gatekeeper did not record as a verified merge
+ * (direct pushes to main never deploy) and quarantines a SHA whose deploy
+ * fails, so the pending-deploy self-heal cannot re-run the same broken brain.
  */
 export async function deploy(
   cfg: PilotConfig,
@@ -44,6 +63,17 @@ export async function deploy(
 ): Promise<DeployResult> {
   const emitEvent = opts?.emitEvent ?? emit;
   emitEvent("deploy", { phase: "start", detail: `sha ${sha.slice(0, 7)}` });
+  // P2-058 sha guard: first gate of all — a SHA the gatekeeper did not verify
+  // (or that failed a previous deploy) must not reach production, even before
+  // the disk probe. Refusal is expected behavior, not a failure: no notify.
+  const verified = opts?.verifiedMerges ?? readVerifiedMerges(defaultVerifiedMergesFile());
+  const banned = opts?.quarantine ?? readQuarantine(defaultQuarantineFile());
+  const shaGuard = shaGuardDetail(sha, verified, banned);
+  if (shaGuard) {
+    log("warn", shaGuard);
+    emitEvent("deploy", { phase: "sha-guard", ok: false, detail: shaGuard });
+    return { ok: false, rolledBack: false, detail: shaGuard };
+  }
   // P3-006 disk guard: must run before ANY mutation (git/npm) — a full disk
   // used to surface later as a cryptic git index.lock failure. Unavailable
   // probe = proceed (fail-open).
@@ -72,21 +102,21 @@ export async function deploy(
     kickstart(cfg, "com.ocr.relay");
     kickstart(cfg, "com.ocr.daemon");
   } catch (err) {
-    await rollback(cfg, prev, `deploy steps failed: ${String(err).slice(0, 200)}`);
+    await banAndRollback(cfg, sha, prev, `deploy steps failed: ${String(err).slice(0, 200)}`, meta?.task ?? "deploy");
     return { ok: false, rolledBack: true, detail: String(err).slice(0, 200) };
   }
 
   // health watch: services must come up healthy
   const healthy = await pollHealth(cfg, 90);
   if (!healthy) {
-    await rollback(cfg, prev, "health check failed after deploy");
+    await banAndRollback(cfg, sha, prev, "health check failed after deploy", meta?.task ?? "deploy");
     return { ok: false, rolledBack: true, detail: "health check failed" };
   }
 
   // live invariants against production (replay, tunnel, state perms)
   const inv = exec("npx tsx scripts/invariants.ts --live", { cwd: cfg.repo, timeoutMin: 5, allowFail: true });
   if (!inv.ok) {
-    await rollback(cfg, prev, `live invariants failed: ${inv.output.slice(-200)}`);
+    await banAndRollback(cfg, sha, prev, `live invariants failed: ${inv.output.slice(-200)}`, meta?.task ?? "deploy");
     return { ok: false, rolledBack: true, detail: "live invariants failed" };
   }
 
@@ -104,7 +134,7 @@ export async function deploy(
       fails++;
       if (fails >= 3) {
         emit("deploy", { phase: "rollback", ok: false, detail: "soak failed" });
-        await rollback(cfg, prev, `soak failed after ${i + 1} checks`);
+        await banAndRollback(cfg, sha, prev, `soak failed after ${i + 1} checks`, meta?.task ?? "deploy");
         return { ok: false, rolledBack: true, detail: "soak failed" };
       }
     } else fails = 0;
@@ -149,6 +179,34 @@ async function rollback(cfg: PilotConfig, prevSha: string, why: string) {
   kickstart(cfg, "com.ocr.daemon");
   console.log(JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "rollback", data: { prevSha, why } }));
   await sleep(15_000);
+}
+
+/**
+ * P2-058: quarantine before rolling back — the failed SHA is banned so the
+ * pending-deploy self-heal walks past it (last good verified state) instead of
+ * re-deploying and re-executing the same defective brain in a loop.
+ */
+async function banAndRollback(cfg: PilotConfig, badSha: string, prevSha: string, why: string, task: string) {
+  const recorded = quarantineSha(defaultQuarantineFile(), badSha, why, task, nowLocalISO());
+  if (!recorded) log("warn", "quarantine write failed — sha remains deployable", { sha: badSha.slice(0, 7) });
+  await rollback(cfg, prevSha, why);
+}
+
+/**
+ * P2-058: the deploy target — the newest gate-verified, non-quarantined merge
+ * sha reachable from origin/main's first-parent history. Unverified bookkeeping
+ * commits on top of main are walked past, so a direct push to main can never
+ * become a deploy target. Null = nothing deployable (fail-closed).
+ */
+export function latestDeployableSha(repo: string): string | null {
+  exec("git fetch -q origin", { cwd: repo, allowFail: true });
+  const hist = exec("git log --first-parent --format=%H origin/main", { cwd: repo, allowFail: true });
+  if (!hist.ok) return null;
+  return pickDeployableSha(
+    hist.output.split("\n").map((l) => l.trim()).filter(Boolean),
+    readVerifiedMerges(defaultVerifiedMergesFile()),
+    readQuarantine(defaultQuarantineFile()),
+  );
 }
 
 function kickstart(cfg: PilotConfig, service: string) {

@@ -7,7 +7,9 @@ Remote control for this opencode instance: mobile PWA -> relay -> daemon -> loca
 This repo evolves autonomously via the Pilot service (`apps/pilot`, docs in `docs/PILOT.md`):
 agents implement tasks from `BACKLOG.md`, adversarial reviewers check them, a deterministic
 gatekeeper runs the eval battery + `scripts/invariants.ts` (see `docs/CONSTITUTION.md`), and
-deploys are staged with automatic rollback. P0/P1 tasks first go through a PLANNER phase: a
+deploys are staged with automatic rollback — production only ever runs gate-verified merge
+SHAs (P2-058): direct pushes to main never deploy, and a failed deploy quarantines its SHA
+so the redeploy loop cannot re-run a defective build. P0/P1 tasks first go through a PLANNER phase: a
 read-only agent writes `specs/<ID>.md` on the task branch (problem, approach, touched files,
 edge cases, acceptance criteria, out of scope) and the builder + quality reviewer are held to
 it; P2+ tasks go straight to the builder (P2-008). Cognition is tiered (P1-059): pilot.json may set a

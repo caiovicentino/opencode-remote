@@ -115,6 +115,19 @@ import { artifactMentions, fmtBytes } from "../apps/web/src/lib/artifacts";
 import { clampSplitPct, isSplitViewport, SPLIT_MIN_PX } from "../apps/web/src/lib/split";
 import { DISK_MIN_FREE_BYTES, diskGuardDetail, freeDiskBytes } from "../apps/pilot/src/disk";
 import { deploy } from "../apps/pilot/src/deploy";
+import {
+  MAX_QUARANTINE_ENTRIES,
+  MAX_VERIFIED_ENTRIES,
+  MAX_WALK_COMMITS,
+  parseQuarantine,
+  parseVerifiedMerges,
+  pickDeployableSha,
+  quarantineSha,
+  readQuarantine,
+  readVerifiedMerges,
+  recordVerifiedMerge,
+  shaGuardDetail,
+} from "../apps/pilot/src/deployguard";
 import type { PilotConfig } from "../apps/pilot/src/state";
 import { overlayVisible, phonePaired } from "../apps/desktop/src/pairing";
 import { daemonTooltip, loginItemSupported, trayIconSource } from "../apps/desktop/src/tray";
@@ -1525,6 +1538,10 @@ check("disk guard: statfs probe returns bytes on a real dir", realFree !== null 
   };
   const res = await deploy(cfgDisk, "1234567890abcdef1234567890abcdef12345678", { task: "P3-006" }, {
     minFreeBytes: 5 * GB,
+    // P2-058: the sha guard runs before the disk probe — inject the verified
+    // list so this test still exercises the disk-guard path specifically
+    verifiedMerges: [{ sha: "1234567890abcdef1234567890abcdef12345678", task: "P3-006", at: "t" }],
+    quarantine: [],
     probeFreeBytes: async () => {
       probeCalls++;
       return 4.2 * GB;
@@ -1556,6 +1573,115 @@ check("disk guard: statfs probe returns bytes on a real dir", realFree !== null 
     events.length === 2 && events[1]!.phase === "disk-guard" && events[1]!.ok === false,
   );
   rmSync(tmpDisk, { recursive: true, force: true });
+}
+
+// --- P2-058 deploy sha guard: only gate-verified merges deploy ----------------
+{
+  const vm = (sha: string) => ({ sha, task: "P2-058", at: "t" });
+  const q = (sha: string) => ({ sha, task: "P2-058", at: "t", why: "soak failed" });
+  const OLD = "1111111111111111111111111111111111111111";
+  const GOOD = "2222222222222222222222222222222222222222";
+  const BAD = "3333333333333333333333333333333333333333";
+  const NOISE = "4444444444444444444444444444444444444444";
+  const history = [NOISE, BAD, GOOD, OLD]; // newest-first first-parent
+
+  check(
+    "deploy guard: walks past unverified bookkeeping commits to the newest verified merge",
+    pickDeployableSha(history, [vm(GOOD)], []) === GOOD,
+  );
+  check(
+    "deploy guard: newest verified sha wins",
+    pickDeployableSha(history, [vm(OLD), vm(GOOD), vm(BAD)], []) === BAD,
+  );
+  check(
+    "deploy guard: quarantined sha skipped — walk falls back to the last good verified sha",
+    pickDeployableSha(history, [vm(GOOD), vm(BAD)], [q(BAD)]) === GOOD,
+  );
+  check(
+    "deploy guard: nothing verified → null (a direct push to main never deploys)",
+    pickDeployableSha([NOISE], [vm(GOOD)], []) === null && pickDeployableSha([], [vm(GOOD)], []) === null,
+  );
+  check(
+    "deploy guard: walk capped at MAX_WALK_COMMITS (fail-closed on both sides)",
+    pickDeployableSha([...Array(MAX_WALK_COMMITS).fill(NOISE), GOOD], [vm(GOOD)], []) === null &&
+      pickDeployableSha([...Array(MAX_WALK_COMMITS - 1).fill(NOISE), GOOD], [vm(GOOD)], []) === GOOD,
+  );
+  check(
+    "deploy guard: non-object-id lines are never selected",
+    pickDeployableSha(["; rm -rf /", GOOD], [vm(GOOD)], []) === GOOD,
+  );
+
+  check("deploy guard: unverified sha refused", shaGuardDetail(NOISE, [vm(GOOD)], []) === "sha not gate-verified — deploy refused");
+  check("deploy guard: verified-but-quarantined sha refused", shaGuardDetail(BAD, [vm(BAD)], [q(BAD)]) === "sha quarantined after a failed deploy — deploy refused");
+  check("deploy guard: verified non-quarantined sha passes", shaGuardDetail(GOOD, [vm(GOOD)], [q(BAD)]) === null);
+  check("deploy guard: unverifiable sha charset refused", shaGuardDetail("../../main", [], []) === "unverifiable sha — deploy refused");
+
+  check(
+    "deploy guard: tolerant parse — corrupt lines and invalid shas skipped",
+    JSON.stringify(parseVerifiedMerges(`not json\n{"sha":"2222222"}\n{"sha":"${GOOD}","task":"T","at":"t"}\n`)) ===
+      JSON.stringify([{ sha: "2222222", task: "", at: "" }, { sha: GOOD, task: "T", at: "t" }]) &&
+      parseQuarantine("garbage\n").length === 0,
+  );
+
+  const dir = mkdtempSync(join(tmpdir(), "ocr-deployguard-"));
+  const vf = join(dir, "verified-merges.jsonl");
+  const qf = join(dir, "quarantine.jsonl");
+  check(
+    "deploy guard: recordVerifiedMerge persists + dedupes per sha",
+    recordVerifiedMerge(vf, GOOD, "P2-058", "t") &&
+      recordVerifiedMerge(vf, GOOD, "P2-058", "t") &&
+      readVerifiedMerges(vf).length === 1 &&
+      readVerifiedMerges(vf)[0]!.sha === GOOD,
+  );
+  check("deploy guard: recordVerifiedMerge rejects an invalid sha", recordVerifiedMerge(vf, "nope", "P2-058", "t") === false);
+  check(
+    "deploy guard: quarantineSha persists + dedupes per sha",
+    quarantineSha(qf, BAD, "soak failed", "P2-058", "t") &&
+      quarantineSha(qf, BAD, "soak failed", "P2-058", "t") &&
+      readQuarantine(qf).length === 1 &&
+      readQuarantine(qf)[0]!.why === "soak failed",
+  );
+  for (let i = 1; i <= MAX_VERIFIED_ENTRIES + 10; i++) {
+    recordVerifiedMerge(vf, i.toString(16).padStart(7, "0"), "T", "t");
+  }
+  check(
+    "deploy guard: verified list capped at MAX_VERIFIED_ENTRIES",
+    readVerifiedMerges(vf).length === MAX_VERIFIED_ENTRIES,
+  );
+  for (let i = 1; i <= MAX_QUARANTINE_ENTRIES + 10; i++) {
+    quarantineSha(qf, i.toString(16).padStart(7, "0"), "why", "T", "t");
+  }
+  check(
+    "deploy guard: quarantine list capped at MAX_QUARANTINE_ENTRIES",
+    readQuarantine(qf).length === MAX_QUARANTINE_ENTRIES,
+  );
+  rmSync(dir, { recursive: true, force: true });
+
+  // deploy() itself must refuse before touching git/npm — a bare tmpdir repo
+  // would make the first git exec throw if the guard were not first
+  const cfgGuard: PilotConfig = {
+    repo: join(tmpdir(), "ocr-guard-bare-does-not-exist"),
+    workspace: join(tmpdir(), "ocr-guard-bare-does-not-exist"),
+    slots: 1,
+    maxTasksPerDay: 1,
+    maxDeploysPerDay: 1,
+    maxReviewRounds: 1,
+    maxAttemptsPerTask: 1,
+    taskTimeoutMin: 1,
+    reviewTimeoutMin: 1,
+    monitorMin: 1,
+    digest: false,
+  };
+  const refused = await deploy(cfgGuard, NOISE, { task: "P2-058" }, { verifiedMerges: [vm(GOOD)], quarantine: [] });
+  check(
+    "deploy guard: unverified sha refused before any git step",
+    refused.ok === false && refused.rolledBack === false && refused.detail.startsWith("sha not gate-verified"),
+  );
+  const banned = await deploy(cfgGuard, BAD, { task: "P2-058" }, { verifiedMerges: [vm(BAD)], quarantine: [q(BAD)] });
+  check(
+    "deploy guard: quarantined sha refused before any git step",
+    banned.ok === false && banned.rolledBack === false && banned.detail.startsWith("sha quarantined"),
+  );
 }
 
 // --- P1-007 experience memory (IER) ------------------------------------------
