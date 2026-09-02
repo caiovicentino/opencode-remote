@@ -46,6 +46,11 @@ Alterar `scripts/invariants.ts` ou qualquer regra acima exige:
 commit com prefixo `constitution-change:` no body descrevendo o porquê,
 e aprovação unânime dos 2 reviewers (security + quality).
 
+Adicionar (ou editar) uma regra de julgamento — inclusive as invariantes de
+produto da seção acima e o prompt `CONSTITUTION` em `apps/pilot/src/pipeline.ts`
+— segue a mesma exigência de flag, mesmo sem tocar `invariants.ts`/`deploy/`.
+O commit do item 7 (P1-071) carrega a flag no body: verificado no review.
+
 ## Hierarquia de segurança
 
 ```
