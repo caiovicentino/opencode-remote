@@ -118,6 +118,9 @@ const STATE_FILE = join(homedir(), ".opencode-remote", "pilot", "state.json");
 export interface CycleSample {
   ok: boolean;
   at: number; // epoch ms
+  /** P2-063: task id that produced this outcome (absent on pipeline-level
+   * crashes with no task, and on legacy samples written before P2-063). */
+  task?: string;
 }
 
 /** P2-032: fever audit mode — the scheduler-wide pause state. */

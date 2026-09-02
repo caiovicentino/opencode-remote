@@ -399,8 +399,11 @@ independentes, alimentados por estado em `state.json` (`cycles`,
 `blockEvents`, `auditMode` — sobrevivem ao rollover de meia-noite):
 
 1. **Taxa de febre**: janela deslizante dos últimos **10 ciclos** de pipeline;
-   **>= 60% de falha** (6/10) dispara. Janela parcial nunca dispara (sem amostra
-   pequena demais).
+   **>= 3 tasks DISTINTAS** falhando dispara (P2-063: as falhas são agregadas por
+   `task.id` — uma task teimosa sozinha, esgotando o próprio
+   `maxAttemptsPerTask`, nunca pausa a fila global; ela segue o circuito
+   normal por task). Falhas sem task atribuída (crashes de pipeline, amostras
+   legacy) contam cada uma como distinta — sinal sistêmico conservador.
 2. **Rajada de bloqueios**: **2 tasks** indo para `## Blocked` em **30min**
    (contagem nos landings reais do push em `main`).
 

@@ -3246,23 +3246,45 @@ check(
   // sliding window keeps only the AUDIT_WINDOW most recent samples
   {
     const s = st();
-    for (let i = 0; i < AUDIT_WINDOW + 4; i++) recordCycle(s, true, i);
+    for (let i = 0; i < AUDIT_WINDOW + 4; i++) recordCycle(s, true, undefined, i);
     check("audit: sliding window keeps the last 10 cycles", s.cycles!.length === AUDIT_WINDOW && s.cycles![0]!.at === 4);
   }
 
-  // trigger 1: fever rate over the cycle window
+  // trigger 1: >= 3 DISTINCT tasks failed inside the cycle window (P2-063)
   {
-    const partial = st();
-    for (let i = 0; i < 4; i++) recordCycle(partial, false, i);
-    check("audit: partial window never trips the rate trigger", feverReason(partial, 100) === null);
-
+    // spec criterion: 10-cycle window where 1 stubborn task fails 4x — the
+    // per-task maxAttemptsPerTask circuit owns it, not the global pause
     const s = st();
-    recordCycle(s, true, 0); // oldest sample is a success so one more failure crosses the line
-    for (let i = 1; i <= 5; i++) recordCycle(s, false, i);
-    for (let i = 6; i < AUDIT_WINDOW; i++) recordCycle(s, true, i);
-    check("audit: 5/10 failures stay under the 60% line", feverReason(s, 100) === null);
-    recordCycle(s, false, AUDIT_WINDOW); // success slides out, failure slides in -> 6/10
-    check("audit: 6/10 failures trip the fever rate", (feverReason(s, AUDIT_WINDOW + 1) ?? "").includes("6/10"));
+    for (let i = 0; i < 4; i++) recordCycle(s, false, "P1-056", i);
+    for (let i = 4; i < AUDIT_WINDOW; i++) recordCycle(s, true, undefined, i);
+    check("audit: 1 task failing 4x in 10 cycles never trips the fever", feverReason(s, AUDIT_WINDOW) === null);
+
+    // even alternating failures from 2 distinct tasks stay under the global breaker
+    const s2 = st();
+    for (let i = 0; i < 6; i++) recordCycle(s2, false, i % 2 === 0 ? "T-A" : "T-B", i);
+    for (let i = 6; i < AUDIT_WINDOW; i++) recordCycle(s2, true, undefined, i);
+    check("audit: 2 distinct tasks failing do not trip the fever", feverReason(s2, AUDIT_WINDOW) === null);
+
+    // 3 distinct failing tasks trip it — even in a sparse window
+    const s3 = st();
+    recordCycle(s3, false, "T-A", 0);
+    recordCycle(s3, false, "T-B", 1);
+    check("audit: 2 distinct failing tasks in a partial window stay calm", feverReason(s3, 2) === null);
+    recordCycle(s3, false, "T-C", 2);
+    check("audit: 3 distinct failing tasks trip the fever", (feverReason(s3, 3) ?? "").includes("3 distinct tasks"));
+    // repeats from an already-counted task add no evidence
+    recordCycle(s3, false, "T-A", 3);
+    recordCycle(s3, false, "T-A", 4);
+    check("audit: repeats of the same task do not deepen the fever", (feverReason(s3, 5) ?? "").includes("3 distinct tasks"));
+
+    // id-less failures (pipeline crashes, legacy samples) each count as their
+    // own distinct entry — 3 crashed pipelines are still systemic evidence
+    const s4 = st();
+    recordCycle(s4, false, undefined, 0);
+    recordCycle(s4, false, undefined, 1);
+    check("audit: 2 id-less failures do not trip yet", feverReason(s4, 2) === null);
+    recordCycle(s4, false, undefined, 2);
+    check("audit: 3 crashed pipelines trip the fever (conservative)", (feverReason(s4, 3) ?? "").includes("3 distinct tasks"));
   }
 
   // trigger 2: 2 tasks blocked within 30 min
@@ -3281,16 +3303,16 @@ check(
   // lifecycle: enter once, hold, resume on either path
   {
     const s = st();
-    for (let i = 0; i < AUDIT_WINDOW; i++) recordCycle(s, false, i);
+    for (let i = 0; i < AUDIT_WINDOW; i++) recordCycle(s, false, `T-${i}`, i);
     const reason = feverReason(s, AUDIT_WINDOW);
     check("audit: enterAuditMode trips once", enterAuditMode(s, reason!, 1000) === true && enterAuditMode(s, reason!, 1001) === false);
     check("audit: entering clears the trigger windows", s.cycles!.length === 0 && s.blockEvents!.length === 0);
     check("audit: audit state carries reason + since", s.auditMode!.reason === reason && s.auditMode!.since.length > 0);
     check("audit: resume not due before 2h", auditResumeDue(s.auditMode!, 1000 + AUDIT_RESUME_MS - 1) === false);
     check("audit: resume due after 2h without failure", auditResumeDue(s.auditMode!, 1000 + AUDIT_RESUME_MS) === true);
-    recordCycle(s, false, 2000);
+    recordCycle(s, false, undefined, 2000);
     check("audit: fresh failure pushes the resume deadline", s.auditMode!.lastFailure === 2000);
-    recordCycle(s, true, 3000);
+    recordCycle(s, true, undefined, 3000);
     check("audit: success does not push the resume deadline", s.auditMode!.lastFailure === 2000);
     recordBlockEvent(s, 4000);
     check("audit: block landing also pushes the deadline", s.auditMode!.lastFailure === 4000);

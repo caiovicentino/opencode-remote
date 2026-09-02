@@ -3,7 +3,9 @@
  * for the whole scheduler. Two independent triggers watch the pipeline's vital
  * signs over sliding windows held in state.json:
  *
- *  1. fever rate — >= 60% of the last 10 pipeline cycles failed;
+ *  1. fever rate — >= 3 DISTINCT tasks failed within the last 10 pipeline
+ *     cycles (P2-063: aggregated by task id, so one stubborn task burning
+ *     through its own maxAttemptsPerTask breaker can never pause the queue);
  *  2. block burst — 2 tasks landed in ## Blocked within 30 minutes.
  *
  * While in audit mode the loop stops picking tasks from ## Ready, runs a
@@ -18,12 +20,12 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { nowLocalISO } from "./log";
 import { parseFailureLessons, type FailureLesson } from "./failureLessons";
-import type { AuditMode, PilotState } from "./state";
+import type { AuditMode, CycleSample, PilotState } from "./state";
 
 /** Sliding-window size for the fever-rate trigger (pipeline cycles). */
 export const AUDIT_WINDOW = 10;
-/** Fraction of failed cycles inside the window that trips the breaker. */
-export const AUDIT_FAIL_RATE = 0.6;
+/** P2-063: distinct tasks that must fail inside the window to trip the breaker. */
+export const AUDIT_DISTINCT_TASKS = 3;
 /** Block-burst window: 2 tasks blocked within 30 min trip the breaker. */
 export const AUDIT_BLOCK_WINDOW_MS = 30 * 60_000;
 export const AUDIT_BLOCK_TRIGGER = 2;
@@ -37,12 +39,14 @@ export function auditClearFile(): string {
 
 /**
  * Feed one pipeline outcome into the sliding fever window (keep the most
- * recent AUDIT_WINDOW samples). A failure recorded while already in audit
- * mode pushes the 2h resume deadline forward.
+ * recent AUDIT_WINDOW samples). `task` attributes the outcome to a task id so
+ * P2-063 can aggregate failures per task; undefined for pipeline-level crashes
+ * that have no task. A failure recorded while already in audit mode pushes the
+ * 2h resume deadline forward.
  */
-export function recordCycle(st: PilotState, ok: boolean, now = Date.now()): void {
+export function recordCycle(st: PilotState, ok: boolean, task?: string, now = Date.now()): void {
   const cycles = st.cycles ?? (st.cycles = []);
-  cycles.push({ ok, at: now });
+  cycles.push({ ok, at: now, task });
   if (cycles.length > AUDIT_WINDOW) st.cycles = cycles.slice(-AUDIT_WINDOW);
   if (!ok && st.auditMode) st.auditMode.lastFailure = now;
 }
@@ -59,17 +63,36 @@ export function recordBlockEvent(st: PilotState, now = Date.now()): void {
 }
 
 /**
- * The two P2-032 triggers. Returns the reason string when the pilot is in
- * fever, null otherwise. The rate trigger needs a full window so a single
- * early failure can never trip the breaker on its own.
+ * P2-063: count the DISTINCT tasks behind the failed cycles in the fever
+ * window. The old trigger counted failed cycles, so a single hard task
+ * exhausting its own attempts generated several "fever" samples and paused
+ * the whole queue — a per-task condition triggering a global pause. Id-less
+ * failures (pipeline-level crashes, legacy pre-P2-063 samples) carry no
+ * attribution; each counts as its own distinct entry, keeping the breaker
+ * conservative about systemic evidence.
+ */
+export function distinctFailedTasks(cycles: CycleSample[]): number {
+  const ids = new Set<string>();
+  for (const c of cycles) {
+    if (c.ok) continue;
+    ids.add(c.task || `?${c.at}`);
+  }
+  return ids.size;
+}
+
+/**
+ * The two P2-032 triggers. The fever-rate trigger needs >= AUDIT_DISTINCT_TASKS
+ * different tasks failing inside the last AUDIT_WINDOW cycles (P2-063), so a
+ * lone stubborn task keeps going through its normal maxAttemptsPerTask circuit
+ * instead of pausing the queue; three distinct tasks failing is systemic
+ * evidence strong enough on its own and trips even in a partial window.
+ * Returns the reason string when the pilot is in fever, null otherwise.
  */
 export function feverReason(st: PilotState, now = Date.now()): string | null {
   const cycles = st.cycles ?? [];
-  if (cycles.length >= AUDIT_WINDOW) {
-    const fails = cycles.filter((c) => !c.ok).length;
-    if (fails / cycles.length >= AUDIT_FAIL_RATE) {
-      return `fever: ${fails}/${cycles.length} cycles failed (>= ${AUDIT_FAIL_RATE * 100}%)`;
-    }
+  const distinct = distinctFailedTasks(cycles);
+  if (distinct >= AUDIT_DISTINCT_TASKS) {
+    return `fever: ${distinct} distinct tasks failed in the last ${AUDIT_WINDOW} cycles (>= ${AUDIT_DISTINCT_TASKS})`;
   }
   const blocks = (st.blockEvents ?? []).filter((t) => now - t <= AUDIT_BLOCK_WINDOW_MS);
   if (blocks.length >= AUDIT_BLOCK_TRIGGER) {
