@@ -142,6 +142,35 @@ export function preserveBranch(attempts: number | undefined, branchExists: boole
   return (attempts ?? 0) > 0 && branchExists;
 }
 
+/**
+ * P1-036: branch setup at the start of EVERY attempt, extracted verbatim from
+ * `runPipeline` for testability. Fetches origin, clears worktree dirt, then
+ * keeps the `pilot/<ID>` branch when this is a retry (P1-060: attempts > 0 and
+ * the branch exists) and recreates it at origin/main otherwise — deleting the
+ * branch ONLY on the fresh path so preserved attempt work survives retries.
+ * Precondition: `id` was already TASK_ID_RE-checked by the caller (it is
+ * interpolated into shell commands here). Returns true when the workspace
+ * resumed an existing preserved branch.
+ */
+export function setupTaskBranch(ws: string, id: string, attempts: number | undefined): boolean {
+  const branch = `pilot/${id}`;
+  exec("git fetch origin", { cwd: ws });
+  exec("git reset -q --hard", { cwd: ws }); // clear dirt on whatever branch we are on
+  exec("git clean -qfd", { cwd: ws });
+  let resumed = false;
+  if (preserveBranch(attempts, branchExists(ws, branch))) {
+    resumed = exec(`git checkout -q ${branch}`, { cwd: ws, allowFail: true }).ok;
+  }
+  if (resumed) {
+    console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "branch preserved from previous attempt", data: { task: id, attempt: (attempts ?? 0) + 1 } }));
+  } else {
+    exec(`git branch -qD ${branch} 2>/dev/null || true`, { cwd: ws, allowFail: true });
+    exec(`git checkout -q -B ${branch} origin/main`, { cwd: ws });
+    clearCheckpoint(id); // no stale range diff may resurrect deleted work
+  }
+  return resumed;
+}
+
 export interface RoundCheckpoint {
   task: string;
   /** Branch head sha at builder-round start (40-hex, validated on load). */
@@ -1010,24 +1039,11 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
   const branch = `pilot/${t.id}`;
   // P2-009: pipeline (branch) start — cited UI evidence must be newer than this
   const startedAtMs = Date.now();
-  // P1-060: first attempt starts clean at origin/main; later attempts keep the
-  // branch (P1-036 prerequisite) so the previous attempt's committed work
-  // survives — the builder continues it instead of restarting from scratch.
+  // P1-060/P1-036: first attempt starts clean at origin/main; later attempts
+  // keep the branch so the previous attempt's committed work survives — the
+  // builder continues it instead of restarting from scratch.
   const attemptNo = state.taskAttempts[t.id] ?? 0;
-  exec("git fetch origin", { cwd: ws });
-  exec("git reset -q --hard", { cwd: ws }); // clear dirt on whatever branch we are on
-  exec("git clean -qfd", { cwd: ws });
-  let resumed = false;
-  if (preserveBranch(attemptNo, branchExists(ws, branch))) {
-    resumed = exec(`git checkout -q ${branch}`, { cwd: ws, allowFail: true }).ok;
-  }
-  if (resumed) {
-    console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "branch preserved from previous attempt", data: { task: t.id, attempt: attemptNo + 1 } }));
-  } else {
-    exec(`git branch -qD ${branch} 2>/dev/null || true`, { cwd: ws, allowFail: true });
-    exec(`git checkout -q -B ${branch} origin/main`, { cwd: ws });
-    clearCheckpoint(t.id); // no stale range diff may resurrect deleted work
-  }
+  const resumed = setupTaskBranch(ws, t.id, attemptNo);
 
   // sandbox permissions: agents in the clone get full tool access (the real
   // security boundary is the gatekeeper + invariants + staged deploy, not this)

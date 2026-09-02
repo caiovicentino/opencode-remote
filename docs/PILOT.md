@@ -126,7 +126,7 @@ cérebro — o merge recebe um caminho reforçado no gate e no deploy:
   (`SOAK_RATE_TOLERANCE`) rola back — pegando degradação intermitente que a regra
   de "3 falhas seguidas" nunca vê.
 - **Branch preservada entre attempts (d, pré-requisito P1-036)**: já garantida
-  pelo `preserveBranch` (P1-060) para **qualquer** task — attempt 1 começa limpo,
+  pelo `preserveBranch` (P1-060/P1-036) para **qualquer** task — attempt 1 começa limpo,
   attempts seguintes continuam a branch `pilot/<ID>` existente (o builder é
   instruído a continuar o trabalho commitado, não recomeçar do zero).
 
