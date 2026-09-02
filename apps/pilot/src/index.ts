@@ -41,6 +41,7 @@ import {
   type PilotState,
 } from "./state";
 import { applySessionCosts, querySessionTokens } from "./costs";
+import { runDoctor } from "./doctor";
 
 let deployBusy = false;
 /** Shared runtime counters — mutated by the dispatcher and by slot workers.
@@ -64,6 +65,10 @@ async function main() {
   const slotCfg = new Map<number, PilotConfig>();
   for (const s of slotNumbers) slotCfg.set(s, ensureSlotWorkspace(cfg, s));
   startWatchdog();
+
+  // P1-030: deterministic repair pass on every boot — refs/state/backlog/
+  // branches, each idempotent and logged; never blocks the loop from starting.
+  runDoctor(cfg, slotNumbers.map((s) => slotCfg.get(s)!.workspace));
 
   const once = process.argv.includes("--once");
   log("info", "pilot started", {

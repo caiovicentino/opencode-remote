@@ -260,6 +260,11 @@ export function saveState(s: PilotState, file: string = STATE_FILE) {
   writeJsonAtomic(file, s);
 }
 
+/** P1-030: the doctor's state subcommand repairs this exact file by default. */
+export function defaultStateFile(): string {
+  return STATE_FILE;
+}
+
 export function frozen(): boolean {
   return existsSync(join(homedir(), ".opencode-remote", "pilot.lock"));
 }
