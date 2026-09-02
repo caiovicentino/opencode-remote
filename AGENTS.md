@@ -101,6 +101,14 @@ Caption appearance can be customized: `~/.opencode-remote/clip-style.json` accep
 The phone app edits this file for you — if the user asks for a caption style change,
 tell them to use Settings → Caption style.
 
+## Conversão de documentos (doc → PDF)
+
+Quando o usuário mandar um documento (`.docx .doc .rtf .html .csv .xlsx .pptx`) e quiser
+um PDF de volta, rode `node tools/doc2pdf.mjs <arquivo>` (padrão: arquivos em
+`~/.opencode-remote/uploads/`) — usa LibreOffice quando instalado, com fallback nativo
+macOS (textutil+cupsfilter) p/ doc/docx/rtf/html/csv. A saída imprime `[file: <abs path>]`;
+repita essa linha na resposta pro card de download aparecer no chat.
+
 ## Artifacts (documentos renderizáveis)
 
 Quando o resultado for um documento (html, md, csv, pdf…), escreva-o em
