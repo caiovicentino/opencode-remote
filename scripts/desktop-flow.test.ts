@@ -103,7 +103,14 @@ try {
   // the gate. The .pair-submit / .pair-error hooks are locale-independent.
   run("click Pair (locale-proof .pair-submit)", ["click", ".pair-submit"], 15_000);
   const errText = run("pairing error rendered (.pair-error)", ["ipc", "document.querySelector('.pair-error')?.textContent ?? ''"], 15_000);
-  if (errText.ok) check("pairing error carries the invalid-code copy", /"[^"]+"/.test(errText.stdout.trim()));
+  if (errText.ok) {
+    // The ipc output is JSON-stringified (tools/desktop.mjs fail()); assert the
+    // real invalid-code copy, not just any non-empty string (round-2 review).
+    check(
+      "pairing error carries the invalid-code copy",
+      /Invalid pairing code|Código de pareamento inválido/.test(errText.stdout),
+    );
+  }
   const shot = run("screenshot captured", ["shot", shotPath], 15_000);
   if (shot.ok) {
     try {
