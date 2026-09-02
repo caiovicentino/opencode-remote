@@ -9,6 +9,7 @@ import { latestUiShot } from "./shot";
 import { defaultVerifiedMergesFile, recordVerifiedMerge } from "./deployguard";
 import { touchHeartbeat, type PilotConfig, type PilotState } from "./state";
 import { appendLessonsToWorkspace, pickRelevantLessons, readExperienceFile } from "./experience";
+import { defaultLessonsFile, failureLessonsBlock, readRecentFailureLessons } from "./failureLessons";
 import { captureGateCorpus, CORPUS_COMMANDS, CORPUS_DIR, loadGateCorpus } from "./gate-corpus";
 
 export const CONSTITUTION = `CONSTITUTION (never violate):
@@ -19,7 +20,7 @@ export const CONSTITUTION = `CONSTITUTION (never violate):
 5. Every user-visible change is documented (README/AGENTS/docs) and covered by the eval battery.
 6. Design bar: the product must look professionally designed, never AI-generated. Banned tells: generic purple/blue gradients, glassmorphism abuse, emoji as icons, inconsistent spacing/typography, rounded-everything, placeholder copy. Every UI change reads as intentional craft (reference bar: Linear, Raycast, Claude Desktop).`;
 
-/** P1-007: injected into builder/strategist prompts — top keyword-matched lessons. */
+/** P1-007: injected into planner/builder/strategist prompts — top keyword-matched lessons. */
 export function lessonsBlock(lessons: string[]): string {
   return lessons.length ? `\nEXPERIENCE — relevant lessons from past merges (follow them):\n${lessons.join("\n")}\n` : "";
 }
@@ -49,7 +50,7 @@ export function specPathFor(id: string): string | null {
   return `specs/${id}.md`;
 }
 
-export function plannerPrompt(t: Task, attempt: number): string {
+export function plannerPrompt(t: Task, attempt: number, lessons: string[] = [], failureBlock = ""): string {
   const retry = attempt > 1
     ? `\nATTENTION: this is attempt ${attempt}. Your previous run did not leave a valid specs/${t.id}.md on disk — write the file this time.\n`
     : "";
@@ -77,7 +78,7 @@ Rules:
 - Keep the spec short and concrete (<= ~120 lines) — the builder is another agent that will follow it.
 - Acceptance criteria must be testable: commands to run, observable behaviors, numbers when applicable.
 - Touched files must cite real repo paths you actually inspected.${milestones}
-
+${lessonsBlock(lessons)}${failureBlock}
 When finished, your LAST line of output must be exactly: PLANNER:DONE`;
 }
 
@@ -1122,10 +1123,15 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
       console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "planner", data: { task: t.id } }));
       let plannerSession: string | undefined;
       let specOk = false;
+      // P2-042: the planner writes the spec the builder+reviewers are held to,
+      // so it must know the same patterns the builder knows — top-5 IER lessons
+      // keyword-matched against the task plus the 10 most recent failure lessons.
+      const lessons = pickRelevantLessons(readExperienceFile(ws), t.title, t.spec);
+      const failureBlock = failureLessonsBlock(readRecentFailureLessons(defaultLessonsFile()));
       for (let attempt = 1; attempt <= 2 && !specOk; attempt++) {
         const out = await runAgentForRole(
           "planner",
-          plannerPrompt(t, attempt),
+          plannerPrompt(t, attempt, lessons, failureBlock),
           {
             cwd: ws,
             timeoutMin: PLANNER_TIMEOUT_MIN,

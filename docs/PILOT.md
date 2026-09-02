@@ -429,6 +429,12 @@ sem spec.
 
 - O `builderPrompt` referência o spec: "read it FIRST ... do not delete or
   rewrite the spec" — desvios precisam ser justificados no commit.
+- **Planner enxerga as lições (P2-042)**: o `plannerPrompt` injeta o mesmo
+  contexto de experiência do builder/strategist — top-5 lições do IER
+  (`pickRelevantLessons`, keyword-match contra título+spec da task) e as 10
+  failure lessons mais recentes (`~/.opencode-remote/pilot/lessons.jsonl`).
+  Assim o spec de P0/P1 já nasce ciente dos padrões que bloquearam tasks
+  anteriores; sem nenhum match, o prompt fica limpo (blocos vazios).
 - O reviewer de **quality** ganha o critério explícito "does the diff fulfill
   `specs/<ID>.md`?" — desvio de abordagem/arquivos/critérios de aceite é finding.
 - **Exclusividade determinística**: "commita ONLY o spec" é enforced pelo runner,
