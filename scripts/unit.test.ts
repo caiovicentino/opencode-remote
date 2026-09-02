@@ -144,6 +144,14 @@ import {
   type WindowBounds,
 } from "../apps/desktop/src/window-state";
 import { extractReport, FORENSIC_MARKER, FORENSIC_WINDOW_MS, forensicDue, forensicPrompt, listGateFails } from "../apps/pilot/src/forensic";
+import {
+  activeSlots,
+  initialViewState,
+  isPaneOpen,
+  topSlot,
+  viewReducer,
+  type ViewState,
+} from "../apps/web/src/lib/viewState";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -2664,6 +2672,76 @@ check(
   const daemonSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
   const leaky = daemonSrc.split("\n").filter((l) => l.includes("log(") && l.includes("token="));
   check("p1-061 no daemon log call contains token=", leaky.length === 0);
+}
+
+// --- P1-046: desktop shell v2 view-state reducer -----------------------------
+{
+  const base: ViewState = initialViewState;
+  const chat = viewReducer(base, { type: "openChat", sessionId: "s1" });
+  check(
+    "p1-046 openChat sets chatSession and pushes the chat slot",
+    chat.chatSession === "s1" && topSlot(chat) === "chat" && isPaneOpen(chat) === false,
+  );
+  const withArtifacts = viewReducer(chat, { type: "open", slot: "artifacts" });
+  check(
+    "p1-046 opening a pane keeps the active chat (chat + artifact coexist)",
+    withArtifacts.chatSession === "s1" && topSlot(withArtifacts) === "artifacts" && isPaneOpen(withArtifacts),
+  );
+  const withFiles = viewReducer(withArtifacts, { type: "open", slot: "files" });
+  const slots = activeSlots(withFiles);
+  check(
+    "p1-046 opening a second pane leaves exactly ONE active rail slot",
+    slots.size === 1 && slots.has("files") && !slots.has("artifacts"),
+  );
+  const backToArtifacts = viewReducer(withFiles, { type: "back" });
+  check(
+    "p1-046 back() pops the pane stack",
+    topSlot(backToArtifacts) === "artifacts" && backToArtifacts.chatSession === "s1",
+  );
+  const backToChat = viewReducer(backToArtifacts, { type: "back" });
+  check(
+    "p1-046 back() to chat keeps the session",
+    topSlot(backToChat) === "chat" && backToChat.chatSession === "s1",
+  );
+  const backHome = viewReducer(backToChat, { type: "back" });
+  check(
+    "p1-046 back() from chat closes the conversation and lands home",
+    backHome.chatSession === null && backHome.stack.length === 0 && isPaneOpen(backHome) === false,
+  );
+  check(
+    "p1-046 topSlot falls back to chat on the home screen",
+    topSlot(base) === "chat" && activeSlots(base).has("chat"),
+  );
+  const share = viewReducer(chat, { type: "open", slot: "share" });
+  const shareClosed = viewReducer(share, { type: "back" });
+  check(
+    "p1-046 share enters and leaves the stack without touching the chat",
+    topSlot(share) === "share" && topSlot(shareClosed) === "chat" && shareClosed.chatSession === "s1",
+  );
+  const noDupes = viewReducer(viewReducer(chat, { type: "open", slot: "files" }), { type: "open", slot: "files" });
+  check(
+    "p1-046 the stack never holds duplicates",
+    noDupes.stack.filter((s) => s === "files").length === 1 && noDupes.stack.length === 2,
+  );
+  const replaced = viewReducer(viewReducer(chat, { type: "open", slot: "settings" }), {
+    type: "replace",
+    slot: "files",
+  });
+  check(
+    "p1-046 replace() swaps the top slot, preserving the chat below",
+    topSlot(replaced) === "files" && replaced.stack.length === 2 && replaced.stack[0] === "chat",
+  );
+  const wiped = viewReducer(withArtifacts, { type: "reset" });
+  check(
+    "p1-046 reset() clears the whole view state (disconnect/switchMachine)",
+    wiped.stack.length === 0 && wiped.chatSession === null,
+  );
+  check("p1-046 back() on the home screen is a no-op", viewReducer(base, { type: "back" }) === base);
+  const closeChat = viewReducer(chat, { type: "closeChat" });
+  check(
+    "p1-046 closeChat clears the session and drops the chat slot",
+    closeChat.chatSession === null && !closeChat.stack.includes("chat"),
+  );
 }
 
 if (failures > 0) {

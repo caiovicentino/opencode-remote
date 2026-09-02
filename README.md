@@ -132,6 +132,14 @@ Tailscale. It loads the same `@ocr/web` build as the phone.
 The shell runs on **Electron 44** (Chromium 152, V8 15.2, Node 24.18.1),
 which requires **macOS 13 (Ventura) or later**.
 
+Since P1-046 the window is a real two-column cockpit: the conversation stays
+open in the left column while Artifacts, Browser, Files or Settings open in a
+contextual pane on the right (switching panes never destroys the chat), and
+the whole navigation lives behind a single view stack. Keyboard shortcuts
+(also in the **Go** menu): `Cmd+T` new conversation, `Cmd+K` command palette
+(search conversations and actions), `Cmd+1..5` switch to chat / Artifacts /
+Browser / Files / Settings.
+
 ```bash
 npm run build --workspace @ocr/web       # build the UI once
 npm run build --workspace @ocr/desktop   # compile the shell (TypeScript main process)

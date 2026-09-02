@@ -139,6 +139,31 @@ try {
   if (btn.ok) check("reconnect button renders the pt-BR copy", /true/.test(btn.stdout));
   run("daemon-down banner shows the reconnect button", ["see", "Reconectar agora"], 15_000);
 
+  // --- P1-046: Go menu + shortcut bridge --------------------------------------
+  // The paired two-column layout can't render hermetically (needs real E2E
+  // keys, see the P1-051 note above), but the shortcut WIRING is fully
+  // observable: the preload bridge must expose onMenuAction and the app menu
+  // must carry the Go items whose click handlers broadcast ocr:menu-action.
+  const bridge = run("P1-046: preload exposes onMenuAction", ["ipc", "typeof window.ocrDesktop.onMenuAction"], 15_000);
+  if (bridge.ok) check("P1-046: onMenuAction is a function", /function/.test(bridge.stdout));
+  const menuIds: [string, string][] = [
+    ["go-new-chat", "New conversation"],
+    ["go-palette", "Command palette"],
+    ["go-pane-chat", "Chat"],
+    ["go-pane-artifacts", "Artifacts"],
+    ["go-pane-browser", "Browser"],
+    ["go-pane-files", "Files"],
+    ["go-pane-settings", "Settings"],
+  ];
+  for (const [id, label] of menuIds) {
+    const res = run(`P1-046: Go menu item ${id}`, ["menu", id], 15_000);
+    if (res.ok) check(`P1-046: ${id} is labeled "${label}"`, res.stdout.includes(label));
+  }
+  // Real click on the menu item: runs the main-process handler that
+  // broadcasts ocr:menu-action to every window (renderer ignores it while
+  // unpaired — the call must not throw).
+  run("P1-046: go-pane-artifacts click dispatches", ["menu-click", "go-pane-artifacts"], 15_000);
+
   // --- P1-053: the "reconnecting…" hermetic state (second launch) --------------
   // An ADOPTED daemon going missing is never terminal: the yellow banner shows
   // an active reconnecting state with the attempt counter and NO QR overlay.

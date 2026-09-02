@@ -35,6 +35,9 @@ interface Props {
   onOpenSettings: () => void;
   onOpenFiles: () => void;
   tick: number;
+  /** P1-046: creation lifted to App so Cmd+T/Cmd+K reuse the same path. */
+  creating: boolean;
+  onCreateSession: () => Promise<string | null>;
   /** "grid" (mobile cards) | "rows" (desktop flat Claude-style list) */
   variant?: "grid" | "rows";
 }
@@ -56,6 +59,8 @@ export default function SessionsView({
   onOpenSettings,
   onOpenFiles,
   tick,
+  creating,
+  onCreateSession,
   variant = "grid",
 }: Props) {
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -96,26 +101,9 @@ export default function SessionsView({
     void load();
   }, [tick]);
 
-  const [creating, setCreating] = useState(false);
-
   async function createSession() {
-    if (creating) return;
-    setCreating(true);
-    setError("");
-    try {
-      const res = await request("POST", "/session", {});
-      const created = res.body as { id?: string };
-      if (res.status === 200 && created.id) {
-        onOpen(created.id);
-        void load();
-      } else {
-        setError(`create failed (${res.status}): ${JSON.stringify(res.body).slice(0, 140)}`);
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setCreating(false);
-    }
+    const err = await onCreateSession();
+    if (err) setError(err);
   }
 
   async function renameSession(id: string, current?: string) {
