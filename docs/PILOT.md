@@ -685,10 +685,14 @@ Since P2-038 the verifier treats code observations as first-class evidence:
   dropped as hallucinated.)
 - **Symbol check (code-observation findings)**: a finding that cites
   `file:line` and quotes a symbol (`[request]`, `verifyToken`, …) is verified
-  deterministically — the cited file:line must exist and the quoted symbol
-  must appear in a cited file or in the reviewed diff. A finding is marked
-  hallucinated only when the cited file, line or symbol does not exist
-  anywhere it is claimed to.
+  deterministically — the cited file:line must exist and the quoted symbols
+  must appear in the **union** of all cited files' contents plus the reviewed
+  diff (P1-065: no longer per-citation, so a cross-file finding whose symbols
+  are spread across its own citations is valid). Two tiers: when the full
+  symbol set does not resolve, the finding is still kept if at least one
+  quoted span of ≥6 chars matches the union. A finding is marked hallucinated
+  only when a cited file or line does not exist, or when no quoted span of
+  ≥6 chars matches the union.
 
 ## Cheap resumption (P2-013)
 
