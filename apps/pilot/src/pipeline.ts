@@ -1221,6 +1221,12 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       // findings header.
       const crash = crashRoundDecision(round, cfg.maxReviewRounds);
       if (!crash.retry) {
+        // P1-074: a timeout with no output is infra (the agent process died
+        // silently) — the marker lets runSlot's classifier spare the attempt
+        // budget; only empty-output timeouts are infra
+        if (build.timedOut && !build.output.trim()) {
+          return { ok: false, detail: `[infra] builder timed out without output (round ${round})` };
+        }
         return { ok: false, detail: `${crash.detail}: ${build.output.slice(-300)}` };
       }
       continue;

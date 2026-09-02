@@ -137,6 +137,10 @@ export interface PilotState {
   failures: number;
   /** P2-045: successful merges today — the honest dashboard MERGES counter. */
   merges: number;
+  /** P1-074: infra-signature pipeline failures today (API down, spawn error,
+   * timeout without output). Diagnostic counter only — never merit evidence:
+   * burns no attempt and feeds no fever window. Resets at the daily rollover. */
+  infraFails?: number;
   /** P1-014 stop-loss: pipeline failures per task id (circuit breaker). */
   taskAttempts: Record<string, number>;
   redteamLast?: string;
@@ -186,6 +190,9 @@ export function loadState(file = STATE_FILE): PilotState {
     const attempts = s.taskAttempts ?? {};
     // P2-045: legacy state files predate the daily merge counter
     const merges = typeof s.merges === "number" && Number.isFinite(s.merges) ? s.merges : 0;
+    // P1-074: infra counter backfilled for legacy files, never NaN (resets at
+    // the midnight rollover like the other daily counters — diagnostic only)
+    const infraFails = typeof s.infraFails === "number" && Number.isFinite(s.infraFails) ? s.infraFails : 0;
     const shared = {
       taskAttempts: attempts,
       cycles: Array.isArray(s.cycles) ? s.cycles : [],
@@ -196,8 +203,8 @@ export function loadState(file = STATE_FILE): PilotState {
       taskCosts: s.taskCosts && typeof s.taskCosts === "object" ? s.taskCosts : {},
       taskCostSessions: s.taskCostSessions && typeof s.taskCostSessions === "object" ? s.taskCostSessions : {},
     };
-    if (s.date === today) return { ...s, ...shared, merges };
-    return { date: today, tasks: 0, deploys: 0, failures: 0, merges: 0, ...shared };
+    if (s.date === today) return { ...s, ...shared, merges, infraFails };
+    return { date: today, tasks: 0, deploys: 0, failures: 0, merges: 0, infraFails: 0, ...shared };
   } catch {
     return {
       date: nowLocalISO().slice(0, 10),
@@ -205,6 +212,7 @@ export function loadState(file = STATE_FILE): PilotState {
       deploys: 0,
       failures: 0,
       merges: 0,
+      infraFails: 0,
       taskAttempts: {},
       cycles: [],
       blockEvents: [],

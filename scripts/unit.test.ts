@@ -104,14 +104,17 @@ import {
   AUDIT_BLOCK_WINDOW_MS,
   AUDIT_RESUME_MS,
   AUDIT_WINDOW,
+  INFRA_DOCTOR_EVERY,
   auditResumeDue,
   buildDiagnosis,
   clearAuditMode,
   enterAuditMode,
   feverReason,
   formatDiagnosis,
+  infraFailureKind,
   recordBlockEvent,
   recordCycle,
+  recordInfraFailure,
 } from "../apps/pilot/src/audit";
 import {
   appendCommitAndPush,
@@ -3631,6 +3634,56 @@ check(
     check("loadState backfills fever fields for legacy state", legacy.cycles!.length === 0 && legacy.blockEvents!.length === 0 && legacy.auditMode === null);
     writeFileSync(file, JSON.stringify({ date: "2026-01-01", auditMode: { reason: "" } }));
     check("loadState rejects a malformed audit mode", loadState(file).auditMode === null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// --- P1-074 infra failures must not burn attempts or fever samples ----------------
+{
+  // classifier positives (spec criteria)
+  check("infra kind: preflight API unreachable → api-down", infraFailureKind("...[preflight] opencode API unreachable...") === "api-down");
+  check("infra kind: Cannot connect to API → api-down", infraFailureKind("Cannot connect to API") === "api-down");
+  check("infra kind: spawn error → spawn", infraFailureKind("x\nspawn error: ENOENT") === "spawn");
+  check("infra kind: ECONNREFUSED → network", infraFailureKind("ECONNREFUSED ...") === "network");
+  check("infra kind: timeout-without-output marker → timeout", infraFailureKind("[infra] builder timed out without output (round 2)") === "timeout");
+  // negatives — merit failures stay merit
+  check("infra kind: gatekeeper rejection is merit", infraFailureKind("gatekeeper rejected: eval battery or invariants failed") === null);
+  check("infra kind: review rounds exhausted is merit", infraFailureKind("max review rounds reached — findings: ...") === null);
+  check("infra kind: empty diff is merit", infraFailureKind("builder produced an empty diff") === null);
+
+  // fever immunity: 12 consecutive infra outcomes (the runSlot infra branch:
+  // recordInfraFailure + skip recordCycle) add no cycle sample and no attempt
+  const infraRun = { date: "2026-09-01", tasks: 0, deploys: 0, failures: 0, taskAttempts: {} } as PilotState;
+  for (let i = 0; i < 12; i++) {
+    const infra = infraFailureKind("[preflight] opencode API unreachable at http://127.0.0.1:4096");
+    if (infra) recordInfraFailure(infraRun);
+    else recordCycle(infraRun, false, "P1-074", i);
+  }
+  check("infra: 12 infra outcomes never feed the fever window", feverReason(infraRun) === null);
+  check("infra: infra outcomes burn no attempts", Object.keys(infraRun.taskAttempts).length === 0 && infraRun.infraFails === 12);
+
+  // merit control: one non-infra failure still takes the existing path
+  const meritRun = { date: "2026-09-01", tasks: 0, deploys: 0, failures: 0, taskAttempts: {} } as PilotState;
+  if (!infraFailureKind("gatekeeper rejected: eval battery or invariants failed")) {
+    recordCycle(meritRun, false, "P1-074");
+    recordTaskFailure(meritRun, "P1-074", 4);
+  }
+  check("infra: merit control still records cycle + attempt", meritRun.cycles!.length === 1 && meritRun.taskAttempts["P1-074"] === 1);
+
+  // doctor wake: exactly on the 3rd and 6th infra failure
+  check("infra: doctor cadence constant is 3", INFRA_DOCTOR_EVERY === 3);
+  const wakeRun = { date: "2026-09-01", tasks: 0, deploys: 0, failures: 0, taskAttempts: {} } as PilotState;
+  const wakes: boolean[] = [];
+  for (let i = 0; i < 7; i++) wakes.push(recordInfraFailure(wakeRun));
+  check("infra: doctor wakes exactly on the 3rd and 6th failure", wakes[2] === true && wakes[5] === true && wakes.filter(Boolean).length === 2);
+
+  // legacy state.json without the field backfills to 0, never NaN
+  const dir = mkdtempSync(join(tmpdir(), "pilot-infra-state-"));
+  try {
+    const file = join(dir, "state.json");
+    writeFileSync(file, JSON.stringify({ date: new Date().toLocaleDateString("en-CA"), tasks: 1, deploys: 0, failures: 0, taskAttempts: {} }));
+    check("infra: loadState backfills infraFails for legacy state", loadState(file).infraFails === 0);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
