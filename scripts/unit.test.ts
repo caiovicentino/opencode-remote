@@ -94,7 +94,7 @@ import {
 import { EXPLORER_MAX_FINDINGS, EXPLORER_MAX_STEPS, EXPLORER_TIMEOUT_MIN, EXPLORER_PUSH_RETRIES, EXPLORER_PUSH_WAIT_MS, commitAndPushFindings, explorerSpec, parseExplorerFindings, type ExplorerFinding } from "../apps/pilot/src/explorer";
 import { API_PREFLIGHT, apiHealthy, claudeArgs, idScanner, mergeAgentIds, OPENCODE_URL_DEFAULT, scanIds, shouldFallbackTierB, waitForApi } from "../apps/pilot/src/runner";
 import { mkdtempSync, mkdirSync, readdirSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync, utimesSync } from "node:fs";
-import { execSync, spawn } from "node:child_process";
+import { execSync, spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { AddressInfo } from "node:net";
 import { connect as netConnect } from "node:net";
@@ -144,6 +144,7 @@ import {
   type WindowBounds,
 } from "../apps/desktop/src/window-state";
 import { extractReport, FORENSIC_MARKER, FORENSIC_WINDOW_MS, forensicDue, forensicPrompt, listGateFails } from "../apps/pilot/src/forensic";
+import { DOC_EXTS, hasPdfMagic, NATIVE_TEXT_EXTS, pickConverter, validateExt } from "../tools/doc2pdf.mjs";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -2664,6 +2665,56 @@ check(
   const daemonSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
   const leaky = daemonSrc.split("\n").filter((l) => l.includes("log(") && l.includes("token="));
   check("p1-061 no daemon log call contains token=", leaky.length === 0);
+}
+
+// --- P2-065: tools/doc2pdf.mjs pure helpers -----------------------------------
+{
+  check("doc2pdf validateExt: full allowlist", DOC_EXTS.join(",") === "docx,doc,rtf,html,csv,xlsx,pptx" && DOC_EXTS.every((e) => validateExt(`a.${e}`) === e));
+  check("doc2pdf validateExt: case-insensitive", validateExt("Relatório.DOCX") === "docx" && validateExt("X.CSV") === "csv");
+  check("doc2pdf validateExt: rejects outside allowlist", validateExt("a.exe") === null && validateExt("a.sh") === null && validateExt("a.pdf") === null);
+  check("doc2pdf validateExt: rejects no-extension and hidden files", validateExt("noext") === null && validateExt(".bashrc") === null);
+  check("doc2pdf native fallback covers text-ish formats", NATIVE_TEXT_EXTS.join(",") === "docx,doc,rtf,html,csv");
+
+  const soffice = { id: "soffice", platforms: ["darwin", "linux", "win32"], available: true };
+  const native = { id: "textutil+cupsfilter", platforms: ["darwin"], available: true };
+  check("doc2pdf pickConverter: first available wins", pickConverter("darwin", [soffice, native]) === soffice);
+  check("doc2pdf pickConverter: skips unavailable candidates", pickConverter("darwin", [{ ...soffice, available: false }, native]) === native);
+  check("doc2pdf pickConverter: platform mismatch skipped", pickConverter("linux", [native, { ...soffice, platforms: ["darwin"] }]) === null);
+  check("doc2pdf pickConverter: none available -> null (graceful)", pickConverter("darwin", [soffice, native].map((c) => ({ ...c, available: false }))) === null);
+  check("doc2pdf pickConverter: empty candidates -> null", pickConverter("darwin", []) === null);
+
+  check("doc2pdf hasPdfMagic: accepts %PDF header", hasPdfMagic(Buffer.from("%PDF-1.4 rest")));
+  check("doc2pdf hasPdfMagic: rejects garbage/short", !hasPdfMagic(Buffer.from("JUNK...")) && !hasPdfMagic(Buffer.from("%PD")) && !hasPdfMagic(Buffer.alloc(0)));
+
+  // real-conversion smoke on the committed fixtures (criteria: valid %PDF <10s);
+  // skipped where the macOS-native fallback isn't available
+  const cups = existsSync("/usr/sbin/cupsfilter") || spawnSync("which", ["cupsfilter"], { encoding: "utf8" }).status === 0;
+  const textutil = spawnSync("which", ["textutil"], { encoding: "utf8" }).status === 0;
+  const fixturesDir = join(import.meta.dirname, "..", "tools", "fixtures");
+  if (process.platform === "darwin" && cups && textutil && existsSync(join(fixturesDir, "sample.docx"))) {
+    const outDir = mkdtempSync(join(tmpdir(), "doc2pdf-smoke-"));
+    try {
+      for (const fixture of ["sample.docx", "sample.csv"]) {
+        const t0 = Date.now();
+        const r = spawnSync(process.execPath, ["tools/doc2pdf.mjs", join(fixturesDir, fixture), outDir], {
+          encoding: "utf8",
+          timeout: 30_000,
+        });
+        const out = join(outDir, fixture.replace(/\.[^.]+$/, ".pdf"));
+        check(
+          `doc2pdf smoke: ${fixture} -> valid PDF <10s`,
+          r.status === 0 &&
+            Date.now() - t0 < 10_000 &&
+            readFileSync(out).subarray(0, 4).toString("latin1") === "%PDF" &&
+            r.stdout.includes(`[file: ${out}]`),
+        );
+      }
+    } finally {
+      rmSync(outDir, { recursive: true, force: true });
+    }
+  } else {
+    check("doc2pdf smoke: skipped (no native converter on this platform)", true);
+  }
 }
 
 if (failures > 0) {

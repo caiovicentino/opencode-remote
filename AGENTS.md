@@ -85,6 +85,12 @@ Tools: `tools/clip.mjs` (needs whisper-cli + ffmpeg, already installed).
 
 Videos the user sends from the phone are saved under `~/.opencode-remote/uploads/`.
 
+## Conversão de documentos (office → PDF)
+
+`node tools/doc2pdf.mjs <arquivo> [outdir]` converte docx/doc/rtf/html/csv/xlsx/pptx pra PDF
+(usando LibreOffice `soffice` quando instalado; no macOS cai pra textutil+cupsfilter p/ docx/doc/rtf/html/csv)
+e imprime a linha `[file: <abs path>]` pro card de download — extensão fora da allowlist falha com exit 1.
+
 ## Entregando arquivos pro usuário (PDF, planilhas, relatórios...)
 
 Quando gerar um artefato para o usuário, salve-o em `~/.opencode-remote/uploads/`
