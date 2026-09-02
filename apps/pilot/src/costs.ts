@@ -9,6 +9,12 @@
  * pipeline just needs to reconcile those ids against the DB and accumulate the
  * totals into state.json as `taskCosts: {taskId: tokens}`.
  *
+ * Data provenance is BEST-EFFORT (round 3 review): session ids are captured
+ * from agent stdout, so a rogue/malicious agent could echo a foreign `ses_…`
+ * and inflate its own task's cost line. taskCosts feeds cost prioritization
+ * only — no gate or privilege decision consumes it. The reconciler also opens
+ * the database strictly read-only (`sqlite3 -readonly`).
+ *
  * Reconciliation is REPLACE-by-recompute, never ADD: a resumed builder session
  * grows over time, so the task's stored total is recomputed from the full set
  * of session ids ever recorded for it. Re-running the same round therefore
@@ -115,7 +121,10 @@ export async function querySessionTokens(
     exec ??
     ((db: string, sql: string): Promise<string> =>
       new Promise((resolve, reject) => {
-        const child = execFile("sqlite3", ["-json", db], { timeout: 15_000 }, (err, stdout) =>
+        // -readonly (round 3 review): the reconciler must never be able to
+        // write the live opencode.db (WAL/journal of a running opencode);
+        // writes now fail with "attempt to write a readonly database".
+        const child = execFile("sqlite3", ["-readonly", "-json", db], { timeout: 15_000 }, (err, stdout) =>
           err ? reject(err) : resolve(String(stdout)),
         );
         child.stdin?.end(sql); // SQL via stdin: no shell, no argv leakage

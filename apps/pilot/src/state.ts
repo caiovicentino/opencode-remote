@@ -153,8 +153,10 @@ export interface PilotState {
   /** P2-045: last audit-mode doctor summary (formatDiagnosis) shown on the dash chip. */
   auditDiagnosis?: string;
   /** P2-028: task id → total tokens (input+output+cache) across all the agent
-   * sessions the task consumed, from the local opencode.db. Not a daily budget:
-   * persists across midnight rollovers and is pruned by tasks.ts cap. */
+   * sessions the task consumed, from the local opencode.db. Best-effort signal
+   * (ids are captured from agent stdout; cost prioritization only — no gate
+   * consumes it), read with sqlite3 -readonly. Not a daily budget: persists
+   * across midnight rollovers and is pruned by tasks.ts cap. */
   taskCosts?: Record<string, number>;
   /** P2-028: task id → session ids already reflected in taskCosts (dedupes the
    * recompute; a resumed builder session keeps the same id across rounds). */

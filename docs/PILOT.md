@@ -334,6 +334,10 @@ A linha da task no BACKLOG.md pode carregar a tag opcional `(size: S|M|L)` (defa
   o chip `x.xM tok` em cada linha (formato k/M/B). Janela rolante de 200 tasks
   em `state.json`; sem DB/`sqlite3`, o total anterior é preservado e o ciclo
   segue. Objetivo: identificar tasks caras e priorizar otimização por dado.
+  Sinal **best-effort** (round 3): os ids vêm do stdout dos agentes — um eco
+  estranho de `ses_…` pode inflar a linha da própria task (nada de gate
+  consome `taskCosts`); a reconciliação abre o DB com `sqlite3 -readonly`,
+  sem possibilidade de escrever no WAL/journal do opencode em produção.
 - Logs JSONL: `~/.opencode-remote/logs/pilot.log`
 - Feed bruto: `GET 127.0.0.1:8792/api/pilot-events` (Bearer apiToken) — eventos + contadores + heartbeat
 - Digest a cada pipeline: push no seu telefone (via `POST /api/push` autenticado no daemon)
