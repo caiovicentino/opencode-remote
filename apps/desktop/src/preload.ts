@@ -46,6 +46,11 @@ contextBridge.exposeInMainWorld("ocrDesktop", {
   getPairingState: (): Promise<PairingState | null> => ipcRenderer.invoke("app:pairingState"),
   // P1-053: banner button — manual daemon restart (same path as the tray).
   reconnectDaemon: (): Promise<boolean> => ipcRenderer.invoke("app:reconnectDaemon"),
+  // P3-053: dock unread badge — the web UI derives the count (lib/unread.ts)
+  // and pushes it on every change; main maps it to app.setBadgeCount. The
+  // getter exists so tests can verify the IPC round-trip via the harness.
+  sendUnread: (n: number): void => ipcRenderer.send("ocr:unread", n),
+  getUnreadBadge: (): Promise<number> => ipcRenderer.invoke("app:unreadBadge"),
   // P1-050: Settings "Copy diagnostic" — support bundle (versions, daemon
   // state, desktop.log tail, crash-file names). Text only, no secrets.
   getDiagnostics: (): Promise<string> => ipcRenderer.invoke("app:diagnostics"),

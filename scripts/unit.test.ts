@@ -12,6 +12,7 @@ import { sessionTitleOf } from "../apps/web/src/lib/title";
 import { dict } from "../apps/web/src/lib/i18n";
 import { permissionPreview } from "../apps/web/src/lib/permission";
 import { applySessionFilters, isPilotTitle, splitPilotSessions } from "../apps/web/src/lib/sessionFilter";
+import { initialUnreadState, reduceUnread } from "../apps/web/src/lib/unread";
 import {
   capMessagePage,
   parsePageLimit,
@@ -335,6 +336,57 @@ check("preview command wins over pattern", permissionPreview({ metadata: { comma
 check("preview caps long lines", (permissionPreview({ metadata: { command: "x".repeat(200) } }) ?? "").length <= 120);
 check("preview empty payload", permissionPreview({ metadata: {} }) === undefined);
 check("preview null/undefined payload", permissionPreview(null) === undefined && permissionPreview(undefined) === undefined);
+
+// --- dock unread badge reducer (P3-053) ---------------------------------------
+check("unread starts at zero, focused at the tail", initialUnreadState(true, true).count === 0);
+check("unread: arrival while blurred increments", (() => {
+  let s = initialUnreadState(false, true);
+  s = reduceUnread(s, { kind: "message" });
+  return s.count === 1;
+})());
+check("unread: arrival scrolled away from the tail increments", (() => {
+  let s = initialUnreadState(true, false);
+  s = reduceUnread(s, { kind: "message" });
+  return s.count === 1;
+})());
+check("unread: arrival focused at the tail does not count", (() => {
+  let s = initialUnreadState(true, true);
+  s = reduceUnread(s, { kind: "message" });
+  return s.count === 0;
+})());
+check("unread: focusing zeroes", (() => {
+  let s = initialUnreadState(false, true);
+  s = reduceUnread(s, { kind: "message" });
+  s = reduceUnread(s, { kind: "message" });
+  s = reduceUnread(s, { kind: "focus" });
+  return s.count === 0 && s.focused;
+})());
+check("unread: reaching the tail zeroes", (() => {
+  let s = initialUnreadState(true, false);
+  s = reduceUnread(s, { kind: "message" });
+  s = reduceUnread(s, { kind: "message" });
+  s = reduceUnread(s, { kind: "atEnd", atEnd: true });
+  return s.count === 0 && s.atEnd;
+})());
+check("unread: count never regresses on non-zeroing transitions", (() => {
+  let s = initialUnreadState(false, false);
+  for (let i = 0; i < 5; i++) s = reduceUnread(s, { kind: "message" });
+  s = reduceUnread(s, { kind: "atEnd", atEnd: false });
+  s = reduceUnread(s, { kind: "blur" });
+  return s.count === 5;
+})());
+check("unread: reset (session switch) zeroes and keeps the flags", (() => {
+  let s = initialUnreadState(false, false);
+  s = reduceUnread(s, { kind: "message" });
+  s = reduceUnread(s, { kind: "reset" });
+  return s.count === 0 && !s.focused && !s.atEnd;
+})());
+check("unread: scrolling away never fabricates or clears", (() => {
+  let s = initialUnreadState(true, true);
+  s = reduceUnread(s, { kind: "message" });
+  s = reduceUnread(s, { kind: "atEnd", atEnd: false });
+  return s.count === 0 && !s.atEnd;
+})());
 
 // --- session badge filter chips (P2-005) -------------------------------------
 type FS = { id: string; title?: string };
