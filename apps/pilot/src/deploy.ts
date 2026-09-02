@@ -130,18 +130,20 @@ export async function deploy(
   return { ok: true, rolledBack: false, detail: `deployed ${sha.slice(0, 7)} (prev ${prev.slice(0, 7)})` };
 }
 
-/** npm ci with visible errors and one retry (transient cache/lock races happen). */
+/** npm ci with visible errors and one retry (transient cache/lock races happen).
+ * P1-057: --ignore-scripts — dependency lifecycle scripts are a supply-chain
+ * vector; the deploy only needs tsc/esbuild (no electron binary, no packaging). */
 function npmInstall(cfg: PilotConfig) {
-  const r = exec("npm ci --no-audit --no-fund --loglevel=error", { cwd: cfg.repo, timeoutMin: 15, allowFail: true });
+  const r = exec("npm ci --no-audit --no-fund --ignore-scripts --loglevel=error", { cwd: cfg.repo, timeoutMin: 15, allowFail: true });
   if (r.ok) return;
   console.log(JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "npm ci retry", data: r.output.slice(-300) }));
-  exec("npm ci --no-audit --no-fund --loglevel=error", { cwd: cfg.repo, timeoutMin: 15 });
+  exec("npm ci --no-audit --no-fund --ignore-scripts --loglevel=error", { cwd: cfg.repo, timeoutMin: 15 });
 }
 
 async function rollback(cfg: PilotConfig, prevSha: string, why: string) {
   exec("git checkout -q main", { cwd: cfg.repo, allowFail: true });
   exec(`git reset -q --hard ${prevSha}`, { cwd: cfg.repo, allowFail: true });
-  exec("npm ci --silent", { cwd: cfg.repo, timeoutMin: 15, allowFail: true });
+  exec("npm ci --silent --ignore-scripts", { cwd: cfg.repo, timeoutMin: 15, allowFail: true });
   exec("npm run build --silent", { cwd: cfg.repo, timeoutMin: 15, allowFail: true });
   kickstart(cfg, "com.ocr.relay");
   kickstart(cfg, "com.ocr.daemon");

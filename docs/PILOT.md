@@ -33,7 +33,7 @@ BACKLOG.md ──> BUILDER ────┬──> SECURITY REVIEWER ─┬──
 | `security reviewer` | foco: crypto, auth, injection, secrets | 20 min |
 | `quality reviewer` | foco: regressão, UX, docs, testes | 20 min |
 | `scribe` | após o merge: destila até 3 lições do diff + findings → `docs/EXPERIENCE.md` | 10 min |
-| `strategist` | quando a fila tem <2 tasks: lê código/memória/métricas e redige as próximas tasks no BACKLOG.md | 25 min |
+| `strategist` | quando a fila tem <2 tasks: lê código/memória/métricas e propõe as próximas tasks (o runner valida, commita e empurra com guard) | 25 min |
 | `red team` (03:00/dia) | tenta quebrar segurança/robustez; achados viram task P0 | 30 min |
 | gatekeeper | **não é LLM** — roda scripts, decide por exit codes | — |
 
@@ -104,7 +104,7 @@ escopo hermético por design (chaves E2E reais).
    claro (`disk low: Xgb free (need 5.0gb) — deploy aborted before npm ci/build`),
    evento `disk-guard` no feed e `notifySupervisor` em vez de falhar depois com
    um `git index.lock` críptico. Sonda indisponível = fail-open (não bloqueia).
-1. `git reset --hard <sha>` no repo de produção + `npm ci` + `npm run build`
+1. `git reset --hard <sha>` no repo de produção + `npm ci --ignore-scripts` + `npm run build`
 2. `launchctl kickstart -k` relay e daemon (o daemon derruba-se com shutdown
    graceful desde P2-020: drain ≤3s, ws close 1001, exit 0)
 3. Health: `GET 127.0.0.1:8792/api/health` (Bearer apiToken) até 90s
@@ -608,10 +608,40 @@ tentativas.
 
 Once per day, before picking tasks, the pilot wakes a RESEARCHER agent with webfetch.
 It scans Electron releases, opencode releases, competing desktop-agent product pages
-and HN front page, compares against docs/VISION.md, and appends 1-2 `[spike]` tasks to
-BACKLOG.md ## Ready (citing the source URL in the spec). The scan commit stays on main;
-the summary is pushed to the supervisor session for review. Spike budget rule: at least
-1 in 4 tasks may be an experiment — cheap failures are signal.
+and HN front page, compares against docs/VISION.md, and proposes 1-2 `[spike]` tasks
+(citing the source URL in the spec). P1-057: the researcher has **no shell and no write
+access** — it prints the proposed BACKLOG.md lines between `AUX-TASKS:` / `AUX-TASKS-EOF`
+markers; the runner validates each line (`parseAuxTaskLines`: backlog format, id, known
+area, no shell metacharacters), appends the valid ones to `## Ready`, commits and pushes
+only when the branch diff is exactly `BACKLOG.md` (push guard). The summary is pushed to
+the supervisor session for review. Spike budget rule: at least 1 in 4 tasks may be an
+experiment — cheap failures are signal.
+
+## Aux agents sem shell (P1-057)
+
+researcher, strategist, redteam e scribe ingerem conteúdo não confiável (webfetch,
+diffs) e por isso rodam com sandbox restrito (`writeAuxSandboxConfig`):
+`bash: deny`, `edit: deny`, `external_directory: deny` — apenas `webfetch: allow`.
+Uma página injetando `curl exfil` no conteúdo pesquisado vira, no pior caso, texto
+rejeitado pelo parser — nunca um comando no host. Toda escrita em repo é feita pelo
+**runner** (código determinístico): `appendReadyLines` + commit + guard de push
+(`mayPush`) que só aceita diff cujo `git diff --name-only origin/main...HEAD` seja
+exatamente `BACKLOG.md` (tarefas) ou `docs/EXPERIENCE.md` (lições); qualquer outro
+conteúdo loga `aux push refused` e não empurra. Retry de push (3x com fetch/reset)
+reavalia o guard a cada tentativa. O `npm ci` do deploy roda com `--ignore-scripts`
+(lifecycle scripts de dependências são vetor de supply chain; o deploy só precisa de
+tsc/esbuild — rollback existente cobre falha de build num lock novo).
+
+## Dashboard sem token no HTML (P1-057)
+
+`GET /dashboard` nunca mais embute o apiToken no HTML (`__APITOKEN__` vira `""`). O
+browser prova quem é pelo token box / `?token=` (salvos em localStorage) ou trocando
+o Bearer por um cookie de sessão: `POST /api/session` (Bearer obrigatório) devolve
+`ocr_session` HttpOnly/SameSite=Strict com TTL de 12h, válido em todos os gates
+`/api/*`, `/api/browse` e `/__ocr/*` via helper `authorized()`. Sessões vivem só em
+memória: reiniciar o daemon pede novo login (o cliente refaz o Bearer). A rota de
+criação de sessão opencode (`POST /api/session` com proxy) foi substituída por este
+endpoint de autenticação.
 
 ## Explorer noturno: computer-use agentic async (P3-052)
 

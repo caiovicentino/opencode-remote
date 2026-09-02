@@ -471,9 +471,16 @@ if (existsSync(bundle)) {
     "bundle smoke: authenticated /api/health is 200 healthy",
     authRes.status === 200 && authBody.healthy === true && typeof authBody.version === "string",
   );
+  const dashRes = await fetch(`http://127.0.0.1:${smokePort}/dashboard`);
   check(
     "bundle smoke: GET /dashboard is 200 (import.meta survives CJS bundling)",
-    (await fetch(`http://127.0.0.1:${smokePort}/dashboard`)).status === 200,
+    dashRes.status === 200,
+  );
+  // P1-057: the apiToken must never ride in the served HTML anymore
+  const dashBody = await dashRes.text();
+  check(
+    "bundle smoke: GET /dashboard body does NOT contain the apiToken",
+    dashBody.length > 0 && !dashBody.includes(token),
   );
 
   // P2-007: the pairing URI is exposed read-only over loopback, Bearer-gated.
@@ -503,6 +510,30 @@ if (existsSync(bundle)) {
   );
   const devNoAuthRes = await fetch(`http://127.0.0.1:${smokePort}/__ocr/devices`);
   check("bundle smoke: GET /__ocr/devices without token is 401", devNoAuthRes.status === 401);
+
+  // P1-057: Bearer → short-lived HttpOnly session cookie. The cookie alone must
+  // open /api/* and must never mint fresh sessions (Bearer-only).
+  const sessionRes = await fetch(`http://127.0.0.1:${smokePort}/api/session`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}` },
+  });
+  const setCookie = sessionRes.headers.get("set-cookie") ?? "";
+  check(
+    "bundle smoke: POST /api/session with Bearer is 200 + HttpOnly ocr_session cookie",
+    sessionRes.status === 200 && /ocr_session=[0-9a-f]{32}/i.test(setCookie) && /httponly/i.test(setCookie),
+  );
+  const cookie = /ocr_session=[0-9a-f]+/i.exec(setCookie)?.[0] ?? "";
+  const cookieHealth = await fetch(`http://127.0.0.1:${smokePort}/api/health`, { headers: { cookie } });
+  check("bundle smoke: GET /api/health with only the session cookie is 200", cookieHealth.status === 200);
+  check(
+    "bundle smoke: GET /api/health without any auth is 401",
+    (await fetch(`http://127.0.0.1:${smokePort}/api/health`)).status === 401,
+  );
+  const cookieSessionRes = await fetch(`http://127.0.0.1:${smokePort}/api/session`, {
+    method: "POST",
+    headers: { cookie },
+  });
+  check("bundle smoke: POST /api/session with only the cookie is 401 (Bearer-only)", cookieSessionRes.status === 401);
 
   child.kill("SIGTERM");
   check("bundle smoke: child exits on SIGTERM", await until(() => !pidAlive(child.pid ?? -1)));

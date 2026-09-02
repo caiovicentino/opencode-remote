@@ -3,7 +3,7 @@ import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { agentStream, exec, runAgent, runAgentForRole, type AgentIds } from "./runner";
 import { nowLocalISO } from "./log";
-import { markDone, type Task } from "./backlog";
+import { markDone, mayPush, type Task } from "./backlog";
 import { emit } from "./events";
 import { latestUiShot } from "./shot";
 import { touchHeartbeat, type PilotConfig, type PilotState } from "./state";
@@ -388,6 +388,13 @@ function commitLessons(ws: string, id: string, lessons: string[]): boolean {
       allowFail: true,
     });
     if (!commit.ok) return false; // e.g. index.lock churn — give up, next merge tries again
+    // P1-057 push guard: the scribe may only ever push docs/EXPERIENCE.md —
+    // re-read from the real branch diff on every retry attempt.
+    const names = exec("git diff --name-only origin/main...HEAD", { cwd: ws, allowFail: true });
+    if (!mayPush(names.output, "docs/EXPERIENCE.md")) {
+      logScribe(id, "aux push refused — diff not limited to docs/EXPERIENCE.md", false);
+      return false;
+    }
     if (exec("git push -q origin main", { cwd: ws, allowFail: true }).ok) return true;
   }
   return false;
@@ -395,6 +402,10 @@ function commitLessons(ws: string, id: string, lessons: string[]): boolean {
 
 async function runScribe(ws: string, t: Task, diff: string, findings: string): Promise<void> {
   emit("phase", { task: t.id, phase: "scribe" });
+  // P1-057: the scribe ingests the merged diff — run it read-only; the lessons
+  // come back as TEXT and the runner validates + commits them. The next
+  // pipeline start rewrites the full sandbox config (writeSandboxConfig).
+  writeAuxSandboxConfig(ws);
   const out = await runAgent(scribePrompt(t, diff, findings), {
     cwd: ws,
     timeoutMin: 10,
@@ -564,6 +575,28 @@ export function writeSandboxConfig(ws: string) {
       {
         $schema: "https://opencode.ai/config.json",
         permission: { edit: "allow", bash: "allow", external_directory: "allow", webfetch: "allow" },
+      },
+      null,
+      2,
+    ),
+  );
+}
+
+/**
+ * P1-057: sandbox for aux agents that ingest untrusted external content
+ * (researcher via webfetch, strategist, redteam, scribe). Shell, edits and
+ * external dirs are denied — a prompt-injected page cannot execute commands on
+ * the host. The agents only produce TEXT, which the runner validates
+ * (parseAuxTaskLines/parseScribeLessons) and commits deterministically under a
+ * push guard (mayPush). webfetch stays allowed: injection dies at bash:"deny".
+ */
+export function writeAuxSandboxConfig(ws: string) {
+  writeFileSync(
+    join(ws, "opencode.json"),
+    JSON.stringify(
+      {
+        $schema: "https://opencode.ai/config.json",
+        permission: { edit: "deny", bash: "deny", external_directory: "deny", webfetch: "allow" },
       },
       null,
       2,

@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { exec } from "./runner";
 
 export interface Task {
   id: string;
@@ -119,4 +120,151 @@ export function nextId(repoDir: string, prefix = "RT"): string {
   let max = 0;
   for (const m of ids) max = Math.max(max, Number(m[1]));
   return `${prefix}-${String(max + 1).padStart(3, "0")}`;
+}
+
+// ── P1-057: aux agents are read-only — output becomes validated text ─────────
+//
+// researcher/strategist no longer touch files or run shell: they PRINT proposed
+// backlog lines between markers and the runner validates, appends and commits.
+// Injected instructions from fetched web pages die in a bash:"deny" sandbox and
+// can no longer become commands, commits or pushes.
+
+export const AUX_TASKS_OPEN = "AUX-TASKS:";
+export const AUX_TASKS_CLOSE = "AUX-TASKS-EOF";
+
+/** Aux proposals are P-scheduled backlog lines or redteam RT findings. */
+const AUX_ID_RE = /^(?:P\d-\d{3}|RT-\d{3})$/;
+
+/** Shell metacharacters and command verbs an injected backlog line must never carry. */
+const AUX_LINE_BANNED_RE = /[;`&|<>$]|\bcurl\b|\bwget\b/i;
+
+/**
+ * Extract up to `max` valid backlog lines from an aux agent's output: each must
+ * match the parseBacklog line format exactly, carry a well-formed P/RT id and a
+ * trailing known-area tag. Invalid lines are dropped individually (spec edge
+ * case: one bad proposal never poisons the valid ones); shell-ish content is
+ * rejected outright.
+ */
+export function parseAuxTaskLines(output: string, max = 5): string[] {
+  const start = output.indexOf(AUX_TASKS_OPEN);
+  if (start < 0) return [];
+  const body = (output
+    .slice(start + AUX_TASKS_OPEN.length)
+    .split(AUX_TASKS_CLOSE)[0] ?? "")
+    .split(AUX_TASKS_OPEN)[0] ?? "";
+  const lines: string[] = [];
+  for (const raw of body.split("\n")) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (lines.length >= max) break;
+    if (AUX_LINE_BANNED_RE.test(line)) continue;
+    if (!AUX_ID_RE.test(/\(([^)]+)\)/.exec(line)?.[1] ?? "")) continue;
+    const am = AREA_RE.exec(line);
+    if (!am || !KNOWN_AREAS.has(am[1] ?? "")) continue;
+    const withoutArea = line.slice(0, am.index).trimEnd();
+    const sm = SIZE_RE.exec(withoutArea);
+    const withoutSize = sm ? withoutArea.slice(0, sm.index).trimEnd() : withoutArea;
+    if (!/^- \[ \] \(([^)]+)\) \[(P\d)\] (.+?)(?: — spec: (.+))?$/.exec(withoutSize)) continue;
+    if (!lines.includes(line)) lines.push(line);
+  }
+  return lines;
+}
+
+/**
+ * Append validated lines to the END of ## Ready (before the next section).
+ * Rejects ids already present anywhere in the current file. Returns false when
+ * nothing was appended — the git state stays untouched (no empty commits).
+ */
+export function appendReadyLines(repoDir: string, lines: string[]): boolean {
+  if (!lines.length) return false;
+  const p = join(repoDir, BACKLOG);
+  const md = readFileSync(p, "utf8");
+  const readyAt = md.search(/^## Ready$/m);
+  if (readyAt < 0) return false;
+  const afterReady = md.slice(readyAt + 1);
+  const nextAt = afterReady.search(/^## /m);
+  const insertAt = nextAt < 0 ? md.length : readyAt + 1 + nextAt;
+  const taken = new Set<string>();
+  for (const m of md.matchAll(/\((?:P\d|RT)-\d{3}\)/g)) taken.add(m[0]);
+  const fresh = lines.filter((line) => {
+    const id = `(${/\(([^)]+)\)/.exec(line)?.[1] ?? ""})`;
+    if (taken.has(id)) return false;
+    taken.add(id);
+    return true;
+  });
+  if (!fresh.length) return false;
+  const updated =
+    md.slice(0, insertAt).replace(/\s*$/, "\n") +
+    fresh.join("\n") +
+    "\n\n" +
+    md.slice(insertAt).replace(/^\n+/, "");
+  writeFileSync(p, updated);
+  return true;
+}
+
+/**
+ * Push guard (P1-057): an aux flow may only ever push a diff whose name-only
+ * file list is EXACTLY the one allowed path (BACKLOG.md for task lines,
+ * docs/EXPERIENCE.md for lessons). Anything else — leftover artifacts, agent
+ * tampering — refuses the push.
+ */
+export function mayPush(nameOnlyOutput: string, allowed: string): boolean {
+  const files = nameOnlyOutput
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  return files.length === 1 && files[0] === allowed;
+}
+
+/** Injectable sinks for appendCommitAndPush (unit battery pins the semantics). */
+export interface AuxPushIo {
+  exec: (cmd: string) => { ok: boolean; output: string };
+  sleep: (ms: number) => Promise<void>;
+}
+
+/** Real-filesystem IO for appendCommitAndPush (fakes are used in the unit battery). */
+export function auxPushIo(cwd: string): AuxPushIo {
+  return {
+    exec: (cmd) => exec(cmd, { cwd, allowFail: true }),
+    sleep: (ms) => new Promise<void>((r) => setTimeout(r, ms)),
+  };
+}
+
+export type AuxPushResult = "pushed" | "refused" | "failed";
+
+/**
+ * Deterministic aux landing: fetch/reset main → append validated lines →
+ * commit → push guard → push, retried up to `attempts` times because concurrent
+ * scribes/explorers move origin/main (P3-052 lesson). The guard is re-read from
+ * the actual branch diff on every attempt; a refused diff never gets pushed.
+ */
+export async function appendCommitAndPush(
+  repoDir: string,
+  lines: string[],
+  message: string,
+  io: AuxPushIo,
+  attempts = 3,
+): Promise<AuxPushResult> {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    io.exec("git fetch -q origin");
+    if (!io.exec("git reset -q --hard origin/main").ok || !io.exec("git clean -qfd").ok) {
+      await io.sleep(3_000);
+      continue;
+    }
+    if (!appendReadyLines(repoDir, lines)) return "failed"; // all duplicates/invalid — no commit
+    if (!io.exec(`git add ${BACKLOG} && git commit -qm ${shq(message)}`).ok) {
+      await io.sleep(3_000);
+      continue;
+    }
+    const names = io.exec("git diff --name-only origin/main...HEAD");
+    if (!mayPush(names.output, BACKLOG)) return "refused";
+    if (io.exec("git push -q origin main").ok) return "pushed";
+    await io.sleep(3_000);
+  }
+  return "failed";
+}
+
+/** POSIX single-quote shell escape (JSON.stringify is NOT shell quoting). */
+function shq(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
 }

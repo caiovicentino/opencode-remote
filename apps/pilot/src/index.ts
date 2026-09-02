@@ -7,10 +7,10 @@ import { nowLocalISO } from "./log";
 import { notifySupervisor } from "./notify";
 import { runResearcher } from "./researcher";
 import { runExplorer } from "./explorer";
-import { runPipeline, TASK_ID_RE, writeSandboxConfig, lessonsBlock, budgetsFor, isOverCap } from "./pipeline";
+import { runPipeline, TASK_ID_RE, writeSandboxConfig, writeAuxSandboxConfig, lessonsBlock, budgetsFor, isOverCap } from "./pipeline";
 import { deploy } from "./deploy";
 import { digest } from "./push";
-import { addTask, blockTask, nextId, parseBacklog, type Task } from "./backlog";
+import { addTask, appendCommitAndPush, auxPushIo, blockTask, mayPush, nextId, parseAuxTaskLines, parseBacklog, type Task } from "./backlog";
 import { appendFailureLesson, defaultLessonsFile, failureLessonsBlock, readRecentFailureLessons } from "./failureLessons";
 import { forensicDue, runForensic } from "./forensic";
 import { areaKey, pickBatch } from "./scheduler";
@@ -363,13 +363,16 @@ async function maybeNightly(cfg: PilotConfig, st: PilotState) {
   st.redteamLast = today;
   saveState(st);
   log("info", "nightly redteam starting");
+  // P1-057: the red team reasons about attack surfaces but gets NO shell and
+  // NO write access — findings come back as text and the runner lands them.
+  writeAuxSandboxConfig(cfg.workspace);
   const r = await runAgent(
     `You are the RED TEAM agent of the opencode-remote autonomous pipeline. Your job today:
 try to find a security or robustness hole in this repository (your cwd is a safe clone).
 Attack ideas: relay frame abuse, permission bypass in daemon ops, path traversal,
 push notification spoofing, protocol downgrade, replay variants.
-You may run scripts locally against a staging mindset — do NOT touch production services,
-do NOT push, do NOT modify files (read-only + local scripts only).
+You have NO shell and NO write access this run — reason purely from reading the code.
+Do NOT touch production services, do NOT push, do NOT modify files (read-only).
 
 ${"Constitution: " + CONSTITUTION_REF}
 
@@ -377,6 +380,7 @@ Output: either "REDTEAM: CLEAN" if you found nothing actionable, or
 "REDTEAM: FINDING" followed by title, severity and a one-paragraph proof/attack sketch.`,
     { cwd: cfg.workspace, timeoutMin: 30, label: "redteam", onStdout: agentStream("redteam") },
   );
+  writeSandboxConfig(cfg.workspace);
   // P1-007 experience-memory maintenance: with slots running concurrently the
   // SCRIBE appends can drift apart — the nightly pass is the only writer that
   // dedupes + prunes docs/EXPERIENCE.md once it grows past EXPERIENCE_CAP.
@@ -384,11 +388,18 @@ Output: either "REDTEAM: CLEAN" if you found nothing actionable, or
     try {
       const maint = maintainExperienceFile(cfg.workspace);
       if (maint.changed) {
-        exec(
-          `git add docs/EXPERIENCE.md && git commit -qm "pilot(redteam): experience maintenance (-${maint.removed})" && git push -q origin main`,
+        const commit = exec(
+          `git add docs/EXPERIENCE.md && git commit -qm "pilot(redteam): experience maintenance (-${maint.removed})"`,
           { cwd: cfg.workspace, allowFail: true },
         );
-        log("info", "experience maintained", { removed: maint.removed, lessons: maint.lessons });
+        // P1-057 push guard: the only file this flow may ever push
+        const names = exec("git diff --name-only origin/main...HEAD", { cwd: cfg.workspace, allowFail: true });
+        if (!mayPush(names.output, "docs/EXPERIENCE.md")) {
+          log("warn", "aux push refused — experience diff not limited to docs/EXPERIENCE.md");
+        } else {
+          exec("git push -q origin main", { cwd: cfg.workspace, allowFail: true });
+        }
+        log("info", "experience maintained", { removed: maint.removed, lessons: maint.lessons, committed: commit.ok });
       }
     } catch (err) {
       log("warn", "experience maintenance failed", { err: String(err).slice(0, 200) });
@@ -398,10 +409,18 @@ Output: either "REDTEAM: CLEAN" if you found nothing actionable, or
     const id = nextId(cfg.workspace, "RT");
     const summary = r.output.split("REDTEAM: FINDING")[1]?.slice(0, 600) ?? "finding";
     addTask(cfg.workspace, id, "P0", `Redteam finding ${today}`, summary);
-    exec(`git add BACKLOG.md && git commit -qm "pilot(redteam): add ${id}" && git push -q origin main`, {
+    const commit = exec(`git add BACKLOG.md && git commit -qm "pilot(redteam): add ${id}"`, {
       cwd: cfg.workspace,
       allowFail: true,
     });
+    // P1-057 push guard: only a diff that is exactly BACKLOG.md may be pushed
+    const names = exec("git diff --name-only origin/main...HEAD", { cwd: cfg.workspace, allowFail: true });
+    if (!mayPush(names.output, "BACKLOG.md")) {
+      log("warn", "aux push refused — redteam diff not limited to BACKLOG.md", { id });
+    } else {
+      exec("git push -q origin main", { cwd: cfg.workspace, allowFail: true });
+    }
+    log("info", "redteam finding committed", { id, committed: commit.ok });
     await digest("🚨 Pilot redteam: achado", summary.slice(0, 120), "#/");
   }
 }
@@ -423,7 +442,9 @@ const STRATEGIST_MISSION =
 
 async function runStrategist(cfg: PilotConfig, ready: Task[] = []) {
   lastStrategistRun = Date.now();
-  writeSandboxConfig(cfg.workspace); // headless runs abort without sandbox perms
+  // P1-057: the strategist drafts new tasks from repo content — run it with
+  // the aux sandbox (bash/edit denied) and land its proposals deterministically.
+  writeAuxSandboxConfig(cfg.workspace);
   // P1-007: top-5 lessons keyword-matched against the mission + the queue it
   // is about to refill, so drafted tasks don't repeat past mistakes
   const context = [STRATEGIST_MISSION, ...ready.map((t) => `${t.title} ${t.spec}`)].join("\n");
@@ -459,25 +480,46 @@ Then draft 2-3 NEW tasks that are:
   "... (size: L) (area: desktop)". Never tag routine work (size: L) just because
   it looks big — sliced S tasks are still cheaper and safer.
 
-Append them to BACKLOG.md under ## Ready using EXACTLY the existing line format:
-- [ ] (ID) [Pn] Title — spec: what to do, where, and acceptance criteria (area: <area>)
-IDs continue the sequence (P2-00X / P3-00X). The trailing (area: ...) tag is MANDATORY:
-pick exactly one of ui|daemon|desktop|infra|relay — the area the task touches most
-(ui = apps/web PWA, daemon = apps/daemon, desktop = apps/desktop shell,
-infra = build/scripts/deploy/pilot, relay = apps/relay). The scheduler runs tasks of
-different areas in parallel and never two tasks of the same area at once.
-Do not touch other sections, do not commit.
+You have NO shell and NO file-edit permissions this run: do NOT commit, do NOT edit
+BACKLOG.md. Instead, print the proposed task lines between exactly these markers:
+
+AUX-TASKS:
+- [ ] (ID) [Pn] Title — spec: what to do, where, and acceptance criteria (area: ui)
+AUX-TASKS-EOF
+
+Each line must use EXACTLY the existing backlog format shown above. IDs continue the
+sequence (P2-00X / P3-00X). The trailing (area: ...) tag is MANDATORY: pick exactly one
+of ui|daemon|desktop|infra|relay — the area the task touches most (ui = apps/web PWA,
+daemon = apps/daemon, desktop = apps/desktop shell, infra = build/scripts/deploy/pilot,
+relay = apps/relay). The scheduler runs tasks of different areas in parallel and never
+two tasks of the same area at once. Plain text only — no shell metacharacters, no code
+blocks: the runner validates each line and only the valid ones are appended to
+BACKLOG.md, committed and pushed by the runner itself.
 
 Your LAST line must be exactly: STRATEGIST:DONE`,
     { cwd: cfg.workspace, timeoutMin: 25, label: "strategist", onStdout: agentStream("strategist"), models: cfg.models, marker: STRATEGIST_MARKER },
   );
+  writeSandboxConfig(cfg.workspace);
   if (r.output.includes(STRATEGIST_MARKER)) {
-    exec(`git add BACKLOG.md && git commit -qm "pilot(strategist): queue refill $(date -u +%H:%M)" && git push -q origin main`, {
-      cwd: cfg.workspace,
-      allowFail: true,
-    });
-    log("info", "strategist refilled queue");
-    emit("phase", { task: "strategist", phase: "refill", ok: true, detail: "queue refill pushed" });
+    const lines = parseAuxTaskLines(r.output);
+    if (!lines.length) {
+      log("warn", "strategist: no valid task lines — nothing committed", { tail: r.output.slice(-200) });
+      emit("phase", { task: "strategist", phase: "refill", ok: false, detail: "no valid task lines" });
+      return;
+    }
+    const result = await appendCommitAndPush(
+      cfg.workspace,
+      lines,
+      `pilot(strategist): queue refill ${nowLocalISO().slice(11, 16)}`,
+      auxPushIo(cfg.workspace),
+    );
+    if (result === "pushed") {
+      log("info", "strategist refilled queue", { lines: lines.length });
+      emit("phase", { task: "strategist", phase: "refill", ok: true, detail: `queue refill pushed (${lines.length} lines)` });
+    } else {
+      log("warn", result === "refused" ? "aux push refused" : "strategist landing failed", { lines: lines.length });
+      emit("phase", { task: "strategist", phase: "refill", ok: false, detail: result });
+    }
   } else {
     log("warn", "strategist did not finish", { tail: r.output.slice(-200) });
   }
