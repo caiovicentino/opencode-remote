@@ -172,6 +172,20 @@ try {
   // unpaired — the call must not throw).
   run("P1-046: go-pane-artifacts click dispatches", ["menu-click", "go-pane-artifacts"], 15_000);
 
+  // --- P3-053: dock unread badge bridge ----------------------------------------
+  // The paired chat UI can't render hermetically (see the P1-051 note above),
+  // but the badge WIRING is fully observable: the preload exposes sendUnread
+  // and main records the last pushed count (app:unreadBadge) — a real
+  // renderer→main round-trip on the ocr:unread channel.
+  const unreadBridge = run("P3-053: preload exposes sendUnread", ["ipc", "typeof window.ocrDesktop.sendUnread"], 15_000);
+  if (unreadBridge.ok) check("P3-053: sendUnread is a function", /function/.test(unreadBridge.stdout));
+  run("P3-053: push unread=3 over ocr:unread", ["ipc", "window.ocrDesktop.sendUnread(3)"], 15_000);
+  const badge3 = run("P3-053: read app:unreadBadge", ["ipc", "window.ocrDesktop.getUnreadBadge()"], 15_000);
+  if (badge3.ok) check("P3-053: main received the pushed count (3)", badge3.stdout.trim() === "3");
+  run("P3-053: clear the badge (unread=0)", ["ipc", "window.ocrDesktop.sendUnread(0)"], 15_000);
+  const badge0 = run("P3-053: read app:unreadBadge after clear", ["ipc", "window.ocrDesktop.getUnreadBadge()"], 15_000);
+  if (badge0.ok) check("P3-053: badge clears to 0", badge0.stdout.trim() === "0");
+
   // --- P1-053: the "reconnecting…" hermetic state (second launch) --------------
   // An ADOPTED daemon going missing is never terminal: the yellow banner shows
   // an active reconnecting state with the attempt counter and NO QR overlay.

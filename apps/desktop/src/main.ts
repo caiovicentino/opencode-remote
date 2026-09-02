@@ -44,6 +44,10 @@ let quitting = false;
 // P3-019: latest update-check decision (null = no check resolved yet). Kept in
 // the main process and surfaced only through the tray menu — no new IPC.
 let lastUpdateStatus: UpdateStatus | null = null;
+// P3-053: last unread count the renderer pushed over ocr:unread — the state
+// the dock badge is (or would be) showing. Exposed via app:unreadBadge for
+// the desktop harness; never derived from the OS itself.
+let lastUnreadBadge = 0;
 
 // P3-012: file logging installed before anything can log — console.* in the
 // packaged app is invisible to the stage-5 user (no terminal), so every
@@ -329,6 +333,24 @@ async function onReady(): Promise<void> {
     void restartDaemon().catch((err) => logError("[desktop] banner reconnect failed:", err));
     return true;
   });
+  // P3-053: dock unread badge — the renderer derives the count (lib/unread.ts)
+  // and pushes it on every change. darwin/linux get a real dock badge; Windows
+  // is a deliberate no-op (app.setBadgeCount has no effect there — an overlay
+  // icon is future work). Anything that is not a positive finite number
+  // clears the badge, so a hostile/malformed push can never set garbage.
+  ipcMain.on("ocr:unread", (_e, n: unknown) => {
+    const count = typeof n === "number" && Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+    lastUnreadBadge = count;
+    if (process.platform === "win32") return;
+    try {
+      app.setBadgeCount(count);
+    } catch (err) {
+      logError("[desktop] setBadgeCount failed:", err);
+    }
+  });
+  // P3-053: verification surface for tools/desktop.mjs ipc and the flow test —
+  // reports the last count the renderer pushed (not an OS read-back).
+  ipcMain.handle("app:unreadBadge", () => lastUnreadBadge);
   // Host self-approval: the desktop shell runs on the same machine that owns
   // daemon.json, so it may add its own client identity to the allowlist. The
   // daemon re-reads the allowlist file on every handshake (fresh read), so
@@ -607,6 +629,18 @@ function createWindow(): BrowserWindow {
     },
   });
   win.once("ready-to-show", () => win.show());
+  // P3-053: focusing the window always clears the badge, even when the
+  // renderer has not pushed its zero yet (busy frame, brief race) — matching
+  // Claude Desktop, where activating the window means "seen". Windows stays a
+  // no-op like the ocr:unread handler above.
+  win.on("focus", () => {
+    if (process.platform === "win32") return;
+    try {
+      app.setBadgeCount(0);
+    } catch (err) {
+      logError("[desktop] focus badge clear failed:", err);
+    }
+  });
   // P2-021: track the shell window so showMainWindow() re-shows the hidden
   // one after a close-to-tray instead of spawning duplicates.
   mainWindow = win;

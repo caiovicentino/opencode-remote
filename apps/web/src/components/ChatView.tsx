@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useReducer,
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -19,6 +20,7 @@ import { clampSplitPct, isSplitViewport, SPLIT_MIN_PX } from "../lib/split";
 import { sessionTitleOf } from "../lib/title";
 import { permissionPreview } from "../lib/permission";
 import { getCachedSession, putCachedSession } from "../lib/sessionCache";
+import { initialUnreadState, reduceUnread, sendUnreadToShell } from "../lib/unread";
 import { ArtifactIcon, IconChat, IconDownload, IconLaptop, IconWrench } from "./icons";
 
 interface Props {
@@ -767,6 +769,47 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
     atBottomRef.current = true;
     setAtBottom(true);
   }, [sessionId]);
+
+  // P3-053: dock unread badge (Claude Desktop parity). The pure reducer in
+  // lib/unread.ts owns the count: focused at the tail ⇒ 0, an arrival while
+  // blurred or scrolled away ⇒ +1, focusing or jumping to the tail ⇒ 0. The
+  // shell bridge pushes it to app.setBadgeCount on every change.
+  const [unread, dispatchUnread] = useReducer(
+    reduceUnread,
+    initialUnreadState(document.hasFocus(), true),
+  );
+  useEffect(() => {
+    const onFocus = () => dispatchUnread({ kind: "focus" });
+    const onBlur = () => dispatchUnread({ kind: "blur" });
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("blur", onBlur);
+    };
+  }, []);
+  useEffect(() => {
+    dispatchUnread({ kind: "atEnd", atEnd: atBottom });
+  }, [atBottom]);
+  // A new conversation starts fully read — the old session's count must not
+  // leak into the fresh one.
+  useEffect(() => {
+    dispatchUnread({ kind: "reset" });
+  }, [sessionId]);
+  // Bump only on genuine tail appends: a history refetch or an older-page
+  // prepend rebuilds the array (different first bubble), and the initial
+  // 0→N load fires while the anchor is still empty — none of those are
+  // "messages arriving".
+  const tailAnchor = useRef<{ len: number; first: Bubble | undefined }>({ len: 0, first: undefined });
+  useEffect(() => {
+    const prev = tailAnchor.current;
+    const tailAppend = prev.len > 0 && bubbles.length > prev.len && bubbles[0] === prev.first;
+    tailAnchor.current = { len: bubbles.length, first: bubbles[0] };
+    if (tailAppend) dispatchUnread({ kind: "message" });
+  }, [bubbles]);
+  useEffect(() => {
+    sendUnreadToShell(unread.count);
+  }, [unread.count]);
 
   // keep the render window bounded on very long conversations
   useEffect(() => {
