@@ -38,6 +38,7 @@ import {
   crashRoundDecision,
   resumeBlock,
   RESUME_MAX_TASK_IDS,
+  setupTaskBranch,
   specPathFor,
   touchedPilotInfraFromDiff,
   updateResumeState,
@@ -1047,6 +1048,73 @@ check("touchedUi: lookalike apps/webs rejected", !touchedUiFromDiff("apps/webs/s
     check("spec recovery: no history at all returns null", recoverSpecFromBranch(recRepo, "P1-061", "specs/P1-061.md") === null);
   } finally {
     rmSync(recRepo, { recursive: true, force: true });
+  }
+}
+
+// --- P1-036: setupTaskBranch preserves the task branch across attempts ----------
+{
+  const originDir = mkdtempSync(join(tmpdir(), "ocr-branchorigin-"));
+  const wsRepo = mkdtempSync(join(tmpdir(), "ocr-branchws-"));
+  try {
+    // real bare origin: setupTaskBranch runs `git fetch origin` unconditionally
+    execSync(`git init -q --bare ${JSON.stringify(originDir)}`, { stdio: ["ignore", "pipe", "pipe"] });
+    const g = (c: string) => execSync(c, { cwd: wsRepo, stdio: ["ignore", "pipe", "pipe"] });
+    g("git init -q -b main .");
+    g("git config user.email t@t.local");
+    g("git config user.name t");
+    writeFileSync(join(wsRepo, "README.md"), "base\n");
+    g("git add . && git commit -qm base");
+    g(`git remote add origin ${JSON.stringify(originDir)}`);
+    g("git push -q origin main");
+    const originSha = g("git rev-parse origin/main").toString().trim();
+
+    // attempt 2 with a preserved branch: attempt-1 committed work survives
+    g("git checkout -qb pilot/P1-036T");
+    writeFileSync(join(wsRepo, "attempt-work.txt"), "attempt-1 work\n");
+    g("git add . && git commit -qm 'attempt-1 work'");
+    const preservedSha = g("git rev-parse HEAD").toString().trim();
+    g("git checkout -q main"); // workspace sits anywhere; the branch is the carrier
+    const resumed = setupTaskBranch(wsRepo, "P1-036T", 1);
+    let shaResolves = false;
+    try {
+      g(`git cat-file -e '${preservedSha}^{commit}'`);
+      shaResolves = true;
+    } catch {}
+    check("P1-036: attempt 2 with preserved branch resumes it", resumed === true);
+    check("P1-036: attempt 2 HEAD is the task branch", g("git rev-parse --abbrev-ref HEAD").toString().trim() === "pilot/P1-036T");
+    check("P1-036: attempt-1 commit survives the resume", shaResolves);
+    check("P1-036: attempt-1 work present in the worktree", existsSync(join(wsRepo, "attempt-work.txt")));
+
+    // attempt 0 recreates: stale branch + stale commit are discarded by design
+    g("git checkout -qb pilot/P2-000T origin/main");
+    writeFileSync(join(wsRepo, "stale.txt"), "stale\n");
+    g("git add . && git commit -qm stale");
+    const staleSha = g("git rev-parse HEAD").toString().trim();
+    check("P1-036: attempt 0 recreates the branch (fresh path)", setupTaskBranch(wsRepo, "P2-000T", 0) === false);
+    check("P1-036: attempt 0 branch points at origin/main", g("git rev-parse refs/heads/pilot/P2-000T").toString().trim() === originSha);
+    check("P1-036: attempt 0 leaves the stale commit unreachable", !g("git rev-list --all").toString().includes(staleSha));
+
+    // undefined attempts behaves like attempt 0
+    g("git checkout -qb pilot/P3-000T origin/main");
+    g("git commit -qm stale3 --allow-empty");
+    const stale3Sha = g("git rev-parse HEAD").toString().trim();
+    check(
+      "P1-036: undefined attempts behaves like attempt 0",
+      setupTaskBranch(wsRepo, "P3-000T", undefined) === false &&
+        g("git rev-parse refs/heads/pilot/P3-000T").toString().trim() === originSha,
+    );
+    check("P1-036: undefined attempts drops the stale commit", !g("git rev-list --all").toString().includes(stale3Sha));
+
+    // attempts > 0 with a missing branch (fresh slot clone) falls back to fresh
+    check("P1-036: missing branch with attempts>0 falls back to fresh", setupTaskBranch(wsRepo, "P0-000T", 3) === false);
+    check(
+      "P1-036: fallback still creates the branch at origin/main",
+      g("git rev-parse refs/heads/pilot/P0-000T").toString().trim() === originSha &&
+        g("git rev-parse --abbrev-ref HEAD").toString().trim() === "pilot/P0-000T",
+    );
+  } finally {
+    rmSync(wsRepo, { recursive: true, force: true });
+    rmSync(originDir, { recursive: true, force: true });
   }
 }
 
