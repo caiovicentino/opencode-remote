@@ -103,6 +103,9 @@
   #readylist .drow b { color:#a78bfa; margin-right:8px; }
   #readylist .drow .area { color:#64748b; font-size:10px; margin-left:8px; text-transform:uppercase; letter-spacing:.06em; }
   #readylist .drow.blocked { border-left-color:#ef4444; }
+  /* ── P2-028: per-task token cost chips (FILA / CONCLUÍDAS) ── */
+  .cost { color:var(--cyan); font-size:10px; margin-left:8px; font-variant-numeric:tabular-nums;
+          letter-spacing:.04em; opacity:.85; }
   /* ── P2-045: audit chip + failure breakdown + history widget ── */
   #audit-chip { display:none; margin-bottom:8px; padding:6px 10px; border:1px solid var(--red);
                 background:rgba(248,113,113,.12); color:var(--red); font-size:10px; font-weight:700;
@@ -393,6 +396,7 @@ requestAnimationFrame(loop);
 // ─── polling ──────────────────────────────────────────────────────────────────
 let token = window.__OCR_TOKEN__ || localStorage.getItem("ocr_dash_token");
 let lastAuxData = {};
+let lastCosts = {};
 const params = new URLSearchParams(location.search);
 if (params.get("token")) { token = params.get("token"); localStorage.setItem("ocr_dash_token", token); history.replaceState(null,"","/dashboard"); }
 if (token) startPolling(); else document.getElementById("tokenbox").style.display = "block";
@@ -436,6 +440,14 @@ async function poll() {
     renderFailSteps(data.failSteps);
     // budget meters
     lastAuxData = data.lastAux || {};
+    // P2-028: per-task token costs (state.json taskCosts) drive the cost chips
+    // in the FILA / CONCLUÍDAS views
+    lastCosts = data.state?.taskCosts || {};
+    // P2-028: keep the cost chips fresh while a FILA/CONCLUÍDAS view is open
+    if (logsOpen) {
+      if (document.getElementById("readylist").style.display === "block") renderReady();
+      else if (document.getElementById("donelist").style.display === "block") renderDone();
+    }
     const maxT = data.cfg?.maxTasksPerDay || 15, maxD = data.cfg?.maxDeploysPerDay || 12;    document.getElementById("m-tasks").style.width = `${Math.min((data.state?.tasks ?? 0) / maxT * 100, 100)}%`;
     document.getElementById("m-dep").style.width = `${Math.min((data.state?.deploys ?? 0) / maxD * 100, 100)}%`;
     document.getElementById("m-tasks-t").textContent = `${data.state?.tasks ?? 0}/${maxT}`;
@@ -448,6 +460,21 @@ async function poll() {
   }
 }
 function startPolling() { poll(); setInterval(poll, 2000); loadMission(); }
+
+// P2-028: token total → compact honest label ("640M tok"); empty when unknown
+// so tasks without a recorded cost render exactly as before. Round 2: values
+// in the 999.5k..1M band roll into "1.0M tok" instead of rendering "1000k".
+function fmtTok(n) {
+  if (!Number.isFinite(n) || n <= 0) return "";
+  if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B tok`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M tok`;
+  const k = Math.round(n / 1e3);
+  return k < 1000 ? `${k}k tok` : `${(n / 1e6).toFixed(1)}M tok`;
+}
+function costChip(id) {
+  const c = fmtTok(lastCosts?.[id]);
+  return c ? `<span class="cost">${c}</span>` : "";
+}
 
 // P2-045: queue + blocked counters on the FILA button (## Ready / ## Blocked)
 async function loadFilaCounts() {
@@ -735,7 +762,7 @@ async function renderReady() {
     const res = await fetch("/api/pilot-ready", { headers: { authorization: `Bearer ${token}` } });
     const { ready, blocked } = await res.json();
     const row = (t, cls = "") =>
-      `<div class="drow ${cls}"><b>${escapeHtml(t.id)}</b>${escapeHtml(t.title)}${t.area ? `<span class="area">${escapeHtml(t.area)}</span>` : ""}</div>`;
+      `<div class="drow ${cls}"><b>${escapeHtml(t.id)}</b>${escapeHtml(t.title)}${t.area ? `<span class="area">${escapeHtml(t.area)}</span>` : ""}${costChip(t.id)}</div>`;
     const blockedHtml = (blocked || []).length
       ? `<div class="drow blocked"><b>BLOQUEADAS</b></div>` + (blocked || []).map((t) => row(t, "blocked")).join("")
       : "";
@@ -770,7 +797,7 @@ async function renderDone() {
     const res = await fetch("/api/pilot-done", { headers: { authorization: `Bearer ${token}` } });
     const { done } = await res.json();
     el.innerHTML = (done || []).length
-      ? (done || []).map((d) => `<div class="drow"><b>${escapeHtml(d.id)}</b>${escapeHtml(d.title)}</div>`).join("")
+      ? (done || []).map((d) => `<div class="drow"><b>${escapeHtml(d.id)}</b>${escapeHtml(d.title)}${costChip(d.id)}</div>`).join("")
       : `<div class="drow">nada concluído ainda</div>`;
   } catch {
     el.innerHTML = `<div class="drow">erro ao carregar</div>`;

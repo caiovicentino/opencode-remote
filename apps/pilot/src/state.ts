@@ -152,6 +152,15 @@ export interface PilotState {
   mergesSinceCorpus?: number;
   /** P2-045: last audit-mode doctor summary (formatDiagnosis) shown on the dash chip. */
   auditDiagnosis?: string;
+  /** P2-028: task id → total tokens (input+output+cache) across all the agent
+   * sessions the task consumed, from the local opencode.db. Best-effort signal
+   * (ids are captured from agent stdout; cost prioritization only — no gate
+   * consumes it), read with sqlite3 -readonly. Not a daily budget: persists
+   * across midnight rollovers and is pruned by tasks.ts cap. */
+  taskCosts?: Record<string, number>;
+  /** P2-028: task id → session ids already reflected in taskCosts (dedupes the
+   * recompute; a resumed builder session keeps the same id across rounds). */
+  taskCostSessions?: Record<string, string[]>;
 }
 
 function normalizeAudit(a: unknown): AuditMode | null {
@@ -179,6 +188,10 @@ export function loadState(file = STATE_FILE): PilotState {
       cycles: Array.isArray(s.cycles) ? s.cycles : [],
       blockEvents: Array.isArray(s.blockEvents) ? s.blockEvents.filter((t) => typeof t === "number") : [],
       auditMode: normalizeAudit(s.auditMode),
+      // P2-028: token costs are lifetime records, not daily budgets — midnight
+      // rollover must not wipe them
+      taskCosts: s.taskCosts && typeof s.taskCosts === "object" ? s.taskCosts : {},
+      taskCostSessions: s.taskCostSessions && typeof s.taskCostSessions === "object" ? s.taskCostSessions : {},
     };
     if (s.date === today) return { ...s, ...shared, merges };
     return { date: today, tasks: 0, deploys: 0, failures: 0, merges: 0, ...shared };
@@ -193,6 +206,8 @@ export function loadState(file = STATE_FILE): PilotState {
       cycles: [],
       blockEvents: [],
       auditMode: null,
+      taskCosts: {},
+      taskCostSessions: {},
     };
   }
 }

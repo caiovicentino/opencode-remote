@@ -40,6 +40,7 @@ import {
   type PilotConfig,
   type PilotState,
 } from "./state";
+import { applySessionCosts, querySessionTokens } from "./costs";
 
 let deployBusy = false;
 /** Shared runtime counters — mutated by the dispatcher and by slot workers.
@@ -264,7 +265,15 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
     maxAttemptsPerTask: budgets.attempts,
   };
   try {
-    const result = await runPipeline(taskCfg, task, state);
+    // P2-028: the pipeline records every opencode session id it spawns; the
+    // token totals are reconciled from opencode.db right after the run.
+    const taskSessions = new Set<string>();
+    const result = await runPipeline(taskCfg, task, state, taskSessions);
+    try {
+      await applySessionCosts(state, task.id, [...taskSessions], (ids) => querySessionTokens(ids));
+    } catch (err) {
+      log("warn", "task cost reconciliation failed", { task: task.id, err: String(err).slice(0, 200) });
+    }
     state.tasks++;
     recordCycle(state, result.ok); // P2-032 fever window
     let blockedAttempts: number | null = null;
