@@ -2,7 +2,7 @@
  * P1-072: auto-preview — pure helpers on both sides of the wire.
  * Run: npx tsx scripts/preview.test.ts
  */
-import { extractLocalUrls, PreviewDedupe } from "../apps/daemon/src/preview";
+import { extractLocalUrls, previewsFromEvent, PreviewDedupe } from "../apps/daemon/src/preview";
 import { normalizeHttpUrl, previewFromEvent } from "../apps/web/src/lib/preview";
 import { buildArtifactsPrompt, ARTIFACTS_MARKER } from "../apps/daemon/src/sessionctx";
 
@@ -85,7 +85,70 @@ function check(name: string, ok: boolean, detail = "") {
   check("cap: evicted entry can be emitted again", capped.firstSeen("a", "u1") === true);
 }
 
-// --- previewFromEvent ---------------------------------------------------------
+// --- previewsFromEvent (stream wiring, round-2 findings) -----------------------
+
+{
+  const text = "suba em http://localhost:3000";
+  const roles = new Map<string, string>([["msg_a", "assistant"], ["msg_u", "user"]]);
+  const partEvent = (messageID: string, extra: Record<string, unknown> = {}) => ({
+    type: "message.part.updated",
+    properties: { part: { type: "text", text, messageID, ...extra } },
+  });
+
+  check(
+    "wiring: assistant part emits with the PART-level sessionID (SDK TextPart source)",
+    JSON.stringify(previewsFromEvent(partEvent("msg_a", { sessionID: "ses_part" }), roles)) ===
+      JSON.stringify([{ sessionID: "ses_part", url: "http://localhost:3000/" }]),
+  );
+  check(
+    "wiring: properties.sessionID is the fallback when the part carries none",
+    previewsFromEvent(
+      { type: "message.part.updated", properties: { sessionID: "ses_top", part: { type: "text", text, messageID: "msg_a" } } },
+      roles,
+    )[0]?.sessionID === "ses_top",
+  );
+  check(
+    "wiring: part.sessionID wins over properties.sessionID",
+    previewsFromEvent(
+      { type: "message.part.updated", properties: { sessionID: "ses_top", part: { type: "text", text, messageID: "msg_a", sessionID: "ses_part" } } },
+      roles,
+    )[0]?.sessionID === "ses_part",
+  );
+  check(
+    "wiring: fail closed — unknown/evicted role emits NOTHING",
+    previewsFromEvent(partEvent("msg_unknown"), roles).length === 0,
+  );
+  check(
+    "wiring: user part emits NOTHING",
+    previewsFromEvent(partEvent("msg_u"), roles).length === 0,
+  );
+  check(
+    "wiring: empty sessionID drops the candidate (no cross-session dedupe key)",
+    previewsFromEvent(partEvent("msg_a", { sessionID: "" }), roles).length === 0,
+  );
+  check(
+    "wiring: non-text part and foreign event type emit NOTHING",
+    previewsFromEvent(
+      { type: "message.part.updated", properties: { part: { type: "tool", messageID: "msg_a", sessionID: "s" } } },
+      roles,
+    ).length === 0 && previewsFromEvent({ type: "session.idle", properties: {} }, roles).length === 0,
+  );
+
+  // full stream order: user echo tagged, assistant pinned, then the parts
+  // (real parts always carry sessionID — the SDK TextPart guarantee)
+  const streamRoles = new Map<string, string>();
+  streamRoles.set("m1", "user");
+  streamRoles.set("m2", "assistant");
+  const userPart = { type: "message.part.updated", properties: { part: { type: "text", text: "http://localhost:1111", messageID: "m1", sessionID: "ses_x" } } };
+  const assistantPart = { type: "message.part.updated", properties: { part: { type: "text", text: "http://localhost:2222", messageID: "m2", sessionID: "ses_x" } } };
+  check(
+    "wiring: streamed user echo suppressed, assistant part emitted",
+    previewsFromEvent(userPart, streamRoles).length === 0 &&
+      previewsFromEvent(assistantPart, streamRoles)[0]?.url === "http://localhost:2222/",
+  );
+}
+
+// --- previewFromEvent (client-side envelope parse) -----------------------------
 
 {
   const evt = { type: "ocr.preview", properties: { sessionID: "ses_1", url: "http://localhost:3000" } };

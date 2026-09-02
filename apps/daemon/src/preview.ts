@@ -96,3 +96,46 @@ export class PreviewDedupe {
     return true;
   }
 }
+
+export interface PreviewCandidate {
+  sessionID: string;
+  url: string;
+}
+
+/**
+ * P1-072 round 2: per-event wiring for the opencode stream, pure and pinned
+ * by scripts/preview.test.ts. Takes a raw `message.part.updated` event plus
+ * the messageID→role map maintained by forwardEvents() and returns the
+ * preview candidates to emit.
+ * - FAIL CLOSED: only parts whose messageID was pinned to role "assistant"
+ *   by a `message.updated` event emit previews — a missed/evicted role entry
+   must suppress, never fabricate, a preview.
+ * - sessionID comes from TextPart.sessionID (guaranteed by the installed SDK
+ *   types, v1.18.25) and falls back to top-level properties.sessionID; an
+ *   empty one drops the candidate (an unprefixed dedupe key would otherwise
+ *   cross-suppress URLs across sessions for the whole TTL).
+ */
+export function previewsFromEvent(
+  evt: { type?: string; properties?: unknown },
+  messageRoles: ReadonlyMap<string, string>,
+): PreviewCandidate[] {
+  if (evt?.type !== "message.part.updated") return [];
+  const props = (evt.properties ?? {}) as {
+    sessionID?: unknown;
+    part?: { type?: unknown; text?: unknown; messageID?: unknown; sessionID?: unknown };
+  };
+  const part = props.part;
+  if (!part || typeof part !== "object") return [];
+  if (part.type !== "text" || typeof part.text !== "string") return [];
+  if (typeof part.messageID !== "string" || !part.messageID) return [];
+  // fail closed: unknown/evicted role ⇒ no preview
+  if (messageRoles.get(part.messageID) !== "assistant") return [];
+  const sid =
+    typeof part.sessionID === "string" && part.sessionID
+      ? part.sessionID
+      : typeof props.sessionID === "string"
+        ? props.sessionID
+        : "";
+  if (!sid) return [];
+  return extractLocalUrls(part.text).map((url) => ({ sessionID: sid, url }));
+}

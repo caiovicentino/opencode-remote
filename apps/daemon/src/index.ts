@@ -55,7 +55,7 @@ import { artifactMime, kindFor, listArtifacts, readArtifact } from "./artifacts.
 import { createShutdown, stopAccepting } from "./shutdown.js";
 import { localUpgradeAllowed } from "./localws.js";
 import { injectArtifactsSystem, workspaceCoversArtifacts } from "./sessionctx.js";
-import { extractLocalUrls, PreviewDedupe } from "./preview.js";
+import { previewsFromEvent, PreviewDedupe } from "./preview.js";
 import { UPDATE_CONTENT_TYPES, resolveUpdatePath, updatesDir } from "./updates.js";
 // P2-045: dashboard v2 metrics — aggregations shared with the pilot's eval battery
 import { avgPhaseDurations, burnDown, countFailSteps, rollbackHealthAlert, type HistoryEntry } from "../../pilot/src/metrics";
@@ -1327,6 +1327,8 @@ async function forwardEvents() {
             // http(s) URL with an explicit port emits a synthetic `ocr.preview`
             // event so the desktop app opens its Browser pane on it. The relay
             // stays a blind router: this rides the existing sealed envelope.
+            // Role tracking must stay in the same loop as the part handling
+            // below (message.updated always arrives before its parts).
             if (evt.type === "message.updated") {
               const info = ((evt.properties ?? {}) as { info?: { id?: string; role?: string } }).info;
               if (info?.id) {
@@ -1337,26 +1339,19 @@ async function forwardEvents() {
                 }
               }
             } else if (evt.type === "message.part.updated") {
-              const part = ((evt.properties ?? {}) as {
-                part?: { type?: string; text?: string; messageID?: string };
-              }).part;
-              if (part?.type === "text" && typeof part.text === "string" && part.messageID) {
-                // unknown role ⇒ fail-open as assistant (a missed message.updated
-                // must not suppress the preview; user parts are tagged as "user")
-                if ((messageRoles.get(part.messageID) ?? "assistant") !== "user") {
-                  for (const url of extractLocalUrls(part.text)) {
-                    if (!previewDedupe.firstSeen(sessionID, url)) continue;
-                    log("info", "preview detected", { sessionID, url });
-                    broadcast({
-                      type: "event",
-                      event: {
-                        id: randomUUID(),
-                        type: "ocr.preview",
-                        properties: { sessionID, url },
-                      },
-                    });
-                  }
-                }
+              // pure helper pins the semantics: fail-closed role check
+              // (assistant only) and sessionID from part.sessionID first
+              for (const { sessionID: sid, url } of previewsFromEvent(evt, messageRoles)) {
+                if (!previewDedupe.firstSeen(sid, url)) continue;
+                log("info", "preview detected", { sessionID: sid, url });
+                broadcast({
+                  type: "event",
+                  event: {
+                    id: randomUUID(),
+                    type: "ocr.preview",
+                    properties: { sessionID: sid, url },
+                  },
+                });
               }
             }
 
