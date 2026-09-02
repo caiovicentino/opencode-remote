@@ -15,6 +15,7 @@ Run `opencode-remote doctor` first — it checks everything below in one shot.
 | chat shows duplicated replies | fixed by the incremental event watermark; refresh the PWA |
 | Settings shows a version mismatch | the daemon and the PWA are different builds: restart daemon, pull-to-refresh the PWA |
 | PWA won't open away from home | no TLS — use the tailscale path from `scripts/dev-iphone.sh` or a Caddy-fronted relay |
+| white screen on the phone, desktop fine | the PWA origin died (the desktop shell loads the bundle from disk, only the phone is affected). The origin is the `com.ocr.pwa` launchd service (P2-075), not a dev server: `curl 127.0.0.1:5173/healthz`; if it fails, `opencode-remote restart` or `launchctl kickstart -k gui/$(id -u)/com.ocr.pwa`. The daemon posts a `[pwa] origin` event + red chip on the dashboard when this happens |
 | watch the logs | `tail -f ~/.opencode-remote/logs/daemon.log` (JSON lines; `OCR_LOG_LEVEL=debug` for frame-level) |
 | watch the desktop app logs | tray → **Open logs folder**, then `tail -f ~/Library/Application\ Support/OpenCode\ Remote/logs/desktop.log` (`userData/logs/desktop.log`, ~1MB cap, rotates to `desktop.log.1`) — the packaged app writes here instead of the console |
 | watch the daemon sidecar's own output | same folder, `userData/logs/daemon-sidecar.log` (JSONL; rotates to `daemon-sidecar.log.1`, ~1MB cap) — the desktop shell tees the spawned daemon's stdout/stderr there; the tray's **Open logs folder** click cites both files in `desktop.log` |
@@ -45,6 +46,7 @@ extension, no traversal. Dev builds stay opt-in via `OCR_UPDATE_FEED`.
 
 ```
 curl 127.0.0.1:8787/healthz            # relay, public (safe for LB health checks): {ok,version,uptimeS,rooms,roomsRejected}
+curl 127.0.0.1:5173/healthz            # PWA origin (com.ocr.pwa, loopback only): {ok,service}
 curl 127.0.0.1:8792/metrics            # daemon, localhost only, JSON
 curl '127.0.0.1:8792/metrics?format=prom'
 curl 127.0.0.1:8790/metrics            # relay, localhost only, same contract
@@ -53,6 +55,11 @@ curl 127.0.0.1:8790/metrics            # relay, localhost only, same contract
 ## Service control (macOS launchd)
 
 ```
-opencode-remote status
-opencode-remote restart      # or launchctl kickstart -k gui/$(id -u)/com.ocr.daemon
+opencode-remote status                 # relay + daemon + pwa service states
+opencode-remote restart
+launchctl kickstart -k gui/$(id -u)/com.ocr.pwa   # static PWA origin alone
 ```
+
+The `com.ocr.pwa` service (P2-075) serves `apps/web/dist` statically on
+`127.0.0.1:5173` with `KeepAlive` — it survives reboots and never runs a dev
+server. Its logs are `~/.opencode-remote/logs/pwa.log` / `pwa.err.log`.

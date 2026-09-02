@@ -104,6 +104,29 @@ notification taps to hash deep-links. On the desktop shell (served over
 `file://`) the service worker is not registered and Web Push stays
 unavailable — registration there can only reject.
 
+### PWA static origin (deploy/pwa-server.mjs + launchd, P2-075)
+The phone's origin is **not** a dev server: `deploy/install.sh` installs
+`com.ocr.pwa`, a launchd service (`RunAtLoad` + `KeepAlive`) that runs
+`deploy/pwa-server.mjs` — a dependency-free node http server binding
+`127.0.0.1:5173` and serving `apps/web/dist` (the same build the desktop
+shell loads). `tailscale serve` proxies the tailnet hostname to that port, so
+a clean reboot leaves the PWA reachable at
+`https://<host>.ts.net` with no manual step. Details:
+
+- **Health probe**: `GET /healthz` answers `{"ok":true}` unauthenticated on
+  the loopback port (it leaks nothing — a fixed literal).
+- **Watchdog**: the daemon probes `/healthz` every 60s (only on hosts where
+  `PWA_HEALTHZ_URL` is set or the `com.ocr.pwa` plist exists — sidecars on
+  other machines stay silent) and on flip appends a `[pwa] origin` event to
+  the dashboard feed, lights the red "📵 PWA ORIGIN DOWN" chip and pushes the
+  paired phones. Recovery clears the chip.
+- **Deploys**: after `npm run build`, the pilot's deploy kickstarts
+  `com.ocr.relay`, `com.ocr.daemon` and `com.ocr.pwa` (the last one
+  best-effort: the service only exists after `deploy/install.sh` ran once).
+  Static files are read per request, so even without a kickstart the origin
+  serves the new build; hashed `/assets/*` are `immutable`, the shell files
+  are `no-cache`.
+
 ## Data flow (one op)
 
 1. PWA seals `{ type: "op", req }` with the session key + AAD(sender, seq)
