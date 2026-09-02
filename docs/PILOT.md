@@ -19,7 +19,7 @@ BACKLOG.md ──> BUILDER ────┬──> SECURITY REVIEWER ─┬──
                                      merge (gh pr squash) <─┘
                                           │
                                      OPS: deploy staged
-                                     reset SHA → npm ci → build → kickstart
+                                     reset SHA → install (fast/ci) → build → kickstart
                                      → health watch (90s) → soak (10min)
                                      → OK: digest push / FAIL: auto-rollback
 ```
@@ -153,7 +153,17 @@ mergeadas pelo workflow sem intervenção humana.
    claro (`disk low: Xgb free (need 5.0gb) — deploy aborted before npm ci/build`),
    evento `disk-guard` no feed e `notifySupervisor` em vez de falhar depois com
    um `git index.lock` críptico. Sonda indisponível = fail-open (não bloqueia).
-1. `git reset --hard <sha>` no repo de produção + `npm ci --ignore-scripts` + `npm run build`
+1. `git reset --hard <sha>` no repo de produção + install + `npm run build`.
+   **P1-021**: o install é decidido pelo hash do `package-lock.json` persistido
+   em `~/.opencode-remote/pilot/last-install.json` — lock inalterado roda o fast
+   path `npm install --prefer-offline --no-audit --no-fund --ignore-scripts`
+   (sem wipe de node_modules, ~segundos); lock alterado, estado ausente/corrupto
+   ou hash indisponível roda `npm ci` completo (fail-closed). Fast install que
+   falha cai para o ci completo antes de declarar erro (escada de reparo).
+   Binários electron/ffmpeg saem de cache local (`ELECTRON_CACHE=~/.cache/electron`)
+   em ambos os caminhos. O hash só é (re)gravado após um ci bem-sucedido
+   (deploy novo ou rollback), mantendo o invariante "hash persistido == lock
+   instalado em disco".
 2. `launchctl kickstart -k` relay e daemon (o daemon derruba-se com shutdown
    graceful desde P2-020: drain ≤3s, ws close 1001, exit 0)
 3. Health: `GET 127.0.0.1:8792/api/health` (Bearer apiToken) até 90s
