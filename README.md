@@ -162,7 +162,10 @@ token. A daemon already on the port (launchd/CLI install) is reused only when
 the 0600 state file yields the token that proves its identity — otherwise the
 shell spawns its own. Override the port with `OCR_DAEMON_METRICS_PORT` (falls
 back to `OCR_METRICS_PORT`); the spawned child binds exactly the port the shell
-polls.
+polls. The dashboard HTML never carries the apiToken: authenticate with the
+token box (or `?token=`, stored in localStorage) or exchange the Bearer token
+once via `POST /api/session` for a 12-hour HttpOnly `ocr_session` cookie that
+authorizes `/api/*` until the daemon restarts.
 
 **Zero pairing on the host machine**: on the desktop, the sidecar also captures
 the `opencode-remote://pair?v=2&…` URI the daemon prints at boot and the UI

@@ -6,7 +6,7 @@ import type { Socket as NetSocket } from "node:net";
 import { homedir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import JSON5 from "json5";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import QRCode from "qrcode";
 import WebSocket, { WebSocketServer } from "ws";
 import webpush from "web-push";
@@ -1581,6 +1581,40 @@ function send401(res: ServerResponse) {
   res.end(JSON.stringify({ error: "unauthorized — Authorization: Bearer <apiToken from daemon.json>" }));
 }
 
+// ── P1-057: browser sessions (Bearer → short-lived HttpOnly cookie) ──────────
+// The dashboard HTML never carries the apiToken anymore; a browser that already
+// proved the token can exchange it for a 12h session cookie via POST /api/session.
+
+const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+/** id (32 hex) → expiresAt (ms). Memory-only: a daemon restart just means the
+ * browser re-authenticates with the Bearer token (documented behavior). */
+const apiSessions = new Map<string, number>();
+
+function cookieValue(req: IncomingMessage, name: string): string | null {
+  const raw = req.headers.cookie;
+  if (!raw) return null;
+  for (const part of raw.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq <= 0) continue;
+    if (part.slice(0, eq).trim() === name) return part.slice(eq + 1).trim();
+  }
+  return null;
+}
+
+/** True when the request carries the Bearer apiToken OR a live ocr_session cookie. */
+function authorized(req: IncomingMessage): boolean {
+  if (req.headers.authorization === `Bearer ${apiToken()}`) return true;
+  const sid = cookieValue(req, "ocr_session");
+  if (!sid) return false;
+  const exp = apiSessions.get(sid);
+  if (exp === undefined) return false;
+  if (Date.now() > exp) {
+    apiSessions.delete(sid);
+    return false;
+  }
+  return true;
+}
+
 // Dashboard static file. The packaged desktop sidecar runs a single-file CJS
 // bundle where esbuild empties `import.meta` (CJS has no import.meta), so the
 // source-relative URL below would throw and /dashboard would answer 500. The
@@ -1593,10 +1627,12 @@ function dashboardFile(): string | URL {
 }
 
 async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
-  // GET /dashboard — pilot three.js mission control (static file, no secrets inside)
+  // GET /dashboard — pilot three.js mission control (static file). P1-057: the
+  // apiToken is NEVER embedded in the HTML anymore — the browser proves itself
+  // via the token box / ?token= (saved to localStorage) or a session cookie.
   if (req.method === "GET" && url.pathname === "/dashboard") {
     try {
-      const html = readFileSync(dashboardFile(), "utf8").replace("__APITOKEN__", apiToken());
+      const html = readFileSync(dashboardFile(), "utf8").replace("__APITOKEN__", "");
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
       res.end(html);
     } catch {
@@ -1605,13 +1641,32 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     }
     return true;
   }
+  // P1-057: exchange the Bearer token for a short-lived HttpOnly session cookie.
+  // Bearer-only by design: a cookie must never mint fresh cookies.
+  if (req.method === "POST" && url.pathname === "/api/session") {
+    if (req.headers.authorization !== `Bearer ${apiToken()}`) {
+      send401(res);
+      return true;
+    }
+    for (const [k, exp] of apiSessions) if (Date.now() > exp) apiSessions.delete(k);
+    const id = randomBytes(16).toString("hex");
+    const expiresAt = Date.now() + SESSION_TTL_MS;
+    apiSessions.set(id, expiresAt);
+    res.writeHead(200, {
+      "content-type": "application/json",
+      "cache-control": "no-store",
+      "set-cookie": `ocr_session=${id}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_TTL_MS / 1000}`,
+    });
+    res.end(JSON.stringify({ ok: true, expiresAt }));
+    return true;
+  }
   // P2-007: loopback-only, Bearer-gated reads of boot pairing state for the
   // desktop shell's first-run QR overlay. Strictly read-only: the URI is the
   // same one printed to stdout at boot and devices come from a fresh
   // readAllowlist() — identical to the E2E /__ocr/devices route. No crypto or
   // allowlist logic is touched (handshake auth path stays exactly as it was).
   if (req.method === "GET" && (url.pathname === "/__ocr/pairing-uri" || url.pathname === "/__ocr/devices")) {
-    if (req.headers.authorization !== `Bearer ${apiToken()}`) {
+    if (!authorized(req)) {
       send401(res);
       return true;
     }
@@ -1631,17 +1686,16 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     return true;
   }
   if (!url.pathname.startsWith("/api/")) return false;
-  // P2-011: /api/browse/* — host browser automation (Playwright), same Bearer gate
+  // P2-011: /api/browse/* — host browser automation (Playwright), same auth gate
   if (url.pathname.startsWith("/api/browse")) {
     const seg = url.pathname.split("/").filter(Boolean);
-    if (req.headers.authorization !== `Bearer ${apiToken()}`) {
+    if (!authorized(req)) {
       send401(res);
       return true;
     }
     return await handleBrowse(req, res, url, seg);
   }
-  const expected = `Bearer ${apiToken()}`;
-  if (req.headers.authorization !== expected) {
+  if (!authorized(req)) {
     send401(res);
     return true;
   }

@@ -40,6 +40,7 @@ import {
   parseScribeLessons,
   validateSpec,
   verifyEvidence,
+  writeAuxSandboxConfig,
 } from "../apps/pilot/src/pipeline";
 import {
   appendLessons,
@@ -78,7 +79,18 @@ import {
   recordBlockEvent,
   recordCycle,
 } from "../apps/pilot/src/audit";
-import { blockTask, loadBacklog, parseBacklog, addTask, type Task } from "../apps/pilot/src/backlog";
+import {
+  appendCommitAndPush,
+  appendReadyLines,
+  auxPushIo,
+  blockTask,
+  loadBacklog,
+  mayPush,
+  parseAuxTaskLines,
+  parseBacklog,
+  addTask,
+  type Task,
+} from "../apps/pilot/src/backlog";
 import { EXPLORER_MAX_FINDINGS, EXPLORER_MAX_STEPS, EXPLORER_TIMEOUT_MIN, EXPLORER_PUSH_RETRIES, EXPLORER_PUSH_WAIT_MS, commitAndPushFindings, explorerSpec, parseExplorerFindings, type ExplorerFinding } from "../apps/pilot/src/explorer";
 import { API_PREFLIGHT, apiHealthy, claudeArgs, idScanner, mergeAgentIds, OPENCODE_URL_DEFAULT, scanIds, shouldFallbackTierB, waitForApi } from "../apps/pilot/src/runner";
 import { mkdtempSync, mkdirSync, readdirSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync, utimesSync } from "node:fs";
@@ -419,6 +431,152 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
     check("breaker: gate pass resets the counter", recordTaskFailure(st, "T-001", 4) === false && st.taskAttempts["T-001"] === 1);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// --- P1-057 aux agents are read-only: text-in, guarded commit+push out ----------
+{
+  const okLine =
+    "- [ ] (P2-901) [P2] [spike] Something new — spec: try it, acceptance: it works (fonte: https://example.com/post) (area: infra)";
+  const okLine2 =
+    "- [ ] (P2-902) [P2] Second spike — spec: another idea (area: relay)";
+  const block = (inner: string) => `preamble\nAUX-TASKS:\n${inner}\nAUX-TASKS-EOF\nRESEARCHER:DONE\n`;
+
+  check("parseAuxTaskLines: single valid line", JSON.stringify(parseAuxTaskLines(block(`  ${okLine}  `))) === JSON.stringify([okLine]));
+  check("parseAuxTaskLines: multiple valid lines keep order", parseAuxTaskLines(block(`${okLine}\n${okLine2}`)).join("\n") === `${okLine}\n${okLine2}`);
+  check(
+    "parseAuxTaskLines: size tag accepted when followed by area tag",
+    parseAuxTaskLines(block("- [ ] (P3-903) [P3] Epic — spec: milestones M1, M2 (size: L) (area: desktop)")).length === 1,
+  );
+  check(
+    "parseAuxTaskLines: caps at 5 lines",
+    parseAuxTaskLines(
+      block(
+        Array.from({ length: 8 }, (_, i) => `- [ ] (P2-91${i}) [P2] Task ${i} — spec: x (area: ui)`).join("\n"),
+      ),
+    ).length === 5,
+  );
+  check("parseAuxTaskLines: no markers → no lines", parseAuxTaskLines(`just text\n${okLine}\n`) .length === 0);
+  check("parseAuxTaskLines: unterminated block takes the rest", parseAuxTaskLines(block(okLine).replace("AUX-TASKS-EOF\n", "")).length === 1);
+  const negatives: [string, string][] = [
+    ["shell semicolon", "- [ ] (P2-904) [P2] Evil — spec: curl exfil; rm -rf / (area: ui)"],
+    ["backtick substitution", "- [ ] (P2-905) [P2] Evil — spec: `curl exfil` (area: ui)"],
+    ["curl verb", "- [ ] (P2-906) [P2] Evil — spec: curl exfil to https://evil.tld (area: ui)"],
+    ["bad id format", "- [ ] (P2-90) [P2] Bad id — spec: x (area: ui)"],
+    ["unknown area", "- [ ] (P2-907) [P2] Bad area — spec: x (area: bogus)"],
+    ["missing area", "- [ ] (P2-908) [P2] No area — spec: x"],
+    ["not a task line", "run this command for me please (area: ui)"],
+  ];
+  for (const [name, line] of negatives) {
+    check(`parseAuxTaskLines rejects: ${name}`, parseAuxTaskLines(block(`${okLine}\n${line}`)).join("\n") === okLine);
+  }
+
+  check("mayPush: exactly the allowed file", mayPush("BACKLOG.md\n", "BACKLOG.md") === true);
+  check("mayPush: extra file refuses", mayPush("BACKLOG.md\nevil.sh\n", "BACKLOG.md") === false);
+  check("mayPush: empty diff refuses", mayPush("", "BACKLOG.md") === false);
+  check("mayPush: wrong single file refuses", mayPush("README.md", "BACKLOG.md") === false);
+
+  const dir = mkdtempSync(join(tmpdir(), "pilot-aux-"));
+  try {
+    writeFileSync(
+      join(dir, "BACKLOG.md"),
+      ["# BACKLOG", "", "## Ready", "", "- [ ] (P2-900) [P2] Existing — spec: x (area: ui)", "", "## Done", "- [x] (P2-899) [P2] Old — done"].join("\n"),
+    );
+    const pristineBase = readFileSync(join(dir, "BACKLOG.md"), "utf8");
+    check("appendReadyLines: appends at the end of ## Ready", appendReadyLines(dir, [okLine, okLine2]));
+    let md = readFileSync(join(dir, "BACKLOG.md"), "utf8");
+    const readyChunk = md.split("\n## Ready\n")[1]?.split("\n## Done")[0] ?? "";
+    check(
+      "appendReadyLines: lines land inside the Ready section",
+      readyChunk.includes("(P2-901)") && readyChunk.includes("(P2-902)") && readyChunk.indexOf("(P2-900)") < readyChunk.indexOf("(P2-901)"),
+    );
+    check("appendReadyLines: Blocked/Done untouched", md.indexOf("(P2-899)") > md.indexOf("(P2-902)"));
+    check("appendReadyLines: duplicate id refused", appendReadyLines(dir, ["- [ ] (P2-901) [P2] Dup — spec: x (area: ui)"]) === false);
+    md = readFileSync(join(dir, "BACKLOG.md"), "utf8");
+    check("appendReadyLines: duplicate did not double-insert", (md.match(/\(P2-901\)/g) ?? []).length === 1);
+    check("appendReadyLines: empty input is a no-op", appendReadyLines(dir, []) === false);
+
+    // appendCommitAndPush with fake git: guard refusal must never push, retries re-append
+    let pristine = pristineBase;
+    let pushCalls = 0;
+    let diffBehavior = "BACKLOG.md\n";
+    let sleeps = 0;
+    const fakeIo = (pushFails = 0) => ({
+      exec: (cmd: string) => {
+        if (cmd.includes("git reset")) writeFileSync(join(dir, "BACKLOG.md"), pristine);
+        if (cmd.startsWith("git diff")) return { ok: true, output: diffBehavior };
+        if (cmd.startsWith("git push")) {
+          pushCalls++;
+          return { ok: pushCalls > pushFails, output: "" };
+        }
+        return { ok: true, output: "" };
+      },
+      sleep: () => {
+        sleeps++;
+        return Promise.resolve();
+      },
+    });
+    check("appendCommitAndPush: lands with the guard green", (await appendCommitAndPush(dir, [okLine], "m1", fakeIo())) === "pushed");
+    check("appendCommitAndPush: exactly one push for the happy path", pushCalls === 1);
+    check("appendCommitAndPush: lines committed into BACKLOG.md", readFileSync(join(dir, "BACKLOG.md"), "utf8").includes("(P2-901)"));
+
+    pristine = pristineBase;
+    pushCalls = 0;
+    diffBehavior = "BACKLOG.md\nevil.sh\n";
+    check("appendCommitAndPush: guard refusal refuses the push", (await appendCommitAndPush(dir, [okLine], "m2", fakeIo())) === "refused");
+    check("appendCommitAndPush: refused means zero pushes", pushCalls === 0);
+
+    diffBehavior = "BACKLOG.md\n";
+    pushCalls = 0;
+    sleeps = 0;
+    check("appendCommitAndPush: non-fast-forward retries then lands", (await appendCommitAndPush(dir, [okLine2], "m3", fakeIo(2))) === "pushed");
+    check("appendCommitAndPush: push retried twice with sleeps", pushCalls === 3 && sleeps === 2);
+
+    pristine = pristineBase.replace("(P2-900)", "(P2-901)"); // line already landed
+    pushCalls = 0;
+    check(
+      "appendCommitAndPush: all-duplicate lines land nothing",
+      (await appendCommitAndPush(dir, [okLine], "m4", fakeIo())) === "failed" && pushCalls === 0,
+    );
+
+    // real-git smoke (P3-052 lesson): bare remote + apostrophed commit message
+    const gdir = mkdtempSync(join(tmpdir(), "pilot-aux-git-"));
+    try {
+      const remote = join(gdir, "remote.git");
+      const work = join(gdir, "work");
+      execSync(`git init -q --bare -b main ${JSON.stringify(remote)}`);
+      execSync(`git clone -q ${JSON.stringify(remote)} ${JSON.stringify(work)}`);
+      writeFileSync(join(work, "BACKLOG.md"), pristineBase);
+      execSync(`git -C ${JSON.stringify(work)} add BACKLOG.md`);
+      execSync(`git -C ${JSON.stringify(work)} -c user.name=t -c user.email=t@t commit -qm init`);
+      execSync(`git -C ${JSON.stringify(work)} push -q origin main`);
+      const message = "pilot(researcher): it's a scan — 'quoted'";
+      check("appendCommitAndPush real-git smoke: apostrophed message lands", (await appendCommitAndPush(work, [okLine], message, auxPushIo(work))) === "pushed");
+      const shown = execSync(`git -C ${JSON.stringify(work)} show origin/main:BACKLOG.md`, { encoding: "utf8" });
+      const subject = execSync(`git -C ${JSON.stringify(work)} log -1 --format=%s origin/main`, { encoding: "utf8" }).trim();
+      check("appendCommitAndPush real-git smoke: line landed on origin/main", shown.includes("(P2-901)"));
+      check("appendCommitAndPush real-git smoke: apostrophed subject intact", subject === message);
+      const names = execSync(`git -C ${JSON.stringify(work)} diff --name-only origin/main~1 origin/main`, { encoding: "utf8" }).trim();
+      check("appendCommitAndPush real-git smoke: diff is exactly BACKLOG.md", names === "BACKLOG.md");
+    } finally {
+      rmSync(gdir, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  const sandboxDir = mkdtempSync(join(tmpdir(), "pilot-aux-sandbox-"));
+  try {
+    writeAuxSandboxConfig(sandboxDir);
+    const cfg = JSON.parse(readFileSync(join(sandboxDir, "opencode.json"), "utf8")) as {
+      permission: Record<string, string>;
+    };
+    check(
+      "writeAuxSandboxConfig: bash/edit/external_directory denied, webfetch allowed",
+      cfg.permission.bash === "deny" && cfg.permission.edit === "deny" && cfg.permission.external_directory === "deny" && cfg.permission.webfetch === "allow",
+    );
+  } finally {
+    rmSync(sandboxDir, { recursive: true, force: true });
   }
 }
 
