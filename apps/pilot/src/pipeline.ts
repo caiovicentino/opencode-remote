@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, dirname, relative, sep } from "node:path";
 import { homedir } from "node:os";
-import { agentStream, exec, runAgent, runAgentForRole, type AgentIds } from "./runner";
+import { agentStream, cachedExec, exec, runAgent, runAgentForRole, type AgentIds, type RerunResults } from "./runner";
 import { nowLocalISO } from "./log";
 import { markDone, mayPush, type Task } from "./backlog";
 import { emit } from "./events";
@@ -1274,9 +1274,15 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
       };
     }
 
+    // P2-040: one shared re-run cache per round — the preflight below executes
+    // typecheck once and the gate (evidence re-run + step battery) reuses the
+    // same (command, workspace) result instead of re-running it. A new round
+    // starts with a fresh map: the builder may have changed the code.
+    const rerunResults: RerunResults = new Map();
+
     // preflight: a broken build must never reach the reviewers (they cost LLM
     // tokens and would only re-report the same typecheck errors)
-    const pre = exec("npm run typecheck --silent", { cwd: ws, timeoutMin: 10, allowFail: true });
+    const pre = cachedExec(rerunResults, "npm run typecheck --silent", ws, { timeoutMin: 10 });
     if (!pre.ok) {
       findings = `${findings}\n[typecheck still failing — fix these first]\n${pre.output.slice(-1500)}`;
       emit("phase", { task: t.id, phase: "builder", detail: "preflight typecheck failed → next round", ok: false });
@@ -1380,7 +1386,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
     if (gateSecOk && gateQualOk) {
       emit("phase", { task: t.id, phase: "gatekeeper" });
       // serialized across slots: fixed battery ports + main push (P1-006)
-      merged = await runGateExclusive(() => gatekeeper(cfg, ws, t, state, build.output, startedAtMs));
+      merged = await runGateExclusive(() => gatekeeper(cfg, ws, t, state, build.output, startedAtMs, rerunResults));
       emit("phase", { task: t.id, phase: "merge", ok: merged });
       if (merged) {
         // gate passed — the per-task carryover file has no reason to linger
@@ -1606,6 +1612,10 @@ async function gatekeeper(
   state: PilotState,
   builderOutput: string,
   startedAtMs: number,
+  // P2-040: the round's shared re-run cache — the preflight typecheck already
+  // executed in this workspace, so the evidence re-run and the step battery
+  // below reuse it (1 execution per round, not 3) while holding no lock.
+  rerunResults: RerunResults,
 ): Promise<boolean> {
   const steps: Array<[string, string]> = [
     ["typecheck", "npm run typecheck --silent"],
@@ -1647,16 +1657,13 @@ async function gatekeeper(
   // apps/desktop is instructed to bring shots and the gate enforces it.
   // Round 2: re-run results are cached — the typecheck/build/unit steps below
   // reuse them instead of re-executing the same commands while holding the
-  // cross-slot gate lock (P1-006).
-  const rerunResults = new Map<string, { ok: boolean; output: string }>();
+  // cross-slot gate lock (P1-006). P2-040: the cache is the round's shared
+  // map, so a command the preflight already ran in this workspace is not
+  // re-executed here either.
   const requireShots = needsUiEvidence(t.area, renderTouched);
-  const evidence = verifyEvidence(ws, builderOutput, requireShots, startedAtMs, (cmd, cwd) => {
-    const cached = rerunResults.get(cmd);
-    if (cached) return cached;
-    const r = exec(cmd, { cwd, timeoutMin: 20, allowFail: true });
-    rerunResults.set(cmd, r);
-    return r;
-  });
+  const evidence = verifyEvidence(ws, builderOutput, requireShots, startedAtMs, (cmd, cwd) =>
+    cachedExec(rerunResults, cmd, cwd, { timeoutMin: 20 }),
+  );
   if (!evidence.ok) {
     recordGateFail(state, t.id, "evidence", evidence.detail);
     return false;
@@ -1664,7 +1671,7 @@ async function gatekeeper(
   for (const [name, cmd] of steps) {
     // evidence already re-executed this exact command in this workspace — keep
     // its result; the step list uses the same canonical command strings
-    const r = rerunResults.get(cmd) ?? exec(cmd, { cwd: ws, timeoutMin: 20, allowFail: true });
+    const r = cachedExec(rerunResults, cmd, ws, { timeoutMin: 20 });
     if (!r.ok) {
       recordGateFail(state, t.id, name, r.output);
       return false;

@@ -482,7 +482,12 @@ o que fez e o gate **re-executa** a prova:
 - **Sem execução dupla**: os resultados das re-execuções da evidência são
   reusados como os steps `typecheck`/`build`/`unit` do próprio gate (os comandos
   canônicos são idênticos), então o gate não roda os mesmos comandos duas vezes
-  segurando o lock de exclusão mútua entre slots (P1-006).
+  segurando o lock de exclusão mútua entre slots (P1-006). P2-040: o mapa de
+  re-runs é **por round e compartilhado com o preflight** — o `cachedExec`
+  (key `comando+workspace`) faz o preflight pós-builder executar o typecheck
+  uma única vez e o gate (evidence + steps) ler o mesmo resultado; o typecheck
+  roda 1x por round no código da pipeline, não 3x. Round novo = mapa novo (o
+  builder pode ter mudado o código).
 - **Self-heal**: falha de evidência escreve o carryover padrão
   `pilot/gate-fail/<ID>.json` (step `evidence`), então a próxima rodada do
   builder recebe o detalhe exato (ex.: "stale screenshot (predates this round)")
@@ -536,7 +541,11 @@ outputs reais** dos três comandos de evidência:
 
 - **Preflight typecheck**: after each builder round, a fast `tsc --noEmit` runs
   before the reviewers — broken code bounces straight back to the builder with
-  the error tail instead of burning reviewer tokens.
+  the error tail instead of burning reviewer tokens. P2-040: the preflight
+  populates the round's shared re-run cache (`cachedExec`, key =
+  command+workspace), so the gatekeeper's evidence re-run and step battery
+  reuse that result — one typecheck execution per round across the whole
+  pipeline.
 - **API preflight (P2-016)**: before every agent spawn (`runAgent`), the runner
   probes the opencode server (`GET $OPENCODE_URL/global/health`, 5s timeout —
   same endpoint/contract as the CLI doctor). If the API is down — typically

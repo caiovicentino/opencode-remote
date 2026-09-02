@@ -271,6 +271,42 @@ export async function runAgent(
   });
 }
 
+// ── P2-040: shared re-run cache (preflight ↔ evidence ↔ gate steps) ────────────
+
+/** Results of command re-executions, keyed by rerunKey(cmd, cwd). */
+export type RerunResults = Map<string, { ok: boolean; output: string }>;
+
+/**
+ * Cache key for a re-run result: command + workspace. The same command string
+ * in a different slot workspace clone (repo-1, repo-2, ...) must never share
+ * an entry - one key per (command, workspace) pair.
+ */
+export function rerunKey(cmd: string, cwd: string): string {
+  return `${cmd}\u0000${cwd}`;
+}
+
+/**
+ * exec() that reuses the result of an identical (command, workspace) run.
+ * The round's first execution - the preflight typecheck - populates the map;
+ * the gate's evidence re-run and step battery read from it, so a round whose
+ * code did not change executes each command exactly once. Injectable `run`
+ * keeps the execution count unit-testable.
+ */
+export function cachedExec(
+  cache: RerunResults,
+  cmd: string,
+  cwd: string,
+  opts: { timeoutMin?: number } = {},
+  run?: (cmd: string, cwd: string) => { ok: boolean; output: string },
+): { ok: boolean; output: string } {
+  const key = rerunKey(cmd, cwd);
+  const hit = cache.get(key);
+  if (hit) return hit;
+  const r = run ? run(cmd, cwd) : exec(cmd, { cwd, timeoutMin: opts.timeoutMin ?? 10, allowFail: true });
+  cache.set(key, r);
+  return r;
+}
+
 export function exec(
   cmd: string,
   opts: { cwd: string; timeoutMin?: number; allowFail?: boolean },
