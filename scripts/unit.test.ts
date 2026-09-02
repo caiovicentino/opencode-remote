@@ -30,9 +30,12 @@ import { taskMergedIn } from "../apps/pilot/src/pipeline";
 import { cachedExec, rerunKey, type RerunResults } from "../apps/pilot/src/runner";
 import {
   applySessionCosts,
+  cacheHitRatio,
   isSessionId,
+  parseSessionTokenRows,
   parseSessionTokens,
   pruneTaskCosts,
+  querySessionTokenRows,
   querySessionTokens,
   sessionTotalTokens,
   TASK_COST_CAP,
@@ -69,6 +72,7 @@ import {
   touchedPilotInfraFromDiff,
   updateResumeState,
   parseScribeLessons,
+  scribePrompt,
   validateSpec,
   verifyEvidence,
   writeAuxSandboxConfig,
@@ -1448,6 +1452,46 @@ check("touchedUi: lookalike apps/webs rejected", !touchedUiFromDiff("apps/webs/s
   const inc = reviewerPrompt("SECURITY", "crypto", L_TASK, "", null, null, "abc1234");
   check("reviewer: incremental scope note cites the range", inc.includes("INCREMENTAL REVIEW") && inc.includes("commits since abc1234"));
   check("reviewer: no incremental note for total diffs", !reviewerPrompt("SECURITY", "crypto", L_TASK, "", null).includes("INCREMENTAL REVIEW"));
+
+  // --- P1-077 cache-aware prompt assembly ---------------------------------------
+  // Provider prefix caching only engages on a byte-identical prefix, so the
+  // four prompt templates must open with their STABLE blocks (role, rules,
+  // CONSTITUTION, output contract) and keep every VARIABLE byte (task text,
+  // round, findings, lessons) after the last stable line.
+  {
+    const TASK_A: Task = { id: "P1-771", priority: "P1", title: "Cache probe alpha", spec: "alpha spec", area: "", line: "" };
+    const TASK_B: Task = { id: "P1-772", priority: "P2", title: "Cache probe beta", spec: "beta spec", area: "", line: "" };
+    const CACHE_LESSONS = ["- When reordering prompts, pin the stable prefix with tests (fonte: P1-077)"];
+    const commonPrefix = (a: string, b: string): number => {
+      let i = 0;
+      const n = Math.min(a.length, b.length);
+      while (i < n && a[i] === b[i]) i++;
+      return i;
+    };
+    // builder: two DIFFERENT tasks/rounds/attempts/findings/lessons — the
+    // shared prefix must run strictly past the EVIDENCE heading
+    const bA = builderPrompt(TASK_A, 1, "", CACHE_LESSONS, "specs/P1-771.md");
+    const bB = builderPrompt(TASK_B, 3, "fix findings", [], null, { sessionId: "ses_abc123456", taskIds: ["task_1"] }, 2);
+    check("cache: builder prefix byte-identical past the EVIDENCE heading across tasks/rounds", commonPrefix(bA, bB) > bA.indexOf("EVIDENCE:"));
+    check("cache: builder constitution precedes the task text and the IER lessons", bA.indexOf(CONSTITUTION) < bA.indexOf(TASK_A.title) && bA.indexOf(CONSTITUTION) < bA.indexOf("EXPERIENCE —"));
+    check("cache: builder round moved out of the stable role line", !bA.split("TASK (P1-771)")[0]!.includes("round 1") && bA.includes("builder round 1"));
+
+    const pA = plannerPrompt(TASK_A, 1, CACHE_LESSONS, "FAILURE LESSONS block");
+    const pB = plannerPrompt(TASK_B, 2);
+    const plannerTail = pA.indexOf("TASK (P1-771)");
+    check("cache: planner prefix stable across tasks/attempts", plannerTail > 0 && pA.slice(0, plannerTail) === pB.slice(0, plannerTail));
+    check("cache: planner constitution precedes the task text and the IER lessons", pA.indexOf(CONSTITUTION) < pA.indexOf(TASK_A.title) && pA.indexOf(CONSTITUTION) < pA.indexOf("EXPERIENCE —"));
+
+    const rA = reviewerPrompt("QUALITY", "focus A", TASK_A, "", null, "specs/P1-771.md", "abc1234");
+    const rB = reviewerPrompt("QUALITY", "focus B", TASK_B, "diff", "shot.png");
+    check("cache: reviewer prefix byte-identical through the verdict contract", commonPrefix(rA, rB) > rA.indexOf("VERDICT: APPROVE"));
+    check("cache: reviewer constitution precedes the task text", rA.indexOf(CONSTITUTION) < rA.indexOf(TASK_A.title));
+
+    const sA = scribePrompt(TASK_A, "diff A", "finding");
+    const sB = scribePrompt(TASK_B, "diff B", "");
+    check("cache: scribe prefix byte-identical through the LESSONS contract", commonPrefix(sA, sB) > sA.indexOf("SCRIBE:DONE"));
+    check("cache: scribe constitution precedes the task text", sA.indexOf(CONSTITUTION) < sA.indexOf(TASK_A.title));
+  }
 
   // scratch git repo: spec recovery from a preserved branch's history
   const recRepo = mkdtempSync(join(tmpdir(), "ocr-specrecover-"));
@@ -4330,6 +4374,54 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check("costs: rolling window prunes oldest tasks", Object.keys(big.taskCosts).length === TASK_COST_CAP && !("P9-0" in big.taskCosts) && "P9-209" in big.taskCostSessions);
 }
 
+// --- P1-077 cache-aware prompt assembly: per-task cache metrics -----------------
+{
+  const row = (input: number, read: number, write: number, output = 0) => ({
+    id: "ses_cache0001",
+    tokens_input: input,
+    tokens_output: output,
+    tokens_cache_read: read,
+    tokens_cache_write: write,
+  });
+  const rowsJson = (r: { id: string; tokens_input: number; tokens_output: number; tokens_cache_read: number; tokens_cache_write: number }) => JSON.stringify([r]);
+  check("cache: rows parser keeps canonical ids and 4-way breakdown", parseSessionTokenRows(rowsJson(row(900, 300, 100, 50))).ses_cache0001.tokens_cache_read === 300);
+  check("cache: rows parser survives garbage", Object.keys(parseSessionTokenRows("not json")).length === 0);
+  const viaRows = await querySessionTokenRows(["ses_cache0001"], "/tmp/fake.db", async () => rowsJson(row(900, 300, 100, 50)));
+  check("cache: rows query maps session → breakdown", viaRows.ses_cache0001.tokens_input === 900 && viaRows.ses_cache0001.tokens_cache_write === 100);
+  const viaTotals = await querySessionTokens(["ses_cache0001"], "/tmp/fake.db", async () => rowsJson(row(900, 300, 100, 50)));
+  check("cache: totals view still sums all four kinds", viaTotals.ses_cache0001 === 1350);
+
+  const store: { taskCosts: Record<string, number>; taskCostSessions: Record<string, string[]>; taskCache?: Record<string, { input: number; cacheRead: number; cacheWrite: number }> } = { taskCosts: {}, taskCostSessions: {} };
+  const fold = await applySessionCosts(store, "P1-077", ["ses_cache0001"], async () => ({ ses_cache0001: row(900, 300, 100, 50) }));
+  check("cache: breakdown folded into taskCache", JSON.stringify(store.taskCache?.["P1-077"]) === JSON.stringify({ input: 900, cacheRead: 300, cacheWrite: 100 }));
+  check("cache: totals path unchanged by the fold", store.taskCosts["P1-077"] === 1350);
+  check("cache: fold returns the log payload with the hit ratio", fold?.input === 900 && fold.cacheRead === 300 && fold.cacheWrite === 100 && fold.ratio === 300 / 1200 && fold.task === "P1-077");
+  // REPLACE-by-recompute: a resumed session grows — re-folding replaces, never accumulates
+  await applySessionCosts(store, "P1-077", ["ses_cache0001"], async () => ({ ses_cache0001: row(1200, 600, 200, 60) }));
+  check("cache: re-fold replaces instead of double counting", store.taskCache?.["P1-077"].cacheRead === 600 && store.taskCosts["P1-077"] === 2060);
+  // failed DB read keeps the previous breakdown honest
+  await applySessionCosts(store, "P1-077", ["ses_gone000001"], async () => ({}));
+  check("cache: failed DB read keeps the previous fold", store.taskCache?.["P1-077"].cacheRead === 600);
+
+  check("cache: ratio helper", cacheHitRatio(300, 900) === 0.25 && cacheHitRatio(0, 0) === 0 && cacheHitRatio(0, 100) === 0);
+
+  // the rolling window prunes taskCache in lockstep with taskCosts
+  const big: { taskCosts: Record<string, number>; taskCostSessions: Record<string, string[]>; taskCache: Record<string, { input: number; cacheRead: number; cacheWrite: number }> } = { taskCosts: {}, taskCostSessions: {}, taskCache: {} };
+  for (let i = 0; i < TASK_COST_CAP + 10; i++) {
+    big.taskCosts[`P9-${i}`] = i;
+    big.taskCostSessions[`P9-${i}`] = [`ses_abc${String(i).padStart(6, "0")}`];
+    big.taskCache[`P9-${i}`] = { input: i, cacheRead: 0, cacheWrite: 0 };
+  }
+  pruneTaskCosts(big);
+  check("cache: rolling window prunes taskCache in lockstep", Object.keys(big.taskCache).length === TASK_COST_CAP && !("P9-0" in big.taskCache) && "P9-209" in big.taskCache);
+
+  // legacy state.json without the field backfills {} instead of crashing
+  const legacyDir = mkdtempSync(join(tmpdir(), "ocr-legacy-state-"));
+  writeFileSync(join(legacyDir, "state.json"), JSON.stringify({ tasks: 1, deploys: 0, failures: 0 }));
+  check("cache: loadState backfills taskCache for legacy files", JSON.stringify(loadState(join(legacyDir, "state.json")).taskCache) === "{}");
+  rmSync(legacyDir, { recursive: true, force: true });
+}
+
 // --- P1-030 pilot doctor: deterministic, idempotent repair pass -----------------
 {
   const REF_SEQ = [
@@ -4411,7 +4503,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     check("doctor attempts: clearing empty state stays zero", clearTaskAttempts(st) === 0);
     const legacy = { date: "", tasks: Number.NaN, deploys: 0, failures: 0, taskAttempts: undefined } as unknown as PilotState;
     const n = normalizePilotState(legacy);
-    check("doctor state: normalizePilotState fills schema defaults", n.merges === 0 && n.tasks === 0 && n.date.length === 10 && JSON.stringify(n.taskAttempts) === "{}" && Array.isArray(n.cycles) && Array.isArray(n.blockEvents) && n.auditMode === null && JSON.stringify(n.taskCosts) === "{}");
+    check("doctor state: normalizePilotState fills schema defaults", n.merges === 0 && n.tasks === 0 && n.date.length === 10 && JSON.stringify(n.taskAttempts) === "{}" && Array.isArray(n.cycles) && Array.isArray(n.blockEvents) && n.auditMode === null && JSON.stringify(n.taskCosts) === "{}" && JSON.stringify(n.taskCache) === "{}");
   }
 
   {

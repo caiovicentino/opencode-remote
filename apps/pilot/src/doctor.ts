@@ -256,6 +256,7 @@ export function normalizePilotState(s: PilotState): PilotState {
     auditMode: s.auditMode ?? null,
     taskCosts: s.taskCosts && typeof s.taskCosts === "object" ? s.taskCosts : {},
     taskCostSessions: s.taskCostSessions && typeof s.taskCostSessions === "object" ? s.taskCostSessions : {},
+    taskCache: s.taskCache && typeof s.taskCache === "object" ? s.taskCache : {},
   };
 }
 

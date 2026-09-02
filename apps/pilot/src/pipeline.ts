@@ -58,14 +58,15 @@ export function plannerPrompt(t: Task, attempt: number, lessons: string[] = [], 
   const milestones = t.size === "L"
     ? "\n- Long-horizon task (P1-060): this task is size L. The ## Approach must be a numbered list of milestones M1..Mn, each with its own acceptance criterion — the builder executes them in order, 1+ per round across several reviewed rounds.\n"
     : "";
+  // P1-077 cache-aware assembly: the STABLE prefix (role, section template,
+  // rules, CONSTITUTION) is byte-identical across tasks and requests so the
+  // provider prefix-caches it; the VARIABLE tail (task, retry, milestones,
+  // lessons, failure lessons) always comes last.
   return `You are the PLANNER agent of the opencode-remote autonomous pipeline (READ-ONLY).
-The task below is high priority; before any builder touches it, you must produce its build spec.
+The task at the end of this prompt is high priority; before any builder touches it, you must produce its build spec.
 
-TASK (${t.id}) [${t.priority}]: ${t.title}
-spec: ${t.spec || "(no extra spec — use judgement, keep the change small and shippable)"}
-${retry}
 Read the relevant code in this repository and write the build spec to the file
-specs/${t.id}.md (create the specs/ directory if needed) with EXACTLY these markdown sections:
+specs/<TASK-ID>.md (create the specs/ directory if needed) with EXACTLY these markdown sections:
 ## Problem
 ## Approach
 ## Touched files
@@ -75,11 +76,14 @@ specs/${t.id}.md (create the specs/ directory if needed) with EXACTLY these mark
 
 Rules:
 - ${CONSTITUTION}
-- READ-ONLY except for specs/${t.id}.md: do NOT modify, create or delete any other file, do NOT commit.
+- READ-ONLY except for specs/<TASK-ID>.md: do NOT modify, create or delete any other file, do NOT commit.
 - Keep the spec short and concrete (<= ~120 lines) — the builder is another agent that will follow it.
 - Acceptance criteria must be testable: commands to run, observable behaviors, numbers when applicable.
-- Touched files must cite real repo paths you actually inspected.${milestones}
-${lessonsBlock(lessons)}${failureBlock}
+- Touched files must cite real repo paths you actually inspected.
+
+TASK (${t.id}) [${t.priority}]: ${t.title}
+spec: ${t.spec || "(no extra spec — use judgement, keep the change small and shippable)"}
+The spec file to write is specs/${t.id}.md on this branch.${retry}${milestones}${lessonsBlock(lessons)}${failureBlock}
 When finished, your LAST line of output must be exactly: PLANNER:DONE`;
 }
 
@@ -313,24 +317,28 @@ export function builderPrompt(
   const attemptBlock = attempt > 1
     ? `\nATTEMPT ${attempt} (P1-060): the branch pilot/${t.id} already exists with committed work from previous attempts and was PRESERVED for you. Continue from the existing history (git log, \`git diff main...pilot/${t.id}\`) — do NOT restart from scratch and do NOT undo already-committed work.\n`
     : "";
-  return `You are the BUILDER agent of the opencode-remote autonomous pipeline (round ${round}).
+  const roundBlock = round > 1
+    ? `\nRounds 1..${round - 1} already committed work on this branch. Inspect it first with \`git diff main...pilot/${t.id}\` and fix the findings INCREMENTALLY — do not restart from scratch or re-read files you already understand.`
+    : "";
+  const uiBullet = uiTask
+    ? `\n- UI self-driving (P2-011): this task changes the UI. Validate your own output visually before finishing: build the app, then use the host browser CLI — \`node tools/browse.mjs open <url> ~/.opencode-remote/pilot/shots/builder/${t.id}-r${round}.png\` — and inspect the PNG. Produce TWO sized screenshots with the browse CLI — \`node tools/browse.mjs shot <path>.png 1440 900\` (desktop) and \`node tools/browse.mjs shot <path>.png 390 844\` (phone), positional width/height — and cite both paths in the EVIDENCE block below; PNG dimensions are verified at the gate (1440x900 exactly, 2x Retina accepted; width 390). This is YOUR pre-merge self-check; post-deploy evidence is captured separately by the pipeline.`
+    : "";
+  // P1-077 cache-aware assembly: the STABLE prefix (role, rules, CONSTITUTION,
+  // EVIDENCE contract — generic <TASK-ID> placeholder, no round) is
+  // byte-identical across tasks and rounds within the uiTask variant so the
+  // provider prefix-caches it; the VARIABLE tail (task text, round, spec/
+  // attempt/resume blocks, findings, lessons, UI bullet) always comes after
+  // the last stable line.
+  return `You are the BUILDER agent of the opencode-remote autonomous pipeline.
 Work inside this repository (your cwd is a dedicated clone; production runs elsewhere).
 
-TASK (${t.id}) [${t.priority}]: ${t.title}
-spec: ${t.spec || "(no extra spec — use judgement, keep the change small and shippable)"}
-${specBlock}${longBlock}${attemptBlock}${resumeBlock(resume, round - 1)}${findings ? `\nREVIEWER FINDINGS TO ADDRESS:\n${findings}\n` : ""}${lessonsBlock(lessons)}
 Rules:
 - ${CONSTITUTION}
-- Create/keep working on branch pilot/${t.id}. Commit your work with a conventional message "pilot(${t.id}): ...".
+- Create/keep working on branch pilot/<TASK-ID>. Commit your work with a conventional message "pilot(<TASK-ID>): ...".
 - Run "npm run typecheck" and "npm run build" and fix any errors before committing.
 - Document user-visible changes in the relevant docs (README.md / AGENTS.md / docs/).
 - Do NOT push, do NOT touch production services, do NOT modify BACKLOG.md.
 - Keep the diff focused: one task, no drive-by refactors.
-${round > 1 ? `- Rounds 1..${round - 1} already committed work on this branch. Inspect it first with \`git diff main...pilot/${t.id}\` and fix the findings INCREMENTALLY — do not restart from scratch or re-read files you already understand.` : ""}${
-    uiTask
-      ? `\n- UI self-driving (P2-011): this task changes the UI. Validate your own output visually before finishing: build the app, then use the host browser CLI — \`node tools/browse.mjs open <url> ~/.opencode-remote/pilot/shots/builder/${t.id}-r${round}.png\` — and inspect the PNG. Produce TWO sized screenshots with the browse CLI — \`node tools/browse.mjs shot <path>.png 1440 900\` (desktop) and \`node tools/browse.mjs shot <path>.png 390 844\` (phone), positional width/height — and cite both paths in the EVIDENCE block below; PNG dimensions are verified at the gate (1440x900 exactly, 2x Retina accepted; width 390). This is YOUR pre-merge self-check; post-deploy evidence is captured separately by the pipeline.`
-      : ""
-  }
 
 MANDATORY EVIDENCE (P2-009): when finished, end your output with exactly this EVIDENCE
 block — the deterministic gatekeeper parses it, re-executes every cited command and
@@ -354,6 +362,10 @@ $ npm run test:unit --silent
       : `\n(if this round's diff touches apps/web/ or apps/desktop/, also cite:\nshot-1440x900: <absolute path of a real 1440x900 PNG screenshot>\nshot-390: <absolute path of a real 390px-wide PNG screenshot>)`
   }
 
+TASK (${t.id}) [${t.priority}]: ${t.title}
+spec: ${t.spec || "(no extra spec — use judgement, keep the change small and shippable)"}
+This is builder round ${round} of this task.${specBlock}${longBlock}${attemptBlock}${resumeBlock(resume, round - 1)}${findings ? `\nREVIEWER FINDINGS TO ADDRESS:\n${findings}\n` : ""}${lessonsBlock(lessons)}${roundBlock}${uiBullet}
+
 Your LAST line of output must be exactly: PILOT:TASK-DONE`;
 }
 
@@ -363,29 +375,32 @@ Your LAST line of output must be exactly: PILOT:TASK-DONE`;
  * to docs/EXPERIENCE.md and commits, so an LLM never edits the file directly.
  */
 export function scribePrompt(t: Task, diff: string, findings: string): string {
+  // P1-077 cache-aware assembly: stable role + rules + LESSONS contract first
+  // (the format line uses a generic <TASK-ID> placeholder), variable task/
+  // findings tail and the DIFF last.
   return `You are the SCRIBE agent of the opencode-remote autonomous pipeline.
-The task below was just merged after passing adversarial reviews and the deterministic gatekeeper.
+The task at the end of this prompt was just merged after passing adversarial reviews and the deterministic gatekeeper.
 Your job: distill reusable engineering lessons for future agents.
 
-TASK (${t.id}) [${t.priority}]: ${t.title}
-spec: ${t.spec || "(none)"}
-${findings ? `\nREVIEWER FINDINGS (already addressed by the merge):\n${findings}\n` : ""}
 Rules:
 - Read the diff below (and the repo if needed). Do NOT modify any files.
 - Output 1 to 3 lessons: concrete, generalizable rules a future agent must
   follow when touching similar code (gotchas, root causes, invariants). Skip the obvious.
 - One lesson per line, EXACTLY this format (plain text, no markdown headings or code blocks):
-  - When <situation>, do <action> (fonte: ${t.id})
+  - When <situation>, do <action> (fonte: <TASK-ID>)
 
 Your LAST lines must be exactly:
 LESSONS:
 <lesson lines>
 SCRIBE:DONE
 
+TASK (${t.id}) [${t.priority}]: ${t.title}
+spec: ${t.spec || "(none)"}
+${findings ? `\nREVIEWER FINDINGS (already addressed by the merge):\n${findings}\n` : ""}
 DIFF:
 \`\`\`diff
 ${diff.slice(0, 30_000)}
-\`\`\``;
+\`\``;
 }
 
 /** Parse the lesson lines between the LESSONS: marker and SCRIBE:DONE (max 3). */
@@ -480,11 +495,23 @@ export function reviewerPrompt(
   specFile: string | null = null,
   incrementalFrom: string | null = null,
 ): string {
+  const incrementalNote = incrementalFrom
+    ? `- INCREMENTAL REVIEW (P1-060): this is a later round of a long-horizon task. Earlier
+  rounds were already reviewed and accepted; judge ONLY the incremental diff below
+  (commits since ${incrementalFrom}), not the whole branch history.`
+    : "";
+  const specNote =
+    (role === "QUALITY" || role === "ESCALATION") && specFile
+      ? `\n- Spec compliance (P2-008): this branch carries a planner spec at "${specFile}" (read it in the workspace). Answer explicitly in your review: does the diff fulfill ${specFile}? A deviation from its approach, touched-files list or acceptance criteria is a finding unless the diff justifies it.`
+      : "";
+  const uiShotNote = uiShot
+    ? `\n- UI evidence (P2-011): the most recent available screenshot for this task is "${uiShot}". It may predate this diff (captured after an earlier deploy) — treat it as a regression baseline, not proof of this diff. Read it (it is an image), say what it shows, and state explicitly whether the diff could plausibly regress it. You can take a fresh screenshot of your local build: \`node tools/browse.mjs shot <path>.png\`.`
+    : "";
+  // P1-077 cache-aware assembly: stable role line, rules, CONSTITUTION and the
+  // verdict contract first (byte-identical across tasks within a role); the
+  // variable tail (task, focus, conditional notes) and the DIFF come last.
   return `You are the ${role} REVIEWER agent of the opencode-remote autonomous pipeline.
-A builder implemented TASK (${t.id}): ${t.title}
-spec: ${t.spec || "(none)"}
-
-Review the following diff with this focus: ${focus}
+A builder implemented the task described at the end of this prompt.
 
 Rules:
 - ${CONSTITUTION}
@@ -499,29 +526,18 @@ Rules:
 - P2-038: the verdict is the LAST \`VERDICT:\` marker in your output, and an APPROVE
   followed by verified findings is processed as a rejection — if you have findings,
   verdict REQUEST_CHANGES; APPROVE only with an empty findings list.
-${
-  incrementalFrom
-    ? `- INCREMENTAL REVIEW (P1-060): this is a later round of a long-horizon task. Earlier
-  rounds were already reviewed and accepted; judge ONLY the incremental diff below
-  (commits since ${incrementalFrom}), not the whole branch history.`
-    : ""
-}
-${
-  (role === "QUALITY" || role === "ESCALATION") && specFile
-    ? `- Spec compliance (P2-008): this branch carries a planner spec at "${specFile}" (read it in the workspace). Answer explicitly in your review: does the diff fulfill ${specFile}? A deviation from its approach, touched-files list or acceptance criteria is a finding unless the diff justifies it.`
-    : ""
-}
-${
-  uiShot
-    ? `- UI evidence (P2-011): the most recent available screenshot for this task is "${uiShot}". It may predate this diff (captured after an earlier deploy) — treat it as a regression baseline, not proof of this diff. Read it (it is an image), say what it shows, and state explicitly whether the diff could plausibly regress it. You can take a fresh screenshot of your local build: \`node tools/browse.mjs shot <path>.png\`.`
-    : ""
-}
 
 Your LAST lines must be exactly one of:
 VERDICT: APPROVE
 or
 VERDICT: REQUEST_CHANGES
 followed by a bullet list of findings.
+
+TASK (${t.id}) [${t.priority}]: ${t.title}
+spec: ${t.spec || "(none)"}
+
+Review the following diff with this focus: ${focus}
+${incrementalNote}${specNote}${uiShotNote}
 
 DIFF:
 \`\`\`diff

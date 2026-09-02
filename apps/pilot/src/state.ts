@@ -168,6 +168,12 @@ export interface PilotState {
   /** P2-028: task id → session ids already reflected in taskCosts (dedupes the
    * recompute; a resumed builder session keeps the same id across rounds). */
   taskCostSessions?: Record<string, string[]>;
+  /** P1-077: task id → provider prefix-cache token breakdown across the task's
+   * agent sessions (input = non-cached input, cacheRead = provider cache hits,
+   * cacheWrite = tokens written to the provider cache). Folded by the same
+   * REPLACE-by-recompute reconciliation as taskCosts; hit ratio is
+   * cacheRead/(cacheRead+input). Lifetime record, pruned with taskCosts. */
+  taskCache?: Record<string, { input: number; cacheRead: number; cacheWrite: number }>;
 }
 
 function normalizeAudit(a: unknown): AuditMode | null {
@@ -202,6 +208,8 @@ export function loadState(file = STATE_FILE): PilotState {
       // rollover must not wipe them
       taskCosts: s.taskCosts && typeof s.taskCosts === "object" ? s.taskCosts : {},
       taskCostSessions: s.taskCostSessions && typeof s.taskCostSessions === "object" ? s.taskCostSessions : {},
+      // P1-077: cache breakdown backfilled for legacy files, never crash
+      taskCache: s.taskCache && typeof s.taskCache === "object" ? s.taskCache : {},
     };
     if (s.date === today) return { ...s, ...shared, merges, infraFails };
     return { date: today, tasks: 0, deploys: 0, failures: 0, merges: 0, infraFails: 0, ...shared };
@@ -219,6 +227,7 @@ export function loadState(file = STATE_FILE): PilotState {
       auditMode: null,
       taskCosts: {},
       taskCostSessions: {},
+      taskCache: {},
     };
   }
 }
