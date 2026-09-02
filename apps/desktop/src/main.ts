@@ -160,6 +160,38 @@ async function onReady(): Promise<void> {
       return null;
     }
   });
+  // P2-048: Mission Control read feed + human takeover. Same trust shape as
+  // app:daemonBrowse above — the apiToken never leaves this process and the
+  // renderer-provided path is URL-parsed and matched against a narrow,
+  // anchored allowlist: pilot forensic reads (GET) and the takeover action
+  // (POST), nothing else.
+  ipcMain.handle("app:daemonApi", async (_e, req: { path?: string; method?: string; body?: unknown }) => {
+    if (!req || typeof req.path !== "string") return null;
+    const method = req.method === "POST" ? "POST" : "GET";
+    const u = new URL(req.path, "http://127.0.0.1");
+    const okPath =
+      method === "GET"
+        ? /^\/api\/pilot-(forensic(\/timeline)?|shot)$/.test(u.pathname)
+        : /^\/api\/pilot-takeover$/.test(u.pathname);
+    if (!okPath) return null;
+    try {
+      const stateFile = join(homedir(), ".opencode-remote", "daemon.json");
+      const token = (JSON.parse(readFileSync(stateFile, "utf8")) as { apiToken?: string }).apiToken;
+      if (!token) return null;
+      const res = await fetch(`http://127.0.0.1:${DAEMON_METRICS_PORT}${u.pathname}${u.search}`, {
+        method,
+        headers: { authorization: `Bearer ${token}` },
+        body: method === "POST" ? JSON.stringify(req.body ?? {}) : undefined,
+        signal: AbortSignal.timeout(45_000),
+      });
+      const raw = await res.arrayBuffer();
+      if (raw.byteLength > 32 * 1024 * 1024) return null;
+      return { status: res.status, contentType: res.headers.get("content-type") ?? "", body: Buffer.from(raw).toString("base64") };
+    } catch (err) {
+      logError("[desktop] daemonApi failed:", err);
+      return null;
+    }
+  });
   // P1-061: local direct mode — the renderer dials the daemon's loopback WS
   // itself (ws://127.0.0.1:<port>/ws?token=…) instead of riding the relay.
   // This deliberately relaxes the "renderer never sees the apiToken" rule:
@@ -582,6 +614,7 @@ function buildMenu(): void {
         { id: "go-pane-browser", label: "Browser", accelerator: "CmdOrCtrl+3", click: () => sendMenuAction("pane:browser") },
         { id: "go-pane-files", label: "Files", accelerator: "CmdOrCtrl+4", click: () => sendMenuAction("pane:files") },
         { id: "go-pane-settings", label: "Settings", accelerator: "CmdOrCtrl+5", click: () => sendMenuAction("pane:settings") },
+        { id: "go-pane-mission", label: "Mission Control", accelerator: "CmdOrCtrl+6", click: () => sendMenuAction("pane:mission") },
       ],
     },
     {

@@ -32,12 +32,14 @@ import FilesView from "./components/FilesView";
 import ArtifactsView from "./components/ArtifactsView";
 import SendToAgentView from "./components/SendToAgentView";
 import BrowserView, { type BrowseFn } from "./components/BrowserView";
+import MissionControlView, { type DaemonApiFn } from "./components/MissionControlView";
 import CommandPalette from "./components/CommandPalette";
 import {
   IconChat,
   IconFolder,
   IconGlobe,
   IconLayers,
+  IconRadar,
   IconSettings,
 } from "./components/icons";
 
@@ -78,6 +80,8 @@ interface DesktopBridge {
   reconnectDaemon?: () => Promise<boolean>;
   /** P1-061: loopback WS credentials for the direct local transport. */
   getLocalLink?: () => Promise<{ port: number; token: string } | null>;
+  /** P2-048: narrow /api/pilot-* bridge for the Mission Control pane. */
+  daemonApi?: DaemonApiFn;
   /** P1-046: Go-menu accelerators (Cmd+T/K/1..5) pushed from the main process. */
   onMenuAction?: (cb: (id: string) => void) => () => void;
 }
@@ -87,8 +91,8 @@ function desktopBridge(): DesktopBridge | null {
   return bridge && typeof bridge.getPairUrl === "function" ? bridge : null;
 }
 
-/** Slot each Cmd+1..5 accelerator (and Go menu item) maps to. */
-const PANE_ACCELERATORS = ["chat", "artifacts", "browser", "files", "settings"] as const;
+/** Slot each Cmd+1..6 accelerator (and Go menu item) maps to. */
+const PANE_ACCELERATORS = ["chat", "artifacts", "browser", "files", "settings", "mission"] as const;
 
 function TabBar({
   active,
@@ -148,6 +152,8 @@ export default function App() {
   // stable handle: the bridge returns a fresh fn each render, which would
   // re-trigger the BrowserView's open-on-mount effect forever
   const [browseFn] = useState<BrowseFn | null>(() => desktopBridge()?.daemonBrowse ?? null);
+  // P2-048: stable Mission Control bridge (fresh fn per render would loop effects)
+  const [daemonApi] = useState<DaemonApiFn | null>(() => desktopBridge()?.daemonApi ?? null);
   const [share, setShare] = useState<{ title?: string; text?: string; url?: string } | null>(null);
   const [tick, setTick] = useState(0);
   const [connStatus, setConnStatus] = useState<Status>("connecting");
@@ -508,7 +514,7 @@ export default function App() {
       } else if (k === "k") {
         e.preventDefault();
         runMenuAction("palette");
-      } else if (k >= "1" && k <= "5") {
+      } else if (k >= "1" && k <= "6") {
         e.preventDefault();
         runMenuAction(`pane:${PANE_ACCELERATORS[Number(k) - 1]}`);
       }
@@ -657,6 +663,7 @@ export default function App() {
   const filesNode = <FilesView request={request} onBack={goBack} />;
   const artifactsNode = <ArtifactsView request={request} onBack={goBack} />;
   const browseNode = <BrowserView browse={browseFn} onBack={goBack} />;
+  const missionNode = <MissionControlView daemonApi={daemonApi} browse={browseFn} onBack={goBack} />;
   const shareNode = share ? (
     <SendToAgentView
       request={request}
@@ -715,15 +722,18 @@ export default function App() {
           ? browseNode
           : top === "files"
             ? filesNode
-            : top === "share" && shareNode
-              ? shareNode
-              : null;
+            : top === "mission"
+              ? missionNode
+              : top === "share" && shareNode
+                ? shareNode
+                : null;
 
   const railButtons: { slot: Slot; label: string; icon: ReactNode }[] = [
     { slot: "chat", label: "Conversas", icon: <IconChat /> },
     { slot: "artifacts", label: "Artifacts", icon: <IconLayers /> },
     { slot: "browser", label: "Browser", icon: <IconGlobe /> },
     { slot: "files", label: "Arquivos", icon: <IconFolder /> },
+    { slot: "mission", label: "Mission Control", icon: <IconRadar /> },
     { slot: "settings", label: "Configurações", icon: <IconSettings /> },
   ];
 
@@ -782,6 +792,7 @@ export default function App() {
             {top === "files" && filesNode}
             {top === "settings" && settingsNode}
             {top === "share" && shareNode}
+            {top === "mission" && missionNode}
           </section>
         </div>
       ) : (

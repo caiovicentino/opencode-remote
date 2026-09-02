@@ -4,10 +4,10 @@
 // opening a pane destroy the open chat. Pure and dependency-free so
 // scripts/unit.test.ts can exercise it directly.
 
-export type Slot = "chat" | "artifacts" | "browser" | "files" | "settings" | "share";
+export type Slot = "chat" | "artifacts" | "browser" | "files" | "settings" | "share" | "mission";
 
 /** Slots rendered in the desktop right-hand pane (everything but the chat). */
-export const PANE_SLOTS: readonly Slot[] = ["artifacts", "browser", "files", "settings", "share"];
+export const PANE_SLOTS: readonly Slot[] = ["artifacts", "browser", "files", "settings", "share", "mission"];
 
 export interface ViewState {
   /** Navigation history, no duplicates; the last entry is the visible slot. */

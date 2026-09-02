@@ -65,6 +65,12 @@ remoto, zero confiança**.
   inclui um **pane Browser** que controla um Chromium headless no host via daemon
   (`/api/browse` — navegar, clicar, extrair texto, screenshot) para agentes validarem
   visualmente o próprio output
+- **Mission Control** — pós-mortem navegável das runs autônomas do pilot no app desktop:
+  um card por tarefa de agente (objetivo, progresso, esforço, ETA) e uma timeline forense
+  lida do `pilot.log`/`events.jsonl` real (decisões, vereditos de reviewers, falhas de gate
+  com tail do output, deploys), shots pós-deploy, shot ao vivo do dashboard e **Assumir**
+  em um clique (Terminal anexado à sessão opencode do agente); também servido via
+  `GET /api/pilot-forensic`
 - **Linguagem de ícones consistente** — todos os ícones de chrome (nav desktop, tab bar,
   header do chat, cards de artifact, dots de status) usam o mesmo conjunto inline-SVG sobre
   tokens CSS; zero emoji-como-ícone, e os tokens `--panel`/`--bg2`/`--fg` agora existem de
@@ -127,8 +133,16 @@ fica aberta na coluna da esquerda enquanto Artifacts, Browser, Arquivos ou
 Configurações abrem num pane contextual à direita (trocar de pane nunca
 destrói o chat), e toda a navegação vive numa única view stack. Atalhos de
 teclado (também no menu **Go**): `Cmd+T` nova conversa, `Cmd+K` command
-palette (busca conversas e ações), `Cmd+1..5` troca para chat / Artifacts /
-Browser / Arquivos / Configurações.
+palette (busca conversas e ações), `Cmd+1..6` troca para chat / Artifacts /
+Browser / Arquivos / Configurações / Mission Control.
+
+O **Mission Control** (Cmd+6) é o pós-mortem navegável das runs autônomas do
+pilot: um card por tarefa de agente (objetivo, progresso, esforço em minuto,
+ETA enquanto roda) lido do `pilot.log`/`events.jsonl` real, mais a timeline
+forense por tarefa — cada decisão do builder, veredito de reviewer, falha de
+gate (com tail do output) e deploy navegáveis, os shots pós-deploy, um shot
+ao vivo do dashboard via a superfície de browse e o botão **Assumir** que
+abre o Terminal anexado à própria sessão opencode do agente (handoff humano).
 
 ```bash
 npm run build --workspace @ocr/web       # gere a UI uma vez

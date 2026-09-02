@@ -33,6 +33,19 @@ import type {
 } from "@ocr/protocol";
 import { log } from "./log.js";
 import { handleBrowse } from "./browse.js";
+import {
+  avgDoneDuration,
+  buildCards,
+  builderLogPath,
+  listShots,
+  progressOf,
+  readForensicIndex,
+  shotsForTask,
+  shotPath,
+  takeoverFromBuilderLog,
+  validateTakeoverDirectory,
+  validateTakeoverSessionId,
+} from "./pilotforensic.js";
 import { detectWhisper, transcribeAudio, type WhisperTool } from "./whisper.js";
 import { metrics, startMetricsServer, VERSION } from "./metrics.js";
 import { loadRoutines, saveRoutines, type Routine } from "./routines.js";
@@ -1908,6 +1921,103 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
           .map((l) => JSON.parse(l) as PilotEvent);
       } catch {}
       send(200, { exists: history.length > 0, days: burnDown(history, 7), phaseAvg: avgPhaseDurations(events) });
+      return true;
+    }
+    // P2-048: Mission Control forensic feed — navigable post-mortem per task.
+    // GET /api/pilot-forensic          → session cards (goal/status/effort/ETA)
+    // GET /api/pilot-forensic/timeline?task=ID → ordered forensic entries + shots
+    if (seg[1] === "pilot-forensic" && req.method === "GET") {
+      if (seg[2] === "timeline") {
+        const task = url.searchParams.get("task") ?? "";
+        if (!/^[P\d][\w.-]{1,24}$/.test(task)) {
+          send(400, { error: "task required" });
+          return true;
+        }
+        const index = readForensicIndex();
+        const entries = index.timelines.get(task) ?? [];
+        const cards = buildCards(index.timelines, index.titles, { avgDoneMs: avgDoneDuration(index.timelines) });
+        const shots = shotsForTask(task, listShots());
+        send(200, {
+          card: cards.find((c) => c.id === task) ?? null,
+          entries,
+          progress: progressOf(entries),
+          shots,
+        });
+        return true;
+      }
+      const index = readForensicIndex();
+      const avgDoneMs = avgDoneDuration(index.timelines);
+      const cards = buildCards(index.timelines, index.titles, { avgDoneMs });
+      const shots = listShots();
+      send(200, {
+        cards: cards.map((c) => ({
+          ...c,
+          progress: progressOf(index.timelines.get(c.id) ?? []),
+          shots: shotsForTask(c.id, shots),
+        })),
+      });
+      return true;
+    }
+    // GET /api/pilot-shot?name=<file>.png — a real post-deploy capture from
+    // pilot/shots. Name is a validated single segment; only .png is served.
+    if (seg[1] === "pilot-shot" && req.method === "GET") {
+      const p = shotPath(url.searchParams.get("name") ?? "");
+      if (!p) {
+        send(400, { error: "bad shot name" });
+        return true;
+      }
+      try {
+        const png = readFileSync(p);
+        res.writeHead(200, { "content-type": "image/png", "cache-control": "no-store" });
+        res.end(png);
+      } catch {
+        send(404, { error: "shot not found" });
+      }
+      return true;
+    }
+    // POST /api/pilot-takeover {task} — human takeover of a pilot agent run:
+    // opens Terminal.app attached to the SAME opencode builder session
+    // (opencode -s <ses_…>) inside the task's workspace clone. Ids are read
+    // from the real builder log; without one, the workspace alone is opened.
+    // Round-2 review: log-derived values are agent-adjacent, so directory and
+    // session id are strictly validated (workspace under pilot/repo-*, char
+    // allowlist, ses_<alnum> id) before touching AppleScript/shell — and the
+    // body parse is guarded, a malformed POST is 400, never a daemon crash.
+    if (seg[1] === "pilot-takeover" && req.method === "POST") {
+      let body: { task?: string };
+      try {
+        body = JSON.parse((await readBody(req)) || "{}") as { task?: string };
+      } catch {
+        send(400, { error: "invalid body" });
+        return true;
+      }
+      const task = body.task ?? "";
+      if (!/^[P\d][\w.-]{1,24}$/.test(task)) {
+        send(400, { error: "task required" });
+        return true;
+      }
+      let directory: string | null = null;
+      let sessionId: string | null = null;
+      try {
+        const lines = readFileSync(builderLogPath(task), "utf8").split("\n").filter(Boolean);
+        const found = takeoverFromBuilderLog(lines.slice(-400));
+        directory = validateTakeoverDirectory(found.directory);
+        sessionId = validateTakeoverSessionId(found.sessionId);
+      } catch {}
+      // validated fallback: a static safe path, never a log value
+      if (!directory) directory = join(homedir(), ".opencode-remote", "pilot");
+      const cmd = sessionId ? `opencode -s ${sessionId}` : "opencode";
+      const script = `tell application "Terminal"
+  activate
+  do script "cd '${directory}' && ${cmd}"
+end tell`;
+      try {
+        await promisify(execFile)("osascript", ["-e", script]);
+        log("info", "pilot takeover — terminal attached", { task, sessionId });
+        send(200, { ok: true, directory, sessionId });
+      } catch (err) {
+        send(500, { error: String(err instanceof Error ? err.message : err) });
+      }
       return true;
     }
     // GET /api/artifacts?session=… — list agent artifacts (P1-010)

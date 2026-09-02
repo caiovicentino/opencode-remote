@@ -270,6 +270,13 @@ A linha da task no BACKLOG.md pode carregar a tag opcional `(size: S|M|L)` (defa
 - Feed bruto: `GET 127.0.0.1:8792/api/pilot-events` (Bearer apiToken) — eventos + contadores + heartbeat
 - Digest a cada pipeline: push no seu telefone (via `POST /api/push` autenticado no daemon)
 - Sucessos, falhas, rollbacks e achados do red team aparecem como notificação.
+- **Pós-mortem navegável (P2-048)**: o pane Mission Control no app desktop
+  (⌘6) renderiza um card por tarefa (objetivo, progresso, esforço, ETA) e a
+  timeline forense por tarefa — decisões do builder, vereditos de reviewer,
+  falhas de gate com tail, deploys e shots pós-deploy — lido do
+  `pilot.log`/`events.jsonl` real via `GET /api/pilot-forensic[(/timeline)?]`;
+  `POST /api/pilot-takeover` abre o Terminal anexado à sessão opencode do
+  builder para handoff humano.
 
 ## Self-healing (3 níveis)
 

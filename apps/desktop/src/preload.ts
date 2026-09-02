@@ -38,6 +38,10 @@ contextBridge.exposeInMainWorld("ocrDesktop", {
   // P2-011: browser pane — proxy GET/POST to the daemon's /api/browse routes.
   daemonBrowse: (req: { path: string; method?: string; body?: unknown }): Promise<DaemonBrowseResponse | null> =>
     ipcRenderer.invoke("app:daemonBrowse", req),
+  // P2-048: Mission Control — narrow /api/pilot-* bridge (forensic reads +
+  // takeover), same response shape as daemonBrowse.
+  daemonApi: (req: { path: string; method?: string; body?: unknown }): Promise<DaemonBrowseResponse | null> =>
+    ipcRenderer.invoke("app:daemonApi", req),
   // P2-007: first-run QR overlay — current snapshot plus change pushes.
   getPairingState: (): Promise<PairingState | null> => ipcRenderer.invoke("app:pairingState"),
   // P1-053: banner button — manual daemon restart (same path as the tray).

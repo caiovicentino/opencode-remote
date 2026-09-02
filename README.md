@@ -64,6 +64,12 @@ private. That is the product: **local power, remote control, zero trust**.
   includes a **Browser pane** that drives a headless Chromium on the host through the daemon
   (`/api/browse` — navigate, click, extract text, screenshot) so agents can visually validate
   their own UI output
+- **Mission Control** — navigable post-mortem of the pilot's autonomous runs in the desktop
+  app: a card per agent task (goal, progress, effort, ETA) and a forensic timeline parsed
+  from the real `pilot.log`/`events.jsonl` (decisions, reviewer verdicts, gate failures with
+  output tails, deploys), post-deploy shots, a live dashboard shot and a one-click
+  **Take over** (Terminal attached to the agent's opencode session); also served
+  programmatically via `GET /api/pilot-forensic`
 - **Consistent icon language** — every chrome icon (desktop nav rail, tab bar, chat header,
   artifact cards, status dots) is the same inline-SVG stroke set on top of CSS design tokens;
   every color literal lives in `apps/web/src/tokens.css` (dark + light theme), and
@@ -138,8 +144,16 @@ open in the left column while Artifacts, Browser, Files or Settings open in a
 contextual pane on the right (switching panes never destroys the chat), and
 the whole navigation lives behind a single view stack. Keyboard shortcuts
 (also in the **Go** menu): `Cmd+T` new conversation, `Cmd+K` command palette
-(search conversations and actions), `Cmd+1..5` switch to chat / Artifacts /
-Browser / Files / Settings.
+(search conversations and actions), `Cmd+1..6` switch to chat / Artifacts /
+Browser / Files / Settings / Mission Control.
+
+**Mission Control** (Cmd+6) is a navigable post-mortem of the pilot's
+autonomous runs: one card per agent task (goal, progress, wall-clock effort,
+ETA while running) parsed from the real `pilot.log`/`events.jsonl`, plus a
+forensic timeline per task — every builder decision, reviewer verdict, gate
+failure (with output tail) and deploy navigable, the post-deploy screenshots,
+a live dashboard shot via the browse surface, and a **Take over** button that
+attaches Terminal to the agent's own opencode session for human handoff.
 
 ```bash
 npm run build --workspace @ocr/web       # build the UI once

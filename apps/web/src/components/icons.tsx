@@ -35,6 +35,18 @@ export function IconChat(p: IconProps) {
   );
 }
 
+/** P2-048: Mission Control pane — radar sweep glyph. */
+export function IconRadar(p: IconProps) {
+  return (
+    <Icon {...p}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 12 7.2 8.6" />
+      <path d="M16.8 4.9a9 9 0 0 1 4.1 5.4" />
+      <circle cx="12" cy="12" r="1" fill="currentColor" stroke="none" />
+    </Icon>
+  );
+}
+
 export function IconLayers(p: IconProps) {
   return (
     <Icon {...p}>
