@@ -175,7 +175,7 @@ import {
 } from "../apps/pilot/src/deployguard";
 import type { PilotConfig } from "../apps/pilot/src/state";
 import { overlayVisible, phonePaired } from "../apps/desktop/src/pairing";
-import { daemonTooltip, loginItemSupported, trayIconSource } from "../apps/desktop/src/tray";
+import { daemonTooltip, loginItemSupported, logsDirPath, openLogsFolder, trayIconSource } from "../apps/desktop/src/tray";
 import { updateMenuLabel } from "../apps/desktop/src/update";
 import { appIdForPlatform, applyAppUserModelId, daemonNotify, NOTIFY_BACK_BODY, NOTIFY_DOWN_BODY, WINDOWS_APP_ID } from "../apps/desktop/src/notify";
 import { DEEP_LINK_QUERY_MAX, deepLinkFromArgv, parseDeepLink } from "../apps/desktop/src/deeplink";
@@ -2758,6 +2758,67 @@ check(
     updateMenuLabel("update-available")?.includes("Update available") === true &&
       updateMenuLabel("update-available")?.includes("restart to install") === true,
   );
+}
+
+// --- desktop tray: open logs folder (P3-016) ------------------------------------
+{
+  // The item must point at the exact folder the file logger (P3-012) writes
+  // to: <userData>/logs. Guard the join so tray and logger never drift apart.
+  check("logs: logsDirPath is <userData>/logs", logsDirPath("/home/u/AppData") === join("/home/u/AppData", "logs"));
+
+  // Path 1 — folder did not exist: mkdir called with recursive:true, then open.
+  {
+    const calls: string[] = [];
+    const opts: { recursive: boolean }[] = [];
+    const ok = await openLogsFolder("/u/logs", {
+      mkdir: (d, o) => {
+        opts.push(o);
+        calls.push(`mkdir ${d}`);
+      },
+      openPath: async (p) => {
+        calls.push(`open ${p}`);
+      },
+    });
+    check("logs: missing dir is created recursively", ok === true && calls.join("|") === "mkdir /u/logs|open /u/logs" && opts[0]?.recursive === true);
+  }
+  // Path 2 — folder already exists: mkdir (idempotent, recursive) still runs
+  // and the folder is opened anyway.
+  {
+    let mkdirs = 0;
+    const opened: string[] = [];
+    const ok = await openLogsFolder("/u/logs", {
+      mkdir: () => {
+        mkdirs++;
+      },
+      openPath: async (p) => {
+        opened.push(p);
+      },
+    });
+    check("logs: existing dir is opened (mkdir idempotent)", ok === true && mkdirs === 1 && opened[0] === "/u/logs");
+  }
+  // Path 3a — fs error (mkdir throws): no open, resolves false, never throws.
+  {
+    let opened = 0;
+    const ok = await openLogsFolder("/u/logs", {
+      mkdir: () => {
+        throw new Error("EROFS: read-only file system");
+      },
+      openPath: async () => {
+        opened++;
+      },
+    });
+    check("logs: mkdir failure is swallowed (log-only)", ok === false && opened === 0);
+  }
+  // Path 3b — openPath rejects: same best-effort contract.
+  {
+    const ok = await openLogsFolder("/u/logs", {
+      mkdir: () => {},
+      openPath: async () => {
+        throw new Error("openPath failed");
+      },
+    });
+    check("logs: openPath failure is swallowed (log-only)", ok === false);
+  }
 }
 
 // --- desktop native daemon notifications (P3-013) -------------------------------
