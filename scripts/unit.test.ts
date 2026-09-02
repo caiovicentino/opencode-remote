@@ -125,6 +125,12 @@ import { dirname, join } from "node:path";
 import { artifactMime, kindFor, listArtifacts, readArtifact, validSegment } from "../apps/daemon/src/artifacts";
 import { browseTarget, clickPoint, validSession, viewportFromParams } from "../apps/daemon/src/browse";
 import { createShutdown, DRAIN_MS, stopAccepting } from "../apps/daemon/src/shutdown";
+import {
+  createShutdown as relayCreateShutdown,
+  stopAccepting as relayStopAccepting,
+  DRAIN_MS as RELAY_DRAIN_MS,
+  type RelayLog,
+} from "../apps/relay/src/shutdown";
 import { touchedUiFromDiff, needsEscalation, parseFindings, verifyFindings, isTaskMergeSha, parseVerdict, reviewerOk } from "../apps/pilot/src/pipeline";
 import { stdlibShadowHits } from "./stdlib-shadow";
 import { latestUiShot, pruneShots } from "../apps/pilot/src/shot";
@@ -2909,6 +2915,144 @@ check(
     keepAlive.destroy();
     client.terminate();
     wss.close();
+  }
+}
+
+// --- P2-023 relay graceful shutdown (SIGTERM/SIGINT) -----------------------------
+{
+  // controllable fake timers: hard-drain timers fire only when flushed
+  type Timer = ReturnType<typeof setTimeout>;
+  const timers: { id: number; fn: () => void; ms: number }[] = [];
+  let nextId = 1;
+  const fakeSetTimeout = (fn: () => void, ms: number): Timer => {
+    const t = { id: nextId++, fn, ms };
+    timers.push(t);
+    return t as unknown as Timer;
+  };
+  const fakeClearTimeout = (timer: Timer) => {
+    const i = timers.indexOf(timer as unknown as { id: number });
+    if (i >= 0) timers.splice(i, 1);
+  };
+  const flushTimers = (upToMs: number) => {
+    const due = timers.filter((t) => t.ms <= upToMs);
+    for (const t of due) {
+      fakeClearTimeout(t);
+      t.fn();
+    }
+  };
+  const logLines: { level: string; msg: string; data?: unknown }[] = [];
+  const fakeLog: RelayLog = (level, msg, data) => logLines.push({ level, msg, data });
+
+  // 1. clean path: stopListeners runs once, final JSONL line with uptime + closed count
+  {
+    let stopCalls = 0;
+    const exits: number[] = [];
+    const { shutdown, isShuttingDown } = relayCreateShutdown({
+      activeConnections: () => 7,
+      uptimeMs: () => 120_000,
+      stopListeners: async () => {
+        stopCalls++;
+      },
+      log: fakeLog,
+      exit: (code) => exits.push(code),
+      setTimeout: fakeSetTimeout,
+      clearTimeout: fakeClearTimeout,
+    });
+    check("relay-shutdown: idle state is not shutting down", isShuttingDown() === false);
+    const p = shutdown("SIGTERM");
+    await new Promise((r) => setTimeout(r, 0)); // let stopListeners run and queue the settle timer
+    check(
+      "relay-shutdown: hard timer queued at DRAIN_MS (plus settle)",
+      timers.length === 2 && timers[0]!.ms === RELAY_DRAIN_MS,
+    );
+    flushTimers(RELAY_DRAIN_MS - 1); // fire the settle timer, keep the hard one queued
+    await p;
+    check("relay-shutdown: stops listeners exactly once", stopCalls === 1);
+    check("relay-shutdown: exits with code 0 after drain", exits.length === 1 && exits[0] === 0);
+    check("relay-shutdown: flag flips while draining", isShuttingDown() === true);
+    check("relay-shutdown: hard timer consumed on clean path", timers.length === 0);
+    const finalLine = logLines.find((l) => l.msg === "relay shut down");
+    const finalData = finalLine?.data as { closedConnections?: number; uptimeS?: number } | undefined;
+    check(
+      "relay-shutdown: final JSONL log carries uptime + closed count",
+      !!finalData && finalData.closedConnections === 7 && finalData.uptimeS === 120,
+    );
+  }
+
+  // 2. idempotent: a second signal exits immediately, no second cleanup pass
+  {
+    let stopCalls = 0;
+    const exits: number[] = [];
+    const { shutdown } = relayCreateShutdown({
+      activeConnections: () => 0,
+      uptimeMs: () => 0,
+      stopListeners: async () => {
+        stopCalls++;
+        await new Promise(() => {}); // drain hangs (e.g. stuck socket)
+      },
+      log: fakeLog,
+      exit: (code) => exits.push(code),
+      setTimeout: fakeSetTimeout,
+      clearTimeout: fakeClearTimeout,
+    });
+    void shutdown("SIGTERM"); // first signal: drain starts and hangs
+    await shutdown("SIGINT"); // second signal: immediate exit
+    check("relay-shutdown: second signal exits immediately (code 0)", exits.length === 1 && exits[0] === 0);
+    check("relay-shutdown: second signal does not re-run cleanup", stopCalls === 1);
+  }
+
+  // 3. drain timer: hanging stopListeners still exits(0) within DRAIN_MS
+  {
+    const exits: number[] = [];
+    const { shutdown } = relayCreateShutdown({
+      activeConnections: () => 0,
+      uptimeMs: () => 0,
+      stopListeners: () => new Promise<void>(() => {}), // never resolves
+      log: fakeLog,
+      exit: (code) => exits.push(code),
+      setTimeout: fakeSetTimeout,
+      clearTimeout: fakeClearTimeout,
+    });
+    void shutdown("SIGTERM");
+    flushTimers(RELAY_DRAIN_MS);
+    check("relay-shutdown: drain timer forces exit(0)", exits.length === 1 && exits[0] === 0);
+  }
+
+  // 4. behavioral: relay-shaped stopAccepting — ws peers get close 1001
+  //    with the documented reason, new connections are refused, and the
+  //    underlying TCP sockets are NOT destroyed before the close frames flush
+  {
+    const httpServer = createServer((_req, res) => res.end("ok"));
+    await new Promise<void>((r) => httpServer.listen(0, "127.0.0.1", r));
+    const port = (httpServer.address() as AddressInfo).port;
+
+    const wss = new WebSocketServer({ server: httpServer, maxPayload: 1_000_000 });
+    const client = new WebSocket(`ws://127.0.0.1:${port}`);
+    await new Promise((r) => client.on("open", r));
+    const serverSock = [...wss.clients][0]!;
+
+    let closeCode: number | null = null;
+    let closeReason = "";
+    client.on("close", (code, reason) => {
+      closeCode = code;
+      closeReason = reason.toString();
+    });
+    relayStopAccepting(httpServer, [serverSock], fakeLog);
+    await new Promise((r) => setTimeout(r, 300)); // let the ws close handshake land
+    check(
+      "relay-shutdown: ws client receives close 1001 'server shutting down'",
+      closeCode === 1001 && closeReason === "server shutting down",
+    );
+    let refused = false;
+    try {
+      await fetch(`http://127.0.0.1:${port}/healthz`);
+    } catch {
+      refused = true;
+    }
+    check("relay-shutdown: server refuses new connections after close()", refused);
+    client.terminate();
+    wss.close();
+    if (httpServer.listening) httpServer.close();
   }
 }
 

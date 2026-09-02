@@ -168,8 +168,8 @@ mergeadas pelo workflow sem intervenção humana.
    em ambos os caminhos. O hash só é (re)gravado após um ci bem-sucedido
    (deploy novo ou rollback), mantendo o invariante "hash persistido == lock
    instalado em disco".
-2. `launchctl kickstart -k` relay e daemon (o daemon derruba-se com shutdown
-   graceful desde P2-020: drain ≤3s, ws close 1001, exit 0)
+2. `launchctl kickstart -k` relay e daemon (ambos derrubam-se com shutdown
+   graceful: drain ≤3s, ws close 1001, exit 0 — daemon P2-020, relay P2-023)
 3. Health: `GET 127.0.0.1:8792/api/health` (Bearer apiToken) até 90s
 4. Soak: checagens a cada 60s por `monitorMin`; 3 falhas seguidas = rollback
    (deploy que toca `apps/pilot/**` dobra a janela, roda `invariants --live`
