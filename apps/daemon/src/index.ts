@@ -729,6 +729,9 @@ end tell`;
       const rows = ((await res.json()) ?? []) as HistoryRowLike[];
       const page = capMessagePage(rows, limit, before);
       metrics.inc("ocr_message_pages_total");
+      // P1-064: observable trail for the paged fetch contract (acceptance: the
+      // client opens a session with exactly one ?limit=50 op)
+      audit("session.historyPage", { sessionId, limit, before: before ?? null });
       return {
         id: req.id,
         status: 200,

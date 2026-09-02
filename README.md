@@ -51,15 +51,18 @@ private. That is the product: **local power, remote control, zero trust**.
 - **Session filters** — chips above the search (All / With badge / No badge)
   narrow the board to sessions with or without an unread badge
 - **Fast session switching (P1-064)** — opening a conversation fetches only
-  the last 50 messages (paged by the daemon with `?limit&before`, sized to
-  stay under the relay's frame limit); older history loads on demand via
+  the last 50 messages (paged by the daemon with `?limit&before`, sized in
+  exact bytes — huge tool outputs are clipped — to stay under the relay's
+  frame limit); older history loads on demand via
   "Load older messages" or by scrolling to the top. The last 3 visited
   conversations stay cached in memory, so switching back repaints instantly
   (a background refetch still refreshes the tail), and a timed-out history
   fetch shows an error with a Retry button instead of an eternal skeleton.
   Sessions titled like the autonomous pilot's tasks (`P3-123 …`) collapse
-  into a "Pilot sessions" group at the end of the board (note: the grouping
-  is by title, so a renamed pilot session shows as a normal one)
+  into a "Pilot sessions" group at the end of the board. The match is by
+  task id anywhere in the title (the heuristic cannot tell agent naming
+  intent from yours), so one of your own conversations that mentions e.g.
+  `P2-049` in its title is grouped as well — rename it to bring it back
 - **Routines** — real cron: daily, specific weekdays, or interval loop
 - **Secure by construction** — passkey (WebAuthn) gate, ECDH P-256 + AES-256-GCM,
   replay protection, device allowlist, audit log, biometric unlock

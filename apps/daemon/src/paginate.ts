@@ -76,18 +76,54 @@ export function sliceMessagePage(
   };
 }
 
+/** exact UTF-8 wire size — the relay frame limit is bytes, not JS chars */
 function pageBytes(rows: HistoryRowLike[]): number {
   try {
-    return JSON.stringify(rows).length;
+    return Buffer.byteLength(JSON.stringify(rows), "utf8");
   } catch {
     return Number.MAX_SAFE_INTEGER; // unserializable row -> shrink the page
   }
 }
 
+// a page is served as one sealed op response, so every row must fit the
+// relay frame even on its own. Oversized fields are degraded gracefully:
+// tool output is shown as the last ~400 chars in the UI anyway, and huge
+// inline data URLs are dropped (the client skips them without crashing).
+const SLIM_OUTPUT_TAIL = 2000;
+const SLIM_TEXT_TAIL = 100_000;
+const SLIM_URL_MAX = 100_000;
+
+function slimRow(row: HistoryRowLike, maxBytes: number): HistoryRowLike | null {
+  let cloned: HistoryRowLike;
+  try {
+    cloned = JSON.parse(JSON.stringify(row)) as HistoryRowLike;
+  } catch {
+    return null; // unserializable row: cannot ship it through the frame
+  }
+  for (const part of cloned.parts ?? []) {
+    const p = part as {
+      type?: string;
+      text?: string;
+      url?: string;
+      state?: { output?: string };
+    };
+    if (typeof p.state?.output === "string" && p.state.output.length > SLIM_OUTPUT_TAIL) {
+      p.state.output = p.state.output.slice(-SLIM_OUTPUT_TAIL);
+    }
+    if (typeof p.url === "string" && p.url.length > SLIM_URL_MAX) p.url = "";
+    if (p.type === "text" && typeof p.text === "string" && p.text.length > SLIM_TEXT_TAIL) {
+      p.text = `…${p.text.slice(-SLIM_TEXT_TAIL)}`;
+    }
+  }
+  return pageBytes([cloned]) <= maxBytes ? cloned : null;
+}
+
 /**
- * Slice then shrink until the serialized page fits the relay frame budget.
- * A single monster row is always kept (limit floors at 1) so the page can
- * never silently drop the newest message.
+ * Slice then shrink until the serialized page fits the relay frame budget
+ * measured in exact UTF-8 bytes (CJK/emoji tool output costs 3-4 bytes per
+ * char). Downsides gracefully per row — truncate tool output, drop huge
+ * inline media, clip giant text — and only a single row that STILL cannot
+ * fit is dropped, because overflowing the frame kills the whole connection.
  */
 export function capMessagePage(
   rows: HistoryRowLike[],
@@ -100,6 +136,13 @@ export function capMessagePage(
   while (page.rows.length > 1 && pageBytes(page.rows) > maxBytes) {
     lim = Math.max(1, Math.floor(lim / 2));
     page = sliceMessagePage(rows, lim, before);
+  }
+  if (page.rows.length === 1 && pageBytes(page.rows) > maxBytes) {
+    const slim = slimRow(page.rows[0]!, maxBytes);
+    if (slim) return { ...page, rows: [slim] };
+    // pathological row (cannot be made to fit): serve the rest of the page.
+    // hasMore=false so the client never loops on an empty page.
+    return { rows: [], hasMore: false, oldest: null, total: page.total };
   }
   return page;
 }

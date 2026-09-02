@@ -739,15 +739,21 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [bubbles, sending, liveText]);
 
+  const lastScrollTop = useRef(0);
   function handleScroll() {
     const el = listRef.current;
     if (!el) return;
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+    const st = el.scrollTop;
+    // upward intent = the reader moved the viewport up themselves; programmatic
+    // scrolls at open (0 -> tail anchor) always move it down
+    const scrollingUp = st < lastScrollTop.current - 1;
+    lastScrollTop.current = st;
+    const nearBottom = el.scrollHeight - st - el.clientHeight < 48;
     if (nearBottom !== atBottomRef.current) {
       atBottomRef.current = nearBottom;
       setAtBottom(nearBottom);
     }
-    pageOlder();
+    pageOlder(scrollingUp);
   }
 
   function jumpToEnd() {
@@ -777,12 +783,16 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
     }
   }, [winStart, bubbles.length]);
 
-  function pageOlder() {
+  function pageOlder(scrollingUp: boolean) {
     const el = listRef.current;
     if (!el) return;
     if (winStart === 0) {
-      // local window exhausted: pull the next page from the daemon
-      if (hasMore) void loadMore();
+      // server paging fires only on genuine upward reading — never on the
+      // initial render, where scrollTop starts at 0 before the tail anchor
+      // (that burst fetched three pages on every session open)
+      if (hasMore && !atBottomRef.current && scrollingUp && el.scrollTop < 40) {
+        void loadMore();
+      }
       return;
     }
     if (el.scrollTop < 40) {
@@ -1497,7 +1507,12 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
           {historyError && (
             <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "8px auto" }}>
               <p style={{ color: "var(--danger)", margin: 0, flex: 1 }}>
-                {humanizeError(historyError, t)}
+                {t("historyRetry")}
+                <span
+                  style={{ display: "block", fontSize: "0.75rem", color: "var(--muted)" }}
+                >
+                  {humanizeError(historyError, t)}
+                </span>
               </p>
               <button
                 style={{ padding: "6px 10px", flexShrink: 0 }}

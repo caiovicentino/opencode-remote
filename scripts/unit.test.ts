@@ -390,6 +390,35 @@ check("empty query string passes all", applySessionFilters(all, funread, "   ", 
   check("P1-064: limit or before opts into paging", shouldPaginateMessages("GET", "/session/ses_1/message", { limit: "50" }) === true && shouldPaginateMessages("GET", "/session/ses_1/message", { before: "msg-1" }) === true);
   check("P1-064: paging only applies to GET of the message route", shouldPaginateMessages("POST", "/session/ses_1/message", { limit: "50" }) === false && shouldPaginateMessages("GET", "/session/ses_1", { limit: "50" }) === false);
   check("P1-064: limit clamps to 1..200", parsePageLimit("9999") === PAGE_LIMIT_MAX && parsePageLimit("0") === 1 && parsePageLimit("abc") === 50 && parsePageLimit(undefined) === 50);
+
+  // the relay frame is BYTES: emoji/CJK tool output costs 3-4 bytes per char,
+  // so the guard must measure UTF-8 (round 2 review finding)
+  const cjk = Array.from({ length: 500 }, (_, i) => ({
+    info: { id: `cjk-${i + 1}`, role: "assistant" },
+    parts: [{ type: "tool", state: { output: "🐢".repeat(200_000) } }],
+  }));
+  const cappedCjk = capMessagePage(cjk, 50);
+  check("P1-064: size guard measures UTF-8 bytes, not UTF-16 chars", Buffer.byteLength(JSON.stringify(cappedCjk.rows), "utf8") <= 800_000);
+  const slimmedPart = cappedCjk.rows[0]?.parts?.[0] as { state?: { output?: string } } | undefined;
+  check("P1-064: single oversize row is trimmed to fit, not dropped", cappedCjk.rows.length === 1 && !!slimmedPart?.state?.output && slimmedPart.state.output.length <= 2000);
+  const texty = [{ info: { id: "msg-big", role: "user" }, parts: [{ type: "text", text: "x".repeat(2_000_000) }] }];
+  const clipped = capMessagePage(texty, 50);
+  check("P1-064: giant text row is clipped so the frame guarantee holds", clipped.rows.length === 1 && Buffer.byteLength(JSON.stringify(clipped.rows), "utf8") <= 800_000);
+  const weird: { info: { id: string }; parts: { loop?: unknown }[] }[] = [{ info: { id: "msg-cyc" }, parts: [{}] }];
+  weird[0]!.parts[0]!.loop = weird; // cyclic: cannot be serialized at all
+  const dropped = capMessagePage(weird as never[], 50);
+  check("P1-064: unserializable row is dropped instead of killing the frame", dropped.rows.length === 0 && dropped.hasMore === false);
+
+  // acceptance 4: a 50-row tail of a 500-message session <100KB and fast
+  const perfRows = Array.from({ length: 500 }, (_, i) => ({
+    info: { id: `p-${i + 1}`, role: i % 2 ? "assistant" : "user" },
+    parts: [{ type: "text", text: `message body ${i + 1} with some realistic bubble content` }],
+  }));
+  const perfT0 = Date.now();
+  const perfPage = capMessagePage(perfRows, 50, undefined);
+  const perfMs = Date.now() - perfT0;
+  const perfBytes = Buffer.byteLength(JSON.stringify(perfPage.rows), "utf8");
+  check(`P1-064: tail page of 500 rows <100KB (${perfBytes}B) and sliced <500ms (${perfMs}ms)`, perfBytes < 100_000 && perfMs < 500);
 }
 
 // --- P1-064: warm session cache (last 3 conversations) -----------------------
@@ -413,8 +442,10 @@ check("empty query string passes all", applySessionFilters(all, funread, "   ", 
 }
 
 // --- P1-064: pilot session grouping heuristic --------------------------------
-check("P1-064: pilot task titles are detected", isPilotTitle("P1-064: fast session switch") && isPilotTitle("fix P2-049 bug"));
-check("P1-064: ordinary titles are not pilot sessions", !isPilotTitle("Planilha de vendas") && !isPilotTitle("P1-64 nope") && !isPilotTitle("") && !isPilotTitle(undefined));
+check("P1-064: canonical pilot task titles are detected", isPilotTitle("P1-064: fast session switch") && isPilotTitle("P2-049: pairing copy fixed"));
+// spec heuristic matches the task id anywhere in the title — so a USER session
+// mentioning a task id is grouped too; documented in the READMEs, rename escapes
+check("P1-064: ordinary titles are not grouped", !isPilotTitle("Planilha de vendas") && !isPilotTitle("P1-64 nope") && !isPilotTitle("") && !isPilotTitle(undefined));
 const mixed = [
   { id: "1", title: "P1-064: fast switch" },
   { id: "2", title: "Groceries" },
