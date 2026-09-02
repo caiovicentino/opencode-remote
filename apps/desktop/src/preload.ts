@@ -26,6 +26,10 @@ export interface PairingState {
   reconnecting?: boolean;
   /** P1-053: failed probes since the loss was detected (banner counter). */
   reconnectAttempts?: number;
+  /** P3-054: shell + live daemon versions and the mismatch verdict. */
+  appVersion?: string | null;
+  daemonVersion?: string | null;
+  versionMismatch?: boolean;
 }
 
 contextBridge.exposeInMainWorld("ocrDesktop", {

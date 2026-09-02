@@ -59,6 +59,10 @@ interface PairingState {
   reconnecting?: boolean;
   /** P1-053: failed reconnect probes since the loss was detected. */
   reconnectAttempts?: number;
+  /** P3-054: shell + live daemon versions and the mismatch verdict (desktop). */
+  appVersion?: string | null;
+  daemonVersion?: string | null;
+  versionMismatch?: boolean;
 }
 
 /** Electron bridge from apps/desktop/src/preload.ts (absent in the browser). */
@@ -576,9 +580,12 @@ export default function App() {
   // P2-017: the shell gave up respawning the daemon sidecar — warn instead of
   // leaving the user with a silently disconnected app. P1-053: an adopted
   // daemon going missing is never terminal — show the active "reconnecting…"
-  // state (yellow) with the attempt counter instead.
+  // state (yellow) with the attempt counter instead. P3-054: a healthy daemon
+  // that is OLDER than the shell (or a different major) gets the non-blocking
+  // mismatch banner — same recovery button, daemon keeps working meanwhile.
   const reconnecting = !!pairingState?.reconnecting;
   const daemonDown = !!pairingState?.daemonDown;
+  const versionMismatch = !!pairingState?.versionMismatch && !!pairingState?.daemonVersion;
   const banner = reconnecting ? (
     <div className="daemon-reconnecting" role="status">
       ⟳ {t("reconnecting", { n: pairingState?.reconnectAttempts ?? 0 })}
@@ -586,6 +593,21 @@ export default function App() {
   ) : daemonDown ? (
     <div className="daemon-down" role="alert">
       ⚠︎ {t("daemonDown")}{" "}
+      {desktopBridge()?.reconnectDaemon && (
+        <button
+          className="daemon-reconnect-btn"
+          onClick={() => void desktopBridge()?.reconnectDaemon?.()}
+        >
+          {t("reconnectNow")}
+        </button>
+      )}
+    </div>
+  ) : versionMismatch ? (
+    <div className="daemon-version-mismatch" role="status">
+      {t("daemonMismatch", {
+        d: pairingState?.daemonVersion ?? "?",
+        a: pairingState?.appVersion ?? "?",
+      })}{" "}
       {desktopBridge()?.reconnectDaemon && (
         <button
           className="daemon-reconnect-btn"

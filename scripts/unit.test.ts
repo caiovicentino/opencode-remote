@@ -191,6 +191,7 @@ import {
 } from "../apps/pilot/src/deployguard";
 import type { PilotConfig } from "../apps/pilot/src/state";
 import { overlayVisible, phonePaired } from "../apps/desktop/src/pairing";
+import { versionMismatch } from "../apps/desktop/src/versions";
 import { daemonTooltip, loginItemSupported, logsDirPath, openLogsFolder, trayIconSource } from "../apps/desktop/src/tray";
 import { updateMenuLabel } from "../apps/desktop/src/update";
 import { appIdForPlatform, applyAppUserModelId, daemonNotify, NOTIFY_BACK_BODY, NOTIFY_DOWN_BODY, WINDOWS_APP_ID } from "../apps/desktop/src/notify";
@@ -2902,6 +2903,28 @@ check(
   check("pairing: overlay hidden once the phone pairs", overlayVisible({ ...state, phonePaired: true }) === false);
   check("pairing: overlay hidden without a QR", overlayVisible({ ...state, qrDataUrl: null }) === false);
   check("pairing: overlay hidden with no state (daemon down)", overlayVisible(null) === false);
+}
+
+// --- desktop daemon/app version mismatch (P3-054) -----------------------------
+{
+  // spec matrix: equal ok, daemon minor ahead ok, older daemon and any major
+  // drift flag. Both directions of the banner text depend on this verdict.
+  check("versions: equal is compatible", versionMismatch("1.2.3", "1.2.3") === false);
+  check("versions: daemon minor ahead is compatible", versionMismatch("1.2.3", "1.3.0") === false);
+  check("versions: daemon patch ahead is compatible", versionMismatch("1.2.3", "1.2.4") === false);
+  check("versions: daemon older minor flags", versionMismatch("1.2.3", "1.1.9") === true);
+  check("versions: daemon older patch flags", versionMismatch("1.2.3", "1.2.2") === true);
+  check("versions: daemon major ahead flags", versionMismatch("1.2.3", "2.0.0") === true);
+  check("versions: daemon major behind flags", versionMismatch("2.0.0", "1.9.9") === true);
+  // -dev suffix tolerance: prerelease of the same core version is compatible.
+  check("versions: -dev suffix tolerated (equal)", versionMismatch("1.2.3-dev", "1.2.3") === false);
+  check("versions: -dev suffix tolerated (reversed)", versionMismatch("1.2.3", "1.2.3-dev") === false);
+  check("versions: -dev does not hide a major drift", versionMismatch("2.0.0-dev", "1.9.9") === true);
+  check("versions: leading v tolerated", versionMismatch("v1.2.3", "1.2.3") === false);
+  // Unknown versions never flag: a false positive nags every healthy user.
+  check("versions: missing daemon version is compatible", versionMismatch("1.2.3", null) === false);
+  check("versions: missing app version is compatible", versionMismatch(null, "1.2.3") === false);
+  check("versions: non-semver daemon is compatible", versionMismatch("1.2.3", "dev-main") === false);
 }
 
 // --- desktop tray: tooltip + login autostart (P3-007) -------------------------
