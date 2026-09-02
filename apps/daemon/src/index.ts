@@ -43,6 +43,8 @@ import {
   shotsForTask,
   shotPath,
   takeoverFromBuilderLog,
+  validateTakeoverDirectory,
+  validateTakeoverSessionId,
 } from "./pilotforensic.js";
 import { detectWhisper, transcribeAudio, type WhisperTool } from "./whisper.js";
 import { metrics, startMetricsServer, VERSION } from "./metrics.js";
@@ -1977,30 +1979,42 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     // opens Terminal.app attached to the SAME opencode builder session
     // (opencode -s <ses_…>) inside the task's workspace clone. Ids are read
     // from the real builder log; without one, the workspace alone is opened.
+    // Round-2 review: log-derived values are agent-adjacent, so directory and
+    // session id are strictly validated (workspace under pilot/repo-*, char
+    // allowlist, ses_<alnum> id) before touching AppleScript/shell — and the
+    // body parse is guarded, a malformed POST is 400, never a daemon crash.
     if (seg[1] === "pilot-takeover" && req.method === "POST") {
-      const body = JSON.parse((await readBody(req)) || "{}") as { task?: string };
+      let body: { task?: string };
+      try {
+        body = JSON.parse((await readBody(req)) || "{}") as { task?: string };
+      } catch {
+        send(400, { error: "invalid body" });
+        return true;
+      }
       const task = body.task ?? "";
       if (!/^[P\d][\w.-]{1,24}$/.test(task)) {
         send(400, { error: "task required" });
         return true;
       }
-      let directory = join(homedir(), ".opencode-remote", "pilot");
-      let sessionId: string | undefined;
+      let directory: string | null = null;
+      let sessionId: string | null = null;
       try {
         const lines = readFileSync(builderLogPath(task), "utf8").split("\n").filter(Boolean);
         const found = takeoverFromBuilderLog(lines.slice(-400));
-        if (found.sessionId) sessionId = found.sessionId;
-        if (found.directory) directory = found.directory;
+        directory = validateTakeoverDirectory(found.directory);
+        sessionId = validateTakeoverSessionId(found.sessionId);
       } catch {}
+      // validated fallback: a static safe path, never a log value
+      if (!directory) directory = join(homedir(), ".opencode-remote", "pilot");
       const cmd = sessionId ? `opencode -s ${sessionId}` : "opencode";
       const script = `tell application "Terminal"
   activate
-  do script "cd ${directory.replace(/"/g, '\\"')} && ${cmd}"
+  do script "cd '${directory}' && ${cmd}"
 end tell`;
       try {
         await promisify(execFile)("osascript", ["-e", script]);
-        log("info", "pilot takeover — terminal attached", { task, sessionId: sessionId ?? null });
-        send(200, { ok: true, directory, sessionId: sessionId ?? null });
+        log("info", "pilot takeover — terminal attached", { task, sessionId });
+        send(200, { ok: true, directory, sessionId });
       } catch (err) {
         send(500, { error: String(err instanceof Error ? err.message : err) });
       }

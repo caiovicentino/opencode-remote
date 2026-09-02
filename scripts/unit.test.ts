@@ -99,7 +99,7 @@ import { createServer } from "node:http";
 import { AddressInfo } from "node:net";
 import { connect as netConnect } from "node:net";
 import WebSocket, { WebSocketServer } from "ws";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -161,6 +161,8 @@ import {
   shotsForTask,
   shotPath,
   takeoverFromBuilderLog,
+  validateTakeoverDirectory,
+  validateTakeoverSessionId,
 } from "../apps/daemon/src/pilotforensic";
 
 let failures = 0;
@@ -2894,6 +2896,25 @@ check(
     return directory === "/ws/repo-2" && sessionId === "ses_abc123def456";
   })(),
 );
+// P2-048 round 2: takeover target validation (hostile log values must die here)
+const HOME = homedir();
+check(
+  "takeover: real workspace clone accepted",
+  validateTakeoverDirectory(`${HOME}/.opencode-remote/pilot/repo-2`, HOME) === `${HOME}/.opencode-remote/pilot/repo-2`,
+);
+check("takeover: shell breakout rejected", validateTakeoverDirectory('foo"; touch /tmp/pwn; echo "', HOME) === null);
+check("takeover: $() command substitution rejected", validateTakeoverDirectory(`${HOME}/.opencode-remote/pilot/repo-2$(id)`, HOME) === null);
+check("takeover: backtick substitution rejected", validateTakeoverDirectory("repo-`id`", HOME) === null);
+check("takeover: AppleScript trailing-backslash breakout rejected", validateTakeoverDirectory(`${HOME}/.opencode-remote/pilot/repo-2\\`, HOME) === null);
+check("takeover: single quote rejected (shell quote escape)", validateTakeoverDirectory(`${HOME}/.opencode-remote/pilot/repo-2'`, HOME) === null);
+check("takeover: path escaping the pilot root rejected", validateTakeoverDirectory(`${HOME}/.opencode-remote/pilot/../evil/repo-1`, HOME) === null);
+check("takeover: path outside pilot root rejected", validateTakeoverDirectory("/tmp/repo-2", HOME) === null);
+check("takeover: non-repo child of pilot root rejected", validateTakeoverDirectory(`${HOME}/.opencode-remote/pilot/checkpoints`, HOME) === null);
+check("takeover: relative path rejected", validateTakeoverDirectory("repo-2", HOME) === null);
+check("takeover: missing value rejected", validateTakeoverDirectory(undefined, HOME) === null);
+check("takeover: session id only ses_<alnum>", validateTakeoverSessionId("ses_abc123def456") === "ses_abc123def456");
+check("takeover: hostile session id rejected", validateTakeoverSessionId('ses_x; rm -rf ~; echo "') === null);
+check("takeover: missing session id rejected", validateTakeoverSessionId(undefined) === null);
 
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);

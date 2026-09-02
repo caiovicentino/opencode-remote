@@ -5,7 +5,7 @@
 // web dashboard (apps/pilot/dashboard) keeps its live-feed role; the desktop
 // Mission Control view consumes these shapes over /api/pilot-forensic.
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { readdirSync, readFileSync } from "node:fs";
 
 export interface RawLogLine {
@@ -411,4 +411,41 @@ export function takeoverFromBuilderLog(
 /** The builder log lives at a fixed path per task. */
 export function builderLogPath(task: string): string {
   return join(PILOT_DIR, `builder-${task}.log`);
+}
+
+/**
+ * P2-048 round 2 (review): the builder log is agent-adjacent output — a
+ * planted `directory=` line must never reach AppleScript or the shell it
+ * feeds (`do script` runs through the user's shell, so `;`, `$()`, backticks
+ * and even a trailing `\` inside the value break out at two layers). The
+ * takeover target must therefore pass BOTH gates:
+ *   1. a strict character allowlist — no quotes, `$`, backticks, `;`, `&`,
+ *      `|`, parentheses or backslashes, so the value is inert as an
+ *      AppleScript literal and inside the single-quoted shell command;
+ *   2. resolve() inside `<home>/.opencode-remote/pilot/repo-<digits>` — the
+ *      only shape a real builder workspace ever has.
+ * Returns the normalized absolute path, or null when anything is off.
+ */
+export function validateTakeoverDirectory(
+  directory: string | undefined,
+  home: string = homedir(),
+): string | null {
+  if (!directory) return null;
+  // relative input would silently anchor to the daemon's cwd — the real log
+  // value is always absolute, anything else is hostile
+  if (!directory.startsWith("/")) return null;
+  if (!/^[A-Za-z0-9 ./_~-]+$/.test(directory)) return null;
+  const root = join(home, ".opencode-remote", "pilot");
+  const abs = resolve(directory);
+  if (abs !== root && !abs.startsWith(root + "/")) return null;
+  if (!/\/repo-\d+$/.test(abs)) return null;
+  return abs;
+}
+
+/**
+ * Session ids ride the same untrusted log; real opencode ids are `ses_` plus
+ * an alphanumeric nanoid — anything else is never passed to the shell.
+ */
+export function validateTakeoverSessionId(sessionId: string | undefined): string | null {
+  return sessionId && /^ses_[A-Za-z0-9]{1,64}$/.test(sessionId) ? sessionId : null;
 }

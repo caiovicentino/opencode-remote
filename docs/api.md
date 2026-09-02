@@ -111,7 +111,7 @@ Navigable post-mortem of the pilot's autonomous runs, parsed from the real
 | GET | `/api/pilot-forensic` | one card per agent task: `{ id, title, status (running/merged/failed), progress, rounds, gateFails, effortMin, etaMs, mergeSha, deploys[], shots[] }` |
 | GET | `/api/pilot-forensic/timeline?task=<ID>` | ordered forensic entries for one task (`phase`, `decision`, `review`, `gate`, `deploy`, `result`, `scribe`) with gate tails |
 | GET | `/api/pilot-shot?name=<file>.png` | a post-deploy capture from `pilot/shots/` (PNG; name strictly validated) |
-| POST | `/api/pilot-takeover` | human takeover: `{ task }` — opens Terminal.app attached to the task's opencode builder session (`opencode -s ses_…`, ids read from the builder log) in its workspace clone |
+| POST | `/api/pilot-takeover` | human takeover: `{ task }` — opens Terminal.app attached to the task's opencode builder session (`opencode -s ses_…`, ids read from the builder log) in its workspace clone. Log-derived values are strictly validated before any shell/AppleScript use: the directory must resolve under `~/.opencode-remote/pilot/repo-<n>` with no shell metacharacters, the session id must be `ses_<alnum>`; anything else falls back to the static pilot dir / plain `opencode` |
 
 `etaMs` is an honest projection (mean duration of finished tasks minus
 elapsed), never a guarantee; `effortMin` is wall-clock agent time. The desktop
