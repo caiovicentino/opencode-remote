@@ -56,7 +56,10 @@ private. That is the product: **local power, remote control, zero trust**.
   `~/.opencode-remote/artifacts/<sessionId>/`; the desktop app gains an
   **Artifacts pane** that lists and renders them in-app (sandboxed html,
   markdown/tables, inline PDF) and chat messages that mention an artifact get
-  an attached card; also listed programmatically via `GET /api/artifacts`
+  an attached card; on viewports ≥ 900 px wide, clicking the card opens the
+  preview in a **side-by-side pane** next to the chat (draggable divider, chat
+  stays visible and navigable — Claude/Codex style), while narrower screens
+  keep the full-screen overlay; also listed programmatically via `GET /api/artifacts`
 - **Desktop shell (early)** — Electron app wrapping the same UI, with tray and native menu;
   includes a **Browser pane** that drives a headless Chromium on the host through the daemon
   (`/api/browse` — navigate, click, extract text, screenshot) so agents can visually validate

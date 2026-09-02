@@ -100,6 +100,7 @@ import { latestUiShot, pruneShots } from "../apps/pilot/src/shot";
 import { parseMarkdown, parseInline } from "../apps/web/src/lib/md";
 import { parseCsv } from "../apps/web/src/lib/csv";
 import { artifactMentions, fmtBytes } from "../apps/web/src/lib/artifacts";
+import { clampSplitPct, isSplitViewport, SPLIT_MIN_PX } from "../apps/web/src/lib/split";
 import { DISK_MIN_FREE_BYTES, diskGuardDetail, freeDiskBytes } from "../apps/pilot/src/disk";
 import { deploy } from "../apps/pilot/src/deploy";
 import type { PilotConfig } from "../apps/pilot/src/state";
@@ -596,6 +597,20 @@ check(
     JSON.stringify([mentionsList[0]]) &&
     artifactMentions("nada aqui", mentionsList).length === 0 &&
     artifactMentions("", mentionsList).length === 0,
+);
+
+// --- side-by-side artifact preview thresholds (P2-062) ------------------------
+check(
+  "split preview: viewport threshold + divider drag clamp",
+  SPLIT_MIN_PX === 900 &&
+    isSplitViewport(900) &&
+    isSplitViewport(1440) &&
+    !isSplitViewport(899) &&
+    !isSplitViewport(390) &&
+    clampSplitPct(0.5) === 0.5 &&
+    clampSplitPct(0.05) === 0.25 &&
+    clampSplitPct(0.99) === 0.75 &&
+    clampSplitPct(Number.NaN) === 0.5,
 );
 
 // --- markdown model for the artifacts pane (P1-010) ---------------------------
