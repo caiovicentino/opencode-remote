@@ -322,8 +322,10 @@ A linha da task no BACKLOG.md pode carregar a tag opcional `(size: S|M|L)` (defa
 2. **Pipeline**: rollback automático de deploy (health + soak + invariants live); diff vazio do builder + task já presente no histórico de merge de `origin/main` (grep ancorado no formato de sujeito `^pilot(<id>):`, com ID validado) → `markDone` no BACKLOG.md e ciclo encerrado com sucesso em vez de falhar para sempre na mesma task
 3. **Serviço**: singleton via pidfile — ao iniciar, o pilot grava `~/.opencode-remote/pilot/pilot.pid`
    e, se a instância anterior ainda estiver viva, a derruba (SIGTERM → 2s → SIGKILL, log
-   `stale pilot instance killed`); o self-reload pós-deploy sai com `process.exit(0)` imediato
-   (log já flushado, sem órfão); heartbeat + watchdog — 30min sem sinal → exit → KeepAlive ressozinho
+   `stale pilot instance killed`); o self-reload pós-deploy (P1-034) dispara sempre que o
+   HEAD mudou no deploy (`prev !== HEAD` pós-reset, em vez do diff `apps/pilot` contra ele
+   mesmo, sempre vazio) — sai com `process.exit(0)` imediato (log já flushado, sem órfão) e
+   o KeepAlive reassume no código novo; heartbeat + watchdog — 30min sem sinal → exit → KeepAlive ressozinho
 
 ## Stop-loss por task (circuit breaker, P1-014)
 

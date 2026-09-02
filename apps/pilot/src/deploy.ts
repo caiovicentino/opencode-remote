@@ -16,6 +16,7 @@ import {
   readQuarantine,
   readVerifiedMerges,
   shaGuardDetail,
+  SHA_RE,
   type QuarantinedSha,
   type VerifiedMerge,
 } from "./deployguard";
@@ -67,6 +68,17 @@ export function soakFailureRateExceeded(window: boolean[], baselineRate: number,
   if (window.length < SOAK_WINDOW) return false;
   const rate = window.filter((h) => !h).length / window.length;
   return rate - baselineRate > tolerance;
+}
+
+/**
+ * P1-034: pure self-reload decision — the brain must never run stale code, so
+ * a successful deploy reloads whenever the HEAD it just produced differs from
+ * the pre-deploy HEAD, regardless of WHICH files changed (the old apps/pilot
+ * diff here compared sha against itself post-reset and was always empty).
+ * Empty or malformed ids → false: a failed probe can never loop restarts.
+ */
+export function shouldSelfReload(prev: string, head: string): boolean {
+  return SHA_RE.test(prev) && SHA_RE.test(head) && prev !== head;
 }
 
 /** P1-044: interval between soak health checks (the soak loop's clock). */
@@ -327,10 +339,16 @@ export async function deploy(
       detail: shotPath ?? "post-deploy screenshot unavailable",
     });
   }
-  // self-update: if this deploy changed pilot code, reload ourselves (KeepAlive restarts)
-  const pilotChanged = exec(`git diff --name-only ${sha} HEAD -- apps/pilot`, { cwd: cfg.repo, allowFail: true });
-  if (String(pilotChanged.output || "").includes("apps/pilot")) {
-    log("warn", "deploy included pilot changes — self-reloading");
+  // self-update (P1-034): reload whenever HEAD moved. `prev` was captured
+  // before any mutation; the post-reset rev-parse gives the full id (an
+  // abbreviated sha would false-positive against SHA_RE-normalized prev).
+  // KeepAlive restarts the monitor on the new code; the pidfile singleton
+  // covers any overlap.
+  const headNow = exec("git rev-parse HEAD", { cwd: cfg.repo, allowFail: true }).output.trim();
+  if (shouldSelfReload(prev, headNow)) {
+    const moved = `HEAD moved ${prev.slice(0, 7)} → ${headNow.slice(0, 7)}`;
+    log("warn", `${moved} — self-reloading`);
+    emitEvent("deploy", { phase: "self-reload", ok: true, detail: moved });
     process.exit(0); // log is flushed synchronously; the pidfile singleton covers any overlap
   }
   return { ok: true, rolledBack: false, detail: `deployed ${sha.slice(0, 7)} (prev ${prev.slice(0, 7)})` };

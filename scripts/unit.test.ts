@@ -125,6 +125,7 @@ import {
   deploy,
   LIVE_INVARIANT_EVERY,
   quarantineWithEscalation,
+  shouldSelfReload,
   soakFailureRateExceeded,
   soakMinutesFor,
   soakWatch,
@@ -1947,6 +1948,24 @@ check("disk guard: statfs probe returns bytes on a real dir", realFree !== null 
     "deploy guard: quarantined sha refused before any git step",
     banned.ok === false && banned.rolledBack === false && banned.detail.startsWith("sha quarantined"),
   );
+}
+
+// --- P1-034: self-reload whenever HEAD moved (stale-brain incident) ----------
+{
+  const A = "a".padEnd(40, "1");
+  const B = "b".padEnd(40, "2");
+  // the function receives no diff at all: a distinct id pair reloads even when
+  // the apps/pilot diff would be empty — the stale-incident root cause
+  check("P1-034: HEAD moved → reload", shouldSelfReload(A, B) === true);
+  check("P1-034: same sha → no reload", shouldSelfReload(A, A) === false);
+  check(
+    "P1-034: invalid ids → no reload",
+    shouldSelfReload("", B) === false && shouldSelfReload("nope", B) === false && shouldSelfReload(A, "") === false,
+  );
+  // regression pin: the broken sha-vs-HEAD diff that always came back empty
+  // must stay out of deploy.ts
+  const deploySrc = readFileSync(join(import.meta.dirname, "..", "apps", "pilot", "src", "deploy.ts"), "utf8");
+  check("P1-034: sha-vs-HEAD self-reload diff removed", !deploySrc.includes("git diff --name-only ${sha} HEAD"));
 }
 
 // --- P2-058 round 2: quarantine-write escalation + merge-identity validation --
