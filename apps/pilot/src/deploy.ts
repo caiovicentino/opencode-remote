@@ -26,6 +26,49 @@ export interface DeployResult {
   detail: string;
 }
 
+// ── P1-044 autocatalysis lane: reinforced deploy for apps/pilot/** merges �───
+
+/**
+ * P1-044 (b): the soak window for a deploy that changes the pilot's own code
+ * doubles (min 20min) — the brain that monitors itself gets a longer watch.
+ * Pure so the eval battery can pin the lane budgets.
+ */
+export function soakMinutesFor(monitorMin: number, pilotInfra: boolean): number {
+  if (!pilotInfra) return monitorMin;
+  return Math.max(monitorMin * 2, 20);
+}
+
+/** P1-044 (c): sliding health window compared against the pre-deploy baseline. */
+export const SOAK_WINDOW = 5;
+/** P1-044 (b): an extra `invariants --live` run every Nth soak check (≈5min). */
+export const LIVE_INVARIANT_EVERY = 5;
+/** P1-044 (c): health probes sampled before the deploy mutation. */
+export const BASELINE_SAMPLES = 3;
+/** P1-044 (c): a window failure rate more than this above the baseline rolls back. */
+export const SOAK_RATE_TOLERANCE = 0.2;
+
+/**
+ * P1-044 (c): failure rate (0..1) of the pre-deploy health probes.
+ * Empty sample set → 0 (no evidence of pre-existing failure).
+ */
+export function baselineFailureRate(samples: boolean[]): number {
+  if (!samples.length) return 0;
+  return samples.filter((h) => !h).length / samples.length;
+}
+
+/**
+ * P1-044 (c): pure rollback decision — true when the soak's sliding health
+ * window is full AND its failure rate exceeds the pre-deploy baseline by more
+ * than SOAK_RATE_TOLERANCE. Catches intermittent degradation that the
+ * 3-consecutive-failures rule never sees (e.g. 2 failures per 5 checks against
+ * a clean baseline). Only a full window counts, so early noise cannot trip it.
+ */
+export function soakFailureRateExceeded(window: boolean[], baselineRate: number, tolerance = SOAK_RATE_TOLERANCE): boolean {
+  if (window.length < SOAK_WINDOW) return false;
+  const rate = window.filter((h) => !h).length / window.length;
+  return rate - baselineRate > tolerance;
+}
+
 /**
  * P3-006: injectable disk-guard dependencies — tests mock the free-space probe,
  * the threshold, the event stream and the supervisor notify to pin the
@@ -41,6 +84,11 @@ export interface DeployOpts {
   /** P2-058: pre-loaded guard lists; absent = read the default pilot state files. */
   verifiedMerges?: VerifiedMerge[];
   quarantine?: QuarantinedSha[];
+  /** P1-044: force the autocatalysis lane on/off (tests); absent = detect from
+   * the prev..sha diff against apps/pilot. */
+  pilotInfra?: boolean;
+  /** P1-044: injectable health probe for the pre-deploy baseline (tests). */
+  probeHealth?: () => Promise<boolean>;
 }
 
 /**
@@ -54,6 +102,10 @@ export interface DeployOpts {
  * P2-058: refuses any SHA the gatekeeper did not record as a verified merge
  * (direct pushes to main never deploy) and quarantines a SHA whose deploy
  * fails, so the pending-deploy self-heal cannot re-run the same broken brain.
+ * P1-044: when the sha range changes apps/pilot/** (autocatalysis lane, or
+ * `opts.pilotInfra` forced by tests), the soak doubles with extra live
+ * invariant runs and a failure-rate regression against the pre-deploy
+ * baseline rolls back automatically.
  */
 export async function deploy(
   cfg: PilotConfig,
@@ -86,6 +138,29 @@ export async function deploy(
     return { ok: false, rolledBack: false, detail: guard };
   }
   const prev = exec("git rev-parse HEAD", { cwd: cfg.repo }).output.trim();
+  // P1-044: the lane applies when this deploy changes the pilot's own code —
+  // detected from the real sha range (covers the pending-deploy self-heal too);
+  // both shas are validated object ids (prev from rev-parse, sha by shaGuard).
+  const pilotInfra =
+    opts?.pilotInfra ??
+    (exec(`git diff --name-only ${prev} ${sha} -- apps/pilot`, { cwd: cfg.repo, allowFail: true }).output.trim().length > 0);
+  // P1-044 (c): pre-deploy health baseline, sampled before any mutation — the
+  // window comparison during soak needs the old deployment's own failure rate.
+  let baselineRate = 0;
+  if (pilotInfra) {
+    const probeHealth = opts?.probeHealth ?? (() => isHealthy(cfg));
+    const samples: boolean[] = [];
+    for (let i = 0; i < BASELINE_SAMPLES; i++) {
+      samples.push(await probeHealth());
+      if (i < BASELINE_SAMPLES - 1) await sleep(1_000);
+    }
+    baselineRate = baselineFailureRate(samples);
+    emitEvent("deploy", {
+      phase: "baseline",
+      ok: true,
+      detail: `${samples.filter((h) => !h).length}/${BASELINE_SAMPLES} failing (autocatalysis lane)`,
+    });
+  }
   try {
     const prevLock = exec("git show HEAD:package-lock.json | shasum -a 256 | cut -d' ' -f1", { cwd: cfg.repo }).output.trim();
     exec(`git fetch origin`, { cwd: cfg.repo });
@@ -121,15 +196,21 @@ export async function deploy(
   }
 
   // soak: keep watching for the monitor window; 3 consecutive failures = rollback
+  // P1-044: autocatalysis lane — doubled window, extra live invariant runs and
+  // a failure-rate rollback against the pre-deploy baseline.
   const soakEverySec = 60;
-  const checks = Math.floor((cfg.monitorMin * 60) / soakEverySec);
+  const soakMin = soakMinutesFor(cfg.monitorMin, pilotInfra);
+  const checks = Math.floor((soakMin * 60) / soakEverySec);
   let fails = 0;
+  const window: boolean[] = [];
   for (let i = 0; i < checks; i++) {
     await sleep(soakEverySec * 1000);
     touchHeartbeat();
     const healthyNow = await isHealthy(cfg);
     console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "soak", data: { check: i + 1, of: checks, healthy: healthyNow } }));
     emit("deploy", { phase: `soak ${i + 1}/${checks}`, ok: healthyNow });
+    window.push(healthyNow);
+    if (window.length > SOAK_WINDOW) window.shift();
     if (!healthyNow) {
       fails++;
       if (fails >= 3) {
@@ -138,6 +219,20 @@ export async function deploy(
         return { ok: false, rolledBack: true, detail: "soak failed" };
       }
     } else fails = 0;
+    if (pilotInfra && (i + 1) % LIVE_INVARIANT_EVERY === 0) {
+      const live = exec("npx tsx scripts/invariants.ts --live", { cwd: cfg.repo, timeoutMin: 5, allowFail: true });
+      emit("deploy", { phase: `live-invariants ${i + 1}/${checks}`, ok: live.ok });
+      if (!live.ok) {
+        emit("deploy", { phase: "rollback", ok: false, detail: "live invariants failed during soak" });
+        await banAndRollback(cfg, sha, prev, `live invariants failed during soak (check ${i + 1}): ${live.output.slice(-200)}`, meta?.task ?? "deploy", opts?.notify ?? notifySupervisor);
+        return { ok: false, rolledBack: true, detail: "live invariants failed during soak" };
+      }
+    }
+    if (pilotInfra && soakFailureRateExceeded(window, baselineRate)) {
+      emit("deploy", { phase: "rollback", ok: false, detail: "soak failure rate above pre-deploy baseline" });
+      await banAndRollback(cfg, sha, prev, `soak failure rate ${window.filter((h) => !h).length}/${window.length} above baseline ${baselineRate.toFixed(2)}`, meta?.task ?? "deploy", opts?.notify ?? notifySupervisor);
+      return { ok: false, rolledBack: true, detail: "soak failure rate regression" };
+    }
   }
   emit("deploy", { phase: "done", ok: true, detail: `sha ${sha.slice(0, 7)} live` });
   // P2-011: UI-changing cycles leave visual evidence in the review log — a

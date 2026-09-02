@@ -18,7 +18,9 @@ import {
   builderPrompt,
   codeChanges,
   budgetsFor,
+  corpusGateDetail,
   isOverCap,
+  MIN_CORPUS_SAMPLES,
   preserveBranch,
   recoverSpecFromBranch,
   branchHasCommits,
@@ -37,6 +39,7 @@ import {
   resumeBlock,
   RESUME_MAX_TASK_IDS,
   specPathFor,
+  touchedPilotInfraFromDiff,
   updateResumeState,
   parseScribeLessons,
   validateSpec,
@@ -115,7 +118,17 @@ import { parseCsv } from "../apps/web/src/lib/csv";
 import { artifactMentions, fmtBytes } from "../apps/web/src/lib/artifacts";
 import { clampSplitPct, isSplitViewport, SPLIT_MIN_PX } from "../apps/web/src/lib/split";
 import { DISK_MIN_FREE_BYTES, diskGuardDetail, freeDiskBytes } from "../apps/pilot/src/disk";
-import { deploy, quarantineWithEscalation } from "../apps/pilot/src/deploy";
+import {
+  BASELINE_SAMPLES,
+  baselineFailureRate,
+  deploy,
+  LIVE_INVARIANT_EVERY,
+  quarantineWithEscalation,
+  soakFailureRateExceeded,
+  soakMinutesFor,
+  SOAK_RATE_TOLERANCE,
+  SOAK_WINDOW,
+} from "../apps/pilot/src/deploy";
 import {
   MAX_QUARANTINE_ENTRIES,
   MAX_VERIFIED_ENTRIES,
@@ -979,6 +992,19 @@ check("touchedUi: lookalike apps/webs rejected", !touchedUiFromDiff("apps/webs/s
   check("preserveBranch: later attempt keeps an existing branch", preserveBranch(2, true) === true);
   check("preserveBranch: missing branch falls back to fresh", preserveBranch(2, false) === false);
 
+  // P1-044 autocatalysis lane: pilot-infra detection from a name-only diff
+  check(
+    "pilotInfra: any diff line under apps/pilot/ marks the lane",
+    touchedPilotInfraFromDiff("apps/pilot/src/deploy.ts\napps/web/src/x.ts") === true &&
+      touchedPilotInfraFromDiff("apps/pilot/") === true,
+  );
+  check(
+    "pilotInfra: lookalike paths and UI-only diffs are not the lane",
+    touchedPilotInfraFromDiff("apps/web/src/pilot-helper.ts\napps/desktop/x.ts") === false &&
+      touchedPilotInfraFromDiff("") === false,
+  );
+  check("pilotInfra: corpus gate demands >=3 samples per command", MIN_CORPUS_SAMPLES === 3);
+
   const L_TASK: Task = { id: "P1-060", priority: "P1", title: "Long horizon", spec: "", area: "infra", line: "", size: "L" };
   const S_TASK: Task = { ...L_TASK, size: "S" };
   check("planner: L task demands numbered milestones in the spec", plannerPrompt(L_TASK, 1).includes("milestones M1..Mn"));
@@ -1259,6 +1285,42 @@ check("stdlibShadow: non-stdlib root file passes", stdlibShadowHits("A\tmain.py\
       check(
         "corpus: hostile task id neutralized in the commit message",
         hFiles.length === 1 && subjects.includes("pilot(corpus): 1 gate sample(s) from unknown-task") && !subjects.includes("rm -rf"),
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  // --- P1-044 (a): golden-corpus gate for pilot-infra tasks -------------------
+  {
+    check("corpus gate: the shipped corpus is green", corpusGateDetail() === null);
+    const dir = mkdtempSync(join(tmpdir(), "p1-044-corpus-"));
+    try {
+      check("corpus gate: empty corpus fails closed", corpusGateDetail(dir)?.startsWith("golden corpus too thin") === true);
+      appendCorpusSample(dir, "npm run typecheck --silent", "sample one\n", "abc1234");
+      appendCorpusSample(dir, "npm run typecheck --silent", "sample two\n", "abc1234");
+      appendCorpusSample(dir, "npm run typecheck --silent", "sample three\n", "abc1234");
+      const thin = corpusGateDetail(dir);
+      check(
+        "corpus gate: <3 samples for ANY command rejects the gate",
+        thin !== null && thin.includes("npm run test:unit --silent"),
+      );
+      // a tampered sample must be caught: the matcher must still reject a
+      // fabricated line placed over the real output
+      appendCorpusSample(dir, "npm run test:unit --silent", "OK 1\n", "abc1234");
+      appendCorpusSample(dir, "npm run test:unit --silent", "OK 2\n", "abc1234");
+      appendCorpusSample(dir, "npm run test:unit --silent", "OK 3\n", "abc1234");
+      appendCorpusSample(dir, "npm run build --silent", "built\n", "abc1234");
+      appendCorpusSample(dir, "npm run build --silent", "built 2\n", "abc1234");
+      appendCorpusSample(dir, "npm run build --silent", "built 3\n", "abc1234");
+      check("corpus gate: 3 samples per command is green", corpusGateDetail(dir) === null);
+      // the matcher itself must still reject a fabricated line over a real
+      // sample — the gate's fabrication probe composes exactly this predicate
+      // (prepended: lines beyond the 600-line paste cap are sliced away)
+      const real = "OK   scripts/a.test.ts\nOK   scripts/b.test.ts\n";
+      check(
+        "corpus gate: fabrication probe matches the matcher's rejection rule",
+        evidenceMatches(`FABRICATED-CORPUS-PROBE-LINE\n${real}`, real) === false && evidenceMatches(real, real) === true,
       );
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -1643,6 +1705,29 @@ check("disk guard: statfs probe returns bytes on a real dir", realFree !== null 
     events.length === 2 && events[1]!.phase === "disk-guard" && events[1]!.ok === false,
   );
   rmSync(tmpDisk, { recursive: true, force: true });
+}
+
+// --- P1-044 autocatalysis lane: reinforced soak for apps/pilot/** deploys ----
+{
+  check("soak lane: regular deploy keeps the configured window", soakMinutesFor(10, false) === 10 && soakMinutesFor(3, false) === 3);
+  check("soak lane: pilot-infra deploy doubles the window (10 → 20)", soakMinutesFor(10, true) === 20);
+  check("soak lane: the lane never soaks less than 20min", soakMinutesFor(5, true) === 20 && soakMinutesFor(15, true) === 30);
+
+  check("baseline: no samples → rate 0", baselineFailureRate([]) === 0);
+  check("baseline: 1 failing probe of 3 → 1/3", Math.abs(baselineFailureRate([true, false, true]) - 1 / 3) < 1e-9);
+
+  const w = (fails: number, total = SOAK_WINDOW) => [...Array(total - fails).fill(true), ...Array(fails).fill(false)];
+  check("soak rate: window below SOAK_WINDOW never trips", soakFailureRateExceeded([false, false, false], 0) === false);
+  check("soak rate: clean window on clean baseline continues", soakFailureRateExceeded(w(0), 0) === false);
+  check("soak rate: 1/5 failures on clean baseline is inside tolerance", soakFailureRateExceeded(w(1), 0) === false);
+  check("soak rate: 2/5 failures on clean baseline rolls back", soakFailureRateExceeded(w(2), 0) === true);
+  check(
+    "soak rate: a flaky baseline (1/3 failing) absorbs an equal window",
+    soakFailureRateExceeded(w(2), baselineFailureRate([true, false, true])) === false,
+  );
+  check("soak rate: degradation beyond a flaky baseline rolls back", soakFailureRateExceeded(w(3), baselineFailureRate([true, false, true])) === true);
+  check("soak rate: tolerance constant pins the 20% margin", SOAK_RATE_TOLERANCE === 0.2 && SOAK_WINDOW === 5);
+  check("soak lane: baseline is 3 probes; extra live invariants every 5 checks", BASELINE_SAMPLES === 3 && LIVE_INVARIANT_EVERY === 5);
 }
 
 // --- P2-058 deploy sha guard: only gate-verified merges deploy ----------------

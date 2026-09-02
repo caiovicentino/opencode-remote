@@ -97,6 +97,39 @@ pairing inválido → clicar Pair → assert do erro visível → shot → asser
 (Conversas/Artifacts) só renderiza com o app pareado a um daemon vivo — fora do
 escopo hermético por design (chaves E2E reais).
 
+## Lane de auto-modificação (autocatálise, P1-044)
+
+Task cujo diff toca `apps/pilot/**` é o caso em que o sistema edita o próprio
+cérebro — o merge recebe um caminho reforçado no gate e no deploy:
+
+- **Gate exige golden corpus verde (P3-033)**: quando o diff toca `apps/pilot/`,
+  o gatekeeper roda uma checagem determinística extra (`corpusGateDetail`) sobre
+  `apps/pilot/src/__fixtures__/gate-corpus/`: ≥3 amostras reais por comando de
+  evidência, cada amostra casa consigo mesma e com a forma truncada, e uma linha
+  fabricada sobre a amostra continua sendo rejeitada. Se o diff não puder ser
+  computado, a checagem roda de qualquer jeito (fail-closed). Motivo: a calibração
+  do próprio gate (evidence matcher) não pode regredir através de um merge.
+- **Soak dobrado com `invariants --live` extra (b)**: o deploy detecta a lane pela
+  faixa de SHAs que está aplicando (`git diff --name-only prev..sha -- apps/pilot`,
+  cobrindo também deploys empacotados e o self-heal de "pending deploy") — se toca
+  `apps/pilot/**`, dobra a janela de soak (`soakMinutesFor` — mínimo 20min,
+  `2×monitorMin` quando maior) e roda `scripts/invariants.ts --live` adicional a
+  cada 5 checagens (~5min); falha em qualquer rodada extra quarentena o SHA e rola
+  back imediatamente.
+- **Rollback por taxa de falha (c)**: antes de qualquer mutação o deploy amostra a
+  saúde do deploy antigo 3× (`BASELINE_SAMPLES`) e calcula a taxa de falha
+  baseline. Durante o soak, uma janela deslizante de 5 checagens
+  (`SOAK_WINDOW`) com taxa de falha acima do baseline em mais de 20%
+  (`SOAK_RATE_TOLERANCE`) rola back — pegando degradação intermitente que a regra
+  de "3 falhas seguidas" nunca vê.
+- **Branch preservada entre attempts (d, pré-requisito P1-036)**: já garantida
+  pelo `preserveBranch` (P1-060) para **qualquer** task — attempt 1 começa limpo,
+  attempts seguintes continuam a branch `pilot/<ID>` existente (o builder é
+  instruído a continuar o trabalho commitado, não recomeçar do zero).
+
+Critério de sucesso da lane: tasks de infra do próprio pilot (ex. P1-034, P1-035)
+mergeadas pelo workflow sem intervenção humana.
+
 ## Deploy staged + rollback
 
 0. **Guard de SHA verificado (P2-058)**: o `deploy()` só aceita SHA que o
@@ -122,6 +155,8 @@ escopo hermético por design (chaves E2E reais).
    graceful desde P2-020: drain ≤3s, ws close 1001, exit 0)
 3. Health: `GET 127.0.0.1:8792/api/health` (Bearer apiToken) até 90s
 4. Soak: checagens a cada 60s por `monitorMin`; 3 falhas seguidas = rollback
+   (deploy que toca `apps/pilot/**` dobra a janela, roda `invariants --live`
+   extra e ganha rollback por taxa de falha — ver Lane de auto-modificação)
 5. Rollback: reset para o SHA anterior + rebuild + kickstart (idempotente)
 
 ## Budgets e kill switch
