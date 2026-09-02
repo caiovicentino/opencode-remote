@@ -14,7 +14,7 @@
  * of session ids ever recorded for it. Re-running the same round therefore
  * cannot double count, and retried attempts keep the attempts' earlier costs.
  */
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
@@ -98,24 +98,33 @@ export function parseSessionTokens(json: string): Record<string, number> {
  * session ids; returns {sessionId: totalTokens}. Chunked so long session
  * lists stay within sane command-line/SQL limits. `exec` is injectable for
  * the unit battery; the real path passes SQL over stdin (no shell).
+ *
+ * Round 2 (review): ASYNC — this runs inside `runSlot` on the shared event
+ * loop, and with slots > 1 a sync spawn (the only one in pilot src) could
+ * stall the other slot's stdout streaming and heartbeats for the whole
+ * timeout. execFile keeps the loop free; a slow/locked DB now only delays
+ * this one reconciliation promise.
  */
-export function querySessionTokens(
+export async function querySessionTokens(
   ids: string[],
   dbPath: string = defaultOpencodeDb(),
-  exec?: (dbPath: string, sql: string) => string,
-): Record<string, number> {
+  exec?: (dbPath: string, sql: string) => Promise<string>,
+): Promise<Record<string, number>> {
   if (!ids.length) return {};
   const run =
     exec ??
-    ((db: string, sql: string): string => {
-      const r = spawnSync("sqlite3", ["-json", db], { input: sql, encoding: "utf8", timeout: 15_000 });
-      return r.status === 0 ? r.stdout : "";
-    });
+    ((db: string, sql: string): Promise<string> =>
+      new Promise((resolve, reject) => {
+        const child = execFile("sqlite3", ["-json", db], { timeout: 15_000 }, (err, stdout) =>
+          err ? reject(err) : resolve(String(stdout)),
+        );
+        child.stdin?.end(sql); // SQL via stdin: no shell, no argv leakage
+      }));
   const out: Record<string, number> = {};
   for (let i = 0; i < ids.length; i += 100) {
     const chunk = ids.slice(i, i + 100).filter(isSessionId);
     if (!chunk.length) continue;
-    for (const [id, n] of Object.entries(parseSessionTokens(run(dbPath, tokensSql(chunk))))) {
+    for (const [id, n] of Object.entries(parseSessionTokens(await run(dbPath, tokensSql(chunk))))) {
       out[id] = (out[id] ?? 0) + n;
     }
   }
@@ -128,14 +137,14 @@ export function querySessionTokens(
  * (index.ts runSlot) decides when to persist. Every id is regex-validated
  * before it can reach the SQL layer. Missing/failed DB reads keep the
  * previous total (stale-but-honest beats erasing real data on a transient
- * sqlite error).
+ * sqlite error). Async so the sqlite3 child never blocks the event loop.
  */
-export function applySessionCosts(
+export async function applySessionCosts(
   store: TaskCostStore,
   taskId: string,
   newSessions: string[] | undefined,
-  query: (ids: string[]) => Record<string, number>,
-): void {
+  query: (ids: string[]) => Promise<Record<string, number>>,
+): Promise<void> {
   if (!taskId || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(taskId)) return;
   store.taskCostSessions ??= {};
   store.taskCosts ??= {};
@@ -145,7 +154,7 @@ export function applySessionCosts(
   }
   if (!known.length) return;
   store.taskCostSessions[taskId] = known;
-  const tokens = query(known);
+  const tokens = await query(known);
   const total = known.reduce((sum, id) => sum + (tokens[id] ?? 0), 0);
   if (total > 0) store.taskCosts[taskId] = total;
   pruneTaskCosts(store);

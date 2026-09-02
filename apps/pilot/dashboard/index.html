@@ -462,13 +462,14 @@ async function poll() {
 function startPolling() { poll(); setInterval(poll, 2000); loadMission(); }
 
 // P2-028: token total → compact honest label ("640M tok"); empty when unknown
-// so tasks without a recorded cost render exactly as before
+// so tasks without a recorded cost render exactly as before. Round 2: values
+// in the 999.5k..1M band roll into "1.0M tok" instead of rendering "1000k".
 function fmtTok(n) {
   if (!Number.isFinite(n) || n <= 0) return "";
   if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B tok`;
   if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M tok`;
-  if (n >= 1e3) return `${Math.round(n / 1e3)}k tok`;
-  return `${n} tok`;
+  const k = Math.round(n / 1e3);
+  return k < 1000 ? `${k}k tok` : `${(n / 1e6).toFixed(1)}M tok`;
 }
 function costChip(id) {
   const c = fmtTok(lastCosts?.[id]);

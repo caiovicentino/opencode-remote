@@ -3605,25 +3605,36 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check("costs: parser survives garbage", Object.keys(parseSessionTokens("not json")).length === 0);
 
   check("costs: sql inlines validated ids", tokensSql(["ses_abc123456"]).includes("IN ('ses_abc123456')"));
-  const viaQuery = querySessionTokens(["ses_abc123456"], "/tmp/fake.db", () => json);
+  const viaQuery = await querySessionTokens(["ses_abc123456"], "/tmp/fake.db", async () => json);
   check("costs: query maps session → total tokens", viaQuery.ses_abc123456 === 1125);
+  // round 2 (review): the sqlite call is async — a rejected exec must reject
+  // the promise (caught by the runSlot try/catch), never throw synchronously
+  let rejected = false;
+  try {
+    await querySessionTokens(["ses_abc123456"], "/tmp/fake.db", async () => {
+      throw new Error("db locked");
+    });
+  } catch {
+    rejected = true;
+  }
+  check("costs: query failure rejects instead of throwing sync", rejected);
 
   const store: { taskCosts: Record<string, number>; taskCostSessions: Record<string, string[]> } = { taskCosts: {}, taskCostSessions: {} };
-  applySessionCosts(store, "P2-028", ["ses_abc123456", "glued_ses_x"], () => ({ ses_abc123456: 1000 }));
+  await applySessionCosts(store, "P2-028", ["ses_abc123456", "glued_ses_x"], async () => ({ ses_abc123456: 1000 }));
   check("costs: applySessionCosts records the task total", store.taskCosts["P2-028"] === 1000);
   check("costs: non-session ids are filtered before the query", JSON.stringify(store.taskCostSessions["P2-028"]) === JSON.stringify(["ses_abc123456"]));
   // recompute semantics: a resumed session GROWS — the stored total is replaced,
   // never added twice, and re-applied ids are deduped
-  applySessionCosts(store, "P2-028", ["ses_abc123456"], () => ({ ses_abc123456: 2500 }));
+  await applySessionCosts(store, "P2-028", ["ses_abc123456"], async () => ({ ses_abc123456: 2500 }));
   check("costs: re-applied session recomputes instead of double counting", store.taskCosts["P2-028"] === 2500);
-  applySessionCosts(store, "P2-028", ["ses_def6789012"], () => ({ ses_abc123456: 2500, ses_def6789012: 500 }));
+  await applySessionCosts(store, "P2-028", ["ses_def6789012"], async () => ({ ses_abc123456: 2500, ses_def6789012: 500 }));
   check("costs: a second session adds to the task total", store.taskCosts["P2-028"] === 3000);
   // a transient DB failure keeps the previous honest total; the id stays
   // recorded so the next reconciliation picks it up once the DB has it
-  applySessionCosts(store, "P2-028", ["ses_ghi9012345"], () => ({}));
+  await applySessionCosts(store, "P2-028", ["ses_ghi9012345"], async () => ({}));
   check("costs: failed DB read keeps the previous total", store.taskCosts["P2-028"] === 3000 && store.taskCostSessions["P2-028"].length === 3);
   // unknown task id never reaches the store
-  applySessionCosts(store, "../evil", ["ses_abc123456"], () => ({ ses_abc123456: 1 }));
+  await applySessionCosts(store, "../evil", ["ses_abc123456"], async () => ({ ses_abc123456: 1 }));
   check("costs: hostile task id is ignored", !("../evil" in store.taskCosts));
   // rolling window keeps state.json bounded
   const big: { taskCosts: Record<string, number>; taskCostSessions: Record<string, string[]> } = { taskCosts: {}, taskCostSessions: {} };

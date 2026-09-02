@@ -270,7 +270,7 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
     const taskSessions = new Set<string>();
     const result = await runPipeline(taskCfg, task, state, taskSessions);
     try {
-      applySessionCosts(state, task.id, [...taskSessions], (ids) => querySessionTokens(ids));
+      await applySessionCosts(state, task.id, [...taskSessions], (ids) => querySessionTokens(ids));
     } catch (err) {
       log("warn", "task cost reconciliation failed", { task: task.id, err: String(err).slice(0, 200) });
     }
