@@ -200,8 +200,10 @@ intacto). Bloco opcional:
 - **Runs tier B são non-streaming e context-less**: `claude -p` imprime a
   resposta final uma única vez — `onStdout` não é ligado ao output tier B e
   não há session id para resume; `sessionId`/`onStdout` só valem quando o
-  papel roda (ou cai) no tier A. O watchdog é alimentado pelo timer interno
-  de heartbeat do `runTierB`.
+  papel roda (ou cai) no tier A. O watchdog é alimentado por timers internos
+  de heartbeat — `runTierB` (non-streaming) e `runAgent` (P1-035: timer de
+  60s armado no spawn, parado em exit/error; um agent silencioso não derruba
+  mais o pilot com slots em voo).
 - **Papéis tier B**: planner de P0/P1 (o spec commitado passa pelo mesmo
   `validateSpec`/gate determinístico), strategist (refill de qualidade),
   **reviewer de escalada** e **forensic semanal** (abaixo). O gatekeeper e a
@@ -746,9 +748,10 @@ em vez de olhar diffs, olha o **produto** como um usuário de primeira viagem.
 - **Nunca bloqueia**: qualquer falha (sync, agente, push) é log-only — o
   explorer não participa do circuit breaker nem reprova merge. Guard diário
   próprio em `state.json` (`explorerLast`), independente do `redteamLast`.
-- **Watchdog**: a pass bloqueia o loop por ~25min; o callback de stdout do
-  explorer toca o heartbeat (mesma preocupação do P1-035) para o self-watchdog
-  não matar o pilot no meio da exploração.
+- **Watchdog**: a pass bloqueia o loop por ~25min; desde o P1-035 o `runAgent`
+  alimenta o self-watchdog num timer interno (60s) durante qualquer await de
+  aux agent — o toque extra no callback de stdout do explorer é redundante,
+  mantido por defesa em profundidade.
 
 Barra de aceitação: a primeira run noturna deve gerar >=3 findings reais no
 backlog, cada um com shot anexado.
