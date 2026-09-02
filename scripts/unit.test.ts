@@ -152,6 +152,7 @@ import {
   viewReducer,
   type ViewState,
 } from "../apps/web/src/lib/viewState";
+import { ALLOWED_EXTS, extOf, pickConverter, validateExt } from "../tools/doc2pdf.mjs";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -2743,6 +2744,32 @@ check(
     closeChat.chatSession === null && !closeChat.stack.includes("chat"),
   );
 }
+
+// --- doc2pdf: extension allowlist + converter pick (P2-065) -----------------
+const SOFFICE_CONV = { kind: "soffice", bin: "/app/LibreOffice.app/soffice", exts: [...ALLOWED_EXTS] };
+const NATIVE_CONV = {
+  kind: "native",
+  textutil: "/usr/bin/textutil",
+  cupsfilter: "/usr/sbin/cupsfilter",
+  exts: ["doc", "docx", "rtf", "html", "csv"],
+};
+check("doc2pdf allowlist is exactly the office formats", ALLOWED_EXTS.join(" ") === "docx doc rtf html csv xlsx pptx");
+for (const ext of ALLOWED_EXTS) {
+  check(`doc2pdf accepts .${ext}`, validateExt(`relatorio.${ext}`).ok && validateExt(`relatorio.${ext}`).ext === ext);
+}
+check("doc2pdf rejects disallowed extension", !validateExt("payload.exe").ok);
+check("doc2pdf rejects file without extension", !validateExt("README").ok);
+check("doc2pdf rejects dotfile as extension-less", !validateExt(".hidden").ok);
+check("doc2pdf rejects trailing-dot name", !validateExt("file.").ok);
+check("doc2pdf accepts uppercase extensions", validateExt("Doc.REPORT.DOCX").ok);
+check("doc2pdf empty ext is empty string", extOf("file.") === "");
+check("doc2pdf soffice wins wherever it appears", pickConverter("darwin", [NATIVE_CONV, SOFFICE_CONV]) === SOFFICE_CONV);
+check("doc2pdf falls back to native on darwin", pickConverter("darwin", [NATIVE_CONV]) === NATIVE_CONV);
+check("doc2pdf native unusable on linux", pickConverter("linux", [NATIVE_CONV]) === null);
+check("doc2pdf soffice usable on linux", pickConverter("linux", [SOFFICE_CONV]) === SOFFICE_CONV);
+check("doc2pdf no candidates means no converter", pickConverter("darwin", []) === null);
+check("doc2pdf malformed candidates are ignored", pickConverter("darwin", [undefined, {}, { kind: "soffice" }] as never) === null);
+check("doc2pdf non-array candidates fail graceful", pickConverter("darwin", "soffice" as never) === null);
 
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);
