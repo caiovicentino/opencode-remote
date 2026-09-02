@@ -106,7 +106,7 @@ import { dirname, join } from "node:path";
 import { artifactMime, kindFor, listArtifacts, readArtifact, validSegment } from "../apps/daemon/src/artifacts";
 import { browseTarget, clickPoint, validSession, viewportFromParams } from "../apps/daemon/src/browse";
 import { createShutdown, DRAIN_MS, stopAccepting } from "../apps/daemon/src/shutdown";
-import { touchedUiFromDiff, needsEscalation, parseFindings, verifyFindings, isTaskMergeSha } from "../apps/pilot/src/pipeline";
+import { touchedUiFromDiff, needsEscalation, parseFindings, verifyFindings, isTaskMergeSha, parseVerdict, reviewerOk } from "../apps/pilot/src/pipeline";
 import { stdlibShadowHits } from "./stdlib-shadow";
 import { latestUiShot, pruneShots } from "../apps/pilot/src/shot";
 import { parseMarkdown, parseInline } from "../apps/web/src/lib/md";
@@ -1050,6 +1050,55 @@ check("stdlibShadow: non-stdlib root file passes", stdlibShadowHits("A\tmain.py\
   check("verifyFindings: prose mention of real file resolves", verifyFindings(["- mention of real.ts in prose is fine"], ws, diff).kept.length === 1);
   check("verifyFindings: URL not mistaken for a file citation", verifyFindings(["- see https://example.com/a/real.ts:2, plus `beta touched` here"], ws, diff).kept.length === 1);
   rmSync(ws, { recursive: true, force: true });
+}
+
+// --- verdict = last marker wins + code-observation findings (P2-038) -----------
+{
+  check("p2-038: parseVerdict takes the LAST marker (approve then changes)", parseVerdict("VERDICT: APPROVE\nprose...\nVERDICT: REQUEST_CHANGES") === "REQUEST_CHANGES");
+  check("p2-038: parseVerdict takes the LAST marker (changes then approve)", parseVerdict("VERDICT: REQUEST_CHANGES\n- x\nVERDICT: APPROVE") === "APPROVE");
+  check("p2-038: parseVerdict single markers", parseVerdict("VERDICT: APPROVE") === "APPROVE" && parseVerdict("VERDICT: REQUEST_CHANGES") === "REQUEST_CHANGES");
+  check("p2-038: parseVerdict case-insensitive with spacing", parseVerdict("verdict:  approve") === "APPROVE");
+  check("p2-038: parseVerdict no marker → null", parseVerdict("looks great to me") === null);
+  check("p2-038: reviewerOk — APPROVE with verified findings REJECTS", !reviewerOk("VERDICT: APPROVE\n- real.ts:1 — wrong", ["- real.ts:1 — wrong"], []));
+  check("p2-038: reviewerOk — clean APPROVE approves", reviewerOk("VERDICT: APPROVE", [], []));
+  check("p2-038: reviewerOk — REQUEST_CHANGES with verified findings rejects", !reviewerOk("VERDICT: REQUEST_CHANGES\n- real.ts:1 — wrong", ["- real.ts:1 — wrong"], []));
+  check("p2-038: reviewerOk — all findings dropped → effective approve", reviewerOk("VERDICT: REQUEST_CHANGES\n- ghost.ts:1 — nope", [], ["- ghost.ts:1 — nope"]));
+  check("p2-038: reviewerOk — no marker fails closed", !reviewerOk("all good", [], []));
+  const twoMarkers = parseFindings("VERDICT: APPROVE\n- early bullet\nVERDICT: REQUEST_CHANGES\n- late bullet");
+  check("p2-038: parseFindings anchored at the LAST marker", twoMarkers.some((f) => f.includes("late bullet")) && !twoMarkers.some((f) => f.includes("early")));
+
+  // requirement (d): code-observation findings verified deterministically
+  const ws2 = mkdtempSync(join(tmpdir(), "p2-038-"));
+  mkdirSync(join(ws2, "apps", "desktop", "src"), { recursive: true });
+  // line 3 contains the real symbol `[request]`
+  writeFileSync(join(ws2, "apps", "desktop", "src", "CommandPalette.tsx"), "export const a = 1;\n\nconst q = [request];\n");
+  writeFileSync(join(ws2, "real.ts"), "alpha\nbeta\n");
+  const diff2 = "diff --git a/real.ts b/real.ts\n+beta touched\n";
+  check(
+    "p2-038: REAL finding — bare-name file:line + real symbol resolves",
+    verifyFindings(["- `CommandPalette.tsx:3` — `[request]` is used without a guard"], ws2, diff2).kept.length === 1,
+  );
+  check(
+    "p2-038: FAKE finding — real file:line but symbol exists nowhere → hallucinated",
+    verifyFindings(["- `CommandPalette.tsx:3` — `totallyFakeSymbol` is unused"], ws2, diff2).dropped.length === 1,
+  );
+  check(
+    "p2-038: symbol present in the reviewed diff → finding valid",
+    verifyFindings(["- `real.ts:2` — the `beta touched` line is misplaced"], ws2, diff2).kept.length === 1,
+  );
+  check(
+    "p2-038: cited line empty/out-of-range still hallucinated",
+    verifyFindings(["- `CommandPalette.tsx:99` — `[request]` leaks"], ws2, diff2).dropped.length === 1,
+  );
+  check(
+    "p2-038: nonexistent file with real-looking symbol hallucinated",
+    verifyFindings(["- `ghost.ts:1` — `[request]` leaks"], ws2, diff2).dropped.length === 1,
+  );
+  check(
+    "p2-038: file-path-shaped quotes are citations, not symbols",
+    verifyFindings(["- `real.ts:2` conflicts with `apps/desktop/src/CommandPalette.tsx:3`"], ws2, diff2).kept.length === 1,
+  );
+  rmSync(ws2, { recursive: true, force: true });
 }
 
 // --- mandatory builder evidence (P2-009) --------------------------------------

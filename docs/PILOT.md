@@ -524,6 +524,26 @@ reviewer prompt documents the citation contract. Pinned by unit tests in
 `scripts/unit.test.ts` (one valid citation with a real path, one hallucinated
 path — only the invalid one is dropped).
 
+Since P2-038 the verifier treats code observations as first-class evidence:
+
+- **Last marker wins**: the verdict is the LAST `VERDICT:` marker in the
+  reviewer output (`parseVerdict`), not a substring test — a
+  `VERDICT: REQUEST_CHANGES` written after an APPROVE in prose rejects the
+  build. An `APPROVE` that still carries verified findings is also processed
+  as a rejection: findings that verify are evidence, not noise
+  (`reviewerOk`).
+- **Bare-name citations resolve**: a citation like `CommandPalette.tsx:63`
+  without a directory is resolved by suffix match against the workspace
+  listing instead of being dropped. (The same audit fixed a regex truncation
+  that read `.tsx` as `.ts` — the cause of 7 valid P1-046 findings being
+  dropped as hallucinated.)
+- **Symbol check (code-observation findings)**: a finding that cites
+  `file:line` and quotes a symbol (`[request]`, `verifyToken`, …) is verified
+  deterministically — the cited file:line must exist and the quoted symbol
+  must appear in a cited file or in the reviewed diff. A finding is marked
+  hallucinated only when the cited file, line or symbol does not exist
+  anywhere it is claimed to.
+
 ## Cheap resumption (P2-013)
 
 Since opencode ≥1.18.20, failed subagent tool calls surface a **resumable

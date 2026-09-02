@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { join, dirname, relative, sep } from "node:path";
 import { homedir } from "node:os";
 import { agentStream, exec, runAgent, runAgentForRole, type AgentIds } from "./runner";
 import { nowLocalISO } from "./log";
@@ -456,6 +456,9 @@ Rules:
   \`path/file.ext:LINE\` (line matching the workspace files) or quote a literal snippet
   from the diff. Findings without a verifiable citation are mechanically dropped as
   hallucinated; a reviewer whose findings ALL fail verification counts as APPROVE.
+- P2-038: the verdict is the LAST \`VERDICT:\` marker in your output, and an APPROVE
+  followed by verified findings is processed as a rejection — if you have findings,
+  verdict REQUEST_CHANGES; APPROVE only with an empty findings list.
 ${
   incrementalFrom
     ? `- INCREMENTAL REVIEW (P1-060): this is a later round of a long-horizon task. Earlier
@@ -488,6 +491,34 @@ ${diff.slice(0, 60_000)}
 
 /** P1-059: a tier-B escalation reviewer's output must carry a verdict marker. */
 export const ESCALATION_MARKER = "VERDICT:";
+
+export type ReviewerVerdict = "APPROVE" | "REQUEST_CHANGES";
+
+/**
+ * P2-038: the verdict is the LAST `VERDICT:` marker in the output. Reviewers
+ * discuss example verdicts in prose; an APPROVE quoted early must not mask a
+ * REQUEST_CHANGES written after it (or vice versa). `null` when no marker —
+ * a malformed output can never approve anything.
+ */
+export function parseVerdict(output: string): ReviewerVerdict | null {
+  const matches = [...output.matchAll(/VERDICT:\s*(APPROVE|REQUEST_CHANGES)/gi)];
+  const last = matches[matches.length - 1];
+  if (!last) return null;
+  return last[1]!.toUpperCase() === "APPROVE" ? "APPROVE" : "REQUEST_CHANGES";
+}
+
+/**
+ * P2-038: one reviewer's verdict outcome. The LAST marker decides
+ * (`parseVerdict`); an APPROVE that carries verified findings is a rejection —
+ * findings that verify are evidence, not noise. A REQUEST_CHANGES whose
+ * findings ALL fail verification degenerates to an effective approve, and an
+ * output without any marker fails closed.
+ */
+export function reviewerOk(output: string, kept: string[], dropped: string[]): boolean {
+  const verdict = parseVerdict(output);
+  if (verdict === "APPROVE") return kept.length === 0;
+  return verdict === "REQUEST_CHANGES" && dropped.length > 0 && kept.length === 0;
+}
 
 /**
  * P1-059: pure escalation predicate — round-1 review outcomes that are
@@ -1208,7 +1239,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
         ts: nowLocalISO(),
         level: "info",
         msg: "reviewers done",
-        data: { task: t.id, round, secOk: /VERDICT:\s*APPROVE/i.test(sec.output), qualOk: /VERDICT:\s*APPROVE/i.test(qual.output) },
+        data: { task: t.id, round, secOk: parseVerdict(sec.output) === "APPROVE", qualOk: parseVerdict(qual.output) === "APPROVE" },
       }),
     );
     const secParsed = parseFindings(sec.output);
@@ -1222,13 +1253,14 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
     const qualVerified = verifyFindings(qualParsed, ws, reviewDiff);
     for (const d of secVerified.dropped) logHallucination(t.id, "security", d);
     for (const d of qualVerified.dropped) logHallucination(t.id, "quality", d);
-    const approve = (o: string) => /VERDICT:\s*APPROVE/i.test(o);
+    // P2-038: the LAST verdict marker decides and verified findings reject even
+    // when an APPROVE marker is present — findings that verify are evidence.
     const allDropped = (o: string, v: { kept: string[]; dropped: string[] }) =>
-      /VERDICT:\s*REQUEST_CHANGES/i.test(o) && v.dropped.length > 0 && v.kept.length === 0;
+      parseVerdict(o) === "REQUEST_CHANGES" && v.dropped.length > 0 && v.kept.length === 0;
     const secAllDropped = allDropped(sec.output, secVerified);
     const qualAllDropped = allDropped(qual.output, qualVerified);
-    const secOk = approve(sec.output) || secAllDropped;
-    const qualOk = approve(qual.output) || qualAllDropped;
+    const secOk = reviewerOk(sec.output, secVerified.kept, secVerified.dropped);
+    const qualOk = reviewerOk(qual.output, qualVerified.kept, qualVerified.dropped);
     if (secAllDropped || qualAllDropped) {
       console.log(
         JSON.stringify({
@@ -1260,7 +1292,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
       const escParsed = parseFindings(esc.output);
       const escVerified = verifyFindings(escParsed, ws, reviewDiff);
       for (const d of escVerified.dropped) logHallucination(t.id, "escalation", d);
-      const escApprove = approve(esc.output) || allDropped(esc.output, escVerified);
+      const escApprove = reviewerOk(esc.output, escVerified.kept, escVerified.dropped);
       if (escApprove) {
         gateSecOk = true;
         gateQualOk = true;
@@ -1325,9 +1357,11 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
   return { ok: true, detail: `task ${t.id} merged`, sha: headSha(ws), touchedUi };
 }
 
-/** P2-015: findings are the bullet lines after (or near) the verdict marker. */
+/** P2-015: findings are the bullet lines after (or near) the verdict marker.
+ * P2-038: anchored at the LAST verdict marker — last marker wins. */
 export function parseFindings(output: string): string[] {
-  const idx = output.search(/VERDICT:\s*REQUEST_CHANGES/i);
+  const markers = [...output.matchAll(/VERDICT:\s*(?:APPROVE|REQUEST_CHANGES)/gi)];
+  const idx = markers.length > 0 ? (markers[markers.length - 1]!.index ?? -1) : -1;
   const tail = idx >= 0 ? output.slice(idx) : output.slice(-1500);
   return tail
     .split("\n")
@@ -1350,10 +1384,14 @@ export interface VerifiedFindings {
  * pin this against fake findings (one real path, one nonexistent).
  */
 export function verifyFindings(findings: string[], ws: string, diff: string): VerifiedFindings {
+  // P2-038: one workspace file listing per call — bare-name citations
+  // (e.g. `CommandPalette.tsx:63`) resolve by suffix match instead of being
+  // dropped as hallucinated just because the reviewer omitted the directory.
+  const wsFiles = workspaceFiles(ws);
   const kept: string[] = [];
   const dropped: string[] = [];
   for (const f of findings) {
-    if (findingResolves(f, ws, diff)) kept.push(f);
+    if (findingResolves(f, ws, diff, wsFiles)) kept.push(f);
     else dropped.push(f);
   }
   return { kept, dropped };
@@ -1366,34 +1404,95 @@ interface FileCite {
 
 /** Known source extensions keep prose words ("e.g", "v1.2") out of citations. */
 const KNOWN_EXT = "ts|tsx|js|jsx|mjs|cjs|json|md|css|html?|sh|py|rb|go|rs|java|ya?ml|toml|sql|txt|xml|svg";
-const FILE_CITE_RE = new RegExp(`(\\b[\\w@][\\w@./+-]*\\.(?:${KNOWN_EXT}))(?::(\\d+))?`, "g");
+const FILE_CITE_RE = new RegExp(`(\\b[\\w@][\\w@./+-]*\\.(?:${KNOWN_EXT}))(?::(\\d+))?(?!\\w)`, "g");
+const FILE_PATH_SHAPE_RE = new RegExp(`^[\\w@./+-]*\\.(?:${KNOWN_EXT})(?::\\d+)?$`);
+
 const SNIPPET_RES = [/"([^"\n]{6,})"/g, /`([^`\n]{6,})`/g];
 
-function findingResolves(finding: string, ws: string, diff: string): boolean {
+/** P2-038: quoted spans act as symbol citations inside findings that already
+ * cite a file — a code observation has no stdout, so its quoted symbol is the
+ * thing to verify. File-path-shaped spans stay the business of FILE_CITE_RE. */
+const SYMBOL_RES = [/"([^"\n]{2,})"/g, /`([^`\n]{2,})`/g];
+
+function symbolCites(finding: string): string[] {
+  const out: string[] = [];
+  for (const re of SYMBOL_RES) {
+    for (const m of finding.matchAll(re)) {
+      const sym = (m[1] ?? "").trim();
+      if (sym.length < 2 || FILE_PATH_SHAPE_RE.test(sym)) continue;
+      out.push(sym);
+    }
+  }
+  return out;
+}
+
+/** P2-038: workspace-relative paths of all scannable files (no .git /
+ * node_modules), sorted for determinism. */
+function workspaceFiles(ws: string): string[] {
+  const out: string[] = [];
+  const walk = (dir: string) => {
+    let entries: import("fs").Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (e.name === ".git" || e.name === "node_modules") continue;
+      const p = join(dir, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.isFile()) out.push(relative(ws, p).split(sep).join("/"));
+    }
+  };
+  walk(ws);
+  return out.sort();
+}
+
+function findingResolves(finding: string, ws: string, diff: string, wsFiles: string[]): boolean {
   // URLs are not file citations; they would only produce phantom paths
   const cleaned = finding.replace(/https?:\/\/\S+/g, " ");
   const fileCites: FileCite[] = [...cleaned.matchAll(FILE_CITE_RE)].map((m) => ({
     path: m[1] ?? "", // group 1 always matches when the regex matched
     line: m[2] !== undefined ? Number(m[2]) : undefined,
   }));
-  if (fileCites.length > 0) return fileCites.every((c) => pathResolves(ws, c.path, c.line));
+  if (fileCites.length > 0) {
+    // P2-038 (requirement d): a code observation is verified deterministically —
+    // every cited file:line must exist in the workspace AND every quoted symbol
+    // must exist in a cited file or in the reviewed diff. Hallucinated only
+    // when the cited file, line or symbol does not exist.
+    const symbols = symbolCites(cleaned);
+    return fileCites.every((c) => citeResolves(ws, c, symbols, diff, wsFiles));
+  }
   return SNIPPET_RES.some((re) => [...cleaned.matchAll(re)].some((m) => m[1] !== undefined && diff.includes(m[1])));
 }
 
-function pathResolves(ws: string, rawPath: string, line: number | undefined): boolean {
+/** P2-038: one file citation resolves when the cited file exists (at the cited
+ * ws-relative path, or anywhere in the workspace for bare-name citations) and
+ * the cited line, when present, is non-empty, and every quoted symbol appears
+ * in a cited file or in the diff. */
+function citeResolves(ws: string, cite: FileCite, symbols: string[], diff: string, wsFiles: string[]): boolean {
   // unified-diff prefixes + traversal attempts are never valid citations
-  const rel = rawPath.replace(/^(?:\.\/)+/, "").replace(/^(?:a|b)\//, "");
+  const rel = cite.path.replace(/^(?:\.\/)+/, "").replace(/^(?:a|b)\//, "");
   if (rel.includes("..")) return false;
-  let lines: string[];
-  try {
-    if (!existsSync(join(ws, rel))) return false;
-    lines = readFileSync(join(ws, rel), "utf8").split("\n");
-  } catch {
-    return false;
+  const candidates = existsSync(join(ws, rel)) ? [rel] : wsFiles.filter((f) => f.endsWith(`/${rel}`));
+  for (const cand of candidates) {
+    let lines: string[];
+    try {
+      lines = readFileSync(join(ws, cand), "utf8").split("\n");
+    } catch {
+      continue;
+    }
+    if (cite.line !== undefined) {
+      const l = lines[cite.line - 1];
+      if (l === undefined || l.trim().length === 0) continue;
+    }
+    if (symbols.length > 0) {
+      const content = lines.join("\n");
+      if (!symbols.every((s) => content.includes(s) || diff.includes(s))) continue;
+    }
+    return true;
   }
-  if (line === undefined) return true;
-  const l = lines[line - 1];
-  return l !== undefined && l.trim().length > 0;
+  return false;
 }
 
 function logHallucination(task: string, reviewer: string, finding: string) {
