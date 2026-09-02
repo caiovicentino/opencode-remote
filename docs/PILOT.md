@@ -424,6 +424,44 @@ Cobertura: `scripts/unit.test.ts` injeta falhas nos dois gatilhos (janela
 deslizante, rajada com pruning, fronteira de 2h, agregação do diagnóstico e
 persistência no `state.json`).
 
+## Doctor de reparo determinístico (P1-030)
+
+Reparos que antes eram feitos à mão (refs stale no clone, `state.json` corrompido,
+BACKLOG.md malformado, branches órfãs `pilot/*`) viraram subcomandos idempotentes
+e logados em `apps/pilot/src/doctor.ts`:
+
+- **`refs`** — fetch + `reset --hard origin/main` + clean do clone de trabalho
+  (mesma sequência do `syncWorkspace` do scheduler); loga `changed` só quando o
+  HEAD realmente se moveu;
+- **`attempts`** — limpa o contador do circuit breaker (P1-014): `--clear` zera
+  todos, `--clear <id>` zera um; sem flag, apenas reporta;
+- **`backlog`** — valida seções (`## Ready`/`## Done` obrigatórias, `## Blocked`
+  opcional) + ids de task únicos em todas as seções, via `loadBacklog`; somente
+  leitura — backlog inválido é reportado (log warn + exit 1), nunca auto-editado;
+- **`branches`** — deleta branches locais `pilot/*` **sem PR aberto**; fail-safe:
+  só deleta com `gh` respondendo (PR aberto, gh indisponível, branch checked-out
+  ou de task com tentativa viva no breaker — preservada para retry, P1-060 —
+  são pulados);
+- **`state`** — normaliza `state.json` pro schema atual + defaults (campos
+  legados, tipos lixo e arquivo corrompido viram defaults; writeJsonAtomic);
+  segunda passada seguida loga `changed: false`.
+
+O boot do pilot roda o pass completo (refs/state/backlog/branches em cada slot,
+log `doctor: <cmd>` no JSONL) — falha do doctor nunca impede o pipeline de subir.
+Uso manual:
+
+```sh
+npx tsx apps/pilot/src/doctor.ts all                # pass completo
+npx tsx apps/pilot/src/doctor.ts refs               # só refs
+npx tsx apps/pilot/src/doctor.ts attempts --clear P1-030
+npx tsx apps/pilot/src/doctor.ts backlog            # exit 1 se inválido
+npx tsx apps/pilot/src/doctor.ts branches
+npx tsx apps/pilot/src/doctor.ts state
+```
+
+Cobertura: um bloco por subcomando em `scripts/unit.test.ts` (sequência exata de
+comandos do refs, idempotência, fail-safe do branches, reparo de state corrompido).
+
 ## Rodar manualmente
 
 ```sh

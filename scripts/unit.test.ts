@@ -79,6 +79,8 @@ import {
   type FailureLesson,
 } from "../apps/pilot/src/failureLessons";
 import { AtomicWriteIo, clampSlots, ensureSingleton, loadState, normalizeModels, recordTaskFailure, saveState, startHeartbeat, tierBModelFor, writeJsonAtomic } from "../apps/pilot/src/state";
+import type { PilotState } from "../apps/pilot/src/state";
+import { clearTaskAttempts, doctorBacklog, doctorBranches, doctorRefs, doctorState, normalizePilotState, validateBacklog, type RunFn } from "../apps/pilot/src/doctor";
 import { avgPhaseDurations, burnDown, countFailSteps, rollbackHealthAlert } from "../apps/pilot/src/metrics";
 import type { PilotEvent } from "../apps/pilot/src/events";
 import { areaKey, pickBatch, pickTasks } from "../apps/pilot/src/scheduler";
@@ -3925,6 +3927,157 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   }
   pruneTaskCosts(big);
   check("costs: rolling window prunes oldest tasks", Object.keys(big.taskCosts).length === TASK_COST_CAP && !("P9-0" in big.taskCosts) && "P9-209" in big.taskCostSessions);
+}
+
+// --- P1-030 pilot doctor: deterministic, idempotent repair pass -----------------
+{
+  const REF_SEQ = [
+    "git rev-parse HEAD",
+    "git fetch origin",
+    "git checkout -q main",
+    "git reset -q --hard origin/main",
+    "git clean -qfd",
+    "git rev-parse HEAD",
+  ];
+  const mkRun = (opts: { heads?: string[]; fail?: string[] } = {}) => {
+    const ran: string[] = [];
+    const heads = opts.heads ?? ["aaaa111", "bbbb222"];
+    let headIdx = 0;
+    const run: RunFn = (cmd) => {
+      ran.push(cmd);
+      if (cmd === "git rev-parse HEAD") return { ok: true, output: `${heads[Math.min(headIdx++, heads.length - 1)]}\n` };
+      if (opts.fail?.includes(cmd)) return { ok: false, output: "boom\n" };
+      return { ok: true, output: "" };
+    };
+    return { ran, run };
+  };
+
+  {
+    const { ran, run } = mkRun();
+    const r = doctorRefs("/ws", run);
+    check("doctor refs: runs the exact fetch+reset+clean sequence", ran.join("|") === REF_SEQ.join("|"));
+    check("doctor refs: ok and reports the HEAD move", r.ok && r.changed && r.detail.includes("bbbb222"));
+  }
+  {
+    const { run } = mkRun({ heads: ["aaaa111", "aaaa111"] });
+    const r = doctorRefs("/ws", run);
+    check("doctor refs: idempotent — same HEAD logs changed=false", r.ok && !r.changed);
+  }
+  {
+    const { run } = mkRun({ fail: ["git reset -q --hard origin/main"] });
+    const r = doctorRefs("/ws", run);
+    check("doctor refs: failed reset reports the step", !r.ok && r.detail.includes("git reset -q --hard origin/main"));
+  }
+
+  check("doctor backlog: healthy sections + unique ids", validateBacklog("## Ready\n\n- [ ] (P9-001) [P1] A — spec: x\n\n## Done\n- [x] (P9-000) [P1] Old — done\n").ok);
+  check("doctor backlog: missing ## Done is a problem", !validateBacklog("## Ready\n- [ ] (P9-001) [P1] A — spec: x\n").ok);
+  check("doctor backlog: missing ## Ready is a problem", !validateBacklog("## Done\n- [x] (P9-000) [P1] Old — done\n").ok);
+  {
+    const md = "## Ready\n\n- [ ] (P9-001) [P1] A — spec: x\n- [ ] (P9-002) [P2] B — spec: y\n\n## Done\n- [x] (P9-001) [P1] A — done\n";
+    const d = validateBacklog(md);
+    check("doctor backlog: duplicate ids detected across sections", !d.ok && d.duplicateIds.join(",") === "P9-001" && d.taskCount === 2);
+  }
+  {
+    const d = validateBacklog("## Ready\n- [ ] (P9-001) [P1] mentions (P9-002) mid-spec — spec: x\n## Done\n");
+    check("doctor backlog: ids quoted inside a spec are not duplicates", d.ok && d.duplicateIds.length === 0);
+  }
+  {
+    const dir = mkdtempSync(join(tmpdir(), "pilot-doctor-"));
+    try {
+      writeFileSync(join(dir, "BACKLOG.md"), "## Ready\n\n- [ ] (P9-001) [P1] A — spec: x\n\n## Done\n");
+      const d = doctorBacklog(dir);
+      check("doctor backlog: loadBacklog path counts ready tasks", d.ok && d.taskCount === 1);
+      rmSync(join(dir, "BACKLOG.md"));
+      const missing = doctorBacklog(dir);
+      check("doctor backlog: missing file is a finding, not a crash", !missing.ok && missing.problems[0]?.includes("loadBacklog failed"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  {
+    const st: PilotState = {
+      date: "2026-09-02",
+      tasks: 0,
+      deploys: 0,
+      failures: 0,
+      merges: 0,
+      taskAttempts: { "P9-001": 2, "P9-002": 1 },
+    };
+    check("doctor attempts: clear one id", clearTaskAttempts(st, "P9-001") === 1 && st.taskAttempts["P9-001"] === undefined && st.taskAttempts["P9-002"] === 1);
+    check("doctor attempts: clearing an unknown id is a no-op", clearTaskAttempts(st, "P9-999") === 0);
+    check("doctor attempts: clear all", clearTaskAttempts(st) === 1 && Object.keys(st.taskAttempts).length === 0);
+    check("doctor attempts: clearing empty state stays zero", clearTaskAttempts(st) === 0);
+    const legacy = { date: "", tasks: Number.NaN, deploys: 0, failures: 0, taskAttempts: undefined } as unknown as PilotState;
+    const n = normalizePilotState(legacy);
+    check("doctor state: normalizePilotState fills schema defaults", n.merges === 0 && n.tasks === 0 && n.date.length === 10 && JSON.stringify(n.taskAttempts) === "{}" && Array.isArray(n.cycles) && Array.isArray(n.blockEvents) && n.auditMode === null && JSON.stringify(n.taskCosts) === "{}");
+  }
+
+  {
+    const dir = mkdtempSync(join(tmpdir(), "pilot-doctor-state-"));
+    try {
+      const file = join(dir, "state.json");
+      writeFileSync(file, JSON.stringify({ date: "2026-09-02", tasks: "many", taskAttempts: "nope" }));
+      const first = doctorState(file);
+      const after = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+      check("doctor state: legacy/garbage fields normalized", first.ok && first.changed && after.tasks === 0 && after.merges === 0 && JSON.stringify(after.taskAttempts) === "{}" && Array.isArray(after.cycles) && after.auditMode === null);
+      const second = doctorState(file);
+      check("doctor state: idempotent — second pass changes nothing", second.ok && !second.changed);
+      writeFileSync(file, "{corrupt json");
+      const third = doctorState(file);
+      const repaired = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+      check("doctor state: corrupt file reset to defaults", third.ok && third.changed && repaired.tasks === 0 && typeof repaired.date === "string");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  {
+    const mkBranchRun = (current: string) => {
+      const ran: string[] = [];
+      const run: RunFn = (cmd) => {
+        ran.push(cmd);
+        if (cmd === "git for-each-ref --format=%(refname:short) refs/heads/pilot/*")
+          return { ok: true, output: "pilot/P9-001\npilot/P9-002\npilot/P9-003\npilot/P9-004\n" };
+        if (cmd === "git rev-parse --abbrev-ref HEAD") return { ok: true, output: `${current}\n` };
+        return { ok: true, output: "" };
+      };
+      return { ran, run };
+    };
+    const gh = (out: Record<string, string>, failKeys: string[] = []): RunFn => (cmd) => {
+      const hit = Object.entries(out).find(([k]) => cmd.includes(k));
+      if (hit) return { ok: !failKeys.some((f) => cmd.includes(f)), output: hit[1] };
+      return { ok: false, output: "" };
+    };
+    {
+      const { run } = mkBranchRun("main");
+      const r = doctorBranches("/ws", {
+        run,
+        gh: gh({ "pilot/P9-001": "[]", "pilot/P9-002": '[{"number":1}]', "pilot/P9-003": "[]", "pilot/P9-004": "[]" }, ["pilot/P9-003"]),
+        protectedIds: new Set(["P9-004"]),
+      });
+      check("doctor branches: deletes only PR-less branches", r.ok && r.changed && r.detail.includes("deleted: pilot/P9-001"));
+      check("doctor branches: open PR is skipped", r.detail.includes("pilot/P9-002 (open PR)"));
+      check("doctor branches: gh failure is fail-safe (skip)", r.detail.includes("pilot/P9-003 (gh unavailable)"));
+      check("doctor branches: preserved retry branch is protected", r.detail.includes("pilot/P9-004 (preserved for retry)"));
+      check("doctor branches: protected branch is not deleted", !r.detail.includes("deleted: pilot/P9-004") && !r.detail.includes("deleted: pilot/P9-002"));
+    }
+    {
+      const { run } = mkBranchRun("pilot/P9-001");
+      const r = doctorBranches("/ws", {
+        run,
+        gh: gh({ "pilot/P9-001": "[]" }),
+        protectedIds: new Set(["P9-002"]),
+      });
+      check("doctor branches: checked-out branch never deleted", r.detail.includes("pilot/P9-001 (checked out)") && !r.changed);
+      check("doctor branches: preserved retry branch is protected", r.detail.includes("pilot/P9-002 (preserved for retry)"));
+    }
+    {
+      const { run } = mkBranchRun("main");
+      const r = doctorBranches("/ws", { run, gh: () => ({ ok: false, output: "" }) });
+      check("doctor branches: gh down skips every branch", r.ok && !r.changed && r.detail.includes("gh unavailable"));
+    }
+  }
 }
 
 if (failures > 0) {
