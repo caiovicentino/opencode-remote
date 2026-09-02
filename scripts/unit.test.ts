@@ -78,7 +78,7 @@ import {
   readRecentFailureLessons,
   type FailureLesson,
 } from "../apps/pilot/src/failureLessons";
-import { clampSlots, ensureSingleton, loadState, normalizeModels, recordTaskFailure, startHeartbeat, tierBModelFor } from "../apps/pilot/src/state";
+import { AtomicWriteIo, clampSlots, ensureSingleton, loadState, normalizeModels, recordTaskFailure, saveState, startHeartbeat, tierBModelFor, writeJsonAtomic } from "../apps/pilot/src/state";
 import { avgPhaseDurations, burnDown, countFailSteps, rollbackHealthAlert } from "../apps/pilot/src/metrics";
 import type { PilotEvent } from "../apps/pilot/src/events";
 import { areaKey, pickBatch, pickTasks } from "../apps/pilot/src/scheduler";
@@ -747,6 +747,82 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
     writeFileSync(file, JSON.stringify({ date: today, tasks: 1, deploys: 1, failures: 1 }));
     const legacy = loadState(file);
     check("loadState backfills missing taskAttempts", legacy.tasks === 1 && Object.keys(legacy.taskAttempts).length === 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// --- P2-024 writeJsonAtomic: state.json survives a crash mid-write --------------
+{
+  const makeIo = () => {
+    const files = new Map<string, string>();
+    const renames: string[] = [];
+    const unlinks: string[] = [];
+    let failRename = false;
+    const io: AtomicWriteIo = {
+      writeFileSync: (f, d) => {
+        files.set(f, d);
+      },
+      renameSync: (from, to) => {
+        if (failRename) throw new Error("rename boom");
+        const v = files.get(from);
+        if (v === undefined) throw new Error(`ENOENT: ${from}`);
+        files.delete(from);
+        files.set(to, v);
+        renames.push(`${from}->${to}`);
+      },
+      unlinkSync: (f) => {
+        unlinks.push(f);
+        files.delete(f);
+      },
+    };
+    return { io, files, renames, unlinks, breakRename: () => (failRename = true) };
+  };
+
+  const dest = "/mock/state.json";
+  const tmp = `${dest}.tmp`;
+
+  // successful rename: destination has the payload, no .tmp left behind
+  const ok = makeIo();
+  writeJsonAtomic(dest, { a: 1 }, ok.io);
+  check("writeJsonAtomic: rename swaps the destination", ok.files.get(dest) === JSON.stringify({ a: 1 }, null, 2));
+  check("writeJsonAtomic: .tmp never survives on success", ok.files.has(tmp) === false && ok.renames.join() === `${tmp}->${dest}`);
+
+  // failed rename: .tmp removed, error rethrown for the caller, dest untouched
+  const badRename = makeIo();
+  ok.files.forEach((v, k) => badRename.files.set(k, v));
+  badRename.files.set(dest, "previous-good-state");
+  badRename.breakRename();
+  let threw = false;
+  try {
+    writeJsonAtomic(dest, { a: 2 }, badRename.io);
+  } catch {
+    threw = true;
+  }
+  check("writeJsonAtomic: failed rename rethrows to the caller", threw);
+  check("writeJsonAtomic: failed rename removes the .tmp", badRename.files.has(tmp) === false && badRename.unlinks.join() === tmp);
+  check("writeJsonAtomic: failed rename leaves the old destination intact", badRename.files.get(dest) === "previous-good-state");
+
+  // failed write: same cleanup contract, no rename attempted
+  const badWrite = makeIo();
+  badWrite.io.writeFileSync = () => {
+    throw new Error("disk full");
+  };
+  threw = false;
+  try {
+    writeJsonAtomic(dest, { a: 3 }, badWrite.io);
+  } catch {
+    threw = true;
+  }
+  check("writeJsonAtomic: failed write rethrows and cleans the .tmp", threw && badWrite.files.has(tmp) === false && badWrite.renames.length === 0);
+}
+{
+  const dir = mkdtempSync(join(tmpdir(), "pilot-state-atomic-"));
+  try {
+    const file = join(dir, "state.json");
+    saveState({ date: "2026-01-01", tasks: 2, deploys: 1, failures: 0, merges: 0, taskAttempts: { "P2-024": 1 } }, file);
+    check("saveState: atomic write round-trips through loadState", loadState(file).taskAttempts["P2-024"] === 1);
+    check("saveState: no .tmp residue in the state dir", readdirSync(dir).join() === "state.json");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
