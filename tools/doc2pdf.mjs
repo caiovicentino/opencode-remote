@@ -88,11 +88,12 @@ function converterCandidates(ext) {
   const cups = cupsfilterBin();
   const textutil = textutilBin();
   return [
-    { id: "soffice", platforms: ["darwin", "linux", "win32"], available: !!sofficeBin() },
+    { id: "soffice", platforms: ["darwin", "linux"], available: !!sofficeBin() },
     {
       id: "textutil+cupsfilter",
       platforms: ["darwin"],
-      available: !!cups && (ext === "csv" || !!textutil),
+      // csv needs only cupsfilter (plain text); the rest go through textutil first
+      available: !!cups && NATIVE_TEXT_EXTS.includes(ext) && (ext === "csv" || !!textutil),
     },
   ];
 }
@@ -146,20 +147,28 @@ function main(file, outDir) {
   }
 
   const started = Date.now();
-  let out;
+  const out = outPdfPath(file, outDir);
+  if (existsSync(out)) {
+    console.log(`doc2pdf: overwriting existing ${basename(out)}`);
+  }
+  let produced;
   try {
-    out = conv.id === "soffice" ? convertWithSoffice(file, outDir) : convertWithNative(file, outDir, ext);
+    produced = conv.id === "soffice" ? convertWithSoffice(file, outDir) : convertWithNative(file, outDir, ext);
   } catch (e) {
     console.error(`doc2pdf: conversion failed: ${e.message ?? e}`);
     process.exit(1);
   }
-  if (!hasPdfMagic(readFileSync(out))) {
-    console.error(`doc2pdf: conversion produced an invalid PDF: ${out}`);
+  if (!existsSync(produced)) {
+    console.error(`doc2pdf: conversion produced no output: ${produced}`);
+    process.exit(1);
+  }
+  if (!hasPdfMagic(readFileSync(produced))) {
+    console.error(`doc2pdf: conversion produced an invalid PDF: ${produced}`);
     process.exit(1);
   }
   const secs = ((Date.now() - started) / 1000).toFixed(1);
-  console.log(`doc2pdf: ${basename(file)} -> ${basename(out)} via ${conv.id} (${secs}s)`);
-  console.log(`[file: ${resolve(out)}]`);
+  console.log(`doc2pdf: ${basename(file)} -> ${basename(produced)} via ${conv.id} (${secs}s)`);
+  console.log(`[file: ${resolve(produced)}]`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

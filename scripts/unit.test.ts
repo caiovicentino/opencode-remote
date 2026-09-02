@@ -2715,6 +2715,68 @@ check(
   } else {
     check("doc2pdf smoke: skipped (no native converter on this platform)", true);
   }
+
+  // primary soffice path E2E via a stub that emits a minimal %PDF — exercises
+  // the main converter branch (OCR_SOFFICE override) even without LibreOffice
+  if (process.platform !== "win32") {
+    const stubDir = mkdtempSync(join(tmpdir(), "doc2pdf-soffice-"));
+    const outDir = mkdtempSync(join(tmpdir(), "doc2pdf-soffice-out-"));
+    try {
+      const stub = join(stubDir, "soffice-stub.sh");
+      writeFileSync(
+        stub,
+        [
+          "#!/bin/sh",
+          'out=""',
+          'prev=""',
+          'for a in "$@"; do',
+          '  if [ "$prev" = "--outdir" ]; then out="$a"; fi',
+          '  prev="$a"',
+          "done",
+          "for last; do :; done",
+          'base=$(basename "$last")',
+          'base="${base%.*}"',
+          "printf '%%PDF-1.4 stub\\n' > \"$out/$base.pdf\"",
+        ].join("\n") + "\n",
+        { mode: 0o755 },
+      );
+      const docx = join(fixturesDir, "sample.docx");
+      const runStub = (ocrSoffice: string, out: string) =>
+        spawnSync(process.execPath, ["tools/doc2pdf.mjs", docx, out], {
+          encoding: "utf8",
+          timeout: 30_000,
+          env: { ...process.env, OCR_SOFFICE: ocrSoffice },
+        });
+      const outPdf = join(outDir, "sample.pdf");
+      const r1 = runStub(stub, outDir);
+      check(
+        "doc2pdf soffice path: OCR_SOFFICE stub drives the primary converter",
+        r1.status === 0 &&
+          r1.stdout.includes("via soffice") &&
+          readFileSync(outPdf).subarray(0, 4).toString("latin1") === "%PDF" &&
+          r1.stdout.includes(`[file: ${outPdf}]`),
+      );
+      const r2 = runStub(stub, outDir);
+      check(
+        "doc2pdf soffice path: warns before overwriting an existing PDF",
+        r2.status === 0 && r2.stdout.includes("doc2pdf: overwriting existing sample.pdf"),
+      );
+      const lazy = join(stubDir, "soffice-lazy.sh");
+      writeFileSync(lazy, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+      // fresh outdir: a pre-existing valid PDF would mask the missing output
+      const lazyOut = join(outDir, "lazy");
+      const r3 = runStub(lazy, lazyOut);
+      check(
+        "doc2pdf soffice path: exit-0-without-output fails graceful (no raw stack)",
+        r3.status === 1 &&
+          r3.stderr.includes(`doc2pdf: conversion produced no output: ${join(lazyOut, "sample.pdf")}`) &&
+          !r3.stderr.includes("ENOENT"),
+      );
+    } finally {
+      rmSync(stubDir, { recursive: true, force: true });
+      rmSync(outDir, { recursive: true, force: true });
+    }
+  }
 }
 
 if (failures > 0) {
