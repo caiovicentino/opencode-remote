@@ -72,6 +72,7 @@ function blocks(nodes: MdBlock[]): ReactNode[] {
               borderRadius: 8,
               padding: "8px 10px",
               overflowX: "auto",
+              maxWidth: "100%", // P1-080: scroll inside the block, never the page
               fontSize: "0.78rem",
               lineHeight: 1.45,
             }}
@@ -245,13 +246,19 @@ export default function ArtifactViewer({
                 style={{ width: "100%", height: "100%", border: "none", background: "var(--preview-bg)" }}
               />
             )}
-            {meta.kind === "md" && <div style={{ maxWidth: 900 }}>{blocks(parseMarkdown(state.text ?? ""))}</div>}
+            {meta.kind === "md" && (
+              <div style={{ maxWidth: "min(900px, 100%)", overflowWrap: "anywhere" }}>
+                {blocks(parseMarkdown(state.text ?? ""))}
+              </div>
+            )}
             {meta.kind === "csv" && <CsvTable text={state.text ?? ""} />}
             {meta.kind === "text" && (
               <pre
                 style={{
                   whiteSpace: "pre-wrap",
                   wordBreak: "break-word",
+                  maxWidth: "100%",
+                  overflowWrap: "anywhere",
                   fontSize: "0.8rem",
                   margin: 0,
                 }}

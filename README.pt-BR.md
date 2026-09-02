@@ -33,7 +33,10 @@ remoto, zero confiança**.
   a mensagem nova automaticamente quando você já está no fim — ao rolar pra
   cima, um botão ↓ aparece pra voltar ao fim sem roubar a leitura; se a conexão
   cair, um banner fino com o contador de tentativas de reconexão substitui o
-  antigo dot do header
+  antigo dot do header. Blocos de código e linhas longas nunca cortam na borda
+  direita: texto e URLs quebram linha e blocos largos de código/diff rolam
+  horizontalmente dentro do próprio bloco — nada sai do viewport (chat, modal
+  de diff e painel de artifact)
 - **AutoMode** — o agente roda solto; toda aprovação automática vira auditoria
   (e notificação, se você quiser)
 - **Preview de aprovação** — o card de permissão mostra as primeiras linhas
