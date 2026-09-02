@@ -18,7 +18,7 @@ import { initDesktopLog, log, logError } from "./desktop-log";
 import { phonePaired, type PairingState } from "./pairing";
 import { applyAppUserModelId, daemonNotify, NOTIFY_BACK_BODY, NOTIFY_DOWN_BODY, NOTIFY_TITLE, type DaemonHealth } from "./notify";
 import { deepLinkFromArgv, parseDeepLink } from "./deeplink";
-import { daemonTooltip, loginItemSupported, trayIconSource } from "./tray";
+import { daemonTooltip, loginItemSupported, logsDirPath, openLogsFolder, trayIconSource } from "./tray";
 import { checkForUpdatesOnBoot, feedUrlFromEnv, updateMenuLabel, type UpdateStatus } from "./update";
 import { loadWindowBounds, saveWindowBounds, WINDOW_MIN, windowStateFile } from "./window-state";
 import { installFatalErrorHandlers, onRendererGone, ReloadGuard } from "./crash";
@@ -717,6 +717,23 @@ function trayMenuItems(): Electron.MenuItemConstructorOptions[] {
       click: (item) => app.setLoginItemSettings({ openAtLogin: item.checked }),
     });
   }
+  // P3-016: the persistent desktop.log (P3-012) is useless to a lay user if
+  // nothing in the app points at it — this item creates the folder on demand
+  // and reveals it in the OS file manager. Best-effort: openLogsFolder
+  // resolves false instead of rejecting, so the failure stays log-only and
+  // can never take the shell down.
+  items.push({
+    label: "Open logs folder",
+    click: () => {
+      const dir = logsDirPath(app.getPath("userData"));
+      void openLogsFolder(dir, {
+        mkdir: (d, opts) => mkdirSync(d, opts),
+        openPath: (p) => shell.openPath(p),
+      }).then((ok) => {
+        if (!ok) logError("[desktop] open logs folder failed:", dir);
+      });
+    },
+  });
   items.push(
     { type: "separator" },
     {

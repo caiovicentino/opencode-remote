@@ -1,5 +1,6 @@
 // Pure decision logic for the desktop tray (P3-007). Kept free of electron
 // imports so scripts/unit.test.ts can exercise it (same pattern as pairing.ts).
+import { join } from "node:path";
 
 /** Tooltip shown by the tray: doubles as the sidecar health indicator, kept in
  * sync by the 3s pairing-watcher poll in main.ts. */
@@ -11,6 +12,38 @@ export function daemonTooltip(healthy: boolean): string {
  * Windows (Electron docs), so the "Start at login" item is shown only there. */
 export function loginItemSupported(platform: string): boolean {
   return platform === "darwin" || platform === "win32";
+}
+
+/** P3-016: userData/logs — the folder holding the persistent desktop.log
+ * (P3-012). Same join the file logger uses, exposed so the tray item and the
+ * logger can never drift apart on the location. */
+export function logsDirPath(userData: string): string {
+  return join(userData, "logs");
+}
+
+/** Structural subset the logs-folder helper touches (tests inject fakes). */
+export interface LogsFolderSinks {
+  /** fs.mkdirSync, always called with { recursive: true } — the logs folder is
+   * normally created at boot by the logger, but a user may have deleted it. */
+  mkdir(dir: string, opts: { recursive: boolean }): void;
+  /** shell.openPath: resolve with the OS file manager showing `dir`. */
+  openPath(path: string): Promise<unknown>;
+}
+
+/**
+ * P3-016: create (if needed) and reveal the logs folder for the tray's
+ * "Open logs folder" item. Best-effort by design: a missing folder, a full
+ * disk or a failed open must never take the shell down — the caller logs the
+ * `false` return. Resolves `true` when the folder was opened.
+ */
+export async function openLogsFolder(dir: string, sinks: LogsFolderSinks): Promise<boolean> {
+  try {
+    sinks.mkdir(dir, { recursive: true });
+    await sinks.openPath(dir);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Which image source buildTray() hands to `new Tray(...)`. */
