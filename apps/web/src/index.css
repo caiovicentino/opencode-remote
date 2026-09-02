@@ -240,7 +240,7 @@ textarea {
   flex: 1;
   min-width: 0;
   font-weight: 600;
-  font-size: 0.85rem;
+  font-size: var(--font-size-sm);
   line-height: 1.2;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -699,7 +699,7 @@ select {
 .desk-empty h2 {
   font-family: ui-serif, Georgia, "Times New Roman", serif;
   font-size: 2.4rem;
-  font-weight: 500;
+  font-weight: var(--font-weight-medium);
   letter-spacing: -0.01em;
 }
 .desk-greet-mark {
