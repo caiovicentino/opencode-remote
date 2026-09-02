@@ -7,6 +7,7 @@ import { TokenBucket } from "./ratelimit";
 import { IpCap, normalizeIp } from "./ipcap";
 import { isValidRoomId, MAX_ROOMS_PER_SOCKET } from "./roomid";
 import { createShutdown, stopAccepting } from "./shutdown";
+import { decideStale } from "./liveness";
 
 /**
  * Relay: a blind router.
@@ -37,6 +38,12 @@ const RATE_LIMIT_CLOSE = 4029; // custom 4xxx: "too many frames"
 // other peer admission
 const MAX_PER_IP = envNum("RELAY_MAX_PER_IP", 20);
 const ipCap = new IpCap(MAX_PER_IP);
+// ws-level liveness sweep (P2-067): every interval the relay pings all
+// sockets and terminates the ones silent for more than interval+grace
+// (grace == interval), so a peer that vanished without a close frame
+// (phone lost wifi, laptop slept) stops holding a MAX_SOCKETS slot and its
+// per-IP budget until restart. 0 disables the sweep entirely.
+const PING_INTERVAL_S = envNum("RELAY_PING_INTERVAL_S", 30);
 
 // root package.json (monorepo) — same single source the web PWA generates from
 const VERSION = (() => {
@@ -67,6 +74,7 @@ interface Socket extends WebSocket {
   bucket?: TokenBucket;
   ip?: string;
   released?: boolean;
+  lastSeen?: number;
 }
 
 const rooms = new Map<string, Set<Socket>>();
@@ -80,6 +88,7 @@ const m = {
   rejects: 0,
   rateLimited: 0,
   roomsRejected: 0,
+  staleTerminated: 0,
   startedAt: Date.now(),
 };
 if (METRICS_PORT) {
@@ -101,6 +110,8 @@ if (METRICS_PORT) {
           `relay_rate_limited_total ${m.rateLimited}`,
           "# TYPE relay_rooms_rejected counter",
           `relay_rooms_rejected ${m.roomsRejected}`,
+          "# TYPE relay_stale_terminated counter",
+          `relay_stale_terminated ${m.staleTerminated}`,
           "# TYPE relay_rooms_active gauge",
           `relay_rooms_active ${rooms.size}`,
         ];
@@ -120,6 +131,7 @@ if (METRICS_PORT) {
             rejects: m.rejects,
             rate_limited_total: m.rateLimited,
             rooms_rejected: m.roomsRejected,
+            stale_terminated: m.staleTerminated,
             rooms_active: rooms.size,
           },
           null,
@@ -188,6 +200,7 @@ server.listen(PORT, () => {
     maxPerIp: MAX_PER_IP,
     ratePerMin: RATE_PER_MIN,
     rateBurst: RATE_BURST,
+    pingIntervalS: PING_INTERVAL_S,
   });
 });
 
@@ -220,7 +233,14 @@ wss.on("connection", (socket: Socket, req) => {
   socket.ip = ip;
   socket.id = `s${Date.now().toString(36)}${(counter++).toString(36)}`;
   socket.rooms = new Set();
+  socket.lastSeen = Date.now();
   ev("info", "connection open", { id: socket.id, total: wss.clients.size });
+
+  // every pong proves the peer is alive at the transport level (ws clients
+  // answer pings automatically unless they are truly half-dead)
+  socket.on("pong", () => {
+    socket.lastSeen = Date.now();
+  });
 
   socket.on("message", (data) => {
     let frame: { room?: unknown; from?: unknown; seq?: unknown; payload?: unknown };
@@ -313,6 +333,23 @@ wss.on("connection", (socket: Socket, req) => {
     leaveAll(socket);
   });
 });
+
+// P2-067: reap sockets that vanished without a close frame. Terminated via
+// socket.terminate(), so the normal close path runs — rooms and the per-IP
+// slot are released by the existing handlers above.
+if (PING_INTERVAL_S > 0) {
+  setInterval(() => {
+    const now = Date.now();
+    for (const dead of decideStale(now, wss.clients as Set<Socket>, PING_INTERVAL_S, PING_INTERVAL_S)) {
+      m.staleTerminated++;
+      ev("info", "stale socket terminated", { id: dead.id, silentS: PING_INTERVAL_S * 2 });
+      dead.terminate();
+    }
+    for (const c of wss.clients) {
+      if (c.readyState === c.OPEN) c.ping();
+    }
+  }, PING_INTERVAL_S * 1000);
+}
 
 // P2-023: SIGTERM/SIGINT graceful shutdown — drain ≤3s, then exit 0.
 // `launchctl kickstart -k` (deploy step 2) relies on this: clients get a

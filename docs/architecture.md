@@ -61,7 +61,13 @@ client-controlled, so the relay grants no exemptions. Note the enforcement
 point is the connection, not the handshake pub key — the key stays inside
 the sealed E2E handshake, invisible to the relay by design. The bucket
 resets on reconnect, so a device can trade a reconnect for a fresh budget;
-total abuse stays bounded by the 1000-socket cap. `GET /healthz` is the one
+total abuse stays bounded by the 1000-socket cap. A ws-level liveness sweep
+(P2-067) pings every socket every `RELAY_PING_INTERVAL_S` (default 30,
+0 disables) and terminates peers silent for more than two cycles, so a
+client that vanished without a close frame (phone lost wifi, laptop slept)
+no longer holds a socket slot or its per-IP budget until restart — rooms
+and IP slots release through the normal close path, and the sweep is
+counted in `stale_terminated` on `/metrics`. `GET /healthz` is the one
 public HTTP endpoint on the relay port — an unauthenticated liveness probe
 answering `{ok, version, uptimeS, rooms, roomsRejected}` (counters only,
 never room ids) for load balancers in the hosted stage; `/metrics` stays
