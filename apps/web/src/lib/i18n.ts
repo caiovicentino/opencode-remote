@@ -160,6 +160,9 @@ export const dict = {
     daemonDown: "Local daemon is down — the app stopped retrying.",
     reconnectNow: "Reconnect now",
     reconnecting: "Reconnecting to daemon… ({n})",
+    // version mismatch banner (desktop, P3-054): healthy but stale daemon.
+    // Key is daemonMismatch: versionMismatch already names the PWA copy above.
+    daemonMismatch: "Daemon v{d} · app v{a} — restart the daemon.",
     // command palette (desktop, P1-046)
     palettePlaceholder: "Search conversations and actions…",
     paletteEmpty: "No matches",
@@ -351,6 +354,8 @@ export const dict = {
     daemonDown: "Daemon local caiu — o app parou de tentar reiniciar.",
     reconnectNow: "Reconectar agora",
     reconnecting: "Reconectando ao daemon… ({n})",
+    // banner de mismatch de versão (desktop, P3-054): daemon vivo, mas velho.
+    daemonMismatch: "Daemon v{d} · app v{a} — reinicie o daemon.",
     // command palette (desktop, P1-046)
     palettePlaceholder: "Buscar conversas e ações…",
     paletteEmpty: "Nada encontrado",

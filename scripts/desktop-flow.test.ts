@@ -280,6 +280,67 @@ try {
   } finally {
     if (reconnBooted) spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: reconnEnv });
   }
+
+  // --- P3-054: the daemon/app version-mismatch banner (third launch) -----------
+  // An adopted daemon older than the shell (stale launchd service, second
+  // install) must surface as a non-blocking warn banner, not random breakage.
+  // The OCR_DAEMON_FORCE_VERSION_MISMATCH hatch makes the main process emit
+  // the mismatch state deterministically over the real ocr:pairing-state IPC
+  // channel — so this exercises the full main→preload→renderer path, the
+  // banner precedence and the P3-017 reconnect button, hermetically.
+  const mismatchEnv = {
+    ...process.env,
+    OCR_DESKTOP_SESSION: `${session}-mismatch`,
+    OCR_DAEMON_FORCE_VERSION_MISMATCH: "1",
+  };
+  const shot1440m = join(shotsDir, "P3-054-mismatch.png");
+  const shot390m = join(shotsDir, "P3-054-mismatch-390.png");
+  let mismatchBooted = false;
+  try {
+    const mOpen = run("mismatch: open (hermetic launch)", ["open"], 45_000, mismatchEnv);
+    mismatchBooted = mOpen.ok;
+    if (mOpen.ok) {
+      // Precedence: the forced mismatch state wins over hermeticEnv's
+      // OCR_DAEMON_FORCE_DOWN — warn strip in, red daemon-down strip out.
+      const dom = run("mismatch: .daemon-version-mismatch banner rendered", ["ipc", "!!document.querySelector('.daemon-version-mismatch')"], 15_000, mismatchEnv);
+      if (dom.ok) check("mismatch: banner element present", /true/.test(dom.stdout));
+      const noDown = run("mismatch: red daemon-down banner absent", ["ipc", "!!document.querySelector('.daemon-down')"], 15_000, mismatchEnv);
+      if (noDown.ok) check("mismatch: daemon-down strip not rendered", /false/.test(noDown.stdout));
+      // P2-049 lesson: assert the real user-visible copy for every locale.
+      const copy = run("mismatch: banner copy", ["ipc", "document.querySelector('.daemon-version-mismatch')?.textContent ?? ''"], 15_000, mismatchEnv);
+      if (copy.ok) {
+        check(
+          "mismatch: banner names both versions and the restart action",
+          /Daemon v0\.0\.1-force · app v/.test(copy.stdout) &&
+            /reinicie o daemon|restart the daemon/.test(copy.stdout),
+        );
+      }
+      const btn = run("mismatch: reconnect button inside the banner", ["ipc", "!!document.querySelector('.daemon-version-mismatch .daemon-reconnect-btn')"], 15_000, mismatchEnv);
+      if (btn.ok) check("mismatch: reconnect button present", /true/.test(btn.stdout));
+      const state = run("mismatch: IPC app:pairingState", ["ipc", "window.ocrDesktop.getPairingState()"], 15_000, mismatchEnv);
+      if (state.ok) {
+        let parsed: { versionMismatch?: boolean; appVersion?: string | null; daemonVersion?: string | null; uri?: string | null } | null = null;
+        try {
+          parsed = JSON.parse(state.stdout) as typeof parsed;
+        } catch {
+          parsed = null;
+        }
+        check(
+          "mismatch: pairingState carries versions + verdict over ocr:pairing-state",
+          parsed?.versionMismatch === true &&
+            parsed?.daemonVersion === "0.0.1-force" &&
+            typeof parsed?.appVersion === "string" &&
+            parsed?.uri === null,
+        );
+      }
+      const m1 = run("mismatch: 1440x900 evidence shot", ["shot", shot1440m, "1440", "900"], 15_000, mismatchEnv);
+      if (m1.ok) check("mismatch: 1440x900 shot is a real PNG", pngSize(shot1440m).join("x") === "1440x900");
+      const m2 = run("mismatch: 390 evidence shot", ["shot", shot390m, "390", "844"], 15_000, mismatchEnv);
+      if (m2.ok) check("mismatch: 390 shot is a real PNG", pngSize(shot390m)[0] === 390);
+    }
+  } finally {
+    if (mismatchBooted) spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: mismatchEnv });
+  }
 } finally {
   if (keeperBooted) spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: cliEnv });
 }

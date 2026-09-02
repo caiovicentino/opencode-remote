@@ -5,6 +5,7 @@ import { join } from "node:path";
 import QRCode from "qrcode";
 import {
   DAEMON_METRICS_PORT,
+  fetchDaemonVersion,
   getPairUrl,
   isDaemonDown,
   readApiToken,
@@ -17,6 +18,7 @@ import {
 import { initDesktopLog, log, logError } from "./desktop-log";
 import { initSidecarLog } from "./sidecar-log";
 import { phonePaired, type PairingState } from "./pairing";
+import { versionMismatch } from "./versions";
 import { applyAppUserModelId, daemonNotify, NOTIFY_BACK_BODY, NOTIFY_DOWN_BODY, NOTIFY_TITLE, type DaemonHealth } from "./notify";
 import { deepLinkFromArgv, parseDeepLink } from "./deeplink";
 import { daemonTooltip, loginItemSupported, logsDirPath, openLogsFolder, trayIconSource } from "./tray";
@@ -451,6 +453,11 @@ function handleDeepLink(raw: unknown): void {
 const PAIRING_POLL_MS = 3_000;
 const PROBE_TIMEOUT_MS = 2_000;
 
+// P3-054: test-only escape hatch (tools/desktop.mjs harness + builder shots):
+// reports an intentionally older daemon version so the mismatch banner renders
+// deterministically. Never set in production — same policy as OCR_DAEMON_FORCE_*.
+const FORCE_VERSION_MISMATCH = process.env.OCR_DAEMON_FORCE_VERSION_MISMATCH === "1";
+
 let pairingState: PairingState | null = null;
 let pairingTimer: NodeJS.Timeout | null = null;
 
@@ -529,7 +536,29 @@ function observeDaemonHealth(down: boolean): void {
   }
 }
 
+/** P3-054: deterministic mismatch state for the harness (see the hatch note
+ * above). uri/qrDataUrl stay null so the QR overlay can never open from it —
+ * same shape discipline as reconnectingState(). */
+function forcedMismatchState(): PairingState {
+  return {
+    uri: null,
+    qrDataUrl: null,
+    devices: 0,
+    phonePaired: false,
+    appVersion: app.getVersion(),
+    daemonVersion: "0.0.1-force",
+    versionMismatch: true,
+  };
+}
+
 async function refreshPairingState(): Promise<void> {
+  // Test-only override first: the hermetic harness has no apiToken, so without
+  // this the happy path (the only place a real mismatch is detected) is
+  // unreachable and the banner could never render deterministically.
+  if (FORCE_VERSION_MISMATCH) {
+    setPairingState(forcedMismatchState());
+    return;
+  }
   const token = readApiToken();
   if (!token) {
     // Cannot prove health without the token — report down until proven ok.
@@ -555,6 +584,18 @@ async function refreshPairingState(): Promise<void> {
     // The daemon answers (adopted or sidecar) — control is back.
     observeDaemonHealth(false);
 
+    // P3-054: keep the live daemon's version in the state so the renderer can
+    // flag a stale adopted daemon (older or different major than the shell).
+    // One loopback call per poll; unknown version degrades to "no banner".
+    // (The FORCE_VERSION_MISMATCH hatch never reaches this path — it returns
+    // the deterministic forced state at the top of refreshPairingState.)
+    const appVersion = app.getVersion();
+    const daemonVersion = await fetchDaemonVersion(token);
+    const mismatch = versionMismatch(appVersion, daemonVersion);
+    if (mismatch) {
+      log(`[desktop] daemon version mismatch: daemon ${daemonVersion ?? "?"} · app ${appVersion}`);
+    }
+
     const paired = phonePaired(devices);
     let uri = pairingState?.uri ?? null;
     let qrDataUrl = pairingState?.qrDataUrl ?? null;
@@ -569,7 +610,15 @@ async function refreshPairingState(): Promise<void> {
       uri = ((await uriRes.json()) as { uri?: string }).uri ?? null;
       if (uri) qrDataUrl = await QRCode.toDataURL(uri, { margin: 1, width: 480 });
     }
-    setPairingState({ uri, qrDataUrl, devices: devices.length, phonePaired: paired });
+    setPairingState({
+      uri,
+      qrDataUrl,
+      devices: devices.length,
+      phonePaired: paired,
+      appVersion,
+      daemonVersion,
+      versionMismatch: mismatch,
+    });
   } catch (err) {
     // Daemon down, token rotated or state file wiped: drop the cached state so
     // a stale QR (old room/keys) is never shown. The next healthy tick

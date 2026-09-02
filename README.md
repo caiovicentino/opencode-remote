@@ -301,6 +301,17 @@ case and carries a **Reconnect now** button wired to the same restart as the
 tray action — so a daemon `kickstart`d by a deploy no longer leaves the app
 stuck on the pairing screen.
 
+**Daemon/app version mismatch banner**: because the shell adopts an external
+daemon (launchd/CLI install), it can end up talking to a daemon older than the
+app itself — the symptom for a lay user is random breakage, not a clear
+message. The shell now reads the daemon's version from the same authenticated
+`/api/health` probe it already uses and, when the daemon's major differs from
+the app's or the daemon is simply older (a `-dev` suffix is tolerated, a daemon
+minor ahead is fine), shows a non-blocking yellow strip: "Daemon vX · app vY —
+reinicie o daemon" ("restart the daemon"), with the same **Reconnect now**
+one-click recovery button. Compatible versions render nothing, and a browser
+without the desktop bridge is never affected.
+
 **Crash-proof shell**: a renderer crash no longer leaves a dead white window —
 the shell logs the crash reason and reloads the UI automatically (bounded to
 3 reloads per minute so a page that crashes on boot cannot become a reload

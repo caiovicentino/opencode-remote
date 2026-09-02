@@ -186,6 +186,28 @@ export interface HealthWaitOptions {
   token?: string | null;
 }
 
+/**
+ * P3-054: authenticated GET /api/health returning only the daemon's own
+ * version string (null when unreachable, unauthorized or malformed). The
+ * pairing watcher calls this on every poll so the version-mismatch banner
+ * always reflects the daemon that is actually answering right now — including
+ * one the user replaced externally while the app stayed open.
+ */
+export async function fetchDaemonVersion(token: string | null): Promise<string | null> {
+  if (token === null) return null;
+  try {
+    const res = await fetch(`http://127.0.0.1:${DAEMON_METRICS_PORT}/api/health`, {
+      headers: { authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+    });
+    if (res.status !== 200) return null;
+    const body = (await res.json().catch(() => ({}))) as { version?: unknown };
+    return typeof body.version === "string" ? body.version : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Poll GET /api/health until it answers or the deadline expires. */
 export async function waitForDaemonHealth(opts: HealthWaitOptions = {}): Promise<boolean> {
   const port = opts.port ?? DAEMON_METRICS_PORT;

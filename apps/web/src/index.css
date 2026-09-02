@@ -879,8 +879,11 @@ select {
   background: var(--banner-danger-bg);
   border-bottom: 1px solid var(--danger);
 }
-/* P1-053: adopted daemon lost — active, recoverable state (yellow variant). */
-.daemon-reconnecting {
+/* P1-053: adopted daemon lost — active, recoverable state (yellow variant).
+   P3-054: the version-mismatch banner shares the exact same warn strip —
+   the daemon is healthy, just older than the shell, so same severity. */
+.daemon-reconnecting,
+.daemon-version-mismatch {
   position: fixed;
   top: 0;
   left: 0;

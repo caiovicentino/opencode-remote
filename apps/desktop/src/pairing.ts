@@ -28,6 +28,13 @@ export interface PairingState {
   reconnecting?: boolean;
   /** P1-053: failed reconnect probes since the loss was detected. */
   reconnectAttempts?: number;
+  /** P3-054: shell version, echoed back so the banner can name both sides. */
+  appVersion?: string | null;
+  /** P3-054: version reported by the live daemon's /api/health (null unknown). */
+  daemonVersion?: string | null;
+  /** P3-054: versionMismatch(appVersion, daemonVersion) — computed in the
+   * main process (pure comparator in versions.ts); the renderer only renders. */
+  versionMismatch?: boolean;
 }
 
 /**
