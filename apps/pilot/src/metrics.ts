@@ -129,3 +129,20 @@ export function avgPhaseDurations(events: PilotEvent[]): PhaseDuration[] {
     .map(([phase, { sum, n }]) => ({ phase, avgMs: Math.round(sum / n), n }))
     .sort((a, b) => b.n - a.n || a.phase.localeCompare(b.phase));
 }
+
+/**
+ * P2-041: the post-rollback health verdict that should light the dashboard's
+ * red "prod unhealthy" chip, or null when there is no active alert. The NEWEST
+ * verdict wins: an unhealthy `rollback-health` event alerts, a healthy verdict
+ * or a later clean deploy (phase `done`) clears it. Scans the full event feed
+ * (like countFailSteps) so a 200-event tail cannot silently hide an alert.
+ */
+export function rollbackHealthAlert(events: PilotEvent[]): PilotEvent | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]!;
+    if (e.type !== "deploy") continue;
+    if (e.phase === "rollback-health") return e.ok === false ? e : null;
+    if (e.phase === "done") return null;
+  }
+  return null;
+}

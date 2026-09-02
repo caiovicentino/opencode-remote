@@ -110,6 +110,11 @@
   #audit-reason { display:block; color:#fca5a5; font-weight:400; text-transform:none; letter-spacing:0;
                   margin-top:3px; font-size:10px; word-break:break-word; }
   @keyframes pulse-red { 0%{box-shadow:0 0 0 0 rgba(248,113,113,.55)} 70%{box-shadow:0 0 0 10px rgba(248,113,113,0)} 100%{box-shadow:0 0 0 0 rgba(248,113,113,0)} }
+  /* ── P2-041: prod-unhealthy-after-rollback alert chip (same design language
+     as the audit chip — red, pulsing, uppercase, tooltip carries the detail) ── */
+  #rb-health { display:none; margin-bottom:8px; padding:6px 10px; border:1px solid var(--red);
+               background:rgba(248,113,113,.12); color:var(--red); font-size:10px; font-weight:700;
+               letter-spacing:.1em; border-radius:8px; text-transform:uppercase; animation:pulse-red 2s infinite; cursor:help; }
   .fstep { display:flex; justify-content:space-between; font-size:10px; color:var(--red); padding:1px 2px 0 14px; }
   .fstep b { font-variant-numeric:tabular-nums; }
   #hist { display:none; margin-top:8px; }
@@ -137,6 +142,7 @@
 </div>
 
 <div class="overlay" id="stats">
+  <div id="rb-health" title="">⛔ PROD UNHEALTHY</div>
   <div id="audit-chip" title="">⛔ AUDIT MODE<span id="audit-reason"></span></div>
   <div class="row"><span>TASKS HOJE</span><b id="s-tasks">0</b></div>
   <div class="meter"><span>TASKS / DIA</span><div class="bedit"><input id="b-tasks" type="number" min="1" max="99" /><b id="m-tasks-t">0/15</b></div><div class="bar"><i id="m-tasks"></i></div></div>
@@ -420,6 +426,12 @@ async function poll() {
       document.getElementById("audit-reason").textContent = audit.reason || "";
       chip.title = data.state?.auditDiagnosis || "";
     }
+    // P2-041: post-rollback health alert — red chip while the newest
+    // rollback-health verdict says prod is still unhealthy (a healthy verdict
+    // or a later clean deploy clears it; the daemon aggregates the full feed)
+    const rb = document.getElementById("rb-health");
+    rb.style.display = data.rollbackUnhealthy ? "block" : "none";
+    rb.title = data.rollbackUnhealthy ? (data.rollbackDetail || "") : "";
     // P2-045: gate failure breakdown by step (evidence/invariants/integration/…)
     renderFailSteps(data.failSteps);
     // budget meters
@@ -547,7 +559,12 @@ function render(events) {
   // deploy events → core
   const dep = [...events].reverse().find(e => e.type === "deploy");
   if (dep) {
-    setState("core", dep.phase === "done" ? "ok" : dep.phase === "rollback" ? "fail" : "working");
+    // P2-041: a rollback-health verdict is an honest prod state — red when the
+    // rolled-back build is still failing, green once it recovered
+    const coreState = dep.phase === "rollback-health"
+      ? (dep.ok === false ? "fail" : "ok")
+      : dep.phase === "done" ? "ok" : dep.phase === "rollback" ? "fail" : "working";
+    setState("core", coreState);
     if (dep.phase === "start") flow("deploy","core","#4ade80");
     if (dep.phase === "rollback") { setState("deploy","fail"); burst(nodeMap.core.x, nodeMap.core.y, "#f87171"); }
     if (dep.phase === "done") burst(nodeMap.core.x, nodeMap.core.y, "#4ade80");

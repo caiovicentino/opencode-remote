@@ -53,7 +53,7 @@ import { artifactMime, kindFor, listArtifacts, readArtifact } from "./artifacts.
 import { createShutdown, stopAccepting } from "./shutdown.js";
 import { localUpgradeAllowed } from "./localws.js";
 // P2-045: dashboard v2 metrics — aggregations shared with the pilot's eval battery
-import { avgPhaseDurations, burnDown, countFailSteps, type HistoryEntry } from "../../pilot/src/metrics";
+import { avgPhaseDurations, burnDown, countFailSteps, rollbackHealthAlert, type HistoryEntry } from "../../pilot/src/metrics";
 import type { PilotEvent } from "../../pilot/src/events";
 
 const RELAY_URL = process.env.RELAY_URL ?? "ws://127.0.0.1:8787";
@@ -1870,6 +1870,9 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       // P2-045: per-step gate failure breakdown over the full event file —
       // wider than the 200-event tail so the picture stays honest
       const failSteps = countFailSteps(allEvents);
+      // P2-041: newest post-rollback health verdict (full file, not the tail) —
+      // drives the dashboard's red "prod unhealthy" chip
+      const rbAlert = rollbackHealthAlert(allEvents);
       let state: unknown = {};
       let heartbeatMs: number | null = null;
       try {
@@ -1898,7 +1901,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
           } catch {}
         }
       } catch {}
-      send(200, { state, heartbeatMs, events, cfg, lastAux, failSteps });
+      send(200, { state, heartbeatMs, events, cfg, lastAux, failSteps, rollbackUnhealthy: rbAlert !== null, rollbackDetail: rbAlert?.detail ?? "" });
       return true;
     }
     // GET /api/pilot-history — P2-043 history.jsonl digest: 7-day burn-down and

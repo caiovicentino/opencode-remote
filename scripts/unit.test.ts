@@ -68,7 +68,7 @@ import {
   type FailureLesson,
 } from "../apps/pilot/src/failureLessons";
 import { clampSlots, ensureSingleton, loadState, normalizeModels, recordTaskFailure, startHeartbeat, tierBModelFor } from "../apps/pilot/src/state";
-import { avgPhaseDurations, burnDown, countFailSteps } from "../apps/pilot/src/metrics";
+import { avgPhaseDurations, burnDown, countFailSteps, rollbackHealthAlert } from "../apps/pilot/src/metrics";
 import type { PilotEvent } from "../apps/pilot/src/events";
 import { areaKey, pickBatch, pickTasks } from "../apps/pilot/src/scheduler";
 import {
@@ -129,12 +129,14 @@ import {
   deploy,
   LIVE_INVARIANT_EVERY,
   quarantineWithEscalation,
+  ROLLBACK_HEALTH_WINDOW_SEC,
   shouldSelfReload,
   soakFailureRateExceeded,
   soakMinutesFor,
   soakWatch,
   SOAK_RATE_TOLERANCE,
   SOAK_WINDOW,
+  verifyRollbackHealth,
 } from "../apps/pilot/src/deploy";
 import {
   MAX_QUARANTINE_ENTRIES,
@@ -2148,6 +2150,102 @@ check("disk guard: statfs probe returns bytes on a real dir", realFree !== null 
   check(
     "deploy guard: quarantined sha refused before any git step",
     banned.ok === false && banned.rolledBack === false && banned.detail.startsWith("sha quarantined"),
+  );
+}
+
+// --- P2-041: post-rollback health verification --------------------------------
+{
+  const events: Array<{ phase?: string; ok?: boolean; detail?: string }> = [];
+  const notified: Array<{ task: string; ok: boolean; detail: string }> = [];
+  const notify = async (task: string, ok: boolean, detail: string) => {
+    notified.push({ task, ok, detail });
+    return true;
+  };
+  // cfg only feeds the default probe (overridden in every hook below)
+  const cfgRoll: PilotConfig = {
+    repo: join(tmpdir(), "ocr-rollback-health-unused"),
+    workspace: "unused",
+    slots: 1,
+    maxTasksPerDay: 1,
+    maxDeploysPerDay: 1,
+    maxReviewRounds: 1,
+    maxAttemptsPerTask: 1,
+    taskTimeoutMin: 1,
+    reviewTimeoutMin: 1,
+    monitorMin: 1,
+    digest: false,
+  };
+  const hooksFor = (probe: () => Promise<boolean>, windowSec = 10) => ({
+    task: "P2-041",
+    probe,
+    onEvent: (e: { phase: string; ok: boolean; detail?: string }) => events.push(e),
+    notify,
+    sleep: () => Promise.resolve(),
+    windowSec,
+  });
+
+  check("rollback health: window is 30s at the shared 5s probe cadence", ROLLBACK_HEALTH_WINDOW_SEC === 30);
+
+  // healthy prod: the first probe passes — no retries, ok event, no escalation
+  let probes = 0;
+  events.length = 0;
+  notified.length = 0;
+  const okRun = await verifyRollbackHealth(cfgRoll, hooksFor(async () => {
+    probes++;
+    return true;
+  }));
+  check(
+    "rollback health: healthy prod verifies immediately with an ok rollback-health event",
+    okRun === true && probes === 1 && events.length === 1 &&
+      events[0]!.phase === "rollback-health" && events[0]!.ok === true && notified.length === 0,
+  );
+
+  // flappy start: two failing probes then recovery inside the window
+  const seq = [false, false, true];
+  let idx = 0;
+  events.length = 0;
+  const retryRun = await verifyRollbackHealth(cfgRoll, hooksFor(async () => seq[idx++] ?? true));
+  check(
+    "rollback health: prod recovering inside the window still verifies ok",
+    retryRun === true && idx === 3 && events[0]!.ok === true,
+  );
+
+  // unhealthy: window exhausted → ok=false event + supervisor escalation
+  let fails = 0;
+  events.length = 0;
+  notified.length = 0;
+  const badRun = await verifyRollbackHealth(cfgRoll, hooksFor(async () => {
+    fails++;
+    return false;
+  }, 10));
+  check(
+    "rollback health: unhealthy prod after rollback emits ok=false and escalates",
+    badRun === false && fails === 3 && events[0]!.ok === false &&
+      notified.length === 1 && notified[0]!.task === "P2-041" && notified[0]!.ok === false &&
+      notified[0]!.detail.includes("UNHEALTHY"),
+  );
+
+  // pure aggregation behind the dashboard chip: newest verdict wins
+  const ev = (phase: string, ok: boolean): PilotEvent => ({ ts: "t", type: "deploy", phase, ok });
+  check(
+    "rollback health: latest unhealthy verdict lights the dashboard chip",
+    rollbackHealthAlert([ev("start", true), ev("rollback", false), ev("rollback-health", false)]) !== null,
+  );
+  check(
+    "rollback health: a healthy verdict clears the chip",
+    rollbackHealthAlert([ev("rollback", false), ev("rollback-health", false), ev("rollback-health", true)]) === null,
+  );
+  check(
+    "rollback health: a later clean deploy supersedes an old alert",
+    rollbackHealthAlert([ev("rollback-health", false), ev("start", true), ev("done", true)]) === null,
+  );
+  check("rollback health: feed without verdicts never fakes an alert", rollbackHealthAlert([]) === null);
+
+  // wiring pin: rollback() must end in the health watch — the blind sleep is gone
+  const deploySrc = readFileSync(join(import.meta.dirname, "..", "apps", "pilot", "src", "deploy.ts"), "utf8");
+  check(
+    "rollback health: rollback() wires verifyRollbackHealth (no blind sleep)",
+    deploySrc.includes("await verifyRollbackHealth(cfg, hooks)") && !deploySrc.includes("sleep(15_000)"),
   );
 }
 
