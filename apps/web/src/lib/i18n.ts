@@ -236,6 +236,10 @@ export const dict = {
     // a11y (P2-049)
     rename: "Rename",
     delete: "Delete",
+    // chat history paging + session list grouping (P1-064)
+    loadMore: "Load older messages",
+    historyRetry: "Could not load the conversation history.",
+    pilotGroup: "Pilot sessions ({n})",
   },
   pt: {
     search: "Buscar conversas…",
@@ -423,5 +427,9 @@ export const dict = {
     // a11y (P2-049)
     rename: "Renomear",
     delete: "Apagar",
+    // chat history paging + session list grouping (P1-064)
+    loadMore: "Carregar mensagens anteriores",
+    historyRetry: "Não deu pra carregar o histórico da conversa.",
+    pilotGroup: "Sessões do pilot ({n})",
   },
 } satisfies Record<Lang, Record<string, string>>;

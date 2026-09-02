@@ -18,6 +18,7 @@ import { artifactMentions, listArtifacts, type ArtifactMeta } from "../lib/artif
 import { clampSplitPct, isSplitViewport, SPLIT_MIN_PX } from "../lib/split";
 import { sessionTitleOf } from "../lib/title";
 import { permissionPreview } from "../lib/permission";
+import { getCachedSession, putCachedSession } from "../lib/sessionCache";
 import { ArtifactIcon, IconChat, IconDownload, IconLaptop, IconWrench } from "./icons";
 
 interface Props {
@@ -106,6 +107,36 @@ function toolsFromRows(rows: HistoryRow[]): Map<string, ToolActivity> {
     }
   }
   return map;
+}
+
+/** P1-064: paged-history envelope served by the daemon (?limit&before). */
+interface HistoryPage {
+  rows?: HistoryRow[];
+  hasMore?: boolean;
+  oldest?: string | null;
+}
+
+/** text/file parts -> chat bubbles, in the order the rows arrive */
+function rowsToBubbles(rows: HistoryRow[]): Bubble[] {
+  const out: Bubble[] = [];
+  for (const row of rows) {
+    const text = row.parts
+      .filter((p) => p.type === "text" && p.text)
+      .map((p) => p.text)
+      .join("\n");
+    const images = row.parts
+      .filter((p) => p.type === "file" && typeof p.url === "string" && p.url.startsWith("data:image/"))
+      .map((p) => p.url as string);
+    if (text || images.length) {
+      out.push({
+        role: row.info.role === "user" ? "user" : "assistant",
+        text,
+        images,
+        messageID: row.info.id,
+      });
+    }
+  }
+  return out;
 }
 
 interface Skill {
@@ -242,6 +273,12 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
   const [qCustom, setQCustom] = useState<Record<string, Record<number, string>>>({});
   const [showActivity, setShowActivity] = useState(false);
   const [historyTools, setHistoryTools] = useState<Map<string, ToolActivity>>(new Map());
+  // P1-064: server paging state + explicit history error (never an eternal skeleton)
+  const [historyError, setHistoryError] = useState("");
+  const [hasMore, setHasMore] = useState(false);
+  const [oldest, setOldest] = useState<string | null>(null);
+  const [paging, setPaging] = useState(false);
+  const pagingRef = useRef(false);
   const [sessionTitle, setSessionTitle] = useState("");
   // P2-049: autoscroll only when the reader is at the bottom — scrolling up to
   // read must not be yanked back by the streaming tail
@@ -315,8 +352,17 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
   async function loadToolHistory() {
     try {
       const res = await request("GET", `/session/${sessionId}/message`);
-      if (res.status === 200) setHistoryTools(toolsFromRows((res.body as HistoryRow[]) ?? []));
+      if (res.status === 200) {
+        const rows = (Array.isArray(res.body) ? (res.body as HistoryRow[]) : ((res.body as HistoryPage)?.rows ?? []));
+        setHistoryTools(toolsFromRows(rows));
+      }
     } catch {}
+  }
+  // P1-064: opening the activity drawer reuses the tools already derived from
+  // the paged history fetch; a second full-history request on every toggle was
+  // one of the two fetches that made session opening slow.
+  function ensureToolHistory() {
+    if (historyTools.size === 0) void loadToolHistory();
   }
   const [diff, setDiff] = useState<{
     ask: PermissionAsk | null;
@@ -449,39 +495,102 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
   useEffect(() => {
     setLoadingHistory(true);
     setWinStart(0);
+    setHistoryError("");
+    // P1-064: warm cache paints the conversation immediately — the refetch
+    // below still runs so streaming-fresh messages replace the snapshot.
+    const cached = getCachedSession<Bubble, ToolActivity>(sessionId);
+    if (cached) {
+      setBubbles(cached.bubbles);
+      setHistoryTools(cached.tools);
+      setHasMore(cached.hasMore);
+      setOldest(cached.oldest);
+      setWinStart(Math.max(0, cached.bubbles.length - MSG_WINDOW));
+      setLoadingHistory(false);
+    }
     void loadHistory();
   }, [sessionId]);
 
+  const HISTORY_TIMEOUT_MS = 10_000;
+  const PAGE_QUERY = { limit: "50" };
+
   async function loadHistory() {
     try {
-      const res = await request("GET", `/session/${sessionId}/message`);
+      const res = await request("GET", `/session/${sessionId}/message`, undefined, PAGE_QUERY, HISTORY_TIMEOUT_MS);
       if (res.status !== 200) throw new Error(`GET messages -> ${res.status}`);
-      const rows = (res.body as HistoryRow[]) ?? [];
-      const out: Bubble[] = [];
-      for (const row of rows) {
-        const text = row.parts
-          .filter((p) => p.type === "text" && p.text)
-          .map((p) => p.text)
-          .join("\n");
-        const images = row.parts
-          .filter((p) => p.type === "file" && typeof p.url === "string" && p.url.startsWith("data:image/"))
-          .map((p) => p.url as string);
-        if (text || images.length) {
-          out.push({
-            role: row.info.role === "user" ? "user" : "assistant",
-            text,
-            images,
-            messageID: row.info.id,
-          });
-        }
-      }
+      const body = res.body as HistoryPage;
+      // legacy daemons (no paging params) still answer a plain array
+      const rows = Array.isArray(res.body) ? (res.body as HistoryRow[]) : (body.rows ?? []);
+      const out = rowsToBubbles(rows);
+      const page = Array.isArray(res.body) ? null : body;
+      const tools = toolsFromRows(rows);
+      const more = page?.hasMore ?? false;
+      const oldestId = page?.oldest ?? rows[0]?.info?.id ?? null;
       setBubbles(out);
       setWinStart(Math.max(0, out.length - MSG_WINDOW));
-      setHistoryTools(toolsFromRows(rows));
+      setHistoryTools(tools);
+      setHasMore(more);
+      setOldest(oldestId);
+      setHistoryError("");
+      putCachedSession(sessionId, { bubbles: out, tools, hasMore: more, oldest: oldestId });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      // keep whatever is on screen; surface a retryable error instead of a
+      // skeleton that never resolves
+      setHistoryError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoadingHistory(false);
+    }
+  }
+
+  // P1-064: prepend the page older than `oldest`. If the server tail overlaps
+  // what is already rendered (history changed under us, e.g. a rewind), the
+  // page replaces the list instead of duplicating bubbles.
+  async function loadMore() {
+    if (pagingRef.current || !hasMore || !oldest) return;
+    pagingRef.current = true;
+    setPaging(true);
+    const el = listRef.current;
+    if (el) prePagingHeight.current = el.scrollHeight;
+    try {
+      const res = await request(
+        "GET",
+        `/session/${sessionId}/message`,
+        undefined,
+        { limit: "100", before: oldest },
+        HISTORY_TIMEOUT_MS,
+      );
+      if (res.status !== 200) throw new Error(`GET messages -> ${res.status}`);
+      const body = res.body as HistoryPage;
+      const rows = Array.isArray(res.body) ? (res.body as HistoryRow[]) : (body.rows ?? []);
+      const older = rowsToBubbles(rows);
+      const more = Array.isArray(res.body) ? false : (body.hasMore ?? false);
+      const nextOldest = rows[0]?.info?.id ?? oldest;
+      const tools = toolsFromRows(rows);
+      const known = new Set(bubbles.map((x) => x.messageID).filter(Boolean));
+      const overlap = older.some((x) => x.messageID && known.has(x.messageID));
+      // functional update: a streamed bubble landing mid-fetch must survive
+      setBubbles((b) => {
+        const stale = new Set(b.map((x) => x.messageID).filter(Boolean));
+        const hit = older.some((x) => x.messageID && stale.has(x.messageID));
+        return hit ? older : [...older, ...b];
+      });
+      const next = overlap ? older : [...older, ...bubbles];
+      setWinStart(Math.max(0, next.length - MSG_WINDOW));
+      const mergedTools = new Map([...historyTools, ...tools]);
+      setHistoryTools(mergedTools);
+      setHasMore(more);
+      setOldest(nextOldest);
+      setHistoryError("");
+      putCachedSession(sessionId, {
+        bubbles: next,
+        tools: mergedTools,
+        hasMore: more,
+        oldest: nextOldest,
+      });
+    } catch (err) {
+      setHistoryError(err instanceof Error ? err.message : String(err));
+    } finally {
+      pagingRef.current = false;
+      setPaging(false);
     }
   }
 
@@ -666,11 +775,16 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
       listRef.current.scrollTop = listRef.current.scrollHeight - prePagingHeight.current;
       prePagingHeight.current = 0;
     }
-  }, [winStart]);
+  }, [winStart, bubbles.length]);
 
   function pageOlder() {
     const el = listRef.current;
-    if (!el || winStart === 0) return;
+    if (!el) return;
+    if (winStart === 0) {
+      // local window exhausted: pull the next page from the daemon
+      if (hasMore) void loadMore();
+      return;
+    }
     if (el.scrollTop < 40) {
       prePagingHeight.current = el.scrollHeight;
       setWinStart(Math.max(0, winStart - 100));
@@ -1326,7 +1440,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
         <button
           onClick={() => {
             setShowActivity((v) => !v);
-            void loadToolHistory();
+            ensureToolHistory();
           }}
           aria-label={t("toolActivity")}
           style={showActivity ? { borderColor: "var(--accent)" } : undefined}
@@ -1371,7 +1485,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
               <div className="skel" style={{ width: "70%", height: 64 }} />
             </>
           )}
-          {!loadingHistory && bubbles.length === 0 && !liveText && (
+          {!loadingHistory && bubbles.length === 0 && !liveText && !historyError && (
             <div className="chat-empty">
               <span className="chat-empty-icon" aria-hidden>
                 <IconChat />
@@ -1380,10 +1494,37 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
               <p className="chat-empty-hint">{t("emptyHint")}</p>
             </div>
           )}
+          {historyError && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "8px auto" }}>
+              <p style={{ color: "var(--danger)", margin: 0, flex: 1 }}>
+                {humanizeError(historyError, t)}
+              </p>
+              <button
+                style={{ padding: "6px 10px", flexShrink: 0 }}
+                onClick={() => {
+                  setHistoryError("");
+                  setLoadingHistory(true);
+                  void loadHistory();
+                }}
+              >
+                {t("retry")}
+              </button>
+            </div>
+          )}
           {winStart > 0 && (
             <div className="muted" style={{ textAlign: "center", fontSize: "0.75rem" }}>
               ↑ {t("olderMessages", { n: winStart })}
             </div>
+          )}
+          {winStart === 0 && hasMore && !loadingHistory && (
+            <button
+              className="chip"
+              style={{ margin: "4px auto 8px", display: "block" }}
+              disabled={paging}
+              onClick={() => void loadMore()}
+            >
+              {paging ? "…" : t("loadMore")}
+            </button>
           )}
           {bubbles.slice(winStart).map((b, i) => (
             <div

@@ -11,7 +11,20 @@ import { timeAgo, sessionUpdatedTs } from "../apps/web/src/lib/time";
 import { sessionTitleOf } from "../apps/web/src/lib/title";
 import { dict } from "../apps/web/src/lib/i18n";
 import { permissionPreview } from "../apps/web/src/lib/permission";
-import { applySessionFilters } from "../apps/web/src/lib/sessionFilter";
+import { applySessionFilters, isPilotTitle, splitPilotSessions } from "../apps/web/src/lib/sessionFilter";
+import {
+  capMessagePage,
+  parsePageLimit,
+  shouldPaginateMessages,
+  sliceMessagePage,
+  PAGE_LIMIT_MAX,
+} from "../apps/daemon/src/paginate";
+import {
+  dropCachedSession,
+  getCachedSession,
+  putCachedSession,
+  SESSION_CACHE_MAX,
+} from "../apps/web/src/lib/sessionCache";
 import { taskMergedIn } from "../apps/pilot/src/pipeline";
 import { cachedExec, rerunKey, type RerunResults } from "../apps/pilot/src/runner";
 import {
@@ -341,6 +354,74 @@ check("search query still matches title case-insensitive", fQuery.length === 1 &
 const fBoth = applySessionFilters(all, funread, "fix", "without");
 check("badge filter and query compose", fBoth.length === 0);
 check("empty query string passes all", applySessionFilters(all, funread, "   ", "all").length === 3);
+
+// --- P1-064: server-side message paging --------------------------------------
+{
+  const rows = Array.from({ length: 500 }, (_, i) => ({
+    info: { id: `msg-${i + 1}`, role: i % 2 === 0 ? "user" : "assistant" },
+    parts: [{ type: "text", text: `hello ${i + 1}` }],
+  }));
+  const p1 = sliceMessagePage(rows, 50);
+  check("P1-064: tail page of 500x50 has exactly the last 50 rows", p1.rows.length === 50 && p1.rows[0]!.info!.id === "msg-451" && p1.rows[49]!.info!.id === "msg-500");
+  check("P1-064: tail page hasMore + oldest cursor", p1.hasMore === true && p1.oldest === "msg-451" && p1.total === 500);
+  const p2 = sliceMessagePage(rows, 100, "msg-451");
+  check("P1-064: before cursor returns the 100 previous rows", p2.rows.length === 100 && p2.rows[0]!.info!.id === "msg-351" && p2.rows[99]!.info!.id === "msg-450");
+  check("P1-064: before page still has more behind it", p2.hasMore === true && p2.oldest === "msg-351");
+  const p3 = sliceMessagePage(rows, 50, "msg-2");
+  check("P1-064: page at the head of history has no more behind", p3.hasMore === false && p3.rows.length === 1 && p3.oldest === "msg-1");
+  const p4 = sliceMessagePage(rows, 50, "msg-vanished");
+  check("P1-064: vanished before id serves the available tail", p4.rows.length === 50 && p4.hasMore === true);
+  const p5 = sliceMessagePage([], 50);
+  check("P1-064: empty session yields empty page without more", p5.rows.length === 0 && p5.hasMore === false && p5.oldest === null);
+
+  // size guard: a page of 200KB tool outputs must shrink until it fits 800KB
+  const fat = Array.from({ length: 500 }, (_, i) => ({
+    info: { id: `fat-${i + 1}`, role: "assistant" },
+    parts: [{ type: "tool", state: { output: "x".repeat(200_000) } }],
+  }));
+  const capped = capMessagePage(fat, 50);
+  check("P1-064: oversize page shrinks until under the frame budget", JSON.stringify(capped.rows).length <= 800_000 && capped.rows.length < 50);
+  check("P1-064: capped page always keeps at least one row", capped.rows.length >= 1);
+  const small = capMessagePage(rows, 50);
+  check("P1-064: small pages pass through the guard untouched", small.rows.length === 50 && small.hasMore === true);
+
+  // passthrough semantics: no params -> no intercept, plain array stays
+  check("P1-064: no query params keeps the passthrough", shouldPaginateMessages("GET", "/session/ses_1/message") === false && shouldPaginateMessages("GET", "/session/ses_1/message", {}) === false);
+  check("P1-064: limit or before opts into paging", shouldPaginateMessages("GET", "/session/ses_1/message", { limit: "50" }) === true && shouldPaginateMessages("GET", "/session/ses_1/message", { before: "msg-1" }) === true);
+  check("P1-064: paging only applies to GET of the message route", shouldPaginateMessages("POST", "/session/ses_1/message", { limit: "50" }) === false && shouldPaginateMessages("GET", "/session/ses_1", { limit: "50" }) === false);
+  check("P1-064: limit clamps to 1..200", parsePageLimit("9999") === PAGE_LIMIT_MAX && parsePageLimit("0") === 1 && parsePageLimit("abc") === 50 && parsePageLimit(undefined) === 50);
+}
+
+// --- P1-064: warm session cache (last 3 conversations) -----------------------
+{
+  const entry = { bubbles: [] as unknown[], tools: new Map(), hasMore: false, oldest: null };
+  for (const id of ["cache-a", "cache-b", "cache-c", "cache-d", "cache-e"]) dropCachedSession(id);
+  putCachedSession("cache-a", entry);
+  putCachedSession("cache-b", entry);
+  putCachedSession("cache-c", entry);
+  const touched = getCachedSession("cache-a"); // touch: a becomes the newest again
+  putCachedSession("cache-d", entry); // evicts b (oldest)
+  putCachedSession("cache-e", entry); // evicts c — a survives thanks to the touch
+  const ra = getCachedSession("cache-a");
+  const rb = getCachedSession("cache-b");
+  const rc = getCachedSession("cache-c");
+  const rd = getCachedSession("cache-d");
+  const re = getCachedSession("cache-e");
+  check("P1-064: cache keeps at most 3 sessions, evicting the oldest", touched !== null && ra !== null && rb === null && rc === null && rd !== null && re !== null);
+  check("P1-064: unknown session id is a cache miss", getCachedSession("cache-zzz") === null);
+  check("P1-064: cache cap is 3", SESSION_CACHE_MAX === 3);
+}
+
+// --- P1-064: pilot session grouping heuristic --------------------------------
+check("P1-064: pilot task titles are detected", isPilotTitle("P1-064: fast session switch") && isPilotTitle("fix P2-049 bug"));
+check("P1-064: ordinary titles are not pilot sessions", !isPilotTitle("Planilha de vendas") && !isPilotTitle("P1-64 nope") && !isPilotTitle("") && !isPilotTitle(undefined));
+const mixed = [
+  { id: "1", title: "P1-064: fast switch" },
+  { id: "2", title: "Groceries" },
+  { id: "3", title: "P2-063: breaker" },
+];
+const split = splitPilotSessions(mixed);
+check("P1-064: list splits into user and pilot groups", split.user.length === 1 && split.user[0]!.id === "2" && split.pilot.length === 2);
 
 // --- file card copy path (P3-002) --------------------------------------------
 check("hasClipboardApi present", hasClipboardApi({ clipboard: { writeText: () => {} } }));
