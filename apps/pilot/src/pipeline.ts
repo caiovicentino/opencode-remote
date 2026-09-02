@@ -431,7 +431,13 @@ function commitLessons(ws: string, id: string, lessons: string[]): boolean {
   return false;
 }
 
-async function runScribe(ws: string, t: Task, diff: string, findings: string): Promise<void> {
+async function runScribe(
+  ws: string,
+  t: Task,
+  diff: string,
+  findings: string,
+  trackSession?: (id: string | undefined) => string | undefined,
+): Promise<void> {
   emit("phase", { task: t.id, phase: "scribe" });
   // P1-057: the scribe ingests the merged diff — run it read-only; the lessons
   // come back as TEXT and the runner validates + commits them. The next
@@ -443,6 +449,7 @@ async function runScribe(ws: string, t: Task, diff: string, findings: string): P
     label: `scribe-${t.id}`,
     onStdout: agentStream("scribe"),
   });
+  trackSession?.(out.sessionId);
   if (!out.output.includes("SCRIBE:DONE")) {
     logScribe(t.id, "scribe did not finish — lessons skipped");
     return;
@@ -1033,10 +1040,17 @@ export function verifyEvidence(
   return { ok: true, detail: `${block.commands.length} command(s) re-executed` };
 }
 
-export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState): Promise<PipelineResult> {
+export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, sessions?: Set<string>): Promise<PipelineResult> {
   const ws = cfg.workspace;
   // central injection guard: t.id is interpolated into shell commands below
   if (!TASK_ID_RE.test(t.id)) return { ok: false, detail: `invalid task id: ${t.id}` };
+  // P2-028: every opencode session this task spawns lands here (planner,
+  // builder rounds, reviewers, escalation, scribe) — the caller reconciles
+  // their token totals from opencode.db into state.taskCosts after the run.
+  const trackSession = (id: string | undefined) => {
+    if (id && sessions) sessions.add(id);
+    return id;
+  };
   const branch = `pilot/${t.id}`;
   // P2-009: pipeline (branch) start — cited UI evidence must be newer than this
   const startedAtMs = Date.now();
@@ -1144,6 +1158,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
           },
         );
         if (out.sessionId) plannerSession = out.sessionId;
+        trackSession(out.sessionId);
         // deterministic validation + commit: the LLM is never trusted, only the
         // on-disk file (all six sections present) counts as a spec
         specOk = commitSpec(ws, t.id);
@@ -1186,6 +1201,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
       onStdout: stream,
     });
     if (build.sessionId) builderSession = build.sessionId;
+    trackSession(build.sessionId);
     // P2-013 (round 2): only a failed round leaves resumable state — a
     // successful one resets it, so review-fix rounds never see a false
     // "resume the crash" block
@@ -1312,6 +1328,8 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
         onStdout: stream,
       }),
     ]);
+    trackSession(sec.sessionId);
+    trackSession(qual.sessionId);
     console.log(
       JSON.stringify({
         ts: nowLocalISO(),
@@ -1367,6 +1385,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
         models: cfg.models,
         marker: ESCALATION_MARKER,
       });
+      trackSession(esc.sessionId);
       const escParsed = parseFindings(esc.output);
       const escVerified = verifyFindings(escParsed, ws, reviewDiff);
       for (const d of escVerified.dropped) logHallucination(t.id, "escalation", d);
@@ -1407,7 +1426,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState):
         // latency must not block other slots) and before the pipeline returns
         // (the next pipeline resets this worktree, which would race the agent).
         try {
-          await runScribe(ws, t, diff, findings);
+          await runScribe(ws, t, diff, findings, trackSession);
         } catch (err) {
           console.log(
             JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "scribe crashed", data: { task: t.id, err: String(err).slice(0, 200) } }),

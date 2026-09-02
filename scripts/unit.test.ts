@@ -14,6 +14,16 @@ import { permissionPreview } from "../apps/web/src/lib/permission";
 import { applySessionFilters } from "../apps/web/src/lib/sessionFilter";
 import { taskMergedIn } from "../apps/pilot/src/pipeline";
 import { cachedExec, rerunKey, type RerunResults } from "../apps/pilot/src/runner";
+import {
+  applySessionCosts,
+  isSessionId,
+  parseSessionTokens,
+  pruneTaskCosts,
+  querySessionTokens,
+  sessionTotalTokens,
+  TASK_COST_CAP,
+  tokensSql,
+} from "../apps/pilot/src/costs";
 import { CORPUS_COMMANDS, appendCorpusSample, captureGateCorpus, corpusSlug, loadGateCorpus, sanitizeForCorpus } from "../apps/pilot/src/gate-corpus";
 import {
   builderPrompt,
@@ -1775,6 +1785,13 @@ check("viewport: garbage rejected", viewportFromParams("x", "800") === null);
     "resume: prose tokens do not evict or distort real ids",
     JSON.stringify(mixed.taskIds) === JSON.stringify(["task_A1b2C3d4E5f6"]),
   );
+
+  // P2-028: session ids now feed DB cost lookups — the capture must stay
+  // anchored so glued prose ("my_ses_…", "abcses_…") never reaches the query
+  const gluedSes = scanIds("prefix my_ses_abc123def456 suffix abcses_abc123def456x end");
+  check("resume: glued ses_ prose is not captured", gluedSes.sessionId === undefined);
+  const anchored = scanIds("word ses_abc123def456x more");
+  check("resume: a real anchored ses_ id still captures", anchored.sessionId === "ses_abc123def456x");
 
   // streaming: an id split across two stdout chunks is captured whole via the
   // tail buffer; a match still growing at the chunk edge waits for flush()
@@ -3575,6 +3592,48 @@ const ptKeys = Object.keys(dict.pt).sort();
 check("i18n: en and pt share the exact same key set", JSON.stringify(enKeys) === JSON.stringify(ptKeys));
 check("i18n: no empty strings in either locale", enKeys.every((k) => String((dict.en as Record<string, string>)[k]).trim() !== "") && ptKeys.every((k) => String((dict.pt as Record<string, string>)[k]).trim() !== ""));
 check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "olderMessages", "changesFor", "connTitle"].every((k) => String((dict.en as Record<string, string>)[k]).includes("{") && String((dict.pt as Record<string, string>)[k]).includes("{")));
+
+// --- P2-028 per-task token costs from opencode.db -----------------------------
+{
+  const SESS = { id: "ses_abc123456", tokens_input: 1000, tokens_output: 100, tokens_cache_read: 20, tokens_cache_write: 5 };
+  check("costs: session id charset guard", isSessionId("ses_abc123456") && !isSessionId("ses_ab; rm") && !isSessionId("myses_abc123456") && !isSessionId("nope"));
+  check("costs: total sums input+output+both caches", sessionTotalTokens(SESS) === 1125);
+
+  const json = JSON.stringify([SESS, { id: "junk; DROP", tokens_input: 9, tokens_output: 0, tokens_cache_read: 0, tokens_cache_write: 0 }]);
+  const parsed = parseSessionTokens(json);
+  check("costs: parser keeps canonical ids only", parsed.ses_abc123456 === 1125 && !("junk; DROP" in parsed));
+  check("costs: parser survives garbage", Object.keys(parseSessionTokens("not json")).length === 0);
+
+  check("costs: sql inlines validated ids", tokensSql(["ses_abc123456"]).includes("IN ('ses_abc123456')"));
+  const viaQuery = querySessionTokens(["ses_abc123456"], "/tmp/fake.db", () => json);
+  check("costs: query maps session → total tokens", viaQuery.ses_abc123456 === 1125);
+
+  const store: { taskCosts: Record<string, number>; taskCostSessions: Record<string, string[]> } = { taskCosts: {}, taskCostSessions: {} };
+  applySessionCosts(store, "P2-028", ["ses_abc123456", "glued_ses_x"], () => ({ ses_abc123456: 1000 }));
+  check("costs: applySessionCosts records the task total", store.taskCosts["P2-028"] === 1000);
+  check("costs: non-session ids are filtered before the query", JSON.stringify(store.taskCostSessions["P2-028"]) === JSON.stringify(["ses_abc123456"]));
+  // recompute semantics: a resumed session GROWS — the stored total is replaced,
+  // never added twice, and re-applied ids are deduped
+  applySessionCosts(store, "P2-028", ["ses_abc123456"], () => ({ ses_abc123456: 2500 }));
+  check("costs: re-applied session recomputes instead of double counting", store.taskCosts["P2-028"] === 2500);
+  applySessionCosts(store, "P2-028", ["ses_def6789012"], () => ({ ses_abc123456: 2500, ses_def6789012: 500 }));
+  check("costs: a second session adds to the task total", store.taskCosts["P2-028"] === 3000);
+  // a transient DB failure keeps the previous honest total; the id stays
+  // recorded so the next reconciliation picks it up once the DB has it
+  applySessionCosts(store, "P2-028", ["ses_ghi9012345"], () => ({}));
+  check("costs: failed DB read keeps the previous total", store.taskCosts["P2-028"] === 3000 && store.taskCostSessions["P2-028"].length === 3);
+  // unknown task id never reaches the store
+  applySessionCosts(store, "../evil", ["ses_abc123456"], () => ({ ses_abc123456: 1 }));
+  check("costs: hostile task id is ignored", !("../evil" in store.taskCosts));
+  // rolling window keeps state.json bounded
+  const big: { taskCosts: Record<string, number>; taskCostSessions: Record<string, string[]> } = { taskCosts: {}, taskCostSessions: {} };
+  for (let i = 0; i < TASK_COST_CAP + 10; i++) {
+    big.taskCosts[`P9-${i}`] = i;
+    big.taskCostSessions[`P9-${i}`] = [`ses_abc${String(i).padStart(6, "0")}`];
+  }
+  pruneTaskCosts(big);
+  check("costs: rolling window prunes oldest tasks", Object.keys(big.taskCosts).length === TASK_COST_CAP && !("P9-0" in big.taskCosts) && "P9-209" in big.taskCostSessions);
+}
 
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);

@@ -322,6 +322,18 @@ A linha da task no BACKLOG.md pode carregar a tag opcional `(size: S|M|L)` (defa
   (planner/builder/reviewers/gatekeeper, rounds incluídos) via
   `GET /api/pilot-history`; sem o arquivo, o widget fica oculto em vez de
   inventar série.
+- **Custo por task (P2-028)**: o runner já captura o `ses_…` de cada spawn —
+  o pilot reconcilia esses ids contra o `opencode.db` local
+  (`~/.local/share/opencode/opencode.db`, tabela `session`: `tokens_input`,
+  `tokens_output`, `tokens_cache_read`, `tokens_cache_write`; os totais batem
+  com o JSON `data` da tabela `message`) e acumula em `state.json` como
+  `taskCosts: {id: tokens}` + `taskCostSessions: {id: [ses…]}`. O total é
+  **recomputado** (não somado) a cada ciclo a partir da lista deduplicada de
+  sessões — sessão retomada cresce sem virar dupla contagem; task bloqueada
+  preserva o custo das tentativas. Os views **FILA** e **CONCLUÍDAS** mostram
+  o chip `x.xM tok` em cada linha (formato k/M/B). Janela rolante de 200 tasks
+  em `state.json`; sem DB/`sqlite3`, o total anterior é preservado e o ciclo
+  segue. Objetivo: identificar tasks caras e priorizar otimização por dado.
 - Logs JSONL: `~/.opencode-remote/logs/pilot.log`
 - Feed bruto: `GET 127.0.0.1:8792/api/pilot-events` (Bearer apiToken) — eventos + contadores + heartbeat
 - Digest a cada pipeline: push no seu telefone (via `POST /api/push` autenticado no daemon)

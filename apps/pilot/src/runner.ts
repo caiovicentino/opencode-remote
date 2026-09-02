@@ -28,13 +28,23 @@ export const MIN_TASK_ID_SUFFIX = 8;
 const RESUMABLE_TASK_ID_RE = /(?<![A-Za-z0-9_-])task_[A-Za-z0-9]{8,}/g;
 
 /**
+ * P2-028: session ids are now CONSUMED (per-task token costs), so the capture
+ * gets the same anchoring the task-id regex already had — the lookbehind keeps
+ * glued prose out ("mytask_ses_abc…" must not become a session id and query
+ * the wrong row). Suffix stays length-free: the pinned chunk-edge battery
+ * completes a 8-char `ses_98z7Yy6` across two chunks.
+ */
+const SESSION_ID_RE = /(?<![A-Za-z0-9_-])ses_[A-Za-z0-9]+/;
+const SESSION_ID_RE_G = /(?<![A-Za-z0-9_-])ses_[A-Za-z0-9]+/g;
+
+/**
  * P2-013: opencode >=1.18.20 surfaces failed subagent tool calls with a
  * resumable `task_id`. Extract those plus the agent's own session id from a
  * block of stdout (pure — pinned against canned output by the unit battery).
  */
 export function scanIds(window: string): AgentIds {
   return {
-    sessionId: window.match(/ses_[A-Za-z0-9]+/)?.[0],
+    sessionId: window.match(SESSION_ID_RE)?.[0],
     taskIds: [...window.matchAll(RESUMABLE_TASK_ID_RE)].map((m) => m[0]),
   };
 }
@@ -71,7 +81,7 @@ export function idScanner(): { scan: (chunk: string) => AgentIds; flush: () => A
     // only settle it once more text has arrived (or on the final flush)
     const settled = (m: RegExpMatchArray) => final || m.index! + m[0].length < window.length;
     if (!sessionId) {
-      const s = [...window.matchAll(/ses_[A-Za-z0-9]+/g)].find(settled);
+      const s = [...window.matchAll(SESSION_ID_RE_G)].find(settled);
       if (s) sessionId = s[0];
     }
     for (const m of [...window.matchAll(RESUMABLE_TASK_ID_RE)]) {
