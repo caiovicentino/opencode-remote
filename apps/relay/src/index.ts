@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { WebSocketServer, type WebSocket } from "ws";
 import { healthzHandler } from "./healthz";
 import { TokenBucket } from "./ratelimit";
-import { IpCap } from "./ipcap";
+import { IpCap, normalizeIp } from "./ipcap";
 import { isValidRoomId, MAX_ROOMS_PER_SOCKET } from "./roomid";
 import { createShutdown, stopAccepting } from "./shutdown";
 
@@ -206,8 +206,11 @@ wss.on("connection", (socket: Socket, req) => {
     socket.close(1013, "server busy");
     return;
   }
-  // admission control: the per-IP cap applies before any room join
-  const ip = req.socket.remoteAddress ?? "unknown";
+  // admission control: the per-IP cap applies before any room join.
+  // Normalize once here (P2-026) — mapped IPv4 unmasks, IPv6 aggregates by
+  // /64 — and stash the key on the socket so admit() and release() always
+  // act on the same bucket.
+  const ip = normalizeIp(req.socket.remoteAddress ?? "unknown");
   if (!ipCap.admit(ip)) {
     m.rejects++;
     ev("warn", "connection rejected: per-IP cap exceeded", { ip });

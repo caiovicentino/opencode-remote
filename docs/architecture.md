@@ -48,7 +48,11 @@ live-connection cap (`RELAY_MAX_PER_IP`, default 20, 0 disables — the
 surplus connection is closed with 1013 "too many connections" and counted
 in `rejects` on `/metrics`), and a per-connection
 token bucket on message frames (600 msgs/min sustained, burst 1000 —
-`RELAY_RATE_PER_MIN` / `RELAY_RATE_BURST`, 0 disables). Defaults are sized to
+`RELAY_RATE_PER_MIN` / `RELAY_RATE_BURST`, 0 disables). The per-IP cap keys
+on a normalized address (`normalizeIp`): IPv4-mapped IPv6
+(`::ffff:a.b.c.d`) unmasks to the plain IPv4 and other IPv6 sources
+aggregate by their /64 prefix, so one dual-stack host gets one budget
+instead of 2^64 (IPv4 and `::1` are kept as-is). Defaults are sized to
 pass the daemon's worst-case chunked transfer; a connection over budget is
 disconnected with close code 4029 and counted in `rate_limited_total` on
 `/metrics`. The budget applies to every frame including joins and
@@ -63,9 +67,10 @@ answering `{ok, version, uptimeS, rooms, roomsRejected}` (counters only,
 never room ids) for load balancers in the hosted stage; `/metrics` stays
 loopback-only. Optional TLS (`wss://`)
 or termination via Caddy.
-Note the per-IP cap reads `req.socket.remoteAddress` — if you front the relay
-with a TLS-terminating proxy every connection shares the proxy IP, so raise
-`RELAY_MAX_PER_IP` (or route TCP passthrough) accordingly.
+Note the per-IP cap reads (a normalized form of) `req.socket.remoteAddress`
+— if you front the relay with a TLS-terminating proxy every connection
+shares the proxy IP, so raise `RELAY_MAX_PER_IP` (or route TCP passthrough)
+accordingly.
 
 ### apps/daemon
 Runs next to `opencode serve`. Responsibilities:

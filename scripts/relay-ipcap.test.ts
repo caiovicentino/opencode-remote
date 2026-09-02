@@ -4,12 +4,15 @@
  * rejecting connection cap+1 with 1013 "too many connections", a released
  * slot being reused by the next peer, and a RELAY_MAX_PER_IP=0 relay
  * proving the disabled cap never rejects.
+ * P2-026: normalizeIp rotation immunity — mapped IPv4 unmasks to the plain
+ * IPv4, IPv6 aggregates by /64, and the handler keys admit/release on the
+ * normalized value.
  * Run: npx tsx scripts/relay-ipcap.test.ts
  */
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import WebSocket from "ws";
-import { IpCap } from "../apps/relay/src/ipcap";
+import { IpCap, normalizeIp } from "../apps/relay/src/ipcap";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -46,7 +49,33 @@ check("ipcap: 0 disables — no state kept", Object.keys(free.counts()).length =
 free.release("host");
 check("ipcap: 0 disables — release is a no-op", Object.keys(free.counts()).length === 0);
 
-// --- 2. integration helpers ---------------------------------------------------
+// --- 2. normalizeIp (P2-026): rotation-immune cap keys ------------------------
+check("normalize: mapped IPv4 unmasks to the plain IPv4", normalizeIp("::ffff:11.22.33.44") === "11.22.33.44");
+check("normalize: plain IPv4 passes through", normalizeIp("11.22.33.44") === "11.22.33.44");
+check("normalize: mapped and plain share the bucket", normalizeIp("::ffff:11.22.33.44") === normalizeIp("11.22.33.44"));
+check("normalize: mapped hex tail unmasks too", normalizeIp("::ffff:0B16:212C") === "11.22.33.44");
+check("normalize: IPv6 loopback stays", normalizeIp("::1") === "::1");
+check("normalize: /64 key is the compressed lowercase prefix", normalizeIp("2001:DB8:0001:0002::1") === "2001:db8:1:2");
+check("normalize: uncompressed and compressed /64 siblings agree", normalizeIp("2001:db8:1:2:dead:beef:0:1") === normalizeIp("2001:db8:1:2::1"));
+check("normalize: neighbor /64 aggregates differently", normalizeIp("2001:db8:1:2::1") !== normalizeIp("2001:db8:1:3::1"));
+check("normalize: trailing-zero prefix compresses", normalizeIp("2001:db8:0:0::1") === "2001:db8::");
+check("normalize: garbage degrades to raw key", normalizeIp("not-an-ip") === "not-an-ip");
+
+// handler-equivalent keying: the connection path normalizes once and passes
+// the same key to admit() and release()
+const shared = new IpCap(1);
+check("ipcap: mapped addr takes the plain-IPv4 budget", shared.admit(normalizeIp("::ffff:11.22.33.44")) && !shared.admit(normalizeIp("11.22.33.44")));
+shared.release(normalizeIp("::ffff:11.22.33.44"));
+check("ipcap: release via the mapped twin reopens for plain", shared.admit(normalizeIp("11.22.33.44")));
+
+// two addresses of one /64 share the budget; neighbors don't collide
+const lan = new IpCap(2);
+check("ipcap: same /64 shares budget", lan.admit(normalizeIp("2001:db8:1:2::1")) && lan.admit(normalizeIp("2001:db8:1:2:dead:beef:0:1")));
+check("ipcap: same /64 cap+1 is refused", !lan.admit(normalizeIp("2001:db8:1:2::3")));
+check("ipcap: neighbor /64 unaffected", lan.admit(normalizeIp("2001:db8:1:3::1")));
+check("ipcap: counts keys are normalized", JSON.stringify(Object.keys(lan.counts()).sort()) === '["2001:db8:1:2","2001:db8:1:3"]');
+
+// --- 3. integration helpers ---------------------------------------------------
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function startRelay(env: Record<string, string>) {
@@ -108,7 +137,7 @@ const closeInfo = (ws: WebSocket) =>
     ws.on("close", (code, reason) => resolve({ code, reason: reason.toString() })),
   );
 
-// --- 3. strict-env relay: per-IP admission enforced ---------------------------
+// --- 4. strict-env relay: per-IP admission enforced ---------------------------
 const strict = startRelay({ RELAY_MAX_PER_IP: "2" });
 await waitReady(strict.port);
 const strictUrl = `ws://127.0.0.1:${strict.port}`;
@@ -136,11 +165,16 @@ for (let i = 0; i < 10 && !reused; i++) {
 }
 check("relay: released slot is reusable (close handler)", reused !== null);
 check("relay: previously admitted peer still open", s2!.readyState === WebSocket.OPEN);
+// normalization must not over-merge: IPv6 loopback is its own bucket, so an
+// IPv6 source is admitted while the 127.0.0.1 budget (s2 + reused) is full
+const v6 = await tryOpen(`ws://[::1]:${strict.port}`);
+check("relay: IPv6 loopback has its own bucket", v6 !== null);
+v6?.close();
 s2!.close();
 reused?.close();
 strict.proc.kill("SIGTERM");
 
-// --- 4. RELAY_MAX_PER_IP=0: cap disabled, never rejects ------------------------
+// --- 5. RELAY_MAX_PER_IP=0: cap disabled, never rejects ------------------------
 const disabled = startRelay({ RELAY_MAX_PER_IP: "0" });
 await waitReady(disabled.port);
 const url = `ws://127.0.0.1:${disabled.port}`;
