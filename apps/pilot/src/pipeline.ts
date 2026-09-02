@@ -18,7 +18,8 @@ export const CONSTITUTION = `CONSTITUTION (never violate):
 3. scripts/invariants.ts and deploy/ are safety-critical: changes there need explicit justification in the commit message.
 4. No secrets in the repo. No network listeners beyond the documented ports.
 5. Every user-visible change is documented (README/AGENTS/docs) and covered by the eval battery.
-6. Design bar: the product must look professionally designed, never AI-generated. Banned tells: generic purple/blue gradients, glassmorphism abuse, emoji as icons, inconsistent spacing/typography, rounded-everything, placeholder copy. Every UI change reads as intentional craft (reference bar: Linear, Raycast, Claude Desktop).`;
+6. Design bar: the product must look professionally designed, never AI-generated. Banned tells: generic purple/blue gradients, glassmorphism abuse, emoji as icons, inconsistent spacing/typography, rounded-everything, placeholder copy. Every UI change reads as intentional craft (reference bar: Linear, Raycast, Claude Desktop).
+7. Product premise (P1-071): local = no auth ceremony; every flow must be reachable from first boot.`;
 
 /** P1-007: injected into planner/builder/strategist prompts — top keyword-matched lessons. */
 export function lessonsBlock(lessons: string[]): string {
@@ -487,6 +488,8 @@ Review the following diff with this focus: ${focus}
 
 Rules:
 - ${CONSTITUTION}
+- Product premise (P1-071): if the diff presupposes a user flow (auth, onboarding,
+  connection), question the premise, not just the implementation.
 - Judge only this diff against the task and the constitution. Do not rewrite the code.
 - Be strict but concrete: every finding must reference a file and a problem.
 - Cite or it didn't happen (P2-015): every finding bullet must cite a repo-relative

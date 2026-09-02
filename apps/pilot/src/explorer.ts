@@ -41,6 +41,17 @@ export function explorerShotsDir(): string {
 }
 
 /**
+ * P1-071: a fresh-state explorer run keys its own `OCR_DESKTOP_SESSION` —
+ * digits only, no spaces, safe as a /tmp session-dir suffix. Each day gets a
+ * session name never used before, so `tools/desktop.mjs`'s keeper spawns fresh
+ * and `hermeticEnv()` mints a brand-new temp userData: a true first install,
+ * never a reused keeper of a previous run.
+ */
+export function explorerSessionName(today: string): string {
+  return `explorer-fresh-${today.replace(/[^0-9]/g, "")}`;
+}
+
+/**
  * Pure parser for the agent's structured output. A finding is only kept when
  * it has a title, a known severity and a screenshot that actually exists on
  * disk (evidence is the point of the exercise); unknown areas degrade to ""
@@ -137,8 +148,10 @@ export async function runExplorer(cfg: PilotConfig, state: PilotState): Promise<
   const shotsDir = explorerShotsDir();
   try {
     mkdirSync(shotsDir, { recursive: true });
-    log("info", "nightly explorer starting");
-    const r = await runAgent(explorerPrompt(shotsDir), {
+    // P1-071: one fresh session per run — first-boot journey, clean userData.
+    const session = explorerSessionName(today);
+    log("info", "nightly explorer starting", { session });
+    const r = await runAgent(explorerPrompt(shotsDir, session), {
       cwd: cfg.workspace,
       timeoutMin: EXPLORER_TIMEOUT_MIN,
       label: "explorer",
@@ -189,19 +202,22 @@ export async function runExplorer(cfg: PilotConfig, state: PilotState): Promise<
   }
 }
 
-function explorerPrompt(shotsDir: string): string {
+export function explorerPrompt(shotsDir: string, session: string): string {
   return `You are the EXPLORER agent of the opencode-remote autonomous pipeline (nightly computer-use pass).
-Your job: explore the REAL desktop app like a first-time user and report UX/robustness findings.
+Your job: review the FIRST-BOOT JOURNEY of the real desktop app with a clean state —
+exactly what a brand-new user sees on first install — and report product-premise,
+UX and robustness findings.
 
 The app is driven with the hermetic harness from the repo root (it launches the Electron
-app with no production daemon — safe to poke):
-  OCR_DESKTOP_SESSION=explorer node tools/desktop.mjs open "${shotsDir}/01-boot.png" 1440 900
-  OCR_DESKTOP_SESSION=explorer node tools/desktop.mjs see "<text>"
-  OCR_DESKTOP_SESSION=explorer node tools/desktop.mjs click "<selector>"
-  OCR_DESKTOP_SESSION=explorer node tools/desktop.mjs type "<selector>" "<text>"
-  OCR_DESKTOP_SESSION=explorer node tools/desktop.mjs shot "${shotsDir}/NN-name.png" 1440 900
-  OCR_DESKTOP_SESSION=explorer node tools/desktop.mjs ipc "<js expr>"
-  OCR_DESKTOP_SESSION=explorer node tools/desktop.mjs close
+app with no production daemon — safe to poke). Your session name below is unique to this
+run, so the launch is a TRUE first boot: fresh temp userData, no leftover state:
+  OCR_DESKTOP_SESSION=${session} node tools/desktop.mjs open "<shot.png>" 1440 900
+  OCR_DESKTOP_SESSION=${session} node tools/desktop.mjs see "<text>"
+  OCR_DESKTOP_SESSION=${session} node tools/desktop.mjs click "<selector>"
+  OCR_DESKTOP_SESSION=${session} node tools/desktop.mjs type "<selector>" "<text>"
+  OCR_DESKTOP_SESSION=${session} node tools/desktop.mjs shot "<shot.png>" 1440 900
+  OCR_DESKTOP_SESSION=${session} node tools/desktop.mjs ipc "<js expr>"
+  OCR_DESKTOP_SESSION=${session} node tools/desktop.mjs close
 
 If apps/web/dist/index.html or apps/desktop/dist-electron/main.js is missing, build
 them first (does NOT count toward the harness budget):
@@ -210,13 +226,34 @@ them first (does NOT count toward the harness budget):
 HARD BUDGET: at most ${EXPLORER_MAX_STEPS} harness commands this run — count them and stop.
 Do not run any other commands against the app. Do not git commit or push anything.
 
-How to explore (user mindset, not code mindset):
-- Onboarding/pairing first: what does a brand-new user see? Try an INVALID pairing code
-  and capture the error state. Try empty input. What happens after the error?
-- Then complete flows: navigate every pane (Conversas, Artifacts, ...) from the pairing
-  screen, open/close things, resize if the harness allows, look for dead ends.
-- Deliberate error states: malformed input, double clicks, interactions while disconnected.
-- Every finding MUST be backed by a screenshot you actually took (PNG in ${shotsDir}).
+Journey structure (two boots, at most 10 harness commands per phase):
+
+PHASE 1 — FIRST BOOT (the product premise):
+- Your VERY FIRST harness command must capture the untouched first screen, before any
+  interaction: open with a shot argument, one command:
+    OCR_DESKTOP_SESSION=${session} node tools/desktop.mjs open "${shotsDir}/first-boot-<YYYYMMDD>.png" 1440 900
+  (open takes an optional shot arg — do NOT run shot before open; the keeper is not
+  up yet and a bare shot fails).
+- If open reports reused:true, a stale keeper exists: close, then open once more
+  (both count toward the budget).
+- Then answer the premise questions from what the screen ACTUALLY shows, never invented:
+  * Why does a local app show any auth/pairing ceremony on this screen — is it needed?
+  * Is every flow reachable from first boot? Any dead ends with a clean state?
+  * What are the empty states — do they guide the user or just sit blank?
+- Explore onboarding/pairing as a first-time user: try an INVALID code and empty input,
+  capture the error states.
+
+PHASE 2 — SECOND BOOT, "daemon detected" (best-effort, same session):
+- close the app, then boot again with the reconnecting knob (P1-053, existing harness
+  env — no code changes; it shows the "first contact with a daemon" state):
+    OCR_DESKTOP_SESSION=${session} OCR_DAEMON_FORCE_RECONNECTING=1 node tools/desktop.mjs open "<shot.png>" 1440 900
+- Compare: is the reconnecting/recovery state understandable on its own? Does recovery
+  ever demand re-pairing? If phase 2 misbehaves, that is a finding like any other.
+- close at the end of the run.
+
+Every finding MUST be backed by a screenshot you actually took (PNG in ${shotsDir}).
+The first-boot screenshot is mandatory: findings about the first boot that do not cite
+first-boot-*.png are not journey findings.
 
 Output format — for each finding, one block exactly like:
 EXPLORER: FINDING
@@ -226,7 +263,8 @@ area: <ui|desktop|daemon|infra|relay>
 shot: <absolute path of the screenshot>
 detail: <what is wrong, why it matters, where — 1-3 sentences, single line>
 
-Aim for at least 3 real findings — quality over quantity, no invented filler. If a finding
-cannot be seen in a screenshot, it is not a finding.
+Aim for at least 3 real findings — premise and journey findings first, quality over
+quantity, no invented filler. If a finding cannot be seen in a screenshot, it is not
+a finding. Report only what the shots actually show.
 Your LAST line of output must be exactly: EXPLORER: DONE`;
 }

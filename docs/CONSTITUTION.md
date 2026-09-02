@@ -29,11 +29,27 @@ constituição NÃO é mergeado — sem exceção, sem waiver.
     de qualquer Python rodado depois. Se o diff não puder ser computado, o
     check reprova (fail-closed).
 
+## Product invariants (judgment)
+
+Invariantes de **produto** que os agents aplicam por julgamento (reviewers, red team,
+explorer de first boot) — explicitamente **NÃO** verificadas por `scripts/invariants.ts`:
+
+- **Local = sem cerimonia de auth** — o app roda na maquina do usuario; nenhum fluxo
+  pode exigir login/pareamento como barreira se existe caminho mais direto, e todo
+  fluxo deve ser alcancavel a partir do **first boot** (state limpo, primeira
+  instalacao). O explorer noturno roda uma passada fresh-state por dia exatamente
+  para auditar esta regra (P3-052/P1-071).
+
 ## Mudanças na constituição
 
 Alterar `scripts/invariants.ts` ou qualquer regra acima exige:
 commit com prefixo `constitution-change:` no body descrevendo o porquê,
 e aprovação unânime dos 2 reviewers (security + quality).
+
+Adicionar (ou editar) uma regra de julgamento — inclusive as invariantes de
+produto da seção acima e o prompt `CONSTITUTION` em `apps/pilot/src/pipeline.ts`
+— segue a mesma exigência de flag, mesmo sem tocar `invariants.ts`/`deploy/`.
+O commit do item 7 (P1-071) carrega a flag no body: verificado no review.
 
 ## Hierarquia de segurança
 

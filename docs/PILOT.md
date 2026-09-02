@@ -842,12 +842,24 @@ endpoint de autenticação.
 
 Junto do pass noturno do red team (janela das 03:00), o pilot acorda um agente
 com **visão** para explorar o app desktop **de verdade** — via harness hermético
-do P1-051 (`tools/desktop.mjs`, sessão `explorer` isolada, sem daemon de
-produção). É a camada exploratória que complementa os reviewers adversariais:
-em vez de olhar diffs, olha o **produto** como um usuário de primeira viagem.
+do P1-051 (`tools/desktop.mjs`, sem daemon de produção). É a camada exploratória
+que complementa os reviewers adversariais: em vez de olhar diffs, olha o
+**produto**. Desde o P1-071 a pass é **fresh-state**: cada run usa a sessão
+única `explorer-fresh-<AAAAMMDD>` (`explorerSessionName`), que nunca foi usada
+antes — o keeper do harness nasce novo e o `hermeticEnv()` cria um userData
+virgem, simulando uma primeira instalação real. O prompt manda abrir o app já
+tirando o shot `first-boot-<data>.png` 1440x900 (tela intacta, pré-interação) e
+responder as **perguntas de premissa** do produto: por que um app local mostraria
+cerimonia de auth/pareamento? Todo fluxo é alcançável a partir do first boot?
+Como ficam os empty states? Um segundo boot (best-effort, mesma sessão) com
+`OCR_DAEMON_FORCE_RECONNECTING=1` (knob P1-053, sem mudança no harness) cobre o
+estado "daemon detectado, primeiro contato".
 
-- **O que explora**: onboarding/pairing (incl. código inválido e campos vazios),
-  fluxos completos entre panes, states de erro deliberados, dead ends de navegação.
+- **O que explora**: a jornada de first boot com state limpo — premissa do produto
+  (cerimonia de auth num app local, alcançabilidade de fluxos, empty states),
+  onboarding/pairing (incl. código inválido e campos vazios), segundo boot com
+  daemon "detectado", fluxos completos entre panes, states de erro deliberados,
+  dead ends de navegação. Achados de jornada exigem o shot do first boot citado.
 - **Budget de custo previsível**: no máx. **24 comandos de harness** por run
   (enforced no prompt), timeout de agente de **25min** e cap de **5 findings**
   inseridos por run (`EXPLORER_MAX_*` em `apps/pilot/src/explorer.ts`).

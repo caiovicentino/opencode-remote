@@ -52,6 +52,7 @@ import {
   commitSpec,
   evidenceMatches,
   evidenceShotDimsOk,
+  CONSTITUTION,
   lessonsBlock,
   needsPlanner,
   needsUiEvidence,
@@ -126,7 +127,7 @@ import {
   type Task,
 } from "../apps/pilot/src/backlog";
 import { clearPendingRefill, readPendingRefill, relandDetail, relandPendingRefill, savePendingRefill } from "../apps/pilot/src/refill";
-import { EXPLORER_MAX_FINDINGS, EXPLORER_MAX_STEPS, EXPLORER_TIMEOUT_MIN, EXPLORER_PUSH_RETRIES, EXPLORER_PUSH_WAIT_MS, commitAndPushFindings, explorerSpec, parseExplorerFindings, type ExplorerFinding } from "../apps/pilot/src/explorer";
+import { EXPLORER_MAX_FINDINGS, EXPLORER_MAX_STEPS, EXPLORER_TIMEOUT_MIN, EXPLORER_PUSH_RETRIES, EXPLORER_PUSH_WAIT_MS, commitAndPushFindings, explorerPrompt, explorerSessionName, explorerSpec, parseExplorerFindings, type ExplorerFinding } from "../apps/pilot/src/explorer";
 import { runAgent, API_PREFLIGHT, apiHealthy, claudeArgs, idScanner, mergeAgentIds, OPENCODE_URL_DEFAULT, scanIds, shouldFallbackTierB, waitForApi } from "../apps/pilot/src/runner";
 import { mkdtempSync, mkdirSync, readdirSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync, utimesSync } from "node:fs";
 import { execSync, spawn } from "node:child_process";
@@ -1385,6 +1386,10 @@ check("touchedUi: lookalike apps/webs rejected", !touchedUiFromDiff("apps/webs/s
   check("planner: quality reviewer gets the spec criterion", qual.includes("does the diff fulfill specs/P0-999.md"));
   check("planner: no spec criterion without a spec", !reviewerPrompt("QUALITY", "regressions", TASK, "", null).includes("specs/P0-999.md"));
   check("planner: security reviewer never gets the spec criterion", !reviewerPrompt("SECURITY", "crypto", TASK, "", null, "specs/P0-999.md").includes("does the diff fulfill"));
+  // P1-071: premise review for every reviewer role + constitution item 7
+  check("reviewer: security reviewer gets the premise line", reviewerPrompt("SECURITY", "crypto", TASK, "", null).includes("question the premise, not just the implementation"));
+  check("reviewer: quality reviewer gets the premise line", reviewerPrompt("QUALITY", "regressions", TASK, "", null).includes("question the premise, not just the implementation"));
+  check("constitution: item 7 pins the first-boot product invariant", CONSTITUTION.includes("7. Product premise") && CONSTITUTION.includes("first boot") && CONSTITUTION.includes("local = no auth ceremony"));
 }
 
 // --- P1-060 long-horizon tasks: size tag, budgets, checkpoint review ----------
@@ -3761,6 +3766,14 @@ check(
     check("explorer: max option caps insertion", parseExplorerFindings(three, { exists: () => true, max: 2 }).length === 2);
     check("explorer: default budget cap is the module constant", parseExplorerFindings(three, { exists: () => true, max: EXPLORER_MAX_FINDINGS }).length === 3 && EXPLORER_MAX_FINDINGS <= 5);
     check("explorer: budgets keep the run cost predictable", EXPLORER_MAX_STEPS > 0 && EXPLORER_TIMEOUT_MIN > 0 && EXPLORER_TIMEOUT_MIN <= 30);
+
+    // P1-071: fresh-state first-boot journey — unique session + prompt shape
+    check("explorer: session name derives a never-used key from the date", explorerSessionName("2026-09-02") === "explorer-fresh-20260902");
+    const prompt = explorerPrompt("/abs/shots", "explorer-fresh-20260902");
+    check("explorer: prompt keys the run to its own fresh session", prompt.includes("OCR_DESKTOP_SESSION=explorer-fresh-"));
+    check("explorer: prompt demands an untouched first-boot shot at 1440x900", prompt.includes("first-boot-") && prompt.includes("1440 900"));
+    check("explorer: prompt carries the product-premise questions", prompt.includes("Why does a local app show any auth/pairing ceremony") && prompt.includes("reachable from first boot") && prompt.includes("empty states"));
+    check("explorer: prompt keeps the structured output contract", prompt.trimEnd().endsWith("Your LAST line of output must be exactly: EXPLORER: DONE"));
 
     // real insertion path: the addTask line must round-trip through parseBacklog
     writeFileSync(join(dir, "BACKLOG.md"), "# B\n\n## Ready\n\n## Done\n");
