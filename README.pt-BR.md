@@ -77,7 +77,13 @@ remoto, zero confiança**.
   ganham um card anexado; em telas com ≥ 900 px de largura, clicar no card abre
   a prévia num **painel lateral** ao lado do chat (divisor arrastável, o chat
   continua visível e navegável — estilo Claude/Codex); em telas mais estreitas
-  vale o overlay em tela cheia de antes; também listável via `GET /api/artifacts`
+  vale o overlay em tela cheia de antes; também listável via `GET /api/artifacts`.
+  Toda sessão criada pelo daemon carrega o protocolo de artifacts — ele é
+  injetado no system prompt do agente mesmo em workspaces sem `AGENTS.md`
+  (um AGENTS.md do workspace que já documenta o protocolo suprime a injeção;
+  sessões criadas direto no CLI/TUI do opencode não são tocadas). O registro
+  de sessões injetadas vive em memória: sessões criadas antes de um restart
+  do daemon não são re-injetadas depois — apenas as criadas pelo daemon novo
 - **App desktop (inicial)** — shell Electron com a mesma UI, com tray e menu nativo;
   inclui um **pane Browser** que controla um Chromium headless no host via daemon
   (`/api/browse` — navegar, clicar, extrair texto, screenshot) para agentes validarem

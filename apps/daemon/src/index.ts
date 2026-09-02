@@ -54,6 +54,7 @@ import { loadRoutines, saveRoutines, type Routine } from "./routines.js";
 import { artifactMime, kindFor, listArtifacts, readArtifact } from "./artifacts.js";
 import { createShutdown, stopAccepting } from "./shutdown.js";
 import { localUpgradeAllowed } from "./localws.js";
+import { injectArtifactsSystem, workspaceCoversArtifacts } from "./sessionctx.js";
 import { UPDATE_CONTENT_TYPES, resolveUpdatePath, updatesDir } from "./updates.js";
 // P2-045: dashboard v2 metrics — aggregations shared with the pilot's eval battery
 import { avgPhaseDurations, burnDown, countFailSteps, rollbackHealthAlert, type HistoryEntry } from "../../pilot/src/metrics";
@@ -677,7 +678,10 @@ end tell`;
 
   // resolve image attachments into data URLs before opencode sees them
   if (req.method === "POST" && /^\/session\/[^/]+\/message$/.test(req.path)) {
-    const body = req.body as { parts?: { url?: string; mime?: string; filename?: string }[] };
+    const body = req.body as {
+      parts?: { url?: string; mime?: string; filename?: string }[];
+      system?: string;
+    };
     if (Array.isArray(body?.parts)) {
       for (const p of body.parts) {
           const m = typeof p?.url === "string" ? /^(?:ocr-upload:\/\/)+(.+)$/.exec(p.url) : null;
@@ -692,6 +696,14 @@ end tell`;
         p.filename = p.filename || up.filename;
         uploads.delete(m[1]!);
       }
+    }
+    // P1-068: daemon-created sessions carry the artifacts protocol on every
+    // turn (SessionPromptData.system is per-turn). The /api message route
+    // flows through the same proxy (op() → proxy), so this is the single
+    // injection point for both tunnels; the marker keeps it idempotent.
+    const sid = req.path.split("/")[2] ?? "";
+    if (sid && artifactSessions.has(sid) && body && typeof body === "object") {
+      injectArtifactsSystem(body, sid);
     }
   }
   if (req.path === "/__ocr/push-subscription" && req.method === "POST") {
@@ -773,6 +785,12 @@ end tell`;
       body = JSON.parse(text);
     } catch {
       // keep raw text
+    }
+    // P1-068: remember sessions created through the tunnel (PWA/relay and the
+    // /api routes — both pass through here) so their turns carry the artifacts
+    // protocol. The response is repassed untouched.
+    if (res.ok && req.method === "POST" && req.path === "/session") {
+      registerArtifactSession(body as { id?: string; directory?: string });
     }
     // /provider ships ~6MB of model metadata (208 providers) — far beyond the
     // relay's 1MB frame limit. Slim it to what the PWA needs before sealing.
@@ -928,6 +946,23 @@ interface ClientSession {
 
 const sessions = new Map<string, ClientSession>();
 
+// P1-068: sessions created by the daemon (E2E tunnel, /api, routines) whose
+// turns must carry the artifacts protocol. In-memory by design: after a
+// restart only newly created sessions are injected (documented behavior).
+const artifactSessions = new Set<string>();
+
+/** Register a daemon-created session unless its workspace already teaches the
+ * artifacts protocol via AGENTS.md. Missing `directory` fails open (register):
+ * a redundant instruction is cheaper than a session without the protocol. */
+function registerArtifactSession(info: { id?: string; directory?: string } | null | undefined) {
+  const id = info?.id;
+  if (!id || !id.startsWith("ses")) return; // defensive: ignore malformed creates
+  if (artifactSessions.has(id)) return;
+  const dir = typeof info?.directory === "string" ? info.directory : "";
+  if (dir && workspaceCoversArtifacts(dir)) return;
+  artifactSessions.add(id);
+}
+
 // --- scheduled routines: daemon fires prompts and ships results to the phone -
 let routines = loadRoutines();
 const pendingRuns = new Map<string, string>(); // sessionID -> routineID
@@ -941,15 +976,22 @@ async function fireRoutine(r: Routine) {
         headers,
         body: JSON.stringify({ title: `⏰ ${r.name}` }),
       })
-    ).json()) as { id?: string };
+    ).json()) as { id?: string; directory?: string };
     if (!created.id) throw new Error("session create failed");
+    registerArtifactSession(created);
     r.lastSessionID = created.id;
     saveRoutines(routines);
     pendingRuns.set(created.id, r.id);
+    // P1-068: routine sessions get the artifacts protocol too (their fetches
+    // bypass proxy(), so the injection is explicit here).
+    const promptBody: { parts: { type: string; text: string }[]; system?: string } = {
+      parts: [{ type: "text", text: r.prompt }],
+    };
+    if (artifactSessions.has(created.id)) injectArtifactsSystem(promptBody, created.id);
     await fetch(new URL(`/session/${created.id}/message`, OPENCODE_URL), {
       method: "POST",
       headers,
-      body: JSON.stringify({ parts: [{ type: "text", text: r.prompt }] }),
+      body: JSON.stringify(promptBody),
     });
     log("info", "routine fired", { routine: r.name, session: created.id });
   } catch (err) {

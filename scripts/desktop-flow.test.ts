@@ -13,12 +13,18 @@
  *
  * Run: npx tsx scripts/desktop-flow.test.ts
  */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import {
+  ARTIFACTS_MARKER,
+  buildArtifactsPrompt,
+  injectArtifactsSystem,
+  workspaceCoversArtifacts,
+} from "../apps/daemon/src/sessionctx";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 
@@ -43,6 +49,46 @@ if (!existsSync(preload)) {
   spawnSync("npm", ["run", "build", "--workspace", "@ocr/desktop"], { cwd: repoRoot, stdio: "inherit" });
 }
 check("desktop shell built (dist-electron/preload.js)", existsSync(preload));
+
+// --- P1-068: artifacts protocol injection (hermetic, no Electron needed) -----
+// The daemon registers every session it creates and injects the artifacts
+// protocol into each turn UNLESS the workspace's own AGENTS.md already teaches
+// it. Mirrored here against the real helpers: a session created in a bare
+// workspace must get the block; a covered workspace must stay untouched.
+{
+  const block = buildArtifactsPrompt("ses_flow");
+  check(
+    "P1-068: injected block points at the session's artifacts dir",
+    block.includes(ARTIFACTS_MARKER) &&
+      block.includes(join(homedir(), ".opencode-remote", "artifacts", "ses_flow")),
+  );
+  const bare = mkdtempSync(join(tmpdir(), "ocr-flow-bare-"));
+  const covered = mkdtempSync(join(tmpdir(), "ocr-flow-covered-"));
+  try {
+    writeFileSync(join(covered, "AGENTS.md"), "artifacts em .opencode-remote/artifacts/<sessionId>/");
+    // the daemon's register→inject decision: inject only when not covered
+    const shouldInject = (dir: string) => !workspaceCoversArtifacts(dir);
+    const bareTurn: { parts: unknown[]; system?: string } = {
+      parts: [{ type: "text", text: "gere um preview HTML do relatório" }],
+    };
+    if (shouldInject(bare)) injectArtifactsSystem(bareTurn, "ses_flow");
+    check(
+      "P1-068: session in a workspace WITHOUT AGENTS.md receives the protocol (marker + [file: line)",
+      bareTurn.system?.includes(ARTIFACTS_MARKER) === true && bareTurn.system?.includes("[file:") === true,
+    );
+    const coveredTurn: { parts: unknown[]; system?: string } = {
+      parts: [{ type: "text", text: "gere um preview HTML do relatório" }],
+    };
+    if (shouldInject(covered)) injectArtifactsSystem(coveredTurn, "ses_flow");
+    check(
+      "P1-068: session in a workspace whose AGENTS.md covers the protocol gets NO injection",
+      coveredTurn.system === undefined,
+    );
+  } finally {
+    rmSync(bare, { recursive: true, force: true });
+    rmSync(covered, { recursive: true, force: true });
+  }
+}
 
 // Reviewer fix (P1-051 round 1): the gate NEVER uses the default "main"
 // session — a builder's leftover keeper (idle TTL 5min) would be reused with
