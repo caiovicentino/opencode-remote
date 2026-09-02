@@ -980,6 +980,34 @@ check("touchedUi: lookalike apps/webs rejected", !touchedUiFromDiff("apps/webs/s
       prompt.includes("PLANNER:DONE"),
   );
   check("planner: retry attempt mentions the previous failure", plannerPrompt(TASK, 2).includes("attempt 2"));
+  // P2-042: the planner sees the same lessons as the builder/strategist
+  check(
+    "planner: no lessons → prompt stays clean",
+    !plannerPrompt(TASK, 1).includes("EXPERIENCE") && !plannerPrompt(TASK, 1).includes("FAILURE LESSONS"),
+  );
+  check(
+    "planner: prompt carries injected IER lessons",
+    plannerPrompt(TASK, 1, ["- When X, do Y (fonte: P0-001)"]).includes("EXPERIENCE — relevant lessons from past merges") &&
+      plannerPrompt(TASK, 1, ["- When X, do Y (fonte: P0-001)"]).includes("(fonte: P0-001)"),
+  );
+  const plannerLessons = pickRelevantLessons(
+    "# Experience memory (IER)\n\n## Lessons\n- When you build the planner prompt, inject matched lessons (fonte: P2-042)\n",
+    TASK.title,
+    TASK.spec,
+  );
+  check(
+    "planner: keyword-matched lessons reach the prompt (match criterion)",
+    plannerLessons.length === 1 && plannerPrompt(TASK, 1, plannerLessons).includes("inject matched lessons"),
+  );
+  check(
+    "planner: prompt carries the failure-lessons block",
+    plannerPrompt(TASK, 1, [], failureLessonsBlock([
+      { kind: "failure", ts: "", task: "P2-001", attempts: 4, step: "typecheck", findings: "finding f", tail: "tail t" },
+    ])).includes("FAILURE LESSONS") &&
+      plannerPrompt(TASK, 1, [], failureLessonsBlock([
+        { kind: "failure", ts: "", task: "P2-001", attempts: 4, step: "typecheck", findings: "finding f", tail: "tail t" },
+      ])).includes("[P2-001]"),
+  );
   const template = ["## Problem", "## Approach", "## Touched files", "## Edge cases", "## Acceptance criteria", "## Out of scope"].join("\n");
   check("planner: validateSpec accepts the full template", validateSpec(template));
   check("planner: validateSpec tolerates heading suffixes", validateSpec("## Problem — why\n## Approach\n## Touched files\n## Edge cases\n## Acceptance criteria\n## Out of scope (future)"));
