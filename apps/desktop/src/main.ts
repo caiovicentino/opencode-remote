@@ -15,6 +15,7 @@ import {
   waitForDaemonHealth,
 } from "./daemon";
 import { initDesktopLog, log, logError } from "./desktop-log";
+import { initSidecarLog } from "./sidecar-log";
 import { phonePaired, type PairingState } from "./pairing";
 import { applyAppUserModelId, daemonNotify, NOTIFY_BACK_BODY, NOTIFY_DOWN_BODY, NOTIFY_TITLE, type DaemonHealth } from "./notify";
 import { deepLinkFromArgv, parseDeepLink } from "./deeplink";
@@ -54,6 +55,11 @@ if (harnessUserData) {
   app.setPath("userData", harnessUserData);
 }
 initDesktopLog(app.getPath("userData"));
+// P3-018: the daemon sidecar's stdout/stderr (JSONL lines) is teed to
+// userData/logs/daemon-sidecar.log (~1MB cap, one rotated file kept). Must be
+// installed before the first spawnChild — later, early daemon output would be
+// lost in the packaged app. Write failures are log-only and never throw.
+initSidecarLog(app.getPath("userData"));
 // P3-011: a main-process exception used to crash Electron without will-quit,
 // killing the daemon sidecar with no cleanup. Installed before anything can
 // throw, so even boot-time failures quit through the graceful path. Fatal
@@ -726,6 +732,10 @@ function trayMenuItems(): Electron.MenuItemConstructorOptions[] {
     label: "Open logs folder",
     click: () => {
       const dir = logsDirPath(app.getPath("userData"));
+      // P3-018: cite the concrete files in the message this item produces —
+      // a user landing in the folder sees which file holds what (the shell
+      // log vs. the daemon sidecar's stdout/stderr JSONL).
+      log("[desktop] logs folder: desktop.log (shell), daemon-sidecar.log (daemon sidecar stdout/stderr)");
       void openLogsFolder(dir, {
         mkdir: (d, opts) => mkdirSync(d, opts),
         openPath: (p) => shell.openPath(p),
