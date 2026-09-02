@@ -363,10 +363,11 @@ async function keeperMain() {
   } catch {}
   server.listen(SOCK, () => {
     // Defense in depth: even inside the 0700 dir, only the owner may connect.
+    // ENOENT is benign — the keeper is already shutting down (socket unlinked).
     try {
       chmodSync(SOCK, 0o600);
     } catch (err) {
-      keeperLog("socket chmod failed:", err);
+      if (err?.code !== "ENOENT") keeperLog("socket chmod failed:", err);
     }
   });
 
@@ -392,7 +393,10 @@ async function handle(electronApp, page, msg) {
     }
     case "see": {
       try {
-        await page.getByText(msg.text).first().waitFor({ state: "visible", timeout: 10_000 });
+        // 15s actionability budget: the gate runs the flow while typecheck/
+        // build/tests hog the machine — the previous 10s budget flaked
+        // (click/see failures in the P2-049 round-1 gate run).
+        await page.getByText(msg.text).first().waitFor({ state: "visible", timeout: 15_000 });
       } catch {
         throw new Error(`text not visible: ${msg.text}`);
       }
@@ -400,14 +404,14 @@ async function handle(electronApp, page, msg) {
     }
     case "click":
       try {
-        await page.click(msg.selector, { timeout: 10_000 });
+        await page.click(msg.selector, { timeout: 15_000 });
       } catch {
         throw new Error(`click failed: ${msg.selector}`);
       }
       return { ok: true };
     case "type":
       try {
-        await page.fill(msg.selector, msg.text, { timeout: 10_000 });
+        await page.fill(msg.selector, msg.text, { timeout: 15_000 });
       } catch {
         throw new Error(`fill failed: ${msg.selector}`);
       }

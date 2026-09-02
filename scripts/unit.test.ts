@@ -9,6 +9,7 @@ import { copyText, hasClipboardApi, legacyCopy } from "../apps/web/src/lib/clipb
 import { mimeFor } from "../apps/web/src/lib/files";
 import { timeAgo, sessionUpdatedTs } from "../apps/web/src/lib/time";
 import { sessionTitleOf } from "../apps/web/src/lib/title";
+import { dict } from "../apps/web/src/lib/i18n";
 import { permissionPreview } from "../apps/web/src/lib/permission";
 import { applySessionFilters } from "../apps/web/src/lib/sessionFilter";
 import { taskMergedIn } from "../apps/pilot/src/pipeline";
@@ -2915,6 +2916,15 @@ check("takeover: missing value rejected", validateTakeoverDirectory(undefined, H
 check("takeover: session id only ses_<alnum>", validateTakeoverSessionId("ses_abc123def456") === "ses_abc123def456");
 check("takeover: hostile session id rejected", validateTakeoverSessionId('ses_x; rm -rf ~; echo "') === null);
 check("takeover: missing session id rejected", validateTakeoverSessionId(undefined) === null);
+
+// --- i18n dictionary parity (P2-049) -------------------------------------------
+// The web UI ships two locales from one dict; a key that exists only in one
+// language silently falls back to English (or the raw key) at runtime.
+const enKeys = Object.keys(dict.en).sort();
+const ptKeys = Object.keys(dict.pt).sort();
+check("i18n: en and pt share the exact same key set", JSON.stringify(enKeys) === JSON.stringify(ptKeys));
+check("i18n: no empty strings in either locale", enKeys.every((k) => String((dict.en as Record<string, string>)[k]).trim() !== "") && ptKeys.every((k) => String((dict.pt as Record<string, string>)[k]).trim() !== ""));
+check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "olderMessages", "changesFor", "connTitle"].every((k) => String((dict.en as Record<string, string>)[k]).includes("{") && String((dict.pt as Record<string, string>)[k]).includes("{")));
 
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);

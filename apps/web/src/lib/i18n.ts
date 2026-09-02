@@ -46,7 +46,7 @@ export function useT() {
   };
 }
 
-const dict = {
+export const dict = {
   en: {
     // sessions board
     search: "Search conversations…",
@@ -185,6 +185,47 @@ const dict = {
     missionLiveShot: "Live dashboard shot",
     missionLive: "Live",
     unitMin: "min",
+    // pairing screen (P2-049)
+    pairIntro:
+      "Run the daemon on your machine and scan the QR code it prints, or paste the pairing code. Traffic is end-to-end encrypted; the relay cannot read it.",
+    scanQr: "Scan QR code",
+    orPaste: "— or paste manually —",
+    pairBtn: "Pair",
+    connecting: "Connecting…",
+    invalidCode: "Invalid pairing code",
+    // chat composer + header (P2-049)
+    send: "Send",
+    messagePlaceholder: "Message the agent…",
+    recording: "recording…",
+    streamingWait: "Agent is streaming — wait or Stop",
+    attachImage: "Attach image",
+    stopRecording: "Stop recording",
+    recordVoice: "Record voice",
+    toolActivity: "tool activity",
+    noToolCalls: "no tool calls observed yet",
+    refreshTools: "Refresh tool history",
+    agentMode: "Agent mode",
+    agentOption: "agent",
+    model: "Model",
+    openArtifact: "Open artifact",
+    trimStart: "Trim start (s)",
+    trimEnd: "Trim end (s)",
+    attach: "Attach",
+    full: "Full",
+    removeImage: "Remove image",
+    olderMessages: "{n} older messages",
+    loadingDiff: "loading diff…",
+    changesFor: "changes for {action}",
+    noChanges: "no file changes yet for this request",
+    close: "Close",
+    queuedTitle: "queued — will send when back online",
+    connTitle: "connection: {status}",
+    sessionFallback: "session",
+    jumpToEnd: "Go to end",
+    resizeSplit: "Resize artifact preview",
+    // a11y (P2-049)
+    rename: "Rename",
+    delete: "Delete",
   },
   pt: {
     search: "Buscar conversas…",
@@ -321,5 +362,46 @@ const dict = {
     missionLiveShot: "Shot ao vivo do dashboard",
     missionLive: "Ao vivo",
     unitMin: "min",
+    // pairing screen (P2-049)
+    pairIntro:
+      "Rode o daemon na sua máquina e escaneie o QR code que ele imprime, ou cole o código de pareamento. O tráfego é criptografado ponta a ponta; o relay não consegue lê-lo.",
+    scanQr: "Escanear QR code",
+    orPaste: "— ou cole manualmente —",
+    pairBtn: "Parear",
+    connecting: "Conectando…",
+    invalidCode: "Código de pareamento inválido",
+    // chat composer + header (P2-049)
+    send: "Enviar",
+    messagePlaceholder: "Mensagem pro agente…",
+    recording: "gravando…",
+    streamingWait: "Agente respondendo — espere ou Pare",
+    attachImage: "Anexar imagem",
+    stopRecording: "Parar gravação",
+    recordVoice: "Gravar voz",
+    toolActivity: "atividade de tools",
+    noToolCalls: "nenhuma tool chamada ainda",
+    refreshTools: "Atualizar histórico de tools",
+    agentMode: "Modo do agente",
+    agentOption: "agente",
+    model: "Modelo",
+    openArtifact: "Abrir artifact",
+    trimStart: "Início do corte (s)",
+    trimEnd: "Fim do corte (s)",
+    attach: "Anexar",
+    full: "Completo",
+    removeImage: "Remover imagem",
+    olderMessages: "{n} mensagens anteriores",
+    loadingDiff: "carregando diff…",
+    changesFor: "mudanças de {action}",
+    noChanges: "sem mudanças de arquivos neste pedido",
+    close: "Fechar",
+    queuedTitle: "na fila — envia quando voltar a conexão",
+    connTitle: "conexão: {status}",
+    sessionFallback: "sessão",
+    jumpToEnd: "Ir pro fim",
+    resizeSplit: "Redimensionar preview do artifact",
+    // a11y (P2-049)
+    rename: "Renomear",
+    delete: "Apagar",
   },
 } satisfies Record<Lang, Record<string, string>>;

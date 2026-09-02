@@ -1,4 +1,11 @@
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from "react";
 import type { EventEnvelope } from "@ocr/protocol";
 import { WavRecorder, encodeWav } from "../lib/recorder";
 import { saveFile } from "../lib/files";
@@ -139,6 +146,66 @@ interface PendingImage {
   raw?: Uint8Array;
 }
 
+/** P2-049: accessible modal shell — Esc closes, Tab is trapped inside while
+ * open, and focus returns to the trigger on close (role=dialog + aria-modal). */
+function Modal({
+  label,
+  z,
+  onClose,
+  children,
+}: {
+  label: string;
+  z: number;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const trigger = document.activeElement as HTMLElement | null;
+    ref.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      trigger?.focus();
+    };
+  }, [onClose]);
+
+  function trapTab(e: ReactKeyboardEvent<HTMLDivElement>) {
+    if (e.key !== "Tab") return;
+    const nodes = ref.current?.querySelectorAll<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+    );
+    if (!nodes || nodes.length === 0) return;
+    const first = nodes[0]!;
+    const last = nodes[nodes.length - 1]!;
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
+
+  return (
+    <div
+      className="modal-scrim"
+      style={{ zIndex: z }}
+      role="dialog"
+      aria-modal="true"
+      aria-label={label}
+      ref={ref}
+      tabIndex={-1}
+      onKeyDown={trapTab}
+    >
+      {children}
+    </div>
+  );
+}
+
 export default function ChatView({ sessionId, events, connStatus, voice, request, onBack }: Props) {
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
@@ -176,6 +243,10 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
   const [showActivity, setShowActivity] = useState(false);
   const [historyTools, setHistoryTools] = useState<Map<string, ToolActivity>>(new Map());
   const [sessionTitle, setSessionTitle] = useState("");
+  // P2-049: autoscroll only when the reader is at the bottom — scrolling up to
+  // read must not be yanked back by the streaming tail
+  const [atBottom, setAtBottom] = useState(true);
+  const atBottomRef = useRef(true);
   // agent artifacts (P1-010): cards under messages that reference them
   const [artifacts, setArtifacts] = useState<ArtifactMeta[]>([]);
   const [artifactView, setArtifactView] = useState<ArtifactMeta | null>(null);
@@ -495,6 +566,21 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
     }
   }, [events, sessionId]);
 
+  // P2-049: reconnection attempts the user can see — increments each time a
+  // connection that had been paired drops again (banner replaces the 9px dot)
+  const [connAttempts, setConnAttempts] = useState(0);
+  const wasPairedRef = useRef(connStatus === "paired");
+  useEffect(() => {
+    if (connStatus === "paired") {
+      wasPairedRef.current = true;
+      return;
+    }
+    if (wasPairedRef.current) {
+      wasPairedRef.current = false;
+      setConnAttempts((n) => n + 1);
+    }
+  }, [connStatus]);
+
   // P1-061 stream resync: after any reconnect (local loopback or relay), history
   // is the source of truth. On the connecting→paired transition following a
   // drop, clear the stale streaming tail and refetch the conversation —
@@ -537,9 +623,35 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
     return () => clearTimeout(t);
   }, [autoNote]);
 
+  // P2-049: follow the tail only when the reader is already at the bottom;
+  // otherwise surface a "go to end" affordance instead of stealing the scroll
   useEffect(() => {
+    if (!atBottomRef.current) return;
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [bubbles, sending, liveText]);
+
+  function handleScroll() {
+    const el = listRef.current;
+    if (!el) return;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+    if (nearBottom !== atBottomRef.current) {
+      atBottomRef.current = nearBottom;
+      setAtBottom(nearBottom);
+    }
+    pageOlder();
+  }
+
+  function jumpToEnd() {
+    atBottomRef.current = true;
+    setAtBottom(true);
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }
+
+  // switching conversations starts the reader at the tail again
+  useEffect(() => {
+    atBottomRef.current = true;
+    setAtBottom(true);
+  }, [sessionId]);
 
   // keep the render window bounded on very long conversations
   useEffect(() => {
@@ -739,7 +851,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
         return;
       }
       setCanUnrevert(false);
-      setAutoNote("De volta pro presente");
+      setAutoNote(t("unreverted"));
       await loadHistory();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -830,6 +942,9 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
   async function send(override?: string) {
     const text = (override ?? input).trim();
     if ((!text && images.length === 0) || sending || liveText) return;
+    // the reader's own message always lands on the newest tail
+    atBottomRef.current = true;
+    setAtBottom(true);
     setSending(true);
     setError("");
     setInput("");
@@ -1179,12 +1294,6 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
     <div className={`screen${splitOpen ? " artifact-split" : ""}`}>
       <header>
         <button className="chat-back" onClick={onBack}>←</button>
-        <span
-          title={`connection: ${connStatus}`}
-          className={`status-dot${
-            connStatus === "paired" ? " ok" : connStatus === "connecting" ? " wait" : " err"
-          }`}
-        />
         <h1
           title={sessionTitle}
           style={{
@@ -1196,7 +1305,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
             whiteSpace: "nowrap",
           }}
         >
-          {sessionTitle || "session"}
+          {sessionTitle || t("sessionFallback")}
         </h1>
         <button
           className="chat-handoff"
@@ -1219,7 +1328,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
             setShowActivity((v) => !v);
             void loadToolHistory();
           }}
-          aria-label="Tool activity"
+          aria-label={t("toolActivity")}
           style={showActivity ? { borderColor: "var(--accent)" } : undefined}
         >
           <IconWrench />
@@ -1230,14 +1339,21 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
             setAgent(e.target.value);
             localStorage.setItem("ocr_agent", e.target.value);
           }}
-          aria-label="Agent mode"
+          aria-label={t("agentMode")}
           style={{ maxWidth: 90 }}
         >
-          <option value="">agent</option>
+          <option value="">{t("agentOption")}</option>
           <option value="build">build</option>
           <option value="plan">plan</option>
         </select>
       </header>
+
+      {connStatus !== "paired" && (
+        <div className="conn-banner" role="status" title={t("connTitle", { status: connStatus })}>
+          <span className="conn-banner-spin" aria-hidden>⟳</span>{" "}
+          {t("reconnecting", { n: Math.max(connAttempts, 1) })}
+        </div>
+      )}
 
       <div
         className="chat-row"
@@ -1245,7 +1361,8 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
         style={draggingSplit ? { userSelect: "none", cursor: "col-resize" } : undefined}
       >
         <div className="chat">
-        <div className="messages" ref={listRef} onScroll={pageOlder}>
+        <div className="msg-wrap">
+        <div className="messages" ref={listRef} onScroll={handleScroll}>
           {loadingHistory && bubbles.length === 0 && (
             <>
               <div className="skel" style={{ width: "55%", height: 40, alignSelf: "flex-end" }} />
@@ -1265,14 +1382,14 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
           )}
           {winStart > 0 && (
             <div className="muted" style={{ textAlign: "center", fontSize: "0.75rem" }}>
-              ↑ {winStart} mensagens anteriores
+              ↑ {t("olderMessages", { n: winStart })}
             </div>
           )}
           {bubbles.slice(winStart).map((b, i) => (
             <div
               key={i}
               className={`msg ${b.role}${b.pending ? " pending" : ""}`}
-              title={b.pending === "queued" ? "queued — will send when back online" : undefined}
+              title={b.pending === "queued" ? t("queuedTitle") : undefined}
             >
               {b.images && b.images.length > 0 && (
                 <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: b.text ? 4 : 0 }}>
@@ -1302,7 +1419,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
                       width: "100%",
                     }}
                     onClick={() => setArtifactView(a)}
-                    title="Open artifact"
+                    title={t("openArtifact")}
                   >
                     <span aria-hidden className="artifact-icon">
                       <ArtifactIcon kind={a.kind} />
@@ -1335,9 +1452,9 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
             </div>
           ))}
           {liveText && (
-            <div className="msg assistant">
+            <div className="msg assistant" aria-live="polite">
               {renderBubbleText(liveText, request, setError)}
-              <span className="caret" />
+              <span className="caret" aria-hidden />
             </div>
           )}
           {sending && !liveText && (
@@ -1359,6 +1476,18 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
             </button>
           )}
           <div ref={bottomRef} />
+        </div>
+
+        {!atBottom && (
+          <button
+            className="jump-end"
+            onClick={jumpToEnd}
+            aria-label={t("jumpToEnd")}
+            title={t("jumpToEnd")}
+          >
+            ↓
+          </button>
+        )}
         </div>
 
         {questions.length > 0 && (
@@ -1497,7 +1626,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
         )}
         {queue.length > 0 && (
           <p className="muted" style={{ margin: 0 }}>
-            {queue.length} message(s) queued — will send when reconnected
+            {t("queued", { n: queue.length })}
           </p>
         )}
 
@@ -1545,7 +1674,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
               style={{ width: 64, padding: "6px 8px" }}
               value={trimStart}
               onChange={(e) => setTrimStart(e.target.value)}
-              aria-label="Trim start (s)"
+              aria-label={t("trimStart")}
             />
             <span className="muted">→</span>
             <input
@@ -1556,12 +1685,12 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
               style={{ width: 64, padding: "6px 8px" }}
               value={trimEnd}
               onChange={(e) => setTrimEnd(e.target.value)}
-              aria-label="Trim end (s)"
+              aria-label={t("trimEnd")}
             />
             <button className="primary" onClick={() => confirmTrim(true)}>
-              Attach
+              {t("attach")}
             </button>
-            <button onClick={() => confirmTrim(false)}>Full</button>
+            <button onClick={() => confirmTrim(false)}>{t("full")}</button>
           </div>
         )}
 
@@ -1576,7 +1705,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
                 />
                 <button
                   onClick={() => setImages((prev) => prev.filter((i) => i.id !== img.id))}
-                  aria-label="Remove image"
+                  aria-label={t("removeImage")}
                   style={{
                     position: "absolute",
                     top: -6,
@@ -1606,7 +1735,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
               setModel(e.target.value);
               localStorage.setItem("ocr_model", e.target.value);
             }}
-            aria-label="Model"
+            aria-label={t("model")}
             style={{ width: "100%", marginBottom: 6 }}
           >
             <option value="">default model</option>
@@ -1643,7 +1772,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
           <button
             onClick={() => fileRef.current?.click()}
             disabled={uploading || recState === "busy"}
-            aria-label="Attach image"
+            aria-label={t("attachImage")}
           >
             {uploading ? (
               "…"
@@ -1679,7 +1808,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
                 }
               }}
               disabled={recState === "busy"}
-              aria-label={recState === "rec" ? "Stop recording" : "Record voice"}
+              aria-label={recState === "rec" ? t("stopRecording") : t("recordVoice")}
             >
               {recState === "busy" ? (
                 "…"
@@ -1697,7 +1826,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
           )}
           <textarea
             rows={1}
-            placeholder={recState === "rec" ? "recording…" : "Message the agent…"}
+            placeholder={recState === "rec" ? t("recording") : t("messagePlaceholder")}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
@@ -1711,9 +1840,9 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
             className="primary"
             onClick={() => void send()}
             disabled={sending || !!liveText}
-            title={liveText ? "Agent is streaming — wait or Stop" : "Send"}
+            title={liveText ? t("streamingWait") : t("send")}
           >
-            {liveText ? "…" : "Send"}
+            {liveText ? "…" : t("send")}
           </button>
         </div>
       </div>
@@ -1724,7 +1853,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
             className={`split-divider${draggingSplit ? " dragging" : ""}`}
             role="separator"
             aria-orientation="vertical"
-            aria-label="Resize artifact preview"
+            aria-label={t("resizeSplit")}
             onPointerDown={splitDown}
             onPointerMove={splitMove}
             onPointerUp={splitUp}
@@ -1745,29 +1874,18 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
       </div>
 
       {showActivity && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "var(--scrim)",
-            zIndex: 55,
-            display: "flex",
-            flexDirection: "column",
-            padding: 12,
-            gap: 8,
-          }}
-        >
+        <Modal label={t("toolActivity")} z={55} onClose={() => setShowActivity(false)}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <button onClick={() => setShowActivity(false)} aria-label="Close activity">
+            <button onClick={() => setShowActivity(false)} aria-label={t("close")}>
               ✕
             </button>
-            <div style={{ flex: 1, fontWeight: 600, fontSize: "0.9rem" }}>tool activity</div>
-            <button onClick={() => void loadToolHistory()} aria-label="Refresh tool history">
+            <div style={{ flex: 1, fontWeight: 600, fontSize: "0.9rem" }}>{t("toolActivity")}</div>
+            <button onClick={() => void loadToolHistory()} aria-label={t("refreshTools")}>
               ↻
             </button>
           </div>
           <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
-            {activity.length === 0 && <p className="muted">no tool calls observed yet</p>}
+            {activity.length === 0 && <p className="muted">{t("noToolCalls")}</p>}
             {activity.map(([callID, a]) => (
               <div key={callID} className="card" style={{ padding: "8px 10px", marginBottom: 8 }}>
                 <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -1817,28 +1935,21 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
               </div>
             ))}
           </div>
-        </div>
+        </Modal>
       )}
 
       {diff && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "var(--scrim)",
-            zIndex: 60,
-            display: "flex",
-            flexDirection: "column",
-            padding: 12,
-            gap: 8,
-          }}
+        <Modal
+          label={diff.loading ? t("loadingDiff") : t("changesFor", { action: diff.ask?.label ?? "…" })}
+          z={60}
+          onClose={() => setDiff(null)}
         >
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <button onClick={() => setDiff(null)} aria-label="Close diff">
+            <button onClick={() => setDiff(null)} aria-label={t("close")}>
               ✕
             </button>
             <div style={{ flex: 1, fontWeight: 600, fontSize: "0.9rem" }}>
-              {diff.loading ? "loading diff…" : `changes for ${diff.ask?.label ?? "action"}`}
+              {diff.loading ? t("loadingDiff") : t("changesFor", { action: diff.ask?.label ?? "…" })}
             </div>
             {diff.ask && !diff.loading && (
               <>
@@ -1850,7 +1961,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
                     void respond(id, "approve");
                   }}
                 >
-                  Approve
+                  {t("approve")}
                 </button>
                 <button
                   className="danger"
@@ -1860,7 +1971,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
                     void respond(id, "reject");
                   }}
                 >
-                  Deny
+                  {t("deny")}
                 </button>
               </>
             )}
@@ -1868,7 +1979,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
           <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
             {diff.err && <p style={{ color: "var(--danger)" }}>{diff.err}</p>}
             {!diff.loading && !diff.err && diff.files.length === 0 && (
-              <p className="muted">no file changes yet for this request</p>
+              <p className="muted">{t("noChanges")}</p>
             )}
             {diff.files.map((f) => (
               <div key={f.file} style={{ marginBottom: 10 }}>
@@ -1921,7 +2032,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
               </div>
             ))}
           </div>
-        </div>
+        </Modal>
       )}
       {artifactView && !wide && (
         <ArtifactViewer meta={artifactView} request={request} onClose={() => setArtifactView(null)} />

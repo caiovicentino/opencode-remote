@@ -267,7 +267,20 @@ export default function SessionsView({
               const when = timeAgo(s.updatedAt ?? s.time?.updated, t("justNow"));
               const n = unread[s.id] ?? 0;
               return (
-                <div key={s.id} className="sess-row" onClick={() => onOpen(s.id)}>
+                <div
+                  key={s.id}
+                  className="sess-row"
+                  role="button"
+                  tabIndex={0}
+                  aria-label={s.title || s.id.slice(0, 12)}
+                  onClick={() => onOpen(s.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      onOpen(s.id);
+                    }
+                  }}
+                >
                   <span
                     style={{
                       width: 8,
@@ -288,11 +301,25 @@ export default function SessionsView({
         )}
         {variant !== "rows" && (
         <div className="session-grid">
-          {sorted.map((s) => {
-            const st = statusOf.get(s.id);
-            const when = timeAgo(s.updatedAt ?? s.time?.updated, t("justNow"));
-            return (
-              <div key={s.id} className="card session-card" onClick={() => onOpen(s.id)} style={{ cursor: "pointer" }}>
+            {sorted.map((s) => {
+              const st = statusOf.get(s.id);
+              const when = timeAgo(s.updatedAt ?? s.time?.updated, t("justNow"));
+              return (
+                <div
+                  key={s.id}
+                  className="card session-card"
+                  role="button"
+                  tabIndex={0}
+                  aria-label={s.title || s.id.slice(0, 12)}
+                  onClick={() => onOpen(s.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      onOpen(s.id);
+                    }
+                  }}
+                  style={{ cursor: "pointer" }}
+                >
                 <div className="session-head">
                   <span
                     style={{
@@ -313,10 +340,10 @@ export default function SessionsView({
                   {st?.label ?? t("ready")}
                 </div>
                 <div className="session-actions" onClick={(e) => e.stopPropagation()}>
-                  <button aria-label="Rename" style={{ padding: "2px 8px" }} onClick={() => void renameSession(s.id, s.title)}>
+                  <button aria-label={t("rename")} title={t("rename")} style={{ padding: "2px 8px" }} onClick={() => void renameSession(s.id, s.title)}>
                     ✎
                   </button>
-                  <button className="danger" aria-label="Delete" style={{ padding: "2px 8px" }} onClick={() => void deleteSession(s.id)}>
+                  <button className="danger" aria-label={t("delete")} title={t("delete")} style={{ padding: "2px 8px" }} onClick={() => void deleteSession(s.id)}>
                     ✕
                   </button>
                 </div>
