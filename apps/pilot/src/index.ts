@@ -42,7 +42,7 @@ import {
   type PilotConfig,
   type PilotState,
 } from "./state";
-import { applySessionCosts, querySessionTokens } from "./costs";
+import { applySessionCosts, querySessionTokenRows } from "./costs";
 import { runDoctor } from "./doctor";
 
 let deployBusy = false;
@@ -286,7 +286,10 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
     const taskSessions = new Set<string>();
     const result = await runPipeline(taskCfg, task, state, taskSessions);
     try {
-      await applySessionCosts(state, task.id, [...taskSessions], (ids) => querySessionTokens(ids));
+      // P1-077: rows query — folds the per-task cache breakdown (input /
+      // cacheRead / cacheWrite) into state.taskCache alongside the total.
+      const cacheFold = await applySessionCosts(state, task.id, [...taskSessions], (ids) => querySessionTokenRows(ids));
+      if (cacheFold) log("info", "task cache", cacheFold);
     } catch (err) {
       log("warn", "task cost reconciliation failed", { task: task.id, err: String(err).slice(0, 200) });
     }

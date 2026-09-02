@@ -347,6 +347,37 @@ A linha da task no BACKLOG.md pode carregar a tag opcional `(size: S|M|L)` (defa
   estranho de `ses_…` pode inflar a linha da própria task (nada de gate
   consome `taskCosts`); a reconciliação abre o DB com `sqlite3 -readonly`,
   sem possibilidade de escrever no WAL/journal do opencode em produção.
+- **Cache-aware prompt assembly (P1-077)**: medido no `opencode.db` (janela de
+  51h), o pipeline consumiu 1.87B tokens de input com apenas 954k de
+  `cache.read` — hit rate de 0.05%. Causa raiz: os templates de prompt abriam
+  com conteúdo **variável** (task, round, findings, lessons) antes dos blocos
+  estáveis; provider prefix caching (GLM/CulturaBuilder faz context caching
+  server-side) só engata com prefixo byte-idêntico. Os quatro templates
+  (`builderPrompt`, `plannerPrompt`, `reviewerPrompt`, `scribePrompt`) agora
+  montam **primeiro** o prefixo estável — linha de role (sem `round`), regras
+  de role, `CONSTITUTION` e contrato de saída (bloco EVIDENCE do builder,
+  veredito do reviewer, contrato LESSONS do scribe, seções+marcador do
+  planner; placeholders genéricos `<TASK-ID>` no lugar do id interpolado) — e
+  a cauda **variável** por último (task id/título/spec, round, specBlock/
+  longBlock/attempt/resume, findings, lições IER e failure lessons, bullet de
+  screenshots, diff por último para reviewer/scribe). O bloco EVIDENCE tem
+  uma variante inevitável (`uiTask` on/off); o prefixo é idêntico dentro de
+  cada variante. **Métrica**: `state.json` ganhou `taskCache: {id: {input,
+  cacheRead, cacheWrite}}` (dobra na mesma reconciliação REPLACE-by-recompute
+  e janela rolante de 200 do `taskCosts`; normalizado pelo doctor) e cada
+  task loga `msg:"task cache"` com `{task, input, cacheRead, cacheWrite,
+  ratio}` onde `ratio = cacheRead/(cacheRead+input)` (0 quando o denominador
+  é 0). Critério pós-merge (janela de 10 ciclos): razão agregada
+  `sum(cacheRead)/sum(cacheRead+input) >= 30%` nas tasks novas.
+  **Investigação do provider**: no mesmo opencode.db, sessões interativas com
+  outros modelos reportam `cache.read > 0` (kimi-k3: 746k, laguna: 208k
+  tokens) — ou seja, o opencode repassa a contabilidade de cache do provider;
+  já as ~30k mensagens do `glm-5.2` (CulturaBuilder, `@ai-sdk/openai-compatible`)
+  têm `cache.read`/`cache.write` = 0 em todas — o gateway só "acerta" o cache
+  quando o prefixo de fato coincide, e os prompts antigos tornavam isso
+  praticamente impossível. Conclusão: nenhum option extra de modelo é
+  necessário no `opencode.jsonc` (arquivo do host, nunca commitado — contém a
+  API key); o lever é a ordem de montagem do prompt, implementada nesta task.
 - Logs JSONL: `~/.opencode-remote/logs/pilot.log`
 - Feed bruto: `GET 127.0.0.1:8792/api/pilot-events` (Bearer apiToken) — eventos + contadores + heartbeat
 - Digest a cada pipeline: push no seu telefone (via `POST /api/push` autenticado no daemon)

@@ -38,6 +38,24 @@ export interface SessionTokens {
 export interface TaskCostStore {
   taskCosts?: Record<string, number>;
   taskCostSessions?: Record<string, string[]>;
+  /** P1-077: task id → provider prefix-cache breakdown across the task's
+   * agent sessions. Additive sibling of taskCosts: same REPLACE-by-recompute
+   * reconciliation and the same rolling cap. */
+  taskCache?: Record<string, TaskCacheEntry>;
+}
+
+/** P1-077: per-task cache-token breakdown (subset of the session columns). */
+export interface TaskCacheEntry {
+  input: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+/** P1-077: what the reconciliation folded for one task, ready for the log line. */
+export interface TaskCacheFold extends TaskCacheEntry {
+  task: string;
+  /** cacheRead/(cacheRead+input); 0 when the denominator is 0. */
+  ratio: number;
 }
 
 /**
@@ -81,8 +99,18 @@ export function tokensSql(ids: string[]): string {
   return `SELECT id, tokens_input, tokens_output, tokens_cache_read, tokens_cache_write FROM session WHERE id IN (${list});`;
 }
 
-/** Parse `sqlite3 -json` output (array of SessionTokens; tolerate partial rows). */
-export function parseSessionTokens(json: string): Record<string, number> {
+/** P1-077: provider prefix-cache hit ratio — cacheRead over cacheRead+input
+ * (the two "prefix went through the model" token kinds); 0 on empty input so
+ * logs/JSON never carry NaN. */
+export function cacheHitRatio(cacheRead: number, input: number): number {
+  const denom = cacheRead + input;
+  return denom > 0 ? cacheRead / denom : 0;
+}
+
+/** Parse `sqlite3 -json` output into per-session 4-way breakdowns, keyed by
+ * canonical session id (P1-077). Tolerates partial/garbage rows: missing
+ * numeric columns count as 0 (older DBs predate the cache columns). */
+export function parseSessionTokenRows(json: string): Record<string, SessionTokens> {
   let rows: SessionTokens[] = [];
   try {
     const parsed = JSON.parse(json) as unknown;
@@ -91,19 +119,33 @@ export function parseSessionTokens(json: string): Record<string, number> {
   } catch {
     return {};
   }
-  const out: Record<string, number> = {};
+  const out: Record<string, SessionTokens> = {};
   for (const r of rows) {
     if (!r || typeof r.id !== "string" || !isSessionId(r.id)) continue;
-    out[r.id] = (out[r.id] ?? 0) + sessionTotalTokens(r);
+    const cur = (out[r.id] ??= { id: r.id, tokens_input: 0, tokens_output: 0, tokens_cache_read: 0, tokens_cache_write: 0 });
+    cur.tokens_input += r.tokens_input || 0;
+    cur.tokens_output += r.tokens_output || 0;
+    cur.tokens_cache_read += r.tokens_cache_read || 0;
+    cur.tokens_cache_write += r.tokens_cache_write || 0;
+  }
+  return out;
+}
+
+/** Parse `sqlite3 -json` output (array of SessionTokens; tolerate partial rows). */
+export function parseSessionTokens(json: string): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [id, row] of Object.entries(parseSessionTokenRows(json))) {
+    out[id] = sessionTotalTokens(row);
   }
   return out;
 }
 
 /**
  * Query opencode.db via the sqlite3 CLI (present on the host) for the given
- * session ids; returns {sessionId: totalTokens}. Chunked so long session
- * lists stay within sane command-line/SQL limits. `exec` is injectable for
- * the unit battery; the real path passes SQL over stdin (no shell).
+ * session ids; returns {sessionId: 4-way token breakdown} (P1-077). Chunked
+ * so long session lists stay within sane command-line/SQL limits. `exec` is
+ * injectable for the unit battery; the real path passes SQL over stdin (no
+ * shell).
  *
  * Round 2 (review): ASYNC — this runs inside `runSlot` on the shared event
  * loop, and with slots > 1 a sync spawn (the only one in pilot src) could
@@ -111,11 +153,11 @@ export function parseSessionTokens(json: string): Record<string, number> {
  * timeout. execFile keeps the loop free; a slow/locked DB now only delays
  * this one reconciliation promise.
  */
-export async function querySessionTokens(
+export async function querySessionTokenRows(
   ids: string[],
   dbPath: string = defaultOpencodeDb(),
   exec?: (dbPath: string, sql: string) => Promise<string>,
-): Promise<Record<string, number>> {
+): Promise<Record<string, SessionTokens>> {
   if (!ids.length) return {};
   const run =
     exec ??
@@ -129,13 +171,34 @@ export async function querySessionTokens(
         );
         child.stdin?.end(sql); // SQL via stdin: no shell, no argv leakage
       }));
-  const out: Record<string, number> = {};
+  const out: Record<string, SessionTokens> = {};
   for (let i = 0; i < ids.length; i += 100) {
     const chunk = ids.slice(i, i + 100).filter(isSessionId);
     if (!chunk.length) continue;
-    for (const [id, n] of Object.entries(parseSessionTokens(await run(dbPath, tokensSql(chunk))))) {
-      out[id] = (out[id] ?? 0) + n;
+    for (const [id, row] of Object.entries(parseSessionTokenRows(await run(dbPath, tokensSql(chunk))))) {
+      const cur = out[id];
+      if (!cur) {
+        out[id] = { ...row };
+        continue;
+      }
+      cur.tokens_input += row.tokens_input;
+      cur.tokens_output += row.tokens_output;
+      cur.tokens_cache_read += row.tokens_cache_read;
+      cur.tokens_cache_write += row.tokens_cache_write;
     }
+  }
+  return out;
+}
+
+/** Totals-only view of `querySessionTokenRows` (P2-028 shape). */
+export async function querySessionTokens(
+  ids: string[],
+  dbPath: string = defaultOpencodeDb(),
+  exec?: (dbPath: string, sql: string) => Promise<string>,
+): Promise<Record<string, number>> {
+  const out: Record<string, number> = {};
+  for (const [id, row] of Object.entries(await querySessionTokenRows(ids, dbPath, exec))) {
+    out[id] = sessionTotalTokens(row);
   }
   return out;
 }
@@ -147,40 +210,82 @@ export async function querySessionTokens(
  * before it can reach the SQL layer. Missing/failed DB reads keep the
  * previous total (stale-but-honest beats erasing real data on a transient
  * sqlite error). Async so the sqlite3 child never blocks the event loop.
+ *
+ * P1-077: the injected query may return per-session 4-way rows
+ * (`querySessionTokenRows`) or plain totals (legacy fixtures). Rows are the
+ * real path: they additionally fold `input/cacheRead/cacheWrite` into
+ * `store.taskCache` — REPLACE-by-recompute like the total, so a resumed
+ * session never double-counts cache tokens. Returns the folded breakdown
+ * (with hit ratio) for the caller's "task cache" log line, or null when
+ * nothing was recorded.
  */
 export async function applySessionCosts(
   store: TaskCostStore,
   taskId: string,
   newSessions: string[] | undefined,
-  query: (ids: string[]) => Promise<Record<string, number>>,
-): Promise<void> {
-  if (!taskId || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(taskId)) return;
+  query: (ids: string[]) => Promise<Record<string, SessionTokens | number>>,
+): Promise<TaskCacheFold | null> {
+  if (!taskId || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(taskId)) return null;
   store.taskCostSessions ??= {};
   store.taskCosts ??= {};
   const known = store.taskCostSessions[taskId] ?? [];
   for (const s of newSessions ?? []) {
     if (isSessionId(s) && !known.includes(s)) known.push(s);
   }
-  if (!known.length) return;
+  if (!known.length) return null;
   store.taskCostSessions[taskId] = known;
-  const tokens = await query(known);
-  const total = known.reduce((sum, id) => sum + (tokens[id] ?? 0), 0);
-  if (total > 0) store.taskCosts[taskId] = total;
+  const rows = await query(known);
+  let total = 0;
+  let input = 0;
+  let cacheRead = 0;
+  let cacheWrite = 0;
+  let sawRow = false;
+  for (const id of known) {
+    const r = rows[id];
+    if (!r) continue;
+    if (typeof r === "number") {
+      total += r; // legacy totals-only injector: no breakdown available
+      continue;
+    }
+    sawRow = true;
+    total += sessionTotalTokens(r);
+    input += r.tokens_input || 0;
+    cacheRead += r.tokens_cache_read || 0;
+    cacheWrite += r.tokens_cache_write || 0;
+  }
+  if (total > 0) {
+    store.taskCosts[taskId] = total;
+    if (sawRow) {
+      store.taskCache ??= {};
+      store.taskCache[taskId] = { input, cacheRead, cacheWrite };
+    }
+  }
   pruneTaskCosts(store);
+  return sawRow && total > 0
+    ? { task: taskId, input, cacheRead, cacheWrite, ratio: cacheHitRatio(cacheRead, input) }
+    : null;
 }
 
 /** Keep the rolling window bounded: drop the oldest task ids past the cap. */
 export function pruneTaskCosts(store: TaskCostStore, cap = TASK_COST_CAP): void {
   const costs = store.taskCosts ?? {};
   const sessions = store.taskCostSessions ?? {};
+  const cache = store.taskCache ?? {};
   for (const key of Object.keys(costs)) {
     if (Object.keys(costs).length <= cap) break;
     delete costs[key];
+    delete sessions[key]; // P1-077: keep the sibling maps aligned
+    delete cache[key];
   }
   for (const key of Object.keys(sessions)) {
     if (Object.keys(sessions).length <= cap) break;
     delete sessions[key];
   }
+  for (const key of Object.keys(cache)) {
+    if (Object.keys(cache).length <= cap) break;
+    delete cache[key];
+  }
   store.taskCosts = costs;
   store.taskCostSessions = sessions;
+  store.taskCache = cache;
 }
