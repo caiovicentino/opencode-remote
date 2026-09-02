@@ -607,7 +607,7 @@ export default function App() {
             setAddingMachine(false);
             const pairing = parsePairingUri(uri);
             if (!pairing) {
-              setError("Invalid pairing code");
+              setError(t("invalidCode"));
               setPhase("error");
               return;
             }
@@ -630,7 +630,7 @@ export default function App() {
           onPair={(uri) => {
             const pairing = parsePairingUri(uri);
             if (!pairing) {
-              setError("Invalid pairing code");
+              setError(t("invalidCode"));
               setPhase("error");
               return;
             }

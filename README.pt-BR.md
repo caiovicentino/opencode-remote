@@ -29,7 +29,11 @@ remoto, zero confiança**.
 - **Chat completo** com streaming, markdown, imagens e histórico de ferramentas;
   o header do chat mostra o título da conversa (o genérico "session" enquanto
   a sessão ainda não tem título); conversa nova mostra um empty state de
-  boas-vindas com dicas rápidas (áudio, foto ou texto)
+  boas-vindas com dicas rápidas (áudio, foto ou texto). A conversa só acompanha
+  a mensagem nova automaticamente quando você já está no fim — ao rolar pra
+  cima, um botão ↓ aparece pra voltar ao fim sem roubar a leitura; se a conexão
+  cair, um banner fino com o contador de tentativas de reconexão substitui o
+  antigo dot do header
 - **AutoMode** — o agente roda solto; toda aprovação automática vira auditoria
   (e notificação, se você quiser)
 - **Preview de aprovação** — o card de permissão mostra as primeiras linhas
@@ -75,6 +79,9 @@ remoto, zero confiança**.
   header do chat, cards de artifact, dots de status) usam o mesmo conjunto inline-SVG sobre
   tokens CSS; zero emoji-como-ícone, e os tokens `--panel`/`--bg2`/`--fg` agora existem de
   verdade, consertando o light theme no shell desktop
+- **UI bilíngue + teclado** — todas as telas (pareamento, composer do chat, diálogos de
+  atividade e diff) saem de um dicionário único EN/pt-BR; diálogos fecham com Esc e prendem
+  o focus, e o painel de sessões é totalmente navegável por teclado
 
 ## Quick Start (Mac → iPhone, ~5 min)
 

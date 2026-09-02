@@ -98,11 +98,19 @@ try {
 
   run("boot rendered the app (#root mounted)", ["see", "OpenCode Remote"], 15_000);
   run("type invalid pairing code", ["type", "textarea", "opencode-remote://not-a-valid-code"], 15_000);
-  // Quoted/exact selector on purpose: the bare text= engine also matches the
-  // textarea by its VALUE ("…//pair?v=2…" contains "pair") and would click
-  // the wrong element.
-  run("click Pair", ["click", 'text="Pair"'], 15_000);
-  run("error text visible (Invalid pairing code)", ["see", "Invalid pairing code"], 15_000);
+  // P2-049: the pairing screen copy moved into the i18n dictionary — on a
+  // pt-BR host the button reads "Parear", so the old text="Pair" click broke
+  // the gate. The .pair-submit / .pair-error hooks are locale-independent.
+  run("click Pair (locale-proof .pair-submit)", ["click", ".pair-submit"], 15_000);
+  const errText = run("pairing error rendered (.pair-error)", ["ipc", "document.querySelector('.pair-error')?.textContent ?? ''"], 15_000);
+  if (errText.ok) {
+    // The ipc output is JSON-stringified (tools/desktop.mjs fail()); assert the
+    // real invalid-code copy, not just any non-empty string (round-2 review).
+    check(
+      "pairing error carries the invalid-code copy",
+      /Invalid pairing code|Código de pareamento inválido/.test(errText.stdout),
+    );
+  }
   const shot = run("screenshot captured", ["shot", shotPath], 15_000);
   if (shot.ok) {
     try {

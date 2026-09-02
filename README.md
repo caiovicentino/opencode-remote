@@ -28,7 +28,10 @@ private. That is the product: **local power, remote control, zero trust**.
 - **Full chat** with streaming, markdown, images and tool-activity history;
   the chat header shows the conversation's title (generic "session" while the
   session has no title yet); a fresh conversation shows a welcome empty state
-  with quick tips (audio, photo or text)
+  with quick tips (audio, photo or text). The view only auto-follows the
+  newest message while you are already at the bottom — scroll up to read and
+  a small ↓ pill appears to jump back to the tail; when the connection drops
+  a slim banner with the reconnection attempt count replaces the old header dot
 - **AutoMode** — the agent runs hands-free; every auto-approved action is
   audited and pushable
 - **Approval preview** — permission cards show the first lines of the
@@ -75,6 +78,9 @@ private. That is the product: **local power, remote control, zero trust**.
   every color literal lives in `apps/web/src/tokens.css` (dark + light theme), and
   Settings → Appearance accepts **System/Dark/Light** — System follows the OS
   `prefers-color-scheme` live, with no reload
+- **Bilingual UI + keyboard access** — every screen (pairing, chat composer, tool
+  activity and diff dialogs) reads from one EN/pt-BR dictionary, dialogs close
+  with Esc and trap focus, and the session board is fully reachable by keyboard
 
 ## Quick Start (Mac → iPhone, ~5 min)
 

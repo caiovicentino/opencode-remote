@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 import QrScanner from "./QrScanner";
+import { useT } from "../lib/i18n";
 
 interface Props {
   phase: "unpaired" | "connecting" | "error" | "paired";
@@ -9,6 +10,7 @@ interface Props {
 }
 
 export default function PairingView({ phase, error, onPair, onRetry }: Props) {
+  const t = useT();
   const [code, setCode] = useState("");
   const [scanning, setScanning] = useState(false);
   const busy = phase === "connecting";
@@ -32,18 +34,15 @@ export default function PairingView({ phase, error, onPair, onRetry }: Props) {
       <header>
         <h1 style={{ fontSize: "1rem", margin: 0 }}>OpenCode Remote</h1>
       </header>
-      <p className="muted">
-        Run the daemon on your machine and scan the QR code it prints, or paste
-        the pairing code. Traffic is end-to-end encrypted; the relay cannot read it.
-      </p>
+      <p className="muted">{t("pairIntro")}</p>
       <button
         className="primary"
         disabled={busy}
         onClick={() => setScanning(true)}
       >
-        Scan QR code
+        {t("scanQr")}
       </button>
-      <p className="muted" style={{ alignSelf: "center" }}>— or paste manually —</p>
+      <p className="muted" style={{ alignSelf: "center" }}>{t("orPaste")}</p>
       <textarea
         rows={4}
         placeholder="opencode-remote://pair?v=2&relay=…"
@@ -52,15 +51,16 @@ export default function PairingView({ phase, error, onPair, onRetry }: Props) {
         disabled={busy}
       />
       <button
+        className="pair-submit"
         disabled={busy || !code.trim()}
         onClick={() => onPair(code)}
       >
-        {busy ? "Connecting…" : "Pair"}
+        {busy ? t("connecting") : t("pairBtn")}
       </button>
       {phase === "error" && (
         <>
-          <p style={{ color: "var(--danger)" }}>{error}</p>
-          <button onClick={onRetry}>Retry</button>
+          <p className="pair-error" style={{ color: "var(--danger)" }}>{error}</p>
+          <button onClick={onRetry}>{t("retry")}</button>
         </>
       )}
     </div>
