@@ -156,7 +156,7 @@ export default function SessionsView({
   const toneColor: Record<string, string> = {
     work: "var(--status-work)",
     wait: "var(--status-wait)",
-    err: "var(--danger)",
+    err: "var(--status-err)",
     done: "var(--status-done)",
   };
 
@@ -191,7 +191,7 @@ export default function SessionsView({
             disabled={pushState !== "idle"}
             aria-label={pushState === "enabled" ? t("pushOn") : t("pushEnable")}
             title={pushState === "enabled" ? t("pushOn") : t("pushEnable")}
-            style={pushState === "enabled" ? { color: "#2ecc71", borderColor: "#2ecc71" } : undefined}
+            style={pushState === "enabled" ? { color: "var(--status-ok)", borderColor: "var(--status-ok)" } : undefined}
             onClick={async () => {
               setPushState("enabling");
               try {
@@ -245,13 +245,7 @@ export default function SessionsView({
           onChange={(e) => setQuery(e.target.value)}
         />
         {loading && (
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fill, minmax(165px, 1fr))",
-              gap: 8,
-            }}
-          >
+          <div className="session-grid">
             {[0, 1, 2, 3, 4, 5].map((i) => (
               <div key={i} className="skel" style={{ height: 72 }} />
             ))}
@@ -280,7 +274,7 @@ export default function SessionsView({
                       height: 8,
                       borderRadius: 4,
                       flexShrink: 0,
-                      background: st ? toneColor[st.tone] : "#9ca3af",
+                      background: st ? toneColor[st.tone] : "var(--status-done)",
                       opacity: st ? 1 : 0.5,
                     }}
                   />
@@ -293,51 +287,32 @@ export default function SessionsView({
           </div>
         )}
         {variant !== "rows" && (
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fill, minmax(165px, 1fr))",
-            gap: 8,
-          }}
-        >
+        <div className="session-grid">
           {sorted.map((s) => {
             const st = statusOf.get(s.id);
             const when = timeAgo(s.updatedAt ?? s.time?.updated, t("justNow"));
             return (
-              <div
-                key={s.id}
-                className="card session-card"
-                onClick={() => onOpen(s.id)}
-                style={{ cursor: "pointer", display: "flex", flexDirection: "column", gap: 4, minHeight: 84 }}
-              >
-                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <div key={s.id} className="card session-card" onClick={() => onOpen(s.id)} style={{ cursor: "pointer" }}>
+                <div className="session-head">
                   <span
                     style={{
                       width: 8,
                       height: 8,
                       borderRadius: 4,
                       flexShrink: 0,
-                      background: st ? toneColor[st.tone] : "#9ca3af",
+                      background: st ? toneColor[st.tone] : "var(--status-done)",
                       opacity: st ? 1 : 0.5,
                     }}
                   />
-                  <div style={{ flex: 1, minWidth: 0, fontWeight: 600, fontSize: "0.85rem", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", whiteSpace: "normal", lineHeight: 1.2 }}>
-                    {s.title || s.id.slice(0, 12)}
-                  </div>
+                  <div className="session-title">{s.title || s.id.slice(0, 12)}</div>
                   {(unread[s.id] ?? 0) > 0 && <span className="unread-badge">{unread[s.id]}</span>}
-                  {when && (
-                    <span style={{ fontSize: "0.68rem", color: "var(--muted)", flexShrink: 0 }}>
-                      {when}
-                    </span>
-                  )}
+                  {when && <span className="session-when">{when}</span>}
                 </div>
-                <div style={{ flex: 1, fontSize: "0.75rem", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }} className="muted">
-                  {st?.snippet || "\u00a0"}
-                </div>
-                <div style={{ fontSize: "0.72rem", color: st ? toneColor[st.tone] : "#9ca3af" }}>
+                <div className="session-snippet">{st?.snippet || "\u00a0"}</div>
+                <div className="session-meta" style={{ color: st ? toneColor[st.tone] : "var(--status-done)" }}>
                   {st?.label ?? t("ready")}
                 </div>
-                <div style={{ display: "flex", gap: 4 }} onClick={(e) => e.stopPropagation()}>
+                <div className="session-actions" onClick={(e) => e.stopPropagation()}>
                   <button aria-label="Rename" style={{ padding: "2px 8px" }} onClick={() => void renameSession(s.id, s.title)}>
                     ✎
                   </button>
@@ -372,7 +347,7 @@ export default function SessionsView({
           style={{
             position: "fixed",
             inset: 0,
-            background: "rgba(0,0,0,0.94)",
+            background: "var(--scrim)",
             zIndex: 70,
             display: "flex",
             flexDirection: "column",

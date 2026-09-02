@@ -68,7 +68,7 @@ function blocks(nodes: MdBlock[]): ReactNode[] {
             key={i}
             style={{
               background: "var(--surface)",
-              border: "1px solid var(--border, rgba(255,255,255,0.1))",
+              border: "1px solid var(--border)",
               borderRadius: 8,
               padding: "8px 10px",
               overflowX: "auto",
@@ -82,7 +82,7 @@ function blocks(nodes: MdBlock[]): ReactNode[] {
           </pre>
         );
       case "table": {
-        const cell = { padding: "4px 8px", borderBottom: "1px solid var(--border, rgba(255,255,255,0.1))", textAlign: "left" } as const;
+        const cell = { padding: "4px 8px", borderBottom: "1px solid var(--border)", textAlign: "left" } as const;
         return (
           <div key={i} style={{ overflowX: "auto" }}>
             <table style={{ borderCollapse: "collapse", fontSize: "0.82rem", margin: "6px 0" }}>
@@ -183,7 +183,7 @@ export default function ArtifactViewer({
           ? {
               flex: 1,
               minWidth: 0,
-              background: "var(--bg, #0b0b0d)",
+              background: "var(--bg)",
               display: "flex",
               flexDirection: "column",
             }
@@ -191,7 +191,7 @@ export default function ArtifactViewer({
               position: "fixed",
               inset: 0,
               zIndex: 1000,
-              background: "var(--bg, #0b0b0d)",
+              background: "var(--bg)",
               display: "flex",
               flexDirection: "column",
             }
@@ -242,7 +242,7 @@ export default function ArtifactViewer({
                 title={meta.name}
                 sandbox="allow-scripts"
                 srcDoc={state.text ?? ""}
-                style={{ width: "100%", height: "100%", border: "none", background: "#fff" }}
+                style={{ width: "100%", height: "100%", border: "none", background: "var(--preview-bg)" }}
               />
             )}
             {meta.kind === "md" && <div style={{ maxWidth: 900 }}>{blocks(parseMarkdown(state.text ?? ""))}</div>}
@@ -288,7 +288,7 @@ function CsvTable({ text }: { text: string }) {
   const rows = parseCsv(text);
   if (!rows.length) return <p className="muted">(empty)</p>;
   const [header, ...rest] = rows;
-  const cell = { padding: "4px 8px", borderBottom: "1px solid var(--border, rgba(255,255,255,0.1))", textAlign: "left" } as const;
+  const cell = { padding: "4px 8px", borderBottom: "1px solid var(--border)", textAlign: "left" } as const;
   return (
     <table style={{ borderCollapse: "collapse", fontSize: "0.82rem" }}>
       <thead>

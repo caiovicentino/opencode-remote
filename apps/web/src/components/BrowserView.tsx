@@ -164,10 +164,10 @@ export default function BrowserView({ browse, onBack }: { browse: BrowseFn | nul
               style={{
                 position: "absolute",
                 inset: 0,
-                background: "rgba(0,0,0,.35)",
+                background: "var(--scrim-soft)",
                 display: "grid",
                 placeItems: "center",
-                color: "#fff",
+                color: "var(--on-scrim)",
                 fontSize: 13,
               }}
             >
