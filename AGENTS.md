@@ -36,7 +36,8 @@ queue) or 2 tasks get blocked within 30min — it posts a diagnostic summary to
 the log and resumes after external intervention (`touch ~/.opencode-remote/pilot/audit-clear`)
 or 2h without a new failure. Once per day, alongside the red-team pass, a non-blocking
 nightly EXPLORER agent (P3-052) drives the real desktop app through the P1-051 harness
-like a first-time user and files UX/robustness findings (shot + severity) as backlog lines,
+in a fresh-state first-boot pass (clean userData) like a first-time user and files
+journey/UX/robustness findings (shot + severity) as backlog lines,
 budget-capped per run. Builders must end
 their output with a final EVIDENCE block (real typecheck/test:unit outputs, plus 1440x900 and
 390px screenshot paths for UI tasks) — the gatekeeper re-executes the cited commands and rejects
