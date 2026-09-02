@@ -1,26 +1,28 @@
-// Staged update feed check (P2-012 spike): opt-in, boot-only, log-only.
+// Auto-update (P1-050): check → download → restart with consent.
 //
-// The desktop app has no update channel yet (packaging/notarization is stage 5
-// of docs/VISION.md), so there is no production feed. This spike wires
-// Electron's built-in autoUpdater against a staged static feed so the update
-// path can be exercised end to end before a real feed exists:
-//
-//   OCR_UPDATE_FEED=http://127.0.0.1:9310/feed.json npm start --workspace @ocr/desktop
-//
-// The check runs exactly once at boot and ONLY when OCR_UPDATE_FEED is set —
-// without the variable nothing happens at all (no fetch, no listeners). Any
-// network/feed failure is logged and swallowed: it must never block or crash
-// the window. The check is never awaited by main.ts (fire-and-forget).
+// Evolution of the P2-012 spike (staged feed check, log-only) into the real
+// client-ready flow. The built-in autoUpdater (Squirrel.Mac) is still the
+// engine — see the spike finding below on feed formats — but the decision now
+// lands in front of the user: when a newer version is downloaded, a consent
+// dialog offers "Restart now" / "Later". Nothing installs without a click.
 //
 // Spike finding (measured on Electron 44, macOS): the built-in autoUpdater
 // only understands the Squirrel.Mac JSON feed format ({url,name,notes}) —
 // pointing setFeedURL at an electron-builder `latest-mac.yml` fails with
 // "The server sent an invalid response". So this module parses the yml itself
 // (parseFeed) to make the update decision + log line work for both formats,
-// and only hands JSON feeds to Squirrel for the background download. A staged
-// test feed therefore ships both files from the same directory: latest-mac.yml
-// (electron-builder standard, version 0.2.1 + fake release notes) and feed.json
-// (the same release in the JSON shape Squirrel consumes).
+// and only hands JSON feeds to Squirrel for the background download.
+//
+// Listener-safety contract (P1-050 round-2 review): the autoUpdater is an
+// Electron singleton, and runUpdateCheck() runs at boot AND on every tray
+// click. Listeners must therefore be attached AT MOST ONCE per updater
+// instance — gated by listenerCount — and the update-downloaded handler must
+// read the version from the EVENT ARGUMENTS, never from a closure captured at
+// check time. Otherwise check #1's stale listener would keep offering a
+// version the user already declined after check #2 lands a newer one.
+//
+// Everything here stays fail-open: a dead feed, a bad feed or a failed
+// download is logged and swallowed — it must never block or crash the shell.
 import { app, autoUpdater } from "electron";
 
 /** Shape of the subset of Electron's autoUpdater we need (tests inject fakes). */
@@ -28,6 +30,10 @@ export interface UpdaterLike {
   setFeedURL(options: { url: string; serverType?: "json" | "default" }): void;
   checkForUpdates(): void;
   on(event: string, listener: (...args: unknown[]) => void): unknown;
+  /** Standard EventEmitter surface; optional so unit fakes can omit it. */
+  listenerCount?(event: string): number;
+  /** Squirrel.Mac applies the downloaded release and restarts the app. */
+  quitAndInstall?(): void;
 }
 
 export interface FeedInfo {
@@ -41,20 +47,25 @@ export type UpdateStatus =
   | "disabled"
   | "update-available"
   | "update-not-available"
+  | "update-downloaded"
   | "unrecognized-feed"
   | "feed-unreachable";
 
 /**
- * P3-019: tray label for the disabled status item that mirrors the latest
- * update-check decision. Pure and electron-free like the helpers in tray.ts
- * so the unit battery can exercise all five statuses. Returns null for
- * "disabled" — with no feed configured the tray must stay exactly as it was
- * before P3-019 (no status item at all).
+ * Tray label for the update-status item. Pure and electron-free like the
+ * helpers in tray.ts so the unit battery can exercise every status. Returns
+ * null for "disabled" — with no feed configured the tray must stay exactly
+ * as it was before P3-019 (no status item at all).
  */
 export function updateMenuLabel(status: UpdateStatus): string | null {
   switch (status) {
     case "update-available":
-      return "Update available — restart to install";
+      // Not "restart to install": at this point nothing has been downloaded
+      // yet, and under the consent flow a plain restart never installs — the
+      // dialog (update-downloaded → quitAndInstall) is the only apply path.
+      return "Update available — check for updates";
+    case "update-downloaded":
+      return "Update ready — restart to install";
     case "update-not-available":
       return "Up to date";
     case "unrecognized-feed":
@@ -69,10 +80,29 @@ export function updateMenuLabel(status: UpdateStatus): string | null {
 /** Single fetch timeout for the feed document. */
 const FEED_TIMEOUT_MS = 10_000;
 
-/** OCR_UPDATE_FEED holds the staged feed URL; unset/empty disables everything. */
+/** OCR_UPDATE_FEED holds an explicit staged feed URL; unset/empty means "use the packaged default". */
 export function feedUrlFromEnv(env: NodeJS.ProcessEnv = process.env): string | null {
   const raw = env.OCR_UPDATE_FEED?.trim();
   return raw ? raw : null;
+}
+
+/**
+ * P1-050: the feed actually used. Priority: explicit OCR_UPDATE_FEED (dev /
+ * staged tests) → packaged default, the versioned folder the daemon serves at
+ * /__ocr/updates (loopback-only). Unpackaged dev runs stay opt-in so a plain
+ * `npm start` never fetches anything.
+ */
+export function resolvedFeedUrl(env: NodeJS.ProcessEnv = process.env, packaged = app?.isPackaged ?? false): string | null {
+  const explicit = feedUrlFromEnv(env);
+  if (explicit) return explicit;
+  if (!packaged) return null;
+  const port = Number(env.OCR_DAEMON_METRICS_PORT) || Number(env.OCR_METRICS_PORT) || 8792;
+  return `http://127.0.0.1:${port}/__ocr/updates/feed.json`;
+}
+
+/** True when an update source exists (explicit env or packaged default). */
+export function updatesEnabled(env: NodeJS.ProcessEnv = process.env, packaged = app?.isPackaged ?? false): boolean {
+  return resolvedFeedUrl(env, packaged) != null;
 }
 
 /** Numeric dotted-version compare: isNewerVersion("0.2.0", "0.2.1") === true. */
@@ -142,7 +172,7 @@ function parseYmlNotes(text: string): string {
 }
 
 export interface UpdateCheckOptions {
-  /** Overrides OCR_UPDATE_FEED (tests); undefined reads the env var. */
+  /** Overrides the resolved feed URL (tests); undefined uses resolvedFeedUrl(). */
   feedUrl?: string | null;
   /** Overrides app.getVersion() (tests/dev fixtures). */
   currentVersion?: string;
@@ -152,20 +182,151 @@ export interface UpdateCheckOptions {
   fetchImpl?: typeof fetch;
   /** Overrides the [desktop] console logger (tests capture lines). */
   log?: (line: string) => void;
+  /** Notified of every resolved status (main.ts mirrors it into the tray). */
+  onStatus?: (status: UpdateStatus, version: string | null) => void;
+  /** Overrides the consent dialog (tests inject fakes). */
+  dialog?: UpdateDialogSinks;
+}
+
+// --- consent flow -------------------------------------------------------------
+
+/** What the consent dialog needs from its host (main.ts wires Electron's dialog). */
+export interface UpdateDialogSinks {
+  /** Resolve with "install" (Restart now) or "later" (deferred). Applying the
+   * downloaded release is the updater's own job (quitAndInstall). */
+  askInstall(version: string): Promise<"install" | "later">;
 }
 
 /**
- * Boot-time update check. Never throws; never blocks (main.ts calls it with
- * `void`). Returns the decision so tests (and future UI) can assert it.
+ * Downloaded-release bookkeeping, keyed by the autoUpdater singleton. Kept in
+ * a module-level WeakMap so repeated checks (boot + every tray click) never
+ * duplicate state — and so unit tests can drive several fake updaters in one
+ * process without cross-contamination.
+ */
+interface DownloadedState {
+  /** Version currently being offered in an open dialog (null = none). */
+  offering: string | null;
+  /** Versions the user deferred this session — never re-prompted until a manual re-check. */
+  declined: Set<string>;
+  /** Last resolved version for the tray label. */
+  version: string | null;
+}
+const downloaded = new WeakMap<UpdaterLike, DownloadedState>();
+
+function stateFor(updater: UpdaterLike): DownloadedState {
+  let st = downloaded.get(updater);
+  if (!st) {
+    st = { offering: null, declined: new Set(), version: null };
+    downloaded.set(updater, st);
+  }
+  return st;
+}
+
+/**
+ * Pure decision: may we open the consent dialog for this version right now?
+ * Duplicate offers are the exact regression the round-1 review flagged — a
+ * stale per-check listener re-offering 0.3.0 after the user had declined it —
+ * so the two guards below are the load-bearing fix.
+ */
+export function shouldOfferInstall(st: DownloadedState, version: string): boolean {
+  if (st.offering === version) return false; // dialog already open for it
+  if (st.declined.has(version)) return false; // user said "later" this session
+  return true;
+}
+
+/**
+ * Extract the version from an autoUpdater "update-downloaded" emission. The
+ * argument shape differs per platform/channel (macOS: releaseNotes,
+ * releaseName, releaseDate, updateURL; some channels emit a single info
+ * object), so accept the first plausible version-looking string or a
+ * { version } object. Returns null when nothing plausible is found — callers
+ * then fall back to the feed version they just advertised.
+ */
+export function versionFromDownloadedArgs(args: unknown[]): string | null {
+  for (const arg of args) {
+    if (typeof arg === "string" && /^[vV]?\d+(?:\.\d+){0,3}$/.test(arg.trim())) return arg.trim();
+    if (arg && typeof arg === "object" && typeof (arg as { version?: unknown }).version === "string") {
+      return (arg as { version: string }).version;
+    }
+  }
+  return null;
+}
+
+/**
+ * Attach the singleton's event listeners EXACTLY ONCE per updater instance.
+ * This is the load-bearing fix from the round-1 review: runUpdateCheck() runs
+ * at boot and on every tray click, so attaching per call would stack N
+ * listeners on the shared singleton and one update-downloaded event would
+ * invoke N stale handlers (each re-offering the version it captured). The
+ * listenerCount gate makes re-invocation idempotent even though the singleton
+ * persists across all checks.
+ */
+export function attachUpdateListeners(
+  updater: UpdaterLike,
+  hooks: { log: (line: string) => void; dialog: UpdateDialogSinks; onStatus?: (s: UpdateStatus, v: string | null) => void },
+): void {
+  const count = typeof updater.listenerCount === "function" ? updater.listenerCount.bind(updater) : () => 0;
+  if (count("error") > 0 || count("update-downloaded") > 0) return;
+
+  updater.on("error", (err) => {
+    const message = err instanceof Error ? err.message : String(err);
+    hooks.log(`update check failed (log-only, continuing): ${message}`);
+  });
+  updater.on("update-available", () => hooks.log("update-available (autoUpdater event) — download continues in background"));
+  updater.on("update-downloaded", (...args: unknown[]) => {
+    const st = stateFor(updater);
+    const version = versionFromDownloadedArgs(args) ?? st.version ?? "";
+    hooks.log(`update-downloaded: ${version} (autoUpdater event) — ready to install`);
+    st.version = version || st.version;
+    if (hooks.onStatus) hooks.onStatus("update-downloaded", version || st.version);
+    void offerInstall(updater, version, hooks);
+  });
+}
+
+/**
+ * Open the consent dialog for a downloaded version — once per version. The
+ * dialog sinks are awaited so two rapid downloads can't stack dialogs.
+ */
+async function offerInstall(
+  updater: UpdaterLike,
+  version: string,
+  hooks: { log: (line: string) => void; dialog: UpdateDialogSinks },
+): Promise<void> {
+  const st = stateFor(updater);
+  if (!version || !shouldOfferInstall(st, version)) return;
+  st.offering = version;
+  try {
+    const choice = await hooks.dialog.askInstall(version);
+    if (choice === "install") {
+      hooks.log(`update install: restarting to apply ${version}`);
+      st.offering = null;
+      updater.quitAndInstall?.();
+      return;
+    }
+    hooks.log(`update install: deferred ${version} — applied on next restart`);
+    st.declined.add(version);
+  } catch (err) {
+    hooks.log(`update install: dialog failed (${err instanceof Error ? err.message : String(err)}) — staying on current version`);
+  } finally {
+    if (st.offering === version) st.offering = null;
+  }
+}
+
+/**
+ * Update check driver, shared by the boot path and the tray's "Check for
+ * updates" item. Never throws; never blocks (callers use `void`). Returns the
+ * decision so tests and the tray can assert on it.
  */
 export async function checkForUpdatesOnBoot(opts: UpdateCheckOptions = {}): Promise<UpdateStatus> {
   const log = opts.log ?? ((line: string) => console.log(`[desktop] ${line}`));
-  const feedUrl = opts.feedUrl !== undefined ? opts.feedUrl : feedUrlFromEnv();
-  // No env var → the feature is off: no fetch, no listeners, no log noise.
+  const feedUrl = opts.feedUrl !== undefined ? opts.feedUrl : resolvedFeedUrl();
+  // No feed source → the feature is off: no fetch, no listeners, no log noise.
   if (!feedUrl) return "disabled";
-  // Under plain node (unit tests) the electron import degrades to undefined;
-  // callers there inject a fake via opts.updater.
   const updater = opts.updater !== undefined ? opts.updater : (autoUpdater as UpdaterLike | undefined);
+  const finish = (status: UpdateStatus, version: string | null = null): UpdateStatus => {
+    if (opts.onStatus) opts.onStatus(status, version);
+    return status;
+  };
 
   let body: string;
   try {
@@ -177,40 +338,40 @@ export async function checkForUpdatesOnBoot(opts: UpdateCheckOptions = {}): Prom
     // Feed unreachable/down: log-only by design — a dead feed must never
     // crash the shell or delay startup.
     log(`update check: feed unreachable (${feedUrl}): ${err instanceof Error ? err.message : String(err)}`);
-    return "feed-unreachable";
+    return finish("feed-unreachable");
   }
 
   const feed = parseFeed(body);
   if (!feed) {
     log(`update check: unrecognized feed at ${feedUrl} — ignoring`);
-    return "unrecognized-feed";
+    return finish("unrecognized-feed");
   }
   const current = opts.currentVersion ?? app?.getVersion?.() ?? "0.0.0";
   if (!isNewerVersion(current, feed.version)) {
     log(`update check: no update (current ${current} >= feed ${feed.version})`);
-    return "update-not-available";
+    return finish("update-not-available");
   }
 
-  // Decision made: log the spike's acceptance line, then (JSON feeds only)
-  // hand the feed to Squirrel.Mac so a packaged install downloads it in the
-  // background. Download/apply errors land on the error listener: log-only.
+  // Decision made: hand the release to the shell. JSON feeds go to
+  // Squirrel.Mac so a packaged install downloads them in the background;
+  // yml feeds stay parse+log (see the spike finding at the top).
   log(`update-available: ${feed.version}${feed.notes ? ` — ${feed.notes}` : ""}`);
   if (feed.format === "json" && updater) {
+    // P1-050: listeners attach at most once per updater instance (see
+    // attachUpdateListeners) and the downloaded handler reads its version
+    // from the event args — a second check here never stacks stale offers.
+    const dialog = opts.dialog ?? { askInstall: async () => "later", quitAndInstall: () => {} };
+    attachUpdateListeners(updater, { log, dialog, onStatus: opts.onStatus });
+    stateFor(updater).version = feed.version;
     try {
-      updater.on("error", (err) => {
-        const message = err instanceof Error ? err.message : String(err);
-        log(`update check failed (log-only, continuing): ${message}`);
-      });
-      updater.on("update-available", () => log("update-available (autoUpdater event) — download continues in background"));
-      updater.on("update-downloaded", () => log("update-downloaded (autoUpdater event) — applied on next restart"));
       updater.setFeedURL({ url: feedUrl, serverType: "json" });
       updater.checkForUpdates();
     } catch (err) {
       log(`update check failed (log-only, continuing): ${err instanceof Error ? err.message : String(err)}`);
-      return "update-available";
+      return finish("update-available", feed.version);
     }
   } else if (feed.format === "yml") {
     log("update check: yml feed parsed (built-in autoUpdater needs a Squirrel JSON feed for the download step)");
   }
-  return "update-available";
+  return finish("update-available", feed.version);
 }

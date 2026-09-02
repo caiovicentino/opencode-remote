@@ -1,4 +1,5 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, statSync, readdirSync, openSync, readSync, closeSync, appendFileSync, copyFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, statSync, readdirSync, openSync, readSync, closeSync, appendFileSync, copyFileSync, createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { IncomingMessage, ServerResponse, Server as HttpServer } from "node:http";
@@ -52,6 +53,7 @@ import { loadRoutines, saveRoutines, type Routine } from "./routines.js";
 import { artifactMime, kindFor, listArtifacts, readArtifact } from "./artifacts.js";
 import { createShutdown, stopAccepting } from "./shutdown.js";
 import { localUpgradeAllowed } from "./localws.js";
+import { UPDATE_CONTENT_TYPES, resolveUpdatePath, updatesDir } from "./updates.js";
 // P2-045: dashboard v2 metrics — aggregations shared with the pilot's eval battery
 import { avgPhaseDurations, burnDown, countFailSteps, rollbackHealthAlert, type HistoryEntry } from "../../pilot/src/metrics";
 import type { PilotEvent } from "../../pilot/src/events";
@@ -1651,6 +1653,42 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     } catch {
       res.writeHead(500, { "content-type": "text/plain" });
       res.end("dashboard file missing");
+    }
+    return true;
+  }
+  // P1-050: staged auto-update feed — GET /__ocr/updates/<version>/<file>.
+  // Serves ONLY files under ~/.opencode-remote/updates (resolveUpdatePath is
+  // strict: charset + extension allowlist + resolved-path containment). The
+  // route is intentionally unauthenticated like /dashboard because the
+  // desktop's autoUpdater cannot attach the Bearer token; the metrics server
+  // binds 127.0.0.1 only, so the folder is unreachable off-machine.
+  if (req.method === "GET" && url.pathname.startsWith("/__ocr/updates/")) {
+    const file = resolveUpdatePath(updatesDir(), url.pathname.slice("/__ocr/updates".length));
+    if (!file) {
+      res.writeHead(404, { "content-type": "text/plain" });
+      res.end("not found");
+      return true;
+    }
+    try {
+      // P1-050 r2: stream, don't buffer. Update artifacts are multi-MB; a
+      // readFileSync here would block the shared event loop (relay WS client,
+      // /api/*) for the whole read and hold the entire file in memory.
+      // stat() is async (404 fallback preserved), content-length helps the
+      // desktop's download progress, and errors mid-stream just tear the
+      // response down — headers are already sent at that point.
+      const size = (await stat(file)).size;
+      const ext = (file.match(/(\.[a-z0-9]+)$/i)?.[1] ?? "").toLowerCase();
+      res.writeHead(200, {
+        "content-type": UPDATE_CONTENT_TYPES[ext] ?? "application/octet-stream",
+        "content-length": String(size),
+        "cache-control": "no-store",
+      });
+      const stream = createReadStream(file);
+      stream.on("error", () => res.destroy());
+      stream.pipe(res);
+    } catch {
+      res.writeHead(404, { "content-type": "text/plain" });
+      res.end("not found");
     }
     return true;
   }

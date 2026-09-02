@@ -46,6 +46,9 @@ contextBridge.exposeInMainWorld("ocrDesktop", {
   getPairingState: (): Promise<PairingState | null> => ipcRenderer.invoke("app:pairingState"),
   // P1-053: banner button — manual daemon restart (same path as the tray).
   reconnectDaemon: (): Promise<boolean> => ipcRenderer.invoke("app:reconnectDaemon"),
+  // P1-050: Settings "Copy diagnostic" — support bundle (versions, daemon
+  // state, desktop.log tail, crash-file names). Text only, no secrets.
+  getDiagnostics: (): Promise<string> => ipcRenderer.invoke("app:diagnostics"),
   // P1-061: fresh loopback WS credentials (port + token) for the local direct
   // transport; null when the state file has no token yet (first health poll).
   getLocalLink: (): Promise<LocalLink | null> => ipcRenderer.invoke("app:localLink"),

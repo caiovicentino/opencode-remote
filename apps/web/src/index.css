@@ -807,6 +807,64 @@ select {
   padding: 10px;
 }
 
+/* first-run splash (P1-050): wordmark, value line, 3-step onboarding */
+.splash-logo {
+  border-radius: 10px;
+}
+.splash-wordmark {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.splash-value {
+  color: var(--text);
+  opacity: 0.92;
+  max-width: 34ch;
+  line-height: 1.45;
+}
+.splash-steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: splash-step;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  text-align: left;
+  width: 100%;
+}
+.splash-steps li {
+  counter-increment: splash-step;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+.splash-steps li::before {
+  content: counter(splash-step);
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--text);
+  opacity: 0.8;
+  transform: translateY(3px);
+}
+.splash-under {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--text);
+  opacity: 0.75;
+}
+
 /* daemon sidecar gave up (desktop, P2-017): slim warning strip on top */
 .daemon-down {
   position: fixed;

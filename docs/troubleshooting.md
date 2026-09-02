@@ -18,6 +18,28 @@ Run `opencode-remote doctor` first — it checks everything below in one shot.
 | watch the logs | `tail -f ~/.opencode-remote/logs/daemon.log` (JSON lines; `OCR_LOG_LEVEL=debug` for frame-level) |
 | watch the desktop app logs | tray → **Open logs folder**, then `tail -f ~/Library/Application\ Support/OpenCode\ Remote/logs/desktop.log` (`userData/logs/desktop.log`, ~1MB cap, rotates to `desktop.log.1`) — the packaged app writes here instead of the console |
 | watch the daemon sidecar's own output | same folder, `userData/logs/daemon-sidecar.log` (JSONL; rotates to `daemon-sidecar.log.1`, ~1MB cap) — the desktop shell tees the spawned daemon's stdout/stderr there; the tray's **Open logs folder** click cites both files in `desktop.log` |
+| desktop app crashed or the window went white | crash reports land in `~/.opencode-remote/pilot/client-logs/` (newest 20 kept, one `.txt` per event: `uncaught` = main process, `renderer` = renderer crash). Copy one when filing an issue |
+| report a problem with everything attached | desktop → Settings → **Diagnostics → Copy diagnostic**: versions, platform, daemon state, last 40 `desktop.log` lines and the crash-file names, on your clipboard. No secrets (apiToken/allowlist/pairing URI never included) |
+| update didn't install | the consent dialog only appears after a **background download** finished; check `desktop.log` for `update status`, then tray → **Check for updates**. A version you deferred ("Later") is not re-offered until the next manual check or app restart |
+
+## Staging a desktop update release (P1-050)
+
+The packaged desktop app checks `http://127.0.0.1:8792/__ocr/updates/feed.json`
+(loopback-only, served by the local daemon from `~/.opencode-remote/updates/`).
+To publish a new version:
+
+```
+~/.opencode-remote/updates/
+  feed.json                          # Squirrel.Mac pointer doc: {url, name, notes, releaseDate}
+  0.3.0/OpenCode Remote-0.3.0-mac.zip
+  0.3.0/latest-mac.yml               # optional, electron-builder metadata
+```
+
+`feed.json`'s `url` field must point at the absolute artifact URL, e.g.
+`http://127.0.0.1:8792/__ocr/updates/0.3.0/OpenCode Remote-0.3.0-mac.zip`.
+The route is unauthenticated (autoUpdater cannot send headers) but strictly
+loopback-bound and limited to that folder: only plain filenames with a known
+extension, no traversal. Dev builds stay opt-in via `OCR_UPDATE_FEED`.
 
 ## Health endpoints
 

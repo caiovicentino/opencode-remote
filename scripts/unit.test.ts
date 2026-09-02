@@ -2780,9 +2780,12 @@ check(
 {
   // The disabled status item mirrors the latest check decision in the tray;
   // the update-available string is the task-mandated label shown above
-  // "Restart daemon". All five UpdateStatus values must map to a stable,
+  // "Restart daemon". All six UpdateStatus values must map to a stable,
   // distinct label (disabled → null = no status item, tray unchanged).
-  check("tray: update-available label", updateMenuLabel("update-available") === "Update available — restart to install");
+  // P1-050 r2: "update-available" no longer says "restart to install" — at
+  // that point nothing has downloaded and a plain restart installs nothing
+  // under the consent flow; only update-downloaded does.
+  check("tray: update-available label", updateMenuLabel("update-available") === "Update available — check for updates");
   check("tray: update-not-available label", updateMenuLabel("update-not-available") === "Up to date");
   check("tray: unrecognized-feed label", updateMenuLabel("unrecognized-feed") === "Update check failed — unrecognized feed");
   check("tray: feed-unreachable label", updateMenuLabel("feed-unreachable") === "Update check failed — feed unreachable");
@@ -2798,7 +2801,7 @@ check(
   check(
     "tray: update label keeps the mandated em-dash phrasing",
     updateMenuLabel("update-available")?.includes("Update available") === true &&
-      updateMenuLabel("update-available")?.includes("restart to install") === true,
+      updateMenuLabel("update-available")?.includes("check for updates") === true,
   );
 }
 
