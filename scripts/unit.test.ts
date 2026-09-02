@@ -80,7 +80,7 @@ import {
 } from "../apps/pilot/src/failureLessons";
 import { AtomicWriteIo, clampSlots, ensureSingleton, loadState, normalizeModels, recordTaskFailure, saveState, startHeartbeat, tierBModelFor, writeJsonAtomic } from "../apps/pilot/src/state";
 import type { PilotState } from "../apps/pilot/src/state";
-import { clearTaskAttempts, doctorBacklog, doctorBranches, doctorRefs, doctorState, normalizePilotState, validateBacklog, type RunFn } from "../apps/pilot/src/doctor";
+import { clearTaskAttempts, doctorBacklog, doctorBranches, doctorRefs, doctorState, normalizePilotState, parseAttemptsArgs, runAttemptsCommand, validateBacklog, type AttemptsRequest, type RunFn } from "../apps/pilot/src/doctor";
 import { avgPhaseDurations, burnDown, countFailSteps, rollbackHealthAlert } from "../apps/pilot/src/metrics";
 import type { PilotEvent } from "../apps/pilot/src/events";
 import { areaKey, pickBatch, pickTasks } from "../apps/pilot/src/scheduler";
@@ -4014,6 +4014,35 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   }
 
   {
+    // P1-030 round 2: the CLI argv dispatch is where the destructive default
+    // hid — table-drive every form against a throwaway state file.
+    const table: [string, string[], AttemptsRequest["mode"], string | undefined][] = [
+      ["no flag reports", ["doctor.ts", "attempts"], "report", undefined],
+      ["--clear <id> clears one", ["doctor.ts", "attempts", "--clear", "P9-001"], "clear", "P9-001"],
+      ["bare --clear errors", ["doctor.ts", "attempts", "--clear"], "error", undefined],
+      ["--clear <garbage> errors", ["doctor.ts", "attempts", "--clear", "garbage;rm"], "error", undefined],
+      ["--clear <unknown id> errors", ["doctor.ts", "attempts", "--clear", "P9-99"], "error", undefined],
+    ];
+    for (const [name, argv, mode, id] of table) {
+      const req = parseAttemptsArgs(argv);
+      check(`doctor attempts args: ${name}`, req.mode === mode && (mode !== "clear" || req.id === id));
+    }
+    const dir = mkdtempSync(join(tmpdir(), "pilot-doctor-cli-"));
+    try {
+      const file = join(dir, "state.json");
+      writeFileSync(file, JSON.stringify({ taskAttempts: { "P9-001": 2 } }));
+      const logs: string[] = [];
+      const sink = (level: string, msg: string, data?: unknown) => logs.push(`${level}:${msg}`);
+      check("doctor attempts cli: report leaves every counter alone", runAttemptsCommand(["doctor.ts", "attempts"], file, sink) && JSON.parse(readFileSync(file, "utf8")).taskAttempts["P9-001"] === 2);
+      check("doctor attempts cli: bare --clear is rejected", !runAttemptsCommand(["doctor.ts", "attempts", "--clear"], file, sink) && JSON.parse(readFileSync(file, "utf8")).taskAttempts["P9-001"] === 2);
+      check("doctor attempts cli: --clear <id> clears and persists", runAttemptsCommand(["doctor.ts", "attempts", "--clear", "P9-001"], file, sink) && JSON.parse(readFileSync(file, "utf8")).taskAttempts["P9-001"] === undefined);
+      check("doctor attempts cli: garbage id rejected", !runAttemptsCommand(["doctor.ts", "attempts", "--clear", "garbage;rm"], file, sink) && !("garbage;rm" in JSON.parse(readFileSync(file, "utf8")).taskAttempts));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  {
     const dir = mkdtempSync(join(tmpdir(), "pilot-doctor-state-"));
     try {
       const file = join(dir, "state.json");
@@ -4076,6 +4105,34 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       const { run } = mkBranchRun("main");
       const r = doctorBranches("/ws", { run, gh: () => ({ ok: false, output: "" }) });
       check("doctor branches: gh down skips every branch", r.ok && !r.changed && r.detail.includes("gh unavailable"));
+    }
+    {
+      // shell-injection guard: a refname that is not pilot/<TASK_ID> must never
+      // reach the gh probe or `git branch -D` (both run via a shell)
+      const probed: string[] = [];
+      const run: RunFn = (cmd) => {
+        if (cmd.startsWith("git for-each-ref")) return { ok: true, output: "pilot/evil;rm\npilot/P9-001\n" };
+        return { ok: true, output: "" };
+      };
+      const ghRun: RunFn = (cmd) => {
+        probed.push(cmd);
+        return { ok: true, output: "[]" };
+      };
+      const r = doctorBranches("/ws", { run, gh: ghRun });
+      check("doctor branches: off-shape refname skipped unmanaged", r.ok && r.detail.includes("pilot/evil;rm (invalid refname)"));
+      check("doctor branches: off-shape refname never reaches a shell command", probed.every((c) => !c.includes("evil")) && !r.detail.includes("deleted: pilot/evil;rm"));
+      check("doctor branches: valid task branch still deleted next to it", r.changed && r.detail.includes("deleted: pilot/P9-001"));
+    }
+    {
+      // a failed `git branch -D` means the repair did not happen — ok must be false
+      const run: RunFn = (cmd) => {
+        if (cmd.startsWith("git for-each-ref")) return { ok: true, output: "pilot/P9-001\n" };
+        if (cmd === "git rev-parse --abbrev-ref HEAD") return { ok: true, output: "main\n" };
+        if (cmd.startsWith("git branch -D")) return { ok: false, output: "error: branch locked\n" };
+        return { ok: true, output: "" };
+      };
+      const r = doctorBranches("/ws", { run, gh: () => ({ ok: true, output: "[]" }) });
+      check("doctor branches: failed deletion reports ok=false", !r.ok && r.detail.includes("pilot/P9-001 (delete failed)"));
     }
   }
 }

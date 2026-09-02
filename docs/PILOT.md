@@ -433,8 +433,10 @@ e logados em `apps/pilot/src/doctor.ts`:
 - **`refs`** — fetch + `reset --hard origin/main` + clean do clone de trabalho
   (mesma sequência do `syncWorkspace` do scheduler); loga `changed` só quando o
   HEAD realmente se moveu;
-- **`attempts`** — limpa o contador do circuit breaker (P1-014): `--clear` zera
-  todos, `--clear <id>` zera um; sem flag, apenas reporta;
+- **`attempts`** — contador do circuit breaker (P1-014): sem flag apenas
+  **reporta** (nunca altera nada); `--clear <id>` zera o contador de um id;
+  `--clear` sem id é **erro** (exit 1) — o modo report nunca limpa contadores,
+  muito menos todos de uma vez;
 - **`backlog`** — valida seções (`## Ready`/`## Done` obrigatórias, `## Blocked`
   opcional) + ids de task únicos em todas as seções, via `loadBacklog`; somente
   leitura — backlog inválido é reportado (log warn + exit 1), nunca auto-editado;

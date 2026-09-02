@@ -80,6 +80,46 @@ export function clearTaskAttempts(st: PilotState, id?: string): number {
   return n;
 }
 
+export type AttemptsRequest =
+  | { mode: "report" }
+  | { mode: "clear"; id: string }
+  | { mode: "error"; detail: string };
+
+/**
+ * Argv dispatch for the `attempts` subcommand (table-pinned by the unit
+ * battery): no flag → report only; `--clear <id>` → clear one counter;
+ * `--clear` WITHOUT an id is an error, never a destructive clear-all — a
+ * report-only invocation must not defeat the P1-014 stop-loss.
+ */
+export function parseAttemptsArgs(argv: string[]): AttemptsRequest {
+  const at = argv.indexOf("--clear");
+  if (at < 0) return { mode: "report" };
+  const id = argv[at + 1];
+  if (!id || !DOCTOR_ID_RE.test(id)) return { mode: "error", detail: id ? `invalid task id: ${id}` : "--clear requires a task id: attempts --clear <id>" };
+  return { mode: "clear", id };
+}
+
+/**
+ * One `attempts` invocation against a concrete state file (injectable for
+ * hermetic tests). Returns false when the invocation was rejected.
+ */
+export function runAttemptsCommand(argv: string[], file: string, log: typeof doctorLog = doctorLog): boolean {
+  const req = parseAttemptsArgs(argv);
+  if (req.mode === "error") {
+    log("warn", "doctor: attempts", { ok: false, detail: req.detail });
+    return false;
+  }
+  const st = loadState(file);
+  if (req.mode === "clear") {
+    const cleared = clearTaskAttempts(st, req.id);
+    if (cleared > 0) saveState(st, file);
+    log("info", "doctor: attempts", { changed: cleared > 0, cleared: req.id });
+  } else {
+    log("info", "doctor: attempts", { changed: false, attempts: st.taskAttempts ?? {} });
+  }
+  return true;
+}
+
 // ── backlog: section + unique-id validation ──────────────────────────────────
 
 export interface BacklogDiagnosis {
@@ -137,6 +177,9 @@ export function doctorBacklog(repoDir: string): BacklogDiagnosis {
  * branch is only deleted when `gh` confirms the PR state — an gh failure or an
  * open PR skips the branch. Branches whose task still has live attempts
  * (preserved for a retry, P1-060) and the checked-out branch are never touched.
+ * Refnames are validated against the strict `pilot/<TASK_ID>` shape BEFORE any
+ * shell use — agent-created branches may carry metacharacters, and both the gh
+ * probe and `git branch -D` run through a shell (P1-030 review, round 2).
  */
 export function doctorBranches(
   ws: string,
@@ -150,12 +193,17 @@ export function doctorBranches(
   const current = run("git rev-parse --abbrev-ref HEAD").output.trim();
   const deleted: string[] = [];
   const skipped: string[] = [];
+  let failed = false;
   for (const branch of branches) {
+    const id = branch.slice("pilot/".length);
+    if (!branch.startsWith("pilot/") || !DOCTOR_ID_RE.test(id)) {
+      skipped.push(`${branch} (invalid refname)`);
+      continue;
+    }
     if (branch === current) {
       skipped.push(`${branch} (checked out)`);
       continue;
     }
-    const id = branch.slice("pilot/".length);
     if (opts.protectedIds?.has(id)) {
       skipped.push(`${branch} (preserved for retry)`);
       continue;
@@ -171,13 +219,16 @@ export function doctorBranches(
       continue;
     }
     if (run(`git branch -D ${branch}`).ok) deleted.push(branch);
-    else skipped.push(`${branch} (delete failed)`);
+    else {
+      skipped.push(`${branch} (delete failed)`);
+      failed = true; // the repair did not happen — never report success
+    }
   }
   const parts: string[] = [];
   if (deleted.length) parts.push(`deleted: ${deleted.join(", ")}`);
   if (skipped.length) parts.push(`skipped: ${skipped.join(", ")}`);
   return {
-    ok: true,
+    ok: !failed,
     changed: deleted.length > 0,
     detail: parts.length ? parts.join(" | ") : "no pilot/* branches",
   };
@@ -248,10 +299,11 @@ function protectedBranchIds(st: PilotState): Set<string> {
 export function runDoctor(cfg: Pick<PilotConfig, "repo">, workspaces: string[], log: typeof doctorLog = doctorLog): void {
   const st = loadState();
 
-  for (const ws of workspaces) {
+  const refsResults = workspaces.map((ws) => {
     const r = safe(() => doctorRefs(ws), "refs");
     log(r.ok ? "info" : "warn", "doctor: refs", { ws, ...r });
-  }
+    return r.ok;
+  });
 
   const stateResult = safe(() => doctorState(), "state");
   log(stateResult.ok ? "info" : "warn", "doctor: state", stateResult);
@@ -264,12 +316,15 @@ export function runDoctor(cfg: Pick<PilotConfig, "repo">, workspaces: string[], 
   }
   log(backlog.ok ? "info" : "warn", "doctor: backlog", { repo: cfg.repo, ...backlog });
 
-  for (const ws of workspaces) {
+  const branchResults = workspaces.map((ws) => {
     const r = safe(() => doctorBranches(ws, { protectedIds: protectedBranchIds(st) }), "branches");
     log(r.ok ? "info" : "warn", "doctor: branches", { ws, ...r });
-  }
+    return r.ok;
+  });
 
-  log("info", "doctor pass complete", { ok: backlog.ok && stateResult.ok });
+  log("info", "doctor pass complete", {
+    ok: refsResults.every(Boolean) && stateResult.ok && backlog.ok && branchResults.every(Boolean),
+  });
 }
 
 function safe(fn: () => DoctorResult, what: string): DoctorResult {
@@ -295,17 +350,7 @@ function main() {
       break;
     }
     case "attempts": {
-      const st = loadState();
-      const clearAt = process.argv.indexOf("--clear");
-      const id = clearAt >= 0 ? process.argv[clearAt + 1] : undefined;
-      if (clearAt >= 0 && id && !DOCTOR_ID_RE.test(id)) {
-        log("warn", "doctor: attempts", { ok: false, detail: `invalid task id: ${id}` });
-        ok = false;
-        break;
-      }
-      const cleared = clearTaskAttempts(st, id);
-      if (cleared > 0) saveState(st);
-      log("info", "doctor: attempts", { changed: cleared > 0, cleared, attempts: st.taskAttempts });
+      ok = runAttemptsCommand(process.argv, defaultStateFile());
       break;
     }
     case "backlog": {
