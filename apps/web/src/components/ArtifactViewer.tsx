@@ -121,17 +121,22 @@ function blocks(nodes: MdBlock[]): ReactNode[] {
 }
 
 /**
- * Full-screen artifact viewer: html in a sandboxed iframe, md/tables with the
- * light renderer, pdf/image inline, everything else via open/save links.
+ * Artifact viewer: html in a sandboxed iframe, md/tables with the light
+ * renderer, pdf/image inline, everything else via open/save links.
+ * Two variants (P2-062): "overlay" covers the whole screen (mobile, Artifacts
+ * pane); "panel" fills its parent flex box for the chat's side-by-side preview.
  */
 export default function ArtifactViewer({
   meta,
   request,
   onClose,
+  variant = "overlay",
 }: {
   meta: ArtifactMeta;
   request: OcrRequest;
   onClose: () => void;
+  /** "overlay" (default) renders fixed full-screen; "panel" fills its parent */
+  variant?: "overlay" | "panel";
 }) {
   const [state, setState] = useState<ViewState>({ loading: true });
   const viewRef = useRef<ViewState>({ loading: true });
@@ -173,14 +178,24 @@ export default function ArtifactViewer({
 
   return (
     <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 1000,
-        background: "var(--bg, #0b0b0d)",
-        display: "flex",
-        flexDirection: "column",
-      }}
+      style={
+        variant === "panel"
+          ? {
+              flex: 1,
+              minWidth: 0,
+              background: "var(--bg, #0b0b0d)",
+              display: "flex",
+              flexDirection: "column",
+            }
+          : {
+              position: "fixed",
+              inset: 0,
+              zIndex: 1000,
+              background: "var(--bg, #0b0b0d)",
+              display: "flex",
+              flexDirection: "column",
+            }
+      }
     >
       <div
         style={{

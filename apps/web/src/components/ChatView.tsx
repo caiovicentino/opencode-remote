@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import type { EventEnvelope } from "@ocr/protocol";
 import { WavRecorder, encodeWav } from "../lib/recorder";
 import { saveFile } from "../lib/files";
@@ -8,6 +8,7 @@ import { getVoiceSettings } from "./SettingsView";
 import { renderBubbleText } from "./FileCard";
 import ArtifactViewer from "./ArtifactViewer";
 import { artifactMentions, listArtifacts, type ArtifactMeta } from "../lib/artifacts";
+import { clampSplitPct, isSplitViewport, SPLIT_MIN_PX } from "../lib/split";
 import { sessionTitleOf } from "../lib/title";
 import { permissionPreview } from "../lib/permission";
 import { ArtifactIcon, IconChat, IconDownload, IconLaptop, IconWrench } from "./icons";
@@ -178,6 +179,38 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
   // agent artifacts (P1-010): cards under messages that reference them
   const [artifacts, setArtifacts] = useState<ArtifactMeta[]>([]);
   const [artifactView, setArtifactView] = useState<ArtifactMeta | null>(null);
+  // P2-062: side-by-side preview — wide viewports render the artifact in a
+  // right-hand pane (chat stays visible/navigable); narrow ones keep overlay.
+  const [wide, setWide] = useState(() => isSplitViewport(window.innerWidth));
+  const [splitPct, setSplitPct] = useState(0.5);
+  const [draggingSplit, setDraggingSplit] = useState(false);
+  const chatRowRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const mq = window.matchMedia(`(min-width: ${SPLIT_MIN_PX}px)`);
+    const onChange = (e: MediaQueryListEvent) => setWide(e.matches);
+    mq.addEventListener("change", onChange);
+    setWide(mq.matches);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  function splitDown(e: ReactPointerEvent<HTMLDivElement>) {
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setDraggingSplit(true);
+  }
+  function splitMove(e: ReactPointerEvent<HTMLDivElement>) {
+    if (!draggingSplit) return;
+    const row = chatRowRef.current;
+    if (!row) return;
+    const rect = row.getBoundingClientRect();
+    if (rect.width <= 0) return;
+    setSplitPct(clampSplitPct((rect.right - e.clientX) / rect.width));
+  }
+  function splitUp(e: ReactPointerEvent<HTMLDivElement>) {
+    if (!draggingSplit) return;
+    e.currentTarget.releasePointerCapture(e.pointerId);
+    setDraggingSplit(false);
+  }
+  const splitOpen = !!artifactView && wide;
   const t = useT();
 
   const [exporting, setExporting] = useState(false);
@@ -1143,7 +1176,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
   }
 
   return (
-    <div className="screen">
+    <div className={`screen${splitOpen ? " artifact-split" : ""}`}>
       <header>
         <button className="chat-back" onClick={onBack}>←</button>
         <span
@@ -1206,7 +1239,12 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
         </select>
       </header>
 
-      <div className="chat">
+      <div
+        className="chat-row"
+        ref={chatRowRef}
+        style={draggingSplit ? { userSelect: "none", cursor: "col-resize" } : undefined}
+      >
+        <div className="chat">
         <div className="messages" ref={listRef} onScroll={pageOlder}>
           {loadingHistory && bubbles.length === 0 && (
             <>
@@ -1680,6 +1718,32 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
         </div>
       </div>
 
+      {artifactView && wide && (
+        <>
+          <div
+            className={`split-divider${draggingSplit ? " dragging" : ""}`}
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize artifact preview"
+            onPointerDown={splitDown}
+            onPointerMove={splitMove}
+            onPointerUp={splitUp}
+            onPointerCancel={splitUp}
+          >
+            <span />
+          </div>
+          <div className="artifact-pane" style={{ flexBasis: `${splitPct * 100}%` }}>
+            <ArtifactViewer
+              meta={artifactView}
+              request={request}
+              onClose={() => setArtifactView(null)}
+              variant="panel"
+            />
+          </div>
+        </>
+      )}
+      </div>
+
       {showActivity && (
         <div
           style={{
@@ -1859,7 +1923,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
           </div>
         </div>
       )}
-      {artifactView && (
+      {artifactView && !wide && (
         <ArtifactViewer meta={artifactView} request={request} onClose={() => setArtifactView(null)} />
       )}
     </div>

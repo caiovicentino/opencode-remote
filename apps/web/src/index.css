@@ -825,3 +825,41 @@ select {
 .pair-wrap {
   height: 100%;
 }
+
+/* ── side-by-side artifact preview (P2-062): chat left, artifact right ── */
+/* row wrapper around the chat column; the preview pane and divider join it
+   while an artifact is open on a wide (≥ 900px) viewport */
+.chat-row {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+/* the split view needs the full row — the reading column no longer applies */
+.screen.artifact-split,
+.desk-main .screen.artifact-split {
+  max-width: none;
+}
+.screen.artifact-split .chat {
+  min-width: 0;
+}
+.split-divider {
+  flex: 0 0 9px;
+  display: flex;
+  justify-content: center;
+  cursor: col-resize;
+  touch-action: none;
+}
+.split-divider span {
+  width: 1px;
+  background: var(--border);
+}
+.split-divider:hover span,
+.split-divider.dragging span {
+  width: 2px;
+  background: var(--accent);
+}
+.artifact-pane {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
