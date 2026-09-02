@@ -110,6 +110,11 @@ unavailable — registration there can only reject.
   connections stop, relay/client websockets are closed with code 1001, a
   ≤3s drain timer bounds the wait and the process exits 0; a second signal
   exits immediately. Clients auto-rehandshake on the next boot.
+- The relay has the same graceful shutdown (P2-023): `launchctl kickstart -k`
+  on deploy stops new admissions (`server.close`), sends every ws client a
+  close 1001 ("server shutting down"), logs a final JSONL line with uptime
+  and closed connections, and exits 0 within the ≤3s drain window; a second
+  signal exits immediately.
 - Session keys are re-derived on every handshake; daemon restart invalidates
   them by design (clients auto-rehandshake transparently)
 - The relay learns room ids and traffic volume, nothing else

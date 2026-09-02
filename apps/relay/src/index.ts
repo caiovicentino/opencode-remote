@@ -6,6 +6,7 @@ import { healthzHandler } from "./healthz";
 import { TokenBucket } from "./ratelimit";
 import { IpCap } from "./ipcap";
 import { isValidRoomId, MAX_ROOMS_PER_SOCKET } from "./roomid";
+import { createShutdown, stopAccepting } from "./shutdown";
 
 /**
  * Relay: a blind router.
@@ -309,3 +310,18 @@ wss.on("connection", (socket: Socket, req) => {
     leaveAll(socket);
   });
 });
+
+// P2-023: SIGTERM/SIGINT graceful shutdown — drain ≤3s, then exit 0.
+// `launchctl kickstart -k` (deploy step 2) relies on this: clients get a
+// close 1001 frame and a final JSONL line instead of a dead socket.
+const { shutdown } = createShutdown({
+  activeConnections: () => wss.clients.size,
+  uptimeMs: () => Date.now() - m.startedAt,
+  stopListeners: () => stopAccepting(server, wss.clients, ev),
+  log: ev,
+  exit: (code) => process.exit(code),
+  setTimeout,
+  clearTimeout,
+});
+process.on("SIGTERM", () => void shutdown("SIGTERM"));
+process.on("SIGINT", () => void shutdown("SIGINT"));
