@@ -118,6 +118,10 @@
   #rb-health { display:none; margin-bottom:8px; padding:6px 10px; border:1px solid var(--red);
                background:rgba(248,113,113,.12); color:var(--red); font-size:10px; font-weight:700;
                letter-spacing:.1em; border-radius:8px; text-transform:uppercase; animation:pulse-red 2s infinite; cursor:help; }
+  /* ── P2-075: PWA-origin-down chip (same alert language as rb-health) ── */
+  #pwa-chip { display:none; margin-bottom:8px; padding:6px 10px; border:1px solid var(--red);
+              background:rgba(248,113,113,.12); color:var(--red); font-size:10px; font-weight:700;
+              letter-spacing:.1em; border-radius:8px; text-transform:uppercase; animation:pulse-red 2s infinite; cursor:help; }
   .fstep { display:flex; justify-content:space-between; font-size:10px; color:var(--red); padding:1px 2px 0 14px; }
   .fstep b { font-variant-numeric:tabular-nums; }
   #hist { display:none; margin-top:8px; }
@@ -146,6 +150,7 @@
 
 <div class="overlay" id="stats">
   <div id="rb-health" title="">⛔ PROD UNHEALTHY</div>
+  <div id="pwa-chip" title="">📵 PWA ORIGIN DOWN</div>
   <div id="audit-chip" title="">⛔ AUDIT MODE<span id="audit-reason"></span></div>
   <div class="row"><span>TASKS HOJE</span><b id="s-tasks">0</b></div>
   <div class="meter"><span>TASKS / DIA</span><div class="bedit"><input id="b-tasks" type="number" min="1" max="99" /><b id="m-tasks-t">0/15</b></div><div class="bar"><i id="m-tasks"></i></div></div>
@@ -436,6 +441,11 @@ async function poll() {
     const rb = document.getElementById("rb-health");
     rb.style.display = data.rollbackUnhealthy ? "block" : "none";
     rb.title = data.rollbackUnhealthy ? (data.rollbackDetail || "") : "";
+    // P2-075: PWA origin down — red chip while the newest pwa-origin verdict
+    // says the static origin (com.ocr.pwa, :5173) is not answering
+    const pwa = document.getElementById("pwa-chip");
+    pwa.style.display = data.pwaDown ? "block" : "none";
+    pwa.title = data.pwaDown ? (data.pwaDetail || "") : "";
     // P2-045: gate failure breakdown by step (evidence/invariants/integration/…)
     renderFailSteps(data.failSteps);
     // budget meters

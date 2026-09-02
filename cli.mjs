@@ -91,6 +91,7 @@ async function doctor() {
   };
   print("daemon service", state("com.ocr.daemon"));
   print("relay service", state("com.ocr.relay"));
+  print("pwa service", state("com.ocr.pwa"));
 
   console.log("");
   if (existsSync(STATE_FILE) && daemonUp) {
@@ -113,21 +114,21 @@ function serviceLabel(name) {
 }
 
 function start() {
-  for (const t of ["com.ocr.relay", "com.ocr.daemon"]) {
+  for (const t of ["com.ocr.relay", "com.ocr.daemon", "com.ocr.pwa"]) {
     const r = sh(`launchctl kickstart -k ${serviceLabel(t)} 2>&1`);
     r.status === 0 ? ok(`${t} kicked`) : bad(`${t}: ${r.stderr || "not installed (opencode-remote setup)"}`);
   }
 }
 
 function stop() {
-  for (const t of ["com.ocr.daemon", "com.ocr.relay"]) {
+  for (const t of ["com.ocr.daemon", "com.ocr.relay", "com.ocr.pwa"]) {
     const r = sh(`launchctl bootout ${serviceLabel(t)} 2>&1`);
     r.status === 0 ? ok(`${t} stopped`) : bad(`${t}: not loaded`);
   }
 }
 
 function status() {
-  for (const t of ["com.ocr.relay", "com.ocr.daemon"]) {
+  for (const t of ["com.ocr.relay", "com.ocr.daemon", "com.ocr.pwa"]) {
     const out = sh(`launchctl print ${GUI}/${t} 2>/dev/null | grep -E "state|pid" | head -2`).stdout ?? "";
     const state = /state = (\w+)/.exec(out)?.[1] ?? "not loaded";
     const pid = /pid = (\d+)/.exec(out)?.[1] ?? "-";

@@ -122,13 +122,18 @@ The wizard checks node/opencode/whisper/ffmpeg, installs launchd services
 with KeepAlive and prints the pairing QR. Point the camera at it from the
 PWA and you are in.
 
+The phone's PWA origin is the `com.ocr.pwa` launchd service — it serves the
+built `apps/web/dist` statically on `127.0.0.1:5173` (P2-075), never a dev
+server. The daemon watches `/healthz` and flags a dead origin on the
+dashboard (red chip + `[pwa] origin` event).
+
 ## CLI
 
 ```bash
 node cli.mjs doctor    # full diagnostics: binaries, health, services, devices
 node cli.mjs qr        # re-print the pairing QR
 node cli.mjs status    # launchd services state + paired devices
-node cli.mjs start     # restart services (relay + daemon)
+node cli.mjs start     # restart services (relay + daemon + pwa)
 node cli.mjs update    # pull, reinstall deps, restart — one-command upgrades
 node cli.mjs token     # print the local HTTP API token
 ```

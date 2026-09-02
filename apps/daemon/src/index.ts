@@ -57,8 +57,16 @@ import { localUpgradeAllowed } from "./localws.js";
 import { injectArtifactsSystem, workspaceCoversArtifacts } from "./sessionctx.js";
 import { previewsFromEvent, PreviewDedupe } from "./preview.js";
 import { UPDATE_CONTENT_TYPES, resolveUpdatePath, updatesDir } from "./updates.js";
+// P2-075: PWA origin watchdog — pure helpers in their own module (P1-072 lesson)
+import {
+  defaultPwaPlistPath,
+  pwaOriginAlert,
+  pwaWatchEnabled,
+  startPwaWatch,
+} from "./pwawatch.js";
 // P2-045: dashboard v2 metrics — aggregations shared with the pilot's eval battery
 import { avgPhaseDurations, burnDown, countFailSteps, rollbackHealthAlert, type HistoryEntry } from "../../pilot/src/metrics";
+import { emit } from "../../pilot/src/events";
 import type { PilotEvent } from "../../pilot/src/events";
 
 const RELAY_URL = process.env.RELAY_URL ?? "ws://127.0.0.1:8787";
@@ -1093,6 +1101,21 @@ for (const r of loadRoutines()) {
 setInterval(checkRoutines, 30_000);
 setTimeout(checkRoutines, 10_000);
 
+// P2-075: PWA origin watchdog — probes the static origin's /healthz and, on
+// flip, appends a dashboard event (`[pwa] origin`), lights the red chip and
+// pushes the phone. Only on hosts that actually serve the PWA.
+if (pwaWatchEnabled(process.env.PWA_HEALTHZ_URL, defaultPwaPlistPath())) {
+  metrics.describe("ocr_pwa_origin_healthy", "1 when the static PWA origin answers /healthz", "gauge");
+  metrics.gauge("ocr_pwa_origin_healthy", 1);
+  startPwaWatch({
+    onTransition: (down, detail) => {
+      emit("phase", { task: "pwa", phase: "origin", ok: !down, detail });
+      void pushToSubscribers(down ? "📵 PWA offline" : "📶 PWA de volta", detail, { url: "#/" });
+      log("warn", "pwa origin flipped", { down });
+    },
+  });
+}
+
 // watchdog: tell the phone when the agent server goes down (and back up)
 let opencodeHealthy = true;
 metrics.gauge("ocr_opencode_healthy", 1);
@@ -2035,6 +2058,8 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       // P2-041: newest post-rollback health verdict (full file, not the tail) —
       // drives the dashboard's red "prod unhealthy" chip
       const rbAlert = rollbackHealthAlert(allEvents);
+      // P2-075: newest pwa-origin verdict — drives the red "PWA down" chip
+      const pwaAlert = pwaOriginAlert(allEvents);
       let state: unknown = {};
       let heartbeatMs: number | null = null;
       try {
@@ -2063,7 +2088,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
           } catch {}
         }
       } catch {}
-      send(200, { state, heartbeatMs, events, cfg, lastAux, failSteps, rollbackUnhealthy: rbAlert !== null, rollbackDetail: rbAlert?.detail ?? "" });
+      send(200, { state, heartbeatMs, events, cfg, lastAux, failSteps, rollbackUnhealthy: rbAlert !== null, rollbackDetail: rbAlert?.detail ?? "", pwaDown: pwaAlert?.down === true, pwaDetail: pwaAlert?.detail ?? "" });
       return true;
     }
     // GET /api/pilot-history — P2-043 history.jsonl digest: 7-day burn-down and

@@ -312,6 +312,7 @@ export async function deploy(
     exec("npm run build --silent", { cwd: cfg.repo, timeoutMin: 15 });
     kickstart(cfg, "com.ocr.relay");
     kickstart(cfg, "com.ocr.daemon");
+    kickstartPwa(cfg);
   } catch (err) {
     await banAndRollback(cfg, sha, prev, `deploy steps failed: ${String(err).slice(0, 200)}`, meta?.task ?? "deploy", opts?.notify ?? notifySupervisor, rollbackHealth(meta?.task ?? "deploy"));
     return { ok: false, rolledBack: true, detail: String(err).slice(0, 200) };
@@ -482,6 +483,7 @@ async function rollback(cfg: PilotConfig, prevSha: string, why: string, hooks?: 
   exec("npm run build --silent", { cwd: cfg.repo, timeoutMin: 15, allowFail: true });
   kickstart(cfg, "com.ocr.relay");
   kickstart(cfg, "com.ocr.daemon");
+  kickstartPwa(cfg);
   console.log(JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "rollback", data: { prevSha, why } }));
   // P2-041: the old blind sleep(15s) never verified that the rolled-back build
   // came up — prod could stay unhealthy silently. Watch the health endpoint and
@@ -551,6 +553,23 @@ export function latestDeployableSha(repo: string): string | null {
 
 function kickstart(cfg: PilotConfig, service: string) {
   exec(`launchctl kickstart -k gui/${process.getuid?.() ?? 501}/${service}`, { cwd: cfg.repo });
+}
+
+/**
+ * P2-075: refresh the static PWA origin (com.ocr.pwa) after the web build.
+ * Tolerant by design — the service only exists after `deploy/install.sh` ran
+ * once on this host, and a missing restart must never fail a deploy (KeepAlive
+ * keeps any previous instance serving the new dist from disk; the daemon's
+ * pwa-origin watchdog reports a dead origin on the dashboard either way).
+ */
+export function kickstartPwa(cfg: PilotConfig): boolean {
+  const r = exec(`launchctl kickstart -k gui/${process.getuid?.() ?? 501}/com.ocr.pwa`, { cwd: cfg.repo, allowFail: true });
+  emit("deploy", {
+    phase: "pwa-kickstart",
+    ok: r.ok,
+    detail: r.ok ? undefined : "com.ocr.pwa not loaded — run deploy/install.sh once",
+  });
+  return r.ok;
 }
 
 async function isHealthy(_cfg: PilotConfig): Promise<boolean> {

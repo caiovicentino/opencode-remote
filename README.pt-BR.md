@@ -121,13 +121,17 @@ node cli.mjs setup --relay=wss://seu-host.ts.net:8788
 O wizard confere node/opencode/whisper/ffmpeg, instala os serviços launchd
 com KeepAlive e imprime o QR de pareamento. Aponte a câmera do PWA e pronto.
 
+O origin do PWA no celular é servido pelo serviço launchd `com.ocr.pwa`
+(`apps/web/dist` estático em `127.0.0.1:5173`, P2-075) — nunca um dev server.
+O daemon vigia `/healthz` e sinaliza no dashboard se o origin cair.
+
 ## CLI
 
 ```bash
 node cli.mjs doctor    # diagnóstico completo
 node cli.mjs qr        # reimprime o QR de pareamento
 node cli.mjs status    # estado dos serviços + devices
-node cli.mjs start     # restart dos serviços (relay + daemon)
+node cli.mjs start     # restart dos serviços (relay + daemon + pwa)
 node cli.mjs update    # puxa, reinstala deps e reinicia num comando
 node cli.mjs token     # imprime o token da API HTTP local
 ```
