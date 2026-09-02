@@ -4,7 +4,8 @@ import { humanizeError } from "../lib/errors";
 import { timeAgo, sessionUpdatedTs } from "../lib/time";
 import type { EventEnvelope } from "@ocr/protocol";
 import type { Pairing } from "../lib/client";
-import { applySessionFilters, type BadgeFilter } from "../lib/sessionFilter";
+import { applySessionFilters, splitPilotSessions, type BadgeFilter } from "../lib/sessionFilter";
+import { dropCachedSession } from "../lib/sessionCache";
 
 interface Session {
   id: string;
@@ -42,6 +43,39 @@ interface Props {
   variant?: "grid" | "rows";
 }
 
+/** P1-064: collapsed header for autonomous-pilot sessions, pinned to the end
+ * of the list. Same chip vocabulary as the filter row — no extra chrome. */
+function PilotGroup({
+  open,
+  onToggle,
+  label,
+}: {
+  open: boolean;
+  onToggle: () => void;
+  label: string;
+}) {
+  return (
+    <button
+      className="chip"
+      aria-expanded={open}
+      onClick={onToggle}
+      style={{
+        gridColumn: "1 / -1",
+        margin: "4px 0 2px",
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        width: "fit-content",
+      }}
+    >
+      <span aria-hidden style={{ fontSize: "0.7rem", transform: open ? "rotate(180deg)" : undefined, display: "inline-block" }}>
+        ▾
+      </span>
+      {label}
+    </button>
+  );
+}
+
 export default function SessionsView({
   machineName,
   events,
@@ -71,6 +105,7 @@ export default function SessionsView({
   const [query, setQuery] = useState("");
   const [badgeFilter, setBadgeFilter] = useState<BadgeFilter>("all");
   const [switching, setSwitching] = useState(false);
+  const [pilotOpen, setPilotOpen] = useState(false);
 
   // silent restore: a device that already granted permission never re-authorizes
   useEffect(() => {
@@ -115,7 +150,9 @@ export default function SessionsView({
 
   async function deleteSession(id: string) {
     if (!window.confirm(t("deleteConfirm"))) return;
-    await request("DELETE", `/session/${id}`);
+    const res = await request("DELETE", `/session/${id}`);
+    // P1-064: a deleted conversation must not linger in the warm cache
+    if (res.status === 200) dropCachedSession(id);
     void load();
   }
 
@@ -123,6 +160,10 @@ export default function SessionsView({
 
   // most recently touched first when the API gives us timestamps
   const sorted = filtered.sort((a, b) => sessionUpdatedTs(b) - sessionUpdatedTs(a));
+
+  // P1-064: autonomous-pilot sessions collapse into their own group at the
+  // end of the list so the user's conversations stay on top
+  const { user: userSessions, pilot: pilotSessions } = splitPilotSessions(sorted);
 
   // live status per session, derived from the last relevant event of each one
   const statusOf = (() => {
@@ -159,6 +200,92 @@ export default function SessionsView({
     err: "var(--status-err)",
     done: "var(--status-done)",
   };
+
+  function renderRow(s: Session) {
+    const st = statusOf.get(s.id);
+    const when = timeAgo(s.updatedAt ?? s.time?.updated, t("justNow"));
+    const n = unread[s.id] ?? 0;
+    return (
+      <div
+        key={s.id}
+        className="sess-row"
+        role="button"
+        tabIndex={0}
+        aria-label={s.title || s.id.slice(0, 12)}
+        onClick={() => onOpen(s.id)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onOpen(s.id);
+          }
+        }}
+      >
+        <span
+          style={{
+            width: 8,
+            height: 8,
+            borderRadius: 4,
+            flexShrink: 0,
+            background: st ? toneColor[st.tone] : "var(--status-done)",
+            opacity: st ? 1 : 0.5,
+          }}
+        />
+        <span className="sess-title">{s.title || s.id.slice(0, 12)}</span>
+        {n > 0 && <span className="unread-badge">{n}</span>}
+        {when && <span className="sess-when">{when}</span>}
+      </div>
+    );
+  }
+
+  function renderCard(s: Session) {
+    const st = statusOf.get(s.id);
+    const when = timeAgo(s.updatedAt ?? s.time?.updated, t("justNow"));
+    return (
+      <div
+        key={s.id}
+        className="card session-card"
+        role="button"
+        tabIndex={0}
+        aria-label={s.title || s.id.slice(0, 12)}
+        onClick={() => onOpen(s.id)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onOpen(s.id);
+          }
+        }}
+        style={{ cursor: "pointer" }}
+      >
+        <div className="session-head">
+          <span
+            style={{
+              width: 8,
+              height: 8,
+              borderRadius: 4,
+              flexShrink: 0,
+              background: st ? toneColor[st.tone] : "var(--status-done)",
+              opacity: st ? 1 : 0.5,
+            }}
+          />
+          <div className="session-title">{s.title || s.id.slice(0, 12)}</div>
+          {(unread[s.id] ?? 0) > 0 && <span className="unread-badge">{unread[s.id]}</span>}
+          {when && <span className="session-when">{when}</span>}
+        </div>
+        <div className="session-snippet">{st?.snippet || "\u00a0"}</div>
+        <div className="session-meta" style={{ color: st ? toneColor[st.tone] : "var(--status-done)" }}>
+          {st?.label ?? t("ready")}
+        </div>
+        <div className="session-actions" onClick={(e) => e.stopPropagation()}>
+          <button aria-label={t("rename")} title={t("rename")} style={{ padding: "2px 8px" }} onClick={() => void renameSession(s.id, s.title)}>
+            ✎
+          </button>
+          <button className="danger" aria-label={t("delete")} title={t("delete")} style={{ padding: "2px 8px" }} onClick={() => void deleteSession(s.id)}>
+            ✕
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="screen">
@@ -262,94 +389,28 @@ export default function SessionsView({
         {!loading && filtered.length === 0 && <p className="muted">{t("noSessions")}</p>}
         {variant === "rows" && (
           <div className="sess-rows">
-            {sorted.map((s) => {
-              const st = statusOf.get(s.id);
-              const when = timeAgo(s.updatedAt ?? s.time?.updated, t("justNow"));
-              const n = unread[s.id] ?? 0;
-              return (
-                <div
-                  key={s.id}
-                  className="sess-row"
-                  role="button"
-                  tabIndex={0}
-                  aria-label={s.title || s.id.slice(0, 12)}
-                  onClick={() => onOpen(s.id)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      onOpen(s.id);
-                    }
-                  }}
-                >
-                  <span
-                    style={{
-                      width: 8,
-                      height: 8,
-                      borderRadius: 4,
-                      flexShrink: 0,
-                      background: st ? toneColor[st.tone] : "var(--status-done)",
-                      opacity: st ? 1 : 0.5,
-                    }}
-                  />
-                  <span className="sess-title">{s.title || s.id.slice(0, 12)}</span>
-                  {n > 0 && <span className="unread-badge">{n}</span>}
-                  {when && <span className="sess-when">{when}</span>}
-                </div>
-              );
-            })}
+            {userSessions.map(renderRow)}
+            {pilotSessions.length > 0 && (
+              <PilotGroup
+                open={pilotOpen}
+                onToggle={() => setPilotOpen((v) => !v)}
+                label={t("pilotGroup", { n: pilotSessions.length })}
+              />
+            )}
+            {pilotOpen && pilotSessions.map(renderRow)}
           </div>
         )}
         {variant !== "rows" && (
         <div className="session-grid">
-            {sorted.map((s) => {
-              const st = statusOf.get(s.id);
-              const when = timeAgo(s.updatedAt ?? s.time?.updated, t("justNow"));
-              return (
-                <div
-                  key={s.id}
-                  className="card session-card"
-                  role="button"
-                  tabIndex={0}
-                  aria-label={s.title || s.id.slice(0, 12)}
-                  onClick={() => onOpen(s.id)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      onOpen(s.id);
-                    }
-                  }}
-                  style={{ cursor: "pointer" }}
-                >
-                <div className="session-head">
-                  <span
-                    style={{
-                      width: 8,
-                      height: 8,
-                      borderRadius: 4,
-                      flexShrink: 0,
-                      background: st ? toneColor[st.tone] : "var(--status-done)",
-                      opacity: st ? 1 : 0.5,
-                    }}
-                  />
-                  <div className="session-title">{s.title || s.id.slice(0, 12)}</div>
-                  {(unread[s.id] ?? 0) > 0 && <span className="unread-badge">{unread[s.id]}</span>}
-                  {when && <span className="session-when">{when}</span>}
-                </div>
-                <div className="session-snippet">{st?.snippet || "\u00a0"}</div>
-                <div className="session-meta" style={{ color: st ? toneColor[st.tone] : "var(--status-done)" }}>
-                  {st?.label ?? t("ready")}
-                </div>
-                <div className="session-actions" onClick={(e) => e.stopPropagation()}>
-                  <button aria-label={t("rename")} title={t("rename")} style={{ padding: "2px 8px" }} onClick={() => void renameSession(s.id, s.title)}>
-                    ✎
-                  </button>
-                  <button className="danger" aria-label={t("delete")} title={t("delete")} style={{ padding: "2px 8px" }} onClick={() => void deleteSession(s.id)}>
-                    ✕
-                  </button>
-                </div>
-              </div>
-            );
-          })}
+            {userSessions.map(renderCard)}
+            {pilotSessions.length > 0 && (
+              <PilotGroup
+                open={pilotOpen}
+                onToggle={() => setPilotOpen((v) => !v)}
+                label={t("pilotGroup", { n: pilotSessions.length })}
+              />
+            )}
+            {pilotOpen && pilotSessions.map(renderCard)}
         </div>
         )}
       </div>

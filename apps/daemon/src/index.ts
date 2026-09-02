@@ -33,6 +33,7 @@ import type {
   RelayFrame,
 } from "@ocr/protocol";
 import { log } from "./log.js";
+import { capMessagePage, parsePageLimit, shouldPaginateMessages, type HistoryRowLike } from "./paginate.js";
 import { handleBrowse } from "./browse.js";
 import {
   avgDoneDuration,
@@ -709,6 +710,48 @@ end tell`;
     const endpoint = (req.body as { endpoint?: string })?.endpoint;
     saveSubscriptions(loadSubscriptions().filter((s) => s.endpoint !== endpoint));
     return { id: req.id, status: 200, body: { ok: true } };
+  }
+
+  // P1-064: paged history — the client asks ?limit=N&before=<messageID> and
+  // gets the tail of the conversation as { rows, hasMore, oldest, total },
+  // sized to stay under the relay's 1MB frame. Without those params the
+  // passthrough below keeps returning the integral array (export, handoff and
+  // internal syncs depend on the unchanged shape).
+  if (shouldPaginateMessages(req.method, req.path, req.query)) {
+    const sessionId = req.path.split("/")[2] ?? "";
+    const limit = parsePageLimit(req.query?.limit);
+    const before = typeof req.query?.before === "string" ? req.query.before : undefined;
+    try {
+      const res = await fetch(new URL(`/session/${sessionId}/message`, OPENCODE_URL), {
+        headers: authHeader ? { authorization: authHeader } : {},
+      });
+      if (!res.ok) return { id: req.id, status: 502, body: { error: `opencode ${res.status}` } };
+      const rows = ((await res.json()) ?? []) as HistoryRowLike[];
+      const page = capMessagePage(rows, limit, before);
+      metrics.inc("ocr_message_pages_total");
+      // P1-064: observable trail for the paged fetch contract (acceptance: the
+      // client opens a session with exactly one ?limit=50 op). `bytes` is the
+      // size of the body actually served — the thing that must fit the relay frame.
+      const body = {
+        rows: page.rows,
+        hasMore: page.hasMore,
+        oldest: page.oldest,
+        total: page.total,
+      };
+      audit("session.historyPage", {
+        sessionId,
+        limit,
+        before: before ?? null,
+        bytes: Buffer.byteLength(JSON.stringify(body), "utf8"),
+      });
+      return { id: req.id, status: 200, body };
+    } catch (err) {
+      return {
+        id: req.id,
+        status: 502,
+        body: { error: String(err instanceof Error ? err.message : err) },
+      };
+    }
   }
 
   const url = new URL(req.path, OPENCODE_URL);

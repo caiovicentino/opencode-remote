@@ -52,6 +52,19 @@ remoto, zero confiança**.
   para a mais antiga
 - **Filtro de sessões** — chips acima da busca (Todas / Com badge / Sem badge)
   filtram o painel pelas conversas com ou sem badge de não-lidas
+- **Troca rápida de sessão (P1-064)** — abrir uma conversa busca só as últimas
+  50 mensagens (paginação no daemon com `?limit&before`, medida em bytes
+  exatos — outputs gigantes de tool são aparados — pra caber no limite de
+  frame do relay); histórico mais antigo carrega sob demanda no botão
+  "Carregar mensagens anteriores" ou rolando até o topo. As últimas 3 conversas
+  visitadas ficam em cache na memória: voltar pra elas repinta na hora (um
+  refetch em segundo atualiza a cauda), e fetch de histórico que estoura
+  timeout mostra erro com botão "Tentar de novo" em vez de skeleton eterno.
+  Sessões com título no padrão do pilot (`P3-123 …`) colapsam num grupo
+  "Sessões do pilot" no fim do painel. A batida é pelo id de task em
+  qualquer parte do título (a heurística não adivinha intenção), então uma
+  conversa sua que menciona ex. `P2-049` no título também agrupa — renomeie
+  pra tirar do grupo
 - **Rotinas** — cron de verdade: diário, dias da semana ou loop por intervalo
 - **Seguro por construção** — gate com passkey (WebAuthn), ECDH P-256 +
   AES-256-GCM, anti-replay, allowlist de dispositivos, audit log, biometria
