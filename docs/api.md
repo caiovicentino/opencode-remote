@@ -101,6 +101,23 @@ The phone/desktop UI consumes the same data over the E2E tunnel
 (`/__ocr/artifacts`) — the desktop app shows them in the **Artifacts pane**,
 and chat messages that mention an artifact file name render an attached card.
 
+### Mission Control / pilot forensics (P2-048)
+
+Navigable post-mortem of the pilot's autonomous runs, parsed from the real
+`logs/pilot.log` JSONL + `pilot/events.jsonl` (no invented data):
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/pilot-forensic` | one card per agent task: `{ id, title, status (running/merged/failed), progress, rounds, gateFails, effortMin, etaMs, mergeSha, deploys[], shots[] }` |
+| GET | `/api/pilot-forensic/timeline?task=<ID>` | ordered forensic entries for one task (`phase`, `decision`, `review`, `gate`, `deploy`, `result`, `scribe`) with gate tails |
+| GET | `/api/pilot-shot?name=<file>.png` | a post-deploy capture from `pilot/shots/` (PNG; name strictly validated) |
+| POST | `/api/pilot-takeover` | human takeover: `{ task }` — opens Terminal.app attached to the task's opencode builder session (`opencode -s ses_…`, ids read from the builder log) in its workspace clone |
+
+`etaMs` is an honest projection (mean duration of finished tasks minus
+elapsed), never a guarantee; `effortMin` is wall-clock agent time. The desktop
+app renders this feed in the **Mission Control** pane (⌘6); agents can reuse
+the same endpoints via the SDK/curl.
+
 ## SDK (TypeScript/JS)
 
 ```js

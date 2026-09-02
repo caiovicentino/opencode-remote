@@ -153,6 +153,15 @@ import {
   type ViewState,
 } from "../apps/web/src/lib/viewState";
 import { ALLOWED_EXTS, extOf, pickConverter, validateExt } from "../tools/doc2pdf.mjs";
+import {
+  avgDoneDuration,
+  buildCards,
+  buildForensicIndex,
+  progressOf,
+  shotsForTask,
+  shotPath,
+  takeoverFromBuilderLog,
+} from "../apps/daemon/src/pilotforensic";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -2819,6 +2828,72 @@ check("doc2pdf soffice usable on linux", pickConverter("linux", [SOFFICE_CONV]) 
 check("doc2pdf no candidates means no converter", pickConverter("darwin", []) === null);
 check("doc2pdf malformed candidates are ignored", pickConverter("darwin", [undefined, {}, { kind: "soffice" }] as never) === null);
 check("doc2pdf non-array candidates fail graceful", pickConverter("darwin", "soffice" as never) === null);
+
+// --- P2-048: forensic index from real pilot.log shapes -----------------------
+// Fixture mirrors the two real timestamp formats: pilot.log uses local -03:00,
+// events.jsonl uses UTC Z — sorting must be by parsed instant, not string.
+const FORENSIC_LOG = [
+  '{"ts":"2026-09-01T10:00:00-03:00","level":"info","msg":"pipeline start","data":{"task":"P9-001","title":"Fix the thing","slot":1}}',
+  '{"ts":"2026-09-01T10:00:30-03:00","level":"info","msg":"planner","data":{"task":"P9-001"}}',
+  '{"ts":"2026-09-01T10:01:00-03:00","level":"info","msg":"agent","data":"Lendo o spec e os arquivos afetados."}',
+  '{"ts":"2026-09-01T10:02:00-03:00","level":"info","msg":"builder round","data":{"task":"P9-001","round":1}}',
+  '{"ts":"2026-09-01T10:12:00-03:00","level":"info","msg":"builder done","data":{"task":"P9-001","round":1}}',
+  '{"ts":"2026-09-01T10:13:00-03:00","level":"info","msg":"reviewers start","data":{"task":"P9-001","round":1}}',
+  '{"ts":"2026-09-01T10:15:00-03:00","level":"info","msg":"reviewers done","data":{"task":"P9-001","round":1,"secOk":true,"qualOk":false}}',
+  '{"ts":"2026-09-01T10:15:01-03:00","level":"warn","msg":"gatekeeper fail","data":{"task":"P9-001","step":"evidence","tail":"npm run typecheck\\nERR!"}}',
+  '{"ts":"2026-09-01T10:16:00-03:00","level":"info","msg":"builder round","data":{"task":"P9-001","round":2}}',
+  '{"ts":"2026-09-01T10:20:00-03:00","level":"info","msg":"builder done","data":{"task":"P9-001","round":2}}',
+  '{"ts":"2026-09-01T10:21:00-03:00","level":"info","msg":"pipeline result","data":{"task":"P9-001","ok":true,"slot":1,"detail":"task P9-001 merged"}}',
+  '{"ts":"2026-09-01T10:21:30-03:00","level":"info","msg":"deploy result","data":{"task":"P9-001","ok":true,"rolledBack":false,"detail":"sha 1a2b3c4 done in 40s"}}',
+  '{"ts":"2026-09-01T10:22:00-03:00","level":"info","msg":"scribe","data":{"task":"P9-001","msg":"committed 2 lesson(s)"}}',
+  // second task: still running, narration must attribute to the latest context
+  '{"ts":"2026-09-01T11:00:00-03:00","level":"info","msg":"pipeline start","data":{"task":"P9-002","title":"Add the other thing","slot":2}}',
+  '{"ts":"2026-09-01T11:01:00-03:00","level":"info","msg":"builder round","data":{"task":"P9-002","round":1}}',
+  '{"ts":"2026-09-01T11:02:00-03:00","level":"info","msg":"agent","data":"Escrevendo o widget agora."}',
+  '{"ts":"2026-09-01T11:20:00-03:00","level":"info","msg":"planner","data":{"task":"P9-003"}}',
+  // unattributed narration AFTER a task line without task field → P9-003
+  '{"ts":"2026-09-01T11:21:00-03:00","level":"info","msg":"agent","data":"Planejando."}',
+];
+const FORENSIC_EVENTS = [
+  '{"ts":"2026-09-01T13:05:00.000Z","type":"agent","task":"P9-001","detail":"Decisão estruturada vinda do events.jsonl."}',
+];
+const idx = buildForensicIndex(FORENSIC_LOG, FORENSIC_EVENTS);
+const t1 = idx.timelines.get("P9-001")!;
+check("forensic: task with pipeline start builds timeline", !!t1 && t1.length > 5);
+check("forensic: title captured from pipeline start", idx.titles.get("P9-001") === "Fix the thing");
+check(
+  "forensic: timeline sorted by parsed instant across sources",
+  t1.map((e) => e.ts).every((ts, i, a) => i === 0 || Date.parse(a[i - 1]) <= Date.parse(ts)),
+);
+const card1 = buildCards(idx.timelines, idx.titles).find((c) => c.id === "P9-001")!;
+check("forensic: merged card status", card1.status === "merged");
+check("forensic: rounds counted from phase entries", card1.rounds === 2);
+check("forensic: gate fails counted", card1.gateFails === 1);
+check("forensic: effort in minutes from wall clock", card1.effortMin === 21);
+check("forensic: merge sha parsed from deploy detail", card1.mergeSha === "1a2b3c4");
+check("forensic: decisions include events.jsonl narration", card1.decisions === 2);
+check("forensic: gate tail kept for navigation", t1.some((e) => e.kind === "gate" && e.step === "evidence" && e.tail.includes("ERR!")));
+const card2 = buildCards(idx.timelines, idx.titles, { avgDoneMs: 30 * 60_000, nowMs: Date.parse("2026-09-01T11:10:00-03:00") }).find((c) => c.id === "P9-002")!;
+check("forensic: running card without result", card2.status === "running" && card2.effortMin === null);
+check("forensic: ETA projects avg minus elapsed", card2.etaMs === 20 * 60_000);
+check("forensic: narration attributed to latest task context", idx.timelines.get("P9-003")?.some((e) => e.text === "Planejando.") === true);
+const avg = avgDoneDuration(idx.timelines);
+check("forensic: avg duration from ok results only", avg !== undefined && Math.abs(avg! - 21 * 60_000) < 60_000);
+check("forensic: progress full for merged task", progressOf(idx.timelines.get("P9-001")!) === 1);
+check("forensic: partial progress for running", progressOf(idx.timelines.get("P9-002")!) === 1 / 6);
+check("forensic: shots filtered by task prefix", shotsForTask("P9-001", ["P9-001-1a2b3c4-123.png", "P9-010-9x-1.png", "notes.png"]).join(",") === "P9-001-1a2b3c4-123.png");
+check("forensic: shot path validation rejects traversal", shotPath("../daemon.json") === null && shotPath("a/b.png") === null);
+check("forensic: shot path accepts real shape", shotPath("P9-001-1a2b3c4-1788325050913.png")?.endsWith("pilot/shots/P9-001-1a2b3c4-1788325050913.png") === true);
+check(
+  "forensic: takeover extraction from real builder log lines",
+  (() => {
+    const { directory, sessionId } = takeoverFromBuilderLog([
+      'timestamp=2026-09-02T04:05:17.340Z level=INFO run=1 message="creating instance" directory=/ws/repo-2',
+      'timestamp=2026-09-02T04:05:17.511Z level=INFO run=1 message=created id=ses_abc123def456 directory=/ws/repo-2 tokens.input=0',
+    ]);
+    return directory === "/ws/repo-2" && sessionId === "ses_abc123def456";
+  })(),
+);
 
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);

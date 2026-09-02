@@ -7,6 +7,7 @@ import {
   IconFolder,
   IconGlobe,
   IconLayers,
+  IconRadar,
   IconSettings,
 } from "./icons";
 
@@ -27,7 +28,7 @@ interface Props {
   onClose: () => void;
   onOpenSession: (id: string) => void;
   onNewChat: () => void;
-  onOpenPane: (slot: "artifacts" | "browser" | "files" | "settings") => void;
+  onOpenPane: (slot: "artifacts" | "browser" | "files" | "settings" | "mission") => void;
 }
 
 interface Item {
@@ -69,6 +70,7 @@ export default function CommandPalette({ request, onClose, onOpenSession, onNewC
       { key: "a-artifacts", label: t("paletteOpenArtifacts"), kind: "action", run: () => onOpenPane("artifacts") },
       { key: "a-browser", label: t("paletteOpenBrowser"), kind: "action", run: () => onOpenPane("browser") },
       { key: "a-files", label: t("paletteOpenFiles"), kind: "action", run: () => onOpenPane("files") },
+      { key: "a-mission", label: t("paletteOpenMission"), kind: "action", run: () => onOpenPane("mission") },
       { key: "a-settings", label: t("paletteOpenSettings"), kind: "action", run: () => onOpenPane("settings") },
     ].filter((a) => !q || a.label.toLowerCase().includes(q));
     const sess: Item[] = applySessionFilters(sessions, {}, query, "all")
@@ -159,5 +161,6 @@ function PaneIcon({ item }: { item: string }) {
   if (item === "a-artifacts") return <IconLayers size={15} />;
   if (item === "a-browser") return <IconGlobe size={15} />;
   if (item === "a-files") return <IconFolder size={15} />;
+  if (item === "a-mission") return <IconRadar size={15} />;
   return <IconSettings size={15} />;
 }
