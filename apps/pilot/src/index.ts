@@ -23,8 +23,10 @@ import {
   enterAuditMode,
   feverReason,
   formatDiagnosis,
+  infraFailureKind,
   recordBlockEvent,
   recordCycle,
+  recordInfraFailure,
 } from "./audit";
 import { apiHealthy } from "./runner";
 import { maintainExperienceFile, pickRelevantLessons, readExperienceFile } from "./experience";
@@ -122,18 +124,8 @@ async function main() {
         ).catch(() => {});
         // doctor pass: deterministic diagnostics in the log — API health plus
         // the top failure steps and top rejected tasks from the failure record
-        const api = await apiHealthy();
-        const diag = buildDiagnosis({
-          lessonsFile: defaultLessonsFile(),
-          gateFailDir: join(homedir(), ".opencode-remote/pilot/gate-fail"),
-          attempts: state.taskAttempts,
-          api,
-        });
-        log("warn", "audit diagnosis", { summary: formatDiagnosis(diag), ...diag });
-        // P2-045: surface the diagnosis on the dashboard audit chip — the
-        // operator sees WHY the queue paused without grepping the log
-        state.auditDiagnosis = formatDiagnosis(diag);
-        saveState(state);
+        // (P1-074: shared with the infra-failure wake below)
+        await runDoctorPass(state);
       }
     }
 
@@ -257,6 +249,25 @@ async function main() {
   }
 }
 
+/**
+ * P1-074: deterministic doctor diagnostic pass, shared between audit-mode
+ * entry and the infra-failure wake — API health probe plus the top failure
+ * steps and top rejected tasks from the failure record. Also refreshes the
+ * dashboard audit chip (P2-045) and persists the state.
+ */
+async function runDoctorPass(st: PilotState): Promise<void> {
+  const api = await apiHealthy();
+  const diag = buildDiagnosis({
+    lessonsFile: defaultLessonsFile(),
+    gateFailDir: join(homedir(), ".opencode-remote/pilot/gate-fail"),
+    attempts: st.taskAttempts,
+    api,
+  });
+  log("warn", "audit diagnosis", { summary: formatDiagnosis(diag), ...diag });
+  st.auditDiagnosis = formatDiagnosis(diag);
+  saveState(st);
+}
+
 /** One pipeline run in a slot workspace, with all result bookkeeping. */
 async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotConfig): Promise<void> {
   // P1-060: budgets scale with the task's size tag — clone the slot config
@@ -280,12 +291,23 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
       log("warn", "task cost reconciliation failed", { task: task.id, err: String(err).slice(0, 200) });
     }
     state.tasks++;
-    recordCycle(state, result.ok, task.id); // P2-032 fever window (P2-063: attributed to the task)
     let blockedAttempts: number | null = null;
     if (result.ok) {
+      recordCycle(state, true, task.id); // P2-032 fever window (P2-063: attributed to the task)
       delete state.taskAttempts[task.id]; // gate passed — breaker reset
     } else {
-      blockedAttempts = tripCircuitBreaker(taskCfg, state, task, result.detail);
+      // P1-074: infra noise (API down, spawn error, timeout without output)
+      // burns no attempt, adds no fever sample and blocks nothing — it counts
+      // in the diagnostic infraFails, with a doctor pass every 3rd occurrence
+      const infra = infraFailureKind(result.detail);
+      if (infra) {
+        const wake = recordInfraFailure(state);
+        log("warn", "pipeline infra-failure", { task: task.id, kind: infra, infraFails: state.infraFails });
+        if (wake) await runDoctorPass(state);
+      } else {
+        recordCycle(state, false, task.id);
+        blockedAttempts = tripCircuitBreaker(taskCfg, state, task, result.detail);
+      }
     }
     saveState(state);
     log("info", "pipeline result", { task: task.id, ok: result.ok, slot, detail: result.detail.slice(0, 200) });

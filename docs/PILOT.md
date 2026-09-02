@@ -393,6 +393,17 @@ O contador **não** é zerado pelo reset diário de `state.json` (virar a noite 
 reabre o breaker) e, se o push do bloqueio falhar, o guard do loop re-bloqueia a
 task no ciclo seguinte em vez de executá-la de novo.
 
+**Falhas de infraestrutura não queimam attempt (P1-074)**: detalhes de falha com
+assinatura de infra — API do opencode fora (`[preflight] opencode API
+unreachable`, `Cannot connect to API`), `spawn error:` e timeout do builder sem
+output (`[infra] builder timed out without output`) — são classificados pelo
+`infraFailureKind` e seguem por outro caminho: incrementam apenas o contador
+diagnóstico `infraFails` em `state.json` (reset diário), **sem** incrementar
+`taskAttempts` e **sem** alimentar a janela de febre. A cada 3 ocorrências o
+doctor roda um pass de diagnóstico no log (`audit diagnosis`, com `api=…`), sem
+entrar em modo auditoria — a fila continua rodando e a task é re-agendada pelo
+scheduler no ciclo seguinte.
+
 ## Circuit breaker de febre — modo auditoria (P2-032)
 
 O stop-loss acima é **por task**; o breaker de febre é **global**: pausa o

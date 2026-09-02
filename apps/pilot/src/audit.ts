@@ -51,6 +51,54 @@ export function recordCycle(st: PilotState, ok: boolean, task?: string, now = Da
   if (!ok && st.auditMode) st.auditMode.lastFailure = now;
 }
 
+// ── P1-074: infra-signature failures — never merit evidence ─────────────────
+
+/** P1-074: kind of infrastructure failure behind a pipeline outcome. */
+export type InfraFailureKind = "api-down" | "spawn" | "timeout" | "network";
+
+/** Every INFRA_DOCTOR_EVERY-th infra failure wakes the doctor (a diagnostic
+ * pass without entering audit mode). */
+export const INFRA_DOCTOR_EVERY = 3;
+
+/** Case-insensitive needles, highest-fidelity signature first. `[infra] …` is
+ * the marker pipeline.ts emits for a builder timeout with no output. */
+const INFRA_SIGNATURES: Array<[InfraFailureKind, string]> = [
+  ["timeout", "[infra] builder timed out without output"],
+  ["api-down", "[preflight] opencode api unreachable"],
+  ["api-down", "cannot connect to api"],
+  ["spawn", "spawn error:"],
+  ["network", "econnrefused"],
+  ["network", "econnreset"],
+  ["network", "etimedout"],
+];
+
+/**
+ * P1-074: classify a pipeline failure detail as infrastructure noise (opencode
+ * API down, agent spawn failure, network error, builder timeout with no
+ * output) or null for a merit failure. Case-insensitive; first match wins.
+ * A merit detail that merely mentions infra words in a builder log tail may
+ * classify as infra — the false-positive direction is safe (the retry is free:
+ * no attempt is burned, no block can land).
+ */
+export function infraFailureKind(text: string): InfraFailureKind | null {
+  const t = text.toLowerCase();
+  for (const [kind, needle] of INFRA_SIGNATURES) {
+    if (t.includes(needle)) return kind;
+  }
+  return null;
+}
+
+/**
+ * P1-074: count one infra-signature failure in the diagnostic `infraFails`
+ * counter — the only record (no cycle sample, no attempt, no block). Returns
+ * true every INFRA_DOCTOR_EVERY-th call, when the caller should wake the
+ * doctor for a diagnosis pass.
+ */
+export function recordInfraFailure(st: PilotState): boolean {
+  st.infraFails = (st.infraFails ?? 0) + 1;
+  return st.infraFails % INFRA_DOCTOR_EVERY === 0;
+}
+
 /**
  * Record a task block that landed on main (stop-loss P1-014) and prune the
  * 30min burst window. Counts as fresh failure evidence for the resume clock.
