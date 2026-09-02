@@ -81,7 +81,9 @@ remoto, zero confiança**.
   Toda sessão criada pelo daemon carrega o protocolo de artifacts — ele é
   injetado no system prompt do agente mesmo em workspaces sem `AGENTS.md`
   (um AGENTS.md do workspace que já documenta o protocolo suprime a injeção;
-  sessões criadas direto no CLI/TUI do opencode não são tocadas)
+  sessões criadas direto no CLI/TUI do opencode não são tocadas). O registro
+  de sessões injetadas vive em memória: sessões criadas antes de um restart
+  do daemon não são re-injetadas depois — apenas as criadas pelo daemon novo
 - **App desktop (inicial)** — shell Electron com a mesma UI, com tray e menu nativo;
   inclui um **pane Browser** que controla um Chromium headless no host via daemon
   (`/api/browse` — navegar, clicar, extrair texto, screenshot) para agentes validarem

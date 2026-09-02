@@ -80,7 +80,9 @@ private. That is the product: **local power, remote control, zero trust**.
   injected into the agent's system prompt even in workspaces without an
   `AGENTS.md` (a workspace AGENTS.md that already documents the protocol
   suppresses the injection; sessions created directly in the opencode CLI/TUI
-  are not touched)
+  are not touched). The injected-session registry lives in memory: sessions
+  created before a daemon restart are not re-injected after it — only
+  sessions created from the fresh daemon are
 - **Desktop shell (early)** — Electron app wrapping the same UI, with tray and native menu;
   includes a **Browser pane** that drives a headless Chromium on the host through the daemon
   (`/api/browse` — navigate, click, extract text, screenshot) so agents can visually validate
