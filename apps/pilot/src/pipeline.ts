@@ -726,11 +726,13 @@ Rules:
 - Be strict but concrete: every finding must reference a file and a problem.
 - Cite or it didn't happen (P2-015): every finding bullet must cite a repo-relative
   \`path/file.ext:LINE\` (line matching the workspace files) or quote a literal snippet
-  from the diff. Findings without a verifiable citation are mechanically dropped as
-  hallucinated; a reviewer whose findings ALL fail verification counts as APPROVE.
-- P2-038: the verdict is the LAST \`VERDICT:\` marker in your output, and an APPROVE
-  followed by verified findings is processed as a rejection — if you have findings,
-  verdict REQUEST_CHANGES; APPROVE only with an empty findings list.
+  from the diff. Findings without a verifiable citation are mechanically dropped and
+  only repassed to the builder as [unverified] hints; a REQUEST_CHANGES whose findings
+  ALL fail verification still rejects (fail-closed).
+- P2-038/P1-102: the verdict is the LAST \`VERDICT:\` marker in your output, and finding
+  bullets are parsed ONLY under it — \`VERDICT: REQUEST_CHANGES\` must be followed by the
+  bullet list of findings; bullets after \`VERDICT: APPROVE\` are treated as rationale,
+  not findings. APPROVE only with an empty findings list.
 
 Your LAST lines must be exactly one of:
 VERDICT: APPROVE
@@ -1668,10 +1670,11 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
     // (incremental on later rounds of size-L tasks).
     const secVerified = verifyFindings(secParsed, ws, reviewDiff);
     const qualVerified = verifyFindings(qualParsed, ws, reviewDiff);
-    for (const d of secVerified.dropped) logHallucination(t.id, "security", d);
-    for (const d of qualVerified.dropped) logHallucination(t.id, "quality", d);
-    // P2-038: the LAST verdict marker decides and verified findings reject even
-    // when an APPROVE marker is present — findings that verify are evidence.
+    for (const d of secVerified.dropped) logHallucination(t.id, "security", d, secVerified.reasons[d] ?? "unknown");
+    for (const d of qualVerified.dropped) logHallucination(t.id, "quality", d, qualVerified.reasons[d] ?? "unknown");
+    // P2-038: the LAST verdict marker decides. P1-102: findings are parsed
+    // only under REQUEST_CHANGES, so verified findings reject only a rejecting
+    // review — an APPROVE's rationale bullets are not findings.
     const allDropped = (o: string, v: { kept: string[]; dropped: string[] }) =>
       parseVerdict(o) === "REQUEST_CHANGES" && v.dropped.length > 0 && v.kept.length === 0;
     const secAllDropped = allDropped(sec.output, secVerified);
@@ -1709,7 +1712,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       trackSession(esc.sessionId);
       const escParsed = parseFindings(esc.output);
       const escVerified = verifyFindings(escParsed, ws, reviewDiff);
-      for (const d of escVerified.dropped) logHallucination(t.id, "escalation", d);
+      for (const d of escVerified.dropped) logHallucination(t.id, "escalation", d, escVerified.reasons[d] ?? "unknown");
       const escApprove = reviewerOk(esc.output, escVerified.kept, escVerified.dropped);
       if (escApprove) {
         gateSecOk = true;
@@ -1770,18 +1773,26 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       }
       if (!merged) return { ok: false, detail: "gate green but the PR merge failed — the next cycle retries the PR", ...roundMeta() };
     } else {
-      // Only verified findings reach the builder prompt (P2-015). P1-059 round
-      // 2: on escalation rejection the arbiter ADDS its verified findings to
-      // the round-1 verified kept findings — it arbiters, it does not erase
-      // the reviewers' evidence (union, deduped line-wise).
+      // Only verified findings reach the builder prompt as evidence (P2-015).
+      // P1-059 round 2: on escalation rejection the arbiter ADDS its verified
+      // findings to the round-1 verified kept findings — it arbiters, it does
+      // not erase the reviewers' evidence (union, deduped line-wise).
       const round1Kept = [...(secOk ? [] : secVerified.kept), ...(qualOk ? [] : qualVerified.kept)];
       const allKept = escalationFindings !== null ? [...round1Kept, ...escalationFindings] : round1Kept;
       const deduped = allKept.filter((f, i) => allKept.indexOf(f) === i);
+      // P1-102: dropped is not fabricated by definition — the audit showed REAL
+      // findings dying in mechanical verification (file nonexistent, symbol
+      // spans). A rejecting reviewer's dropped findings are repassed as
+      // [unverified] hints so the builder sees the full concern list.
+      const round1Dropped = [...(secOk ? [] : secVerified.dropped), ...(qualOk ? [] : qualVerified.dropped)];
+      const unverified = round1Dropped
+        .filter((f, i) => round1Dropped.indexOf(f) === i)
+        .map((f) => `[unverified] ${f.trim()}`);
       // P1-073: fail-closed — an all-unverifiable REQUEST_CHANGES no longer
       // approves. When no tier-B arbiter ran, the builder gets the rejection
       // with an explicit instruction to re-raise the concern citing verifiable
       // path:line evidence, instead of the round silently merging.
-      findings = deduped.join("\n");
+      findings = [...deduped, ...unverified].join("\n");
       if ((secAllDropped || qualAllDropped) && escalationFindings === null) {
         findings = `${findings}\n[a reviewer voted REQUEST_CHANGES but every finding failed mechanical verification — if the concern is real, restate it citing verifiable path:line evidence from the diff]`.trim();
       }
@@ -1804,10 +1815,17 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
 }
 
 /** P2-015: findings are the bullet lines after (or near) the verdict marker.
- * P2-038: anchored at the LAST verdict marker — last marker wins. */
+ * P2-038: anchored at the LAST verdict marker — last marker wins.
+ * P1-102: findings are parsed ONLY under REQUEST_CHANGES — rationale bullets
+ * after an APPROVE are not findings (830 of 1189 audited drops came from
+ * APPROVE outputs). A marker-less output keeps the tail scan so a malformed
+ * review still yields candidate findings (reviewerOk rejects it either way —
+ * fail-closed). */
 export function parseFindings(output: string): string[] {
-  const markers = [...output.matchAll(/VERDICT:\s*(?:APPROVE|REQUEST_CHANGES)/gi)];
-  const idx = markers.length > 0 ? (markers[markers.length - 1]!.index ?? -1) : -1;
+  const markers = [...output.matchAll(/VERDICT:\s*(APPROVE|REQUEST_CHANGES)/gi)];
+  const last = markers.length > 0 ? markers[markers.length - 1] : undefined;
+  if (last && (last[1] ?? "").toUpperCase() === "APPROVE") return [];
+  const idx = last ? (last.index ?? -1) : -1;
   const tail = idx >= 0 ? output.slice(idx) : output.slice(-1500);
   return tail
     .split("\n")
@@ -1818,14 +1836,20 @@ export function parseFindings(output: string): string[] {
 export interface VerifiedFindings {
   kept: string[];
   dropped: string[];
+  /** P1-102: mechanical drop reason per dropped finding (keyed by the finding
+   * text) — logged with the drop and visible in pilot.log. */
+  reasons: Record<string, string>;
 }
 
 /**
  * P2-015 anti-hallucination filter. A finding is resolvable when:
+ *  - it quotes a literal snippet (≥6 chars) that appears verbatim in the
+ *    reviewed diff (P1-102: checked FIRST — proof of contact with the real
+ *    change beats a failed path:line resolution); or
  *  - it cites only repo-relative files that exist in `ws` (every file citation
- *    must resolve; a cited line, when present, must be non-empty); or
- *  - it cites no file but quotes a literal snippet (≥6 chars) that appears
- *    verbatim in the reviewed diff.
+ *    must resolve; a cited line, when present, must be non-empty) and, when it
+ *    quotes symbols, those resolve against the union of the cited files'
+ *    contents plus the diff.
  * Pure in spirit — fs reads only touch the workspace, so the eval battery can
  * pin this against fake findings (one real path, one nonexistent).
  */
@@ -1836,11 +1860,16 @@ export function verifyFindings(findings: string[], ws: string, diff: string): Ve
   const wsFiles = workspaceFiles(ws);
   const kept: string[] = [];
   const dropped: string[] = [];
+  const reasons: Record<string, string> = {};
   for (const f of findings) {
-    if (findingResolves(f, ws, diff, wsFiles)) kept.push(f);
-    else dropped.push(f);
+    const reason = findingDropReason(f, ws, diff, wsFiles);
+    if (reason === null) kept.push(f);
+    else {
+      dropped.push(f);
+      reasons[f] = reason;
+    }
   }
-  return { kept, dropped };
+  return { kept, dropped, reasons };
 }
 
 interface FileCite {
@@ -1853,25 +1882,31 @@ const KNOWN_EXT = "ts|tsx|js|jsx|mjs|cjs|json|md|css|html?|sh|py|rb|go|rs|java|y
 const FILE_CITE_RE = new RegExp(`(\\b[\\w@][\\w@./+-]*\\.(?:${KNOWN_EXT}))(?::(\\d+))?(?!\\w)`, "g");
 const FILE_PATH_SHAPE_RE = new RegExp(`^[\\w@./+-]*\\.(?:${KNOWN_EXT})(?::\\d+)?$`);
 
-const SNIPPET_RES = [/"([^"\n]{6,})"/g, /`([^`\n]{6,})`/g];
-
-/** P2-038: quoted spans act as symbol citations inside findings that already
- * cite a file — a code observation has no stdout, so its quoted symbol is the
- * thing to verify. File-path-shaped spans stay the business of FILE_CITE_RE. */
-const SYMBOL_RES = [/"([^"\n]{2,})"/g, /`([^`\n]{2,})`/g];
-
-/** Quoted spans (double quotes or backticks) of at least `minLen` chars that
- * are not file-path-shaped — symbol or snippet citations inside a finding. */
-function quotedSpans(finding: string, minLen: number): string[] {
+/** Quoted spans (double quotes or backticks) of at least `minLen` chars.
+ * P1-102: delimiters are paired sequentially and the length floor applied
+ * AFTER pairing — a length floor inside the regex quantifier mis-pairs when a
+ * short quoted span sits between two long ones (`` `t.id` … `long span` ``
+ * made the regex consume the next span's opening delimiter), which was exactly
+ * how 19% of the audited REQUEST_CHANGES findings died. */
+function rawQuoteSpans(s: string, minLen: number): string[] {
   const out: string[] = [];
-  for (const re of SYMBOL_RES) {
-    for (const m of finding.matchAll(re)) {
-      const sym = (m[1] ?? "").trim();
-      if (sym.length < minLen || FILE_PATH_SHAPE_RE.test(sym)) continue;
-      out.push(sym);
+  for (const delim of ['"', "`"]) {
+    const parts = s.split(delim);
+    for (let i = 1; i + 1 < parts.length; i += 2) {
+      const span = (parts[i] ?? "").trim();
+      if (span.length >= minLen) out.push(span);
     }
   }
   return out;
+}
+
+/** Quoted spans of at least `minLen` chars that are not file-path-shaped —
+ * symbol or snippet citations inside a finding. P2-038: quoted spans act as
+ * symbol citations inside findings that already cite a file — a code
+ * observation has no stdout, so its quoted symbol is the thing to verify.
+ * File-path-shaped spans stay the business of FILE_CITE_RE. */
+function quotedSpans(finding: string, minLen: number): string[] {
+  return rawQuoteSpans(finding, minLen).filter((s) => !FILE_PATH_SHAPE_RE.test(s));
 }
 
 function symbolCites(finding: string): string[] {
@@ -1900,9 +1935,18 @@ function workspaceFiles(ws: string): string[] {
   return out.sort();
 }
 
-function findingResolves(finding: string, ws: string, diff: string, wsFiles: string[]): boolean {
+/** Returns null when the finding resolves, otherwise the mechanical drop
+ * reason (P1-102: every drop is logged WITH its reason). */
+function findingDropReason(finding: string, ws: string, diff: string, wsFiles: string[]): string | null {
   // URLs are not file citations; they would only produce phantom paths
   const cleaned = finding.replace(/https?:\/\/\S+/g, " ");
+  // P1-102: a verbatim quote of the reviewed diff is proof the finding touches
+  // the real change — checked BEFORE path:line resolution, so a real finding
+  // (audit fixtures: shell injection via t.id, the qrcode devDep) is never
+  // dropped because its file:line citation failed to resolve.
+  if (rawQuoteSpans(cleaned, 6).some((s) => diff.includes(s))) {
+    return null;
+  }
   const fileCites: FileCite[] = [...cleaned.matchAll(FILE_CITE_RE)].map((m) => ({
     path: m[1] ?? "", // group 1 always matches when the regex matched
     line: m[2] !== undefined ? Number(m[2]) : undefined,
@@ -1919,17 +1963,18 @@ function findingResolves(finding: string, ws: string, diff: string, wsFiles: str
     // file/line fails to resolve or zero >=6-char spans match.
     const contents: string[] = [];
     for (const c of fileCites) {
-      const content = resolveCite(ws, c, wsFiles);
-      if (content === null) return false;
-      contents.push(content);
+      const resolved = resolveCite(ws, c, wsFiles);
+      if (typeof resolved !== "string") return resolved.reason;
+      contents.push(resolved);
     }
     const symbols = symbolCites(cleaned);
-    if (symbols.length === 0) return true;
+    if (symbols.length === 0) return null;
     const union = `${contents.join("\n")}\n${diff}`;
-    if (symbols.every((s) => union.includes(s))) return true;
-    return quotedSpans(cleaned, 6).some((s) => union.includes(s));
+    if (symbols.every((s) => union.includes(s))) return null;
+    if (quotedSpans(cleaned, 6).some((s) => union.includes(s))) return null;
+    return "no quoted span resolves against the cited files or diff";
   }
-  return SNIPPET_RES.some((re) => [...cleaned.matchAll(re)].some((m) => m[1] !== undefined && diff.includes(m[1])));
+  return "no verbatim diff quote and no resolvable file citation";
 }
 
 /** P2-038 + P1-065: one file citation resolves when the cited file exists (at
@@ -1937,12 +1982,15 @@ function findingResolves(finding: string, ws: string, diff: string, wsFiles: str
  * citations) and the cited line, when present, is non-empty. Returns the file
  * content so the symbol check can run against the union of all citations
  * instead of each citation in isolation; the first candidate (in sorted
- * workspace order) whose cited line is non-empty wins. */
-function resolveCite(ws: string, cite: FileCite, wsFiles: string[]): string | null {
+ * workspace order) whose cited line is non-empty wins. P1-102: distinguishes
+ * "file not found" from "line empty/beyond EOF" so drops carry a precise
+ * reason. */
+function resolveCite(ws: string, cite: FileCite, wsFiles: string[]): string | { reason: string } {
   // unified-diff prefixes + traversal attempts are never valid citations
   const rel = cite.path.replace(/^(?:\.\/)+/, "").replace(/^(?:a|b)\//, "");
-  if (rel.includes("..")) return null;
+  if (rel.includes("..")) return { reason: "cited path escapes the workspace" };
   const candidates = existsSync(join(ws, rel)) ? [rel] : wsFiles.filter((f) => f.endsWith(`/${rel}`));
+  if (candidates.length === 0) return { reason: "cited file not found in workspace" };
   for (const cand of candidates) {
     let lines: string[];
     try {
@@ -1956,16 +2004,16 @@ function resolveCite(ws: string, cite: FileCite, wsFiles: string[]): string | nu
     }
     return lines.join("\n");
   }
-  return null;
+  return { reason: "cited line empty or beyond EOF" };
 }
 
-function logHallucination(task: string, reviewer: string, finding: string) {
+function logHallucination(task: string, reviewer: string, finding: string, reason: string) {
   console.log(
     JSON.stringify({
       ts: nowLocalISO(),
       level: "warn",
       msg: "finding hallucinated, dropped",
-      data: { task, reviewer, finding: finding.trim().slice(0, 200) },
+      data: { task, reviewer, reason, finding: finding.trim().slice(0, 200) },
     }),
   );
 }

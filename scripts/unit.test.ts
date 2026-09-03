@@ -2470,6 +2470,42 @@ check("stdlibShadow: non-stdlib root file passes", stdlibShadowHits("A\tmain.py\
   rmSync(ws, { recursive: true, force: true });
 }
 
+// --- P1-102: findings only under REQUEST_CHANGES + verbatim-quote-first --------
+{
+  const ws = mkdtempSync(join(tmpdir(), "p1-102-"));
+  writeFileSync(join(ws, "real.ts"), "alpha\nbeta\n");
+  // real drop fixtures from the P1-102 audit: genuine findings (shell injection
+  // via t.id, unused qrcode devDep) died in the mechanical verifier because
+  // path:line resolution ran before any verbatim-diff-quote check.
+  const diff = [
+    "diff --git a/apps/pilot/src/pipeline.ts b/apps/pilot/src/pipeline.ts",
+    "+    const id = taskId ? taskId : \"unknown-task\";",
+    "+    \"qrcode\": \"^1.5.3\",",
+    "",
+  ].join("\n");
+
+  check("p1-102: APPROVE rationale bullets are NOT findings", parseFindings("VERDICT: APPROVE\n- real.ts:2 looks fine, `beta` ok").length === 0);
+  check("p1-102: REQUEST_CHANGES bullets still parse", parseFindings("VERDICT: REQUEST_CHANGES\n- real.ts:2 — wrong").length === 1);
+  check("p1-102: marker-less output still yields candidate findings (fail-closed)", parseFindings("just prose, no marker\n- a bullet").length === 1);
+  check(
+    "p1-102: verbatim diff quote wins over a failed path:line (shell-injection drop fixture)",
+    verifyFindings(["- `apps/pilot/src/ghost.ts:99` — shell injection via `t.id` interpolated as `taskId ? taskId`"], ws, diff).kept.length === 1,
+  );
+  check(
+    "p1-102: verbatim diff quote wins over an empty cited line (qrcode devDep drop fixture)",
+    verifyFindings(["- `real.ts:99` — dead devDep `\"qrcode\": \"^1.5.3\",` present in the diff"], ws, diff).kept.length === 1,
+  );
+  const v = verifyFindings(["- `ghost.ts:1` — nothing here"], ws, diff);
+  check("p1-102: no quote + no resolvable citation still dropped", v.dropped.length === 1);
+  check("p1-102: drop reason recorded (file not found)", (v.reasons["- `ghost.ts:1` — nothing here"] ?? "").includes("cited file not found"));
+  check("p1-102: drop reason recorded (line beyond EOF)", (verifyFindings(["- `real.ts:99` — nothing"], ws, diff).reasons["- `real.ts:99` — nothing"] ?? "").includes("cited line empty"));
+  check(
+    "p1-102: quote absent from the diff never bypasses verification",
+    verifyFindings(["- `ghost.ts:1` — `qrcodes` is unused"], ws, diff).dropped.length === 1,
+  );
+  rmSync(ws, { recursive: true, force: true });
+}
+
 // --- mandatory builder evidence (P2-009) --------------------------------------
 {
   const UI_TASK: Task = { id: "P2-009", priority: "P2", title: "Evidence", spec: "", area: "ui", line: "" };
