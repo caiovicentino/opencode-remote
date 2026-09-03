@@ -19,11 +19,13 @@ read-only agent writes `specs/<ID>.md` on the task branch (problem, approach, to
 edge cases, acceptance criteria, out of scope) and the builder + quality reviewer are held to
 it; P2+ tasks go straight to the builder (P2-008). Cognition is tiered (P1-059): pilot.json may set a
 `models.tierB` block mapping the judgment roles (`strategist`, `planner`, `forensic`,
-`reviewerEscalation`) to a stronger model — those roles then dispatch through the claude CLI
+`reviewerEscalation`, `fable`) to a stronger model — those roles then dispatch through the claude CLI
 (`claude -p --model <m> --add-dir <workspace>`, prompt via stdin) with automatic tier-A fallback
 on spawn error/timeout/empty output/missing completion marker (`tierB-fallback` in the log),
 while builder/reviewers/scribe stay tier A (flash via `opencode run`) and the deterministic
-evidence gate is unchanged; reviewers tag every finding bullet [BLOCKING]/[NIT]
+evidence gate is unchanged; the `fable` role (P2-105) is the nightly product review that
+judges the explorer's six journey shots against docs/PRODUCT.md (its tier-B dispatch
+additionally mounts the shots evidence dir via `--add-dir`); reviewers tag every finding bullet [BLOCKING]/[NIT]
 (P1-103: only a verified BLOCKING finding rejects — a nit-only review approves,
 untagged fails closed) and the tier-B arbiter fires when a verified concern
 REPEATS between rounds — or all-unverifiable findings in ANY
