@@ -13,7 +13,7 @@
  *
  * Run: npx tsx scripts/desktop-flow.test.ts
  */
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -106,9 +106,10 @@ const cliEnv = { ...process.env, OCR_DESKTOP_SESSION: session };
 // Hard budget: the whole flow must fit (spec criterion). P1-070 added the
 // "local boot" block (real hermetic daemon + fresh instance + degradation
 // probe), so the original 60s grew to 90s — documented in the commit per the
-// spec and reflected in the <90s note in AGENTS.md.
+// spec and reflected in the <90s note in AGENTS.md. P2-090 added the artifact
+// auto-open beat (real watcher + three idle round-trips), growing it to 120s.
 const startedAt = Date.now();
-const DEADLINE_MS = 90_000;
+const DEADLINE_MS = 120_000;
 const shotPath = join(tmpdir(), "ocr-desktop-flow", `flow-${process.pid}.png`);
 // P1-051 round 2: session state (socket, token, log) lives in a 0700 dir.
 const logFile = join(tmpdir(), `ocr-desktop-${session}`, "keeper.log");
@@ -1225,6 +1226,88 @@ try {
                   localEnv2,
                 );
               }
+            }
+          }
+
+          // --- P2-090: artifact auto-open on idle --------------------------------
+          // The exact operator repro: the agent writes index.html into the
+          // session's artifacts dir and the turn goes idle — the split-pane
+          // must open by itself, without overriding the user's choices (a
+          // closed pane, and the browser pane keep priority). The daemon here
+          // is the REAL hermetic daemon watching its own HOME artifacts root,
+          // so session.artifact flows through the full watcher→SSE→E2E path.
+          phase("P2-090: artifact auto-open on idle");
+          const AUTO_SES = "ses-artifact-auto";
+          const artDir = join(daemonHome2, ".opencode-remote", "artifacts", AUTO_SES);
+          const resized = run(
+            "P2-090: resize to desktop width",
+            ["shot", join(shotsDir, "P2-090-resize.png"), "1440", "900"],
+            15_000,
+            localEnv2,
+          );
+          if (resized.ok) {
+            await waitProbe("P2-090: desk chat remounted at 1440px", "!!document.querySelector('.messages')", (v) => /true/.test(v), localEnv2);
+            run("P2-090: open the artifact session", ["ipc", `location.hash = '#/session/${AUTO_SES}'`], 15_000, localEnv2);
+            await waitProbe("P2-090: session chat rendered without the pane", "!!document.querySelector('.artifact-pane')", (v) => /false/.test(v), localEnv2);
+            mkdirSync(artDir, { recursive: true });
+            writeFileSync(join(artDir, "index.html"), `<!doctype html><html><body><h1 id="p2-090">P2-090 artifact</h1></body></html>`);
+            await new Promise((r) => setTimeout(r, 1_000)); // watcher settle
+            await fetch(`${fakeUrl}/__emit`, {
+              method: "POST",
+              body: JSON.stringify([{ type: "session.idle", properties: { sessionID: AUTO_SES } }]),
+            });
+            const opened = await waitProbe(
+              "P2-090: split-pane opened by itself on idle",
+              "!!document.querySelector('.artifact-pane')",
+              (v) => /true/.test(v),
+              localEnv2,
+            );
+            if (opened) {
+              const render = run("P2-090: pane renders the artifact", ["ipc", "document.querySelector('.artifact-pane')?.textContent ?? ''"], 15_000, localEnv2);
+              if (render.ok) check("P2-090: pane shows index.html", /index\.html/.test(render.stdout), render.stdout);
+              run("P2-090: auto-open evidence shot", ["shot", join(shotsDir, "P2-090-auto-pane-1440.png"), "1440", "900"], 15_000, localEnv2);
+            }
+            // manual choice wins: closing the pane keeps it closed on the next
+            // idle, even though the artifact changed again
+            run("P2-090: user closes the auto pane", ["click", '.artifact-pane button[aria-label="Close"]'], 15_000, localEnv2);
+            const closed = await waitProbe("P2-090: pane closed by the user", "!!document.querySelector('.artifact-pane')", (v) => /false/.test(v), localEnv2);
+            if (closed) {
+              writeFileSync(join(artDir, "index.html"), "<h1>v2</h1>");
+              await new Promise((r) => setTimeout(r, 1_000));
+              await fetch(`${fakeUrl}/__emit`, {
+                method: "POST",
+                body: JSON.stringify([{ type: "session.idle", properties: { sessionID: AUTO_SES } }]),
+              });
+              await new Promise((r) => setTimeout(r, 1_500));
+              const stillClosed = run("P2-090: closed pane not overridden by idle", ["ipc", "!!document.querySelector('.artifact-pane')"], 15_000, localEnv2);
+              if (stillClosed.ok) check("P2-090: manual close survives the next idle", /false/.test(stillClosed.stdout));
+            }
+            // browser priority: with the Browser pane up (P1-072 auto-open
+            // path), a fresh artifact + idle must not raise the artifact pane
+            await fetch(`${fakeUrl}/__emit`, {
+              method: "POST",
+              body: JSON.stringify([{ type: "ocr.preview", properties: { sessionID: AUTO_SES, url: "http://127.0.0.1:1/p2-090" } }]),
+            });
+            const browserUp = await waitProbe(
+              "P2-090: browser pane opened (preview priority)",
+              "document.querySelector('button[data-pane=\"browser\"]')?.classList.contains('active')",
+              (v) => /true/.test(v),
+              localEnv2,
+            );
+            if (browserUp) {
+              writeFileSync(join(artDir, "second.md"), "# second");
+              await new Promise((r) => setTimeout(r, 1_000));
+              await fetch(`${fakeUrl}/__emit`, {
+                method: "POST",
+                body: JSON.stringify([{ type: "session.idle", properties: { sessionID: AUTO_SES } }]),
+              });
+              await new Promise((r) => setTimeout(r, 1_500));
+              const suppressed = run("P2-090: artifact pane suppressed while browser is up", ["ipc", "!!document.querySelector('.artifact-pane')"], 15_000, localEnv2);
+              if (suppressed.ok) check("P2-090: browser keeps priority over the artifact pane", /false/.test(suppressed.stdout));
+              const browserStill = run("P2-090: browser pane untouched", ["ipc", "document.querySelector('button[data-pane=\"browser\"]')?.classList.contains('active')"], 15_000, localEnv2);
+              if (browserStill.ok) check("P2-090: browser pane was not overridden either", /true/.test(browserStill.stdout));
+              // evidence shots: 1440x900 (desktop, browser pane up) + 390 mobile
+              run("P2-090: 390 evidence shot", ["shot", join(shotsDir, "P2-090-auto-pane-390.png"), "390", "844"], 15_000, localEnv2);
             }
           }
         } finally {

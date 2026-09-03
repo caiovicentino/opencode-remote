@@ -748,6 +748,7 @@ export default function App() {
       events={events}
       connStatus={connStatus}
       voice={clientRef.current?.caps?.transcribe === true}
+      browserActive={top === "browser"}
       onBack={goBack}
     />
   );

@@ -51,7 +51,8 @@ import {
 import { detectWhisper, transcribeAudio, type WhisperTool } from "./whisper.js";
 import { metrics, startMetricsServer, VERSION } from "./metrics.js";
 import { loadRoutines, saveRoutines, type Routine } from "./routines.js";
-import { artifactMime, kindFor, listArtifacts, readArtifact } from "./artifacts.js";
+import { ARTIFACTS_ROOT, artifactMime, kindFor, listArtifacts, readArtifact } from "./artifacts.js";
+import { ArtifactWatcher } from "./artifactwatch.js";
 import { createShutdown, stopAccepting } from "./shutdown.js";
 import { localUpgradeAllowed } from "./localws.js";
 import { injectArtifactsSystem, workspaceCoversArtifacts } from "./sessionctx.js";
@@ -1101,12 +1102,20 @@ for (const r of loadRoutines()) {
 setInterval(checkRoutines, 30_000);
 setTimeout(checkRoutines, 10_000);
 
+// P2-090: artifacts watcher metric help (counter self-registers on inc).
+metrics.describe(
+  "ocr_artifact_events_total",
+  "session.artifact events emitted for agent-written artifacts",
+  "counter",
+);
+
 // P2-075: PWA origin watchdog — probes the static origin's /healthz and, on
 // flip, appends a dashboard event (`[pwa] origin`), lights the red chip and
 // pushes the phone. Only on hosts that actually serve the PWA.
 if (pwaWatchEnabled(process.env.PWA_HEALTHZ_URL, defaultPwaPlistPath())) {
   metrics.describe("ocr_pwa_origin_healthy", "1 when the static PWA origin answers /healthz", "gauge");
   metrics.gauge("ocr_pwa_origin_healthy", 1);
+
   startPwaWatch({
     onTransition: (down, detail) => {
       emit("phase", { task: "pwa", phase: "origin", ok: !down, detail });
@@ -1214,6 +1223,25 @@ async function sendToSession(session: ClientSession, env: DaemonEnvelope) {
 function broadcast(env: DaemonEnvelope) {
   for (const session of sessions.values()) sendToSession(session, env);
 }
+
+// P2-090: watch ~/.opencode-remote/artifacts — every agent-written artifact
+// emits a synthetic `session.artifact` event so desktop clients can open the
+// preview pane on the turn's session.idle (manual choices and the browser
+// pane keep priority on the client side). The relay stays a blind router:
+// this rides the existing sealed envelope, like ocr.preview.
+const artifactWatcher = new ArtifactWatcher(ARTIFACTS_ROOT, (a) => {
+  log("info", "artifact written", { sessionID: a.sessionID, name: a.name });
+  metrics.inc("ocr_artifact_events_total");
+  broadcast({
+    type: "event",
+    event: {
+      id: randomUUID(),
+      type: "session.artifact",
+      properties: { sessionID: a.sessionID, name: a.name, kind: a.kind, path: a.path },
+    },
+  });
+});
+artifactWatcher.start();
 
 const autoApproved = new Map<string, number>();
 

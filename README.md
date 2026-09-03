@@ -85,7 +85,11 @@ private. That is the product: **local power, remote control, zero trust**.
   preview in a **side-by-side pane** next to the chat (draggable divider, chat
   stays visible and navigable — Claude/Codex style), while narrower screens
   keep the full-screen overlay; also listed programmatically via `GET /api/artifacts`.
-  Every session created by the daemon carries the artifacts protocol — it is
+  When the agent writes a new artifact the daemon emits a `session.artifact`
+  event, and on the turn's next idle the desktop app opens the preview pane
+  by itself — never overriding a manual pick, a pane the user closed, or an
+  open Browser pane. Every session created by the daemon carries the artifacts
+  protocol — it is
   injected into the agent's system prompt even in workspaces without an
   `AGENTS.md` (a workspace AGENTS.md that already documents the protocol
   suppresses the injection; sessions created directly in the opencode CLI/TUI
