@@ -17,6 +17,7 @@
   --bg: var(--gray-canvas);
   --surface: var(--gray-raised);
   --border: var(--gray-line);
+  --border-strong: var(--gray-line-strong);
   --text: #ededed;
   --muted: #8a8a8a;
   --accent: #4ade80;
@@ -92,6 +93,7 @@
   --panel: #ffffff;
   --bg2: #e4e4e7;
   --fg: #18181b;
+  --border-strong: #a1a1aa;
   --status-ok: #16a34a;
   --status-wait: #b45309;
   --status-work: #2563eb;
