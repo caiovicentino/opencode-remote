@@ -477,6 +477,30 @@ A linha da task no BACKLOG.md pode carregar a tag opcional `(size: S|M|L)` (defa
   praticamente impossível. Conclusão: nenhum option extra de modelo é
   necessário no `opencode.jsonc` (arquivo do host, nunca commitado — contém a
   API key); o lever é a ordem de montagem do prompt, implementada nesta task.
+- **Telemetria em dólares (P2-113)**: a reconciliação do P2-028 agora aplica
+  uma **tabela de preços por modelo/tier** (`apps/pilot/src/pricing.ts`) às
+  quatro colunas de token que o `costs.ts` já lê do `opencode.db`
+  (`tokens_input`, `tokens_output`, `tokens_cache_read`,
+  `tokens_cache_write`) e grava `state.taskUSD: {id: {total, tierA, tierB,
+  unpricedTokens, tokens}}` na mesma dobrada REPLACE-by-recompute (mesma
+  janela rolante de 200, pruned junto com os maps irmãos). Preços de lista
+  **BYOK** citados (verificação manual, bump de `asOf` na atualização):
+  GLM-5.2 — tier A (US$ 1.4 input / 4.4 output / 0.26 cache-read / 0
+  cache-write, storage de cache free promocional) via
+  `docs.z.ai/guides/overview/pricing`; Claude Sonnet 4.6 — tier B (US$ 3 /
+  15 / 0.30 cache-read / 3.75 cache-write 5m) via
+  `platform.claude.com/docs/en/about-claude/pricing`; ambos asOf 2026-09-03.
+  **Reframe (operador roda inferência própria)**: o dólar é métrica de
+  **produto** — transparência "quanto teria custado na nuvem a preço de
+  lista" para o usuário BYOK do NightShift — e não custo de ops própria; para
+  o operador as métricas primárias seguem sendo **tokens por task** e
+  **cache-hit** (cache poupado = GPU/export poupada, não dólar poupado). No
+  dashboard, o chip de tokens permanece primeiro; o chip dourado `$` (views
+  FILA e CONCLUÍDAS — tasks merged/bloqueadas) tem tooltip com o split
+  tier A/tier B e a fonte citada. Modelos fora da tabela não são
+  convertidos silenciosamente para $0: os tokens aparecem como `sem preço`
+  no tooltip (`unpricedTokens`). Sinal best-effort como o resto do P2-028:
+  nada de gate consome `taskUSD`.
 - Logs JSONL: `~/.opencode-remote/logs/pilot.log`
 - Feed bruto: `GET 127.0.0.1:8792/api/pilot-events` (Bearer apiToken) — eventos + contadores + heartbeat
 - Digest a cada pipeline: push no seu telefone (via `POST /api/push` autenticado no daemon)

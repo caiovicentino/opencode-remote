@@ -46,6 +46,7 @@ import {
   TASK_COST_CAP,
   tokensSql,
 } from "../apps/pilot/src/costs";
+import { normalizeSessionModel, PRICE_SOURCES, PRICE_TABLE, taskCostUSD } from "../apps/pilot/src/pricing";
 import { CORPUS_COMMANDS, CORPUS_SAMPLE_RE, appendCorpusSample, captureGateCorpus, corpusSlug, loadGateCorpus, sanitizeForCorpus } from "../apps/pilot/src/gate-corpus";
 import {
   builderPrompt,
@@ -5956,6 +5957,43 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   }
   pruneTaskCosts(big);
   check("costs: rolling window prunes oldest tasks", Object.keys(big.taskCosts).length === TASK_COST_CAP && !("P9-0" in big.taskCosts) && "P9-209" in big.taskCostSessions);
+}
+
+// --- P2-113 dollar telemetry: BYOK list-price table -----------------------------
+{
+  // the table itself is pinned: tier + every price constant + cited source
+  check("pricing: GLM-5.2 is tier A with Z.ai list prices", PRICE_TABLE["glm-5.2"]?.tier === "A" && PRICE_TABLE["glm-5.2"]?.usdPerMTok.input === 1.4 && PRICE_TABLE["glm-5.2"]?.usdPerMTok.output === 4.4 && PRICE_TABLE["glm-5.2"]?.usdPerMTok.cacheRead === 0.26 && PRICE_TABLE["glm-5.2"]?.usdPerMTok.cacheWrite === 0);
+  check("pricing: Sonnet 4.6 is tier B with Anthropic list prices", PRICE_TABLE["claude-sonnet-4-6"]?.tier === "B" && PRICE_TABLE["claude-sonnet-4-6"]?.usdPerMTok.input === 3 && PRICE_TABLE["claude-sonnet-4-6"]?.usdPerMTok.output === 15 && PRICE_TABLE["claude-sonnet-4-6"]?.usdPerMTok.cacheRead === 0.3 && PRICE_TABLE["claude-sonnet-4-6"]?.usdPerMTok.cacheWrite === 3.75);
+  check("pricing: sources are cited with an as-of date", PRICE_SOURCES.zai.url.includes("z.ai") && PRICE_SOURCES.anthropic.url.includes("claude") && /^\d{4}-\d{2}-\d{2}$/.test(PRICE_SOURCES.zai.asOf) && PRICE_SOURCES.zai.asOf === PRICE_SOURCES.anthropic.asOf);
+
+  const close = (a: number, b: number) => Math.abs(a - b) < 1e-9;
+  const glm = taskCostUSD({ "glm-5.2": { input: 1e6, output: 1e6, cacheRead: 1e6, cacheWrite: 0 } });
+  check("pricing: GLM 1M+1M+1M = $6.06 all tier A", close(glm.total, 6.06) && close(glm.tierA, 6.06) && glm.tierB === 0 && glm.tokens === 3e6);
+  const sonnet = taskCostUSD({ "claude-sonnet-4-6": { input: 1e6, output: 1e6, cacheRead: 1e6, cacheWrite: 1e6 } });
+  check("pricing: Sonnet 1M of each = $22.05 all tier B", close(sonnet.total, 22.05) && close(sonnet.tierB, 22.05) && sonnet.tierA === 0);
+  const mixed = taskCostUSD({ "glm-5.2": { input: 2, output: 0, cacheRead: 0, cacheWrite: 0 }, "mystery-model": { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } });
+  check("pricing: unpriced models are counted, never converted to $0", close(mixed.total, 2 * 1.4 / 1e6) && close(mixed.tierA, 2 * 1.4 / 1e6) && mixed.unpricedTokens === 2 && mixed.tokens === 4);
+  check("pricing: empty breakdown prices to zero", taskCostUSD({}).total === 0 && taskCostUSD({}).tokens === 0);
+
+  check("pricing: model column json blob normalizes to the id", normalizeSessionModel('{"id":"glm-5.2","providerID":"glm52","variant":"default"}') === "glm-5.2");
+  check("pricing: legacy plain-string model normalizes too", normalizeSessionModel("glm-5.2") === "glm-5.2");
+  check("pricing: missing/garbage model → unknown", normalizeSessionModel(null) === "unknown" && normalizeSessionModel("") === "unknown" && normalizeSessionModel("{oops") === "{oops");
+
+  // the reconciler folds the dollar view alongside taskCosts/taskCache
+  const row = (model: string | undefined) => ({ id: "ses_usd000001", tokens_input: 1000, tokens_output: 100, tokens_cache_read: 20, tokens_cache_write: 5, model });
+  const store: { taskCosts: Record<string, number>; taskCostSessions: Record<string, string[]> } = { taskCosts: {}, taskCostSessions: {} };
+  await applySessionCosts(store, "P2-113", ["ses_usd000001"], async () => ({ ses_usd000001: row('{"id":"glm-5.2","providerID":"glm52"}') }));
+  const usd = (store as unknown as { taskUSD?: Record<string, { total: number; tierA: number; tierB: number; unpricedTokens: number; tokens: number }> }).taskUSD?.["P2-113"];
+  // (1000×1.4 + 100×4.4 + 20×0.26 + 5×0)/1e6 = 1845.2/1e6
+  check("pricing: reconciler folds tier-A usd from the model column", !!usd && close(usd.total, 0.0018452) && usd.tierA === usd.total && usd.tierB === 0 && usd.tokens === 1125);
+  const legacy: { taskCosts: Record<string, number>; taskCostSessions: Record<string, string[]> } = { taskCosts: {}, taskCostSessions: {} };
+  await applySessionCosts(legacy, "P2-113b", ["ses_usd000002"], async () => ({ ses_usd000002: 500 }));
+  const legacyUsd = (legacy as unknown as { taskUSD?: Record<string, { unpricedTokens: number; tokens: number }> }).taskUSD?.["P2-113b"];
+  check("pricing: legacy totals-only fold counts tokens as unpriced", !!legacyUsd && legacyUsd.total === 0 && legacyUsd.unpricedTokens === 500 && legacyUsd.tokens === 500);
+  // REPLACE-by-recompute: re-folding replaces the dollar view too
+  await applySessionCosts(store, "P2-113", ["ses_usd000001"], async () => ({ ses_usd000001: row("mystery-model") }));
+  const refolded = (store as unknown as { taskUSD?: Record<string, { total: number; unpricedTokens: number }> }).taskUSD?.["P2-113"];
+  check("pricing: re-fold replaces instead of double counting", store.taskCosts["P2-113"] === 1125 && !!refolded && refolded.total === 0 && refolded.unpricedTokens === 1125);
 }
 
 // --- P1-077 cache-aware prompt assembly: per-task cache metrics -----------------

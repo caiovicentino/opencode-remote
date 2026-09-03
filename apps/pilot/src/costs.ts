@@ -23,6 +23,7 @@
 import { execFile } from "node:child_process";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { normalizeSessionModel, taskCostUSD, type TaskUsd } from "./pricing";
 
 /** One row of the opencode `session` table (only the token columns we need). */
 export interface SessionTokens {
@@ -31,6 +32,9 @@ export interface SessionTokens {
   tokens_output: number;
   tokens_cache_read: number;
   tokens_cache_write: number;
+  /** P2-113: raw `session.model` column (JSON blob/legacy string) — priced in
+   * pricing.ts; undefined when the DB row predates the column. */
+  model?: string;
 }
 
 /** The pilot state fields P2-028 owns (documented in state.ts). Both optional
@@ -42,6 +46,9 @@ export interface TaskCostStore {
    * agent sessions. Additive sibling of taskCosts: same REPLACE-by-recompute
    * reconciliation and the same rolling cap. */
   taskCache?: Record<string, TaskCacheEntry>;
+  /** P2-113: task id → BYOK list-price dollar view (see pricing.ts). Folded
+   * by the same REPLACE-by-recompute reconciliation; no gate consumes it. */
+  taskUSD?: Record<string, TaskUsd>;
 }
 
 /** P1-077: per-task cache-token breakdown (subset of the session columns). */
@@ -96,7 +103,7 @@ export function sessionTotalTokens(s: Omit<SessionTokens, "id">): number {
  */
 export function tokensSql(ids: string[]): string {
   const list = ids.map((id) => `'${id}'`).join(", ");
-  return `SELECT id, tokens_input, tokens_output, tokens_cache_read, tokens_cache_write FROM session WHERE id IN (${list});`;
+  return `SELECT id, tokens_input, tokens_output, tokens_cache_read, tokens_cache_write, model FROM session WHERE id IN (${list});`;
 }
 
 /** P1-077: provider prefix-cache hit ratio — cacheRead over cacheRead+input
@@ -127,6 +134,8 @@ export function parseSessionTokenRows(json: string): Record<string, SessionToken
     cur.tokens_output += r.tokens_output || 0;
     cur.tokens_cache_read += r.tokens_cache_read || 0;
     cur.tokens_cache_write += r.tokens_cache_write || 0;
+    // P2-113: last row wins — the reconciler emits at most one row per id
+    if (typeof r.model === "string") cur.model = r.model;
   }
   return out;
 }
@@ -240,11 +249,16 @@ export async function applySessionCosts(
   let cacheRead = 0;
   let cacheWrite = 0;
   let sawRow = false;
+  // P2-113: per-model token groups — the pricing table is applied per model,
+  // never against a blended total, so tier attribution stays honest.
+  const perModel: Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }> = {};
+  let legacyTokens = 0;
   for (const id of known) {
     const r = rows[id];
     if (!r) continue;
     if (typeof r === "number") {
       total += r; // legacy totals-only injector: no breakdown available
+      legacyTokens += r;
       continue;
     }
     sawRow = true;
@@ -252,6 +266,12 @@ export async function applySessionCosts(
     input += r.tokens_input || 0;
     cacheRead += r.tokens_cache_read || 0;
     cacheWrite += r.tokens_cache_write || 0;
+    const model = normalizeSessionModel(r.model);
+    const cols = (perModel[model] ??= { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+    cols.input += r.tokens_input || 0;
+    cols.output += r.tokens_output || 0;
+    cols.cacheRead += r.tokens_cache_read || 0;
+    cols.cacheWrite += r.tokens_cache_write || 0;
   }
   if (total > 0) {
     store.taskCosts[taskId] = total;
@@ -259,6 +279,18 @@ export async function applySessionCosts(
       store.taskCache ??= {};
       store.taskCache[taskId] = { input, cacheRead, cacheWrite };
     }
+    // P2-113: BYOK list-price view. Legacy totals-only injectors carry no
+    // model info — their tokens are counted as unpriced, never priced at $0
+    // in a way that implies "free".
+    store.taskUSD ??= {};
+    const usd = sawRow
+      ? taskCostUSD(perModel)
+      : { total: 0, tierA: 0, tierB: 0, unpricedTokens: 0, tokens: 0 };
+    if (legacyTokens > 0) {
+      usd.unpricedTokens += legacyTokens;
+      usd.tokens += legacyTokens;
+    }
+    store.taskUSD[taskId] = usd;
   }
   pruneTaskCosts(store);
   return sawRow && total > 0
@@ -289,11 +321,13 @@ export function pruneTaskCosts(store: TaskCostStore, cap = TASK_COST_CAP): void 
   const costs = store.taskCosts ?? {};
   const sessions = store.taskCostSessions ?? {};
   const cache = store.taskCache ?? {};
+  const usd = store.taskUSD ?? {}; // P2-113: keep the dollar view aligned
   for (const key of Object.keys(costs)) {
     if (Object.keys(costs).length <= cap) break;
     delete costs[key];
     delete sessions[key]; // P1-077: keep the sibling maps aligned
     delete cache[key];
+    delete usd[key];
   }
   for (const key of Object.keys(sessions)) {
     if (Object.keys(sessions).length <= cap) break;
@@ -303,7 +337,12 @@ export function pruneTaskCosts(store: TaskCostStore, cap = TASK_COST_CAP): void 
     if (Object.keys(cache).length <= cap) break;
     delete cache[key];
   }
+  for (const key of Object.keys(usd)) {
+    if (Object.keys(usd).length <= cap) break;
+    delete usd[key];
+  }
   store.taskCosts = costs;
   store.taskCostSessions = sessions;
   store.taskCache = cache;
+  store.taskUSD = usd;
 }

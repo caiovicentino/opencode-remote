@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, unlinkS
 import { join, dirname } from "node:path";
 import { nowLocalISO } from "./log";
 import { homedir } from "node:os";
+import type { TaskUsd } from "./pricing";
 
 export interface PilotConfig {
   repo: string; // production checkout (runs the services)
@@ -187,6 +188,10 @@ export interface PilotState {
    * REPLACE-by-recompute reconciliation as taskCosts; hit ratio is
    * cacheRead/(cacheRead+input). Lifetime record, pruned with taskCosts. */
   taskCache?: Record<string, { input: number; cacheRead: number; cacheWrite: number }>;
+  /** P2-113: task id → BYOK list-price dollar view of the task's token
+   * columns (see pricing.ts). Product transparency for BYOK users — NOT the
+   * operator's own ops cost. Same lifetime/prune semantics as taskCosts. */
+  taskUSD?: Record<string, TaskUsd>;
   /** P1-078: slot number → provider prefix-cache breakdown of the most recent
    * task reconciled in that slot (live window, replaced per task). Proof
    * surface for the slot-affinity/stagger effect; best-effort like taskCache. */
@@ -283,6 +288,8 @@ export function loadState(file = STATE_FILE): PilotState {
       taskCostSessions: s.taskCostSessions && typeof s.taskCostSessions === "object" ? s.taskCostSessions : {},
       // P1-077: cache breakdown backfilled for legacy files, never crash
       taskCache: s.taskCache && typeof s.taskCache === "object" ? s.taskCache : {},
+      // P2-113: dollar view backfilled for legacy files, never crash
+      taskUSD: s.taskUSD && typeof s.taskUSD === "object" ? s.taskUSD : {},
       // P1-078: per-slot cache breakdown backfilled for legacy files
       slotCache: s.slotCache && typeof s.slotCache === "object" ? s.slotCache : {},
       // P1-095: idle-window trigger + nightly skip record survive midnight (the
