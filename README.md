@@ -52,9 +52,9 @@ private. That is the product: **local power, remote control, zero trust**.
   you Approve/Deny, so you always know what you're green-lighting
 - **Interactive questions** — the model asks, you tap an option from the beach
 - **Rewind** — go back to any point of the conversation *and* the code, one tap
-- **Context gauge** — every chat header shows how full the model's context
-  window is for that session (token totals from opencode, yellow from 70%,
-  red from 85%), refreshed whenever the agent goes idle
+- **Context gauge** — when the model's context window is known, the chat
+  header shows how full it is for that session (token totals from opencode,
+  yellow from 70%, red from 85%), refreshed whenever the agent goes idle
 - **Pinned recap** — a one-line strip under the composer shows where the
   conversation left off: the first sentence of the agent's last reply (or the
   session summary when the backend provides one)

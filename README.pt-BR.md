@@ -51,10 +51,10 @@ remoto, zero confiança**.
   ou negar, pra você sempre saber o que está liberando
 - **Perguntas interativas** — o modelo pergunta, você toca na opção
 - **Rewind** — volte a conversa *e o código* pra qualquer ponto, num toque
-- **Gauge de contexto** — o cabeçalho de cada chat mostra o quanto a janela de
-  contexto do modelo está ocupada na sessão (soma de tokens do opencode,
-  amarelo a partir de 70%, vermelho a partir de 85%), atualizado sempre que o
-  agente fica ocioso
+- **Gauge de contexto** — quando a janela de contexto do modelo é conhecida, o
+  cabeçalho do chat mostra o quanto dela está ocupada na sessão (soma de
+  tokens do opencode, amarelo a partir de 70%, vermelho a partir de 85%),
+  atualizado sempre que o agente fica ocioso
 - **Recap fixado** — uma linha embaixo do composer mostra onde a conversa
   parou: a primeira sentença da última resposta do agente (ou o summary da
   sessão, quando existir)

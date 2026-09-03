@@ -1,6 +1,6 @@
 /**
  * P1-079 tests: the context-pressure checkpoint.
- *  - pure math: contextPct + thresholds (pilot + daemon + web agree)
+ *  - pure math: contextPct (pilot + daemon compute the number; web color-bands)
  *  - the recap parse + prompt block (pipeline glue)
  *  - e2e over real HTTP: fetchSessionContext against a fake opencode server
  *    (session tokens > 85% of the window), the checkpoint decision, the recap
@@ -13,7 +13,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   CONTEXT_CRITICAL_PCT,
-  CONTEXT_WARN_PCT,
   clearRecapCarry,
   contextPct,
   contextWindowFor,
@@ -24,10 +23,9 @@ import {
   setRecapCarryDir,
 } from "../apps/pilot/src/context";
 import { parseRecap, recapBlock, recapPrompt, recordContextPressure, builderPrompt, applyCheckpoint, dropResumeSession, evaluateCheckpoint } from "../apps/pilot/src/pipeline";
-import { buildWindowMap, WindowCache } from "../apps/daemon/src/contextgauge";
+import { buildWindowMap, WindowCache, sessionTokenTotal, contextPct as daemonPct } from "../apps/daemon/src/contextgauge";
 import type { AgentIds } from "../apps/pilot/src/runner";
-import { contextPct as webPct, firstSentence, pressureLevel } from "../apps/web/src/lib/context";
-import { contextPct as daemonPct, contextWindowFor as daemonWindow, sessionTokenTotal } from "../apps/daemon/src/contextgauge";
+import { CONTEXT_CRITICAL_PCT as WEB_CRITICAL_PCT, CONTEXT_WARN_PCT, firstSentence, pressureLevel } from "../apps/web/src/lib/context";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -38,8 +36,12 @@ function check(name: string, ok: boolean, detail = "") {
   }
 }
 
-// ── pure math: one calculation, three consumers ──────────────────────────────
-check("pilot/daemon/web pressure math agree", contextPct(50, 100) === webPct(50, 100) && contextPct(50, 100) === daemonPct(50, 100));
+// ── pure math: one calculation per responsibility ────────────────────────────
+// pilot + daemon each compute the number (pipeline checkpoint / gauge
+// endpoint); web only color-bands the daemon-computed pct — the formulas and
+// the shared 85% red band must not drift.
+check("pilot and daemon pressure math agree", contextPct(50, 100) === daemonPct(50, 100));
+check("web red band matches the pilot recycle threshold", CONTEXT_CRITICAL_PCT === WEB_CRITICAL_PCT);
 check("50% of the window is 50", contextPct(50, 100) === 50);
 check("0 tokens is 0% pressure", contextPct(0, 100) === 0);
 check("zero window is 0% (no divide-by-zero)", contextPct(10, 0) === 0);
@@ -67,7 +69,6 @@ check("qualified model key resolves", contextWindowFor(catalog, "hpc-ai", "deeps
 check("unknown provider is 0", contextWindowFor(catalog, "nope", "glm-5.2") === 0);
 check("unknown model is 0", contextWindowFor(catalog, "glm52", "nope") === 0);
 check("zero context is 0 (fail-open)", contextWindowFor(catalog, "broken", "m1") === 0);
-check("daemon window lookup matches pilot", daemonWindow(catalog, "glm52", "glm-5.2") === 262144);
 check(
   "session token total sums all five kinds",
   sessionTokenTotal({ tokens: { input: 10, output: 2, reasoning: 1, cache: { read: 20, write: 5 } } }) === 38,

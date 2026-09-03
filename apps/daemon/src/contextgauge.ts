@@ -2,11 +2,9 @@
 // Pure functions kept in their own module (same pattern as sessionctx.ts) so
 // tests pin them without booting a daemon. The token numbers come from the
 // opencode server (GET /session/:id), which materializes the same per-session
-// totals it persists in opencode.db.
-
-/** Gauge thresholds — yellow ~70%, red ~85% of the model window. */
-export const CONTEXT_WARN_PCT = 70;
-export const CONTEXT_CRITICAL_PCT = 85;
+// totals it persists in opencode.db. Color thresholds live exclusively in the
+// web layer (apps/web/src/lib/context.ts); the recycle threshold lives in the
+// pilot (apps/pilot/src/context.ts) — the daemon only computes the number.
 
 /** Pure pressure calculation: 0..100, tolerant of garbage input. */
 export function contextPct(tokens: number, window: number): number {
@@ -38,26 +36,6 @@ export interface OpencodeProviders {
     id: string;
     models?: Record<string, { id?: string; limit?: { context?: number } }>;
   }[];
-}
-
-/**
- * Resolve a model's context window from the /provider catalog. Model keys are
- * not normalized upstream — some providers key bare model ids ("glm-5.2"),
- * others provider-qualified ones ("deepseek/deepseek-v4-flash") — so match
- * bare key, value id and provider-qualified key. 0 when not found.
- */
-export function contextWindowFor(providers: OpencodeProviders, providerID: string, modelID: string): number {
-  for (const p of providers.all ?? []) {
-    if (p?.id !== providerID) continue;
-    for (const [key, m] of Object.entries(p.models ?? {})) {
-      if (key === modelID || m?.id === modelID || key === `${providerID}/${modelID}`) {
-        const ctx = m.limit?.context;
-        return typeof ctx === "number" && Number.isFinite(ctx) && ctx > 0 ? ctx : 0;
-      }
-    }
-    break;
-  }
-  return 0;
 }
 
 /**
