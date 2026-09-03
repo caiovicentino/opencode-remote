@@ -1,1885 +1,870 @@
 <!doctype html>
-<html lang="pt-BR">
+<html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<meta name="theme-color" content="#04060a" />
-<title>Torre de Controle — Pilot</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Pilot — Mission Control</title>
 <style>
-/* ──────────────────────────────────────────────────────────────────────────
-   Torre de Controle — tokens
-   Cor só significa estado: ciano trabalhando, verde ok, vermelho falha,
-   âmbar deploy, índigo reviewer, violeta tier B. Tudo o resto é cinza.
-   ────────────────────────────────────────────────────────────────────────── */
-:root {
-  --bg: #04060a; --bg1: #070b11; --bg2: #0b1018; --bg3: #101722;
-  --line: rgba(255,255,255,.06); --line2: rgba(255,255,255,.11); --line3: rgba(255,255,255,.18);
-  --text: #e8edf2; --muted: #8fa3b8; --dim: #5b6f84; --faint: #3b4a5b;
-  --cyan: #22d3ee; --green: #4ade80; --red: #f87171; --amber: #fbbf24; --indigo: #818cf8; --violet: #c084fc;
-  --cyan-a: rgba(34,211,238,.14); --green-a: rgba(74,222,128,.14); --red-a: rgba(248,113,113,.14);
-  --amber-a: rgba(251,191,36,.14); --indigo-a: rgba(129,140,248,.14); --violet-a: rgba(192,132,252,.14);
-  --sans: -apple-system, "SF Pro Text", Inter, system-ui, sans-serif;
-  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  --ease: cubic-bezier(.2,.7,.2,1);
-  --fast: 150ms; --mid: 220ms; --slow: 300ms;
-  --row: 28px;
-  --radius: 6px;
-}
-* { margin: 0; padding: 0; box-sizing: border-box; }
-html, body { height: 100%; background: var(--bg); color: var(--text); font: 12px/1.45 var(--sans); }
-body { overflow: hidden; -webkit-font-smoothing: antialiased; font-variant-numeric: tabular-nums; }
-button, input { font: inherit; color: inherit; }
-button { background: none; border: 0; cursor: pointer; }
-button:focus-visible, input:focus-visible, [tabindex]:focus-visible { outline: 1px solid var(--cyan); outline-offset: 2px; border-radius: 4px; }
-::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-thumb { background: var(--line2); border-radius: 4px; border: 2px solid transparent; background-clip: padding-box; }
-::-webkit-scrollbar-track { background: transparent; }
-svg.i { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; flex: none; }
-.mono { font-family: var(--mono); }
-.num { font-variant-numeric: tabular-nums; }
-.muted { color: var(--muted); } .dim { color: var(--dim); }
-.c-cyan { color: var(--cyan); } .c-green { color: var(--green); } .c-red { color: var(--red); }
-.c-amber { color: var(--amber); } .c-indigo { color: var(--indigo); } .c-violet { color: var(--violet); }
-.ell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.hide { display: none !important; }
-
-/* ── app frame ─────────────────────────────────────────────────────────── */
-#app { height: 100%; display: grid; grid-template-rows: 48px 40px 1fr 30px; }
-#app.offline #hdr { border-bottom-color: var(--red); }
-
-/* header */
-#hdr { position: relative; display: flex; align-items: center; gap: 16px; padding: 0 16px; border-bottom: 1px solid var(--line); background: var(--bg1); }
-#hdr::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 1px; background: var(--green); opacity: 0; transform-origin: left; }
-#hdr.hb::after { animation: hbpulse 900ms var(--ease); }
-@keyframes hbpulse { 0% { opacity: .9; transform: scaleX(0); } 60% { opacity: .6; transform: scaleX(1); } 100% { opacity: 0; transform: scaleX(1); } }
-#brand { display: flex; align-items: center; gap: 10px; flex: none; }
-#brand .mark { width: 22px; height: 22px; border: 1px solid var(--line3); border-radius: 6px; display: grid; place-items: center; color: var(--cyan); }
-#brand h1 { font-size: 12px; letter-spacing: .16em; text-transform: uppercase; font-weight: 600; }
-#brand .sub { font-size: 11px; color: var(--dim); letter-spacing: .04em; }
-#mission { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 10px; border: 1px solid transparent; border-radius: var(--radius); cursor: text; transition: border-color var(--fast) var(--ease), background var(--fast) var(--ease); }
-#mission:hover { border-color: var(--line2); background: var(--bg2); }
-#mission label { font-size: 10px; letter-spacing: .14em; color: var(--dim); text-transform: uppercase; flex: none; }
-#mission .txt { flex: 1; min-width: 0; color: var(--muted); }
-#mission input { flex: 1; min-width: 0; background: transparent; border: 0; outline: 0; color: var(--text); }
-#mission.editing { border-color: var(--cyan); background: var(--bg2); }
-#clocks { display: flex; align-items: center; gap: 14px; flex: none; font-family: var(--mono); font-size: 11px; color: var(--muted); }
-#clocks b { font-weight: 500; color: var(--text); }
-#clocks .k { color: var(--dim); font-size: 10px; letter-spacing: .1em; margin-right: 4px; }
-#conn { display: flex; align-items: center; gap: 8px; flex: none; font-size: 11px; color: var(--muted); }
-#conn .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); transition: background var(--mid) var(--ease); }
-#conn.on .dot { background: var(--green); } #conn.stale .dot { background: var(--amber); } #conn.off .dot { background: var(--red); }
-#hdr-actions { display: flex; align-items: center; gap: 4px; flex: none; }
-.btn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: var(--radius); border: 1px solid var(--line2); color: var(--muted); font-size: 11px; letter-spacing: .02em; transition: color var(--fast) var(--ease), border-color var(--fast) var(--ease), background var(--fast) var(--ease), transform var(--fast) var(--ease); white-space: nowrap; }
-.btn:hover { color: var(--text); border-color: var(--line3); background: var(--bg2); }
-.btn:active { transform: translateY(1px); }
-.btn.on { color: var(--cyan); border-color: rgba(34,211,238,.4); background: var(--cyan-a); }
-.btn.danger.on { color: var(--red); border-color: rgba(248,113,113,.4); background: var(--red-a); }
-.btn.warn.on { color: var(--amber); border-color: rgba(251,191,36,.4); background: var(--amber-a); }
-.btn.primary { color: #04121a; background: var(--cyan); border-color: var(--cyan); font-weight: 600; }
-.btn.primary:hover { background: #4be0f6; }
-.btn.ghost { border-color: transparent; }
-.btn.sm { height: 24px; padding: 0 8px; font-size: 11px; }
-.btn[disabled] { opacity: .45; cursor: default; }
-.kbd { font-family: var(--mono); font-size: 10px; color: var(--dim); border: 1px solid var(--line2); border-radius: 3px; padding: 0 4px; line-height: 14px; }
-
-/* presence rail */
-#presence { display: flex; align-items: center; gap: 2px; padding: 0 12px; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; background: var(--bg); }
-#presence::-webkit-scrollbar { display: none; }
-.pres { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 8px; border-radius: var(--radius); flex: none; transition: background var(--fast) var(--ease); max-width: 260px; }
-.pres:hover { background: var(--bg2); }
-.pres .av { position: relative; width: 20px; height: 20px; border-radius: 50%; border: 1px solid var(--line3); display: grid; place-items: center; font-size: 9px; font-weight: 600; letter-spacing: .02em; color: var(--muted); background: var(--bg2); transition: border-color var(--mid) var(--ease), color var(--mid) var(--ease); }
-.pres .av::after { content: ""; position: absolute; right: -2px; bottom: -2px; width: 7px; height: 7px; border-radius: 50%; background: var(--faint); border: 2px solid var(--bg); box-sizing: content-box; transition: background var(--mid) var(--ease); }
-.pres.thinking .av { border-color: var(--cyan); color: var(--cyan); } .pres.thinking .av::after { background: var(--cyan); animation: blink 1.4s ease-in-out infinite; }
-.pres.tool .av { border-color: var(--amber); color: var(--amber); } .pres.tool .av::after { background: var(--amber); }
-.pres.done .av { border-color: var(--green); color: var(--green); } .pres.done .av::after { background: var(--green); }
-.pres.fail .av { border-color: var(--red); color: var(--red); } .pres.fail .av::after { background: var(--red); }
-.pres.tierb .av { border-style: dashed; }
-.pres .who { display: flex; flex-direction: column; min-width: 0; line-height: 1.2; }
-.pres .name { font-size: 11px; color: var(--text); white-space: nowrap; }
-.pres .model { font-family: var(--mono); font-size: 9.5px; color: var(--dim); white-space: nowrap; }
-.pres .say { font-family: var(--mono); font-size: 10.5px; color: var(--muted); max-width: 150px; opacity: 0; transition: opacity var(--slow) var(--ease); }
-.pres .say.on { opacity: 1; }
-.pres .clock { font-family: var(--mono); font-size: 10px; color: var(--dim); }
-@keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
-
-/* main columns */
-#main { display: grid; grid-template-columns: 360px minmax(0,1fr) 400px; min-height: 0; }
-.col { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); overflow: hidden; }
-.col:last-child { border-right: 0; }
-.col > .panel { display: flex; flex-direction: column; min-height: 0; border-bottom: 1px solid var(--line); }
-.col > .panel:last-child { border-bottom: 0; }
-.panel-h { display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 12px; flex: none; }
-.panel-h h2 { font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase; font-weight: 600; color: var(--muted); }
-.panel-h .meta { margin-left: auto; font-family: var(--mono); font-size: 10.5px; color: var(--dim); display: flex; align-items: center; gap: 10px; }
-.panel-b { flex: 1; min-height: 0; overflow: auto; }
-.empty { padding: 18px 12px; color: var(--dim); font-size: 11.5px; line-height: 1.5; }
-.empty b { color: var(--muted); font-weight: 500; }
-
-/* ── pistas (flights) ──────────────────────────────────────────────────── */
-#flights { flex: none; max-height: 46%; }
-.flight { position: relative; padding: 10px 12px 12px; border-bottom: 1px solid var(--line); cursor: pointer; transition: background var(--fast) var(--ease); }
-.flight:hover { background: var(--bg1); }
-.flight.sel { background: var(--bg2); box-shadow: inset 2px 0 0 var(--cyan); }
-.flight.sel.failed { box-shadow: inset 2px 0 0 var(--red); }
-.flight.sel.landed { box-shadow: inset 2px 0 0 var(--green); }
-.flight .top { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
-.flight .slot { font-family: var(--mono); font-size: 10px; letter-spacing: .1em; color: var(--dim); flex: none; }
-.flight .id { font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--text); flex: none; }
-.flight .title { flex: 1; color: var(--muted); font-size: 11.5px; }
-.flight .t { font-family: var(--mono); font-size: 10.5px; color: var(--dim); flex: none; }
-.flight .sub { display: flex; align-items: center; gap: 8px; margin-top: 3px; font-size: 11px; color: var(--muted); min-height: 16px; }
-.flight .sub .ph { color: var(--cyan); font-weight: 500; }
-.flight.failed .sub .ph { color: var(--red); } .flight.landed .sub .ph { color: var(--green); } .flight.idle .sub .ph { color: var(--dim); }
-.flight .sub .att { font-family: var(--mono); font-size: 10px; color: var(--dim); margin-left: auto; }
-.flight .sub .att.last { color: var(--amber); }
-.track { position: relative; display: grid; grid-template-columns: repeat(6, 1fr); gap: 2px; margin-top: 10px; height: 22px; }
-.track .st { position: relative; display: flex; align-items: center; justify-content: center; height: 100%; border-radius: 3px; background: var(--bg3); color: var(--dim); font-size: 9.5px; letter-spacing: .08em; text-transform: uppercase; transition: background var(--mid) var(--ease), color var(--mid) var(--ease), box-shadow var(--mid) var(--ease); overflow: hidden; }
-.track .st.ok { background: rgba(74,222,128,.12); color: var(--green); }
-.track .st.fail { background: rgba(248,113,113,.14); color: var(--red); }
-.track .st.active { background: var(--cyan-a); color: var(--cyan); box-shadow: inset 0 0 0 1px rgba(34,211,238,.35); }
-.track .st.active.deploy { background: var(--amber-a); color: var(--amber); box-shadow: inset 0 0 0 1px rgba(251,191,36,.35); }
-.track .st.active.review { background: var(--indigo-a); color: var(--indigo); box-shadow: inset 0 0 0 1px rgba(129,140,248,.35); }
-.track .st.skip { opacity: .35; }
-.track .st .r { position: absolute; right: 3px; top: 1px; font-family: var(--mono); font-size: 8.5px; letter-spacing: 0; text-transform: none; opacity: .9; }
-.track .st.active::before { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgba(255,255,255,.08), transparent); transform: translateX(-100%); animation: sweep 1.6s var(--ease) infinite; }
-@keyframes sweep { to { transform: translateX(100%); } }
-.plane { position: absolute; top: -7px; width: 10px; height: 10px; color: var(--cyan); transition: left var(--slow) var(--ease), color var(--mid) var(--ease); pointer-events: none; }
-.plane svg { width: 10px; height: 10px; }
-.flight.failed .plane { color: var(--red); } .flight.landed .plane { color: var(--green); }
-.flight.idle .track { opacity: .5; }
-.badge { display: inline-flex; align-items: center; gap: 4px; height: 16px; padding: 0 6px; border-radius: 3px; font-size: 9.5px; letter-spacing: .06em; text-transform: uppercase; font-weight: 600; border: 1px solid var(--line2); color: var(--muted); }
-.badge.cyan { color: var(--cyan); border-color: rgba(34,211,238,.35); background: var(--cyan-a); }
-.badge.green { color: var(--green); border-color: rgba(74,222,128,.35); background: var(--green-a); }
-.badge.red { color: var(--red); border-color: rgba(248,113,113,.35); background: var(--red-a); }
-.badge.amber { color: var(--amber); border-color: rgba(251,191,36,.35); background: var(--amber-a); }
-.badge.indigo { color: var(--indigo); border-color: rgba(129,140,248,.35); background: var(--indigo-a); }
-.badge.violet { color: var(--violet); border-color: rgba(192,132,252,.35); background: var(--violet-a); }
-.badge.mono { font-family: var(--mono); text-transform: none; letter-spacing: 0; font-weight: 500; }
-
-/* ── fila / concluídas ─────────────────────────────────────────────────── */
-#queue { flex: 1; min-height: 120px; }
-.tabs { display: flex; gap: 2px; margin-left: auto; }
-.tab { height: 22px; padding: 0 8px; border-radius: 4px; font-size: 10.5px; letter-spacing: .06em; color: var(--dim); text-transform: uppercase; transition: color var(--fast) var(--ease), background var(--fast) var(--ease); }
-.tab:hover { color: var(--muted); } .tab.on { color: var(--text); background: var(--bg3); }
-.tab .n { font-family: var(--mono); margin-left: 4px; color: var(--dim); }
-.qrow { display: flex; align-items: center; gap: 8px; height: var(--row); padding: 0 12px; border-bottom: 1px solid var(--line); cursor: pointer; transition: background var(--fast) var(--ease); }
-.qrow:hover { background: var(--bg1); }
-.qrow .id { font-family: var(--mono); font-size: 11px; color: var(--text); flex: none; width: 58px; }
-.qrow .title { flex: 1; color: var(--muted); font-size: 11.5px; }
-.qrow .area { font-size: 9.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); flex: none; }
-.qrow .cost { font-family: var(--mono); font-size: 10px; color: var(--dim); flex: none; }
-.qrow .k { width: 5px; height: 5px; border-radius: 50%; background: var(--faint); flex: none; }
-.qrow.blocked .k { background: var(--red); } .qrow.done .k { background: var(--green); } .qrow.active .k { background: var(--cyan); }
-.qrow .att { font-family: var(--mono); font-size: 10px; color: var(--amber); flex: none; }
-.qhead { height: 24px; display: flex; align-items: center; padding: 0 12px; font-size: 9.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--dim); background: var(--bg1); border-bottom: 1px solid var(--line); position: sticky; top: 0; }
-
-/* ── pulso econômico ───────────────────────────────────────────────────── */
-#pulse { flex: none; }
-#pulse .panel-b { padding: 4px 12px 10px; overflow: visible; }
-.stat { display: flex; align-items: center; height: 26px; gap: 8px; border-bottom: 1px solid var(--line); }
-.stat:last-child { border-bottom: 0; }
-.stat .k { font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); flex: 1; }
-.stat .v { font-family: var(--mono); font-size: 12px; color: var(--text); }
-.stat .v.ok { color: var(--green); } .stat .v.bad { color: var(--red); } .stat .v.warn { color: var(--amber); }
-.meter { height: 3px; border-radius: 2px; background: var(--bg3); width: 90px; overflow: hidden; }
-.meter i { display: block; height: 100%; width: 0; background: var(--cyan); transition: width var(--slow) var(--ease); }
-.meter i.warn { background: var(--amber); } .meter i.full { background: var(--red); }
-.fever { display: flex; gap: 2px; align-items: center; }
-.fever i { width: 6px; height: 12px; border-radius: 1px; background: var(--bg3); }
-.fever i.ok { background: var(--green); opacity: .8; } .fever i.bad { background: var(--red); }
-.arc { width: 22px; height: 22px; transform: rotate(-90deg); }
-.arc circle { fill: none; stroke-width: 3; }
-.arc .bg { stroke: var(--bg3); } .arc .fg { stroke: var(--cyan); stroke-linecap: round; transition: stroke-dashoffset var(--slow) var(--ease); }
-.burn { display: flex; gap: 3px; align-items: flex-end; height: 24px; width: 90px; }
-.burn i { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; height: 100%; }
-.burn i b { display: block; width: 100%; background: var(--green); opacity: .75; border-radius: 1px 1px 0 0; }
-.burn i b.f { background: var(--red); border-radius: 0; }
-.alert { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; margin: 6px 0; border-radius: var(--radius); border: 1px solid rgba(248,113,113,.35); background: var(--red-a); color: var(--red); font-size: 11px; line-height: 1.4; }
-.alert.amber { border-color: rgba(251,191,36,.35); background: var(--amber-a); color: var(--amber); }
-.alert .body { flex: 1; min-width: 0; } .alert b { font-size: 10px; letter-spacing: .12em; text-transform: uppercase; display: block; }
-.alert .d { color: var(--muted); font-size: 10.5px; margin-top: 2px; word-break: break-word; }
-.alert .btn { color: inherit; border-color: currentColor; opacity: .85; }
-.fsteps { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px 0 6px; }
-
-/* ── caixa-preta (cockpit) ─────────────────────────────────────────────── */
-#cockpit { flex: 1; }
-#cockpit .panel-h { height: 44px; gap: 12px; }
-#ck-role { display: flex; align-items: center; gap: 10px; min-width: 0; }
-#ck-role .av { width: 24px; height: 24px; border-radius: 50%; border: 1px solid var(--line3); display: grid; place-items: center; font-size: 10px; font-weight: 600; color: var(--muted); flex: none; transition: border-color var(--mid) var(--ease), color var(--mid) var(--ease); }
-#ck-role.live .av { border-color: var(--cyan); color: var(--cyan); }
-#ck-role.tierb .av { border-style: dashed; border-color: var(--violet); color: var(--violet); }
-#ck-role .who { display: flex; flex-direction: column; min-width: 0; line-height: 1.2; }
-#ck-role .who b { font-size: 12px; font-weight: 600; } #ck-role .who span { font-family: var(--mono); font-size: 10.5px; color: var(--dim); }
-#ck-meta { margin-left: auto; display: flex; align-items: center; gap: 8px; flex: none; }
-#transcript { font-family: var(--mono); font-size: 11.5px; line-height: 1.6; padding: 10px 14px 24px; color: #c3d0dd; }
-.ln { display: flex; gap: 10px; padding: 1px 0; animation: fadein var(--mid) var(--ease); }
-.ln .ts { color: var(--faint); flex: none; font-size: 10px; padding-top: 2px; width: 56px; }
-.ln .tx { white-space: pre-wrap; word-break: break-word; flex: 1; min-width: 0; }
-.ln.note .tx { color: var(--dim); font-style: italic; }
-.ln.think .tx { color: var(--muted); }
-.ln.err .tx { color: var(--red); }
-.caret::after { content: ""; display: inline-block; width: 6px; height: 12px; margin-left: 2px; vertical-align: -2px; background: var(--cyan); animation: blink 1s steps(2) infinite; }
-.chip { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px; border-radius: 4px; border: 1px solid var(--line2); background: var(--bg2); font-size: 11px; color: var(--muted); max-width: 100%; }
-.chip .nm { color: var(--text); font-weight: 500; }
-.chip .arg { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chip .ms { color: var(--dim); font-size: 10px; margin-left: 4px; }
-.chip.running { border-color: rgba(34,211,238,.5); animation: chippulse 1.2s ease-in-out infinite; }
-.chip.completed { border-color: rgba(74,222,128,.35); } .chip.completed .nm { color: var(--green); }
-.chip.error { border-color: rgba(248,113,113,.45); } .chip.error .nm { color: var(--red); }
-@keyframes chippulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(34,211,238,.25); } 50% { box-shadow: 0 0 0 3px rgba(34,211,238,0); } }
-@keyframes fadein { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
-#ck-foot { display: flex; align-items: center; gap: 14px; height: 32px; padding: 0 14px; border-top: 1px solid var(--line); font-family: var(--mono); font-size: 10.5px; color: var(--dim); flex: none; }
-#ck-foot b { color: var(--muted); font-weight: 500; }
-#ck-foot .tokens { color: var(--cyan); }
-#ck-foot .spacer { flex: 1; }
-.sealed { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 40px 20px; color: var(--dim); text-align: center; }
-.sealed .box { width: 44px; height: 44px; border: 1px dashed var(--violet); border-radius: 8px; display: grid; place-items: center; color: var(--violet); }
-.sealed b { color: var(--muted); font-weight: 500; }
-.sealed .clock { font-family: var(--mono); font-size: 18px; color: var(--text); }
-
-/* ── arena ─────────────────────────────────────────────────────────────── */
-#arena { flex: 1; min-height: 160px; }
-.arena-g { display: grid; grid-template-columns: 1fr 1fr; gap: 0; }
-.arena-g.esc { grid-template-columns: 1fr 1fr; }
-.judge { padding: 8px 12px 10px; border-right: 1px solid var(--line); min-width: 0; }
-.judge:last-child { border-right: 0; }
-.judge.center { grid-column: 1 / -1; border-top: 1px solid var(--line); border-right: 0; background: var(--bg1); }
-.judge .jh { display: flex; align-items: center; gap: 8px; height: 22px; }
-.judge .jh .nm { font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--indigo); font-weight: 600; }
-.judge.center .jh .nm { color: var(--violet); }
-.judge .jh .badge { margin-left: auto; }
-.judge .jh .badge.pending { color: var(--dim); animation: blink 1.6s ease-in-out infinite; }
-.finding { position: relative; padding: 5px 0 5px 10px; margin-top: 4px; font-size: 11px; line-height: 1.45; color: var(--muted); border-left: 2px solid var(--green); animation: fadein var(--mid) var(--ease); }
-.finding .cite { font-family: var(--mono); font-size: 10.5px; color: var(--text); cursor: pointer; }
-.finding .cite:hover { color: var(--cyan); text-decoration: underline; text-underline-offset: 2px; }
-.finding.dropped { border-left-color: var(--faint); color: var(--dim); }
-.finding.dropped .tx { text-decoration: line-through; text-decoration-color: rgba(248,113,113,.7); text-decoration-thickness: 1px; }
-.finding.dropped .why { display: block; margin-top: 2px; font-size: 10px; color: var(--red); text-decoration: none; }
-.finding.dropped .why::before { content: "alucinação · "; color: var(--dim); }
-.finding.resolved { border-left-color: var(--faint); opacity: .55; }
-.finding.resolved .tx { text-decoration: line-through; text-decoration-color: rgba(74,222,128,.7); }
-.judge .sum { font-size: 10.5px; color: var(--dim); margin-top: 6px; }
-
-/* ── tribunal (gate) ───────────────────────────────────────────────────── */
-#gate { flex: none; }
-.lamps { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; padding: 4px 12px 10px; }
-.lamp { display: flex; align-items: center; gap: 8px; height: 24px; font-family: var(--mono); font-size: 11px; color: var(--dim); border-bottom: 1px solid var(--line); }
-.lamp .bulb { width: 8px; height: 8px; border-radius: 50%; background: var(--bg3); border: 1px solid var(--line2); flex: none; transition: background var(--mid) var(--ease), box-shadow var(--mid) var(--ease), border-color var(--mid) var(--ease); }
-.lamp .nm { flex: 1; } .lamp .ms { font-size: 10px; color: var(--faint); }
-.lamp .tag { font-size: 9px; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); border: 1px solid var(--line2); border-radius: 3px; padding: 0 4px; line-height: 13px; }
-.lamp.pending .bulb { border-color: var(--line3); }
-.lamp.running { color: var(--cyan); } .lamp.running .bulb { background: var(--cyan); border-color: var(--cyan); animation: lamppulse 1s ease-in-out infinite; }
-.lamp.ok { color: var(--text); } .lamp.ok .bulb { background: var(--green); border-color: var(--green); box-shadow: 0 0 8px rgba(74,222,128,.55); }
-.lamp.fail { color: var(--red); } .lamp.fail .bulb { background: var(--red); border-color: var(--red); box-shadow: 0 0 10px rgba(248,113,113,.6); }
-.lamp.flaky { color: var(--amber); } .lamp.flaky .bulb { background: var(--amber); border-color: var(--amber); }
-.lamp.skip { opacity: .4; }
-.lamp.cond .nm::after { content: " *"; color: var(--faint); }
-@keyframes lamppulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(34,211,238,.5); } 50% { box-shadow: 0 0 0 4px rgba(34,211,238,0); } }
-.tail { margin: 0 12px 10px; padding: 8px 10px; border-radius: var(--radius); background: var(--bg1); border: 1px solid rgba(248,113,113,.25); font-family: var(--mono); font-size: 10.5px; line-height: 1.5; color: var(--muted); white-space: pre-wrap; word-break: break-word; max-height: 120px; overflow: auto; }
-.verdict { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 12px; border-top: 1px solid var(--line); font-size: 11px; color: var(--muted); }
-.verdict b { font-weight: 600; letter-spacing: .1em; text-transform: uppercase; font-size: 10.5px; }
-.verdict.ok b { color: var(--green); } .verdict.fail b { color: var(--red); } .verdict.run b { color: var(--cyan); }
-
-/* ── pouso (deploy) ────────────────────────────────────────────────────── */
-#landing { flex: none; }
-.stages { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px 12px 6px; }
-.stage { display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 7px; border-radius: 3px; border: 1px solid var(--line2); font-family: var(--mono); font-size: 10.5px; color: var(--dim); animation: fadein var(--mid) var(--ease); }
-.stage .d { width: 5px; height: 5px; border-radius: 50%; background: var(--faint); }
-.stage.ok { color: var(--muted); } .stage.ok .d { background: var(--amber); }
-.stage.fail { color: var(--red); border-color: rgba(248,113,113,.4); } .stage.fail .d { background: var(--red); }
-.stage.run { color: var(--amber); border-color: rgba(251,191,36,.4); } .stage.run .d { background: var(--amber); animation: blink 1s ease-in-out infinite; }
-.ecg-wrap { position: relative; margin: 0 12px; height: 72px; border-radius: var(--radius); background: var(--bg1); border: 1px solid var(--line); overflow: hidden; }
-.ecg-wrap svg { position: absolute; inset: 0; width: 100%; height: 100%; }
-.ecg-wrap .grid line { stroke: var(--line); }
-.ecg-wrap .base { stroke: var(--line2); stroke-dasharray: 2 4; }
-.ecg-wrap .beat { fill: none; stroke: var(--green); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-.ecg-wrap .beat.bad { stroke: var(--red); }
-.ecg-wrap .beat.live { stroke: var(--amber); }
-.ecg-wrap .beat.draw { stroke-dasharray: 80; stroke-dashoffset: 80; animation: draw var(--slow) var(--ease) forwards; }
-.ecg-wrap .beat.goaround { stroke: var(--red); stroke-width: 1.8; stroke-dasharray: 200; stroke-dashoffset: 200; animation: draw 600ms var(--ease) forwards; }
-.ecg-wrap .dot { transform-box: fill-box; transform-origin: center; animation: pop var(--mid) var(--ease); }
-.ecg-wrap .dot.ok { fill: var(--green); } .ecg-wrap .dot.bad { fill: var(--red); } .ecg-wrap .dot.live { fill: var(--amber); }
-.ecg-wrap .lbl { font-family: var(--mono); font-size: 9px; fill: var(--dim); }
-.ecg-wrap .scan { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--amber); opacity: .6; transition: left var(--slow) var(--ease); }
-.ecg-wrap .idle { position: absolute; inset: 0; display: grid; place-items: center; color: var(--faint); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; }
-@keyframes draw { to { stroke-dashoffset: 0; } }
-@keyframes pop { from { transform: scale(0); } to { transform: scale(1); } }
-.runway { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 12px; margin-top: 6px; font-family: var(--mono); font-size: 11px; }
-.runway .k { font-size: 9.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--dim); width: 40px; }
-.runway .strip { flex: 1; height: 22px; border-radius: 4px; background: var(--bg1); border: 1px solid var(--line); position: relative; overflow: hidden; }
-.runway .sha { position: absolute; top: 3px; left: 8px; height: 14px; line-height: 14px; padding: 0 6px; border-radius: 3px; font-size: 10.5px; background: var(--bg3); color: var(--muted); transition: transform 600ms var(--ease), color var(--mid) var(--ease), background var(--mid) var(--ease); }
-.runway .sha.live { color: var(--green); background: var(--green-a); }
-.runway .sha.in { transform: translateX(-140%); }
-.runway .sha.arrive { animation: arrive 600ms var(--ease); }
-.runway .sha.banned { color: var(--red); background: var(--red-a); text-decoration: line-through; }
-@keyframes arrive { from { transform: translateX(-140%); } to { transform: none; } }
-.rbh { display: flex; align-items: center; gap: 8px; height: 26px; padding: 0 12px; font-size: 11px; color: var(--muted); }
-.rbh b { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; }
-.rbh.ok b { color: var(--green); } .rbh.fail b { color: var(--red); }
-
-/* ── ticker ────────────────────────────────────────────────────────────── */
-#ticker { display: flex; align-items: center; gap: 14px; padding: 0 14px; border-top: 1px solid var(--line); background: var(--bg1); font-family: var(--mono); font-size: 10.5px; color: var(--dim); overflow: hidden; }
-#ticker .line { flex: 1; min-width: 0; display: flex; gap: 10px; align-items: center; overflow: hidden; }
-#ticker .ev { display: inline-flex; gap: 6px; white-space: nowrap; animation: fadein var(--mid) var(--ease); }
-#ticker .ev .t { color: var(--faint); } #ticker .ev .k { color: var(--muted); } #ticker .ev.ok .k { color: var(--green); } #ticker .ev.bad .k { color: var(--red); } #ticker .ev.dep .k { color: var(--amber); }
-#ticker .hint { flex: none; display: flex; gap: 8px; color: var(--faint); }
-
-/* ── overlays: dossiê, logs, popovers, toasts ──────────────────────────── */
-.scrim { position: fixed; inset: 0; background: rgba(4,6,10,.55); opacity: 0; pointer-events: none; transition: opacity var(--mid) var(--ease); z-index: 40; }
-.scrim.on { opacity: 1; pointer-events: auto; }
-#dossier { position: fixed; top: 0; right: 0; bottom: 0; width: min(600px, 100vw); background: var(--bg1); border-left: 1px solid var(--line2); transform: translateX(100%); transition: transform var(--slow) var(--ease); z-index: 50; display: flex; flex-direction: column; box-shadow: -24px 0 60px rgba(0,0,0,.5); }
-#dossier.on { transform: none; }
-#dossier .dh { display: flex; align-items: center; gap: 10px; height: 48px; padding: 0 16px; border-bottom: 1px solid var(--line); flex: none; }
-#dossier .dh .id { font-family: var(--mono); font-size: 13px; font-weight: 600; }
-#dossier .dh .title { flex: 1; color: var(--muted); }
-#dossier .db { flex: 1; overflow: auto; padding: 0 0 30px; }
-.sec { padding: 10px 16px 12px; border-bottom: 1px solid var(--line); }
-.sec h3 { font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--dim); font-weight: 600; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
-.sec h3 .meta { margin-left: auto; font-family: var(--mono); color: var(--faint); letter-spacing: 0; text-transform: none; font-weight: 400; }
-.kv { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 6px 12px; }
-.kv div { display: flex; flex-direction: column; gap: 2px; padding: 6px 0; border-bottom: 1px solid var(--line); }
-.kv .k { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); }
-.kv .v { font-family: var(--mono); font-size: 12px; }
-.round { display: grid; grid-template-columns: 44px 1fr; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--line); }
-.round .n { font-family: var(--mono); font-size: 11px; color: var(--muted); padding-top: 2px; }
-.round .seg { display: flex; flex-wrap: wrap; gap: 4px; }
-.seg .s { display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 7px; border-radius: 3px; border: 1px solid var(--line2); font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
-.seg .s.ok { border-color: rgba(74,222,128,.35); color: var(--green); } .seg .s.fail { border-color: rgba(248,113,113,.35); color: var(--red); } .seg .s.run { border-color: rgba(34,211,238,.35); color: var(--cyan); }
-.seg .s .ms { color: var(--dim); }
-.actions { display: flex; flex-wrap: wrap; gap: 6px; }
-.spark { display: flex; align-items: flex-end; gap: 2px; height: 26px; }
-.spark i { width: 10px; background: var(--cyan); opacity: .7; border-radius: 1px 1px 0 0; }
-.spark i.hot { background: var(--amber); } .spark i.crit { background: var(--red); }
-.tl { font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
-.tl div { display: flex; gap: 10px; padding: 2px 0; }
-.tl .t { color: var(--faint); flex: none; } .tl .k { color: var(--text); flex: none; min-width: 90px; } .tl .ok { color: var(--green); } .tl .bad { color: var(--red); }
-
-#logdrawer { position: fixed; left: 0; right: 0; bottom: 0; height: 60vh; background: var(--bg1); border-top: 1px solid var(--line2); transform: translateY(100%); transition: transform var(--slow) var(--ease); z-index: 45; display: flex; flex-direction: column; box-shadow: 0 -24px 60px rgba(0,0,0,.5); }
-#logdrawer.on { transform: none; }
-#logbar { display: flex; align-items: center; gap: 6px; height: 40px; padding: 0 12px; border-bottom: 1px solid var(--line); flex: none; overflow-x: auto; scrollbar-width: none; }
-#logbar h2 { font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); margin-right: 6px; }
-#logbar input { height: 26px; padding: 0 8px; width: 180px; background: var(--bg2); border: 1px solid var(--line2); border-radius: 4px; outline: 0; }
-#logbar input:focus { border-color: var(--cyan); }
-#logview { flex: 1; overflow: auto; padding: 6px 12px 14px; font-family: var(--mono); font-size: 11px; line-height: 1.6; }
-#logview .l { display: flex; gap: 10px; white-space: pre-wrap; word-break: break-word; }
-#logview .l .t { color: var(--faint); flex: none; } #logview .l .m { color: var(--text); flex: none; } #logview .l .d { color: var(--muted); }
-#logview .l.warn .m { color: var(--amber); } #logview .l.error .m { color: var(--red); }
-
-.pop { position: fixed; z-index: 60; width: 300px; background: var(--bg2); border: 1px solid var(--line2); border-radius: 8px; padding: 12px; box-shadow: 0 20px 50px rgba(0,0,0,.55); opacity: 0; transform: translateY(-4px) scale(.98); pointer-events: none; transition: opacity var(--fast) var(--ease), transform var(--fast) var(--ease); }
-.pop.on { opacity: 1; transform: none; pointer-events: auto; }
-.pop h4 { font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--dim); margin-bottom: 8px; }
-.pop .row { display: flex; align-items: center; gap: 8px; height: 30px; }
-.pop .row label { flex: 1; color: var(--muted); font-size: 11px; }
-.pop input[type=number] { width: 60px; height: 26px; padding: 0 8px; text-align: right; background: var(--bg1); border: 1px solid var(--line2); border-radius: 4px; outline: 0; font-family: var(--mono); }
-.pop input:focus { border-color: var(--cyan); }
-.pop .foot { display: flex; justify-content: flex-end; gap: 6px; margin-top: 10px; }
-.pop p { color: var(--muted); font-size: 11px; line-height: 1.5; }
-.pop code { display: block; margin: 8px 0; padding: 8px; background: var(--bg1); border: 1px solid var(--line); border-radius: 4px; font-family: var(--mono); font-size: 10.5px; color: var(--text); user-select: all; word-break: break-all; }
-
-#toasts { position: fixed; left: 50%; bottom: 44px; transform: translateX(-50%); display: flex; flex-direction: column; gap: 6px; z-index: 70; pointer-events: none; }
-.toast { padding: 7px 12px; border-radius: 6px; background: var(--bg3); border: 1px solid var(--line2); font-size: 11.5px; color: var(--text); animation: toastin var(--mid) var(--ease); box-shadow: 0 10px 30px rgba(0,0,0,.4); }
-.toast.ok { border-color: rgba(74,222,128,.4); } .toast.bad { border-color: rgba(248,113,113,.4); } .toast.out { animation: toastout var(--mid) var(--ease) forwards; }
-@keyframes toastin { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
-@keyframes toastout { to { opacity: 0; transform: translateY(6px); } }
-
-#tokenbox { position: fixed; inset: 0; display: none; place-items: center; background: rgba(4,6,10,.85); z-index: 80; }
-#tokenbox.on { display: grid; }
-#tokenbox .card { width: 340px; padding: 20px; background: var(--bg2); border: 1px solid var(--line2); border-radius: 10px; }
-#tokenbox h3 { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); margin-bottom: 10px; }
-#tokenbox input { width: 100%; height: 32px; padding: 0 10px; background: var(--bg1); border: 1px solid var(--line2); border-radius: 6px; outline: 0; font-family: var(--mono); }
-#tokenbox .btn { width: 100%; justify-content: center; margin-top: 10px; }
-#tokenbox p { margin-top: 10px; color: var(--dim); font-size: 11px; }
-
-#mockbar { position: fixed; right: 12px; bottom: 40px; z-index: 30; display: flex; align-items: center; gap: 6px; padding: 4px 6px 4px 10px; border-radius: 999px; background: var(--bg2); border: 1px solid var(--line2); font-family: var(--mono); font-size: 10.5px; color: var(--violet); }
-#mockbar .btn { height: 22px; }
-
-/* ── responsive ────────────────────────────────────────────────────────── */
-#ck-toggle { display: none; }
-@media (max-width: 1180px) {
-  #main { grid-template-columns: 340px minmax(0,1fr); grid-template-rows: 1fr 1fr; }
-  #col-left { grid-row: 1 / -1; }
-  #col-center { grid-row: 1; border-right: 0; }
-  #col-right { grid-row: 2; grid-column: 2; border-top: 1px solid var(--line); border-right: 0; flex-direction: row; }
-  #col-right .panel { flex: 1; border-bottom: 0; border-right: 1px solid var(--line); min-width: 0; }
-  #col-right .panel:last-child { border-right: 0; }
-}
-@media (max-width: 860px) {
-  #app { grid-template-rows: 48px 40px 1fr 30px; }
-  #hdr { padding: 0 10px; gap: 10px; } #brand .sub, #clocks .eta, #hdr .kbd { display: none; }
-  #mission { display: none; }
-  #main { display: flex; flex-direction: column; overflow: auto; }
-  .col { border-right: 0; overflow: visible; flex: none; }
-  #col-center { display: contents; }
-  #cockpit { display: none; }
-  #col-right { flex-direction: column; border-top: 0; }
-  #col-right .panel { border-right: 0; border-bottom: 1px solid var(--line); }
-  #flights { max-height: none; }
-  .panel-b { overflow: visible; }
-  #queue .panel-b { max-height: 260px; overflow: auto; }
-  #ck-toggle { display: inline-flex; }
-  #cockpit.sheet { display: flex; position: fixed; left: 0; right: 0; bottom: 0; height: 72vh; background: var(--bg1); border-top: 1px solid var(--line2); border-radius: 12px 12px 0 0; z-index: 46; transform: translateY(100%); transition: transform var(--slow) var(--ease); box-shadow: 0 -24px 60px rgba(0,0,0,.5); }
-  #cockpit.sheet.on { transform: none; }
-  #cockpit.sheet::before { content: ""; position: absolute; top: 6px; left: 50%; width: 36px; height: 4px; margin-left: -18px; border-radius: 2px; background: var(--line3); }
-  #cockpit.sheet .panel-h { margin-top: 8px; }
-  .lamps { grid-template-columns: 1fr 1fr; }
-  #dossier { width: 100vw; }
-  #ticker .hint { display: none; }
-}
-
-/* ── reduced motion: tudo desligado ────────────────────────────────────── */
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation: none !important; transition: none !important; }
-  .caret::after { animation: none !important; }
-  .ecg-wrap .beat.draw, .ecg-wrap .beat.goaround { stroke-dashoffset: 0 !important; }
-}
+  :root { --cyan:#22d3ee; --green:#4ade80; --red:#f87171; --gold:#fbbf24; --bg:#04060a; --text:#e8edf2; --muted:#8fa3b8; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { height:100%; overflow:hidden; background:var(--bg); font-family:-apple-system,'SF Pro Text',system-ui,sans-serif; color:var(--text); }
+  #scene { position:fixed; inset:0; }
+  .overlay { position:fixed; z-index:10; pointer-events:none; }
+  #header { top:0; left:0; right:0; padding:18px 24px; display:flex; align-items:center; gap:14px;
+            background:linear-gradient(to bottom, rgba(4,6,10,.88), transparent); }
+  #header h1 { font-size:15px; letter-spacing:.22em; text-transform:uppercase; font-weight:700;
+               background:linear-gradient(90deg,#22d3ee,#4ade80,#fbbf24); -webkit-background-clip:text; background-clip:text; color:transparent; }
+  #header .sub { font-size:11px; color:var(--muted); letter-spacing:.08em; }
+  #mission { pointer-events:auto; margin-top:8px; max-width:760px; background:rgba(10,16,24,.72); border:1px solid rgba(74,222,128,.25);
+             border-radius:10px; padding:8px 12px; font-size:12px; color:#c9d6e3; cursor:pointer; }
+  #mission b { color:var(--green); letter-spacing:.1em; font-size:10px; margin-right:8px; }
+  #mission:hover { border-color:var(--green); }
+  #mission input { width:95%; background:#0b111a; border:1px solid #2a3947; color:var(--text); border-radius:6px;
+                   font-size:12px; padding:4px 8px; display:none; margin-top:4px; }
+  #progress { display:inline-block; width:120px; height:4px; border-radius:2px; background:rgba(34,211,238,.15);
+              vertical-align:middle; margin-right:10px; overflow:hidden; }
+  #progress i { display:block; height:100%; width:0; background:linear-gradient(90deg,var(--cyan),var(--green));
+                border-radius:2px; transition:width .6s ease; box-shadow:0 0 8px rgba(34,211,238,.6); }
+  #live { width:10px; height:10px; border-radius:50%; background:#555; }
+  #live.on { background:var(--green); animation:pulse 1.6s infinite; }
+  #live.stale { background:var(--red); animation:none; }
+  @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(74,222,128,.7)} 70%{box-shadow:0 0 0 12px rgba(74,222,128,0)} 100%{box-shadow:0 0 0 0 rgba(74,222,128,0)} }
+  #stats { pointer-events:auto; top:70px; right:20px; width:230px; background:rgba(10,16,24,.72); border:1px solid rgba(34,211,238,.18);
+           border-radius:14px; padding:14px 16px; backdrop-filter:blur(8px); }
+  #stats .row { display:flex; justify-content:space-between; font-size:12px; padding:4px 0; color:#c9d6e3; }
+  #stats .row b { font-variant-numeric:tabular-nums; }
+  #stats .row b.ok { color:var(--green); } #stats .row b.bad { color:var(--red); }
+  #task { bottom:128px; left:50%; transform:translateX(-50%); max-width:80vw; text-align:center;
+          background:rgba(10,16,24,.72); border:1px solid rgba(34,211,238,.25); border-radius:999px;
+          padding:10px 22px; font-size:13px; backdrop-filter:blur(8px); }
+  #task .phase { color:var(--cyan); font-weight:700; margin-right:8px; text-transform:uppercase; font-size:11px; letter-spacing:.14em; }
+  #ticker { bottom:0; left:0; right:0; padding:10px 24px 14px; font:11px/1.7 ui-monospace,Menlo,monospace;
+            color:#7d90a5; background:linear-gradient(to top, rgba(4,6,10,.92), transparent); height:112px; overflow:hidden; }
+  #ticker div { white-space:nowrap; text-overflow:ellipsis; overflow:hidden; }
+  #ticker .t { color:var(--cyan); } #ticker .ok { color:var(--green); } #ticker .bad { color:var(--red); } #ticker .gold { color:var(--gold); }
+  #tokenbox { top:50%; left:50%; transform:translate(-50%,-50%); pointer-events:auto; background:rgba(10,16,24,.92);
+              border:1px solid rgba(34,211,238,.3); border-radius:16px; padding:24px; width:340px; display:none; }
+  #tokenbox h3 { font-size:13px; margin-bottom:10px; letter-spacing:.08em; }
+  #tokenbox input { width:100%; padding:9px 12px; background:#0b111a; border:1px solid #2a3947; color:var(--text); border-radius:8px; font-size:12px; }
+  #tokenbox button { margin-top:10px; width:100%; padding:9px; background:var(--cyan); border:none; color:#04121a; font-weight:700; border-radius:8px; cursor:pointer; }
+  /* ── budget meters ── */
+  .meter { margin:7px 0 2px; }
+  .meter .bar { height:4px; border-radius:2px; background:rgba(143,163,184,.15); overflow:hidden; margin-top:3px; }
+  .meter .bar i { display:block; height:100%; border-radius:2px; background:linear-gradient(90deg,var(--cyan),var(--green)); transition:width .8s ease; }
+  .meter span { font-size:10px; letter-spacing:.12em; color:var(--muted); }
+  .meter b { font-variant-numeric:tabular-nums; font-size:12px; }
+  #logs-btn { pointer-events:auto; margin-top:10px; width:100%; padding:7px; background:rgba(34,211,238,.12); border:1px solid rgba(34,211,238,.35);
+              color:var(--cyan); font-weight:700; letter-spacing:.14em; font-size:11px; border-radius:8px; cursor:pointer; text-align:center; transition:background .2s; }
+  #logs-btn:hover { background:rgba(34,211,238,.25); }
+  /* ── log drawer ── */
+  #logdrawer { position:fixed; z-index:30; left:0; right:0; bottom:0; height:62vh; display:none; flex-direction:column;
+               background:rgba(5,9,14,.97); border-top:1px solid rgba(34,211,238,.35); box-shadow:0 -18px 60px rgba(0,0,0,.6);
+               backdrop-filter:blur(14px); }
+  #logdrawer.open { display:flex; animation:slideup .25s ease; }
+  @keyframes slideup { from { transform:translateY(40px); opacity:0; } to { transform:none; opacity:1; } }
+  #logbar { display:flex; align-items:center; gap:10px; padding:10px 18px; border-bottom:1px solid rgba(34,211,238,.14); flex-wrap:wrap; }
+  #logbar h2 { font-size:12px; letter-spacing:.2em; color:var(--cyan); margin-right:auto; }
+  #logbar input[type=text] { background:#0b111a; border:1px solid #2a3947; color:var(--text); border-radius:7px; padding:6px 11px; font-size:12px; width:210px; }
+  #logbar .chip { background:#0e1824; border:1px solid #2a3947; color:#9db2c6; font:11px ui-monospace,monospace;
+                  padding:4px 10px; border-radius:999px; cursor:pointer; }
+  #logbar .chip.on { border-color:var(--cyan); color:var(--cyan); box-shadow:0 0 10px rgba(34,211,238,.35); }
+  #logbar .chip.role.on { border-color:var(--gold); color:var(--gold); }
+  #logclose { background:none; border:none; color:var(--muted); font-size:18px; cursor:pointer; padding:2px 8px; }
+  #logclose:hover { color:var(--red); }
+  #logview { flex:1; overflow-y:auto; padding:10px 18px 16px; font:11.5px/1.75 ui-monospace,Menlo,monospace; }
+  #logview .ln { display:flex; gap:12px; white-space:pre-wrap; word-break:break-word; padding:1px 0; }
+  #logview .ln:hover { background:rgba(34,211,238,.05); }
+  #logview .ts { color:#5b6f84; flex-shrink:0; }
+  #logview .tag { flex-shrink:0; font-weight:700; width:96px; }
+  #logview .tx { color:#b9c9da; }
+  .lv-warn { color:var(--gold); } .lv-error { color:var(--red); }
+  .rg-agent { color:var(--cyan); } .rg-reviewer { color:#818cf8; } .rg-quality { color:#38bdf8; }
+  .rg-gatekeeper { color:var(--gold); } .rg-deploy { color:var(--green); } .rg-strategist { color:#c084fc; }
+  .rg-redteam { color:var(--red); } .rg-pipeline { color:#e8edf2; } .rg-info { color:#7d90a5; }
+  #followhint { position:absolute; right:22px; bottom:12px; background:var(--cyan); color:#04121a; font-weight:700;
+                font-size:10px; padding:4px 10px; border-radius:999px; cursor:pointer; display:none; }
+  .bedit { display:flex; align-items:center; gap:6px; justify-content:flex-end; }
+  .bedit input { width:44px; background:#0b111a; border:1px solid #2a3947; color:var(--text); border-radius:6px;
+                 font-size:12px; padding:2px 6px; text-align:right; }
+  #bsave { margin-top:6px; width:100%; padding:5px; background:rgba(74,222,128,.12); border:1px solid rgba(74,222,128,.35);
+           color:var(--green); font-weight:700; letter-spacing:.1em; font-size:10px; border-radius:7px; cursor:pointer; }
+  #bsave:hover { background:rgba(74,222,128,.25); }
+  #done-btn { pointer-events:auto; margin-top:6px; width:100%; padding:7px; background:rgba(74,222,128,.10); border:1px solid rgba(74,222,128,.3);
+              color:var(--green); font-weight:700; letter-spacing:.14em; font-size:11px; border-radius:8px; cursor:pointer; text-align:center; transition:background .2s; }
+  #done-btn:hover { background:rgba(74,222,128,.22); }
+  #donelist { flex:1; overflow-y:auto; padding:12px 18px 16px; font:12px/1.9 ui-monospace,Menlo,monospace; display:none; }
+  #donelist .drow { padding:6px 10px; border-left:2px solid var(--green); background:rgba(74,222,128,.04); margin-bottom:8px; border-radius:0 8px 8px 0; }
+  #donelist .drow b { color:var(--green); margin-right:8px; }
+  #ready-btn { pointer-events:auto; margin-top:6px; width:100%; padding:7px; background:rgba(139,92,246,.10); border:1px solid rgba(139,92,246,.3);
+              color:#c4b5fd; font-weight:700; letter-spacing:.14em; font-size:11px; border-radius:8px; cursor:pointer; text-align:center; transition:background .2s; }
+  #ready-btn:hover { background:rgba(139,92,246,.22); }
+  #readylist { flex:1; overflow-y:auto; padding:12px 18px 16px; font:12px/1.9 ui-monospace,Menlo,monospace; display:none; }
+  #readylist .drow { padding:6px 10px; border-left:2px solid #8b5cf6; background:rgba(139,92,246,.05); margin-bottom:8px; border-radius:0 8px 8px 0; }
+  #readylist .drow b { color:#a78bfa; margin-right:8px; }
+  #readylist .drow .area { color:#64748b; font-size:10px; margin-left:8px; text-transform:uppercase; letter-spacing:.06em; }
+  #readylist .drow.blocked { border-left-color:#ef4444; }
+  /* ── P2-028: per-task token cost chips (FILA / CONCLUÍDAS) ── */
+  .cost { color:var(--cyan); font-size:10px; margin-left:8px; font-variant-numeric:tabular-nums;
+          letter-spacing:.04em; opacity:.85; }
+  /* ── P2-045: audit chip + failure breakdown + history widget ── */
+  #audit-chip { display:none; margin-bottom:8px; padding:6px 10px; border:1px solid var(--red);
+                background:rgba(248,113,113,.12); color:var(--red); font-size:10px; font-weight:700;
+                letter-spacing:.1em; border-radius:8px; text-transform:uppercase; animation:pulse-red 2s infinite; cursor:help; }
+  #audit-reason { display:block; color:#fca5a5; font-weight:400; text-transform:none; letter-spacing:0;
+                  margin-top:3px; font-size:10px; word-break:break-word; }
+  @keyframes pulse-red { 0%{box-shadow:0 0 0 0 rgba(248,113,113,.55)} 70%{box-shadow:0 0 0 10px rgba(248,113,113,0)} 100%{box-shadow:0 0 0 0 rgba(248,113,113,0)} }
+  /* ── P2-041: prod-unhealthy-after-rollback alert chip (same design language
+     as the audit chip — red, pulsing, uppercase, tooltip carries the detail) ── */
+  #rb-health { display:none; margin-bottom:8px; padding:6px 10px; border:1px solid var(--red);
+               background:rgba(248,113,113,.12); color:var(--red); font-size:10px; font-weight:700;
+               letter-spacing:.1em; border-radius:8px; text-transform:uppercase; animation:pulse-red 2s infinite; cursor:help; }
+  /* ── P2-075: PWA-origin-down chip (same alert language as rb-health) ── */
+  #pwa-chip { display:none; margin-bottom:8px; padding:6px 10px; border:1px solid var(--red);
+              background:rgba(248,113,113,.12); color:var(--red); font-size:10px; font-weight:700;
+              letter-spacing:.1em; border-radius:8px; text-transform:uppercase; animation:pulse-red 2s infinite; cursor:help; }
+  .fstep { display:flex; justify-content:space-between; font-size:10px; color:var(--red); padding:1px 2px 0 14px; }
+  .fstep b { font-variant-numeric:tabular-nums; }
+  #hist { display:none; margin-top:8px; }
+  #hist-bars { display:flex; gap:3px; align-items:flex-end; height:30px; margin-top:4px; }
+  .hbar { flex:1; display:flex; flex-direction:column; justify-content:flex-end; }
+  .hbar i { display:block; width:100%; background:var(--green); border-radius:1px 1px 0 0; }
+  .hbar i.f { background:var(--red); border-radius:0; }
+  #hist-phases { font-size:10px; color:var(--muted); margin-top:2px; }
+  #logbar .vtab { background:#0e1824; border:1px solid #2a3947; color:#9db2c6; font-weight:700; letter-spacing:.12em;
+                  font-size:10px; padding:5px 12px; border-radius:999px; cursor:pointer; }
+  #logbar .vtab.on { border-color:var(--cyan); color:var(--cyan); }
 </style>
 </head>
 <body>
 <script>window.__OCR_TOKEN__ = "__APITOKEN__";</script>
-<div id="app">
-  <!-- header: marca · missão · relógios · conexão · ações -->
-  <header id="hdr">
-    <div id="brand">
-      <div class="mark" aria-hidden="true"><svg class="i" viewBox="0 0 24 24"><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/></svg></div>
-      <div><h1>Torre de Controle</h1><div class="sub">pilot · opencode-remote</div></div>
-    </div>
-    <div id="mission" title="Clique para editar a missão (Enter salva, Esc cancela)">
-      <label>Missão</label><span class="txt ell" id="mission-text">…</span><input id="mission-input" class="hide" maxlength="500" placeholder="missão final do projeto" />
-    </div>
-    <div id="clocks">
-      <span><span class="k">T+</span><b id="ck-tplus">--:--</b></span>
-      <span class="eta"><span class="k">T-gate</span><b id="ck-tminus">--:--</b></span>
-      <span><span class="k">HB</span><b id="hb-text">—</b></span>
-    </div>
-    <div id="conn"><span class="dot"></span><span id="conn-text">conectando</span></div>
-    <div id="hdr-actions">
-      <button class="btn" id="btn-pause" title="Pausar a fila (pilot.lock)"><svg class="i" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></svg><span>Pausar fila</span></button>
-      <button class="btn" id="btn-budget" title="Orçamento diário"><svg class="i" viewBox="0 0 24 24"><path d="M4 19V9M10 19V5M16 19v-8M22 19H2"/></svg><span>Orçamento</span></button>
-      <button class="btn" id="btn-logs" title="Logs ao vivo (L)"><svg class="i" viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h13"/></svg><span>Logs</span><span class="kbd">L</span></button>
-      <button class="btn ghost" id="ck-toggle" title="Caixa-preta"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 9h6M7 13h10"/></svg></button>
-    </div>
-  </header>
+<canvas id="scene"></canvas>
 
-  <!-- presença: um avatar por role -->
-  <nav id="presence" aria-label="Presença por role"></nav>
-
-  <main id="main">
-    <!-- coluna 1: pistas · fila · pulso -->
-    <section class="col" id="col-left">
-      <div class="panel" id="flights">
-        <div class="panel-h"><h2>Pistas</h2><div class="meta"><span id="fl-meta">—</span></div></div>
-        <div class="panel-b" id="fl-list"></div>
-      </div>
-      <div class="panel" id="queue">
-        <div class="panel-h"><h2>Fila</h2>
-          <div class="tabs">
-            <button class="tab on" data-tab="ready">Prontas<span class="n" id="n-ready">0</span></button>
-            <button class="tab" data-tab="blocked">Bloqueadas<span class="n" id="n-blocked">0</span></button>
-            <button class="tab" data-tab="done">Concluídas<span class="n" id="n-done">0</span></button>
-          </div>
-        </div>
-        <div class="panel-b" id="q-list"></div>
-      </div>
-      <div class="panel" id="pulse">
-        <div class="panel-h"><h2>Pulso</h2><div class="meta"><span id="pulse-date">—</span></div></div>
-        <div class="panel-b" id="pulse-b"></div>
-      </div>
-    </section>
-
-    <!-- coluna 2: caixa-preta -->
-    <section class="col" id="col-center">
-      <div class="panel" id="cockpit">
-        <div class="panel-h">
-          <div id="ck-role"><div class="av">—</div><div class="who"><b id="ck-name">Caixa-preta</b><span id="ck-sub">nenhum voo selecionado</span></div></div>
-          <div id="ck-meta"></div>
-        </div>
-        <div class="panel-b" id="ck-body"><div id="transcript"></div></div>
-        <div id="ck-foot"></div>
-      </div>
-    </section>
-
-    <!-- coluna 3: arena · tribunal · pouso -->
-    <section class="col" id="col-right">
-      <div class="panel" id="arena">
-        <div class="panel-h"><h2>Arena</h2><div class="meta"><span id="ar-meta">—</span></div></div>
-        <div class="panel-b" id="ar-body"></div>
-      </div>
-      <div class="panel" id="gate">
-        <div class="panel-h"><h2>Tribunal</h2><div class="meta"><span id="gt-meta">—</span></div></div>
-        <div class="panel-b" id="gt-body"></div>
-      </div>
-      <div class="panel" id="landing">
-        <div class="panel-h"><h2>Pouso</h2><div class="meta"><span id="ld-meta">—</span></div></div>
-        <div class="panel-b" id="ld-body"></div>
-      </div>
-    </section>
-  </main>
-
-  <footer id="ticker">
-    <div class="line" id="ticker-line"></div>
-    <div class="hint"><span><span class="kbd">1-8</span> pista</span><span><span class="kbd">D</span> dossiê</span><span><span class="kbd">L</span> logs</span><span><span class="kbd">Esc</span> fecha</span></div>
-  </footer>
+<div class="overlay" id="header">
+  <div id="live"></div>
+  <div style="min-width:0">
+    <h1>Pilot · Mission Control</h1>
+    <div class="sub">opencode-remote — autonomous workflow, live</div>
+    <div id="mission" onclick="editMission(event)"><b>MISSÃO</b><span id="mission-text">…</span><input id="mission-input" placeholder="missão final do projeto" /></div>
+  </div>
 </div>
 
-<!-- dossiê da task -->
-<div class="scrim" id="scrim"></div>
-<aside id="dossier" aria-label="Dossiê da task">
-  <div class="dh"><span class="id" id="do-id">—</span><span class="title ell" id="do-title"></span><button class="btn ghost sm" id="do-close" title="Fechar (Esc)"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
-  <div class="db" id="do-body"></div>
-</aside>
+<div class="overlay" id="stats">
+  <div id="rb-health" title="">⛔ PROD UNHEALTHY</div>
+  <div id="pwa-chip" title="">📵 PWA ORIGIN DOWN</div>
+  <div id="audit-chip" title="">⛔ AUDIT MODE<span id="audit-reason"></span></div>
+  <div class="row"><span>TASKS HOJE</span><b id="s-tasks">0</b></div>
+  <div class="meter"><span>TASKS / DIA</span><div class="bedit"><input id="b-tasks" type="number" min="1" max="99" /><b id="m-tasks-t">0/15</b></div><div class="bar"><i id="m-tasks"></i></div></div>
+  <div class="meter"><span>DEPLOYS / DIA</span><div class="bedit"><input id="b-dep" type="number" min="1" max="99" /><b id="m-dep-t">0/12</b></div><div class="bar"><i id="m-dep"></i></div></div>
+  <button id="bsave" onclick="saveBudget()">SALVAR ORÇAMENTO</button>
+  <div class="row" style="margin-top:8px"><span>DEPLOYS</span><b id="s-deploys" class="ok">0</b></div>
+  <div class="row"><span>FALHAS</span><b id="s-fails" class="bad">0</b></div>
+  <div id="failsteps" style="display:none"></div>
+  <div class="row"><span>MERGES</span><b id="s-prs" class="ok">0</b></div>
+  <div class="row"><span>HEARTBEAT</span><b id="s-hb">—</b></div>
+  <div id="hist">
+    <div class="meter"><span>BURN-DOWN 7 DIAS</span><div id="hist-bars"></div></div>
+    <span style="font-size:10px;letter-spacing:.12em;color:var(--muted)">DURAÇÃO MÉDIA / FASE</span>
+    <div id="hist-phases">—</div>
+  </div>
+  <div id="logs-btn" onclick="openLogs()">⌘ LOGS AO VIVO</div>
+  <div id="done-btn" onclick="openDone()">✓ CONCLUÍDAS</div>
+  <div id="ready-btn" onclick="openReady()">☰ FILA <span id="fila-n"></span></div>
+</div>
 
-<!-- logs ao vivo -->
+<div class="overlay" id="task"><span id="progress"><i></i></span><span class="phase" id="task-phase">IDLE</span><span id="task-title">aguardando backlog…</span></div>
+<div class="overlay" id="ticker"></div>
+
+<div class="overlay" id="tokenbox">
+  <h3>API TOKEN (daemon.json → apiToken)</h3>
+  <input id="token" placeholder="cole o apiToken" />
+  <button onclick="saveToken()">Conectar</button>
+</div>
+
 <div id="logdrawer">
   <div id="logbar">
-    <h2>Logs</h2>
-    <input id="logsearch" placeholder="buscar…" />
-    <div id="logroles"></div>
-    <button class="btn sm on" id="logfollow">Seguir</button>
-    <button class="btn ghost sm" id="logclose" style="margin-left:auto" title="Fechar (Esc)"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    <span class="vtab on" id="vt-logs" onclick="viewLogs()">LOGS</span>
+    <span class="vtab" id="vt-done" onclick="viewDone()">CONCLUÍDAS</span>
+    <span class="vtab" id="vt-ready" onclick="viewReady()">FILA</span>
+    <input type="text" id="logsearch" placeholder="buscar…" oninput="renderLogs()" />
+    <span class="chip role" data-role="agent" onclick="toggleRole(this)">BUILDER</span>
+    <span class="chip role" data-role="reviewer" onclick="toggleRole(this)">REVIEW</span>
+    <span class="chip role" data-role="gatekeeper" onclick="toggleRole(this)">GATE</span>
+    <span class="chip role" data-role="deploy" onclick="toggleRole(this)">DEPLOY</span>
+    <span class="chip role" data-role="strategist" onclick="toggleRole(this)">STRATEGIST</span>
+    <span class="chip role" data-role="researcher" onclick="toggleRole(this)">RESEARCHER</span>
+    <span class="chip role" data-role="redteam" onclick="toggleRole(this)">REDTEAM</span>
+    <span class="chip on" id="followbtn" onclick="toggleFollow()">FOLLOW ▼</span>
+    <button id="logclose" onclick="closeLogs()">✕</button>
   </div>
   <div id="logview"></div>
+  <div id="donelist"></div>
+  <div id="readylist"></div>
+  <div id="followhint" onclick="toggleFollow()">↓ SEGUIR</div>
 </div>
-
-<!-- popovers -->
-<div class="pop" id="pop-budget">
-  <h4>Orçamento diário</h4>
-  <div class="row"><label>Tasks por dia</label><input type="number" id="b-tasks" min="1" max="99" /></div>
-  <div class="row"><label>Deploys por dia</label><input type="number" id="b-dep" min="1" max="99" /></div>
-  <div class="foot"><button class="btn sm" id="b-cancel">Cancelar</button><button class="btn sm primary" id="b-save">Salvar</button></div>
-</div>
-<div class="pop" id="pop-stub">
-  <h4 id="stub-title">Ação</h4>
-  <p id="stub-text"></p>
-  <code id="stub-cmd"></code>
-  <div class="foot"><button class="btn sm" id="stub-close">Fechar</button><button class="btn sm primary" id="stub-copy">Copiar comando</button></div>
-</div>
-
-<div id="toasts"></div>
-
-<div id="tokenbox">
-  <div class="card">
-    <h3>API token</h3>
-    <input id="token-input" placeholder="apiToken de ~/.opencode-remote/daemon.json" />
-    <button class="btn primary" id="token-save">Conectar</button>
-    <p>O token fica só no localStorage deste navegador. Nunca viaja na URL depois da primeira carga.</p>
-  </div>
-</div>
-
-<div id="mockbar" class="hide"><span>MOCK</span><button class="btn sm" id="mock-speed">1x</button><button class="btn sm" id="mock-restart">Reiniciar</button></div>
 
 <script>
-"use strict";// ═══════════════════════════════════════════════════════════════════════════
-// 1. Utilidades
-// ═══════════════════════════════════════════════════════════════════════════
-const Q = new URLSearchParams(location.search);
-const MOCK = Q.get("mock") === "1";
-const REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
-const $ = (id) => document.getElementById(id);
-const h = (tag, cls, html) => { const el = document.createElement(tag); if (cls) el.className = cls; if (html != null) el.innerHTML = html; return el; };
-const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-const pad2 = (n) => String(n).padStart(2, "0");
-const fmtClock = (ms) => {
-  if (!Number.isFinite(ms) || ms < 0) return "--:--";
-  const s = Math.floor(ms / 1000), m = Math.floor(s / 60), hh = Math.floor(m / 60);
-  return hh ? `${hh}:${pad2(m % 60)}:${pad2(s % 60)}` : `${pad2(m)}:${pad2(s % 60)}`;
-};
-const fmtDur = (ms) => !Number.isFinite(ms) ? "—" : ms >= 3600e3 ? `${(ms / 3600e3).toFixed(1)}h` : ms >= 60e3 ? `${Math.round(ms / 60e3)}m` : `${Math.max(0, Math.round(ms / 1000))}s`;
-const fmtMs = (ms) => !Number.isFinite(ms) ? "" : ms >= 60e3 ? `${(ms / 60e3).toFixed(1)}m` : ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`;
-const fmtTok = (n) => !Number.isFinite(n) || n <= 0 ? "" : n >= 1e9 ? `${(n / 1e9).toFixed(1)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(Math.round(n));
-const fmtTime = (ts) => ts ? new Date(ts).toLocaleTimeString("pt-BR", { hour12: false }) : "";
-const pct = (a, b) => (b > 0 ? Math.min(100, Math.round((a / b) * 100)) : 0);
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const shortSha = (s) => (s || "").slice(0, 7);
+// ─── canvas setup ─────────────────────────────────────────────────────────────
+const canvas = document.getElementById("scene");
+const ctx = canvas.getContext("2d");
+let W = 0, H = 0, DPR = Math.min(devicePixelRatio || 1, 2);
+function resize() {
+  W = innerWidth; H = innerHeight;
+  canvas.width = W * DPR; canvas.height = H * DPR;
+  canvas.style.width = W + "px"; canvas.style.height = H + "px";
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  layout();
+}
+addEventListener("resize", resize);
 
-const ICON = {
-  plane: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M21 16v-2l-8-5V3.5a1.5 1.5 0 0 0-3 0V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z"/></svg>',
-  check: '<svg class="i" viewBox="0 0 24 24"><path d="M5 12l4 4L19 6"/></svg>',
-  x: '<svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>',
-  copy: '<svg class="i" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a1 1 0 0 1 1-1h10"/></svg>',
-  term: '<svg class="i" viewBox="0 0 24 24"><path d="M4 17l6-5-6-5M12 19h8"/></svg>',
-  lock: '<svg class="i" viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
-  file: '<svg class="i" viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/></svg>',
-  warn: '<svg class="i" viewBox="0 0 24 24"><path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18v.5"/></svg>',
-  bolt: '<svg class="i" viewBox="0 0 24 24"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg>',
-};
-
-// ═══════════════════════════════════════════════════════════════════════════
-// 2. Modelo — o único lugar que interpreta eventos. A UI só renderiza.
-// ═══════════════════════════════════════════════════════════════════════════
-const STATIONS = [["planner", "plan"], ["builder", "build"], ["gate", "gate"], ["review", "review"], ["merge", "merge"], ["deploy", "deploy"]];
-const GATE_STEPS = ["evidence", "typecheck", "build", "unit", "lock-sync", "reconnect", "integration", "desktop-sidecar", "invariants", "desktop-render", "desktop-flow", "corpus"];
-const GATE_COND = new Set(["desktop-render", "desktop-flow", "corpus"]);
-const ROLES = [
-  { id: "planner", label: "Planner", ab: "PL", tier: "B", cfgKey: "planner" },
-  { id: "builder", label: "Builder", ab: "B", tier: "A", cfgKey: "builder" },
-  { id: "security", label: "Security", ab: "S", tier: "A", cfgKey: "reviewer" },
-  { id: "quality", label: "Quality", ab: "Q", tier: "A", cfgKey: "reviewer" },
-  { id: "escalation", label: "Escalation", ab: "E", tier: "B", cfgKey: "reviewerEscalation" },
-  { id: "gate", label: "Gatekeeper", ab: "G", det: true },
-  { id: "deploy", label: "Deploy", ab: "D", det: true },
-  { id: "scribe", label: "Scribe", ab: "SC", tier: "A", cfgKey: "scribe" },
-  { id: "strategist", label: "Strategist", ab: "ST", tier: "B", cfgKey: "strategist" },
-  { id: "researcher", label: "Researcher", ab: "R", tier: "A" },
-  { id: "explorer", label: "Explorer", ab: "X", tier: "A" },
-  { id: "forensic", label: "Forensic", ab: "F", tier: "B", cfgKey: "forensic" },
-  { id: "redteam", label: "Red team", ab: "RT", tier: "A" },
+// ─── pipeline layout (2D) ─────────────────────────────────────────────────────
+const NODES = [
+  { id:"researcher", label:"RESEARCHER", fx:0.05, fy:0.28, color:"#c084fc", small:true },
+  { id:"strategist", label:"STRATEGIST", fx:0.05, fy:0.72, color:"#f472b6", small:true },
+  { id:"backlog",    label:"BACKLOG",    fx:0.14, fy:0.50, color:"#8fa3b8" },
+  { id:"builder",    label:"BUILDER",    fx:0.24, fy:0.50, color:"#22d3ee" },
+  { id:"security",   label:"SEC REVIEW", fx:0.40, fy:0.34, color:"#818cf8" },
+  { id:"quality",    label:"QUALITY",    fx:0.40, fy:0.66, color:"#38bdf8" },
+  { id:"gatekeeper", label:"GATEKEEPER", fx:0.56, fy:0.50, color:"#fbbf24" },
+  { id:"deploy",     label:"DEPLOY",     fx:0.72, fy:0.50, color:"#4ade80" },
+  { id:"core",       label:"MAC · PROD", fx:0.88, fy:0.50, color:"#e8edf2", big:true },
+  { id:"supervisor", label:"SUPERVISOR", fx:0.88, fy:0.72, color:"#22d3ee", small:true },
 ];
-const AUX_TASKS = new Set(["strategist", "research", "explorer", "forensic", "nightly", "redteam"]);
-
-const M = {
-  mock: MOCK, online: false, failures: 0, lastOkAt: 0, hbMs: null, pollN: 0, retryIn: 2000, lineSeq: 0,
-  state: {}, cfg: {}, mission: "", frozen: false,
-  flights: {}, taskSlot: {}, tasks: {}, order: [],
-  landing: null, landingTask: null, prodSha: null, bannedSha: null,
-  presence: {}, aux: {},
-  queue: { ready: [], blocked: [], done: [] }, history: { exists: false, days: [], phaseAvg: [] },
-  failSteps: [], alerts: { rollbackUnhealthy: false, rollbackDetail: "", pwaDown: false, pwaDetail: "" },
-  audit: null, feed: [], log: [], seen: new Set(), seenLog: new Set(),
-  sel: { slot: null, pinned: false }, dossierTask: null, qtab: "ready",
-  dirty: new Set(),
-};
-
-function mark(...panels) { for (const p of panels) M.dirty.add(p); requestRender(); }
-
-function task(id, title) {
-  let t = M.tasks[id];
-  if (!t) {
-    t = M.tasks[id] = {
-      id, title: title || "", slot: null, rounds: {}, round: 0, transcript: [], planner: null,
-      agent: { role: "builder", tier: "A", model: null, since: null, status: "idle" },
-      gate: null, arena: null, deploy: null, result: null, merged: null, startedAt: null, endedAt: null,
-      status: "idle", checkpoint: null, notes: [], lessons: null,
-    };
-    M.order.push(id);
-    if (M.order.length > 60) { const old = M.order.shift(); if (!isActive(M.tasks[old])) delete M.tasks[old]; else M.order.unshift(old); }
-  }
-  if (title && !t.title) t.title = title;
-  return t;
-}
-const isActive = (t) => t && t.status === "active";
-function round(t, n) {
-  if (n) t.round = n;
-  const k = t.round || 1;
-  if (!t.rounds[k]) t.rounds[k] = { n: k, builder: null, gate: null, review: null };
-  return t.rounds[k];
-}
-function judge() { return { verdict: null, kept: [], dropped: [], at: null }; }
-function newGate(ts, steps) {
-  const list = steps && steps.length ? steps : GATE_STEPS;
-  return { startedAt: ts, endedAt: null, ok: null, failed: null, tail: "", flaky: [],
-    steps: GATE_STEPS.map((name) => ({ name, status: list.includes(name) ? "pending" : "skip", ms: null, cached: false, cond: GATE_COND.has(name) })) };
-}
-function newLanding(sha, taskId, ts) {
-  return { sha, task: taskId, startedAt: ts, stages: [], beats: [], rollback: null, rollbackHealth: null, done: null, aborted: false };
-}
-function flight(slot) {
-  if (!M.flights[slot]) M.flights[slot] = { slot, task: null, title: "", status: "idle", phase: "livre", detail: "", startedAt: null, endedAt: null, stations: {}, round: 0, staged: null };
-  return M.flights[slot];
-}
-function boardFlight(slot, t, ts) {
-  const f = flight(slot);
-  Object.assign(f, { task: t.id, title: t.title, status: "active", phase: "decolando", detail: "", startedAt: ts, endedAt: null, stations: {}, round: 0, staged: null });
-  t.slot = slot; M.taskSlot[t.id] = slot; if (!t.startedAt) t.startedAt = ts; t.status = "active";
-  if (!M.sel.pinned) M.sel.slot = slot;
-}
-function fOf(t) { const s = t.slot ?? M.taskSlot[t.id]; return s ? M.flights[s] : null; }
-function ensureFlight(t, e, ts) {
-  let f = fOf(t);
-  if (f && f.task === t.id) return f;
-  const slots = Math.max(1, Number(M.cfg.slots) || 1);
-  // `slot` só viaja em loop/result hoje; `staged` diz "slot N starts in…" no detail
-  let slot = e.slot || parseInt(((e.detail || "").match(/\bslot (\d+)\b/) || [])[1], 10) || 0;
-  if (!slot) { for (let s = 1; s <= slots; s++) if (!M.flights[s] || M.flights[s].status !== "active") { slot = s; break; } }
-  if (!slot) slot = 1;
-  boardFlight(slot, t, ts);
-  return M.flights[slot];
-}
-function station(t, st, status) {
-  const f = fOf(t); if (!f || f.task !== t.id) return;
-  f.stations[st] = status;
-  if (status === "active") f.phase = st;
-}
-function agentIs(t, role, ts, tier) {
-  const r = ROLES.find((x) => x.id === role) || {};
-  t.agent = { role, tier: tier || r.tier || "A", model: modelFor(role), since: ts, status: "thinking" };
-}
-function modelFor(role) {
-  const r = ROLES.find((x) => x.id === role) || {};
-  const p = M.presence[role];
-  if (p && p.model) return p.model;
-  const models = M.cfg.models || {};
-  if (r.tier === "B" && models.tierB && models.tierB[r.cfgKey]) return models.tierB[r.cfgKey];
-  if (models.tierA && models.tierA[r.cfgKey]) return models.tierA[r.cfgKey];
-  if (r.det) return "determinístico";
-  return M.cfg.model || "opencode";
-}
-function presenceSet(role, patch) { M.presence[role] = Object.assign(M.presence[role] || {}, patch); }
-function say(role, text, ts) { presenceSet(role, { say: (text || "").slice(0, 60), sayAt: ts || Date.now() }); }
-
-// transcrição: linhas de texto, pensamentos, notas e chips de tool
-function classify(e) {
-  const d = e.data || {};
-  if (d.tool) return { kind: "tool", tool: d.tool };
-  const text = e.detail || "";
-  const m = text.match(/^\|?\s*(bash|read|edit|write|grep|glob|list|webfetch|task|multiedit|patch)\b[:\s]*(.*)$/i);
-  if (m) return { kind: "tool", tool: { name: m[1].toLowerCase(), arg: m[2], status: "completed" } };
-  if (d.kind) return { kind: d.kind };
-  if (/^(error|erro|fatal)\b/i.test(text)) return { kind: "err" };
-  return { kind: "text" };
-}
-function pushLine(t, line) {
-  if (line.kind === "tool" && line.tool && line.tool.id) {
-    const ex = t.transcript.find((l) => l.kind === "tool" && l.tool.id === line.tool.id);
-    if (ex) { Object.assign(ex.tool, line.tool); return ex; }
-  }
-  line.shown = REDUCED || line.kind === "tool" ? Infinity : 0;
-  line.id = ++M.lineSeq;
-  t.transcript.push(line);
-  if (t.transcript.length > 400) t.transcript.shift();
-  if (line.kind === "text" || line.kind === "think") say(t.agent.role, line.text, line.ts);
-  if (line.kind === "tool") presenceSet(t.agent.role, { status: line.tool.status === "running" ? "tool" : "thinking" });
-  return line;
-}
-function note(t, text, ts) { pushLine(t, { ts, kind: "note", text }); }
-
-// ── ingest de um evento do events.jsonl (real, mock ou futuro PR1) ─────────
-function ingest(e) {
-  if (!e || !e.type) return false;
-  const key = `${e.ts}|${e.type}|${e.task || ""}|${e.phase || ""}|${(e.detail || "").slice(0, 80)}`;
-  if (M.seen.has(key)) return false;
-  M.seen.add(key);
-  if (M.seen.size > 6000) M.seen = new Set([...M.seen].slice(-3000));
-  const ts = Date.parse(e.ts) || Date.now();
-  M.feed.push(e); if (M.feed.length > 300) M.feed.shift();
-  switch (e.type) {
-    case "loop": {
-      if (e.phase === "picked" && e.task) {
-        const t = task(e.task, e.detail);
-        // nova tentativa da mesma task: rounds, transcrição e vereditos recomeçam
-        if (t.result || t.status === "failed" || t.status === "blocked") Object.assign(t, { rounds: {}, round: 0, transcript: [], planner: null, gate: null, arena: null, result: null, merged: null, endedAt: null, checkpoint: null, notes: [], startedAt: null, forensic: null, agent: { role: "builder", tier: "A", model: null, since: null, status: "idle" } });
-        boardFlight(e.slot || 1, t, ts); note(t, `voo iniciado no slot ${e.slot || 1}`, ts);
-      }
-      break;
-    }
-    case "audit": M.audit = { at: ts, detail: e.detail || "" }; break;
-    case "deploy": handleDeploy(e, ts); break;
-    case "agent": {
-      if (!e.task) break;
-      const t = task(e.task);
-      const c = classify(e);
-      pushLine(t, { ts, kind: c.kind, text: e.detail || "", tool: c.tool });
-      break;
-    }
-    case "result": {
-      if (!e.task) break;
-      const t = task(e.task);
-      t.result = { ok: e.ok !== false, detail: e.detail || "", ts };
-      t.endedAt = ts; t.status = e.ok !== false ? "landed" : "failed";
-      t.agent.status = "idle";
-      const f = fOf(t);
-      if (f && f.task === t.id) { f.status = t.status; f.phase = e.ok !== false ? "pousou" : "abortado"; f.detail = e.detail || ""; f.endedAt = ts; }
-      break;
-    }
-    case "phase": AUX_TASKS.has(e.task) ? handleAux(e, ts) : handlePhase(e, ts); break;
-  }
-  mark("flights", "cockpit", "arena", "gate", "landing", "presence", "ticker", "dossier", "queue");
-  return true;
-}
-
-function handlePhase(e, ts) {
-  if (!e.task) return;
-  const t = task(e.task);
-  const f = ensureFlight(t, e, ts);
-  const d = e.data || {};
-  const detail = e.detail || "";
-  switch (e.phase) {
-    case "staged": f.staged = { ok: e.ok !== false, detail }; f.phase = e.ok !== false ? "stagger" : "descartada"; if (e.ok === false) { f.status = "failed"; t.status = "failed"; } note(t, detail, ts); break;
-    case "planner": t.planner = { start: ts, end: null, ok: null }; station(t, "planner", "active"); agentIs(t, "planner", ts, "B"); break;
-    case "planner-done": if (!t.planner) t.planner = { start: ts }; t.planner.end = ts; t.planner.ok = e.ok !== false; t.planner.spec = detail; station(t, "planner", e.ok !== false ? "ok" : "fail"); t.agent.status = "done"; if (e.ok === false) { t.status = "failed"; f.status = "failed"; f.detail = detail; } break;
-    case "builder": {
-      if (e.ok === false) { const r = round(t); r.builder = Object.assign(r.builder || { start: ts }, { end: ts, ok: false, why: detail }); station(t, "builder", "fail"); note(t, detail, ts); break; }
-      const n = parseInt((detail.match(/round (\d+)/) || [])[1], 10) || Math.max(1, t.round);
-      const r = round(t, n);
-      r.builder = { start: ts, end: null, ok: null };
-      f.round = n; f.stations.gate = "idle"; f.stations.review = "idle";
-      station(t, "builder", "active"); agentIs(t, "builder", ts, "A");
-      note(t, `builder · round ${n}${n > 1 ? " · corrigindo findings" : ""}`, ts);
-      break;
-    }
-    case "context-checkpoint": t.checkpoint = { pct: parseFloat(detail) || 0, round: t.round, ts }; note(t, `context checkpoint ${detail} da janela`, ts); break;
-    case "builder-done": { const r = round(t); r.builder = Object.assign(r.builder || { start: ts }, { end: ts, ok: e.ok !== false }); station(t, "builder", e.ok !== false ? "ok" : "fail"); t.agent.status = "done"; break; }
-    case "gatekeeper": { const r = round(t); r.gate = newGate(ts); t.gate = r.gate; const ev = r.gate.steps[0]; if (ev) ev.status = "running"; station(t, "gate", "active"); presenceSet("gate", { status: "thinking", since: ts, task: t.id }); break; }
-    case "gate-start": { const r = round(t); r.gate = newGate(ts, d.steps); t.gate = r.gate; if (r.gate.steps.length) { const first = r.gate.steps.find((s) => s.status === "pending"); if (first) first.status = "running"; } station(t, "gate", "active"); presenceSet("gate", { status: "thinking", since: ts, task: t.id }); break; }
-    case "gate-step": {
-      const g = t.gate || (round(t).gate = t.gate = newGate(ts));
-      const name = d.step || detail;
-      const s = g.steps.find((x) => x.name === name);
-      if (s) { s.status = e.ok !== false ? "ok" : "fail"; s.ms = Number.isFinite(d.ms) ? d.ms : null; s.cached = !!d.cached; }
-      if (e.ok === false) { g.failed = name; }
-      else { const nx = g.steps.find((x) => x.status === "pending"); if (nx) nx.status = "running"; }
-      say("gate", `${name} ${e.ok !== false ? "ok" : "FAIL"}${s && s.ms ? " " + fmtMs(s.ms) : ""}`, ts);
-      break;
-    }
-    case "gate-flaky": { const g = t.gate; if (g) { g.flaky.push(detail); const s = g.steps.find((x) => x.name === detail); if (s) s.status = "flaky"; } break; }
-    case "gate-fail": {
-      const g = t.gate || (round(t).gate = t.gate = newGate(ts));
-      let hit = false;
-      for (const s of g.steps) {
-        if (s.name === detail) { s.status = "fail"; hit = true; continue; }
-        if (!hit && !s.cond && (s.status === "pending" || s.status === "running")) s.status = "ok";
-        else if (hit && s.status !== "ok" && s.status !== "flaky") s.status = "skip";
-      }
-      g.failed = detail; g.ok = false; g.endedAt = ts;
-      station(t, "gate", "fail"); presenceSet("gate", { status: "fail" }); say("gate", `${detail} reprovou`, ts);
-      break;
-    }
-    case "gatekeeper-done": {
-      const g = t.gate || (round(t).gate = t.gate = newGate(ts));
-      g.ok = e.ok !== false; g.endedAt = ts;
-      if (g.ok) for (const s of g.steps) { if (s.status === "pending" || s.status === "running") s.status = s.cond ? "skip" : "ok"; }
-      else if (!g.failed) { g.failed = detail; const s = g.steps.find((x) => x.name === detail); if (s) s.status = "fail"; }
-      station(t, "gate", g.ok ? "ok" : "fail"); presenceSet("gate", { status: g.ok ? "done" : "fail" }); say("gate", g.ok ? "veredito: verde" : `veredito: ${detail}`, ts);
-      break;
-    }
-    case "reviewers": { const r = round(t); r.review = { start: ts, end: null, ok: null, security: judge(), quality: judge(), escalation: null }; t.arena = r.review; station(t, "review", "active"); presenceSet("security", { status: "thinking", since: ts, task: t.id }); presenceSet("quality", { status: "thinking", since: ts, task: t.id }); break; }
-    case "review-verdict": {
-      const r = round(t, d.round || t.round); if (!r.review) { r.review = { start: ts, end: null, ok: null, security: judge(), quality: judge(), escalation: null }; t.arena = r.review; }
-      const who = d.reviewer || "security";
-      const j = r.review[who] || (r.review[who] = judge());
-      j.verdict = d.verdict || (e.ok ? "APPROVE" : "REQUEST_CHANGES"); j.kept = d.kept || []; j.dropped = d.dropped || []; j.at = ts;
-      presenceSet(who, { status: "done" }); say(who, `${j.verdict} · ${j.kept.length} mantido(s), ${j.dropped.length} derrubado(s)`, ts);
-      break;
-    }
-    case "review-escalation": { const r = round(t); if (!r.review) r.review = { start: ts, end: null, ok: null, security: judge(), quality: judge(), escalation: null }; r.review.escalation = judge(); t.arena = r.review; presenceSet("escalation", { status: "thinking", since: ts, task: t.id }); break; }
-    case "reviewers-done": {
-      const r = round(t); if (!r.review) r.review = { start: ts, end: null, ok: null, security: judge(), quality: judge(), escalation: null };
-      r.review.end = ts; r.review.ok = e.ok !== false; t.arena = r.review;
-      station(t, "review", r.review.ok ? "ok" : "fail");
-      for (const who of ["security", "quality", "escalation"]) if (M.presence[who] && M.presence[who].status === "thinking") presenceSet(who, { status: "done" });
-      break;
-    }
-    case "merge": t.merged = e.ok !== false; station(t, "merge", t.merged ? "ok" : "fail"); if (t.merged) M.landingTask = t.id; f.phase = t.merged ? "merge" : "merge falhou"; break;
-    case "scribe": agentIs(t, "scribe", ts, "A"); presenceSet("scribe", { status: "thinking", since: ts, task: t.id }); break;
-    case "scribe-done": t.lessons = detail; presenceSet("scribe", { status: e.ok !== false ? "done" : "fail" }); say("scribe", detail, ts); t.notes.push({ ts, text: `scribe: ${detail}` }); break;
-    case "already-merged": station(t, "merge", "ok"); f.phase = "já mergeada"; t.notes.push({ ts, text: "já mergeada" }); break;
-    case "blocked": t.status = "blocked"; f.status = "failed"; f.phase = "bloqueada"; f.detail = detail; t.notes.push({ ts, text: detail }); break;
-    default: t.notes.push({ ts, text: `${e.phase}${detail ? ": " + detail : ""}` }); note(t, `${e.phase} ${detail}`.trim(), ts);
+const nodeMap = {};
+function layout() {
+  // reserve room for the stats panel on the right so nodes never slide under it
+  const padR = W > 900 ? 300 : 20;
+  const usable = Math.max(W - padR, 400);
+  for (const n of NODES) {
+    n.x = n.fx * usable + 30;
+    n.y = n.fy * H; n.r = n.big ? 34 : n.small ? 20 : 26;
+    nodeMap[n.id] = n;
   }
 }
 
-function handleDeploy(e, ts) {
-  const ph = e.phase || "";
-  const detail = e.detail || "";
-  const shaOf = (s) => (s.match(/sha ([0-9a-f]{7,40})/i) || [])[1] || null;
-  const owner = () => (M.landing && M.landing.task ? M.tasks[M.landing.task] : null);
-  if (ph === "start") {
-    M.landing = newLanding(shaOf(detail), M.landingTask, ts);
-    const t = owner(); if (t) { station(t, "deploy", "active"); const f = fOf(t); if (f) f.phase = "deploy"; }
-    presenceSet("deploy", { status: "thinking", since: ts }); say("deploy", `pouso ${shortSha(M.landing.sha) || ""}`, ts);
-    return;
+// visual state per node: idle | working | ok | fail
+const states = {};
+let hoverNode = null;
+function setState(id, s) { if (nodeMap[id]) states[id] = s; }
+function resetStates() { for (const n of NODES) states[n.id] = "idle"; }
+
+// particles flowing between nodes
+const particles = []; // {from,to,color,t,speed}
+function flow(from, to, color, count = 14) {
+  const f = nodeMap[from], t = nodeMap[to]; if (!f || !t) return;
+  for (let i = 0; i < count; i++) {
+    particles.push({ fx:f.x, fy:f.y, tx:t.x, ty:t.y, color, t:-i*0.06, speed:0.008 + Math.random()*0.006, mid:(Math.random()-.5)*60 });
   }
-  if (ph === "self-reload" || ph === "pwa-kickstart") { if (M.landing) M.landing.stages.push({ name: ph, ok: e.ok !== false, detail, ts }); say("deploy", `${ph}${e.ok === false ? " falhou" : ""}`, ts); return; }
-  if (!M.landing) M.landing = newLanding(null, M.landingTask, ts);
-  const L = M.landing;
-  const beat = ph.match(/^(soak|live-invariants)\s+(\d+)\/(\d+)/);
-  if (beat) {
-    L.beats.push({ kind: beat[1] === "soak" ? "soak" : "live", i: +beat[2], n: +beat[3], ok: e.ok !== false, ts });
-    say("deploy", `${beat[1]} ${beat[2]}/${beat[3]} ${e.ok !== false ? "ok" : "FALHOU"}`, ts);
-    return;
-  }
-  if (ph === "rollback") { L.rollback = { detail, ts }; M.bannedSha = L.sha; const t = owner(); if (t) station(t, "deploy", "fail"); presenceSet("deploy", { status: "fail" }); say("deploy", "arremetida: rollback", ts); return; }
-  if (ph === "rollback-health") { L.rollbackHealth = { ok: e.ok !== false, detail, ts }; presenceSet("deploy", { status: e.ok !== false ? "done" : "fail" }); return; }
-  if (ph === "done") { L.done = ts; M.prodSha = shaOf(detail) || L.sha; const t = owner(); if (t) { station(t, "deploy", "ok"); const f = fOf(t); if (f) f.phase = "pousou"; } presenceSet("deploy", { status: "done" }); say("deploy", `${shortSha(M.prodSha)} live`, ts); return; }
-  L.stages.push({ name: ph, ok: e.ok !== false, detail, ts });
-  if (e.ok === false && ["sha-guard", "disk-guard", "install", "build", "health"].includes(ph)) { L.aborted = true; const t = owner(); if (t) station(t, "deploy", "fail"); presenceSet("deploy", { status: "fail" }); }
-  say("deploy", `${ph}${detail ? " · " + detail : ""}`, ts);
+}
+// burst (merge / rollback celebration)
+const bursts = []; // {x,y,color,t,parts:[{a,v}]}
+function burst(x, y, color) {
+  const parts = [];
+  for (let i = 0; i < 36; i++) parts.push({ a: Math.random()*Math.PI*2, v: 1.5 + Math.random()*3 });
+  bursts.push({ x, y, color, t: 0, parts });
 }
 
-function handleAux(e, ts) {
-  const map = { strategist: "strategist", research: "researcher", explorer: "explorer", forensic: "forensic", redteam: "redteam", nightly: "explorer" };
-  const role = map[e.task] || e.task;
-  const ok = e.ok !== false;
-  M.aux[role] = { phase: e.phase, ok, detail: e.detail || "", ts };
-  presenceSet(role, { status: ok ? "done" : "fail", since: ts });
-  say(role, `${e.phase}${e.detail ? " · " + e.detail : ""}`, ts);
-}
+// ─── drawing ──────────────────────────────────────────────────────────────────
+function draw(time) {
+  ctx.clearRect(0, 0, W, H);
+  // background vignette
+  const bg = ctx.createRadialGradient(W/2, H/2, 0, W/2, H/2, Math.max(W,H)*0.7);
+  bg.addColorStop(0, "#071019"); bg.addColorStop(1, "#04060a");
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
 
-// ── ingest do pilot.log (JSONL): vereditos, alucinações, dispatch, tails ──
-function ingestLog(lines) {
-  let changed = false;
-  for (const raw of lines) {
-    if (M.seenLog.has(raw)) continue;
-    M.seenLog.add(raw);
-    let j; try { j = JSON.parse(raw); } catch { continue; }
-    if (!j || typeof j.msg !== "string") continue;
-    M.log.push(j); if (M.log.length > 800) M.log.shift();
-    const d = j.data && typeof j.data === "object" ? j.data : {};
-    const ts = Date.parse(j.ts) || Date.now();
-    changed = true;
-    if (j.msg === "agent-dispatch" && d.role) {
-      const role = { reviewerEscalation: "escalation", reviewer: "security" }[d.role] || d.role;
-      presenceSet(role, { model: d.model, tier: d.tier });
-    } else if (j.msg === "reviewers done" && d.task && M.tasks[d.task]) {
-      const r = round(M.tasks[d.task], d.round); if (!r.review) continue;
-      if (!r.review.security.verdict) r.review.security.verdict = d.secOk ? "APPROVE" : "REQUEST_CHANGES";
-      if (!r.review.quality.verdict) r.review.quality.verdict = d.qualOk ? "APPROVE" : "REQUEST_CHANGES";
-    } else if (j.msg === "finding hallucinated, dropped" && d.task && M.tasks[d.task]) {
-      const r = round(M.tasks[d.task]); if (!r.review) continue;
-      const jd = r.review[d.reviewer] || (r.review[d.reviewer] = judge());
-      if (!jd.dropped.some((x) => x.text === d.finding)) jd.dropped.push({ text: d.finding || "", why: d.reason || "", cite: "" });
-    } else if (j.msg === "review escalation done" && d.task && M.tasks[d.task]) {
-      const r = round(M.tasks[d.task], d.round); if (!r.review) continue;
-      const ej = r.review.escalation || (r.review.escalation = judge());
-      ej.verdict = d.approve ? "APPROVE" : "REQUEST_CHANGES"; ej.keptCount = d.kept; ej.at = ts;
-    } else if (j.msg === "gatekeeper fail" && d.task && M.tasks[d.task]) {
-      const g = M.tasks[d.task].gate; if (g) { g.tail = d.tail || ""; if (!g.failed) g.failed = d.step; }
+  // animated diagonal grid (parallax waves)
+  ctx.save();
+  ctx.lineWidth = 1;
+  const drift = (time * 12) % 46;
+  for (let gx = -46 + drift; gx < W + 46; gx += 46) {
+    ctx.strokeStyle = "rgba(34,211,238,.045)";
+    ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx + 60, H); ctx.stroke();
+  }
+  for (let gy = -46 + (time * 8) % 46; gy < H + 46; gy += 46) {
+    ctx.strokeStyle = "rgba(34,211,238,.035)";
+    ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(W, gy); ctx.stroke();
+  }
+  // slow sine wave across the middle
+  ctx.beginPath();
+  for (let x = 0; x <= W; x += 8) {
+    const y = H/2 + Math.sin(x*0.008 + time*0.9) * 26 * Math.sin(time*0.23);
+    x === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.strokeStyle = "rgba(34,211,238,.06)"; ctx.lineWidth = 2; ctx.stroke();
+  ctx.restore();
+  // dotted grid
+  ctx.fillStyle = "rgba(56,130,160,.07)";
+  for (let gx = 20; gx < W; gx += 46) for (let gy = 20; gy < H; gy += 46) ctx.fillRect(gx, gy, 2, 2);
+
+  // connection rails
+  ctx.lineWidth = 1;
+  for (const [a, b] of [["researcher","backlog"],["strategist","backlog"],["backlog","builder"],["builder","security"],["builder","quality"],["security","gatekeeper"],["quality","gatekeeper"],["gatekeeper","deploy"],["deploy","core"],["core","supervisor"]]) {
+    const f = nodeMap[a], t = nodeMap[b];
+    ctx.strokeStyle = "rgba(34,211,238,.10)";
+    ctx.beginPath(); ctx.moveTo(f.x, f.y); ctx.lineTo(t.x, t.y); ctx.stroke();
+  }
+
+  // particles
+  for (let i = particles.length-1; i >= 0; i--) {
+    const p = particles[i];
+    p.t += p.speed;
+    if (p.t > 1) { particles.splice(i, 1); continue; }
+    if (p.t < 0) continue;
+    const mx = (p.fx+p.tx)/2, my = (p.fy+p.ty)/2 + p.mid;
+    const u = p.t, iu = 1-u;
+    const x = iu*iu*p.fx + 2*iu*u*mx + u*u*p.tx;
+    const y = iu*iu*p.fy + 2*iu*u*my + u*u*p.ty;
+    const alpha = Math.sin(u * Math.PI);
+    ctx.beginPath(); ctx.arc(x, y, 2.4, 0, Math.PI*2);
+    ctx.fillStyle = hexA(p.color, alpha * 0.95);
+    ctx.shadowColor = p.color; ctx.shadowBlur = 12;
+    ctx.fill(); ctx.shadowBlur = 0;
+  }
+
+  // nodes
+  for (const n of NODES) {
+    const st = states[n.id] || "idle";
+    const working = st === "working";
+    const pulse = working ? 1 + Math.sin(time*5)*0.10 : 1;
+    const r = n.r * pulse;
+    // glow
+    const glowColor = st === "fail" ? "#f87171" : st === "ok" ? "#4ade80" : working ? "#22d3ee" : n.color;
+    const g = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, r*3);
+    g.addColorStop(0, hexA(glowColor, working ? .5 : .22));
+    g.addColorStop(1, hexA(glowColor, 0));
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(n.x, n.y, r*3, 0, Math.PI*2); ctx.fill();
+    // body with radial gradient (3D-ish sphere feel)
+    const bodyG = ctx.createRadialGradient(n.x - r*0.3, n.y - r*0.35, r*0.1, n.x, n.y, r);
+    bodyG.addColorStop(0, "#12202e"); bodyG.addColorStop(1, "#0a1420");
+    ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, Math.PI*2);
+    ctx.fillStyle = bodyG; ctx.fill();
+    ctx.lineWidth = 2.2; ctx.strokeStyle = hexA(glowColor, working ? 1 : .55); ctx.stroke();
+    // icon glyph
+    const glyphs = { researcher:"🌐", strategist:"🧭", backlog:"☰", builder:"B", security:"S", quality:"Q", gatekeeper:"⛑", deploy:"➤", core:"⊙", supervisor:"👁" };
+    ctx.font = `700 ${r*0.9}px -apple-system,system-ui,sans-serif`;
+    ctx.fillStyle = hexA(glowColor, .9);
+    ctx.fillText(glyphs[n.id] || "●", n.x, n.y + 1);
+    // ring
+    ctx.beginPath(); ctx.arc(n.x, n.y, r + 7, time * (working ? 2.2 : 0.6), time * (working ? 2.2 : 0.6) + Math.PI*1.4);
+    ctx.strokeStyle = hexA(glowColor, .5); ctx.lineWidth = 1.4; ctx.stroke();
+    // label
+    ctx.font = "700 12px -apple-system,system-ui,sans-serif";
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillStyle = hexA(glowColor, .95);
+    ctx.fillText(n.label, n.x, n.y - r - 16);
+    // status dot
+    ctx.beginPath(); ctx.arc(n.x + r*0.75, n.y - r*0.75, 4, 0, Math.PI*2);
+    ctx.fillStyle = hexA(glowColor, 1); ctx.fill();
+    // last-run caption (aux roles)
+    if (lastAuxData[n.id]) {
+      const d = new Date(lastAuxData[n.id]);
+      const when = d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" }) + " " +
+        d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+      ctx.font = "600 9px ui-monospace,Menlo,monospace";
+      ctx.fillStyle = hexA("#9db2c6", .75);
+      ctx.fillText("últ.: " + when, n.x, n.y + r + 14);
+    }
+    // hover highlight
+    if (n.id === hoverNode) {
+      ctx.beginPath(); ctx.arc(n.x, n.y, r + 14, 0, Math.PI*2);
+      ctx.strokeStyle = hexA(glowColor, .85); ctx.lineWidth = 1.2; ctx.stroke();
     }
   }
-  if (M.seenLog.size > 4000) M.seenLog = new Set([...M.seenLog].slice(-2000));
-  if (changed) mark("arena", "gate", "presence", "logs", "dossier");
-}
 
-// ── snapshot do /api/pilot-events: estado, cfg, alertas ───────────────────
-function applySnapshot(data) {
-  M.state = data.state || {};
-  M.cfg = data.cfg || {};
-  M.hbMs = Number.isFinite(data.heartbeatMs) ? data.heartbeatMs : null;
-  M.failSteps = data.failSteps || [];
-  M.alerts = { rollbackUnhealthy: !!data.rollbackUnhealthy, rollbackDetail: data.rollbackDetail || "", pwaDown: !!data.pwaDown, pwaDetail: data.pwaDetail || "" };
-  if (data.lastAux) for (const [k, v] of Object.entries(data.lastAux)) { const role = k === "research" ? "researcher" : k; if (!M.aux[role]) M.aux[role] = { phase: "último", ok: true, detail: "", ts: Date.parse(v) }; }
-  for (let s = 1; s <= Math.max(1, Number(M.cfg.slots) || 1); s++) flight(s);
-  let n = 0;
-  for (const e of data.events || []) if (ingest(e)) n++;
-  mark("header", "pulse", "flights", "presence", "queue");
-  return n;
-}
-
-// presença derivada: quem está acordado agora
-function computePresence() {
-  const now = Date.now();
-  const out = [];
-  const slots = Math.max(1, Number(M.cfg.slots) || 1);
-  const activeTasks = Object.values(M.flights).filter((f) => f.status === "active" && f.task).map((f) => M.tasks[f.task]).filter(Boolean);
-  for (const r of ROLES) {
-    if (r.id === "builder") {
-      for (let s = 1; s <= slots; s++) {
-        const f = M.flights[s]; const t = f && f.task ? M.tasks[f.task] : null;
-        const live = t && f.status === "active" && t.agent.role === "builder" && t.agent.status !== "idle";
-        const p = M.presence.builder || {};
-        out.push({ id: `builder-${s}`, label: slots > 1 ? `Builder ${s}` : "Builder", ab: slots > 1 ? `B${s}` : "B", tier: "A", model: modelFor("builder"),
-          status: live ? (t.agent.status === "done" ? "done" : (p.status === "tool" ? "tool" : "thinking")) : "idle",
-          say: live && p.sayAt && now - p.sayAt < 3000 ? p.say : "", since: live ? t.agent.since : null, task: t ? t.id : null });
-      }
-      continue;
+  // bursts
+  for (let i = bursts.length-1; i >= 0; i--) {
+    const b = bursts[i]; b.t += 0.02;
+    if (b.t > 1) { bursts.splice(i, 1); continue; }
+    for (const p of b.parts) {
+      const d = b.t * p.v * 40, x = b.x + Math.cos(p.a)*d, y = b.y + Math.sin(p.a)*d;
+      ctx.beginPath(); ctx.arc(x, y, 2.6*(1-b.t), 0, Math.PI*2);
+      ctx.fillStyle = hexA(b.color, (1-b.t)*0.9); ctx.fill();
     }
-    const p = M.presence[r.id] || {};
-    let status = "idle", since = p.since || null, tsk = p.task || null;
-    if (["planner", "scribe"].includes(r.id)) { const t = activeTasks.find((x) => x.agent.role === r.id && x.agent.status === "thinking"); if (t) { status = "thinking"; since = t.agent.since; tsk = t.id; } else if (p.status === "done" && p.since && now - p.since < 60e3) status = "done"; }
-    else if (["security", "quality", "escalation"].includes(r.id)) { const t = activeTasks.find((x) => x.arena && x.arena.end === null && (r.id !== "escalation" || x.arena.escalation)); if (t) { const jj = t.arena[r.id]; status = jj && jj.verdict ? "done" : "thinking"; tsk = t.id; since = t.arena.start; } }
-    else if (r.id === "gate") { const t = activeTasks.find((x) => x.gate && x.gate.ok === null); if (t) { status = "thinking"; since = t.gate.startedAt; tsk = t.id; } else if (p.status === "fail" && p.since && now - p.since < 120e3) status = "fail"; }
-    else if (r.id === "deploy") { const L = M.landing; if (L && !L.done && !L.rollback && !L.aborted) { status = "thinking"; since = L.startedAt; tsk = L.task; } else if (L && L.rollback && !L.rollbackHealth) { status = "fail"; since = L.startedAt; } else if (L && L.done && now - L.done < 60e3) status = "done"; }
-    else { const a = M.aux[r.id]; if (a && now - a.ts < 15 * 60e3) status = a.ok ? "done" : "fail"; since = a ? a.ts : null; }
-    out.push({ id: r.id, label: r.label, ab: r.ab, tier: r.tier, model: r.det ? "" : modelFor(r.id), status, say: p.sayAt && now - p.sayAt < 3000 ? p.say : "", since: status === "idle" ? null : since, task: tsk });
+    // shockwave ring
+    ctx.beginPath(); ctx.arc(b.x, b.y, b.t*120, 0, Math.PI*2);
+    ctx.strokeStyle = hexA(b.color, (1-b.t)*0.5); ctx.lineWidth = 2; ctx.stroke();
   }
-  return out;
+}
+function hexA(hex, a) {
+  const c = hex.replace("#","");
+  const r = parseInt(c.slice(0,2),16), g = parseInt(c.slice(2,4),16), b = parseInt(c.slice(4,6),16);
+  return `rgba(${r},${g},${b},${a})`;
 }
 
-function selectedFlight() {
-  const slots = Object.values(M.flights).sort((a, b) => a.slot - b.slot);
-  if (M.sel.slot && M.flights[M.sel.slot]) return M.flights[M.sel.slot];
-  return slots.find((f) => f.status === "active") || slots.find((f) => f.task) || slots[0] || null;
+let last = 0;
+function loop(time) {
+  const dt = Math.min((time - last)/1000, 0.1); last = time;
+  draw(time/1000);
+  requestAnimationFrame(loop);
 }
-function selectedTask() { const f = selectedFlight(); return f && f.task ? M.tasks[f.task] : null; }
-// ═══════════════════════════════════════════════════════════════════════════
-// 3. Mock — ?mock=1: uma timeline sintética que voa sozinha, em loop.
-//    Emite eventos no MESMO shape do events.jsonl (mais os campos `data` que
-//    o PR1 da Torre propõe), passando pelo mesmo ingest() do modo real.
-// ═══════════════════════════════════════════════════════════════════════════
-const MOCK_SPEED = { v: Math.max(0.25, Number(Q.get("speed")) || 1) };
-let mockGen = 0;
-const isoNow = () => new Date().toISOString();
-async function W(ms) { const g = mockGen; await sleep(ms / MOCK_SPEED.v); if (g !== mockGen) throw new Error("mock-restart"); }
-function mockEmit(type, fields) {
-  const e = Object.assign({ ts: isoNow(), type }, fields);
-  ingest(e);
-  const lvl = e.ok === false ? "warn" : "info";
-  ingestLog([JSON.stringify({ ts: e.ts, level: lvl, msg: e.phase || e.type, data: { task: e.task, detail: e.detail, slot: e.slot } })]);
-}
-function mockLogLine(msg, data, level = "info") { ingestLog([JSON.stringify({ ts: isoNow(), level, msg, data })]); }
+requestAnimationFrame(loop);
 
-const MOCK_TASKS = [
-  { id: "P1-105", title: "Torre de Controle: pistas por slot e caixa-preta", area: "dashboard" },
-  { id: "P2-081", title: "ECG do soak no pouso do deploy", area: "pilot" },
-  { id: "P1-106", title: "SSE /api/pilot-stream com snapshot e tail-follow", area: "daemon" },
-  { id: "P2-082", title: "review-verdict com kept/dropped verbatim", area: "pilot" },
-  { id: "P3-061", title: "manifest inline para adicionar à tela inicial", area: "dashboard" },
-  { id: "P2-083", title: "gate-step com marca de cache do preflight", area: "pilot" },
-  { id: "P1-107", title: "agent-session no idScanner (cockpit ao vivo)", area: "pilot" },
-];
-function mockSnapshot() {
-  const today = new Date().toISOString().slice(0, 10);
-  const day = (i) => new Date(Date.now() - i * 864e5).toISOString().slice(0, 10);
-  const cyc = [1, 1, 0, 1, 1, 1, 0, 1, 1, 1].map((ok, i) => ({ ok: !!ok, at: Date.now() - (10 - i) * 37 * 60e3, task: MOCK_TASKS[i % 4].id }));
-  applySnapshot({
-    heartbeatMs: 4200,
-    cfg: { slots: 2, maxTasksPerDay: 6, maxDeploysPerDay: 6, maxAttemptsPerTask: 4, maxReviewRounds: 3, taskTimeoutMin: 45, mission: "", model: "glm-5.2",
-      models: { tierA: { builder: "glm-5.2", reviewer: "glm-5.2", scribe: "glm-5.2" }, tierB: { planner: "claude-opus-5", strategist: "claude-opus-5", forensic: "claude-opus-5", reviewerEscalation: "claude-fable-5-1" } } },
-    state: { date: today, tasks: 3, deploys: 2, failures: 1, merges: 3, infraFails: 0, taskAttempts: { "P2-081": 1, "P3-058": 4 }, cycles: cyc, blockEvents: [Date.now() - 6 * 3600e3], auditMode: null, mergesSinceCorpus: 3,
-      taskCosts: { "P1-104": 4_120_000, "P1-103": 2_870_000, "P1-102": 6_400_000, "P2-080": 1_130_000 },
-      taskCache: { "P1-104": { input: 410_000, cacheRead: 3_300_000, cacheWrite: 410_000 }, "P1-103": { input: 380_000, cacheRead: 2_200_000, cacheWrite: 290_000 } },
-      slotCache: { 1: { input: 410_000, cacheRead: 3_300_000, cacheWrite: 410_000 }, 2: { input: 620_000, cacheRead: 1_900_000, cacheWrite: 380_000 } },
-      contextPressure: { "P1-104": [{ round: 1, pct: 31, at: "" }, { round: 2, pct: 48, at: "" }] },
-      lessonImpact: { with: { merges: 9, roundsTotal: 14, tokensTotal: 31e6 }, without: { merges: 6, roundsTotal: 13, tokensTotal: 27e6 } } },
-    events: [], failSteps: [{ step: "unit", count: 3 }, { step: "evidence", count: 2 }, { step: "integration", count: 1 }], lastAux: {},
-    rollbackUnhealthy: false, pwaDown: false,
-  });
-  M.mission = "Um pilot que entrega PRs verificados sozinho enquanto o operador dorme.";
-  M.queue = { ready: MOCK_TASKS.slice(2).map((t) => ({ ...t })), blocked: [{ id: "P3-058", title: "Whisper streaming no composer mobile", area: "web" }],
-    done: [["P1-104", "crash de pipeline é infra, self-reload drena slots"], ["P1-103", "block after 4 failed attempts"], ["P1-102", "findings só sob REQUEST_CHANGES"], ["P2-080", "doctor pass a cada 3 infraFails"]].map(([id, title]) => ({ id, title })) };
-  M.history = { exists: true, days: [6, 5, 4, 3, 2, 1, 0].map((i) => ({ day: day(i), ok: [3, 4, 2, 5, 4, 3, 3][6 - i], failed: [1, 0, 2, 0, 1, 1, 0][6 - i] })),
-    phaseAvg: [{ phase: "planner", avgMs: 4.2 * 60e3, n: 12 }, { phase: "builder", avgMs: 11.6 * 60e3, n: 31 }, { phase: "gatekeeper", avgMs: 6.1 * 60e3, n: 33 }, { phase: "reviewers", avgMs: 3.4 * 60e3, n: 31 }] };
-  M.aux = { strategist: { phase: "refill", ok: true, detail: "queue refill pushed (5 lines)", ts: Date.now() - 52 * 60e3 }, researcher: { phase: "done", ok: true, detail: "", ts: Date.now() - 7 * 3600e3 }, explorer: { phase: "filed", ok: true, detail: "3 finding(s)", ts: Date.now() - 9 * 3600e3 } };
-  M.online = true; M.lastOkAt = Date.now();
-  mark("header", "pulse", "queue", "presence", "flights");
+// ─── polling ──────────────────────────────────────────────────────────────────
+let token = window.__OCR_TOKEN__ || localStorage.getItem("ocr_dash_token");
+let lastAuxData = {};
+let lastCosts = {};
+const params = new URLSearchParams(location.search);
+if (params.get("token")) { token = params.get("token"); localStorage.setItem("ocr_dash_token", token); history.replaceState(null,"","/dashboard"); }
+if (token) startPolling(); else document.getElementById("tokenbox").style.display = "block";
+function saveToken() {
+  token = document.getElementById("token").value.trim();
+  localStorage.setItem("ocr_dash_token", token);
+  document.getElementById("tokenbox").style.display = "none";
+  startPolling();
 }
+window.saveToken = saveToken;
 
-// transcrições sintéticas do builder — texto, pensamento e tool chips
-const SCRIPT_R1 = [
-  ["think", "Lendo a spec em specs/P1-105.md e o dashboard atual para entender o contrato __APITOKEN__."],
-  ["tool", "read", "apps/pilot/dashboard/index.html", 380],
-  ["tool", "read", "specs/P1-105.md", 210],
-  ["text", "O dashboard atual desenha nós num canvas e só reflete a última fase por task. A spec pede uma pista horizontal por slot com estações fixas."],
-  ["tool", "grep", "emit(\"phase\" apps/pilot/src", 640],
-  ["text", "As fases já carregam task e phase, mas slot só viaja em loop.picked e result. Vou mapear task → slot no reducer a partir do picked."],
-  ["tool", "edit", "apps/pilot/dashboard/index.html", 1900],
-  ["text", "Escrevi o reducer: flights[slot] com stations planner → builder → gate → review → merge → deploy, round e attempt visíveis."],
-  ["tool", "bash", "npm run typecheck --silent", 5200],
-  ["text", "Typecheck verde. Agora a evidência visual: screenshot 1440 e 390 via tools/browse.mjs."],
-  ["tool", "bash", "node tools/browse.mjs open http://127.0.0.1:8792/dashboard?mock=1 shots/P1-105-desktop.png 1440 900", 3900],
-  ["tool", "bash", "node tools/browse.mjs shot shots/P1-105-phone.png 390 844", 2100],
-  ["text", "BUILDER:DONE — pistas por slot, caixa-preta com typewriter, evidência em shots/."],
-];
-const SCRIPT_R2 = [
-  ["think", "Dois findings mantidos pelo SECURITY: innerHTML sem escape no título e token na query string do EventSource."],
-  ["tool", "grep", "innerHTML apps/pilot/dashboard/index.html", 320],
-  ["tool", "edit", "apps/pilot/dashboard/index.html", 1400],
-  ["text", "Troquei os pontos de innerHTML por textContent e passei o título por esc(). O token agora vai só no header Authorization."],
-  ["tool", "bash", "npm run typecheck --silent && npx tsx scripts/invariants.ts", 6100],
-  ["text", "BUILDER:DONE — findings do round 1 resolvidos, invariants verde."],
-];
-async function builderStream(id, script, factor = 1) {
-  let n = 0;
-  for (const s of script) {
-    n++;
-    if (s[0] === "tool") {
-      const tid = `${id}-${n}`;
-      mockEmit("agent", { task: id, detail: `${s[1]} ${s[2]}`, data: { tool: { id: tid, name: s[1], arg: s[2], status: "running" } } });
-      await W(s[3] * factor);
-      mockEmit("agent", { task: id, detail: `${s[1]} done`, data: { tool: { id: tid, status: "completed", ms: s[3] } } });
-      await W(250);
-    } else {
-      mockEmit("agent", { task: id, detail: s[1], data: { kind: s[0] } });
-      await W(900 + s[1].length * 12 * factor);
-    }
-    bumpTokens(id, 18_000 + Math.round(Math.random() * 30_000));
-  }
-}
-function bumpTokens(id, n) {
-  const st = M.state; st.taskCosts = st.taskCosts || {}; st.taskCache = st.taskCache || {};
-  st.taskCosts[id] = (st.taskCosts[id] || 0) + n;
-  const c = (st.taskCache[id] = st.taskCache[id] || { input: 0, cacheRead: 0, cacheWrite: 0 });
-  c.cacheRead += Math.round(n * 0.78); c.input += Math.round(n * 0.16); c.cacheWrite += Math.round(n * 0.06);
-  mark("pulse", "cockpit", "dossier");
-}
-
-const F = (text, cite, why) => ({ text, cite: cite || "", why: why || "" });
-async function gateRun(id, failAt, cachedSteps = ["typecheck"], ui = true) {
-  const steps = GATE_STEPS.filter((s) => (s === "desktop-render" || s === "desktop-flow" ? ui : s !== "corpus"));
-  mockEmit("phase", { task: id, phase: "gatekeeper" });
-  mockEmit("phase", { task: id, phase: "gate-start", data: { steps } });
-  const ms = { evidence: 420, typecheck: 6100, build: 9800, unit: 12400, "lock-sync": 3100, reconnect: 5200, integration: 8900, "desktop-sidecar": 7400, invariants: 1900, "desktop-render": 6300, "desktop-flow": 11200 };
-  for (const s of steps) {
-    const cached = cachedSteps.includes(s);
-    const dur = cached ? 60 : ms[s];
-    await W(cached ? 250 : Math.min(2600, 500 + dur / 6));
-    if (s === failAt) {
-      mockEmit("phase", { task: id, phase: "gate-step", ok: false, data: { step: s, ms: dur, cached } });
-      mockEmit("phase", { task: id, phase: "gate-fail", ok: false, detail: s });
-      mockLogLine("gatekeeper fail", { task: id, step: s, tail: "FAIL scripts/unit.test.ts › reducer: gate-fail marks preceding steps ok\n  expected 'ok', got 'pending' (step typecheck)\n  at scripts/unit.test.ts:1893:7\n1 failing, 212 passing" }, "warn");
-      await W(600);
-      mockEmit("phase", { task: id, phase: "gatekeeper-done", ok: false, detail: s });
-      return false;
-    }
-    mockEmit("phase", { task: id, phase: "gate-step", ok: true, data: { step: s, ms: dur, cached } });
-  }
-  await W(500);
-  mockEmit("phase", { task: id, phase: "gatekeeper-done", ok: true, detail: "green" });
-  return true;
-}
-async function reviewRun(id, round, scenario) {
-  mockEmit("phase", { task: id, phase: "reviewers" });
-  mockLogLine("agent-dispatch", { role: "reviewer", tier: "A", model: "glm-5.2", label: `sec-${id}-r${round}` });
-  await W(2600);
-  if (scenario === "changes") {
-    mockEmit("phase", { task: id, phase: "review-verdict", ok: false, data: { round, reviewer: "security", verdict: "REQUEST_CHANGES",
-      kept: [F("Título da task entra em innerHTML sem escape; um título com <img onerror> executa no dashboard.", "apps/pilot/dashboard/index.html:412"), F("EventSource monta a URL com token= na query string; o token vaza em logs de proxy e no histórico.", "apps/pilot/dashboard/index.html:988")],
-      dropped: [F("fetch() sem timeout em loadHistory pode travar o poll indefinidamente.", "apps/pilot/dashboard/index.html:1310", "cited line empty or beyond EOF")] } });
-    await W(1400);
-    mockEmit("phase", { task: id, phase: "review-verdict", ok: true, data: { round, reviewer: "quality", verdict: "APPROVE", kept: [],
-      dropped: [F("Falta teste unitário para syncList reordenar nós existentes.", "scripts/dashboard-reducer.test.ts:40", "cited file not found in workspace")] } });
-    await W(800);
-    mockEmit("phase", { task: id, phase: "reviewers-done", ok: false });
-    return false;
-  }
-  if (scenario === "escalate") {
-    mockEmit("phase", { task: id, phase: "review-verdict", ok: false, data: { round, reviewer: "security", verdict: "REQUEST_CHANGES", kept: [],
-      dropped: [F("pollHealth() ignora status 5xx e considera o deploy saudável.", "apps/pilot/src/deploy.ts:701", "no quoted span resolves against the cited files or diff"), F("ROLLBACK_HEALTH_WINDOW_SEC é lido antes de ser definido.", "apps/pilot/src/deploy.ts:12", "cited line empty or beyond EOF")] } });
-    await W(1200);
-    mockEmit("phase", { task: id, phase: "review-verdict", ok: true, data: { round, reviewer: "quality", verdict: "APPROVE", kept: [], dropped: [] } });
-    await W(600);
-    mockEmit("phase", { task: id, phase: "review-escalation", detail: `round ${round}` });
-    mockLogLine("agent-dispatch", { role: "reviewerEscalation", tier: "B", model: "claude-fable-5-1", label: `esc-${id}-r${round}` });
-    await W(5200);
-    mockEmit("phase", { task: id, phase: "review-verdict", ok: true, data: { round, reviewer: "escalation", verdict: "APPROVE", kept: [], dropped: [] } });
-    mockLogLine("review escalation done", { task: id, round, approve: true, kept: 0 });
-    await W(500);
-    mockEmit("phase", { task: id, phase: "reviewers-done", ok: true });
-    return true;
-  }
-  mockEmit("phase", { task: id, phase: "review-verdict", ok: true, data: { round, reviewer: "security", verdict: "APPROVE", kept: [], dropped: [] } });
-  await W(1100);
-  mockEmit("phase", { task: id, phase: "review-verdict", ok: true, data: { round, reviewer: "quality", verdict: "APPROVE", kept: [F("Nit: o caret do typewriter some sob reduced-motion, como esperado.", "apps/pilot/dashboard/index.html:266")], dropped: [] } });
-  await W(600);
-  mockEmit("phase", { task: id, phase: "reviewers-done", ok: true });
-  return true;
-}
-async function deployRun(id, sha, soakFail) {
-  mockEmit("deploy", { phase: "start", detail: `sha ${sha}` });
-  await W(700); mockEmit("deploy", { phase: "sha-guard", ok: true, detail: "not banned" });
-  await W(500); mockEmit("deploy", { phase: "disk-guard", ok: true, detail: "41 GB free" });
-  await W(900); mockEmit("deploy", { phase: "baseline", ok: true, detail: "fail-rate 0.0% (12 probes)" });
-  await W(2200); mockEmit("deploy", { phase: "install", ok: true, detail: "fast-install (lock unchanged) in 3s" });
-  await W(1200);
-  const N = 6;
-  for (let i = 1; i <= N; i++) {
-    const bad = soakFail && i >= 3;
-    mockEmit("deploy", { phase: `soak ${i}/${N}`, ok: !bad });
-    if (i % 3 === 0) { await W(500); mockEmit("deploy", { phase: `live-invariants ${i}/${N}`, ok: !bad, detail: bad ? "reconnect invariant failed" : "12/12 green" }); }
-    if (bad && i >= 4) break;
-    await W(1300);
-  }
-  if (soakFail) {
-    await W(600); mockEmit("deploy", { phase: "rollback", ok: false, detail: "soak failed" });
-    await W(2600); mockEmit("deploy", { phase: "rollback-health", ok: true, detail: "prod healthy after rollback" });
-    return false;
-  }
-  await W(700); mockEmit("deploy", { phase: "done", ok: true, detail: `sha ${sha} live` });
-  await W(500); mockEmit("deploy", { phase: "pwa-kickstart", ok: true });
-  await W(900); mockEmit("phase", { task: id, phase: "ui-shot", ok: true, detail: `shots/${id}-${sha}.png` });
-  return true;
-}
-
-async function flightA(t, slot) {
-  const sha = Math.random().toString(16).slice(2, 9);
-  mockEmit("loop", { task: t.id, phase: "picked", detail: t.title, slot });
-  await W(800);
-  mockEmit("phase", { task: t.id, phase: "planner" });
-  mockLogLine("agent-dispatch", { role: "planner", tier: "B", model: "claude-opus-5", label: `plan-${t.id}` });
-  await W(7000);
-  mockEmit("phase", { task: t.id, phase: "planner-done", ok: true, detail: `specs/${t.id}.md` });
-  await W(600);
-  mockEmit("phase", { task: t.id, phase: "builder", detail: "round 1" });
-  await builderStream(t.id, SCRIPT_R1);
-  mockEmit("phase", { task: t.id, phase: "context-checkpoint", detail: "41%" });
-  await W(400);
-  mockEmit("phase", { task: t.id, phase: "builder-done", ok: true });
-  await W(700);
-  await gateRun(t.id, null, ["typecheck"], true);
-  await W(600);
-  const ok1 = await reviewRun(t.id, 1, "changes");
-  if (!ok1) {
-    await W(900);
-    mockEmit("phase", { task: t.id, phase: "builder", detail: "round 2" });
-    await builderStream(t.id, SCRIPT_R2);
-    mockEmit("phase", { task: t.id, phase: "builder-done", ok: true });
-    await W(600);
-    await gateRun(t.id, null, ["typecheck", "build", "lock-sync", "desktop-sidecar"], true);
-    await W(500);
-    await reviewRun(t.id, 2, "approve");
-  }
-  await W(700);
-  mockEmit("phase", { task: t.id, phase: "merge", ok: true });
-  await W(900);
-  const landed = await deployRun(t.id, sha, false);
-  await W(600);
-  mockEmit("phase", { task: t.id, phase: "scribe" });
-  await W(3200);
-  mockEmit("phase", { task: t.id, phase: "scribe-done", ok: true, detail: "2 lesson(s)" });
-  await W(400);
-  mockEmit("phase", { task: t.id, phase: "corpus", ok: true, detail: "2 sample(s)" });
-  mockEmit("result", { task: t.id, ok: landed, detail: landed ? `merged + deployed ${sha}` : "rolled back", slot });
-  M.state.tasks++; M.state.merges++; if (landed) M.state.deploys++;
-  M.queue.done.unshift({ id: t.id, title: t.title }); M.queue.ready = M.queue.ready.filter((x) => x.id !== t.id);
-  mark("pulse", "queue");
-}
-async function flightB(t, slot) {
-  const sha = Math.random().toString(16).slice(2, 9);
-  mockEmit("phase", { task: t.id, phase: "staged", ok: true, detail: `slot ${slot} starts in ~4s (cache-write stagger)` });
-  await W(4000);
-  mockEmit("loop", { task: t.id, phase: "picked", detail: t.title, slot });
-  await W(900);
-  mockEmit("phase", { task: t.id, phase: "builder", detail: "round 1" });
-  await builderStream(t.id, SCRIPT_R1.slice(0, 7).map((s) => (s[0] === "text" ? ["text", s[1].replace("pista horizontal", "traço de ECG")] : s)), 1.3);
-  mockEmit("phase", { task: t.id, phase: "builder-done", ok: true });
-  await W(700);
-  const g1 = await gateRun(t.id, "unit", [], false);
-  if (!g1) {
-    await W(1200);
-    mockEmit("phase", { task: t.id, phase: "builder", detail: "round 2" });
-    await builderStream(t.id, [["think", "O gate reprovou em unit: o teste do reducer espera os steps anteriores marcados ok após gate-fail."], ["tool", "read", "scripts/unit.test.ts", 300], ["tool", "edit", "apps/pilot/dashboard/index.html", 1200], ["tool", "bash", "npm run test:unit --silent", 9800], ["text", "BUILDER:DONE — 213 passing."]]);
-    mockEmit("phase", { task: t.id, phase: "builder-done", ok: true });
-    await W(600);
-    await gateRun(t.id, null, ["typecheck", "build"], false);
-  }
-  await W(500);
-  await reviewRun(t.id, (M.tasks[t.id] && M.tasks[t.id].round) || 2, "escalate");
-  await W(700);
-  mockEmit("phase", { task: t.id, phase: "merge", ok: true });
-  await W(900);
-  const landed = await deployRun(t.id, sha, true);
-  mockEmit("result", { task: t.id, ok: landed, detail: landed ? `deployed ${sha}` : "rolled back: soak failed", slot });
-  M.state.tasks++; M.state.merges++; M.state.failures += landed ? 0 : 1;
-  M.state.taskAttempts[t.id] = (M.state.taskAttempts[t.id] || 0) + (landed ? 0 : 1);
-  M.state.cycles = [...(M.state.cycles || []), { ok: landed, at: Date.now(), task: t.id }].slice(-10);
-  mark("pulse", "queue", "flights");
-}
-async function mockInterlude() {
-  await W(2500);
-  mockEmit("phase", { task: "strategist", phase: "refill", ok: true, detail: "queue refill pushed (4 lines)" });
-  await W(2000);
-  mockEmit("audit", { detail: "fever 2/6 failures in window — queue paused" });
-  M.state.auditMode = { since: isoNow(), reason: "fever: 2 falhas em 6 ciclos", lastFailure: Date.now() };
-  M.state.auditDiagnosis = "api=ok · top fail steps: unit×3, evidence×2 · último: soak failed (rollback)";
-  mark("pulse", "header");
-  await W(9000);
-  if (M.state.auditMode) { mockEmit("audit", { detail: "cleared by external intervention" }); M.state.auditMode = null; mark("pulse", "header"); }
-  await W(1500);
-  mockEmit("phase", { task: "research", phase: "done", ok: true });
-}
-async function mockLoop() {
-  const gen = ++mockGen;
-  mockSnapshot();
-  let i = 0;
-  while (gen === mockGen) {
-    try {
-      const a = MOCK_TASKS[i % MOCK_TASKS.length], b = MOCK_TASKS[(i + 1) % MOCK_TASKS.length];
-      const idA = i < 2 ? a.id : `${a.id.split("-")[0]}-${110 + i}`; const idB = i < 2 ? b.id : `${b.id.split("-")[0]}-${120 + i}`;
-      if (!M.queue.ready.some((x) => x.id === idA)) M.queue.ready.unshift({ id: idA, title: a.title, area: a.area });
-      if (!M.queue.ready.some((x) => x.id === idB)) M.queue.ready.unshift({ id: idB, title: b.title, area: b.area });
-      const quiet = (p) => p.catch((err) => { if (String(err && err.message) !== "mock-restart") console.error(err); });
-      await Promise.all([quiet(flightA({ id: idA, title: a.title }, 1)), quiet((async () => { await W(6000); await flightB({ id: idB, title: b.title }, 2); })())]);
-      if (gen !== mockGen) return;
-      await mockInterlude();
-      i += 2;
-    } catch (err) { if (String(err && err.message) !== "mock-restart") console.error(err); return; }
-  }
-}
-function mockReset() {
-  mockGen++;
-  Object.assign(M, { flights: {}, taskSlot: {}, tasks: {}, order: [], landing: null, landingTask: null, prodSha: null, bannedSha: null, presence: {}, aux: {}, audit: null, feed: [], log: [], seen: new Set(), seenLog: new Set(), sel: { slot: null, pinned: false }, dossierTask: null });
-  setTimeout(mockLoop, 50);
-}
-function mockHeartbeat() { M.hbMs = 1500 + Math.round(Math.random() * 5000); M.lastOkAt = Date.now(); M.online = true; M.pollN++; mark("header"); }
-// ═══════════════════════════════════════════════════════════════════════════
-// 4. Transporte — poll /api/pilot-events a cada 2 s, hidratação, backoff,
-//    reconexão em visibilitychange. Token só em header, nunca em URL.
-// ═══════════════════════════════════════════════════════════════════════════
-let token = window.__OCR_TOKEN__ || localStorage.getItem("ocr_dash_token") || "";
-if (Q.get("token")) {
-  token = Q.get("token"); localStorage.setItem("ocr_dash_token", token);
-  const u = new URL(location.href); u.searchParams.delete("token");
-  history.replaceState(null, "", u.pathname + (u.searchParams.toString() ? "?" + u.searchParams.toString() : ""));
-}
-async function api(path, opts = {}) {
-  const res = await fetch(path, { ...opts, headers: { ...(opts.body ? { "content-type": "application/json" } : {}), authorization: `Bearer ${token}`, ...(opts.headers || {}) }, signal: AbortSignal.timeout(opts.timeout || 8000) });
-  if (res.status === 401) { needToken(); throw new Error("401"); }
-  return res;
-}
-let pollTimer = null, backoff = 2000;
 async function poll() {
-  if (MOCK) return;
-  clearTimeout(pollTimer);
   try {
-    const res = await api("/api/pilot-events");
-    if (!res.ok) throw new Error(String(res.status));
+    const res = await fetch("/api/pilot-events", { headers: { authorization: `Bearer ${token}` } });
+    if (!res.ok) throw new Error(res.status);
     const data = await res.json();
-    const wasOffline = !M.online && M.pollN > 0;
-    M.online = true; M.failures = 0; M.lastOkAt = Date.now(); M.pollN++; backoff = 2000;
-    applySnapshot(data);
-    pulseHeartbeat();
-    if (wasOffline) toast("reconectado ao daemon", "ok");
-    if (M.pollN % 2 === 1) pollLog();
-    if (M.pollN % 5 === 1) { loadQueue(); loadHistory(); }
-    if (M.pollN === 1) loadMission();
-  } catch (err) {
-    if (String(err && err.message) === "401") return;
-    M.failures++; if (M.failures >= 2) M.online = false; backoff = Math.min(10_000, Math.round(backoff * 1.5));
-    mark("header");
-  }
-  M.retryIn = M.online ? 2000 : backoff;
-  pollTimer = setTimeout(poll, M.retryIn);
-}
-async function pollLog() { try { const r = await api("/api/pilot-log?n=400"); const j = await r.json(); ingestLog(j.lines || []); } catch {} }
-async function loadQueue() {
-  try {
-    const [a, b] = await Promise.all([api("/api/pilot-ready").then((r) => r.json()), api("/api/pilot-done").then((r) => r.json())]);
-    M.queue = { ready: a.ready || [], blocked: a.blocked || [], done: b.done || [] }; mark("queue");
-  } catch {}
-}
-async function loadHistory() { try { const j = await (await api("/api/pilot-history")).json(); M.history = { exists: !!j.exists, days: j.days || [], phaseAvg: j.phaseAvg || [] }; mark("pulse", "header"); } catch {} }
-async function loadMission() { try { const j = await (await api("/api/pilot-mission")).json(); M.mission = j.mission || ""; mark("header"); } catch {} }
-async function loadForensic(t) {
-  if (MOCK) { t.forensic = { entries: [{ ts: new Date(t.startedAt || Date.now()).toISOString(), kind: "goal", text: t.title }, { ts: isoNow(), kind: "status", text: `${t.status} · round ${t.round}` }], progress: t.status === "landed" ? 1 : 0.6, shots: t.status === "landed" ? [`${t.id}-desktop.png`] : [] }; mark("dossier"); return; }
-  try { const j = await (await api(`/api/pilot-forensic/timeline?task=${encodeURIComponent(t.id)}`)).json(); t.forensic = { entries: j.entries || [], progress: j.progress, shots: j.shots || [], card: j.card }; }
-  catch { t.forensic = { entries: [], error: true }; }
-  mark("dossier");
-}
-function pulseHeartbeat() {
-  const el = $("hdr"); if (REDUCED) return;
-  el.classList.remove("hb"); void el.offsetWidth; el.classList.add("hb");
-}
-function needToken() { $("tokenbox").classList.add("on"); $("token-input").focus(); }
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && !MOCK) poll(); });
-
-// ═══════════════════════════════════════════════════════════════════════════
-// 5. Controles — reais onde a API existe, stub honesto onde não existe.
-// ═══════════════════════════════════════════════════════════════════════════
-function toast(text, kind = "") {
-  const el = h("div", `toast ${kind}`, esc(text)); $("toasts").appendChild(el);
-  setTimeout(() => { el.classList.add("out"); setTimeout(() => el.remove(), 260); }, 2600);
-}
-let popOpen = null;
-function openPop(id, anchor) {
-  closePop();
-  const p = $(id); const r = anchor.getBoundingClientRect();
-  p.style.top = `${r.bottom + 6}px`; p.style.left = `${Math.max(8, Math.min(innerWidth - 308, r.right - 300))}px`;
-  p.classList.add("on"); popOpen = p;
-  setTimeout(() => document.addEventListener("pointerdown", onPopOutside, { once: true }), 0);
-}
-function onPopOutside(ev) { if (popOpen && !popOpen.contains(ev.target)) closePop(); else if (popOpen) document.addEventListener("pointerdown", onPopOutside, { once: true }); }
-function closePop() { if (popOpen) popOpen.classList.remove("on"); popOpen = null; }
-function stub(title, text, cmd, anchor) {
-  $("stub-title").textContent = title; $("stub-text").textContent = text; $("stub-cmd").textContent = cmd;
-  $("stub-copy").onclick = () => { navigator.clipboard?.writeText(cmd).then(() => toast("comando copiado", "ok"), () => toast("não consegui copiar", "bad")); };
-  openPop("pop-stub", anchor || $("btn-pause"));
-}
-$("stub-close").onclick = closePop;
-
-// missão (real: GET/POST /api/pilot-mission)
-const missionEl = $("mission"), missionIn = $("mission-input"), missionTx = $("mission-text");
-missionEl.addEventListener("click", (ev) => { if (ev.target === missionIn) return; missionEl.classList.add("editing"); missionTx.classList.add("hide"); missionIn.classList.remove("hide"); missionIn.value = M.mission; missionIn.focus(); });
-missionIn.addEventListener("keydown", async (ev) => {
-  if (ev.key !== "Enter" && ev.key !== "Escape") return;
-  missionEl.classList.remove("editing"); missionIn.classList.add("hide"); missionTx.classList.remove("hide");
-  if (ev.key === "Escape") return;
-  const v = missionIn.value.trim(); if (!v) return;
-  if (MOCK) { M.mission = v; mark("header"); toast("missão salva (mock)", "ok"); return; }
-  try { const r = await api("/api/pilot-mission", { method: "POST", body: JSON.stringify({ mission: v }) }); const j = await r.json(); M.mission = j.mission || v; mark("header"); toast("missão salva", "ok"); }
-  catch { toast("falha ao salvar a missão", "bad"); }
-});
-missionIn.addEventListener("blur", () => { missionEl.classList.remove("editing"); missionIn.classList.add("hide"); missionTx.classList.remove("hide"); });
-
-// orçamento (real: POST /api/pilot-budget)
-$("btn-budget").onclick = (ev) => { $("b-tasks").value = M.cfg.maxTasksPerDay || 6; $("b-dep").value = M.cfg.maxDeploysPerDay || 6; openPop("pop-budget", ev.currentTarget); };
-$("b-cancel").onclick = closePop;
-$("b-save").onclick = async () => {
-  const t = parseInt($("b-tasks").value, 10), d = parseInt($("b-dep").value, 10);
-  if (!(t > 0 && d > 0)) { toast("valores inválidos", "bad"); return; }
-  closePop();
-  if (MOCK) { M.cfg.maxTasksPerDay = t; M.cfg.maxDeploysPerDay = d; mark("pulse"); toast("orçamento salvo (mock)", "ok"); return; }
-  try { const r = await api("/api/pilot-budget", { method: "POST", body: JSON.stringify({ maxTasksPerDay: t, maxDeploysPerDay: d }) }); const j = await r.json(); if (j.cfg) { M.cfg = { ...M.cfg, ...j.cfg }; mark("pulse"); toast("orçamento salvo", "ok"); } else throw new Error(); }
-  catch { toast("falha ao salvar o orçamento", "bad"); }
-};
-
-// pausar fila — sem rota no daemon hoje: tenta, e cai no comando do pilot.lock
-$("btn-pause").onclick = async (ev) => {
-  const btn = ev.currentTarget; const want = !M.frozen;
-  if (MOCK) { M.frozen = want; mark("header", "pulse"); toast(want ? "fila pausada (mock)" : "fila retomada (mock)", "ok"); return; }
-  try {
-    const r = await api("/api/pilot-freeze", { method: "POST", body: JSON.stringify({ frozen: want }) });
-    if (r.ok) { const j = await r.json(); M.frozen = j.frozen ?? want; mark("header", "pulse"); toast(M.frozen ? "fila pausada" : "fila retomada", "ok"); return; }
-  } catch {}
-  stub(want ? "Pausar a fila" : "Retomar a fila",
-    want ? "O daemon ainda não expõe essa ação. O pilot checa o lock a cada ciclo: crie o arquivo no host e o loop para de pegar tasks (o voo em curso termina)." : "Remova o lock no host e o loop volta a pegar tasks no próximo ciclo.",
-    want ? "touch ~/.opencode-remote/pilot.lock" : "rm ~/.opencode-remote/pilot.lock", btn);
-};
-async function auditClear(anchor) {
-  if (MOCK) { M.state.auditMode = null; M.audit = { at: Date.now(), detail: "cleared by external intervention" }; mark("pulse", "header"); toast("audit mode limpo (mock)", "ok"); return; }
-  try { const r = await api("/api/pilot-audit-clear", { method: "POST", body: "{}" }); if (r.ok) { toast("audit-clear enviado", "ok"); return; } } catch {}
-  stub("Sair do audit mode", "O daemon ainda não expõe essa ação. A flag é consumida no próximo ciclo do pilot, no espírito do pilot.lock.", "touch ~/.opencode-remote/pilot/audit-clear", anchor);
-}
-async function takeover(t, anchor) {
-  if (MOCK) { toast(`takeover (mock): abriria Terminal em repo-${t.slot || 1} com opencode -s ses_…`, "ok"); return; }
-  try { const r = await api("/api/pilot-takeover", { method: "POST", body: JSON.stringify({ task: t.id }) }); const j = await r.json(); if (j.ok) toast(`Terminal aberto${j.sessionId ? " na sessão " + j.sessionId.slice(0, 12) : ""}`, "ok"); else throw new Error(j.error || "erro"); }
-  catch (err) { stub("Takeover manual", `Não consegui abrir o Terminal pelo daemon (${err.message || err}). Abra na mão:`, `cd ~/.opencode-remote/pilot/repo-${t.slot || 1} && opencode`, anchor); }
-}
-
-// token
-$("token-save").onclick = () => { token = $("token-input").value.trim(); if (!token) return; localStorage.setItem("ocr_dash_token", token); $("tokenbox").classList.remove("on"); M.pollN = 0; poll(); };
-$("token-input").addEventListener("keydown", (ev) => { if (ev.key === "Enter") $("token-save").onclick(); });
-
-// seleção de pista, dossiê, logs, teclado
-function selectSlot(slot, pin = true) { M.sel.slot = slot; M.sel.pinned = pin; mark("flights", "cockpit", "arena", "gate", "landing", "header"); }
-function openDossier(taskId) {
-  const t = M.tasks[taskId] || task(taskId, (M.queue.ready.concat(M.queue.blocked, M.queue.done).find((x) => x.id === taskId) || {}).title);
-  M.dossierTask = t.id; if (!t.forensic) loadForensic(t);
-  $("dossier").classList.add("on"); $("scrim").classList.add("on"); mark("dossier");
-}
-function closeDossier() { M.dossierTask = null; $("dossier").classList.remove("on"); $("scrim").classList.remove("on"); }
-$("do-close").onclick = closeDossier; $("scrim").onclick = () => { closeDossier(); closeLogs(); };
-let logsOpen = false, logFollow = true, logRole = "", logQuery = "";
-function openLogs(filter) { logsOpen = true; $("logdrawer").classList.add("on"); if (filter !== undefined) { logQuery = String(filter).toLowerCase(); $("logsearch").value = filter; } if (!MOCK) pollLog(); mark("logs"); }
-function closeLogs() { logsOpen = false; $("logdrawer").classList.remove("on"); }
-$("btn-logs").onclick = () => (logsOpen ? closeLogs() : openLogs());
-$("logclose").onclick = closeLogs;
-$("logsearch").addEventListener("input", (ev) => { logQuery = ev.target.value.trim().toLowerCase(); mark("logs"); });
-$("logfollow").onclick = () => { logFollow = !logFollow; $("logfollow").classList.toggle("on", logFollow); if (logFollow) mark("logs"); };
-$("logview").addEventListener("scroll", () => { const v = $("logview"); const atBottom = v.scrollTop + v.clientHeight > v.scrollHeight - 30; if (logFollow !== atBottom) { logFollow = atBottom; $("logfollow").classList.toggle("on", logFollow); } });
-const LOG_ROLES = [["builder", /^agent|builder/], ["review", /reviewer|finding|escalation/], ["gate", /gatekeeper|invariant/], ["deploy", /deploy|rollback|soak|install|self-reload/], ["strategist", /strategist|refill/], ["aux", /research|explorer|forensic|redteam|scribe/]];
-for (const [r] of LOG_ROLES) { const b = h("button", "btn sm ghost", esc(r)); b.onclick = () => { logRole = logRole === r ? "" : r; for (const c of $("logroles").children) c.classList.toggle("on", c.textContent === logRole); mark("logs"); }; $("logroles").appendChild(b); }
-$("ck-toggle").onclick = () => { const c = $("cockpit"); c.classList.add("sheet"); c.classList.toggle("on"); };
-document.querySelectorAll("#queue .tab").forEach((b) => (b.onclick = () => { M.qtab = b.dataset.tab; document.querySelectorAll("#queue .tab").forEach((x) => x.classList.toggle("on", x === b)); mark("queue"); }));
-addEventListener("keydown", (ev) => {
-  if (/input|textarea/i.test((document.activeElement && document.activeElement.tagName) || "")) return;
-  if (ev.key === "Escape") { closeDossier(); closeLogs(); closePop(); $("cockpit").classList.remove("on"); return; }
-  if (/^[1-8]$/.test(ev.key) && M.flights[+ev.key]) { selectSlot(+ev.key); return; }
-  if (ev.key === "0") { M.sel.pinned = false; M.sel.slot = null; mark("flights", "cockpit"); return; }
-  if (ev.key.toLowerCase() === "l") { logsOpen ? closeLogs() : openLogs(); return; }
-  if (ev.key.toLowerCase() === "d") { const t = selectedTask(); if (t) M.dossierTask ? closeDossier() : openDossier(t.id); return; }
-});
-// ═══════════════════════════════════════════════════════════════════════════
-// 6. Render — diff manual de DOM por chave (sem framework), linhas de altura
-//    fixa, animação só em nós novos. Cor só quando significa estado.
-// ═══════════════════════════════════════════════════════════════════════════
-let rafPending = false;
-function requestRender() { if (rafPending) return; rafPending = true; requestAnimationFrame(() => { rafPending = false; render(); }); }
-function render() {
-  const d = M.dirty; M.dirty = new Set();
-  if (d.has("header")) renderHeader();
-  if (d.has("presence")) renderPresence();
-  if (d.has("flights")) renderFlights();
-  if (d.has("queue")) renderQueue();
-  if (d.has("pulse")) renderPulse();
-  if (d.has("cockpit")) renderCockpit();
-  if (d.has("arena")) renderArena();
-  if (d.has("gate")) renderGate();
-  if (d.has("landing")) renderLanding();
-  if (d.has("ticker")) renderTicker();
-  if (d.has("dossier") && M.dossierTask) renderDossier();
-  if (d.has("logs") && logsOpen) renderLogs();
-}
-function syncList(container, items, keyOf, create, update) {
-  const existing = new Map();
-  for (const el of Array.from(container.children)) existing.set(el.dataset.key, el);
-  let prev = null;
-  for (const it of items) {
-    const k = String(keyOf(it));
-    let el = existing.get(k);
-    if (!el) { el = create(it); el.dataset.key = k; } else existing.delete(k);
-    update(el, it);
-    const want = prev ? prev.nextSibling : container.firstChild;
-    if (want !== el) container.insertBefore(el, want);
-    prev = el;
-  }
-  for (const el of existing.values()) el.remove();
-}
-function setText(el, text) { if (el && el.textContent !== text) el.textContent = text; }
-function setHTML(el, html) { if (el && el.__html !== html) { el.innerHTML = html; el.__html = html; } }
-function setCls(el, cls) { if (el.className !== cls) el.className = cls; }
-const badge = (txt, cls = "") => `<span class="badge ${cls}">${esc(txt)}</span>`;
-
-// ── header ─────────────────────────────────────────────────────────────────
-function renderHeader() {
-  setText(missionTx, M.mission || "clique para definir a missão");
-  const conn = $("conn");
-  const stale = M.hbMs != null && M.hbMs > 90_000;
-  const cls = MOCK ? "on" : !M.online ? "off" : stale ? "stale" : "on";
-  setCls(conn, cls);
-  setText($("conn-text"), MOCK ? "mock · daemon simulado" : !M.online ? `sem daemon · tentando em ${Math.round(M.retryIn / 1000)}s` : stale ? "daemon ok · pilot silencioso" : "ao vivo");
-  document.getElementById("app").classList.toggle("offline", !MOCK && !M.online);
-  setText($("hb-text"), M.hbMs == null ? "—" : `${Math.round(M.hbMs / 1000)}s`);
-  const pb = $("btn-pause"); pb.classList.toggle("on", M.frozen); pb.classList.toggle("warn", M.frozen);
-  pb.querySelector("span").textContent = M.frozen ? "Fila pausada" : "Pausar fila";
-  renderClocks();
-}
-function renderClocks() {
-  const f = selectedFlight(); const t = f && f.task ? M.tasks[f.task] : null;
-  const now = Date.now();
-  setText($("ck-tplus"), f && f.startedAt ? fmtClock((f.endedAt || now) - f.startedAt) : "--:--");
-  let tminus = "--:--";
-  if (t && f.status === "active") {
-    const avg = Object.fromEntries((M.history.phaseAvg || []).map((p) => [p.phase, p.avgMs]));
-    if (t.gate && t.gate.ok === null) tminus = "agora";
-    else if (f.stations.merge === "ok" || f.stations.gate === "ok") tminus = "passou";
-    else if (avg.builder) { const r = t.rounds[t.round]; const start = r && r.builder ? r.builder.start : t.startedAt; const rem = (r && r.builder ? 0 : (avg.planner || 0)) + avg.builder - (now - start); tminus = rem > 0 ? fmtClock(rem) : "~agora"; }
-  }
-  setText($("ck-tminus"), tminus);
-  setText($("pulse-date"), M.state.date || new Date().toISOString().slice(0, 10));
-}
-
-// ── presença ──────────────────────────────────────────────────────────────
-function renderPresence() {
-  const now = Date.now();
-  syncList($("presence"), computePresence(), (p) => p.id,
-    () => h("div", "pres", '<div class="av"></div><div class="who"><span class="name"></span><span class="model"></span></div><span class="say ell"></span><span class="clock"></span>'),
-    (el, p) => {
-      setCls(el, `pres ${p.status}${p.tier === "B" ? " tierb" : ""}`);
-      el.title = `${p.label} · ${p.model || "determinístico"}${p.task ? " · " + p.task : ""}`;
-      setText(el.querySelector(".av"), p.ab); setText(el.querySelector(".name"), p.label); setText(el.querySelector(".model"), p.model || "");
-      const s = el.querySelector(".say"); setText(s, p.say); s.classList.toggle("on", !!p.say);
-      setText(el.querySelector(".clock"), p.since && p.status === "thinking" ? fmtClock(now - p.since) : "");
-    });
-}
-
-// ── pistas ────────────────────────────────────────────────────────────────
-function stationClass(f, id) {
-  const s = f.stations[id] || "idle";
-  if (s === "active") return `active ${id}`;
-  if (s === "idle" && f.status !== "active" && f.task) return "skip";
-  return s;
-}
-function planeLeft(f) {
-  const idx = STATIONS.findIndex(([id]) => f.stations[id] === "active");
-  if (idx >= 0) return `${(idx + 0.5) / 6 * 100}%`;
-  let last = -1; STATIONS.forEach(([id], i) => { if (f.stations[id] === "ok" || f.stations[id] === "fail") last = i; });
-  return `${(last + 1) / 6 * 100}%`;
-}
-function renderFlights() {
-  const slots = Object.values(M.flights).sort((a, b) => a.slot - b.slot);
-  const sel = selectedFlight();
-  setText($("fl-meta"), `${slots.filter((f) => f.status === "active").length}/${slots.length} em voo${M.sel.pinned ? " · fixada" : ""}`);
-  const list = $("fl-list");
-  if (!slots.length) { setHTML(list, '<div class="empty"><b>Nenhuma pista.</b><br>O daemon ainda não respondeu com a configuração de slots.</div>'); return; }
-  if (list.querySelector(".empty")) { list.innerHTML = ""; list.__html = ""; }
-  syncList(list, slots, (f) => f.slot,
-    () => { const el = h("div", "flight", `<div class="top"><span class="slot"></span><span class="id"></span><span class="title ell"></span><span class="t"></span></div><div class="sub"><span class="ph"></span><span class="d ell"></span><span class="att"></span></div><div class="track">${STATIONS.map(([id, lb]) => `<div class="st" data-st="${id}"><span>${lb}</span><span class="r"></span></div>`).join("")}<div class="plane">${ICON.plane}</div></div>`); el.onclick = () => selectSlot(el.__slot); el.ondblclick = () => { const f = M.flights[el.__slot]; if (f && f.task) openDossier(f.task); }; return el; },
-    (el, f) => {
-      el.__slot = f.slot;
-      const t = f.task ? M.tasks[f.task] : null;
-      setCls(el, `flight ${f.status}${sel && sel.slot === f.slot ? " sel" : ""}`);
-      setText(el.querySelector(".slot"), `PISTA ${f.slot}`);
-      setText(el.querySelector(".id"), f.task || "livre");
-      setText(el.querySelector(".title"), f.task ? f.title || "" : "aguardando a fila");
-      setText(el.querySelector(".t"), f.startedAt ? fmtClock((f.endedAt || Date.now()) - f.startedAt) : "");
-      const phaseLabel = { planner: "planner", builder: `builder r${f.round || 1}`, gate: "gate", review: "review", merge: "merge", deploy: "deploy" }[f.phase] || f.phase;
-      setText(el.querySelector(".ph"), f.task ? phaseLabel : "livre");
-      setText(el.querySelector(".d"), f.detail || (t && t.checkpoint && f.phase === "builder" ? `contexto ${Math.round(t.checkpoint.pct)}%` : ""));
-      const att = el.querySelector(".att");
-      const n = (M.state.taskAttempts || {})[f.task] || 0, max = M.cfg.maxAttemptsPerTask || 4;
-      if (f.task && n > 0) { setText(att, `tentativa ${n + 1}/${max}${n + 1 >= max ? " · última chance" : ""}`); att.classList.toggle("last", n + 1 >= max); } else setText(att, "");
-      for (const st of el.querySelectorAll(".st")) { setCls(st, `st ${f.task ? stationClass(f, st.dataset.st) : ""}`); setText(st.querySelector(".r"), (st.dataset.st === "builder" || st.dataset.st === "review" || st.dataset.st === "gate") && f.round > 1 ? `r${f.round}` : ""); }
-      const plane = el.querySelector(".plane"); plane.style.left = f.task ? `calc(${planeLeft(f)} - 5px)` : "-20px"; plane.style.opacity = f.task ? "1" : "0";
-    });
-}
-
-// ── fila ──────────────────────────────────────────────────────────────────
-function renderQueue() {
-  setText($("n-ready"), String(M.queue.ready.length)); setText($("n-blocked"), String(M.queue.blocked.length)); setText($("n-done"), String(M.queue.done.length));
-  const rows = M.queue[M.qtab] || [];
-  const list = $("q-list");
-  if (!rows.length) { setHTML(list, `<div class="empty">${M.qtab === "ready" ? "<b>Fila vazia.</b><br>O strategist reabastece no próximo ciclo." : M.qtab === "blocked" ? "Nenhuma task bloqueada." : "Nada concluído ainda."}</div>`); return; }
-  if (list.querySelector(".empty")) { list.innerHTML = ""; list.__html = ""; }
-  const costs = M.state.taskCosts || {}, att = M.state.taskAttempts || {};
-  syncList(list, rows, (r) => r.id,
-    () => { const el = h("div", "qrow", '<span class="k"></span><span class="id"></span><span class="title ell"></span><span class="att"></span><span class="area"></span><span class="cost"></span>'); el.onclick = () => openDossier(el.__id); return el; },
-    (el, r) => {
-      el.__id = r.id;
-      const active = Object.values(M.flights).some((f) => f.task === r.id && f.status === "active");
-      setCls(el, `qrow ${M.qtab}${active ? " active" : ""}`);
-      setText(el.querySelector(".id"), r.id); setText(el.querySelector(".title"), r.title || "");
-      setText(el.querySelector(".att"), att[r.id] ? `${att[r.id]}×` : ""); setText(el.querySelector(".area"), r.area || "");
-      setText(el.querySelector(".cost"), fmtTok(costs[r.id]) ? `${fmtTok(costs[r.id])} tok` : "");
-    });
-}
-
-// ── pulso ─────────────────────────────────────────────────────────────────
-function arc(p, cls = "") { const r = 9, c = 2 * Math.PI * r; return `<svg class="arc ${cls}" viewBox="0 0 22 22"><circle class="bg" cx="11" cy="11" r="${r}"/><circle class="fg" cx="11" cy="11" r="${r}" stroke-dasharray="${c}" stroke-dashoffset="${c * (1 - p / 100)}"/></svg>`; }
-function cacheHit(c) { return c && c.cacheRead + c.input > 0 ? Math.round((c.cacheRead / (c.cacheRead + c.input)) * 100) : null; }
-function renderPulse() {
-  const s = M.state, cfg = M.cfg;
-  const maxT = cfg.maxTasksPerDay || 6, maxD = cfg.maxDeploysPerDay || 6;
-  const meter = (v, max) => { const p = pct(v, max); return `<div class="meter"><i class="${p >= 100 ? "full" : p >= 80 ? "warn" : ""}" style="width:${p}%"></i></div>`; };
-  const cycles = (s.cycles || []).slice(-10);
-  const fails = cycles.filter((c) => !c.ok).length;
-  const t = selectedTask();
-  const cache = t ? (s.taskCache || {})[t.id] : null; const hit = cacheHit(cache);
-  const slotC = cacheHit((s.slotCache || {})[(selectedFlight() || {}).slot]);
-  const alerts = [];
-  if (s.auditMode) alerts.push(`<div class="alert">${ICON.warn}<div class="body"><b>Audit mode · fila pausada</b><div class="d">${esc(s.auditMode.reason || "")}${s.auditDiagnosis ? "<br>" + esc(s.auditDiagnosis) : ""}</div></div><button class="btn sm" data-act="audit">Limpar</button></div>`);
-  if (M.alerts.rollbackUnhealthy) alerts.push(`<div class="alert">${ICON.warn}<div class="body"><b>Prod unhealthy após rollback</b><div class="d">${esc(M.alerts.rollbackDetail)}</div></div></div>`);
-  if (M.alerts.pwaDown) alerts.push(`<div class="alert">${ICON.warn}<div class="body"><b>PWA origin fora do ar</b><div class="d">${esc(M.alerts.pwaDetail)}</div></div></div>`);
-  if (M.frozen) alerts.push(`<div class="alert amber">${ICON.lock}<div class="body"><b>Fila pausada pelo operador</b><div class="d">pilot.lock presente · o voo em curso termina, nenhum novo decola</div></div></div>`);
-  if (s.nightlySkipped) alerts.push(`<div class="alert amber">${ICON.warn}<div class="body"><b>Nightly pulado</b><div class="d">${esc(s.nightlySkipped.reason)}</div></div></div>`);
-  const li = s.lessonImpact;
-  const lessons = li && (li.with.merges || li.without.merges) ? `<div class="stat"><span class="k">Rounds por merge · lições</span><span class="v">${li.with.merges ? (li.with.roundsTotal / li.with.merges).toFixed(1) : "—"} <span class="dim">vs</span> ${li.without.merges ? (li.without.roundsTotal / li.without.merges).toFixed(1) : "—"}</span></div>` : "";
-  const html = `${alerts.join("")}
-    <div class="stat"><span class="k">Tasks hoje</span>${meter(s.tasks || 0, maxT)}<span class="v">${s.tasks || 0}<span class="dim">/${maxT}</span></span></div>
-    <div class="stat"><span class="k">Deploys hoje</span>${meter(s.deploys || 0, maxD)}<span class="v">${s.deploys || 0}<span class="dim">/${maxD}</span></span></div>
-    <div class="stat"><span class="k">Merges</span><span class="v ok">${s.merges || 0}</span></div>
-    <div class="stat"><span class="k">Falhas · infra</span><span class="v ${s.failures ? "bad" : ""}">${s.failures || 0}</span><span class="v dim">· ${s.infraFails || 0}</span></div>
-    ${M.failSteps.length ? `<div class="fsteps">${M.failSteps.map((x) => badge(`${x.step} ${x.count}`, "red mono")).join("")}</div>` : ""}
-    <div class="stat"><span class="k">Febre · ${cycles.length} ciclos</span><div class="fever">${cycles.map((c) => `<i class="${c.ok ? "ok" : "bad"}" title="${esc(c.task || "")}"></i>`).join("")}</div><span class="v ${fails >= 2 ? "warn" : ""}">${fails}</span></div>
-    <div class="stat"><span class="k">Tokens · ${t ? esc(t.id) : "task"}</span><span class="v">${t && fmtTok((s.taskCosts || {})[t.id]) || "—"}</span></div>
-    <div class="stat"><span class="k">Cache hit · task / slot</span>${arc(hit ?? 0)}<span class="v">${hit != null ? hit + "%" : "—"}<span class="dim"> / ${slotC != null ? slotC + "%" : "—"}</span></span></div>
-    ${lessons}
-    ${M.history.exists ? `<div class="stat"><span class="k">Burn-down 7d</span><div class="burn">${M.history.days.map((d) => { const mx = Math.max(1, ...M.history.days.map((x) => x.ok + x.failed)); return `<i title="${d.day}: ${d.ok} ok, ${d.failed} falhas"><b style="height:${Math.round((d.ok / mx) * 22)}px"></b><b class="f" style="height:${Math.round((d.failed / mx) * 22)}px"></b></i>`; }).join("")}</div></div>
-    <div class="stat"><span class="k">Média por fase</span><span class="v dim" style="font-size:10.5px">${M.history.phaseAvg.map((p) => `${p.phase} ${fmtDur(p.avgMs)}`).join(" · ") || "—"}</span></div>` : ""}`;
-  setHTML($("pulse-b"), html);
-  const b = $("pulse-b").querySelector('[data-act="audit"]'); if (b) b.onclick = (ev) => auditClear(ev.currentTarget);
-}
-
-// ── caixa-preta ───────────────────────────────────────────────────────────
-function renderCockpit() {
-  const f = selectedFlight(); const t = f && f.task ? M.tasks[f.task] : null;
-  const role = $("ck-role"), body = $("ck-body"), tr = $("transcript");
-  if (!t) {
-    setCls(role, ""); setText(role.querySelector(".av"), "—"); setText($("ck-name"), "Caixa-preta"); setText($("ck-sub"), f ? `pista ${f.slot} livre` : "nenhum voo");
-    setHTML($("ck-meta"), ""); setHTML(tr, '<div class="empty"><b>Nenhum agent no ar.</b><br>Quando um voo decolar, a transcrição do builder aparece aqui em tempo real.</div>'); setHTML($("ck-foot"), ""); return;
-  }
-  const rdef = ROLES.find((r) => r.id === t.agent.role) || ROLES[1];
-  const live = t.status === "active" && t.agent.status === "thinking";
-  setCls(role, `${live ? "live" : ""}${t.agent.tier === "B" ? " tierb" : ""}`);
-  setText(role.querySelector(".av"), rdef.ab);
-  setText($("ck-name"), `${rdef.label} · ${t.id}`);
-  setText($("ck-sub"), `${t.agent.model || modelFor(t.agent.role)} · tier ${t.agent.tier}${t.round ? " · round " + t.round : ""}${t.agent.since ? " · " + fmtClock(Date.now() - t.agent.since) : ""}`);
-  const fl = f.status === "active" ? badge(f.phase, "cyan") : f.status === "landed" ? badge("pousou", "green") : badge(f.phase || "abortado", "red");
-  setHTML($("ck-meta"), `${fl}<button class="btn sm" data-act="dossier">Dossiê <span class="kbd">D</span></button><button class="btn sm" data-act="takeover" title="Abrir Terminal na sessão do builder">${ICON.term}Takeover</button>`);
-  $("ck-meta").querySelector('[data-act="dossier"]').onclick = () => openDossier(t.id);
-  $("ck-meta").querySelector('[data-act="takeover"]').onclick = (ev) => takeover(t, ev.currentTarget);
-  if (t.agent.tier === "B" && t.agent.status === "thinking") {
-    setHTML(tr, `<div class="sealed"><div class="box">${ICON.lock}</div><b>Caixa-preta lacrada</b><span>${esc(rdef.label)} roda em tier B (claude -p), sem streaming. O output completo entra quando a sessão fechar.</span><span class="clock" id="sealed-clock">${fmtClock(Date.now() - t.agent.since)}</span></div>`);
-  } else {
-    if (tr.querySelector(".sealed, .empty")) { tr.innerHTML = ""; tr.__html = ""; }
-    const lines = t.transcript.slice(-160);
-    syncList(tr, lines, (l) => l.id,
-      (l) => h("div", `ln ${l.kind}`, `<span class="ts">${fmtTime(l.ts)}</span><span class="tx"></span>`),
-      (el, l) => {
-        const tx = el.querySelector(".tx");
-        if (l.kind === "tool") {
-          const tl = l.tool; setHTML(tx, `<span class="chip ${tl.status || "completed"}"><span class="nm">${esc(tl.name)}</span><span class="arg">${esc(tl.arg || "")}</span>${tl.ms ? `<span class="ms">${fmtMs(tl.ms)}</span>` : ""}</span>`);
-        } else if (l.shown === Infinity || l.shown >= l.text.length) { setText(tx, l.text); tx.classList.remove("caret"); }
-      });
-    typewriterKick();
-    if (nearBottom(body)) body.scrollTop = body.scrollHeight;
-  }
-  const cost = (M.state.taskCosts || {})[t.id]; const c = (M.state.taskCache || {})[t.id]; const hit = cacheHit(c);
-  const tools = t.transcript.filter((l) => l.kind === "tool").length;
-  setHTML($("ck-foot"), `<span><b>tokens</b> <span class="tokens">${fmtTok(cost) || "—"}</span></span><span><b>cache</b> ${hit != null ? hit + "%" : "—"}</span><span><b>tools</b> ${tools}</span>${t.checkpoint ? `<span><b>contexto</b> ${Math.round(t.checkpoint.pct)}%</span>` : ""}<span class="spacer"></span><span>${t.planner && t.planner.spec ? esc(t.planner.spec) : ""}</span>`);
-}
-function nearBottom(el) { return el.scrollTop + el.clientHeight > el.scrollHeight - 80; }
-let twRunning = false, twLast = 0;
-function typewriterKick() { if (twRunning || REDUCED) return; twRunning = true; twLast = performance.now(); requestAnimationFrame(typewriterStep); }
-function typewriterStep(now) {
-  const t = selectedTask(); const tr = $("transcript");
-  const dt = Math.min(100, now - twLast); twLast = now;
-  let pending = false;
-  if (t) {
-    const budget = Math.max(1, Math.round(dt * 0.22));
-    let spent = 0;
-    for (const l of t.transcript) {
-      if (l.kind !== "text" && l.kind !== "think" && l.kind !== "err" && l.kind !== "note") continue;
-      if (l.shown >= l.text.length) continue;
-      const el = tr.querySelector(`[data-key="${l.id}"] .tx`);
-      if (!el) { l.shown = l.text.length; continue; }
-      const take = Math.min(l.text.length - l.shown, budget - spent);
-      if (take <= 0) { pending = true; break; }
-      l.shown += take; spent += take;
-      el.textContent = l.text.slice(0, l.shown);
-      el.classList.toggle("caret", l.shown < l.text.length);
-      if (l.shown < l.text.length) pending = true;
-      if (spent >= budget) { pending = true; break; }
+    const hb = data.heartbeatMs ?? Infinity;
+    document.getElementById("live").className = hb < 90_000 ? "on" : "stale";
+    document.getElementById("s-hb").textContent = hb === Infinity ? "—" : `${Math.round(hb/1000)}s`;
+    document.getElementById("s-tasks").textContent = data.state?.tasks ?? 0;
+    document.getElementById("s-deploys").textContent = data.state?.deploys ?? 0;
+    document.getElementById("s-fails").textContent = data.state?.failures ?? 0;
+    // P2-045: honest daily merge counter from state.json (resets at midnight
+    // with the other budgets) — never a windowed count of the events buffer
+    document.getElementById("s-prs").textContent = data.state?.merges ?? 0;
+    // P2-045: audit-mode chip — state.json already carries the pause + reason
+    const audit = data.state?.auditMode;
+    const chip = document.getElementById("audit-chip");
+    chip.style.display = audit ? "block" : "none";
+    if (audit) {
+      document.getElementById("audit-reason").textContent = audit.reason || "";
+      chip.title = data.state?.auditDiagnosis || "";
     }
-    const body = $("ck-body"); if (pending && nearBottom(body)) body.scrollTop = body.scrollHeight;
+    // P2-041: post-rollback health alert — red chip while the newest
+    // rollback-health verdict says prod is still unhealthy (a healthy verdict
+    // or a later clean deploy clears it; the daemon aggregates the full feed)
+    const rb = document.getElementById("rb-health");
+    rb.style.display = data.rollbackUnhealthy ? "block" : "none";
+    rb.title = data.rollbackUnhealthy ? (data.rollbackDetail || "") : "";
+    // P2-075: PWA origin down — red chip while the newest pwa-origin verdict
+    // says the static origin (com.ocr.pwa, :5173) is not answering
+    const pwa = document.getElementById("pwa-chip");
+    pwa.style.display = data.pwaDown ? "block" : "none";
+    pwa.title = data.pwaDown ? (data.pwaDetail || "") : "";
+    // P2-045: gate failure breakdown by step (evidence/invariants/integration/…)
+    renderFailSteps(data.failSteps);
+    // budget meters
+    lastAuxData = data.lastAux || {};
+    // P2-028: per-task token costs (state.json taskCosts) drive the cost chips
+    // in the FILA / CONCLUÍDAS views
+    lastCosts = data.state?.taskCosts || {};
+    // P2-028: keep the cost chips fresh while a FILA/CONCLUÍDAS view is open
+    if (logsOpen) {
+      if (document.getElementById("readylist").style.display === "block") renderReady();
+      else if (document.getElementById("donelist").style.display === "block") renderDone();
+    }
+    const maxT = data.cfg?.maxTasksPerDay || 15, maxD = data.cfg?.maxDeploysPerDay || 12;    document.getElementById("m-tasks").style.width = `${Math.min((data.state?.tasks ?? 0) / maxT * 100, 100)}%`;
+    document.getElementById("m-dep").style.width = `${Math.min((data.state?.deploys ?? 0) / maxD * 100, 100)}%`;
+    document.getElementById("m-tasks-t").textContent = `${data.state?.tasks ?? 0}/${maxT}`;
+    document.getElementById("m-dep-t").textContent = `${data.state?.deploys ?? 0}/${maxD}`;
+    render(data.events || []);
+    loadFilaCounts();
+    loadHistory();
+  } catch {
+    document.getElementById("live").className = "stale";
   }
-  if (pending) requestAnimationFrame(typewriterStep); else twRunning = false;
+}
+function startPolling() { poll(); setInterval(poll, 2000); loadMission(); }
+
+// P2-028: token total → compact honest label ("640M tok"); empty when unknown
+// so tasks without a recorded cost render exactly as before. Round 2: values
+// in the 999.5k..1M band roll into "1.0M tok" instead of rendering "1000k".
+function fmtTok(n) {
+  if (!Number.isFinite(n) || n <= 0) return "";
+  if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B tok`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M tok`;
+  const k = Math.round(n / 1e3);
+  return k < 1000 ? `${k}k tok` : `${(n / 1e6).toFixed(1)}M tok`;
+}
+function costChip(id) {
+  const c = fmtTok(lastCosts?.[id]);
+  return c ? `<span class="cost">${c}</span>` : "";
 }
 
-// ── arena ─────────────────────────────────────────────────────────────────
-function findingHtml(fd, cls) {
-  return `<div class="finding ${cls}">${fd.cite ? `<span class="cite" data-cite="${esc(fd.cite)}">${esc(fd.cite)}</span> ` : ""}<span class="tx">${esc(fd.text)}</span>${fd.why ? `<span class="why">${esc(fd.why)}</span>` : ""}</div>`;
-}
-function judgeHtml(name, j, cls, resolved) {
-  const v = j.verdict; const vb = !v ? badge("julgando", "pending") : v === "APPROVE" ? badge("approve", "green") : badge("request changes", "red");
-  const kept = j.kept.map((f) => findingHtml(f, resolved && resolved.has(f.text) ? "resolved" : "")).join("");
-  const dropped = j.dropped.map((f) => findingHtml(f, "dropped")).join("");
-  const sum = v && !j.kept.length && !j.dropped.length ? `<div class="sum">${v === "APPROVE" ? "sem findings" : j.keptCount != null ? `${j.keptCount} mantido(s)` : "findings não publicados pelo pilot (PR1 da Torre)"}</div>` : "";
-  return `<div class="judge ${cls}"><div class="jh"><span class="nm">${name}</span>${vb}</div>${kept}${dropped}${sum}</div>`;
-}
-function renderArena() {
-  const t = selectedTask();
-  const body = $("ar-body");
-  if (!t) { setText($("ar-meta"), "—"); setHTML(body, '<div class="empty"><b>Sem review em curso.</b><br>SECURITY e QUALITY julgam o diff depois do gate; findings alucinados aparecem riscados com o motivo.</div>'); return; }
-  const rounds = Object.values(t.rounds).filter((r) => r.review).sort((a, b) => b.n - a.n);
-  const r = rounds[0];
-  if (!r) { setText($("ar-meta"), t.id); setHTML(body, `<div class="empty"><b>${esc(t.id)}</b> ainda não chegou aos reviewers.</div>`); return; }
-  const prev = rounds[1];
-  const resolved = prev ? new Set([...prev.review.security.kept, ...prev.review.quality.kept].map((f) => f.text)) : null;
-  setText($("ar-meta"), `${t.id} · round ${r.n}${r.review.end ? " · " + fmtClock(r.review.end - r.review.start) : ""}${r.review.ok != null ? (r.review.ok ? " · aprovado" : " · mudanças") : ""}`);
-  let html = `<div class="arena-g">${judgeHtml("Security", r.review.security, "")}${judgeHtml("Quality", r.review.quality, "")}${r.review.escalation ? judgeHtml("Escalation · tier B", r.review.escalation, "center") : ""}</div>`;
-  if (prev) { const gone = [...prev.review.security.kept, ...prev.review.quality.kept].filter((f) => ![...r.review.security.kept, ...r.review.quality.kept].some((x) => x.text === f.text)); if (gone.length) html += `<div class="judge" style="border-top:1px solid var(--line)"><div class="jh"><span class="nm" style="color:var(--dim)">Round ${prev.n} · resolvidos pelo builder</span></div>${gone.map((f) => findingHtml(f, "resolved")).join("")}</div>`; }
-  setHTML(body, html);
-  body.querySelectorAll(".cite").forEach((c) => (c.onclick = () => openLogs(c.dataset.cite.split(":")[0].split("/").pop())));
+// P2-045: queue + blocked counters on the FILA button (## Ready / ## Blocked)
+async function loadFilaCounts() {
+  try {
+    const res = await fetch("/api/pilot-ready", { headers: { authorization: `Bearer ${token}` } });
+    const { ready, blocked } = await res.json();
+    document.getElementById("fila-n").textContent = `· ${(ready || []).length} ⛔${(blocked || []).length}`;
+  } catch {}
 }
 
-// ── tribunal ──────────────────────────────────────────────────────────────
-function renderGate() {
-  const t = selectedTask(); const body = $("gt-body");
-  const g = t && t.gate;
-  if (!g) { body.__gateStruct = false; setText($("gt-meta"), t ? t.id : "—"); setHTML(body, `<div class="lamps">${GATE_STEPS.map((s) => `<div class="lamp skip ${GATE_COND.has(s) ? "cond" : ""}"><span class="bulb"></span><span class="nm">${s}</span></div>`).join("")}</div><div class="verdict"><span class="dim">bateria determinística aguardando o builder</span></div>`); return; }
-  const done = g.steps.filter((s) => s.status === "ok" || s.status === "flaky").length, total = g.steps.filter((s) => s.status !== "skip").length;
-  setText($("gt-meta"), `${t.id} · round ${t.round || 1} · ${done}/${total}${g.endedAt ? " · " + fmtClock(g.endedAt - g.startedAt) : ""}`);
-  if (!body.__gateStruct) { body.innerHTML = '<div class="lamps"></div><div class="tail hide"></div><div class="verdict"></div>'; body.__html = ""; body.__gateStruct = true; }
-  const lamps = body.querySelector(".lamps");
-  const order = g.steps.filter((s) => s.status !== "skip").concat(g.steps.filter((s) => s.status === "skip"));
-  syncList(lamps, order, (s) => s.name,
-    (s) => h("div", "lamp", `<span class="bulb"></span><span class="nm">${esc(s.name)}</span><span class="tag hide">cache</span><span class="ms"></span>`),
-    (el, s) => {
-      const i = g.steps.indexOf(s);
-      if (el.__st !== s.status) { el.__st = s.status; el.style.transitionDelay = REDUCED ? "0ms" : `${(i % 4) * 60}ms`; }
-      setCls(el, `lamp ${s.status}${s.cond ? " cond" : ""}`);
-      el.querySelector(".tag").classList.toggle("hide", !s.cached);
-      setText(el.querySelector(".ms"), s.ms != null ? fmtMs(s.ms) : "");
+// P2-045: 7-day burn-down + avg duration per phase (P2-043 history.jsonl)
+async function loadHistory() {
+  const w = document.getElementById("hist");
+  try {
+    const res = await fetch("/api/pilot-history", { headers: { authorization: `Bearer ${token}` } });
+    const data = await res.json();
+    if (!data.exists) { w.style.display = "none"; return; }
+    w.style.display = "block";
+    const days = data.days || [];
+    const max = Math.max(1, ...days.map((d) => d.ok + d.failed));
+    document.getElementById("hist-bars").innerHTML = days.map((d) => {
+      const hOk = Math.round((d.ok / max) * 28);
+      const hFail = Math.round((d.failed / max) * 28);
+      return `<div class="hbar" title="${d.day}: ${d.ok} ok, ${d.failed} falhas"><i style="height:${hOk}px"></i><i class="f" style="height:${hFail}px"></i></div>`;
+    }).join("");
+    document.getElementById("hist-phases").textContent = (data.phaseAvg || []).length
+      ? data.phaseAvg.map((p) => `${p.phase} ${fmtDur(p.avgMs)} (${p.n})`).join(" · ")
+      : "—";
+  } catch {
+    w.style.display = "none";
+  }
+}
+function fmtDur(ms) {
+  if (ms >= 3_600_000) return `${(ms / 3_600_000).toFixed(1)}h`;
+  if (ms >= 60_000) return `${Math.round(ms / 60_000)}m`;
+  return `${Math.round(ms / 1000)}s`;
+}
+
+// P2-045: per-step gate failure rows under the FALHAS counter
+function renderFailSteps(steps) {
+  const el = document.getElementById("failsteps");
+  const list = steps || [];
+  el.innerHTML = list
+    .map((s) => `<div class="fstep"><span>${escapeHtml(s.step)}</span><b>${s.count}</b></div>`)
+    .join("");
+  el.style.display = list.length ? "block" : "none";
+}
+
+function render(events) {
+  resetStates();
+  const ticker = document.getElementById("ticker");
+  ticker.innerHTML = "";
+  for (const e of events.slice(-120)) {
+    const time = e.ts ? new Date(e.ts).toLocaleTimeString("pt-BR", { hour12: false }) : "";
+    const div = document.createElement("div");
+    const cls = e.type === "result" ? (e.ok ? "ok" : "bad") : e.type === "deploy" ? (e.ok === false ? "bad" : "gold") : "t";
+    div.innerHTML = `<span class="${cls}">${time}</span> [${(e.task || e.type).slice(0, 10)}] ${e.phase || e.type} ${escapeHtml(e.detail || "").slice(0, 110)}`;
+    ticker.appendChild(div);
+  }
+  while (ticker.children.length > 6) ticker.removeChild(ticker.firstChild);
+
+  // cognitive-loop nodes: researcher fires daily, strategist on refills
+  const researchEv = [...events].reverse().find(e => e.task === "research");
+  if (researchEv) setState("researcher", researchEv.ok === false ? "fail" : "ok");
+  const refillEv = [...events].reverse().find(e => e.phase === "refill" || (e.detail || "").includes("refill"));
+  if (refillEv) setState("strategist", "working");
+
+  // last phase per task
+  const last = {};
+  for (const e of events.filter(x => x.type === "phase")) if (e.task) last[e.task] = e;
+  const tasks = Object.keys(last);
+  const cur = tasks[tasks.length - 1];
+  if (cur) {
+    const e = last[cur];
+    // P2-008: planner phases precede the builder — buildIdx maps a phase back
+    // onto the original builder-timeline so node states stay honest
+    const seq = ["planner","planner-done","builder","builder-done","reviewers","reviewers-done","gatekeeper","merge"];
+    const idx = seq.indexOf(e.phase);
+    const buildIdx = idx - 2;
+    const phaseEl = document.getElementById("task-phase");
+    phaseEl.textContent = (e.phase || "").toUpperCase();
+    phaseEl.style.color = e.ok === false ? "var(--red)" : "var(--cyan)";
+    document.getElementById("task-title").textContent = `(${cur}) — ${e.detail || ""}`;
+    const bar = document.querySelector("#progress i");
+    // planner phases occupy the first quarter; the build itself stays on the
+    // original 6-step scale so P2 tasks (no planner) start at 16.7%, not 37.5%
+    if (bar) bar.style.width = `${buildIdx >= 0 ? ((buildIdx + 1) / 6) * 100 : ((idx + 1) / 8) * 50}%`;
+
+    if (idx >= 0) {
+      const order = ["backlog","builder","security","quality","gatekeeper","deploy"];
+      const lit = buildIdx >= 0 ? Math.min(buildIdx, 5) : 0; // planner lights only the backlog
+      for (let i = 0; i < order.length; i++) setState(order[i], i <= lit ? "ok" : "idle");
+      setState("builder", buildIdx === 0 || buildIdx < 0 ? "working" : "ok");
+      if (e.phase === "reviewers") { setState("security","working"); setState("quality","working"); }
+      if (e.phase === "reviewers-done") { setState("security", e.ok ? "ok" : "fail"); setState("quality", e.ok ? "ok" : "fail"); }
+      if (e.phase === "gatekeeper") setState("gatekeeper","working");
+      if (e.phase === "merge") setState("gatekeeper", e.ok ? "ok" : "fail");
+      if (e.phase === "merge" && e.ok) {
+        setState("deploy","working");
+        flow("gatekeeper","deploy","#fbbf24");
+        burst(nodeMap.gatekeeper.x, nodeMap.gatekeeper.y, "#fbbf24");
+      }
+      if (e.phase !== "builder") flow("backlog","builder","#22d3ee");
+      if (buildIdx >= 2) { flow("builder","security","#818cf8"); flow("builder","quality","#38bdf8"); }
+      if (e.phase === "builder") flow("backlog","builder","#22d3ee");
+    }
+  }
+
+  // deploy events → core
+  const dep = [...events].reverse().find(e => e.type === "deploy");
+  if (dep) {
+    // P2-041: a rollback-health verdict is an honest prod state — red when the
+    // rolled-back build is still failing, green once it recovered
+    const coreState = dep.phase === "rollback-health"
+      ? (dep.ok === false ? "fail" : "ok")
+      : dep.phase === "done" ? "ok" : dep.phase === "rollback" ? "fail" : "working";
+    setState("core", coreState);
+    if (dep.phase === "start") flow("deploy","core","#4ade80");
+    if (dep.phase === "rollback") { setState("deploy","fail"); burst(nodeMap.core.x, nodeMap.core.y, "#f87171"); }
+    if (dep.phase === "done") burst(nodeMap.core.x, nodeMap.core.y, "#4ade80");
+  }
+}
+function escapeHtml(s) { return s.replace(/</g, "&lt;"); }
+
+// ─── log drawer ───────────────────────────────────────────────────────────────
+let logLines = [], roleFilters = new Set(), follow = true, logsOpen = false;
+const ROLES = ["agent","reviewer","gatekeeper","deploy","strategist","researcher","redteam","pipeline","info"];
+function roleOf(msg) {
+  if (/researcher/.test(msg)) return "researcher";
+  if (/strategist/.test(msg)) return "strategist";
+  if (/redteam/.test(msg)) return "redteam";
+  if (/reviewer/.test(msg)) return "reviewer";
+  if (/gatekeeper|invariant/.test(msg)) return "gatekeeper";
+  if (/deploy|rollback|soak|npm/.test(msg)) return "deploy";
+  if (/^agent|builder/.test(msg)) return "agent";
+  if (/pipeline|pilot started|frozen|watchdog|queue/.test(msg)) return "pipeline";
+  return "info";
+}
+function openLogs(role) {
+  logsOpen = true;
+  document.getElementById("logdrawer").classList.add("open");
+  if (role) {
+    roleFilters = new Set([role]);
+    document.querySelectorAll("#logbar .chip.role").forEach(c =>
+      c.classList.toggle("on", c.dataset.role === role));
+  }
+  pollLogs();
+}
+function closeLogs() { logsOpen = false; document.getElementById("logdrawer").classList.remove("open"); }
+window.openLogs = openLogs; window.closeLogs = closeLogs;
+function toggleRole(el) {
+  const r = el.dataset.role;
+  roleFilters.has(r) ? roleFilters.delete(r) : roleFilters.add(r);
+  el.classList.toggle("on", roleFilters.has(r));
+  renderLogs();
+}
+window.toggleRole = toggleRole;
+function toggleFollow() {
+  follow = !follow;
+  document.getElementById("followbtn").classList.toggle("on", follow);
+  document.getElementById("followbtn").textContent = follow ? "FOLLOW ▼" : "PAUSED ⏸";
+  if (follow) scrollLogs();
+}
+window.toggleFollow = toggleFollow;
+function scrollLogs() {
+  const v = document.getElementById("logview");
+  v.scrollTop = v.scrollHeight;
+  document.getElementById("followhint").style.display = "none";
+}
+document.getElementById("logview").addEventListener("scroll", function () {
+  const atBottom = this.scrollTop + this.clientHeight > this.scrollHeight - 40;
+  if (!atBottom && follow) {
+    follow = false;
+    document.getElementById("followbtn").classList.remove("on");
+    document.getElementById("followbtn").textContent = "PAUSED ⏸";
+  } else if (atBottom && !follow) {
+    follow = true;
+    document.getElementById("followbtn").classList.add("on");
+    document.getElementById("followbtn").textContent = "FOLLOW ▼";
+  }
+});
+async function pollLogs() {
+  if (!logsOpen) return;
+  try {
+    const res = await fetch("/api/pilot-log?n=400", { headers: { authorization: `Bearer ${token}` } });
+    if (!res.ok) throw new Error(res.status);
+    const data = await res.json();
+    logLines = (data.lines || []).map((l) => {
+      try { return JSON.parse(l); } catch { return { msg: "raw", data: l }; }
     });
-  const tail = body.querySelector(".tail"); tail.classList.toggle("hide", !g.tail); setText(tail, g.tail || "");
-  const v = body.querySelector(".verdict");
-  if (g.ok === true) setHTML(v, `<b>Verde</b><span>${g.flaky.length ? "flaky: " + esc(g.flaky.join(", ")) + " · " : ""}${g.steps.filter((s) => s.cached).length} do cache do preflight</span>`);
-  else if (g.ok === false) setHTML(v, `<b>Reprovado</b><span>${esc(g.failed || "")} · builder corrige no próximo round</span>`);
-  else setHTML(v, `<b>Julgando</b><span>${esc((g.steps.find((s) => s.status === "running") || {}).name || "…")}</span>`);
-  setCls(v, `verdict ${g.ok === true ? "ok" : g.ok === false ? "fail" : "run"}`);
+    renderLogs();
+  } catch {}
+  setTimeout(pollLogs, 2000);
 }
-
-// ── pouso ─────────────────────────────────────────────────────────────────
-function renderLanding() {
-  const L = M.landing; const body = $("ld-body");
-  const runway = (sha, prod) => `<div class="runway"><span class="k">${prod ? "prod" : "voo"}</span><div class="strip">${sha ? `<span class="sha ${prod ? "live" : ""}${M.bannedSha && M.bannedSha === sha && !prod ? " banned" : ""}">${esc(shortSha(sha))}</span>` : ""}</div></div>`;
-  if (!L) { setText($("ld-meta"), "—"); setHTML(body, `<div class="ecg-wrap"><div class="idle">sem pouso em curso</div></div>${runway(M.prodSha, true)}`); return; }
-  const t = L.task ? M.tasks[L.task] : null;
-  setText($("ld-meta"), `${t ? t.id + " · " : ""}${L.done ? "pousou" : L.rollback ? "arremetida" : L.aborted ? "abortado" : "pousando"} · ${fmtClock((L.done || (L.rollbackHealth && L.rollbackHealth.ts) || Date.now()) - L.startedAt)}`);
-  const stages = L.stages.map((s) => `<span class="stage ${s.ok ? "ok" : "fail"}" title="${esc(s.detail)}"><span class="d"></span>${esc(s.name)}</span>`).join("") + (!L.done && !L.rollback && !L.aborted && !L.beats.length ? `<span class="stage run"><span class="d"></span>${L.stages.length ? "soak" : "sha-guard"}</span>` : "");
-  const W = Math.max(340, ($("ld-body").clientWidth || 380) - 24), H = 72, base = 46, gap = 18;
-  let x = 14; const parts = []; const dots = []; const lbl = [];
-  let lastKey = "";
-  for (const b of L.beats) {
-    const isLive = b.kind === "live"; const cls = `beat ${!b.ok ? "bad" : isLive ? "live" : ""} ${REDUCED ? "" : "draw"}`;
-    const up = isLive ? 10 : 20, dn = 58;
-    parts.push(b.ok ? `<path class="${cls}" d="M${x - 8} ${base} L${x - 3} ${base} L${x - 1} ${up} L${x + 1} ${dn} L${x + 3} ${base} L${x + 8} ${base}"/>` : `<path class="${cls}" d="M${x - 8} ${base} L${x - 4} ${base} L${x - 2} ${base + 9} L${x + 2} ${base - 3} L${x + 4} ${base} L${x + 8} ${base}"/>`);
-    dots.push(`<circle class="dot ${b.ok ? (isLive ? "live" : "ok") : "bad"}" cx="${x}" cy="${b.ok ? up : base + 9}" r="2"/>`);
-    if (isLive) lbl.push(`<text class="lbl" x="${x}" y="${H - 4}" text-anchor="middle">live ${b.i}/${b.n}</text>`);
-    lastKey = `${b.kind}${b.i}${b.ok}`;
-    x += gap;
-  }
-  if (L.rollback) { parts.push(`<path class="beat goaround" d="M${x - 8} ${base} C ${x + 6} ${base}, ${x + 12} 8, ${x + 40} 6"/>`); lbl.push(`<text class="lbl" x="${x + 6}" y="20" fill="var(--red)">rollback</text>`); x += 48; }
-  if (L.rollbackHealth) { dots.push(`<circle class="dot ${L.rollbackHealth.ok ? "ok" : "bad"}" cx="${x}" cy="${base}" r="4"/>`); lbl.push(`<text class="lbl" x="${x + 8}" y="${base + 4}">${L.rollbackHealth.ok ? "prod ok" : "prod unhealthy"}</text>`); x += 60; }
-  if (L.done) { dots.push(`<circle class="dot ok" cx="${x}" cy="${base}" r="4"/>`); lbl.push(`<text class="lbl" x="${x + 8}" y="${base + 4}">pousou</text>`); x += 50; }
-  const w = Math.max(W, x + 20);
-  const svg = `<svg viewBox="0 0 ${w} ${H}" width="${w}" height="${H}" preserveAspectRatio="none"><g class="grid">${[18, 46].map((y) => `<line x1="0" y1="${y}" x2="${w}" y2="${y}"/>`).join("")}</g><line class="base" x1="0" y1="${base}" x2="${w}" y2="${base}"/>${parts.join("")}${dots.join("")}${lbl.join("")}</svg>`;
-  const scan = !L.done && !L.rollbackHealth && !L.aborted ? `<div class="scan" style="left:${Math.min(x, w - 2)}px"></div>` : "";
-  const html = `<div class="stages">${stages}</div><div class="ecg-wrap" style="overflow-x:auto">${L.beats.length || L.rollback ? svg + scan : `<div class="idle">${L.aborted ? "deploy abortado antes do soak" : "aguardando o primeiro batimento do soak"}</div>`}</div>${L.rollback ? `<div class="rbh ${L.rollbackHealth ? (L.rollbackHealth.ok ? "ok" : "fail") : ""}"><b>${L.rollbackHealth ? (L.rollbackHealth.ok ? "pista segura" : "pista comprometida") : "verificando a pista"}</b><span class="ell">${esc(L.rollback.detail)}${L.rollbackHealth ? " · " + esc(L.rollbackHealth.detail) : ""}</span></div>` : ""}${runway(L.sha, false)}${runway(M.prodSha, true)}`;
-  const key = `${L.startedAt}|${L.stages.length}|${lastKey}|${L.beats.length}|${!!L.rollback}|${!!L.rollbackHealth}|${!!L.done}|${M.prodSha}|${M.bannedSha}`;
-  if (body.__key !== key) {
-    body.__key = key; body.innerHTML = html;
-    const wrap = body.querySelector(".ecg-wrap"); if (wrap) wrap.scrollLeft = wrap.scrollWidth;
-    if (L.done && L.done > Date.now() - 2000) { const prod = body.querySelectorAll(".runway .sha")[1]; if (prod) prod.classList.add("arrive"); }
-  }
-}
-
-// ── ticker ────────────────────────────────────────────────────────────────
-function renderTicker() {
-  const evs = M.feed.slice(-3);
-  setHTML($("ticker-line"), evs.map((e) => { const cls = e.type === "result" ? (e.ok === false ? "bad" : "ok") : e.type === "deploy" ? (e.ok === false ? "bad" : "dep") : e.ok === false ? "bad" : ""; return `<span class="ev ${cls}"><span class="t">${fmtTime(Date.parse(e.ts))}</span><span class="k">${esc(e.task || e.type)}</span><span>${esc(e.phase || e.type)}</span><span class="dim">${esc((e.detail || "").slice(0, 60))}</span></span>`; }).join(""));
-}
-
-// ── logs ──────────────────────────────────────────────────────────────────
+let lastSig = "";
 function renderLogs() {
-  const view = $("logview"); const re = LOG_ROLES.find(([r]) => r === logRole);
-  const rows = M.log.filter((j) => { const ds = typeof j.data === "string" ? j.data : j.data ? JSON.stringify(j.data) : ""; if (re && !re[1].test(j.msg + " " + ds)) return false; if (logQuery && !(j.msg + " " + ds).toLowerCase().includes(logQuery)) return false; return true; }).slice(-500);
-  const html = rows.map((j) => { const ds = typeof j.data === "string" ? j.data : j.data ? Object.entries(j.data).map(([k, v]) => `${k}=${String(v).slice(0, 120)}`).join("  ") : ""; return `<div class="l ${j.level || ""}"><span class="t">${fmtTime(Date.parse(j.ts))}</span><span class="m">${esc(j.msg)}</span><span class="d">${esc(ds)}</span></div>`; }).join("");
-  setHTML(view, html || '<div class="empty">nada no log com esse filtro</div>');
-  if (logFollow) view.scrollTop = view.scrollHeight;
+  const view = document.getElementById("logview");
+  const q = (document.getElementById("logsearch").value || "").toLowerCase();
+  const filtered = [];
+  for (const e of logLines) {
+    const role = roleOf(e.msg || "");
+    if (roleFilters.size && !roleFilters.has(role)) continue;
+    const dataStr = typeof e.data === "string" ? e.data
+      : e.data ? Object.entries(e.data).map(([k, v]) => `${k}:${String(v).slice(0, 90)}`).join("  ") : "";
+    const task = (e.data && e.data.task) || (dataStr.match(/\((P[\d]-[\w-]+)\)/) || [])[1] || "";
+    if (q && !(`${task} ${e.msg} ${dataStr}`.toLowerCase().includes(q))) continue;
+    filtered.push({ e, role, dataStr, task });
+  }
+  // skip DOM rebuild entirely when nothing changed — keeps scroll position stable
+  const lastE = filtered[filtered.length - 1]?.e;
+  const sig = `${filtered.length}|${lastE?.ts}|${lastE?.msg}|${q}|${[...roleFilters].join()}`;
+  if (sig === lastSig) return;
+  const wasFollowing = follow;
+  const prevH = view.scrollHeight, prevTop = view.scrollTop;
+  const frag = document.createDocumentFragment();
+  const tasksSeen = new Map();
+  for (const { e, role, dataStr, task } of filtered) {
+    if (task) tasksSeen.set(task, (tasksSeen.get(task) || 0) + 1);
+    const time = e.ts ? new Date(e.ts).toLocaleTimeString("pt-BR", { hour12: false }) : "";
+    const ln = document.createElement("div");
+    ln.className = "ln";
+    const lv = e.level === "warn" ? "lv-warn" : e.level === "error" ? "lv-error" : "";
+    ln.innerHTML = `<span class="ts">${time}</span>` +
+      `<span class="tag rg-${role} ${lv}">${escapeHtml(e.msg || "")}</span>` +
+      `<span class="tx ${lv}">${task ? `<b style="color:#8fa3b8">[${task}]</b> ` : ""}${escapeHtml(dataStr)}</span>`;
+    frag.appendChild(ln);
+  }
+  view.innerHTML = "";
+  view.appendChild(frag);
+  // dynamic task chips (top 4)
+  document.querySelectorAll("#logbar .chip.task").forEach((c) => c.remove());
+  let lastChip = document.getElementById("followbtn");
+  for (const [t] of [...tasksSeen.entries()].sort((a, b) => b[1] - a[1]).slice(-4)) {
+    const c = document.createElement("span");
+    c.className = "chip task"; c.textContent = t;
+    c.onclick = () => { document.getElementById("logsearch").value = t; renderLogs(); };
+    lastChip.after(c); lastChip = c;
+  }
+  if (wasFollowing) scrollLogs();
+  else view.scrollTop = view.scrollHeight - prevH + prevTop; // keep reading position
+  lastSig = sig;
+}
+addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeLogs();
+  if (e.key === "l" && !logsOpen && !/input|textarea/i.test(document.activeElement.tagName)) openLogs();
+});
+
+// done-view toggle + budget editor
+function viewLogs() {
+  document.getElementById("logview").style.display = "block";
+  document.getElementById("donelist").style.display = "none";
+  document.getElementById("readylist").style.display = "none";
+  document.getElementById("logbar").querySelectorAll("input,.chip,.role").forEach((el) => (el.style.display = ""));
+  document.getElementById("vt-logs").classList.add("on");
+  document.getElementById("vt-done").classList.remove("on");
+  document.getElementById("vt-ready").classList.remove("on");
+}
+function viewDone() {
+  document.getElementById("logview").style.display = "none";
+  document.getElementById("donelist").style.display = "block";
+  document.getElementById("readylist").style.display = "none";
+  document.getElementById("logbar").querySelectorAll("input,.chip").forEach((el) => (el.style.display = "none"));
+  document.getElementById("vt-logs").classList.remove("on");
+  document.getElementById("vt-done").classList.add("on");
+  document.getElementById("vt-ready").classList.remove("on");
+  renderDone();
+}
+function viewReady() {
+  document.getElementById("logview").style.display = "none";
+  document.getElementById("donelist").style.display = "none";
+  document.getElementById("readylist").style.display = "block";
+  document.getElementById("logbar").querySelectorAll("input,.chip").forEach((el) => (el.style.display = "none"));
+  document.getElementById("vt-logs").classList.remove("on");
+  document.getElementById("vt-done").classList.remove("on");
+  document.getElementById("vt-ready").classList.add("on");
+  renderReady();
+}
+async function openReady() {
+  openLogs();
+  viewReady();
+}
+async function renderReady() {
+  const el = document.getElementById("readylist");
+  try {
+    const res = await fetch("/api/pilot-ready", { headers: { authorization: `Bearer ${token}` } });
+    const { ready, blocked } = await res.json();
+    const row = (t, cls = "") =>
+      `<div class="drow ${cls}"><b>${escapeHtml(t.id)}</b>${escapeHtml(t.title)}${t.area ? `<span class="area">${escapeHtml(t.area)}</span>` : ""}${costChip(t.id)}</div>`;
+    const blockedHtml = (blocked || []).length
+      ? `<div class="drow blocked"><b>BLOQUEADAS</b></div>` + (blocked || []).map((t) => row(t, "blocked")).join("")
+      : "";
+    el.innerHTML = (ready || []).length
+      ? (ready || []).map((t) => row(t)).join("") + blockedHtml
+      : `<div class="drow">fila vazia — strategist vai reabastecer</div>`;
+  } catch {
+    el.innerHTML = `<div class="drow">erro ao carregar</div>`;
+  }
+}
+async function openDone() {
+  openLogs();
+  viewDone();
+}
+function saveBudget() {
+  const t = parseInt(document.getElementById("b-tasks").value, 10);
+  const d = parseInt(document.getElementById("b-dep").value, 10);
+  if (!t || !d) return;
+  fetch("/api/pilot-budget", {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+    body: JSON.stringify({ maxTasksPerDay: t, maxDeploysPerDay: d }),
+  }).then((r) => r.json().then((j) => {
+    const btn = document.getElementById("bsave");
+    btn.textContent = j.cfg ? "✓ SALVO" : "✕ ERRO";
+    setTimeout(() => (btn.textContent = "SALVAR ORÇAMENTO"), 1500);
+  }));
+}
+async function renderDone() {
+  const el = document.getElementById("donelist");
+  try {
+    const res = await fetch("/api/pilot-done", { headers: { authorization: `Bearer ${token}` } });
+    const { done } = await res.json();
+    el.innerHTML = (done || []).length
+      ? (done || []).map((d) => `<div class="drow"><b>${escapeHtml(d.id)}</b>${escapeHtml(d.title)}${costChip(d.id)}</div>`).join("")
+      : `<div class="drow">nada concluído ainda</div>`;
+  } catch {
+    el.innerHTML = `<div class="drow">erro ao carregar</div>`;
+  }
 }
 
-// ── dossiê ────────────────────────────────────────────────────────────────
-function renderDossier() {
-  const t = M.tasks[M.dossierTask]; if (!t) return;
-  setText($("do-id"), t.id); setText($("do-title"), t.title || "");
-  const s = M.state; const att = (s.taskAttempts || {})[t.id] || 0; const cost = (s.taskCosts || {})[t.id]; const c = (s.taskCache || {})[t.id]; const hit = cacheHit(c);
-  const f = fOf(t); const dur = t.startedAt ? (t.endedAt || Date.now()) - t.startedAt : null;
-  const seg = (lb, o, extra) => o ? `<span class="s ${o.ok === true ? "ok" : o.ok === false ? "fail" : "run"}">${lb}${o.end || o.endedAt ? `<span class="ms">${fmtClock((o.end || o.endedAt) - (o.start || o.startedAt))}</span>` : ""}${extra ? `<span class="ms">${esc(extra)}</span>` : ""}</span>` : "";
-  const rounds = Object.values(t.rounds).sort((a, b) => a.n - b.n).map((r) => `<div class="round"><span class="n">r${r.n}</span><div class="seg">${seg("builder", r.builder, r.builder && r.builder.why)}${seg("gate", r.gate, r.gate && r.gate.failed)}${seg("review", r.review, r.review && [r.review.security.verdict, r.review.quality.verdict].filter(Boolean).map((v) => (v === "APPROVE" ? "ok" : "chg")).join("/"))}</div></div>`).join("");
-  const findings = Object.values(t.rounds).filter((r) => r.review).flatMap((r) => ["security", "quality", "escalation"].flatMap((w) => { const j = r.review[w]; if (!j) return []; return [...j.kept.map((x) => findingHtml(x, "")), ...j.dropped.map((x) => findingHtml(x, "dropped"))].map((html) => html.replace('class="finding', `title="round ${r.n} · ${w}" class="finding`)); })).join("");
-  const cp = (s.contextPressure || {})[t.id] || (t.checkpoint ? [{ round: t.checkpoint.round, pct: t.checkpoint.pct }] : []);
-  const spark = cp.length ? `<div class="spark">${cp.map((p) => `<i class="${p.pct >= 80 ? "crit" : p.pct >= 60 ? "hot" : ""}" style="height:${Math.max(2, Math.round((p.pct / 100) * 26))}px" title="round ${p.round}: ${Math.round(p.pct)}%"></i>`).join("")}</div>` : '<span class="dim">sem amostras</span>';
-  const g = t.gate;
-  const gate = g ? `<div class="seg">${g.steps.filter((x) => x.status !== "skip").map((x) => `<span class="s ${x.status === "ok" || x.status === "flaky" ? "ok" : x.status === "fail" ? "fail" : "run"}">${esc(x.name)}${x.ms != null ? `<span class="ms">${fmtMs(x.ms)}</span>` : ""}${x.cached ? '<span class="ms">cache</span>' : ""}</span>`).join("")}</div>${g.tail ? `<div class="tail" style="margin:8px 0 0">${esc(g.tail)}</div>` : ""}` : '<span class="dim">o gate ainda não rodou para esta task</span>';
-  const L = M.landing && M.landing.task === t.id ? M.landing : null;
-  const deploy = L ? `<div class="seg">${L.stages.map((x) => `<span class="s ${x.ok ? "ok" : "fail"}">${esc(x.name)}</span>`).join("")}${L.beats.map((b) => `<span class="s ${b.ok ? "ok" : "fail"}">${b.kind} ${b.i}/${b.n}</span>`).join("")}${L.rollback ? '<span class="s fail">rollback</span>' : ""}${L.done ? `<span class="s ok">live ${shortSha(M.prodSha)}</span>` : ""}</div>` : '<span class="dim">sem deploy desta task</span>';
-  const fo = t.forensic;
-  const forensic = !fo ? '<span class="dim">carregando forense…</span>' : fo.error ? '<span class="dim">forense indisponível</span>' : fo.entries.length ? `<div class="tl">${fo.entries.slice(-40).map((e) => `<div><span class="t">${fmtTime(Date.parse(e.ts))}</span><span class="k ${e.ok === false ? "bad" : e.ok ? "ok" : ""}">${esc(e.kind || e.phase || "")}</span><span>${esc(e.text || e.detail || "")}</span></div>`).join("")}</div>${fo.shots && fo.shots.length ? `<div class="actions" style="margin-top:8px">${fo.shots.map((sh) => `<span class="badge mono">${esc(typeof sh === "string" ? sh : sh.name || "")}</span>`).join("")}</div>` : ""}` : '<span class="dim">sem entradas forenses ainda</span>';
-  const notes = [...t.notes].slice(-20).map((n) => `<div><span class="t">${fmtTime(n.ts)}</span><span>${esc(n.text)}</span></div>`).join("");
-  const html = `
-    <div class="sec"><div class="kv">
-      <div><span class="k">Status</span><span class="v ${t.status === "landed" ? "c-green" : t.status === "failed" || t.status === "blocked" ? "c-red" : t.status === "active" ? "c-cyan" : ""}">${esc(t.status)}</span></div>
-      <div><span class="k">Pista</span><span class="v">${f ? f.slot : "—"}</span></div>
-      <div><span class="k">Tentativa</span><span class="v ${att + 1 >= (M.cfg.maxAttemptsPerTask || 4) ? "c-amber" : ""}">${att + 1}/${M.cfg.maxAttemptsPerTask || 4}</span></div>
-      <div><span class="k">Duração</span><span class="v">${dur != null ? fmtClock(dur) : "—"}</span></div>
-      <div><span class="k">Rounds</span><span class="v">${t.round || 0}/${M.cfg.maxReviewRounds || 3}</span></div>
-      <div><span class="k">Tokens</span><span class="v">${fmtTok(cost) || "—"}</span></div>
-      <div><span class="k">Cache hit</span><span class="v">${hit != null ? hit + "%" : "—"}</span></div>
-      <div><span class="k">Cache r/w/in</span><span class="v">${c ? `${fmtTok(c.cacheRead)}/${fmtTok(c.cacheWrite)}/${fmtTok(c.input)}` : "—"}</span></div>
-    </div></div>
-    <div class="sec"><h3>Ações</h3><div class="actions"><button class="btn sm" data-act="takeover">${ICON.term}Takeover no Terminal</button><button class="btn sm" data-act="logs">Logs desta task</button><button class="btn sm" data-act="copy">${ICON.copy}Copiar id</button>${f && f.task === t.id ? `<button class="btn sm" data-act="focus">Focar pista ${f.slot}</button>` : ""}</div></div>
-    <div class="sec"><h3>Rounds${t.planner ? `<span class="meta">planner ${t.planner.end ? fmtClock(t.planner.end - t.planner.start) : "em curso"}${t.planner.spec ? " · " + esc(t.planner.spec) : ""}</span>` : ""}</h3>${rounds || '<span class="dim">nenhum round ainda</span>'}</div>
-    <div class="sec"><h3>Findings<span class="meta">${findings ? "" : "nenhum"}</span></h3>${findings}</div>
-    <div class="sec"><h3>Gate<span class="meta">${g ? (g.ok === true ? "verde" : g.ok === false ? "reprovado em " + esc(g.failed || "") : "julgando") : ""}</span></h3>${gate}</div>
-    <div class="sec"><h3>Deploy</h3>${deploy}</div>
-    <div class="sec"><h3>Pressão de contexto<span class="meta">por round</span></h3>${spark}</div>
-    <div class="sec"><h3>Forense</h3>${forensic}</div>
-    ${notes ? `<div class="sec"><h3>Notas</h3><div class="tl">${notes}</div></div>` : ""}
-    ${t.result ? `<div class="sec"><h3>Resultado</h3><span class="${t.result.ok ? "c-green" : "c-red"} mono">${esc(t.result.detail || (t.result.ok ? "ok" : "falhou"))}</span></div>` : ""}`;
-  const body = $("do-body"); setHTML(body, html);
-  const act = (k) => body.querySelector(`[data-act="${k}"]`);
-  act("takeover").onclick = (ev) => takeover(t, ev.currentTarget);
-  act("logs").onclick = () => openLogs(t.id.toLowerCase());
-  act("copy").onclick = () => navigator.clipboard?.writeText(t.id).then(() => toast("id copiado", "ok"));
-  const fc = act("focus"); if (fc) fc.onclick = () => { selectSlot(f.slot); closeDossier(); };
+// mission banner — read once, click to edit, POST to save
+async function loadMission() {
+  try {
+    const res = await fetch("/api/pilot-mission", { headers: { authorization: `Bearer ${token}` } });
+    const { mission } = await res.json();
+    document.getElementById("mission-text").textContent = mission || "clique para definir a missão final";
+  } catch {}
 }
-// ═══════════════════════════════════════════════════════════════════════════
-// 7. Boot — relógios a cada segundo, mock ou poll real.
-// ═══════════════════════════════════════════════════════════════════════════
-setInterval(() => {
-  renderClocks();
-  const sc = $("sealed-clock"); const t = selectedTask();
-  if (sc && t && t.agent.since) sc.textContent = fmtClock(Date.now() - t.agent.since);
-  // relógios das pistas, presença e caixa-preta avançam sem esperar evento
-  mark("flights", "presence");
-  if (t) mark("cockpit");
-  if (M.landing && !M.landing.done) mark("landing");
-  if (!MOCK && M.online && M.lastOkAt && Date.now() - M.lastOkAt > 15_000) { M.online = false; mark("header"); }
-}, 1000);
-addEventListener("resize", () => mark("landing"));
+function editMission(ev) {
+  if (ev.target.tagName === "INPUT") return;
+  const input = document.getElementById("mission-input");
+  input.style.display = "block";
+  input.value = document.getElementById("mission-text").textContent.startsWith("clique")
+    ? ""
+    : document.getElementById("mission-text").textContent;
+  input.focus();
+}
+window.editMission = editMission;
+document.getElementById("mission-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === "Escape") {
+    const input = document.getElementById("mission-input");
+    input.style.display = "none";
+    if (e.key === "Enter" && input.value.trim()) {
+      fetch("/api/pilot-mission", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+        body: JSON.stringify({ mission: input.value.trim() }),
+      }).then(loadMission);
+    }
+  }
+});
 
-if (MOCK) {
-  $("mockbar").classList.remove("hide");
-  $("mock-speed").onclick = () => { MOCK_SPEED.v = MOCK_SPEED.v >= 4 ? 1 : MOCK_SPEED.v * 2; $("mock-speed").textContent = `${MOCK_SPEED.v}x`; };
-  $("mock-restart").onclick = mockReset;
-  setInterval(mockHeartbeat, 2000);
-  setInterval(() => { if (!REDUCED) pulseHeartbeat(); }, 15_000);
-  mockLoop();
-} else {
-  for (let s = 1; s <= 1; s++) flight(s);
-  mark("header", "flights", "queue", "pulse", "presence", "cockpit", "arena", "gate", "landing");
-  if (token) poll(); else needToken();
+resize();
+const nodeRole = { researcher:"research", strategist:"strategist", backlog:"pipeline", builder:"agent",
+                   security:"reviewer", quality:"reviewer", gatekeeper:"gatekeeper", deploy:"deploy", core:"deploy" };
+function hitNode(e) {
+  for (const n of NODES) {
+    if (Math.hypot(e.clientX - n.x, e.clientY - n.y) <= n.r + 12) return n.id;
+  }
+  return null;
 }
+canvas.addEventListener("mousemove", (e) => {
+  hoverNode = hitNode(e);
+  canvas.style.cursor = hoverNode ? "pointer" : "default";
+});
+canvas.addEventListener("click", (e) => {
+  const id = hitNode(e);
+  if (id) openLogs(nodeRole[id]);
+});
+
+resize();
 </script>
 </body>
 </html>
