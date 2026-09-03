@@ -174,6 +174,12 @@ export interface PilotState {
    * REPLACE-by-recompute reconciliation as taskCosts; hit ratio is
    * cacheRead/(cacheRead+input). Lifetime record, pruned with taskCosts. */
   taskCache?: Record<string, { input: number; cacheRead: number; cacheWrite: number }>;
+  /** P1-095: epoch ms of the last pipeline cycle (any outcome). Drives the
+   * nightly idle-window trigger — undefined means idle since forever (due). */
+  lastCycleAt?: number;
+  /** P1-095: today's "nightly skipped" record (once per day; cleared when the
+   * pass actually starts). Surfaced to Mission Control via /api/pilot-events. */
+  nightlySkipped?: { date: string; reason: string } | null;
 }
 
 function normalizeAudit(a: unknown): AuditMode | null {
@@ -185,6 +191,14 @@ function normalizeAudit(a: unknown): AuditMode | null {
     reason: m.reason,
     lastFailure: typeof m.lastFailure === "number" ? m.lastFailure : 0,
   };
+}
+
+/** P1-095: tolerant parse of the nightly skip record — garbage → null. */
+function normalizeNightlySkipped(v: unknown): { date: string; reason: string } | null {
+  if (!v || typeof v !== "object") return null;
+  const m = v as Partial<{ date: string; reason: string }>;
+  if (typeof m.date !== "string" || !m.date || typeof m.reason !== "string" || !m.reason) return null;
+  return { date: m.date, reason: m.reason };
 }
 
 export function loadState(file = STATE_FILE): PilotState {
@@ -210,6 +224,10 @@ export function loadState(file = STATE_FILE): PilotState {
       taskCostSessions: s.taskCostSessions && typeof s.taskCostSessions === "object" ? s.taskCostSessions : {},
       // P1-077: cache breakdown backfilled for legacy files, never crash
       taskCache: s.taskCache && typeof s.taskCache === "object" ? s.taskCache : {},
+      // P1-095: idle-window trigger + nightly skip record survive midnight (the
+      // timestamp stays a finite number or undefined — never NaN/garbage)
+      lastCycleAt: typeof s.lastCycleAt === "number" && Number.isFinite(s.lastCycleAt) ? s.lastCycleAt : undefined,
+      nightlySkipped: normalizeNightlySkipped(s.nightlySkipped),
     };
     if (s.date === today) return { ...s, ...shared, merges, infraFails };
     return { date: today, tasks: 0, deploys: 0, failures: 0, merges: 0, infraFails: 0, ...shared };
@@ -228,6 +246,7 @@ export function loadState(file = STATE_FILE): PilotState {
       taskCosts: {},
       taskCostSessions: {},
       taskCache: {},
+      nightlySkipped: null,
     };
   }
 }

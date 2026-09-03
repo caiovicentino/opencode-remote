@@ -36,3 +36,48 @@ export function pickBatch(queue: Task[], freeSlots: number, busy: Set<string>, r
   const cap = Math.min(Math.max(0, freeSlots), Math.max(0, remainingBudget));
   return pickTasks(queue, cap, busy);
 }
+
+// ── P1-095: nightly pass trigger — idle window instead of a wall-clock hour ──
+//
+// The old gate (`hour === 3` AND `running.size === 0`) was effectively
+// unreachable: pipelines routinely span the whole 03:00–03:59 window, so
+// redteam/explorer/forensic never ran. The nightly pass now fires at the first
+// moment the scheduler has been idle >= 2h since the last pipeline cycle.
+
+/** Idle gap (ms since the last pipeline cycle) that arms the nightly pass. */
+export const NIGHTLY_IDLE_MS = 2 * 60 * 60_000;
+
+/**
+ * True when the scheduler has been idle long enough to start the nightly pass.
+ * An undefined `lastCycleAt` (fresh or legacy state) means idle since forever →
+ * due immediately.
+ */
+export function nightlyIdleDue(lastCycleAt: number | undefined, now = Date.now()): boolean {
+  return now - (lastCycleAt ?? 0) >= NIGHTLY_IDLE_MS;
+}
+
+/** The nightly skip record persisted in state.json (once per day, honest). */
+export interface NightlySkip {
+  date: string;
+  reason: string;
+}
+
+/**
+ * Reason string when the classic nightly window (03:xx) has passed with slots
+ * still busy and the pass not run today — the "nightly skipped" signal for
+ * state.json + Mission Control. Returns null (nothing to record) when the
+ * slots are idle, the hour is still within the window, the pass already ran
+ * today, or a skip was already recorded today (dedupe by date).
+ */
+export function nightlySkipDue(
+  st: { redteamLast?: string; explorerLast?: string; nightlySkipped?: NightlySkip | null },
+  today: string,
+  hour: number,
+  slotsBusy: boolean,
+): string | null {
+  if (!slotsBusy) return null;
+  if (hour < 4) return null; // 03:xx window not over yet — reason must stay truthful
+  if (st.redteamLast === today && st.explorerLast === today) return null;
+  if (st.nightlySkipped?.date === today) return null;
+  return "slots busy past the nightly window — pass not run today";
+}

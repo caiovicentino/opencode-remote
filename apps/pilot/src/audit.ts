@@ -49,6 +49,9 @@ export function recordCycle(st: PilotState, ok: boolean, task?: string, now = Da
   cycles.push({ ok, at: now, task });
   if (cycles.length > AUDIT_WINDOW) st.cycles = cycles.slice(-AUDIT_WINDOW);
   if (!ok && st.auditMode) st.auditMode.lastFailure = now;
+  // P1-095: every pipeline outcome (ok or merit-fail) refreshes the idle-window
+  // timestamp that arms the nightly pass
+  st.lastCycleAt = now;
 }
 
 // ── P1-074: infra-signature failures — never merit evidence ─────────────────

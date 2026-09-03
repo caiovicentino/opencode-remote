@@ -103,7 +103,7 @@ import type { PilotState } from "../apps/pilot/src/state";
 import { clearTaskAttempts, doctorBacklog, doctorBranches, doctorRefs, doctorState, normalizePilotState, parseAttemptsArgs, runAttemptsCommand, validateBacklog, type AttemptsRequest, type RunFn } from "../apps/pilot/src/doctor";
 import { avgPhaseDurations, burnDown, countFailSteps, rollbackHealthAlert } from "../apps/pilot/src/metrics";
 import type { PilotEvent } from "../apps/pilot/src/events";
-import { areaKey, pickBatch, pickTasks } from "../apps/pilot/src/scheduler";
+import { areaKey, NIGHTLY_IDLE_MS, nightlyIdleDue, nightlySkipDue, pickBatch, pickTasks } from "../apps/pilot/src/scheduler";
 import {
   AUDIT_BLOCK_TRIGGER,
   AUDIT_BLOCK_WINDOW_MS,
@@ -4081,6 +4081,98 @@ check(
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }
+}
+
+// --- P1-095 nightly pass: idle-window trigger + skipped event ---------------------
+{
+  // nightlyIdleDue: undefined (fresh/legacy state) = idle since forever → due
+  const now = 10_000_000_000;
+  check("nightlyIdleDue: undefined lastCycleAt → due immediately", nightlyIdleDue(undefined, now) === true);
+  check("nightlyIdleDue: just cycled → not due", nightlyIdleDue(now - 60_000, now) === false);
+  check("nightlyIdleDue: 1h59m idle → not due", nightlyIdleDue(now - (NIGHTLY_IDLE_MS - 60_000), now) === false);
+  check("nightlyIdleDue: 2h01m idle → due", nightlyIdleDue(now - (NIGHTLY_IDLE_MS + 60_000), now) === true);
+  check("nightlyIdleDue: exactly 2h → due", nightlyIdleDue(now - NIGHTLY_IDLE_MS, now) === true);
+
+  // nightlySkipDue matrix — reason only when busy + window over + pass pending
+  const yesterday = "2026-01-01";
+  const today = "2026-01-02";
+  check("nightlySkipDue: busy inside the 03:xx window (hour 3) → null", nightlySkipDue({ redteamLast: yesterday, explorerLast: yesterday }, today, 3, true) === null);
+  const busyReason = nightlySkipDue({ redteamLast: yesterday, explorerLast: yesterday }, today, 4, true);
+  check("nightlySkipDue: busy at hour 4 with pass pending → reason", typeof busyReason === "string" && busyReason.length > 0);
+  check("nightlySkipDue: already recorded today → null", nightlySkipDue({ redteamLast: yesterday, nightlySkipped: { date: today, reason: "x" } }, today, 4, true) === null);
+  check("nightlySkipDue: pass already ran today → null", nightlySkipDue({ redteamLast: today, explorerLast: today }, today, 4, true) === null);
+  check("nightlySkipDue: slots idle → null", nightlySkipDue({ redteamLast: yesterday, explorerLast: yesterday }, today, 4, false) === null);
+
+  // recordCycle stamps the idle-window trigger with the injected now
+  const rc = { date: today, tasks: 0, deploys: 0, failures: 0, merges: 0, taskAttempts: {} } as PilotState;
+  recordCycle(rc, true, undefined, 12345);
+  check("recordCycle: stamps lastCycleAt with the injected now", rc.lastCycleAt === 12345);
+  recordCycle(rc, false, "P9-999", 23456);
+  check("recordCycle: merit-fail refreshes lastCycleAt too", rc.lastCycleAt === 23456);
+
+  // simulated busy day (state fixtures): slots busy + pass pending + hour 4 →
+  // nightlySkipped recorded and the event line for events.jsonl is well-formed
+  const dir = mkdtempSync(join(tmpdir(), "pilot-nightly-"));
+  try {
+    const file = join(dir, "state.json");
+    writeFileSync(
+      file,
+      JSON.stringify({
+        date: today,
+        tasks: 1,
+        deploys: 0,
+        failures: 0,
+        taskAttempts: {},
+        redteamLast: yesterday,
+        explorerLast: yesterday,
+      }),
+    );
+    const busyState = loadState(file);
+    const reason = nightlySkipDue(busyState, today, 4, true);
+    check("busy day: skip due fires for a pending pass", typeof reason === "string");
+    if (reason) {
+      busyState.nightlySkipped = { date: today, reason };
+      saveState(busyState, file);
+      // the call site emits exactly this payload — verify it serializes with
+      // the fields Mission Control keys on ("task":"nightly","phase":"skipped")
+      const line = JSON.stringify({ ts: "t", type: "phase", task: "nightly", phase: "skipped", ok: false, detail: reason });
+      check("busy day: event line carries task=nightly phase=skipped", line.includes('"task":"nightly"') && line.includes('"phase":"skipped"') && line.includes('"ok":false'));
+    }
+    const reloaded = loadState(file);
+    check("busy day: nightlySkipped round-trips through state.json", reloaded.nightlySkipped?.date === today && reloaded.nightlySkipped.reason === reason);
+
+    // legacy/garbage tolerance: non-numeric lastCycleAt → undefined (due),
+    // garbage nightlySkipped → null
+    writeFileSync(file, JSON.stringify({ date: today, tasks: 0, deploys: 0, failures: 0, taskAttempts: {}, lastCycleAt: "garbage", nightlySkipped: "garbage" }));
+    const legacy = loadState(file);
+    check("loadState: garbage nightly fields tolerated", legacy.lastCycleAt === undefined && legacy.nightlySkipped === null);
+
+    // rollover: both fields survive midnight
+    writeFileSync(
+      file,
+      JSON.stringify({
+        date: "2026-01-01",
+        tasks: 1,
+        deploys: 0,
+        failures: 0,
+        taskAttempts: {},
+        lastCycleAt: 777,
+        nightlySkipped: { date: "2026-01-01", reason: "slots busy past the nightly window" },
+      }),
+    );
+    const rolled = loadState(file);
+    check("loadState: lastCycleAt survives midnight", rolled.lastCycleAt === 777);
+    check("loadState: nightlySkipped survives midnight", rolled.nightlySkipped?.date === "2026-01-01" && rolled.nightlySkipped.reason === "slots busy past the nightly window");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  // simulated idle day (pure-guard level): lastCycleAt 2h+ old and explorer
+  // not stamped → maybeNightly would proceed past both guards
+  const idleState = { redteamLast: today, explorerLast: undefined, lastCycleAt: now - (NIGHTLY_IDLE_MS + 60_000) };
+  check("idle day: idle-window trigger fires", nightlyIdleDue(idleState.lastCycleAt, now) === true);
+  check("idle day: pass not done (explorerLast unset) → guards pass", !(idleState.redteamLast === today && idleState.explorerLast === today));
+  check("idle day: slots idle → no skip record", nightlySkipDue(idleState, today, 4, false) === null);
 }
 
 // --- P1-059: tiered cognition — claude CLI dispatch + escalation predicate ---

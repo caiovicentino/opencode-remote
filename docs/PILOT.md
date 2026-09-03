@@ -34,7 +34,7 @@ BACKLOG.md ──> BUILDER ────┬──> SECURITY REVIEWER ─┬──
 | `quality reviewer` | foco: regressão, UX, docs, testes | 20 min |
 | `scribe` | após o merge: destila até 3 lições do diff + findings → `docs/EXPERIENCE.md` | 10 min |
 | `strategist` | quando a fila tem <2 tasks: lê código/memória/métricas e propõe as próximas tasks (o runner valida, commita e empurra com guard) | 25 min |
-| `red team` (03:00/dia) | tenta quebrar segurança/robustez; achados viram task P0 | 30 min |
+| `red team` (1x/dia, janela >= 2h ocioso) | tenta quebrar segurança/robustez; achados viram task P0 | 30 min |
 | gatekeeper | **não é LLM** — roda scripts, decide por exit codes | — |
 
 Builders e reviewers rodam em **clone isolado** (`~/.opencode-remote/pilot/repo`);
@@ -242,7 +242,8 @@ intacto). Bloco opcional:
   o builder. Máx. 1 escalada por round; sem
   `reviewerEscalation` configurado, divergência e `allDropped` seguem o fluxo
   atual.
-- **Forensic semanal**: na janela nightly 03:xx, um agente analisa as últimas
+- **Forensic semanal**: na passada noturna (primeira janela >= 2h ocioso do
+  dia — P1-095), um agente analisa as últimas
   100 failure lessons (`lessons.jsonl`), os carryovers de gate-fail e o
   `git log -50` e escreve a taxonomia de falhas (padrões, causas raiz,
   recomendações) em `~/.opencode-remote/pilot/forensic-latest.md` + digest no
@@ -819,7 +820,8 @@ seção `## Lessons`. Três peças:
    do título (peso 2) + spec (peso 1) da task contra o texto da lição, empate
    resolvido pela mais recente primeiro. Task sem overlap de keywords não recebe
    lição nenhuma (nada é injetado à força).
-3. **Manutenção noturna (red team)**: no pass noturno das 03:00, além da caça a
+3. **Manutenção noturna (red team)**: no pass noturno (primeira janela >= 2h
+   ocioso do dia), além da caça a
    buracos de segurança, o pilot **deduplica e poda** `docs/EXPERIENCE.md`
    quando ele passa de **60 lições** — dedupe por chave normalizada (case/
    pontuação/provenance-insensitive, vence a ocorrência mais recente) e poda
@@ -897,7 +899,8 @@ endpoint de autenticação.
 
 ## Explorer noturno: computer-use agentic async (P3-052)
 
-Junto do pass noturno do red team (janela das 03:00), o pilot acorda um agente
+Junto do pass noturno do red team (primeira janela >= 2h ocioso do dia —
+P1-095), o pilot acorda um agente
 com **visão** para explorar o app desktop **de verdade** — via harness hermético
 do P1-051 (`tools/desktop.mjs`, sem daemon de produção). É a camada exploratória
 que complementa os reviewers adversariais: em vez de olhar diffs, olha o

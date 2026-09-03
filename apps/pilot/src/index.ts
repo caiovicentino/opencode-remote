@@ -14,7 +14,7 @@ import { addTask, appendCommitAndPush, auxPushIo, blockTask, mayPush, nextId, pa
 import { appendFailureLesson, defaultLessonsFile, failureLessonsBlock, readRecentFailureLessons } from "./failureLessons";
 import { defaultPendingRefillFile, readPendingRefill, relandDetail, relandPendingRefill, savePendingRefill } from "./refill";
 import { forensicDue, runForensic } from "./forensic";
-import { areaKey, pickBatch } from "./scheduler";
+import { areaKey, nightlyIdleDue, nightlySkipDue, pickBatch } from "./scheduler";
 import {
   auditClearFile,
   auditResumeDue,
@@ -183,8 +183,20 @@ async function main() {
       }
     }
 
-    // nightly redteam (03:xx) + weekly maintenance — best effort, slots idle
+    // nightly redteam + weekly maintenance — best effort, slots idle. P1-095:
+    // the pass fires at the first >= 2h idle gap of the day instead of the old
+    // unreachable hour===3 gate; a busy-through-the-window day is recorded.
     if (running.size === 0) await maybeNightly(slotCfg.get(1)!, state);
+    else {
+      const today = nowLocalISO().slice(0, 10);
+      const reason = nightlySkipDue(state, today, new Date().getHours(), true);
+      if (reason) {
+        state.nightlySkipped = { date: today, reason };
+        saveState(state);
+        log("info", "nightly pass skipped", { reason });
+        emit("phase", { task: "nightly", phase: "skipped", ok: false, detail: reason });
+      }
+    }
 
     // pending deploy: production is behind a gate-verified merge on origin/main
     // (e.g. after a rollback). Serial by construction: only checked while slots
@@ -439,12 +451,23 @@ function overCap(task: Task): boolean {
 /** One-shot validation mode used by the eval battery. */
 async function maybeNightly(cfg: PilotConfig, st: PilotState) {
   const today = nowLocalISO().slice(0, 10);
-  const hour = new Date().getHours();
-  if (hour !== 3) return;
+  // P1-095: idle-window gate — the old exact-hour condition (3am) combined
+  // with the slots-idle call-site guard was effectively unreachable (pipelines
+  // routinely span the whole 03:00–03:59 window). Now: first >= 2h idle gap of
+  // the day.
+  if (!nightlyIdleDue(st.lastCycleAt)) return;
   // P1-059: forensic carries its own 7-day guard — a due forensic must not be
   // skipped just because redteam/explorer already ran today (both self-guard).
   const nightlyDone = st.redteamLast === today && st.explorerLast === today;
   if (nightlyDone && !forensicDue(st.forensicLast)) return;
+  // --once (eval battery): a one-shot run must never kick off a 30-min redteam
+  // agent — the battery covers the trigger through the pure scheduler seams.
+  if (process.argv.includes("--once")) return;
+  // The pass is actually starting — today's skip record (if any) is obsolete.
+  if (st.nightlySkipped) {
+    st.nightlySkipped = null;
+    saveState(st);
+  }
   // sync so the nightly agents read a fresh main; a failing sync only skips
   // the pass (best-effort by design — never blocks the loop)
   let wsReady = true;
