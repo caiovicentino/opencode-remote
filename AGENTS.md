@@ -155,7 +155,11 @@ browse.mjs) — launch hermético, sem daemon de produção. Quando o diff toca
 `apps/desktop/` ou `apps/web/`, o gate roda `npm run test:desktop-flow` (fluxo
 de interação real, <90s — P1-070 adicionou o bloco "local boot" com daemon
 hermético real; P1-080 adicionou o repro de overflow do chat: bolha com diff
-longo em janela estreita, nada pode sair do viewport); use `OCR_DESKTOP_SESSION` próprio para não colidir
+longo em janela estreita, nada pode sair do viewport; P1-089 adicionou o beat
+queue→flush→reentrada com segundo boot hermético contra um fake de opencode:
+fila offline drena no reboot, o burst de >500 eventos re-dispara idle antigo e
+o count de bolhas fica estável em 3 re-entradas; ids de sessão do gate são
+curtos de propósito — path de unix socket no macOS trunca em 104 chars); use `OCR_DESKTOP_SESSION` próprio para não colidir
 com a sessão de outro processo. P1-081: com `OCR_DESKTOP_SESSION` setado o app
 NÃO mostra janela (`showMainWindow` no-op + `paintWhenInitiallyHidden`, interação
 100% via webContents) — a tela do operador nunca vê janela de teste; e
