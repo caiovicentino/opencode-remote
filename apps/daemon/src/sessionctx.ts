@@ -72,11 +72,12 @@ export function injectArtifactsSystem<T extends { system?: string }>(body: T): T
 }
 
 /**
- * P1-096: append the per-session artifacts path line as the LAST text part of
- * the body — one-shot, meant for the session's first turn (the line then lives
- * in the history). Idempotent: any part already carrying the path marker makes
- * the call a no-op. Bodies without a `parts` array or with no text part are
- * skipped (fail-open: a later turn retries). Returns true when appended.
+ * P1-096: append the per-session artifacts path line as the LAST part of the
+ * body (after any text/file parts already present) — one-shot, meant for the
+ * session's first turn (the line then lives in the history). Idempotent: any
+ * part already carrying the path marker makes the call a no-op. Bodies without
+ * a `parts` array or with no text part are skipped (fail-open: a later turn
+ * retries). Returns true when appended.
  */
 export function injectArtifactsPathPart<T extends { parts?: unknown[] }>(
   body: T,
