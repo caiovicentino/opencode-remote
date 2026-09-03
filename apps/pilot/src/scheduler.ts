@@ -37,6 +37,72 @@ export function pickBatch(queue: Task[], freeSlots: number, busy: Set<string>, r
   return pickTasks(queue, cap, busy);
 }
 
+// ── P1-078: cache affinity + staggered starts between slots ──────────────────
+//
+// The provider prefix cache is per account/organization: parallel slots hit
+// the SAME provider, so a slot that recently ran a same-shape task (same area
+// key) can inherit the warm prefix instead of paying a fresh cache-write.
+
+/** Affinity window — providers keep prefix caches warm for ~5-10 minutes. */
+export const AFFINITY_TTL_MS = 10 * 60_000;
+
+/** Stagger between simultaneous slot starts so the first builder's cache-write
+ * completes before the second one sends its (near-identical) prefix. */
+export const SLOT_START_STAGGER_MS = 20_000;
+
+/** Slot `slot` last ran a task of area key `area` at epoch-ms `at`. */
+export interface SlotAffinity {
+  slot: number;
+  area: string;
+  at: number;
+}
+
+/** Staggered start delay for the i-th (0-based) pick of one batch. */
+export function startDelayMs(index: number): number {
+  return Math.max(0, index) * SLOT_START_STAGGER_MS;
+}
+
+/**
+ * P1-078: assign each picked task a free slot. `picks` comes from pickBatch
+ * (areas already distinct from each other and from `busy`), so this only
+ * chooses BETWEEN free slots — the P1-006 rule is untouched. A task prefers
+ * the free slot whose most recent task had the same area key within the TTL
+ * (most recent wins), else the lowest-numbered free slot; `solo` keys never
+ * gain affinity (serial by P1-006, and one warm slot is enough for them).
+ * Never assigns a busy area and never reuses a slot within one batch.
+ */
+export function assignSlots(
+  picks: Task[],
+  freeSlots: number[],
+  busy: Set<string>,
+  affinity: SlotAffinity[],
+  now: number,
+  ttlMs: number = AFFINITY_TTL_MS,
+): Map<string, number> {
+  const out = new Map<string, number>();
+  const free = [...freeSlots].sort((a, b) => a - b);
+  for (const t of picks) {
+    const key = areaKey(t);
+    if (busy.has(key)) continue;
+    let slot: number | undefined;
+    if (key !== "solo") {
+      let best: SlotAffinity | undefined;
+      for (const a of affinity) {
+        if (a.area === key && free.includes(a.slot) && now - a.at <= ttlMs) {
+          if (!best || a.at > best.at) best = a;
+        }
+      }
+      slot = best?.slot;
+    }
+    slot ??= free[0];
+    if (slot === undefined) continue;
+    out.set(t.id, slot);
+    const i = free.indexOf(slot);
+    if (i >= 0) free.splice(i, 1);
+  }
+  return out;
+}
+
 // ── P1-095: nightly pass trigger — idle window instead of a wall-clock hour ──
 //
 // The old gate (`hour === 3` AND `running.size === 0`) was effectively

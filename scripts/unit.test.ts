@@ -74,6 +74,7 @@ import {
   updateResumeState,
   parseScribeLessons,
   scribePrompt,
+  strategistPrompt,
   validateSpec,
   verifyEvidence,
   writeAuxSandboxConfig,
@@ -103,7 +104,8 @@ import type { PilotState } from "../apps/pilot/src/state";
 import { clearTaskAttempts, doctorBacklog, doctorBranches, doctorRefs, doctorState, normalizePilotState, parseAttemptsArgs, runAttemptsCommand, validateBacklog, type AttemptsRequest, type RunFn } from "../apps/pilot/src/doctor";
 import { avgPhaseDurations, burnDown, countFailSteps, rollbackHealthAlert } from "../apps/pilot/src/metrics";
 import type { PilotEvent } from "../apps/pilot/src/events";
-import { areaKey, NIGHTLY_IDLE_MS, nightlyIdleDue, nightlySkipDue, pickBatch, pickTasks } from "../apps/pilot/src/scheduler";
+import { areaKey, NIGHTLY_IDLE_MS, nightlyIdleDue, nightlySkipDue, pickBatch, pickTasks, AFFINITY_TTL_MS, assignSlots, SLOT_START_STAGGER_MS, startDelayMs, type SlotAffinity } from "../apps/pilot/src/scheduler";
+import { researcherPrompt } from "../apps/pilot/src/researcher";
 import {
   AUDIT_BLOCK_TRIGGER,
   AUDIT_BLOCK_WINDOW_MS,
@@ -1194,6 +1196,46 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
   check("P1-099 eager-fill: budget 0 picks nothing", pickBatch(eagerQueue, 2, new Set(), 0).length === 0);
 }
 
+// --- P1-078 cache affinity: slot assignment + staggered starts -------------------
+{
+  const AFFINITY_QUEUE = parseBacklog(
+    [
+      "## Ready",
+      "",
+      "- [ ] (A-001) [P1] UI one — spec: x (area: ui)",
+      "- [ ] (A-002) [P1] Daemon one — spec: x (area: daemon)",
+      "- [ ] (A-003) [P1] Solo one — spec: x",
+      "- [ ] (A-004) [P1] Solo two — spec: y",
+    ].join("\n"),
+  );
+  const byId = (id: string) => AFFINITY_QUEUE.find((t) => t.id === id)!;
+  const now = 1_000_000_000;
+  const warm: SlotAffinity[] = [
+    { slot: 2, area: "area:ui", at: now - 60_000 },
+    { slot: 1, area: "area:daemon", at: now - 120_000 },
+  ];
+  // a same-area task prefers the slot that just ran that shape (warm prefix)
+  check("affinity: ui task prefers the slot that just ran ui", assignSlots([byId("A-001")], [1, 2], new Set(), warm, now).get("A-001") === 2);
+  // most recent same-area run wins
+  const contested: SlotAffinity[] = [
+    { slot: 1, area: "area:ui", at: now - 120_000 },
+    { slot: 2, area: "area:ui", at: now - 30_000 },
+  ];
+  check("affinity: most recent same-area run wins", assignSlots([byId("A-001")], [1, 2], new Set(), contested, now).get("A-001") === 2);
+  // expired affinity → lowest-numbered free slot (cold start is fine after 10min)
+  check("affinity: expired TTL falls back to the lowest slot", assignSlots([byId("A-001")], [1, 2], new Set(), warm, now + AFFINITY_TTL_MS + 1).get("A-001") === 1);
+  // a busy area is never assigned (P1-006 rule upstream of affinity)
+  check("affinity: busy area never assigned", assignSlots([byId("A-001")], [1, 2], new Set(["area:ui"]), warm, now).size === 0);
+  // solo keys are serial by P1-006 and never gain affinity
+  check("affinity: solo tasks never gain affinity", assignSlots([byId("A-003")], [1, 2], new Set(), warm, now).get("A-003") === 1);
+  // two picks in one batch land on distinct slots
+  const two = assignSlots([byId("A-001"), byId("A-002")], [1, 2], new Set(), warm, now);
+  check("affinity: two picks never share a slot", two.get("A-001") === 2 && two.get("A-002") === 1);
+  // staggered starts: the first pick goes now, the rest wait 20s each
+  check("stagger: first pick starts immediately", startDelayMs(0) === 0);
+  check("stagger: 20s between simultaneous slot starts", startDelayMs(1) === 20_000 && startDelayMs(2) === 40_000 && SLOT_START_STAGGER_MS === 20_000);
+}
+
 // --- artifacts (P1-010) -------------------------------------------------------
 check("validSegment accepts ids/names", validSegment("ses_abc123") && validSegment("report-1.html"));
 check("validSegment rejects traversal", !validSegment("..") && !validSegment("../etc") && !validSegment("a/b"));
@@ -1667,6 +1709,29 @@ check("touchedUi: lookalike apps/webs rejected", !touchedUiFromDiff("apps/webs/s
     const sB = scribePrompt(TASK_B, "diff B", "");
     check("cache: scribe prefix byte-identical through the LESSONS contract", commonPrefix(sA, sB) > sA.indexOf("SCRIBE:DONE"));
     check("cache: scribe constitution precedes the task text", sA.indexOf(CONSTITUTION) < sA.indexOf(TASK_A.title));
+
+    // --- P1-078: aux templates — no slot/repo path anywhere, variable blocks last ---
+    const strategist = strategistPrompt("MISSION TEXT", CACHE_LESSONS, "FAILURE LESSONS block");
+    const researcher = researcherPrompt();
+    const explorer = explorerPrompt("/abs/shots", "explorer-fresh-20260903");
+    const forensic = forensicPrompt("lesson one", [{ task: "P1-771", step: "gate" }], "abc1234 x");
+    const auxPrompts: Record<string, string> = { builder: bA, planner: pA, reviewer: rA, scribe: sA, strategist, researcher, explorer, forensic };
+    const repoEnv = process.env.OCR_PILOT_REPO ?? "";
+    for (const [name, p] of Object.entries(auxPrompts)) {
+      check(`cache: ${name} prompt carries no slot path`, !/repo-\d/.test(p));
+      if (repoEnv) check(`cache: ${name} prompt carries no repo path`, !p.includes(repoEnv));
+    }
+    check(
+      "cache: strategist variable blocks come after the stable rules",
+      strategist.indexOf("SECURITY RULE") < strategist.indexOf("EXPERIENCE —") &&
+        strategist.indexOf("EXPERIENCE —") < strategist.indexOf("FAILURE LESSONS") &&
+        strategist.indexOf("FAILURE LESSONS") < strategist.indexOf("STRATEGIST:DONE"),
+    );
+    check("cache: strategist lessons land after the AUX-TASKS contract", strategist.indexOf("AUX-TASKS:") < strategist.indexOf("EXPERIENCE —"));
+    check(
+      "cache: forensic data blocks come after the section contract",
+      forensic.indexOf("## Recommendations") < forensic.indexOf("FAILURE LESSONS") && forensic.indexOf("RECENT MERGES") < forensic.indexOf("FORENSIC:DONE"),
+    );
   }
 
   // scratch git repo: spec recovery from a preserved branch's history
@@ -4731,8 +4796,17 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   // legacy state.json without the field backfills {} instead of crashing
   const legacyDir = mkdtempSync(join(tmpdir(), "ocr-legacy-state-"));
   writeFileSync(join(legacyDir, "state.json"), JSON.stringify({ tasks: 1, deploys: 0, failures: 0 }));
-  check("cache: loadState backfills taskCache for legacy files", JSON.stringify(loadState(join(legacyDir, "state.json")).taskCache) === "{}");
+  const legacyState = loadState(join(legacyDir, "state.json"));
+  check("cache: loadState backfills taskCache for legacy files", JSON.stringify(legacyState.taskCache) === "{}");
+  check("cache: loadState backfills slotCache for legacy files (P1-078)", JSON.stringify(legacyState.slotCache) === "{}");
   rmSync(legacyDir, { recursive: true, force: true });
+  // P1-078: the doctor normalization completes the same backfill
+  check(
+    "cache: normalizePilotState backfills slotCache",
+    JSON.stringify(
+      normalizePilotState({ date: "2026-09-03", tasks: 0, deploys: 0, failures: 0, merges: 0 } as unknown as PilotState).slotCache,
+    ) === "{}",
+  );
 }
 
 // --- P1-030 pilot doctor: deterministic, idempotent repair pass -----------------
