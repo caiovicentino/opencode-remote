@@ -412,6 +412,14 @@ A linha da task no BACKLOG.md pode carregar a tag opcional `(size: S|M|L)` (defa
    HEAD mudou no deploy (`prev !== HEAD` pós-reset, em vez do diff `apps/pilot` contra ele
    mesmo, sempre vazio) — sai com `process.exit(0)` imediato (log já flushado, sem órfão) e
    o KeepAlive reassume no código novo; heartbeat + watchdog — 30min sem sinal → exit → KeepAlive ressozinho
+4. **Processo stale (P3-101)**: o loop guarda o HEAD do repo de produção capturado no boot
+   (`bootHead`) e, num momento 100% ocioso (nenhum slot rodando, nenhum deploy em voo),
+   reexecuta `git rev-parse HEAD`; se driftou (`headDrifted`), sai com `exit(0)` e o
+   KeepAlive reassume no código novo — cobrindo o caso que o self-reload pós-deploy não
+   alcança: um processo **anterior** ao conserto do reload (o incidente do P1-095 — o
+   trigger novo mergeou e deployou, mas o processo de 01/09, com o reload morto em
+   memória, nunca reiniciou e a janela ociosa nunca ficou viva). Sem isso, o explorer /
+   red team de P3-052 só rodariam "de fato" após restart manual.
 
 ## Stop-loss por task (circuit breaker, P1-014)
 
@@ -932,7 +940,15 @@ estado "daemon detectado, primeiro contato".
   e push com retry.
 - **Nunca bloqueia**: qualquer falha (sync, agente, push) é log-only — o
   explorer não participa do circuit breaker nem reprova merge. Guard diário
-  próprio em `state.json` (`explorerLast`), independente do `redteamLast`.
+  próprio em `state.json` (`explorerLast`), independente do `redteamLast`
+  (`claimExplorerRun` persiste o claim ANTES do spawn — crash no meio da run
+  não re-executa no mesmo dia).
+- **Driver de prova (`scripts/explorer-proof.ts`)**: roda o fluxo REAL do
+  explorer em sandbox hermético (bare origin + clone scratch jogáveis, save
+  injetado como spy) e imprime uma linha `PROOF` por assertion — eventos
+  `task:explorer` no events.jsonl, shots do dia em `shots/explorer/` e o
+  commit `pilot(explorer):` resolvido por SHA no origin jogável. Prova o
+  mecanismo de ponta a ponta sem tocar `state.json` de produção nem GitHub.
 - **Watchdog**: a pass bloqueia o loop por ~25min; desde o P1-035 o `runAgent`
   alimenta o self-watchdog num timer interno (60s) durante qualquer await de
   aux agent — o toque extra no callback de stdout do explorer é redundante,
