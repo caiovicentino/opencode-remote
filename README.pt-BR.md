@@ -87,6 +87,10 @@ remoto, zero confiança**.
   a prévia num **painel lateral** ao lado do chat (divisor arrastável, o chat
   continua visível e navegável — estilo Claude/Codex); em telas mais estreitas
   vale o overlay em tela cheia de antes; também listável via `GET /api/artifacts`.
+  A lista global de Artifacts agrupa por **título da conversa** (o daemon resolve
+  os ids de sessão contra a lista de sessões do opencode; ids desconhecidos caem
+  de volta pro id cru) e, em telas largas, clicar num item da lista volta pra
+  Conversas com a prévia no painel lateral — sem desvio em tela cheia.
   Toda sessão criada pelo daemon carrega o protocolo de artifacts — ele é
   injetado no system prompt do agente mesmo em workspaces sem `AGENTS.md`
   (um AGENTS.md do workspace que já documenta o protocolo suprime a injeção;

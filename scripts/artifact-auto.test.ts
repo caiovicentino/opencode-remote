@@ -6,7 +6,9 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { artifactFromPath, ArtifactWatcher } from "../apps/daemon/src/artifactwatch";
+import { sessionTitleMap } from "../apps/daemon/src/artifacts";
 import { artifactKindFor, consumeArtifactEvents } from "../apps/web/src/lib/artifactAuto";
+import { listArtifacts, listArtifactsDetailed } from "../apps/web/src/lib/artifacts";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -183,6 +185,63 @@ async function waitEvent(events: string[], name: string, ms: number): Promise<bo
   writeFileSync(join(wroot, "ses_old", "after-stop.html"), "x");
   await new Promise((r) => setTimeout(r, 250));
   check("stop() silences the watcher", events.length === 3, JSON.stringify(events));
+}
+
+// --- P2-091: sessionTitleMap (daemon) + listArtifactsDetailed (web) ------------
+
+{
+  const rows = [
+    { id: "ses_a", title: "Relatório Q3" },
+    { id: "ses_b", title: "  spaced  " },
+    { id: "ses_c" }, // no title
+    { id: "ses_d", title: "   " }, // blank title
+    { id: 42, title: "bad id" }, // wrong id shape
+    { title: "no id" }, // missing id
+    "garbage", // not an object
+  ];
+  const map = sessionTitleMap(rows, ["ses_a", "ses_b", "ses_c", "ses_x"]);
+  check(
+    "sessionTitleMap resolves known ids, trims and skips unusable rows",
+    map["ses_a"] === "Relatório Q3" &&
+      map["ses_b"] === "spaced" &&
+      map["ses_c"] === undefined &&
+      map["ses_x"] === undefined &&
+      Object.keys(map).length === 2,
+    JSON.stringify(map),
+  );
+  check("sessionTitleMap over a non-array is empty", Object.keys(sessionTitleMap(null, ["a"])).length === 0);
+  check("sessionTitleMap with no ids is empty", Object.keys(sessionTitleMap(rows, [])).length === 0);
+}
+
+{
+  const meta = { sessionId: "ses_a", name: "index.html", size: 3, mtime: 1, kind: "html" } as const;
+  const okRequest = (async () => ({
+    status: 200,
+    body: { artifacts: [meta], titles: { ses_a: "Relatório Q3" } },
+  })) as unknown as Parameters<typeof listArtifactsDetailed>[0];
+  const listing = await listArtifactsDetailed(okRequest);
+  check(
+    "listArtifactsDetailed parses artifacts + titles",
+    listing.artifacts.length === 1 &&
+      listing.artifacts[0]!.name === "index.html" &&
+      listing.titles["ses_a"] === "Relatório Q3",
+  );
+  const list = await listArtifacts(okRequest);
+  check("listArtifacts keeps returning the flat array", list.length === 1 && list[0]!.name === "index.html");
+
+  const errRequest = (async () => ({ status: 500, body: {} })) as unknown as Parameters<
+    typeof listArtifactsDetailed
+  >[0];
+  const empty = await listArtifactsDetailed(errRequest);
+  check("listArtifactsDetailed on a non-200 is empty", empty.artifacts.length === 0 && Object.keys(empty.titles).length === 0);
+
+  // legacy daemon (no titles field) still lists
+  const legacyRequest = (async () => ({
+    status: 200,
+    body: { artifacts: [meta] },
+  })) as unknown as Parameters<typeof listArtifactsDetailed>[0];
+  const legacy = await listArtifactsDetailed(legacyRequest);
+  check("legacy daemon without titles still lists artifacts", legacy.artifacts.length === 1 && Object.keys(legacy.titles).length === 0);
 }
 
 rmSync(root, { recursive: true, force: true });

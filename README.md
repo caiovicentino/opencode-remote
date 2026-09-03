@@ -85,6 +85,10 @@ private. That is the product: **local power, remote control, zero trust**.
   preview in a **side-by-side pane** next to the chat (draggable divider, chat
   stays visible and navigable — Claude/Codex style), while narrower screens
   keep the full-screen overlay; also listed programmatically via `GET /api/artifacts`.
+  The global Artifacts list groups by **conversation title** (the daemon resolves
+  session ids against the opencode session list; unknown ids fall back to the raw
+  id) and, on wide viewports, clicking a list item jumps back to Conversas with
+  the preview in the side-by-side pane — no full-screen detour.
   When the agent writes a new artifact the daemon emits a `session.artifact`
   event, and on the turn's next idle the desktop app opens the preview pane
   by itself — never overriding a manual pick, a pane the user closed, or an

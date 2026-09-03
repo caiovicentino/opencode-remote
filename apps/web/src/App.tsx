@@ -34,6 +34,7 @@ import ArtifactsView from "./components/ArtifactsView";
 import SendToAgentView from "./components/SendToAgentView";
 import BrowserView, { type BrowseFn } from "./components/BrowserView";
 import { previewFromEvent } from "./lib/preview";
+import type { ArtifactMeta } from "./lib/artifacts";
 import MissionControlView, { type DaemonApiFn } from "./components/MissionControlView";
 import CommandPalette from "./components/CommandPalette";
 import {
@@ -529,6 +530,16 @@ export default function App() {
     dispatchView({ type: "open", slot });
   }
 
+  // P2-091: an artifact picked in the global Artifacts list opens beside the
+  // chat (split-pane on wide viewports) instead of a full-screen detour.
+  const [paneArtifact, setPaneArtifact] = useState<ArtifactMeta | null>(null);
+  function openArtifactInChat(meta: ArtifactMeta) {
+    setNavDir("fwd");
+    // fresh object identity so ChatView re-adopts even for the same file
+    setPaneArtifact({ ...meta });
+    dispatchView({ type: "openChat", sessionId: meta.sessionId });
+  }
+
   /** Rail "Conversas" button + Cmd+1: raise the chat, close any pane. */
   function goChat() {
     setNavDir("fwd");
@@ -750,6 +761,8 @@ export default function App() {
       voice={clientRef.current?.caps?.transcribe === true}
       browserActive={top === "browser"}
       onBack={goBack}
+      paneArtifact={paneArtifact}
+      onPaneArtifactConsumed={() => setPaneArtifact(null)}
     />
   );
   const settingsNode = (
@@ -762,7 +775,7 @@ export default function App() {
     />
   );
   const filesNode = <FilesView request={request} onBack={goBack} />;
-  const artifactsNode = <ArtifactsView request={request} onBack={goBack} />;
+  const artifactsNode = <ArtifactsView request={request} onBack={goBack} onOpenInChat={openArtifactInChat} />;
   const browseNode = <BrowserView browse={browseFn} onBack={goBack} />;
   const missionNode = <MissionControlView daemonApi={daemonApi} browse={browseFn} onBack={goBack} />;
   const shareNode = share ? (

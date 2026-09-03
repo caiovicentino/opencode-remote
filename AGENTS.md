@@ -153,7 +153,7 @@ Desktop app: para interagir com o app Electron real use o harness
 `tools/desktop.mjs` (`open/see/click/type/shot/ipc/close`, mesma DX do
 browse.mjs) — launch hermético, sem daemon de produção. Quando o diff toca
 `apps/desktop/` ou `apps/web/`, o gate roda `npm run test:desktop-flow` (fluxo
-de interação real, <120s — P1-070 adicionou o bloco "local boot" com daemon
+de interação real, <150s — P1-070 adicionou o bloco "local boot" com daemon
 hermético real; P1-080 adicionou o repro de overflow do chat: bolha com diff
 longo em janela estreita, nada pode sair do viewport; P1-089 adicionou o beat
 queue→flush→reentrada com segundo boot hermético contra um fake de opencode:
@@ -162,7 +162,10 @@ o count de bolhas fica estável em 3 re-entradas; ids de sessão do gate são
 curtos de propósito — path de unix socket no macOS trunca em 104 chars;
 P2-090 adicionou o beat de auto-abertura de artifact: o daemon emite
 `session.artifact` ao detectar escrita em artifacts, o pane abre no idle e
-não sobrepõe escolha manual nem o browser pane); use `OCR_DESKTOP_SESSION` próprio para não colidir
+não sobrepõe escolha manual nem o browser pane; P2-091 adicionou a navegação
+de artifacts: card do chat → split-pane ao lado, item da lista global → volta
+pra Conversas com split-pane (full-screen só em janela estreita), grupos da
+lista por título da conversa (daemon resolve id→titulo)); use `OCR_DESKTOP_SESSION` próprio para não colidir
 com a sessão de outro processo. P1-081: com `OCR_DESKTOP_SESSION` setado o app
 NÃO mostra janela (`showMainWindow` no-op + `paintWhenInitiallyHidden`, interação
 100% via webContents) — a tela do operador nunca vê janela de teste; e

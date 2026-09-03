@@ -53,6 +53,12 @@ interface Props {
     timeoutMs?: number,
   ) => Promise<{ status: number; body: unknown }>;
   onBack: () => void;
+  /** P2-091: artifact picked on another surface (ArtifactsView list) — adopted
+   * once into this chat's manual pick so it opens in the P2-062 split-pane
+   * (wide) or overlay (!wide) exactly like a card click. */
+  paneArtifact?: ArtifactMeta | null;
+  /** Called after paneArtifact is adopted so the source can clear its pending state. */
+  onPaneArtifactConsumed?: () => void;
 }
 
 interface QuestionInfo {
@@ -223,6 +229,8 @@ export default function ChatView({
   browserActive,
   request,
   onBack,
+  paneArtifact,
+  onPaneArtifactConsumed,
 }: Props) {
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
@@ -440,6 +448,20 @@ export default function ChatView({
     artifactViewRef.current = artifactView;
     wideRef.current = wide;
   }, [artifactView, wide]);
+
+  // P2-091: adopt an artifact picked on another surface (ArtifactsView list)
+  // as the manual pick — same state path as a card click, so the P2-062
+  // split-pane/overlay rules and the P2-090 manual-wins-over-auto rule hold.
+  // Consuming clears the source's pending state; a re-click (fresh object
+  // from App) re-opens even the same file.
+  const consumePaneArtifactRef = useRef(onPaneArtifactConsumed);
+  consumePaneArtifactRef.current = onPaneArtifactConsumed;
+  useEffect(() => {
+    if (!paneArtifact) return;
+    setArtifactView(paneArtifact);
+    setAutoArtifact(null);
+    consumePaneArtifactRef.current?.();
+  }, [paneArtifact]);
 
   useEffect(() => {
     let alive = true;
@@ -1763,7 +1785,7 @@ export default function ChatView({
                 artifactMentions(b.text, artifacts).map((a) => (
                   <button
                     key={a.name}
-                    className="card"
+                    className="card artifact-card"
                     style={{
                       display: "flex",
                       gap: 6,
