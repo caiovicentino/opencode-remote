@@ -94,7 +94,13 @@ check("desktop shell built (dist-electron/preload.js)", existsSync(preload));
 // Reviewer fix (P1-051 round 1): the gate NEVER uses the default "main"
 // session — a builder's leftover keeper (idle TTL 5min) would be reused with
 // the wrong env and killed by our final close. Per-run unique session.
-const session = `desktop-flow-${process.pid}-${Date.now()}`;
+// P1-089: keep the id SHORT — the keeper's unix socket lives at
+// $TMPDIR/ocr-desktop-<session>/keeper.sock and macOS truncates AF_UNIX
+// bind() paths at 104 chars. The old long id silently bound a truncated
+// "…/keep" socket that the shutdown unlink could never remove, so any
+// relaunch of the same session dir failed with EADDRINUSE forever (the
+// P1-089 beat is the first to relaunch a session dir).
+const session = `df-${process.pid}-${Date.now()}`;
 const cliEnv = { ...process.env, OCR_DESKTOP_SESSION: session };
 
 // Hard budget: the whole flow must fit (spec criterion). P1-070 added the
@@ -156,15 +162,17 @@ async function waitProbe(
   tries = 12,
   delayMs = 1_000,
 ): Promise<string | null> {
+  let last = "";
   for (let i = 0; i < tries; i++) {
     const res = probe(["ipc", expr], 15_000, env);
     if (res.ok && predicate(res.stdout)) {
       check(name, true);
       return res.stdout;
     }
+    last = res.stdout.trim();
     await new Promise((r) => setTimeout(r, delayMs));
   }
-  check(name, false, `condition never held (${tries} probes)`);
+  check(name, false, `condition never held (${tries} probes), last value: ${last.slice(0, 300)}`);
   return null;
 }
 
@@ -172,6 +180,12 @@ async function waitProbe(
 function pngSize(path: string): [number, number] {
   const buf = readFileSync(path);
   return [buf.readUInt32BE(16), buf.readUInt32BE(20)];
+}
+
+/** P1-089: phase banner with elapsed time — the <90s budget of this gate
+ * grew two hermetic boots, so regressions must be attributable per phase. */
+function phase(label: string): void {
+  console.log(`--- ${label} (${((Date.now() - startedAt) / 1000).toFixed(1)}s elapsed)`);
 }
 
 // --- P1-072: interactive webview against a local fake server -------------------
@@ -942,6 +956,283 @@ try {
         if (degraded) {
           const banner = run("local: degradation banner rendered", ["ipc", "!!(document.querySelector('.daemon-reconnecting') || document.querySelector('.daemon-down'))"], 15_000, localEnv);
           if (banner.ok) check("local: reconnecting/down banner present", /true/.test(banner.stdout));
+        }
+
+        // --- P1-089: queue→flush→reentrada across a SECOND hermetic boot ----
+        // Boot 1 above ran with a DEAD opencode backend (sends answer 502 and
+        // degrade to the error banner). Boot 2 adopts a second hermetic
+        // daemon whose OPENCODE_URL is a live fake backend: a message queued
+        // in the offline queue flushes through it, the session cache written
+        // on entry predates the flushed message, and switching conversations
+        // and coming back must render exactly the history row count — never
+        // duplicated pairs (the operator's repro, plus a >500-event buffer
+        // burst that re-fires an old session.idle).
+        phase("P1-089: fake backend + second hermetic boot");
+        const REPLAY = "ses-reentry-check";
+        const DRAFT = "ses-draft-a";
+        const ROW_COUNT = 6;
+        const fakeScript = [
+          "const http = require('node:http');",
+          `const ROWS = Array.from({ length: ${ROW_COUNT} }, (_, i) => ({`,
+          "  info: { id: 'msg-' + (i + 1), role: i % 2 ? 'assistant' : 'user' },",
+          "  parts: [{ type: 'text', text: (i % 2 ? 'reply-' : 'ping-') + (i + 1) }],",
+          "}));",
+          "const hits = [];",
+          "const sse = new Set();",
+          "const srv = http.createServer((req, res) => {",
+          "  const u = new URL(req.url, 'http://127.0.0.1');",
+          "  const json = (b) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(b)); };",
+          "  hits.push({ method: req.method, path: u.pathname });",
+          "  if (u.pathname === '/__hits') return json(hits);",
+          "  if (u.pathname === '/global/health') return json({ healthy: true, version: 'fake' });",
+          "  if (u.pathname === '/event') {",
+          "    res.writeHead(200, { 'content-type': 'text/event-stream' });",
+          "    res.write('retry: 5000\\n\\n');",
+          "    sse.add(res);",
+          "    req.on('close', () => sse.delete(res));",
+          "    return;",
+          "  }",
+          "  if (u.pathname === '/__emit') {",
+          "    let body = '';",
+          "    req.on('data', (c) => (body += c));",
+          "    req.on('end', () => {",
+          "      res.writeHead(200, { 'content-type': 'application/json' });",
+          "      res.end(JSON.stringify({ ok: true, clients: sse.size }));",
+          "      for (const evt of JSON.parse(body || '[]')) for (const r of sse) r.write('data: ' + JSON.stringify(evt) + '\\n\\n');",
+          "    });",
+          "    return;",
+          "  }",
+          "  if (u.pathname === '/session') return json([{ id: 'ses-reentry-check', title: 'Reentry check' }, { id: 'ses-draft-a', title: 'Draft A' }]);",
+          "  if (u.pathname === '/session/ses-reentry-check' || u.pathname === '/session/ses-draft-a') return json({ id: u.pathname.split('/')[2], title: 'P1-089' });",
+          "  if (/^\\/session\\/[^/]+\\/message$/.test(u.pathname)) return req.method === 'POST' ? json({ id: 'msg-fake' }) : json(ROWS);",
+          "  if (u.pathname === '/permission' || u.pathname === '/question') return json([]);",
+          "  if (u.pathname === '/provider') return json({ all: [] });",
+          "  res.writeHead(404).end();",
+          "});",
+          "srv.listen(0, '127.0.0.1', () => console.log('PORT=' + srv.address().port));",
+        ].join("\n");
+        const fakeChild = spawn(process.execPath, ["-e", fakeScript], {
+          stdio: ["ignore", "pipe", "ignore"],
+        });
+        const fakePort = await new Promise<number>((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error("fake opencode never printed PORT")), 10_000);
+          fakeChild.stdout?.on("data", (d: Buffer) => {
+            const m = d.toString().match(/PORT=(\d+)/);
+            if (m) {
+              clearTimeout(timer);
+              resolve(Number(m[1]));
+            }
+          });
+          fakeChild.on("exit", () => reject(new Error("fake opencode exited early")));
+        }).catch((err) => {
+          check("P1-089: fake opencode backend booted", false, String(err));
+          return NaN;
+        });
+        const fakeUrl = `http://127.0.0.1:${fakePort}`;
+        const killFake = () => fakeChild.kill();
+        process.on("exit", killFake);
+        const daemonHome2 = mkdtempSync(join(tmpdir(), "ocr-flow-daemon2-"));
+        const localStateFile2 = join(daemonHome2, ".opencode-remote", "daemon.json");
+        const port2 = await new Promise<number>((resolve, reject) => {
+          const srv = createServer();
+          srv.listen(0, "127.0.0.1", () => {
+            const { port } = srv.address() as AddressInfo;
+            srv.close(() => resolve(port));
+          });
+          srv.on("error", reject);
+        });
+        const localDaemon2 = spawn(
+          "npx",
+          ["tsx", "apps/daemon/src/index.ts"],
+          {
+            cwd: repoRoot,
+            env: {
+              ...process.env,
+              HOME: daemonHome2,
+              OCR_METRICS_PORT: String(port2),
+              RELAY_URL: "ws://127.0.0.1:1", // dead: relay must stay irrelevant in local mode
+              OPENCODE_URL: fakeUrl,
+              OCR_LOG_LEVEL: "error",
+            },
+            stdio: ["ignore", "ignore", "ignore"],
+            detached: true,
+          },
+        );
+        const killDaemon2 = (signal: NodeJS.Signals = "SIGTERM"): void => {
+          if (!localDaemon2.pid) return;
+          try {
+            process.kill(-localDaemon2.pid, signal);
+          } catch {
+            /* already gone */
+          }
+        };
+        process.on("exit", () => killDaemon2("SIGKILL"));
+        // Same OCR_DESKTOP_SESSION as boot 1 — the offline queue lives in the
+        // userData's localStorage and must survive the relaunch.
+        const localEnv2 = {
+          ...process.env,
+          OCR_DESKTOP_SESSION: `${session}-local`,
+          OCR_DESKTOP_LOCAL_STATE: localStateFile2,
+          OCR_DAEMON_METRICS_PORT: String(port2),
+        };
+        try {
+          let token2 = "";
+          for (let i = 0; i < 25; i++) {
+            try {
+              token2 = (JSON.parse(readFileSync(localStateFile2, "utf8")) as { apiToken?: string }).apiToken ?? "";
+            } catch {}
+            if (token2) break;
+            await fetch(`http://127.0.0.1:${port2}/api/health`, { headers: { authorization: "Bearer warmup" } }).catch(() => {});
+            await new Promise((r) => setTimeout(r, 200));
+          }
+          check("P1-089: boot-2 daemon published the 0600 state file", !!token2);
+          // single-instance lock: boot 1 must be fully closed before boot 2.
+          // The old keeper unlinks its socket EARLY in shutdown but stays
+          // alive through quit()'s 12s SIGKILL grace — relaunching inside
+          // that window races the stale bind (EADDRINUSE observed in the
+          // gate). Wait for the keeper PROCESS to be gone, not just the sock.
+          spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: localEnv });
+          localBooted = false;
+          for (let i = 0; i < 32; i++) {
+            const alive = spawnSync("pgrep", ["-f", "tools/desktop\\.mjs"], { encoding: "utf8" });
+            if (alive.status !== 0) break;
+            await new Promise((r) => setTimeout(r, 500));
+          }
+          const open2 = run("P1-089: open (second hermetic boot, live fake backend)", ["open"], 45_000, localEnv2);
+          localBooted = open2.ok;
+          if (open2.ok) {
+            await waitProbe(
+              "P1-089: boot-2 paired hook rendered",
+              "document.querySelector('[data-phase]')?.getAttribute('data-phase') ?? ''",
+              (v) => v.includes("paired"),
+              localEnv2,
+            );
+            // --- queue→flush: the offline queue drains against the fake -----
+            // P1-089: a send against a dead BACKEND answers 502 (no enqueue —
+            // the daemon is alive), so the queue is seeded at its own storage
+            // key exactly as enqueue() writes it. The renderer's localStorage
+            // is per-launch (fresh userData), so this happens in boot 2 while
+            // the board is still on screen — the flush effect only mounts
+            // with the chat.
+            run(
+              "P1-089: seed the offline queue of the flushed session",
+              ["ipc", `window.localStorage.setItem('ocr.queue.${DRAFT}', JSON.stringify(['rascunho P1-089']))`],
+              15_000,
+              localEnv2,
+            );
+            run("P1-089: deep-link to the queued session", ["ipc", `location.hash = '#/session/${DRAFT}'`], 15_000, localEnv2);
+            await waitProbe(
+              "P1-089: offline queue drained",
+              "window.localStorage.getItem('ocr.queue." + DRAFT + "') ?? 'null'",
+              (v) => v.trim() === '"[]"',
+              localEnv2,
+            );
+            let flushed = false;
+            for (let i = 0; i < 12 && !flushed; i++) {
+              const hits = await fetch(`${fakeUrl}/__hits`).then((r) => r.json() as Promise<{ method: string; path: string }[]>).catch(() => [] as { method: string; path: string }[]);
+              flushed = hits.some((h) => h.method === "POST" && h.path === `/session/${DRAFT}/message`);
+              if (!flushed) await new Promise((r) => setTimeout(r, 500));
+            }
+            check("P1-089: flushed message reached the fake backend (POST recorded)", flushed);
+            await waitProbe(
+              "P1-089: no pending bubbles left after the flush",
+              "document.querySelectorAll('.msg.pending').length",
+              (v) => v.trim() === "0",
+              localEnv2,
+            );
+            // --- reentrada: the operator's repro, 3 round-trips -----------------
+            run("P1-089: deep-link to the replay session", ["ipc", `location.hash = '#/session/${REPLAY}'`], 15_000, localEnv2);
+            const settle = `document.querySelectorAll('.messages .msg').length`;
+            await waitProbe("P1-089: history settles at the row count", settle, (v) => v.trim() === String(ROW_COUNT), localEnv2);
+            // Event burst: >500 filler events slide the watermark out of the
+            // 500-cap buffer, then a turn whose messageID is already in
+            // history re-fires session.idle with a DIFFERENT live text —
+            // exactly the replay that used to duplicate bubbles.
+            const burst = [
+              ...Array.from({ length: 520 }, (_, i) => ({
+                type: "message.updated",
+                properties: { sessionID: "ses-other", info: { id: `filler-${i}`, role: "assistant" } },
+              })),
+              {
+                type: "message.updated",
+                properties: { sessionID: REPLAY, info: { id: "msg-5", role: "assistant" } },
+              },
+              {
+                type: "message.part.updated",
+                properties: { sessionID: REPLAY, part: { type: "text", text: "reply-5-streamed", messageID: "msg-5" } },
+              },
+              { type: "session.idle", properties: { sessionID: REPLAY } },
+            ];
+            const emit = await fetch(`${fakeUrl}/__emit`, { method: "POST", body: JSON.stringify(burst) })
+              .then((r) => r.json() as Promise<{ clients?: number }>)
+              .catch(() => ({}) as { clients?: number });
+            check("P1-089: burst delivered over the daemon's SSE bridge", (emit.clients ?? 0) >= 1, JSON.stringify(emit));
+            await new Promise((r) => setTimeout(r, 2_500));
+            const streamedDupes = `Array.from(document.querySelectorAll('.messages .msg')).filter((m) => (m.textContent || '').includes('reply-5-streamed')).length`;
+            await waitProbe(
+              "P1-089: replayed idle does NOT duplicate a history bubble",
+              `(${settle}) + '|' + (${streamedDupes})`,
+              (v) => {
+                const [count, dupes] = JSON.parse(v.trim()).split("|");
+                return count === String(ROW_COUNT) && dupes === "0";
+              },
+              localEnv2,
+            );
+            let stable = true;
+            for (let i = 0; i < 3; i++) {
+              run("P1-089: switch to the flushed session", ["ipc", `location.hash = '#/session/${DRAFT}'`], 15_000, localEnv2);
+              await waitProbe("P1-089: reentry — flushed session at row count", settle, (v) => v.trim() === String(ROW_COUNT), localEnv2);
+              run("P1-089: back to the replay session", ["ipc", `location.hash = '#/session/${REPLAY}'`], 15_000, localEnv2);
+              const ok = await waitProbe(
+                "P1-089: reentry — replay session at row count",
+                `(${settle}) + '|' + (${streamedDupes})`,
+                (v) => {
+                  const [count, dupes] = JSON.parse(v.trim()).split("|");
+                  return count === String(ROW_COUNT) && dupes === "0";
+                },
+                localEnv2,
+              );
+              if (!ok) stable = false;
+            }
+            check("P1-089: bubble count stable (delta 0) across the 3 re-entries", stable);
+            // evidence shots of the re-entered session (spec criterion 5)
+            const shot1440 = run("P1-089: 1440x900 evidence shot", ["shot", join(shotsDir, "P1-089-reentry-1440.png"), "1440", "900"], 15_000, localEnv2);
+            if (shot1440.ok) check("P1-089: 1440x900 shot is a real PNG", pngSize(join(shotsDir, "P1-089-reentry-1440.png")).join("x") === "1440x900");
+            // back-to-list path: the real ← button only exists below 1024px
+            // (P1-005 hides it in the desktop layout), so this round-trip runs
+            // after the 390px resize that the 390 evidence shot needs anyway.
+            const shot390 = run("P1-089: 390 evidence shot", ["shot", join(shotsDir, "P1-089-reentry-390.png"), "390", "844"], 15_000, localEnv2);
+            if (shot390.ok) check("P1-089: 390 shot is a real PNG", pngSize(join(shotsDir, "P1-089-reentry-390.png"))[0] === 390);
+            await waitProbe("P1-089: chat remounted at 390px", "!!document.querySelector('.messages')", (v) => /true/.test(v), localEnv2);
+            const back = run("P1-089: back to the conversation list", ["click", ".chat-back"], 15_000, localEnv2);
+            if (back.ok) {
+              await waitProbe("P1-089: board rendered (chat unmounted)", "!!document.querySelector('.messages')", (v) => /false/.test(v), localEnv2);
+              await waitProbe(
+                "P1-089: session row rendered on the board",
+                "document.body.innerText.includes('Reentry check')",
+                (v) => /true/.test(v),
+                localEnv2,
+              );
+              const row = run("P1-089: click the session row", ["click", ".session-card"], 15_000, localEnv2);
+              if (row.ok) {
+                await waitProbe(
+                  "P1-089: board re-entry stays at row count",
+                  `(${settle}) + '|' + (${streamedDupes})`,
+                  (v) => {
+                    const [count, dupes] = JSON.parse(v.trim()).split("|");
+                    return count === String(ROW_COUNT) && dupes === "0";
+                  },
+                  localEnv2,
+                );
+              }
+            }
+          }
+        } finally {
+          if (localBooted) spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: localEnv2 });
+          localBooted = false;
+          killDaemon2("SIGKILL");
+          killFake();
+          rmSync(daemonHome2, { recursive: true, force: true });
         }
       }
     }

@@ -27,6 +27,7 @@ import {
 } from "../lib/permissionCards";
 import { getCachedSession, putCachedSession } from "../lib/sessionCache";
 import { appendDraft, getDraft, setDraft } from "../lib/drafts";
+import { mergeBubbles, type Bubble } from "../lib/bubbleMerge";
 import { initialUnreadState, reduceUnread, sendUnreadToShell } from "../lib/unread";
 import { ArtifactIcon, IconChat, IconDownload, IconLaptop, IconWrench } from "./icons";
 
@@ -43,15 +44,6 @@ interface Props {
     timeoutMs?: number,
   ) => Promise<{ status: number; body: unknown }>;
   onBack: () => void;
-}
-
-interface Bubble {
-  role: "user" | "assistant";
-  text: string;
-  images?: string[];
-  messageID?: string;
-  /** true while the relay round-trip is in flight; "queued" when offline */
-  pending?: boolean | "queued";
 }
 
 interface QuestionInfo {
@@ -445,6 +437,12 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
     if (sid === sessionIdRef.current) setInput(next);
   }
 
+  // streaming tail state lives ABOVE the [sessionId] switch effect so that
+  // effect can clear it (P1-089): session A's live tail must never finalize
+  // into session B's transcript on a mid-stream switch.
+  const [liveText, setLiveText] = useState("");
+  const liveRef = useRef<{ text: string; messageID?: string }>({ text: "" });
+
   useEffect(() => {
     rolesRef.current = {};
     setResponded(new Set());
@@ -474,6 +472,10 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
         );
       } catch {}
     })();
+    // P1-089: drop the previous session's streaming tail — otherwise an idle
+    // finalize racing the switch appends it to the new session's bubbles
+    liveRef.current = { text: "" };
+    setLiveText("");
   }, [sessionId]);
 
   // P1-082: the daemon's pending list (GET /permission) is the source of truth
@@ -606,15 +608,11 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
       const more = Array.isArray(res.body) ? false : (body.hasMore ?? false);
       const nextOldest = rows[0]?.info?.id ?? oldest;
       const tools = toolsFromRows(rows);
-      const known = new Set(bubbles.map((x) => x.messageID).filter(Boolean));
-      const overlap = older.some((x) => x.messageID && known.has(x.messageID));
-      // functional update: a streamed bubble landing mid-fetch must survive
-      setBubbles((b) => {
-        const stale = new Set(b.map((x) => x.messageID).filter(Boolean));
-        const hit = older.some((x) => x.messageID && stale.has(x.messageID));
-        return hit ? older : [...older, ...b];
-      });
-      const next = overlap ? older : [...older, ...bubbles];
+      // P1-089: id-keyed prepend — an overlap (history changed under us,
+      // e.g. a rewind) replaces same-id bubbles in place instead of the old
+      // whole-list discard, and streamed id-less bubbles survive the merge.
+      setBubbles((b) => mergeBubbles(older, b));
+      const next = mergeBubbles(older, bubbles);
       setWinStart(Math.max(0, next.length - MSG_WINDOW));
       const mergedTools = new Map([...historyTools, ...tools]);
       setHistoryTools(mergedTools);
@@ -638,10 +636,9 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
   // stream: rebuild the tail of the conversation from live part events.
   // user messages echo as parts too — track message roles and only stream
   // assistant parts. `session.idle`/`session.status:idle` finalize the turn.
-  const [liveText, setLiveText] = useState("");
-  const liveRef = useRef("");
   useEffect(() => {
     let text = "";
+    let textId: string | undefined;
     let idle = false;
     let errored = "";
     let start = 0;
@@ -693,22 +690,36 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
       }
       if (p.part?.type === "text" && p.part.text) {
         if (p.part.messageID && rolesRef.current[p.part.messageID] === "user") continue;
+        // the tail text and its messageID always come from the SAME part
+        // event, so the finalize below keys the right message
         text = p.part.text;
+        textId = p.part.messageID;
         idle = false;
       }
       if (evt.type === "session.idle") idle = true;
     }
     if (text) {
-      liveRef.current = text;
+      liveRef.current = { text, messageID: textId };
       setLiveText(text);
     }
     if (idle) {
-      if (liveRef.current) {
+      if (liveRef.current.text) {
         const final = liveRef.current;
-        setBubbles((b) =>
-          b[b.length - 1]?.text === final ? b : [...b, { role: "assistant" as const, text: final }],
-        );
-        liveRef.current = "";
+        setBubbles((b) => {
+          // P1-089: the append must be idempotent per messageID — a replayed
+          // event buffer (watermark slid out of the 500 cap, reconnect
+          // resync) re-fires old session.idle events. Never push a second
+          // bubble for a message already on screen; history stays the
+          // source of truth and refetches converge the text.
+          if (final.messageID && b.some((x) => x.messageID === final.messageID)) return b;
+          // legacy events carry no messageID — text-only fallback
+          if (!final.messageID && b[b.length - 1]?.text === final.text) return b;
+          return [
+            ...b,
+            { role: "assistant" as const, text: final.text, messageID: final.messageID },
+          ];
+        });
+        liveRef.current = { text: "" };
       }
       setLiveText("");
       setSending(false);
@@ -745,7 +756,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
     if (connStatus === "paired" && hadDropRef.current) {
       hadDropRef.current = false;
       setLiveText("");
-      liveRef.current = "";
+      liveRef.current = { text: "" };
       lastEventId.current = events[events.length - 1]?.id ?? null;
       void loadHistory();
     }
