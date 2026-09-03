@@ -52,7 +52,10 @@ export function reduceThinking(
   if (!prev) return prev;
   if (evt.type === "session.idle") return { ...prev, endedAt: prev.endedAt ?? now };
   if (evt.type === "message.part.updated") {
-    // answer text is streaming — the thinking window closed
+    // only the answer text closing the thinking window freezes the duration —
+    // tool/file/step parts stream mid-turn and must not collapse the block
+    const p = (evt.properties ?? {}) as { part?: { type?: string } };
+    if (p.part?.type !== "text") return prev;
     return { ...prev, endedAt: prev.endedAt ?? now };
   }
   return prev;

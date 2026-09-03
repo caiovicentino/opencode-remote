@@ -65,6 +65,21 @@ check("events of other sessions are ignored", s6 === null);
 check("tool part creates no thinking state", reduceThinking(null, { type: "message.part.updated", properties: { sessionID: SID, part: { type: "tool", callID: "c1" } } }, SID, 1_000) === null);
 check("empty reasoning snapshot is ignored", reduceThinking(null, { type: "message.part.updated", properties: { sessionID: SID, part: { type: "reasoning", text: "" } } }, SID, 1_000) === null);
 
+// reviewer round 2: with a live thinking state, tool/file/step parts stream
+// mid-turn — they must NOT freeze the window (only answer text or idle does)
+const midTurn = reduceThinking(null, reasoningEvt("Pensando entre tool calls"), SID, 1_000);
+const toolMidTurn = reduceThinking(midTurn, { type: "message.part.updated", properties: { sessionID: SID, part: { type: "tool", callID: "c1", state: { status: "running" } } } }, SID, 2_000);
+check("tool part mid-turn does NOT freeze the window (stays expanded)", !!toolMidTurn && thinkingExpanded(toolMidTurn) === true, JSON.stringify(toolMidTurn));
+check("tool part mid-turn leaves endedAt untouched", !!toolMidTurn && toolMidTurn.endedAt === undefined, JSON.stringify(toolMidTurn));
+const fileMidTurn = reduceThinking(midTurn, { type: "message.part.updated", properties: { sessionID: SID, part: { type: "file", url: "data:image/png;base64,x" } } }, SID, 3_000);
+check("file part mid-turn does NOT freeze the window", !!fileMidTurn && thinkingExpanded(fileMidTurn) === true, JSON.stringify(fileMidTurn));
+// reasoning after the tool result still anchors at the ORIGINAL startedAt
+const resumed = reduceThinking(toolMidTurn, reasoningEvt("Voltando a pensar"), SID, 4_000);
+check("reasoning after a tool part keeps the original startedAt", !!resumed && resumed.startedAt === 1_000 && thinkingExpanded(resumed) === true, JSON.stringify(resumed));
+// and the text part STILL freezes after tool parts — no stale collapse
+const textAfterTools = reduceThinking(resumed, textEvt("Resposta"), SID, 5_000);
+check("answer text freezes the window even after mid-turn tool parts", !!textAfterTools && thinkingExpanded(textAfterTools) === false && textAfterTools.endedAt === 5_000, JSON.stringify(textAfterTools));
+
 // collapsed-state unit: a fresh block starts collapsed when rendering from
 // history (streaming=false) and expanded only while live-thinking — the
 // aria-expanded default the desktop-flow gate asserts.
