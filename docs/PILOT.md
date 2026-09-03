@@ -1013,3 +1013,30 @@ main (bookkeeping do pipeline ou, pior, um commit hostil) virava deploy. Agora:
   bateria de eval) em vez de `gh api` no caminho crítico do deploy.
 - Perda do arquivo (ex.: máquina nova) = fail-closed: nada deploya até o
   próximo merge do pilot regravar a lista.
+
+## Watcher de releases do opencode (P2-100, 03/09)
+
+O runtime do pipeline (CLI opencode) solta release quase diária, e mudança de
+comportamento de provider (timeout default, regra de binding do Anthropic)
+queima attempt do builder de um jeito que parece falha de task. O script
+`scripts/opencode-release-watch.ts` dá o sinal de frescor do runtime:
+
+- **Read-only por definição**: consulta
+  `GET https://api.github.com/repos/anomalyco/opencode/releases/latest`
+  (sem auth, User-Agent próprio, timeout de 10s), compara a tag com
+  `opencode --version` local e **nunca atualiza nada** — só observa e reporta.
+- **Divergiu** → grava `lastOpencodeRelease: {tag, publishedAt}` no
+  `state.json` (escrita atômica, P2-024, preservando os demais campos) e
+  emite evento `audit` no `events.jsonl` com o texto
+  `runtime desatualizado: local X, latest Y` — o feed do Mission Control
+  já o exibe; um chip dedicado pode casar nesse texto.
+- **Idempotente**: mesma tag já gravada no state ⇒ no-op (sem evento
+  duplicado); runtime em-par-com-a-latest ⇒ no-op (e registro velho de
+  divergência é removido pra o chip não mentir).
+- **Nunca quebra**: API fora / payload malformado / `opencode` ausente /
+  `state.json` corrompido são warn no log e exit 0 — corrompido nunca é
+  sobrescrito (reparo é do doctor, P1-030).
+
+Run manual: `npx tsx scripts/opencode-release-watch.ts` (cobre via
+`scripts/release-watch.test.ts` na bateria `test:unit`, com fetch mockado).
+Wiring no loop do pipeline é follow-up — o spike valida o sinal primeiro.
