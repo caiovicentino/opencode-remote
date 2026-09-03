@@ -93,6 +93,9 @@
   #bform .stepper button { width:30px; height:30px; padding:0; font-size:14px; line-height:1; }
   #bform .stepper b { min-width:34px; text-align:center; font:700 15px ui-monospace, monospace; color:#cfe6f5; }
   #bform .rochip { display:inline-block; padding:8px 12px; border:1px dashed rgba(160,190,220,.3); border-radius:6px; font:700 11px ui-monospace, monospace; color:#8fb4c9; letter-spacing:.1em; }
+  #bform .copts { display:flex; gap:8px; }
+  #bform .copts button { background:#0a141d; color:#8fb4c9; border:1px solid rgba(160,190,220,.3); border-radius:6px; font:700 11px ui-monospace, monospace; letter-spacing:.12em; padding:9px 14px; cursor:pointer; }
+  #bform .copts button.on { background:#12314a; color:#bfe3ff; border-color:#3fa7ff; box-shadow:0 0 10px rgba(63,167,255,.25); }
   #card { width:min(720px,92vw); max-height:82vh; overflow:auto; background:var(--panel); border:1px solid rgba(34,211,238,.28); border-radius:14px;
           padding:18px 22px; animation:rise .25s ease-out; }
   @keyframes rise { from { transform:translateY(16px); opacity:0 } to { transform:none; opacity:1 } }
@@ -184,8 +187,10 @@
           <span class="stepper"><button onclick="fleetStep(-1)">−</button><b id="f-slots">2</b><button onclick="fleetStep(1)">+</button></span>
         </label>
         <label>COORDENADOR (TIER-B)
-          <input id="f-coord" list="coord-presets" placeholder="claude-fable-5-1" />
-          <datalist id="coord-presets"><option value="claude-fable-5-1"></option><option value="claude-opus-5"></option><option value="opus"></option></datalist>
+          <span class="copts">
+            <button id="c-fable" onclick="pickCoordinator('claude-fable-5-1')">FABLE</button>
+            <button id="c-opus" onclick="pickCoordinator('opus')">OPUS 5</button>
+          </span>
         </label>
         <label>CONSTRUTOR<span class="rochip">GLM · flash</span></label>
         <button id="fsave" onclick="saveFleet()">APLICAR FROTA</button>
@@ -792,7 +797,7 @@ function openCore() {
   $("m-tl").innerHTML = world.deployEvents.length ? world.deployEvents.slice(-40).map(tlRow).join("") : `<div class="empty">sem deploys no feed</div>`;
   $("bform").style.display = "block";
   $("b-tasks").value = world.maxTasks; $("b-dep").value = world.maxDeploys; $("bsave").textContent = "SALVAR"; $("bsave").disabled = false;
-  $("f-slots").textContent = world.fleetSlots || 2; $("f-coord").value = world.coordinator || "";
+  $("f-slots").textContent = world.fleetSlots || 2; pickCoordinator(world.coordinator || "claude-fable-5-1");
   $("modal").classList.add("open");
 }
 function closeModal() { $("modal").classList.remove("open"); }
@@ -810,6 +815,13 @@ async function saveBudget() {
   } catch { done(false); }
 }
 window.saveBudget = saveBudget;
+let coordChoice = "claude-fable-5-1";
+function pickCoordinator(m) {
+  coordChoice = m;
+  $("c-fable").className = m === "claude-fable-5-1" ? "on" : "";
+  $("c-opus").className = m !== "claude-fable-5-1" ? "on" : "";
+}
+window.pickCoordinator = pickCoordinator;
 function fleetStep(d) {
   const cur = parseInt($("f-slots").textContent, 10) || world.fleetSlots || 2;
   $("f-slots").textContent = Math.max(1, Math.min(8, cur + d));
@@ -817,7 +829,7 @@ function fleetStep(d) {
 window.fleetStep = fleetStep;
 async function saveFleet() {
   const slots = parseInt($("f-slots").textContent, 10);
-  const coordinator = $("f-coord").value.trim();
+  const coordinator = coordChoice;
   const body = {};
   if (Number.isInteger(slots) && slots >= 1 && slots <= 8) body.slots = slots;
   if (coordinator) body.coordinator = coordinator;
