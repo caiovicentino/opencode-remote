@@ -179,7 +179,7 @@ import {
   DRAIN_MS as RELAY_DRAIN_MS,
   type RelayLog,
 } from "../apps/relay/src/shutdown";
-import { touchedUiFromDiff, needsEscalation, parseFindings, verifyFindings, isTaskMergeSha, parseVerdict, reviewerOk, tagUnverified } from "../apps/pilot/src/pipeline";
+import { touchedUiFromDiff, needsEscalation, parseFindings, verifyFindings, isTaskMergeSha, parseVerdict, reviewerOk, tagUnverified, isBlockingFinding, findingsRepeat } from "../apps/pilot/src/pipeline";
 import { stdlibShadowHits } from "./stdlib-shadow";
 import { latestUiShot, pruneShots } from "../apps/pilot/src/shot";
 import { parseMarkdown, parseInline } from "../apps/web/src/lib/md";
@@ -2396,6 +2396,18 @@ check("stdlibShadow: non-stdlib root file passes", stdlibShadowHits("A\tmain.py\
   check("p2-038: reviewerOk — REQUEST_CHANGES with verified findings rejects", !reviewerOk("VERDICT: REQUEST_CHANGES\n- real.ts:1 — wrong", ["- real.ts:1 — wrong"], []));
   check("p1-073: reviewerOk — all findings dropped → fail-closed rejection (incident path)", !reviewerOk("VERDICT: REQUEST_CHANGES\n- ghost.ts:1 — nope", [], ["- ghost.ts:1 — nope"]));
   check("p2-038: reviewerOk — no marker fails closed", !reviewerOk("all good", [], []));
+  // P1-103 severity contract: only [BLOCKING] rejects; nit-only reviews approve
+  check("p1-103: reviewerOk — REQUEST_CHANGES with only [NIT] findings approves", reviewerOk("VERDICT: REQUEST_CHANGES\n- [NIT] real.ts:1 — wording", ["- [NIT] real.ts:1 — wording"], []));
+  check("p1-103: reviewerOk — [BLOCKING] finding rejects", !reviewerOk("VERDICT: REQUEST_CHANGES\n- [BLOCKING] real.ts:1 — wrong", ["- [BLOCKING] real.ts:1 — wrong"], []));
+  check("p1-103: reviewerOk — untagged finding fails closed as BLOCKING", !reviewerOk("VERDICT: REQUEST_CHANGES\n- real.ts:1 — wrong", ["- real.ts:1 — wrong"], []));
+  check("p1-103: reviewerOk — verified NIT + unverifiable residue still rejects (P1-073)", !reviewerOk("VERDICT: REQUEST_CHANGES\n- [NIT] real.ts:1 — w", ["- [NIT] real.ts:1 — w"], ["- ghost.ts:1 — nope"]));
+  check("p1-103: reviewerOk — nit-only REQUEST_CHANGES with no evidence at all rejects", !reviewerOk("VERDICT: REQUEST_CHANGES\n- [NIT] real.ts:1 — wording", [], []));
+  check("p1-103: isBlockingFinding contract", isBlockingFinding("- [BLOCKING] x") && !isBlockingFinding("- [NIT] x") && isBlockingFinding("- untagged x") && isBlockingFinding("- [BLOCKING] + [NIT] ambiguous"));
+  // P1-103 cross-round repetition signal for the escalation arbiter
+  check("p1-103: findingsRepeat — same file citation repeats across rounds", findingsRepeat(["- [BLOCKING] src/x.ts:10 — boom"], ["- [NIT] src/x.ts:42 — still boom (rephrased)"]));
+  check("p1-103: findingsRepeat — different citations do not repeat", !findingsRepeat(["- [BLOCKING] src/x.ts:10 — boom"], ["- [BLOCKING] src/y.ts:1 — other"]));
+  check("p1-103: findingsRepeat — citation-free findings match on normalized text", findingsRepeat(["- [BLOCKING] Off-by-one in the loop"], ["- off-by-one in the LOOP!"]));
+  check("p1-103: findingsRepeat — empty previous round never repeats", !findingsRepeat([], ["- [BLOCKING] src/x.ts:1 — boom"]));
   const twoMarkers = parseFindings("VERDICT: APPROVE\n- early bullet\nVERDICT: REQUEST_CHANGES\n- late bullet");
   check("p2-038: parseFindings anchored at the LAST marker", twoMarkers.some((f) => f.includes("late bullet")) && !twoMarkers.some((f) => f.includes("early")));
 
@@ -5469,14 +5481,13 @@ check(
 check("p1-059 normalizeModels: non-object → undefined", normalizeModels("nope") === undefined && normalizeModels(null) === undefined);
 check("p1-059 normalizeModels: empty tiers → undefined", normalizeModels({ tierA: {}, tierB: { planner: "" } }) === undefined);
 
-// escalation table (P1-059 acceptance): divergent ⇒ true; both APPROVE ⇒ false; round>1 divergence ⇒ false
-check("p1-059 needsEscalation: divergent round 1", needsEscalation(1, true, false, false, false) && needsEscalation(1, false, true, false, false));
-check("p1-059 needsEscalation: both approve round 1", !needsEscalation(1, true, true, false, false));
-check("p1-059 needsEscalation: both reject with kept findings", !needsEscalation(1, false, false, false, false));
-check("p1-059 needsEscalation: all-dropped triggers", needsEscalation(1, true, true, true, false) && needsEscalation(1, false, false, false, true));
-check("p1-059 needsEscalation: divergence never past round 1", !needsEscalation(2, true, false, false, false) && !needsEscalation(3, false, true, false, false));
-// P1-073: all-unverifiable findings escalate in ANY round (fail-closed incident path)
-check("p1-073 needsEscalation: all-dropped round 2+ escalates", needsEscalation(2, false, false, true, false) && needsEscalation(2, false, false, false, true) && needsEscalation(3, false, false, true, true));
+// escalation table (P1-059, trigger replaced by P1-103): repeated findings
+// between rounds with a rejection ⇒ true; all-dropped (P1-073) ⇒ true in any
+// round; plain divergence or repetition with both approvals ⇒ false
+check("p1-073 needsEscalation: all-dropped escalates in any round", needsEscalation(false, false, true, false, false) && needsEscalation(true, true, false, true, false));
+check("p1-103 needsEscalation: repeated findings with a rejection escalate", needsEscalation(true, false, false, false, true) && needsEscalation(false, true, false, false, true));
+check("p1-103 needsEscalation: repetition with both approvals does not escalate", !needsEscalation(true, true, false, false, true));
+check("p1-103 needsEscalation: no repetition, no escalation", !needsEscalation(true, false, false, false, false) && !needsEscalation(false, true, false, false, false));
 
 // forensic guards + report extraction
 check("p1-059 forensicDue: never ran", forensicDue(undefined) === true);

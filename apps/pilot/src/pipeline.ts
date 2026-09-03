@@ -735,12 +735,18 @@ Rules:
   bullets are parsed ONLY under it — \`VERDICT: REQUEST_CHANGES\` must be followed by the
   bullet list of findings; bullets after \`VERDICT: APPROVE\` are treated as rationale,
   not findings. APPROVE only with an empty findings list.
+- P1-103 severity contract: tag EVERY finding bullet with one severity —
+  \`[BLOCKING]\` (breaks correctness, security, the constitution, the spec's
+  acceptance criteria, or regresses behavior) or \`[NIT]\` (style, wording,
+  taste). Example: \`- [BLOCKING] src/auth.ts:42 — replay window reopened\`.
+  An untagged bullet is treated as BLOCKING; a review whose findings are all
+  \`[NIT]\` approves, so do not escalate taste to BLOCKING.
 
 Your LAST lines must be exactly one of:
 VERDICT: APPROVE
 or
 VERDICT: REQUEST_CHANGES
-followed by a bullet list of findings.
+followed by a bullet list of findings, each tagged [BLOCKING] or [NIT].
 
 TASK (${t.id}) [${t.priority}]: ${t.title}
 spec: ${t.spec || "(none)"}
@@ -778,36 +784,82 @@ export function parseVerdict(output: string): ReviewerVerdict | null {
  * so in the pipeline an APPROVE always arrives here with an empty `kept` —
  * the "APPROVE carrying verified findings rejects" rule survives only for
  * explicitly passed findings (unit battery, direct callers). P1-073:
- * fail-closed — a REQUEST_CHANGES never approves, even when its findings ALL
- * fail mechanical verification (the incident path: hallucinated findings used
+ * fail-closed — a REQUEST_CHANGES never approves when any finding failed
+ * mechanical verification (the incident path: hallucinated findings used
  * to degenerate to an effective approve). Without an arbiter it stays a
  * rejection, and an output without any marker fails closed too.
+ * P1-103 severity contract: only a verified [BLOCKING] finding rejects —
+ * a review whose verified findings are all [NIT] approves (the P1-056
+ * incident: 55% of rounds rejected with a 100% Nit/Cosmetic tail). An
+ * untagged finding fails closed as BLOCKING.
  */
-export function reviewerOk(output: string, kept: string[], _dropped: string[]): boolean {
+export function reviewerOk(output: string, kept: string[], dropped: string[]): boolean {
   const verdict = parseVerdict(output);
-  if (verdict !== "APPROVE") return false;
-  return kept.length === 0;
+  if (verdict === null) return false;
+  if (verdict === "APPROVE") return !kept.some(isBlockingFinding);
+  // REQUEST_CHANGES: no evidence (or unverifiable residue) is never an
+  // effective approve; verified nit-only findings approve (P1-103).
+  if (kept.length === 0 || dropped.length > 0) return false;
+  return !kept.some(isBlockingFinding);
+}
+
+/**
+ * P1-103: a finding bullet is BLOCKING unless it is explicitly downgraded
+ * with an [NIT] tag (and carries no [BLOCKING] tag). Untagged and ambiguous
+ * bullets fail closed as BLOCKING — an unclassified concern never merges.
+ */
+export function isBlockingFinding(f: string): boolean {
+  if (/\[blocking\]/i.test(f)) return true;
+  return !/\[nit\]/i.test(f);
 }
 
 /**
  * P1-059: pure escalation predicate — review outcomes ambiguous enough to
- * deserve a stronger-model arbitration: divergent verdicts (one approve, one
- * request-changes) or a reviewer whose findings all failed verification
- * (allDropped ⇒ the concerns are unproven either way). P1-073: all-unverifiable
- * findings are the fail-open incident path, so they escalate in ANY round;
- * plain divergence stays a round-1 signal (later rounds already carry the
- * previous round's findings into the builder).
+ * deserve a stronger-model arbitration. P1-073: all-unverifiable findings are
+ * the fail-open incident path, so they escalate in ANY round. P1-103 replaced
+ * the round-1 divergence trigger: a verdict disagreement between two flash
+ * reviewers is cheap to re-litigate in the next round, but the same verified
+ * concern surviving a builder fix round (repeated findings, `findingsRepeat`)
+ * is the signal the pair misjudged — escalate only then, and only while at
+ * least one reviewer still rejects.
  */
 export function needsEscalation(
-  round: number,
   secOk: boolean,
   qualOk: boolean,
   secAllDropped: boolean,
   qualAllDropped: boolean,
+  repeatedFindings: boolean,
 ): boolean {
   if (secAllDropped || qualAllDropped) return true;
-  if (round !== 1) return false;
-  return secOk !== qualOk;
+  if (!repeatedFindings) return false;
+  return !secOk || !qualOk;
+}
+
+/**
+ * P1-103: does any verified concern from the previous round reappear in this
+ * round's rejecting reviews? Two findings describe the same concern when they
+ * cite the same file (path-only, order-insensitive); citation-free findings
+ * fall back to a normalized text key (severity tags, bullet markers, case and
+ * punctuation are noise — reviewers rephrase between rounds). Pure; pinned by
+ * the unit battery.
+ */
+export function findingsRepeat(prev: string[], curr: string[]): boolean {
+  if (prev.length === 0 || curr.length === 0) return false;
+  const prevKeys = new Set(prev.map(findingKey).filter((k) => k.length > 0));
+  if (prevKeys.size === 0) return false;
+  return curr.map(findingKey).some((k) => k.length > 0 && prevKeys.has(k));
+}
+
+/** Cross-round identity of a finding: the repo files it cites (lowercased,
+ * deduped) or, when it cites none, its normalized text. */
+function findingKey(f: string): string {
+  const cites = [...f.matchAll(FILE_CITE_RE)].map((m) => (m[1] ?? "").toLowerCase());
+  if (cites.length > 0) return [...new Set(cites)].sort().join("|");
+  return f
+    .toLowerCase()
+    .replace(/\[(?:blocking|nit)\]/gi, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
 }
 
 /**
@@ -1307,6 +1359,9 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
 
   // ── build ⇄ review loop ─────────────────────────────────────────────────
   let findings = "";
+  // P1-103: the verified findings the last rejecting round fed the builder —
+  // the repetition signal for the escalation arbiter
+  let prevKept: string[] = [];
   let touchedUi = false;
   let builderSession: string | undefined;
   // P2-013: non-null only right after a builder round that actually failed —
@@ -1707,15 +1762,18 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
         }),
       );
     }
-    // P1-059 reviewer escalation: round-1 divergence (1× approve vs 1× request
-    // changes) and all-unverifiable findings are exactly the ambiguous cases a
-    // flash pair misjudged in the past (semantic misses through 20 merges). One
-    // extra tier-B reviewer arbiters; at most one escalation per round.
+    // P1-059 reviewer escalation: P1-103 changed the trigger — the arbiter is
+    // for a concern the builder could NOT address in a fix round (the same
+    // verified finding repeating between rounds), not for cheap round-1
+    // verdict divergence. All-unverifiable findings (P1-073) still escalate in
+    // any round. At most one escalation per round.
+    const keptNow = [...(secOk ? [] : secVerified.kept), ...(qualOk ? [] : qualVerified.kept)];
+    const repeated = findingsRepeat(prevKept, keptNow);
     let gateSecOk = secOk;
     let gateQualOk = qualOk;
     let escalationFindings: string[] | null = null;
     let escalationDropped: string[] = [];
-    if (cfg.models?.tierB?.reviewerEscalation && needsEscalation(round, secOk, qualOk, secAllDropped, qualAllDropped)) {
+    if (cfg.models?.tierB?.reviewerEscalation && needsEscalation(secOk, qualOk, secAllDropped, qualAllDropped, repeated)) {
       emit("phase", { task: t.id, phase: "review-escalation", detail: `round ${round}` });
       console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "review escalation", data: { task: t.id, round } }));
       const esc = await runAgentForRole("reviewerEscalation", reviewerPrompt("ESCALATION", "spec fidelity, semantic correctness, regressions", t, reviewDiff, uiShot, specFile, incrementalFrom), {
@@ -1798,6 +1856,8 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       const round1Kept = [...(secOk ? [] : secVerified.kept), ...(qualOk ? [] : qualVerified.kept)];
       const allKept = escalationFindings !== null ? [...round1Kept, ...escalationFindings] : round1Kept;
       const deduped = allKept.filter((f, i) => allKept.indexOf(f) === i);
+      // P1-103: repetition signal for the next round's escalation check
+      prevKept = deduped;
       // P1-102: dropped is not fabricated by definition — the audit showed REAL
       // findings dying in mechanical verification (file nonexistent, symbol
       // spans). A rejecting reviewer's dropped findings are repassed as

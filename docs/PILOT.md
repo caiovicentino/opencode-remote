@@ -281,9 +281,19 @@ intacto). Bloco opcional:
   **reviewer de escalada** e **forensic semanal** (abaixo). O gatekeeper e a
   bateria de evidência não mudam: modelo forte planeja/julga, mas o merge passa
   pela mesma evidência.
-- **Escalada de review**: vereditos divergentes (1× APPROVE vs
-  1× REQUEST_CHANGES) no round 1, ou findings **todos** unverificados **em
-  qualquer round** (P1-073), disparam **1** reviewer
+- **Contrato de severidade (P1-103)**: todo bullet de finding dos reviewers
+  carrega `[BLOCKING]` (quebra correção, segurança, constituição, critérios de
+  aceite do spec ou regressa comportamento) ou `[NIT]` (estilo, wording, gosto);
+  bullet sem tag falha fechado como BLOCKING. `reviewerOk` só rejeita com
+  finding verificado BLOCKING — review cujos findings verificados são todos NIT
+  aprova (o incidente P1-056: 55% dos rounds rejeitados com tail 100%
+  Nit/Cosmetic).
+- **Escalada de review**: findings verificados que **se repetem entre rounds**
+  (P1-103: a concern sobreviveu a um round de fix do builder —
+  `findingsRepeat` cruza os findings do round anterior com os do round atual
+  por citação de arquivo, ou texto normalizado quando não há citação), ou
+  findings **todos** unverificados **em qualquer round** (P1-073), disparam
+  **1** reviewer
   extra com o modelo `reviewerEscalation` (fase `review-escalation` no feed);
   o veredito dele decide e, quando rejeita, os findings verificados dele se
   **somam** (união, dedup) aos findings verificados do round 1 que seguem para
@@ -882,8 +892,11 @@ drops findings whose citations don't resolve and logs each one as
 (file not found, line empty/beyond EOF, no quoted span resolves — P1-102).
 If **all** findings of a `REQUEST_CHANGES` verdict are dropped the verdict
 still rejects fail-closed (P1-073: escalate or reject — never an effective
-approve). Dropped findings are not erased either: a rejecting reviewer's
-(or tier-B arbiter's) dropped list is repassed to the builder tagged
+approve). P1-103 adds the severity contract on top: reviewers tag every
+finding bullet `[BLOCKING]` or `[NIT]` and `reviewerOk` rejects only on a
+verified BLOCKING finding — a nit-only review approves, an untagged bullet
+fails closed as BLOCKING. Dropped findings are not erased either: a rejecting
+reviewer's (or tier-B arbiter's) dropped list is repassed to the builder tagged
 `[unverified]` (P1-102); the reviewer prompt documents the citation contract.
 Pinned by unit tests in `scripts/unit.test.ts` (one valid citation with a real
 path, one hallucinated path — only the invalid one is dropped).
@@ -895,8 +908,8 @@ Since P2-038 the verifier treats code observations as first-class evidence:
   `VERDICT: REQUEST_CHANGES` written after an APPROVE in prose rejects the
   build. P1-102: finding bullets are parsed only under a REQUEST_CHANGES
   verdict — an APPROVE's rationale bullets are never treated as findings
-  (`reviewerOk` still rejects an APPROVE when findings are passed to it
-  explicitly).
+  (`reviewerOk` still rejects an APPROVE when verified BLOCKING findings are
+  passed to it explicitly — P1-103: untagged bullets fail closed as BLOCKING).
 - **Bare-name citations resolve**: a citation like `CommandPalette.tsx:63`
   without a directory is resolved by suffix match against the workspace
   listing instead of being dropped. (The same audit fixed a regex truncation
