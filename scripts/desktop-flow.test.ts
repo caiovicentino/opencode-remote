@@ -22,7 +22,9 @@ import { createServer, type AddressInfo } from "node:net";
 import { fileURLToPath } from "node:url";
 import {
   ARTIFACTS_MARKER,
+  buildArtifactsPathLine,
   buildArtifactsPrompt,
+  injectArtifactsPathPart,
   injectArtifactsSystem,
   workspaceCoversArtifacts,
 } from "../apps/daemon/src/sessionctx";
@@ -57,11 +59,11 @@ check("desktop shell built (dist-electron/preload.js)", existsSync(preload));
 // it. Mirrored here against the real helpers: a session created in a bare
 // workspace must get the block; a covered workspace must stay untouched.
 {
-  const block = buildArtifactsPrompt("ses_flow");
+  const block = buildArtifactsPrompt();
   check(
-    "P1-068: injected block points at the session's artifacts dir",
+    "P1-096: injected block is session-independent (no per-session dir in system)",
     block.includes(ARTIFACTS_MARKER) &&
-      block.includes(join(homedir(), ".opencode-remote", "artifacts", "ses_flow")),
+      !block.includes(join(homedir(), ".opencode-remote", "artifacts", "ses_flow")),
   );
   const bare = mkdtempSync(join(tmpdir(), "ocr-flow-bare-"));
   const covered = mkdtempSync(join(tmpdir(), "ocr-flow-covered-"));
@@ -72,15 +74,22 @@ check("desktop shell built (dist-electron/preload.js)", existsSync(preload));
     const bareTurn: { parts: unknown[]; system?: string } = {
       parts: [{ type: "text", text: "gere um preview HTML do relatório" }],
     };
-    if (shouldInject(bare)) injectArtifactsSystem(bareTurn, "ses_flow");
+    if (shouldInject(bare)) injectArtifactsSystem(bareTurn);
+    if (shouldInject(bare)) injectArtifactsPathPart(bareTurn, "ses_flow");
     check(
       "P1-068: session in a workspace WITHOUT AGENTS.md receives the protocol (marker + [file: line)",
       bareTurn.system?.includes(ARTIFACTS_MARKER) === true && bareTurn.system?.includes("[file:") === true,
     );
+    check(
+      "P1-096: first turn also carries the per-session path line as the last part",
+      Array.isArray(bareTurn.parts) &&
+        (bareTurn.parts[bareTurn.parts.length - 1] as { text?: string }).text ===
+          buildArtifactsPathLine("ses_flow"),
+    );
     const coveredTurn: { parts: unknown[]; system?: string } = {
       parts: [{ type: "text", text: "gere um preview HTML do relatório" }],
     };
-    if (shouldInject(covered)) injectArtifactsSystem(coveredTurn, "ses_flow");
+    if (shouldInject(covered)) injectArtifactsSystem(coveredTurn);
     check(
       "P1-068: session in a workspace whose AGENTS.md covers the protocol gets NO injection",
       coveredTurn.system === undefined,

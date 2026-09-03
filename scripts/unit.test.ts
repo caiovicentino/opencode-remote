@@ -150,7 +150,9 @@ import { dirname, join } from "node:path";
 import { artifactMime, kindFor, listArtifacts, readArtifact, validSegment } from "../apps/daemon/src/artifacts";
 import {
   ARTIFACTS_MARKER,
+  buildArtifactsPathLine,
   buildArtifactsPrompt,
+  injectArtifactsPathPart,
   injectArtifactsSystem,
   workspaceCoversArtifacts,
 } from "../apps/daemon/src/sessionctx";
@@ -1231,14 +1233,54 @@ try {
   rmSync(aroot, { recursive: true, force: true });
 }
 
-// --- artifacts protocol injection into daemon sessions (P1-068) -----------------
+// --- artifacts protocol injection into daemon sessions (P1-068, P1-096) ----------
 {
-  const block = buildArtifactsPrompt("ses_x");
+  const block = buildArtifactsPrompt();
   check(
-    "artifacts prompt: marker, real session dir and the [file: download line",
+    "artifacts prompt: marker, [file: line, localhost preview pin — and NO per-session dir",
     block.includes(ARTIFACTS_MARKER) &&
-      block.includes(join(homedir(), ".opencode-remote", "artifacts", "ses_x")) &&
-      block.includes("[file:"),
+      block.includes("[file:") &&
+      block.includes("http://localhost:<porta>") &&
+      !block.includes(join(homedir(), ".opencode-remote", "artifacts")) &&
+      !block.includes("ses_"),
+  );
+  const sesA: { parts: unknown[]; system?: string } = { parts: [{ type: "text", text: "a" }] };
+  const sesB: { parts: unknown[]; system?: string } = { parts: [{ type: "text", text: "b" }] };
+  injectArtifactsSystem(sesA);
+  injectArtifactsSystem(sesB);
+  check(
+    "P1-096: system block is byte-identical across sessions (provider prefix cache)",
+    typeof sesA.system === "string" &&
+      sesA.system.length > 0 &&
+      sesA.system === sesB.system,
+  );
+  const pathLine = buildArtifactsPathLine("ses_a");
+  check(
+    "P1-096: path line carries the marker and the session's absolute artifacts dir",
+    pathLine.includes("[ocr-artifacts-path]") &&
+      pathLine.includes(join(homedir(), ".opencode-remote", "artifacts", "ses_a")),
+  );
+  const turn: { parts: unknown[]; system?: string } = {
+    parts: [{ type: "text", text: "oi" }, { type: "file", mime: "image/png" }],
+  };
+  check("P1-096: path part appended on the first turn", injectArtifactsPathPart(turn, "ses_a") === true);
+  check(
+    "P1-096: path part is the LAST part, user parts intact",
+    turn.parts.length === 3 &&
+      JSON.stringify(turn.parts[0]) === JSON.stringify({ type: "text", text: "oi" }) &&
+      (turn.parts[1] as { mime?: string }).mime === "image/png" &&
+      (turn.parts[2] as { text: string }).text === buildArtifactsPathLine("ses_a"),
+  );
+  check(
+    "P1-096: second path-part call is a no-op (marker dedupe)",
+    injectArtifactsPathPart(turn, "ses_a") === false && turn.parts.length === 3,
+  );
+  const noParts: { system?: string } = {};
+  check("P1-096: body without parts → path part skipped", injectArtifactsPathPart(noParts, "ses_a") === false);
+  const noText: { parts: unknown[] } = { parts: [{ mime: "image/png" }] };
+  check(
+    "P1-096: body with no text part → path part skipped (fail-open)",
+    injectArtifactsPathPart(noText, "ses_a") === false && noText.parts.length === 1,
   );
   const wroot = mkdtempSync(join(tmpdir(), "ocr-sessionctx-"));
   try {
@@ -1255,20 +1297,20 @@ try {
     check("workspaceCoversArtifacts: empty directory → false", !workspaceCoversArtifacts(""));
 
     const bare: { parts: unknown[]; system?: string } = { parts: [{ type: "text", text: "oi" }] };
-    injectArtifactsSystem(bare, "ses_x");
+    injectArtifactsSystem(bare);
     check(
       "inject: body without system gains the block; parts untouched",
       bare.system?.includes(ARTIFACTS_MARKER) === true &&
-        bare.system?.includes("ses_x") === true &&
+        bare.system?.includes("ses_x") === false &&
         JSON.stringify(bare.parts) === JSON.stringify([{ type: "text", text: "oi" }]),
     );
     const client: { system?: string } = { system: "SYS" };
-    injectArtifactsSystem(client, "ses_x");
+    injectArtifactsSystem(client);
     check(
       "inject: appends after a client-provided system prompt",
       client.system!.startsWith("SYS") && client.system!.includes(ARTIFACTS_MARKER),
     );
-    injectArtifactsSystem(client, "ses_x");
+    injectArtifactsSystem(client);
     check("inject: second call is a no-op (marker dedupe)", client.system!.split(ARTIFACTS_MARKER).length - 1 === 1);
   } finally {
     rmSync(wroot, { recursive: true, force: true });
