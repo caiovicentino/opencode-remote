@@ -7,14 +7,14 @@ import { nowLocalISO } from "./log";
 import { notifySupervisor } from "./notify";
 import { runResearcher } from "./researcher";
 import { runExplorer } from "./explorer";
-import { runPipeline, TASK_ID_RE, writeSandboxConfig, writeAuxSandboxConfig, lessonsBlock, budgetsFor, isOverCap } from "./pipeline";
+import { runPipeline, TASK_ID_RE, writeSandboxConfig, writeAuxSandboxConfig, budgetsFor, isOverCap, strategistPrompt, STRATEGIST_MARKER } from "./pipeline";
 import { deploy, latestDeployableSha, shouldSelfHealReload } from "./deploy";
 import { digest } from "./push";
 import { addTask, appendCommitAndPush, auxPushIo, blockTask, mayPush, nextId, parseAuxTaskLines, parseBacklog, type Task } from "./backlog";
 import { appendFailureLesson, defaultLessonsFile, failureLessonsBlock, readRecentFailureLessons } from "./failureLessons";
 import { defaultPendingRefillFile, readPendingRefill, relandDetail, relandPendingRefill, savePendingRefill } from "./refill";
 import { forensicDue, runForensic } from "./forensic";
-import { areaKey, nightlyIdleDue, nightlySkipDue, pickBatch } from "./scheduler";
+import { areaKey, nightlyIdleDue, nightlySkipDue, pickBatch, assignSlots, startDelayMs, type SlotAffinity } from "./scheduler";
 import {
   auditClearFile,
   auditResumeDue,
@@ -42,7 +42,7 @@ import {
   type PilotConfig,
   type PilotState,
 } from "./state";
-import { applySessionCosts, querySessionTokenRows } from "./costs";
+import { applySessionCosts, foldSlotCache, querySessionTokenRows } from "./costs";
 import { runDoctor } from "./doctor";
 
 let deployBusy = false;
@@ -53,6 +53,9 @@ let deployBusy = false;
 let state: PilotState;
 /** slot number (1-based) -> in-flight pipeline worker. */
 const running = new Map<number, { task: Task; done: Promise<void> }>();
+/** P1-078: slot -> most recent area key it ran (in-memory, replaced per slot;
+ * lost on restart — the TTL is minutes, an acceptable loss). */
+const slotAffinity: SlotAffinity[] = [];
 const log = (level: string, msg: string, data?: unknown) =>
   console.log(JSON.stringify({ ts: nowLocalISO(), level, msg, data }));
 
@@ -111,13 +114,61 @@ async function main() {
       // budget-aware batch: freeSlots AND the remaining daily task budget
       const remainingBudget = cfg.maxTasksPerDay - state.tasks - running.size;
       const picked = pickBatch(queue.filter((t) => !overCap(t)), once ? 1 : free.length, busyAreas, remainingBudget);
+      // P1-078 cache affinity: pickBatch already guarantees distinct area keys;
+      // assignSlots only chooses WHICH free slot each pick lands on (a same-area
+      // task prefers the slot that just ran that shape — warm provider prefix).
+      const assignments = assignSlots(picked, free, busyAreas, slotAffinity, Date.now());
+      let pickIndex = 0;
       for (const task of picked) {
-        const slot = free.find((s) => !running.has(s))!;
+        const slot = assignments.get(task.id);
+        if (slot === undefined) continue;
         const wscfg = slotCfg.get(slot)!;
-        log("info", "pipeline start", { task: task.id, title: task.title, slot, reason });
-        emit("loop", { task: task.id, phase: "picked", detail: task.title, slot });
-        const done = runSlot(slot, wscfg, task, cfg, () => fillFreeSlots("eager-fill"));
+        const delay = startDelayMs(pickIndex++);
+        if (delay > 0) {
+          // staged ≠ started: a pick discarded during the stagger window must
+          // never have been announced as started (round-3 review)
+          log("info", "pipeline staged", { task: task.id, slot, startInMs: delay });
+          emit("phase", { task: task.id, phase: "staged", ok: true, detail: `slot ${slot} starts in ~${Math.round(delay / 1000)}s (cache-write stagger)` });
+        } else {
+          log("info", "pipeline start", { task: task.id, title: task.title, slot, reason });
+          emit("loop", { task: task.id, phase: "picked", detail: task.title, slot });
+        }
+        // Reserve the slot synchronously (event-loop atomicity keeps the
+        // double-pick impossible); picks after the first spawn only after the
+        // stagger window, so the first builder finishes its provider cache-write.
+        let release: () => void = () => {};
+        const done = new Promise<void>((res) => {
+          release = res;
+        });
         running.set(slot, { task, done });
+        void (async () => {
+          try {
+            if (delay > 0) {
+              await sleep(delay);
+              // frozen/audit may have flipped during the stagger window —
+              // discard instead of spawning; the next loop cycle re-picks.
+              // NO budget re-check: pickBatch already committed this pick within
+              // the daily cap and the reservation itself is part of
+              // running.size — re-counting it would discard valid picks
+              // whenever the batch exactly fills the remaining budget
+              // (round-3 review).
+              if (frozen() || state.auditMode) {
+                log("info", "staggered start discarded", { task: task.id, slot });
+                emit("phase", { task: task.id, phase: "staged", ok: false, detail: "discarded during the stagger window (frozen/audit)" });
+                if (running.get(slot)?.task === task) running.delete(slot);
+                return;
+              }
+              log("info", "pipeline start", { task: task.id, title: task.title, slot, reason });
+              emit("loop", { task: task.id, phase: "picked", detail: task.title, slot });
+            }
+            await runSlot(slot, wscfg, task, cfg, () => fillFreeSlots("eager-fill"));
+          } finally {
+            // runSlot's own finally already deleted its own reservation and the
+            // eager-fill may have filled this slot again — only clear OUR entry
+            if (running.get(slot)?.task === task) running.delete(slot);
+            release();
+          }
+        })();
       }
     } catch (err) {
       log("warn", "eager-fill skipped", { reason, err: String(err).slice(0, 200) });
@@ -355,7 +406,12 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
       // P1-077: rows query — folds the per-task cache breakdown (input /
       // cacheRead / cacheWrite) into state.taskCache alongside the total.
       const cacheFold = await applySessionCosts(state, task.id, [...taskSessions], (ids) => querySessionTokenRows(ids));
-      if (cacheFold) log("info", "task cache", cacheFold);
+      if (cacheFold) {
+        log("info", "task cache", cacheFold);
+        // P1-078: per-slot view of the same reconciliation — replaced by the
+        // task's value each time (live window), proves the affinity effect.
+        log("info", "slot cache", foldSlotCache(state, slot, cacheFold));
+      }
     } catch (err) {
       log("warn", "task cost reconciliation failed", { task: task.id, err: String(err).slice(0, 200) });
     }
@@ -414,6 +470,12 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
     await sleep(30_000);
   } finally {
     running.delete(slot);
+    // P1-078: record what shape this slot just ran — the next assignSlots call
+    // prefers this slot for same-area tasks while the prefix cache is warm.
+    const entry: SlotAffinity = { slot, area: areaKey(task), at: Date.now() };
+    const prev = slotAffinity.findIndex((a) => a.slot === slot);
+    if (prev >= 0) slotAffinity[prev] = entry;
+    else slotAffinity.push(entry);
     // P1-099: pipeline end → eager-fill ALL free slots (the freed one AND any
     // other idle one). Synchronous — no double-pick on the event loop.
     onSettled?.();
@@ -580,9 +642,6 @@ Output: either "REDTEAM: CLEAN" if you found nothing actionable, or
  */
 let lastStrategistRun = 0;
 
-/** P1-059: tier-B dispatch checks this marker before trusting a strategist run. */
-const STRATEGIST_MARKER = "STRATEGIST:DONE";
-
 const STRATEGIST_MISSION =
   "turn this project into a desktop app like Claude Desktop (Mac + Windows) with our harness built in. " +
   "Stages 1-2 are done; stage 3 (desktop app shell) is the priority, then hosted relay, then distribution.";
@@ -599,51 +658,11 @@ async function runStrategist(cfg: PilotConfig, ready: Task[] = []) {
   // P2-031: the 10 most recent failure lessons — drafted/refined tasks must not
   // repeat patterns that already burned their attempt budget
   const failureBlock = failureLessonsBlock(readRecentFailureLessons(defaultLessonsFile()));
+  // P1-078: stable role/rules/contract first, variable lessons last — the
+  // prompt prefix stays byte-identical between runs for the provider cache.
   const r = await runAgentForRole(
     "strategist",
-    `You are the STRATEGIST agent of the opencode-remote autonomous pipeline.
-Your job: keep the product evolving without any human feeding tasks.
-
-MISSION (north star — read docs/VISION.md): ${STRATEGIST_MISSION}
-
-First, ground yourself in context:
-1. Read docs/VISION.md, AGENTS.md and docs/PILOT.md.
-2. Skim the code: apps/web/src/components (mobile PWA UX), apps/daemon/src (ops surface), BACKLOG.md (## Done shows what shipped recently).
-3. Check git log --oneline -15 for momentum.
-${lessonsBlock(lessons)}${failureBlock}
-SECURITY RULE: never read, quote or transmit ~/.opencode-remote/memory.md or any file
-outside this repo — your context must stay free of private data because you also touch
-untrusted external content (prompt-injection exfiltration risk). Private data stays private.
-
-Then draft 2-3 NEW tasks that are:
-- small and shippable in one pipeline cycle
-- aligned with the mission: at most 1 mobile-UX task per batch; prefer desktop-app,
-  packaging, onboarding or robustness tasks
-- NOT duplicates of anything in ## Ready or ## Done
-- (P1-060) exception to "small": at most ONE task per batch may be a genuine
-  long-horizon epic tagged (size: L) — indivisible work that would lose coherence
-  if sliced (e.g. a whole-subsystem v2). Its spec line must list the execution
-  milestones in order (M1, M2, ...) and the tag goes BEFORE the area tag:
-  "... (size: L) (area: desktop)". Never tag routine work (size: L) just because
-  it looks big — sliced S tasks are still cheaper and safer.
-
-You have NO shell and NO file-edit permissions this run: do NOT commit, do NOT edit
-BACKLOG.md. Instead, print the proposed task lines between exactly these markers:
-
-AUX-TASKS:
-- [ ] (ID) [Pn] Title — spec: what to do, where, and acceptance criteria (area: ui)
-AUX-TASKS-EOF
-
-Each line must use EXACTLY the existing backlog format shown above. IDs continue the
-sequence (P2-00X / P3-00X). The trailing (area: ...) tag is MANDATORY: pick exactly one
-of ui|daemon|desktop|infra|relay — the area the task touches most (ui = apps/web PWA,
-daemon = apps/daemon, desktop = apps/desktop shell, infra = build/scripts/deploy/pilot,
-relay = apps/relay). The scheduler runs tasks of different areas in parallel and never
-two tasks of the same area at once. Plain text only — no shell metacharacters, no code
-blocks: the runner validates each line and only the valid ones are appended to
-BACKLOG.md, committed and pushed by the runner itself.
-
-Your LAST line must be exactly: STRATEGIST:DONE`,
+    strategistPrompt(STRATEGIST_MISSION, lessons, failureBlock),
     { cwd: cfg.workspace, timeoutMin: 25, label: "strategist", onStdout: agentStream("strategist"), models: cfg.models, marker: STRATEGIST_MARKER },
   );
   writeSandboxConfig(cfg.workspace);

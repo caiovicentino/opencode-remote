@@ -44,7 +44,11 @@ their output with a final EVIDENCE block (real typecheck/test:unit outputs, plus
 missing or fabricated evidence (P2-009). With `slots` > 1
 in pilot.json the scheduler runs up to N pipelines concurrently, one workspace clone per slot
 (`~/.opencode-remote/pilot/repo-1`, `repo-2`…), always on tasks with distinct `area:` tags —
-two tasks of the same area never run in parallel, and deploys stay serial (P1-006). After every
+two tasks of the same area never run in parallel, and deploys stay serial (P1-006). Slots
+carry cache affinity (P1-078): a task prefers the free slot that last ran the same area
+within ~10min (provider prefix-cache inheritance) and simultaneous slot starts are staggered
+20s so the first builder's cache-write completes first; per-slot cache hit ratios are logged
+as `slot cache` and folded into `state.slotCache`. After every
 successful merge a SCRIBE agent distills up to 3 engineering lessons into `docs/EXPERIENCE.md`
 (P1-007) — the top-5 keyword-matched lessons are injected into the planner, builder and
 strategist prompts (P2-042), and the nightly red-team pass dedupes/prunes the file above 60 lessons.

@@ -316,6 +316,33 @@ A linha da task no BACKLOG.md pode carregar a tag opcional `(size: S|M|L)` (defa
   pelo servidor GitHub e o fallback local refaz `fetch` + retry em
   non-fast-forward. `recordVerifiedMerge` é síncrono, portanto atômico no
   event loop.
+- **Cache affinity entre slots (P1-078)**: o cache de prefixo do provider é
+  por conta/organização — os slots batem no mesmo provider e podem herdar
+  cache um do outro. O scheduler registra em memória qual area key cada slot
+  rodou por último e, ao preencher slots livres, uma task **prefere o slot
+  que acabou de rodar shape similar** (mesma `area`) dentro de um TTL de
+  10min (`AFFINITY_TTL_MS`; mais recente vence; sem affinity → slot de menor
+  número; key `solo` nunca ganha affinity). A regra P1-006 (duas tasks da
+  mesma área nunca em paralelo) continua valendo — affinity só escolhe entre
+  slots livres. **Starts escalonados**: quando 2 slots iniciam no mesmo ciclo,
+  o segundo espera ~20s (`SLOT_START_STAGGER_MS`) para o primeiro completar o
+  cache-write do prefixo. O pick escalonado é anunciado como `pipeline staged`
+  (evento `phase:"staged"`) e só loga `pipeline start`/`picked` quando spawn de
+  fato; o timer re-checa `frozen`/audit antes de spawnar — **sem** re-checar
+  orçamento: o pick já foi commitado dentro do cap pelo `pickBatch` no momento
+  da reserva (a reserva conta em `running.size`), e re-contá-la descartaria
+  picks válidos quando o lote preenche exatamente o budget restante. A affinity
+  é in-memory (perde-se no restart, aceitável para um TTL
+  de minutos). **Métrica por slot**: a reconciliação de custos emite
+  `msg:"slot cache"` com `{slot, task, input, cacheRead, cacheWrite, ratio}` e
+  dobra em `state.slotCache` (janela viva, substituída a cada task) — o
+  critério de efeito é `cache.read > 0` no segundo builder do par de affinity
+  no `opencode.db`. **Limitação conhecida**: cada spawn headless roda em cwd
+  distinto e o próprio opencode injeta `Working directory: ${cwd}` + header
+  absoluto do AGENTS.md no bloco `<env>` do system prompt — bytes fora do
+  controle do pilot, então a herança cross-slot **simultânea** de prefixo é
+  parcial (garantida dentro do mesmo slot; entre slots, depende do provider
+  tolerar o `<env>` divergente no meio do prefixo).
 - **Arquivos de diagnóstico por task**: `pilot/gate-fail/<ID>.json` (carryover
   de falha do gate) e `pilot/builder-<ID>.log` (output do builder) — sem
   last-writer-wins entre slots.

@@ -14,20 +14,12 @@ const RESEARCH_SOURCES = `
 `;
 
 /**
- * RESEARCHER role: bring frontier signal from the outside world into the
- * backlog. Runs at most once per day; proposes 1-2 experimental [spike] tasks
- * grounded in a source URL, curated against our mission (docs/VISION.md).
- * P1-057: the agent is read-only (bash/edit denied) — fetched pages can inject
- * instructions but the worst they can produce is TEXT, which the runner
- * validates and lands via a guarded commit+push.
+ * Pure prompt builder (P1-078): constant content — no per-run variable, no
+ * slot/repo path — so the eval battery can pin it and the provider keeps the
+ * whole prompt prefix-cached between daily runs.
  */
-export async function runResearcher(cfg: PilotConfig, state: { researchLast?: string }): Promise<void> {
-  const today = nowLocalISO().slice(0, 10);
-  if (state.researchLast === today) return;
-  state.researchLast = today;
-  log("info", "researcher: daily frontier scan starting");
-
-  const prompt = `You are the RESEARCHER agent of the opencode-remote autonomous pipeline.
+export function researcherPrompt(): string {
+  return `You are the RESEARCHER agent of the opencode-remote autonomous pipeline.
 Your job: bring FRONTIER signal from the outside world so this product innovates instead of
 only polishing. You have webfetch — use it.
 
@@ -62,6 +54,23 @@ shell metacharacters, no code blocks: the runner validates each line and only th
 ones are appended to BACKLOG.md, committed and pushed by the runner itself.
 
 Your LAST line of output must be exactly: RESEARCHER:DONE`;
+}
+
+/**
+ * RESEARCHER role: bring frontier signal from the outside world into the
+ * backlog. Runs at most once per day; proposes 1-2 experimental [spike] tasks
+ * grounded in a source URL, curated against our mission (docs/VISION.md).
+ * P1-057: the agent is read-only (bash/edit denied) — fetched pages can inject
+ * instructions but the worst they can produce is TEXT, which the runner
+ * validates and lands via a guarded commit+push.
+ */
+export async function runResearcher(cfg: PilotConfig, state: { researchLast?: string }): Promise<void> {
+  const today = nowLocalISO().slice(0, 10);
+  if (state.researchLast === today) return;
+  state.researchLast = today;
+  log("info", "researcher: daily frontier scan starting");
+
+  const prompt = researcherPrompt();
 
   // P1-057: untrusted-content agents run sandboxed (bash/edit denied) — swap in
   // before the spawn, restore the full config afterwards for the next pipeline.

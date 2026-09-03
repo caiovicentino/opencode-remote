@@ -257,6 +257,8 @@ export function normalizePilotState(s: PilotState): PilotState {
     taskCosts: s.taskCosts && typeof s.taskCosts === "object" ? s.taskCosts : {},
     taskCostSessions: s.taskCostSessions && typeof s.taskCostSessions === "object" ? s.taskCostSessions : {},
     taskCache: s.taskCache && typeof s.taskCache === "object" ? s.taskCache : {},
+    // P1-078: per-slot cache breakdown — legacy files backfill to {}
+    slotCache: s.slotCache && typeof s.slotCache === "object" ? s.slotCache : {},
   };
 }
 

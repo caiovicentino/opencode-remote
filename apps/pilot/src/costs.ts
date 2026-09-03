@@ -266,6 +266,24 @@ export async function applySessionCosts(
     : null;
 }
 
+/**
+ * P1-078: fold one task's cache breakdown into the per-slot live window —
+ * REPLACE by task (never accumulate), keyed by slot number. Pure mutator over
+ * `store` so the caller decides when to persist. Returns the "slot cache" log
+ * payload ({slot, task, input, cacheRead, cacheWrite, ratio}) or null when
+ * there is nothing to fold.
+ */
+export function foldSlotCache(
+  store: { slotCache?: Record<number, { input: number; cacheRead: number; cacheWrite: number }> },
+  slot: number,
+  fold: TaskCacheFold | null,
+): (TaskCacheFold & { slot: number }) | null {
+  if (!fold) return null;
+  store.slotCache ??= {};
+  store.slotCache[slot] = { input: fold.input, cacheRead: fold.cacheRead, cacheWrite: fold.cacheWrite };
+  return { slot, ...fold };
+}
+
 /** Keep the rolling window bounded: drop the oldest task ids past the cap. */
 export function pruneTaskCosts(store: TaskCostStore, cap = TASK_COST_CAP): void {
   const costs = store.taskCosts ?? {};

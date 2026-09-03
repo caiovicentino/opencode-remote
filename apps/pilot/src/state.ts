@@ -174,6 +174,10 @@ export interface PilotState {
    * REPLACE-by-recompute reconciliation as taskCosts; hit ratio is
    * cacheRead/(cacheRead+input). Lifetime record, pruned with taskCosts. */
   taskCache?: Record<string, { input: number; cacheRead: number; cacheWrite: number }>;
+  /** P1-078: slot number → provider prefix-cache breakdown of the most recent
+   * task reconciled in that slot (live window, replaced per task). Proof
+   * surface for the slot-affinity/stagger effect; best-effort like taskCache. */
+  slotCache?: Record<number, { input: number; cacheRead: number; cacheWrite: number }>;
   /** P1-095: epoch ms of the last pipeline cycle (any outcome). Drives the
    * nightly idle-window trigger — undefined means idle since forever (due). */
   lastCycleAt?: number;
@@ -224,6 +228,8 @@ export function loadState(file = STATE_FILE): PilotState {
       taskCostSessions: s.taskCostSessions && typeof s.taskCostSessions === "object" ? s.taskCostSessions : {},
       // P1-077: cache breakdown backfilled for legacy files, never crash
       taskCache: s.taskCache && typeof s.taskCache === "object" ? s.taskCache : {},
+      // P1-078: per-slot cache breakdown backfilled for legacy files
+      slotCache: s.slotCache && typeof s.slotCache === "object" ? s.slotCache : {},
       // P1-095: idle-window trigger + nightly skip record survive midnight (the
       // timestamp stays a finite number or undefined — never NaN/garbage)
       lastCycleAt: typeof s.lastCycleAt === "number" && Number.isFinite(s.lastCycleAt) ? s.lastCycleAt : undefined,
@@ -246,6 +252,7 @@ export function loadState(file = STATE_FILE): PilotState {
       taskCosts: {},
       taskCostSessions: {},
       taskCache: {},
+      slotCache: {},
       nightlySkipped: null,
     };
   }
