@@ -228,15 +228,9 @@ exactly what a brand-new user sees on first install — and report product-premi
 UX and robustness findings.
 
 The app is driven with the hermetic harness from the repo root (it launches the Electron
-app with no production daemon — safe to poke). Your session name below is unique to this
-run, so the launch is a TRUE first boot: fresh temp userData, no leftover state:
-  OCR_DESKTOP_SESSION=${session} node tools/desktop.mjs open "<shot.png>" 1440 900
-  OCR_DESKTOP_SESSION=${session} node tools/desktop.mjs see "<text>"
-  OCR_DESKTOP_SESSION=${session} node tools/desktop.mjs click "<selector>"
-  OCR_DESKTOP_SESSION=${session} node tools/desktop.mjs type "<selector>" "<text>"
-  OCR_DESKTOP_SESSION=${session} node tools/desktop.mjs shot "<shot.png>" 1440 900
-  OCR_DESKTOP_SESSION=${session} node tools/desktop.mjs ipc "<js expr>"
-  OCR_DESKTOP_SESSION=${session} node tools/desktop.mjs close
+app with no production daemon — safe to poke). The run's session name and screenshots
+directory are listed in the SESSION PARAMETERS block at the end — the launch is a TRUE
+first boot: fresh temp userData, no leftover state.
 
 If apps/web/dist/index.html or apps/desktop/dist-electron/main.js is missing, build
 them first (does NOT count toward the harness budget):
@@ -249,10 +243,9 @@ Journey structure (two boots, at most 10 harness commands per phase):
 
 PHASE 1 — FIRST BOOT (the product premise):
 - Your VERY FIRST harness command must capture the untouched first screen, before any
-  interaction: open with a shot argument, one command:
-    OCR_DESKTOP_SESSION=${session} node tools/desktop.mjs open "${shotsDir}/first-boot-<YYYYMMDD>.png" 1440 900
-  (open takes an optional shot arg — do NOT run shot before open; the keeper is not
-  up yet and a bare shot fails).
+  interaction: open with a shot argument saved into the screenshots directory as
+  first-boot-<YYYYMMDD>.png (open takes an optional shot arg — do NOT run shot before
+  open; the keeper is not up yet and a bare shot fails).
 - If open reports reused:true, a stale keeper exists: close, then open once more
   (both count toward the budget).
 - Then answer the premise questions from what the screen ACTUALLY shows, never invented:
@@ -264,15 +257,14 @@ PHASE 1 — FIRST BOOT (the product premise):
 
 PHASE 2 — SECOND BOOT, "daemon detected" (best-effort, same session):
 - close the app, then boot again with the reconnecting knob (P1-053, existing harness
-  env — no code changes; it shows the "first contact with a daemon" state):
-    OCR_DESKTOP_SESSION=${session} OCR_DAEMON_FORCE_RECONNECTING=1 node tools/desktop.mjs open "<shot.png>" 1440 900
+  env — no code changes; it shows the "first contact with a daemon" state)
 - Compare: is the reconnecting/recovery state understandable on its own? Does recovery
   ever demand re-pairing? If phase 2 misbehaves, that is a finding like any other.
 - close at the end of the run.
 
-Every finding MUST be backed by a screenshot you actually took (PNG in ${shotsDir}).
-The first-boot screenshot is mandatory: findings about the first boot that do not cite
-first-boot-*.png are not journey findings.
+Every finding MUST be backed by a screenshot you actually took (PNG in the run's
+screenshots directory). The first-boot screenshot is mandatory: findings about the
+first boot that do not cite first-boot-*.png are not journey findings.
 
 Output format — for each finding, one block exactly like:
 EXPLORER: FINDING
@@ -285,5 +277,20 @@ detail: <what is wrong, why it matters, where — 1-3 sentences, single line>
 Aim for at least 3 real findings — premise and journey findings first, quality over
 quantity, no invented filler. If a finding cannot be seen in a screenshot, it is not
 a finding. Report only what the shots actually show.
+
+SESSION PARAMETERS (per-run variables — everything above is stable across runs):
+- Session env prefix for EVERY harness command (unique to this run: fresh temp
+  userData, no leftover state): OCR_DESKTOP_SESSION=${session}
+- Screenshots directory for this run: ${shotsDir}
+- Harness commands (prefix each with the session env above):
+    node tools/desktop.mjs open "<shot.png>" 1440 900
+    node tools/desktop.mjs see "<text>"
+    node tools/desktop.mjs click "<selector>"
+    node tools/desktop.mjs type "<selector>" "<text>"
+    node tools/desktop.mjs shot "<shot.png>" 1440 900
+    node tools/desktop.mjs ipc "<js expr>"
+    node tools/desktop.mjs close
+- The phase-2 boot adds the reconnecting knob right after the session env:
+  OCR_DESKTOP_SESSION=${session} OCR_DAEMON_FORCE_RECONNECTING=1 node tools/desktop.mjs open "<shot.png>" 1440 900
 Your LAST line of output must be exactly: EXPLORER: DONE`;
 }

@@ -124,8 +124,15 @@ async function main() {
         if (slot === undefined) continue;
         const wscfg = slotCfg.get(slot)!;
         const delay = startDelayMs(pickIndex++);
-        log("info", "pipeline start", { task: task.id, title: task.title, slot, reason });
-        emit("loop", { task: task.id, phase: "picked", detail: task.title, slot });
+        if (delay > 0) {
+          // staged ≠ started: a pick discarded during the stagger window must
+          // never have been announced as started (round-3 review)
+          log("info", "pipeline staged", { task: task.id, slot, startInMs: delay });
+          emit("phase", { task: task.id, phase: "staged", ok: true, detail: `slot ${slot} starts in ~${Math.round(delay / 1000)}s (cache-write stagger)` });
+        } else {
+          log("info", "pipeline start", { task: task.id, title: task.title, slot, reason });
+          emit("loop", { task: task.id, phase: "picked", detail: task.title, slot });
+        }
         // Reserve the slot synchronously (event-loop atomicity keeps the
         // double-pick impossible); picks after the first spawn only after the
         // stagger window, so the first builder finishes its provider cache-write.
@@ -138,13 +145,21 @@ async function main() {
           try {
             if (delay > 0) {
               await sleep(delay);
-              // gates may have flipped during the stagger window — discard
-              // instead of spawning; the next loop cycle re-picks
-              if (frozen() || state.auditMode || state.tasks + running.size >= cfg.maxTasksPerDay) {
+              // frozen/audit may have flipped during the stagger window —
+              // discard instead of spawning; the next loop cycle re-picks.
+              // NO budget re-check: pickBatch already committed this pick within
+              // the daily cap and the reservation itself is part of
+              // running.size — re-counting it would discard valid picks
+              // whenever the batch exactly fills the remaining budget
+              // (round-3 review).
+              if (frozen() || state.auditMode) {
                 log("info", "staggered start discarded", { task: task.id, slot });
+                emit("phase", { task: task.id, phase: "staged", ok: false, detail: "discarded during the stagger window (frozen/audit)" });
                 if (running.get(slot)?.task === task) running.delete(slot);
                 return;
               }
+              log("info", "pipeline start", { task: task.id, title: task.title, slot, reason });
+              emit("loop", { task: task.id, phase: "picked", detail: task.title, slot });
             }
             await runSlot(slot, wscfg, task, cfg, () => fillFreeSlots("eager-fill"));
           } finally {

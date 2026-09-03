@@ -326,8 +326,13 @@ A linha da task no BACKLOG.md pode carregar a tag opcional `(size: S|M|L)` (defa
   mesma área nunca em paralelo) continua valendo — affinity só escolhe entre
   slots livres. **Starts escalonados**: quando 2 slots iniciam no mesmo ciclo,
   o segundo espera ~20s (`SLOT_START_STAGGER_MS`) para o primeiro completar o
-  cache-write do prefixo; o timer re-checa `frozen`/audit/budget antes de
-  spawnar. A affinity é in-memory (perde-se no restart, aceitável para um TTL
+  cache-write do prefixo. O pick escalonado é anunciado como `pipeline staged`
+  (evento `phase:"staged"`) e só loga `pipeline start`/`picked` quando spawn de
+  fato; o timer re-checa `frozen`/audit antes de spawnar — **sem** re-checar
+  orçamento: o pick já foi commitado dentro do cap pelo `pickBatch` no momento
+  da reserva (a reserva conta em `running.size`), e re-contá-la descartaria
+  picks válidos quando o lote preenche exatamente o budget restante. A affinity
+  é in-memory (perde-se no restart, aceitável para um TTL
   de minutos). **Métrica por slot**: a reconciliação de custos emite
   `msg:"slot cache"` com `{slot, task, input, cacheRead, cacheWrite, ratio}` e
   dobra em `state.slotCache` (janela viva, substituída a cada task) — o

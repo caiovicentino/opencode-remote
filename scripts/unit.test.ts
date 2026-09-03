@@ -1733,6 +1733,12 @@ check("touchedUi: lookalike apps/webs rejected", !touchedUiFromDiff("apps/webs/s
       "cache: forensic data blocks come after the section contract",
       forensic.indexOf("## Recommendations") < forensic.indexOf("FAILURE LESSONS") && forensic.indexOf("RECENT MERGES") < forensic.indexOf("FORENSIC:DONE"),
     );
+    check(
+      "cache: explorer per-run session/shotsDir land after the stable contract",
+      explorer.indexOf("explorer-fresh-20260903") > explorer.indexOf("Output format") &&
+        explorer.indexOf("/abs/shots") > explorer.indexOf("Output format") &&
+        explorer.lastIndexOf("explorer-fresh-20260903") < explorer.indexOf("EXPLORER: DONE"),
+    );
   }
 
   // scratch git repo: spec recovery from a preserved branch's history
