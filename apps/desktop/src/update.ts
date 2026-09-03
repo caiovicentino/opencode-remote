@@ -100,6 +100,21 @@ export function resolvedFeedUrl(env: NodeJS.ProcessEnv = process.env, packaged =
   return `http://127.0.0.1:${port}/__ocr/updates/feed.json`;
 }
 
+/**
+ * P2-098: public fallback feed for third-party installs. The staged loopback
+ * feed above only exists on a machine that actively stages releases
+ * (~/.opencode-remote/updates); a plain DMG install has no daemon staged
+ * files, so the packaged default would always end "feed unreachable". The
+ * release workflow publishes `latest-mac.yml` on every GitHub release — that
+ * is the public fallback (parsed for the decision; the download step still
+ * needs a Squirrel JSON feed, see the spike note). OCR_PUBLIC_UPDATE_FEED
+ * overrides it for forks/staging.
+ */
+export function publicFeedUrl(env: NodeJS.ProcessEnv = process.env, packaged = app?.isPackaged ?? false): string | null {
+  if (!packaged) return null;
+  return env.OCR_PUBLIC_UPDATE_FEED?.trim() || "https://github.com/caiovicentino/opencode-remote/releases/latest/download/latest-mac.yml";
+}
+
 /** True when an update source exists (explicit env or packaged default). */
 export function updatesEnabled(env: NodeJS.ProcessEnv = process.env, packaged = app?.isPackaged ?? false): boolean {
   return resolvedFeedUrl(env, packaged) != null;
@@ -174,6 +189,8 @@ function parseYmlNotes(text: string): string {
 export interface UpdateCheckOptions {
   /** Overrides the resolved feed URL (tests); undefined uses resolvedFeedUrl(). */
   feedUrl?: string | null;
+  /** Overrides the public fallback feed (tests); undefined uses publicFeedUrl(). */
+  publicFeed?: string | null;
   /** Overrides app.getVersion() (tests/dev fixtures). */
   currentVersion?: string;
   /** Overrides the real Electron autoUpdater (tests inject fakes). */
@@ -319,7 +336,10 @@ async function offerInstall(
  */
 export async function checkForUpdatesOnBoot(opts: UpdateCheckOptions = {}): Promise<UpdateStatus> {
   const log = opts.log ?? ((line: string) => console.log(`[desktop] ${line}`));
-  const feedUrl = opts.feedUrl !== undefined ? opts.feedUrl : resolvedFeedUrl();
+  // An explicitly injected feedUrl (tests, tray re-checks) is authoritative —
+  // the public fallback only applies to the resolved packaged default.
+  const injected = opts.feedUrl !== undefined;
+  let feedUrl = injected ? opts.feedUrl! : resolvedFeedUrl();
   // No feed source → the feature is off: no fetch, no listeners, no log noise.
   if (!feedUrl) return "disabled";
   const updater = opts.updater !== undefined ? opts.updater : (autoUpdater as UpdaterLike | undefined);
@@ -328,17 +348,38 @@ export async function checkForUpdatesOnBoot(opts: UpdateCheckOptions = {}): Prom
     return status;
   };
 
+  const fetchBody = async (url: string, fetchImpl: typeof fetch): Promise<string> => {
+    const res = await fetchImpl(url, { signal: AbortSignal.timeout(FEED_TIMEOUT_MS) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.text();
+  };
+
   let body: string;
   try {
     const fetchImpl = opts.fetchImpl ?? fetch;
-    const res = await fetchImpl(feedUrl, { signal: AbortSignal.timeout(FEED_TIMEOUT_MS) });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    body = await res.text();
+    body = await fetchBody(feedUrl, fetchImpl);
   } catch (err) {
-    // Feed unreachable/down: log-only by design — a dead feed must never
-    // crash the shell or delay startup.
-    log(`update check: feed unreachable (${feedUrl}): ${err instanceof Error ? err.message : String(err)}`);
-    return finish("feed-unreachable");
+    // Staged feed unreachable: P2-098 — a plain DMG install has no staged
+    // loopback feed, so retry once against the public release feed before
+    // giving up. Still fail-open: every failure is log-only by design.
+    const fallback = injected
+      ? null
+      : opts.publicFeed !== undefined
+        ? opts.publicFeed
+        : publicFeedUrl();
+    if (!fallback || fallback === feedUrl) {
+      log(`update check: feed unreachable (${feedUrl}): ${err instanceof Error ? err.message : String(err)}`);
+      return finish("feed-unreachable");
+    }
+    log(`update check: staged feed unreachable (${feedUrl}): ${err instanceof Error ? err.message : String(err)}`);
+    try {
+      const fetchImpl = opts.fetchImpl ?? fetch;
+      feedUrl = fallback;
+      body = await fetchBody(feedUrl, fetchImpl);
+    } catch (err2) {
+      log(`update check: public feed unreachable (${feedUrl}): ${err2 instanceof Error ? err2.message : String(err2)}`);
+      return finish("feed-unreachable");
+    }
   }
 
   const feed = parseFeed(body);

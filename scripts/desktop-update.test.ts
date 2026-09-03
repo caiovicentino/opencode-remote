@@ -31,6 +31,7 @@ const {
   feedUrlFromEnv,
   isNewerVersion,
   parseFeed,
+  publicFeedUrl,
 } = await import("../apps/desktop/src/update.ts");
 
 // --- feedUrlFromEnv ----------------------------------------------------------
@@ -309,6 +310,77 @@ check(
   resolvedFeedUrl({ OCR_DAEMON_METRICS_PORT: "9321" }, true) === "http://127.0.0.1:9321/__ocr/updates/feed.json",
 );
 check("resolvedFeedUrl: dev unpackaged stays disabled", resolvedFeedUrl({}, false) === null);
+
+// --- P2-098: public fallback feed for third-party installs --------------------
+check(
+  "publicFeedUrl: packaged default = GitHub releases latest-mac.yml",
+  publicFeedUrl({}, true) === "https://github.com/caiovicentino/opencode-remote/releases/latest/download/latest-mac.yml",
+);
+check(
+  "publicFeedUrl: OCR_PUBLIC_UPDATE_FEED overrides (forks/staging)",
+  publicFeedUrl({ OCR_PUBLIC_UPDATE_FEED: "https://fork.dev/latest-mac.yml" }, true) === "https://fork.dev/latest-mac.yml",
+);
+check("publicFeedUrl: dev unpackaged has no public feed", publicFeedUrl({}, false) === null);
+
+{
+  const savedFeed = process.env.OCR_UPDATE_FEED;
+  process.env.OCR_UPDATE_FEED = "http://127.0.0.1:1/staged.json";
+  const fetchedUrls: string[] = [];
+  const sequenceFetcher = ((input: RequestInfo | URL) => {
+    const url = String(input);
+    fetchedUrls.push(url);
+    if (url.endsWith("staged.json")) return Promise.reject(new Error("ECONNREFUSED"));
+    return Promise.resolve(new Response(YML, { status: 200 }));
+  }) as unknown as typeof fetch;
+  const fallbackLogs: string[] = [];
+  check(
+    "P2-098: staged feed down → public latest-mac.yml fallback answers",
+    (await checkForUpdatesOnBoot({
+      publicFeed: "http://127.0.0.1:9/latest-mac.yml",
+      currentVersion: "0.2.0",
+      updater: fakeUpdater(),
+      fetchImpl: sequenceFetcher,
+      log: (l) => fallbackLogs.push(l),
+    })) === "update-available" && fallbackLogs.some((l) => l.includes("staged feed unreachable")),
+  );
+  check(
+    "P2-098: fallback fetch order = staged first, public second (one retry)",
+    JSON.stringify(fetchedUrls) === JSON.stringify(["http://127.0.0.1:1/staged.json", "http://127.0.0.1:9/latest-mac.yml"]),
+  );
+  check(
+    "P2-098: staged AND public down → feed-unreachable (fail-open)",
+    (await checkForUpdatesOnBoot({
+      publicFeed: "http://127.0.0.1:1/public.yml",
+      currentVersion: "0.2.0",
+      updater: fakeUpdater(),
+      fetchImpl: fakeFetcher(null),
+      log: () => {},
+    })) === "feed-unreachable",
+  );
+  check(
+    "P2-098: staged feed up → fallback never consulted",
+    (await checkForUpdatesOnBoot({
+      publicFeed: "http://127.0.0.1:1/public.yml",
+      currentVersion: "0.2.0",
+      updater: fakeUpdater(),
+      fetchImpl: fakeFetcher(JSON.stringify({ url: "http://x/y.zip", name: "0.4.0", notes: "" })),
+      log: () => {},
+    })) === "update-available",
+  );
+  check(
+    "P2-098: injected feedUrl is authoritative — no public fallback fetch",
+    (await checkForUpdatesOnBoot({
+      feedUrl: "http://127.0.0.1:1/feed.json",
+      publicFeed: "http://127.0.0.1:9/latest-mac.yml",
+      currentVersion: "0.2.0",
+      updater: fakeUpdater(),
+      fetchImpl: fakeFetcher(null),
+      log: () => {},
+    })) === "feed-unreachable",
+  );
+  if (savedFeed === undefined) delete process.env.OCR_UPDATE_FEED;
+  else process.env.OCR_UPDATE_FEED = savedFeed;
+}
 
 
 // --- e2e: compiled update.js inside the real Electron ------------------------

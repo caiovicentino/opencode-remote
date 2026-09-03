@@ -56,10 +56,13 @@ dmg:
     width: 560
     height: 340
   contents:
+    # P2-098: omit `path` (electron-builder 26 then sources the built .app via
+    # its absolute appPath — the old relative "*.app" glob breaks with the
+    # dmgbuild bundled since dmg-builder@1.2.5, FileNotFoundError at dmg time)
     - x: 144
       y: 200
       type: file
-      path: "*.app"
+      name: "OpenCode Remote.app"
     - x: 416
       y: 200
       type: link

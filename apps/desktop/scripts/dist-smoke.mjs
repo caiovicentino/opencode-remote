@@ -19,6 +19,10 @@
  * (all problems listed, not just the first). Out of the pilot gate by design
  * (docs/PILOT.md) — this is the floor stage 5 (signed installers) builds on.
  *
+ * P2-098: when run against the default dist root (no --dir), the check also
+ * requires the DMG installer next to the bundle — it is the mac release
+ * artifact third parties install (AC "dist:smoke gera DMG").
+ *
  * Usage: npm run dist:smoke --workspace @ocr/desktop [-- --dir <path>]
  * Run:   node scripts/dist-smoke.mjs [--dir <bundle>]
  */
@@ -117,6 +121,19 @@ export function resolveBundleDir(distRoot) {
   return null;
 }
 
+/**
+ * P2-098: the mac release artifact is the DMG — third parties install from it.
+ * Returns the first *.dmg file directly under distRoot (sorted, deterministic),
+ * or null when electron-builder produced none.
+ */
+export function findDmg(distRoot) {
+  if (!existsSync(distRoot)) return null;
+  for (const entry of readdirSync(distRoot).sort()) {
+    if (entry.toLowerCase().endsWith(".dmg") && isFile(join(distRoot, entry))) return join(distRoot, entry);
+  }
+  return null;
+}
+
 function main() {
   const argv = process.argv.slice(2);
   let dir = null;
@@ -127,6 +144,9 @@ function main() {
     if (explicit) dir = resolve(explicit.slice("--dir=".length));
   }
 
+  // --dir-less runs target the default dist root: the bundle must ALSO have a
+  // DMG sibling (P2-098 — the mac release artifact third parties install).
+  const requireDmg = dir === null;
   if (!dir) {
     dir = resolveBundleDir(join(desktopDir, "dist"));
     if (!dir) {
@@ -155,6 +175,18 @@ function main() {
   console.log("  web-dist/index.html present");
   console.log("  daemon/index.js present");
   console.log("  app binary present");
+  if (requireDmg) {
+    const dmg = findDmg(join(desktopDir, "dist"));
+    if (!dmg) {
+      console.error(
+        "dist-smoke: FAIL no *.dmg under apps/desktop/dist — the mac installer is the release artifact\n" +
+          "  (electron-builder mac target `dmg`); rebuild with `npm run dist --workspace @ocr/desktop`",
+      );
+      process.exitCode = 1;
+      return;
+    }
+    console.log(`  dmg artifact present: ${basename(dmg)}`);
+  }
 }
 
 // CLI guard: skip main() when imported by the unit test.

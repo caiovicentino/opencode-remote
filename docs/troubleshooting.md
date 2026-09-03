@@ -15,7 +15,7 @@ Run `opencode-remote doctor` first — it checks everything below in one shot.
 | chat shows duplicated replies | fixed by the incremental event watermark; refresh the PWA |
 | messages repeat after switching conversations and back | fixed by the per-messageID bubble merge (P1-089): history and streamed events key bubbles by message id, so a replayed event buffer can no longer double-render a turn; refresh the PWA |
 | Settings shows a version mismatch | the daemon and the PWA are different builds: restart daemon, pull-to-refresh the PWA |
-| PWA won't open away from home | no TLS — use the tailscale path from `scripts/dev-iphone.sh` or a Caddy-fronted relay |
+| PWA won't open away from home | no TLS — use the tailscale path from `scripts/dev-iphone.sh`, a Caddy-fronted relay, or the LAN-mode install from the README (mkcert + `PWA_TLS_CERT`/`PWA_TLS_KEY`) |
 | white screen on the phone, desktop fine | the PWA origin died (the desktop shell loads the bundle from disk, only the phone is affected). The origin is the `com.ocr.pwa` launchd service (P2-075), not a dev server: `curl 127.0.0.1:5173/healthz`; if it fails, `opencode-remote restart` or `launchctl kickstart -k gui/$(id -u)/com.ocr.pwa`. The daemon posts a `[pwa] origin` event + red chip on the dashboard when this happens |
 | watch the logs | `tail -f ~/.opencode-remote/logs/daemon.log` (JSON lines; `OCR_LOG_LEVEL=debug` for frame-level) |
 | watch the desktop app logs | tray → **Open logs folder**, then `tail -f ~/Library/Application\ Support/OpenCode\ Remote/logs/desktop.log` (`userData/logs/desktop.log`, ~1MB cap, rotates to `desktop.log.1`) — the packaged app writes here instead of the console |
@@ -42,6 +42,12 @@ To publish a new version:
 The route is unauthenticated (autoUpdater cannot send headers) but strictly
 loopback-bound and limited to that folder: only plain filenames with a known
 extension, no traversal. Dev builds stay opt-in via `OCR_UPDATE_FEED`.
+
+Since P2-098, a machine with **no** staged feed falls back to the public
+`latest-mac.yml` attached to the latest GitHub release
+(`OCR_PUBLIC_UPDATE_FEED` overrides it; the tray then reports
+"update available" but the background download still requires a Squirrel JSON
+feed — stage one as above to get the consent flow).
 
 ## Health endpoints
 

@@ -154,6 +154,55 @@ built `apps/web/dist` statically on `127.0.0.1:5173` (P2-075), never a dev
 server. The daemon watches `/healthz` and flags a dead origin on the
 dashboard (red chip + `[pwa] origin` event).
 
+## Install as a third party (no tailnet — LAN mode)
+
+The `wss://…ts.net` in the Quick Start is just one way to reach the relay.
+Any Mac on the same Wi-Fi can host everything with a locally-trusted
+certificate — no tailnet, no public hostname (WebAuthn's passkey gate needs a
+secure context, hence the TLS):
+
+```bash
+git clone https://github.com/caiovicentino/opencode-remote.git
+cd opencode-remote && npm ci
+npm run build --workspace @ocr/web
+opencode serve --port 4096    # if not already running
+
+# one-time: local CA + certificate for your LAN IP (brew install mkcert)
+mkcert -install
+LAN_IP=$(ipconfig getifaddr en0)
+mkdir -p .certs
+mkcert -cert-file .certs/lan.pem -key-file .certs/lan.key "$LAN_IP" localhost 127.0.0.1
+
+# relay + daemon + static PWA origin as launchd services (KeepAlive)
+RELAY_URL="wss://$LAN_IP:8788" \
+RELAY_TLS_CERT="$PWD/.certs/lan.pem" RELAY_TLS_KEY="$PWD/.certs/lan.key" \
+PWA_HOST=0.0.0.0 PWA_TLS_CERT="$PWD/.certs/lan.pem" PWA_TLS_KEY="$PWD/.certs/lan.key" \
+NODE_EXTRA_CA_CERTS="$(mkcert -CAROOT)/rootCA.pem" \
+  ./deploy/install.sh
+
+RELAY_URL="wss://$LAN_IP:8788" node cli.mjs qr   # pairing QR (embeds the relay URL)
+```
+
+Then on the phone (same Wi-Fi): AirDrop `$(mkcert -CAROOT)/rootCA.pem` →
+install profile → enable in **Settings → General → About → Certificate Trust
+Settings**; open `https://<LAN_IP>:5173` in Safari → **Add to Home Screen** →
+scan the QR. Omit the `PWA_*`/`RELAY_TLS_*` overrides to keep the default
+tailscale layout; every port and cert path is an environment variable
+(`RELAY_PORT`, `PWA_PORT`, `PWA_HOST`…). The autonomous pilot service follows
+the same rule: `deploy/install-pilot.sh` has no hardcoded hostname — set
+`RELAY_URL` in the environment (re-installs without it keep the value already
+stored in the plist).
+
+### Desktop app installer (DMG)
+
+Every GitHub release ships a real macOS installer,
+`OpenCode Remote-<version>.dmg` (electron-builder `dmg` target, branded
+window). Releases are **notarized** when the release runner has Apple
+credentials configured; otherwise the build is ad-hoc signed and you
+right-click → **Open** once to pass Gatekeeper. Homebrew users get the same
+code via the `Formula/opencode-remote.rb` template (AGPL-3.0-only, checksum
+pinned per release).
+
 ## CLI
 
 ```bash
@@ -251,13 +300,22 @@ clean checkout.
 **Packaging (P1-050)**: `npm run dist --workspace @ocr/desktop` now also
 produces a distributable **`OpenCode Remote-<version>.dmg`** (branded
 installer window, semantic version in the About panel and in the DMG file
-name). Builds are ad-hoc signed — on first launch, right-click → **Open** once
-to pass Gatekeeper; afterwards the app behaves like any installed app.
+name) — and `npm run dist:smoke --workspace @ocr/desktop` verifies the
+bundle **and** the DMG artifact. Builds are ad-hoc signed — on first launch,
+right-click → **Open** once to pass Gatekeeper; afterwards the app behaves
+like any installed app. Tag releases ship that DMG + `latest-mac.yml` on
+GitHub (`.github/workflows/release.yml`), notarized automatically when Apple
+credentials are configured on the runner.
 
 **Auto-updates with consent (P1-050)**: the packaged shell checks the daemon's
 loopback updates folder (`http://127.0.0.1:8792/__ocr/updates/` — a versioned
 folder served by the same local daemon, no new network surface) at boot and on
-demand from the tray (**Check for updates**). When a newer `feed.json` is
+demand from the tray (**Check for updates**). P2-098: when that staged feed is
+absent — the normal case on a plain DMG install — the shell falls back to the
+public `latest-mac.yml` attached to the latest GitHub release, so the tray
+still reports "update available" on third-party machines (the decision is
+log/tray only for yml feeds; the background download + consent flow needs a
+Squirrel JSON feed like the staged one). When a newer `feed.json` is
 found, the release downloads in the background and a consent dialog offers
 **Restart now / Later** — nothing installs without an explicit click, a
 deferred version is not re-offered during the session, and repeated checks

@@ -22,3 +22,49 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" opencode-remote-*.tar.gz --generate-notes --title "$GITHUB_REF_NAME"
+
+  # P2-098: third-party installability — a release ships a real macOS installer
+  # (DMG), not just the source tarball. When the APPLE_ID /
+  # APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID secrets are configured the DMG
+  # is notarized (electron-builder `-c.mac.notarize=true`); without them the
+  # build stays ad-hoc signed and users right-click → Open once (README).
+  desktop-dmg:
+    runs-on: macos-14
+    needs: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build + package DMG (notarized when Apple credentials exist)
+        env:
+          # no codesigning identity in CI — ad-hoc signing (right-click → Open),
+          # upgraded to full notarization when the Apple secrets are configured
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          NOTARIZE=""
+          if [ -n "$APPLE_ID" ] && [ -n "$APPLE_APP_SPECIFIC_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
+            NOTARIZE="-c.mac.notarize=true"
+          else
+            echo "Apple credentials not configured — shipping ad-hoc signed DMG (skip notarization)"
+          fi
+          npm run dist --workspace @ocr/desktop -- $NOTARIZE
+
+      - name: Attach DMG + update metadata to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" \
+            apps/desktop/dist/*.dmg apps/desktop/dist/latest-mac.yml \
+            --clobber

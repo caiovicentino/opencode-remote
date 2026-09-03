@@ -4,8 +4,14 @@
 // the phone to. Replaces the ad-hoc vite dev server that used to die with the
 // shell that started it (~16h of white screen on the phone). Kept free of npm
 // dependencies on purpose: this runs under launchd KeepAlive, not a dev loop.
-import { createServer } from "node:http";
-import { createReadStream, statSync } from "node:fs";
+//
+// P2-098: optional TLS for LAN installs (PWA_TLS_CERT + PWA_TLS_KEY) — the
+// phone needs a real secure context for WebAuthn and can't rely on
+// `tailscale serve` when there is no tailnet. Mirrors the relay's
+// RELAY_TLS_CERT/RELAY_TLS_KEY pattern; unset = plain http (unchanged).
+import { createServer as createHttpServer } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
+import { createReadStream, readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { extname, join, normalize, sep } from "node:path";
 
@@ -14,6 +20,9 @@ const PORT = Number(process.env.PWA_PORT ?? 5173);
 const ROOT =
   process.env.PWA_DIST_DIR ??
   fileURLToPath(new URL("../apps/web/dist", import.meta.url));
+const TLS_CERT = process.env.PWA_TLS_CERT ?? "";
+const TLS_KEY = process.env.PWA_TLS_KEY ?? "";
+const TLS = Boolean(TLS_CERT && TLS_KEY);
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -49,7 +58,9 @@ function notFound(res) {
   send(res, 404, { "content-type": "text/plain; charset=utf-8" }, "not found");
 }
 
-const server = createServer((req, res) => {
+const server = (TLS ? createHttpsServer : createHttpServer)(
+  TLS ? { cert: readFileSync(TLS_CERT), key: readFileSync(TLS_KEY) } : {},
+  (req, res) => {
   if (req.method !== "GET" && req.method !== "HEAD") {
     res.setHeader("allow", "GET, HEAD");
     send(res, 405, { "content-type": "text/plain; charset=utf-8" }, "method not allowed");
@@ -104,12 +115,13 @@ const server = createServer((req, res) => {
   createReadStream(target)
     .on("error", () => res.destroy())
     .pipe(res);
-});
+  }
+);
 
 // a missing dist must not crash-loop the service: the server answers /healthz
 // and 404s until the first `npm run build` lands (deploy kickstarts after it)
 server.listen(PORT, HOST, () => {
-  log("info", "pwa origin listening", { host: HOST, port: PORT, root: ROOT });
+  log("info", "pwa origin listening", { host: HOST, port: PORT, root: ROOT, tls: TLS });
 });
 server.on("error", (err) => {
   const code = err?.code ?? "";

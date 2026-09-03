@@ -142,6 +142,42 @@ O origin do PWA no celular é servido pelo serviço launchd `com.ocr.pwa`
 (`apps/web/dist` estático em `127.0.0.1:5173`, P2-075) — nunca um dev server.
 O daemon vigia `/healthz` e sinaliza no dashboard se o origin cair.
 
+## Instalar como terceiro (sem tailnet — modo LAN)
+
+O `wss://…ts.net` do Quick Start é só um jeito de alcançar o relay. Qualquer
+Mac no mesmo Wi-Fi hospeda tudo com certificado local (o gate de passkey
+precisa de contexto seguro, por isso o TLS):
+
+```bash
+git clone https://github.com/caiovicentino/opencode-remote.git
+cd opencode-remote && npm ci
+npm run build --workspace @ocr/web
+opencode serve --port 4096    # se ainda não estiver rodando
+
+# uma vez: CA local + certificado pro IP da LAN (brew install mkcert)
+mkcert -install
+LAN_IP=$(ipconfig getifaddr en0)
+mkdir -p .certs
+mkcert -cert-file .certs/lan.pem -key-file .certs/lan.key "$LAN_IP" localhost 127.0.0.1
+
+# relay + daemon + origin estático do PWA como serviços launchd (KeepAlive)
+RELAY_URL="wss://$LAN_IP:8788" \
+RELAY_TLS_CERT="$PWD/.certs/lan.pem" RELAY_TLS_KEY="$PWD/.certs/lan.key" \
+PWA_HOST=0.0.0.0 PWA_TLS_CERT="$PWD/.certs/lan.pem" PWA_TLS_KEY="$PWD/.certs/lan.key" \
+NODE_EXTRA_CA_CERTS="$(mkcert -CAROOT)/rootCA.pem" \
+  ./deploy/install.sh
+
+RELAY_URL="wss://$LAN_IP:8788" node cli.mjs qr   # QR de pareamento
+```
+
+No celular (mesmo Wi-Fi): mande o `$(mkcert -CAROOT)/rootCA.pem` por AirDrop →
+instale o perfil → habilite em **Ajustes → Geral → Sobre → Confiança de
+Certificado**; abra `https://<LAN_IP>:5173` no Safari → **Adicionar à Tela de
+Início** → escaneie o QR. Sem os overrides `PWA_*`/`RELAY_TLS_*` vale o layout
+tailscale padrão; portas e certificados são variáveis de ambiente. O serviço
+do pilot segue a mesma regra: `deploy/install-pilot.sh` não tem hostname
+fixo — defina `RELAY_URL`.
+
 ## CLI
 
 ```bash
