@@ -108,9 +108,8 @@ export function appendCorpusSample(dir: string, cmd: string, sanitized: string, 
  * executed inside the evidence gate — no extra npm runs) as sanitized corpus
  * samples and push the commit to main (scribe-style retry loop: concurrent
  * slots can move main between reset and push). Called by the gatekeeper right
- * after a green merge, inside the gate lock, every `corpusEveryNMerges`
- * successful merges. Writes only inside the pilot workspace `ws`. Returns the
- * files written, for logging.
+ * after a green merge, every `corpusEveryNMerges` successful merges. Writes
+ * only inside the pilot workspace `ws`. Returns the files written, for logging.
  */
 export function captureGateCorpus(
   ws: string,

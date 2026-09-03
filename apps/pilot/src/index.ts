@@ -80,6 +80,47 @@ async function main() {
     workspaces: slotNumbers.map((s) => slotCfg.get(s)!.workspace),
   });
 
+  /**
+   * P1-099: eager-fill — start a pipeline on every schedulable free slot right
+   * now. Synchronous start-to-finish (`exec` is sync, no await): event-loop
+   * atomicity is what prevents double-picking between the main loop and the
+   * slot workers' eager-fill hooks. Called from the main loop ("loop") and at
+   * the end of every pipeline ("eager-fill", runSlot finally) so a pipeline end
+   * immediately backfills BOTH the freed slot and any other idle one.
+   * Best-effort: a queue read failure just skips the fill — the main loop
+   * retries in its next cycle. Never throws out of runSlot.finally.
+   */
+  const fillFreeSlots = (reason: "loop" | "eager-fill"): void => {
+    // --once (eval battery): exactly one pipeline total — only the loop call picks
+    if (once && reason === "eager-fill") return;
+    if (frozen() || state.auditMode) return;
+    if (state.tasks + running.size >= cfg.maxTasksPerDay) return;
+    try {
+      const free = slotNumbers.filter((s) => !running.has(s));
+      if (free.length === 0) return;
+      // queue read straight from origin/main, fresh at pick time:
+      // slot worktrees may be mid-pipeline on a task branch and are never
+      // trusted for scheduling decisions
+      exec("git fetch -q origin", { cwd: cfg.repo, allowFail: true });
+      const md = exec("git show origin/main:BACKLOG.md", { cwd: cfg.repo, allowFail: true });
+      const queue = md.ok ? parseBacklog(md.output) : [];
+      const busyAreas = new Set([...running.values()].map((r) => areaKey(r.task)));
+      // budget-aware batch: freeSlots AND the remaining daily task budget
+      const remainingBudget = cfg.maxTasksPerDay - state.tasks - running.size;
+      const picked = pickBatch(queue.filter((t) => !overCap(t)), once ? 1 : free.length, busyAreas, remainingBudget);
+      for (const task of picked) {
+        const slot = free.find((s) => !running.has(s))!;
+        const wscfg = slotCfg.get(slot)!;
+        log("info", "pipeline start", { task: task.id, title: task.title, slot, reason });
+        emit("loop", { task: task.id, phase: "picked", detail: task.title, slot });
+        const done = runSlot(slot, wscfg, task, cfg, () => fillFreeSlots("eager-fill"));
+        running.set(slot, { task, done });
+      }
+    } catch (err) {
+      log("warn", "eager-fill skipped", { reason, err: String(err).slice(0, 200) });
+    }
+  };
+
   for (;;) {
     touchHeartbeat();
     if (frozen()) {
@@ -228,18 +269,7 @@ async function main() {
       }
     }
 
-    const busyAreas = new Set([...running.values()].map((r) => areaKey(r.task)));
-    // budget-aware batch: freeSlots AND the remaining daily task budget
-    const remainingBudget = cfg.maxTasksPerDay - state.tasks - running.size;
-    const picked = pickBatch(queue.filter((t) => !overCap(t)), once ? 1 : free.length, busyAreas, remainingBudget);
-    for (const task of picked) {
-      const slot = free.find((s) => !running.has(s))!;
-      const wscfg = slotCfg.get(slot)!;
-      log("info", "pipeline start", { task: task.id, title: task.title, slot });
-      emit("loop", { task: task.id, phase: "picked", detail: task.title, slot });
-      const done = runSlot(slot, wscfg, task, cfg);
-      running.set(slot, { task, done });
-    }
+    fillFreeSlots("loop");
 
     if (once) {
       await Promise.all([...running.values()].map((r) => r.done));
@@ -268,8 +298,10 @@ async function runDoctorPass(st: PilotState): Promise<void> {
   saveState(st);
 }
 
-/** One pipeline run in a slot workspace, with all result bookkeeping. */
-async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotConfig): Promise<void> {
+/** One pipeline run in a slot workspace, with all result bookkeeping.
+ * P1-099: `onSettled` runs in the finally, right after the slot is released —
+ * the eager-fill hook that immediately backfills every free slot. */
+async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotConfig, onSettled?: () => void): Promise<void> {
   // P1-060: budgets scale with the task's size tag — clone the slot config
   // with the effective rounds/timeout/attempts so runPipeline and the
   // circuit breaker both honor the long-horizon allowance for size L.
@@ -346,6 +378,9 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
     await sleep(30_000);
   } finally {
     running.delete(slot);
+    // P1-099: pipeline end → eager-fill ALL free slots (the freed one AND any
+    // other idle one). Synchronous — no double-pick on the event loop.
+    onSettled?.();
   }
 }
 
