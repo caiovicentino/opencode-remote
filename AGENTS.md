@@ -18,8 +18,11 @@ it; P2+ tasks go straight to the builder (P2-008). Cognition is tiered (P1-059):
 (`claude -p --model <m> --add-dir <workspace>`, prompt via stdin) with automatic tier-A fallback
 on spawn error/timeout/empty output/missing completion marker (`tierB-fallback` in the log),
 while builder/reviewers/scribe stay tier A (flash via `opencode run`) and the deterministic
-evidence gate is unchanged; round-1 review divergence or all-unverifiable findings trigger at
-most one tier-B escalation reviewer (`review-escalation` phase), and a weekly forensic pass
+evidence gate is unchanged; round-1 review divergence — or all-unverifiable findings in ANY
+round (P1-073: fail-closed, never an effective approve) — triggers at
+most one tier-B escalation reviewer (`review-escalation` phase; without tier-B the
+REQUEST_CHANGES stands and the builder is told to restate it with verifiable path:line
+evidence), and a weekly forensic pass
 distills the failure record into a taxonomy at `~/.opencode-remote/pilot/forensic-latest.md`.
 Tasks that keep failing the pipeline are circuit-broken
 after `maxAttemptsPerTask` (default 4; a `(size: L)` task has its own cap of 6) attempts: moved to `## Blocked` in BACKLOG.md with the last
