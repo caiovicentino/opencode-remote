@@ -3,7 +3,8 @@
  * failure lessons, the open gate-failure carryovers and the recent merge log,
  * and produces a failure taxonomy (patterns → root causes → recommendations)
  * written to ~/.opencode-remote/pilot/forensic-latest.md. Best-effort by
- * design: runs once per 7 days inside the nightly 03:xx window, never blocks
+ * design: runs once per 7 days inside the nightly pass (first >= 2h idle gap
+ * of the day — P1-095), never blocks
  * the loop, and its output is extracted from agent stdout — the agent itself
  * never gains access outside the workspace clone (anti-exfiltration rule).
  */
