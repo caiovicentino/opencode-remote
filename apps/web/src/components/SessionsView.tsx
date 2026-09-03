@@ -2,10 +2,13 @@ import { useEffect, useState } from "react";
 import { useT } from "../lib/i18n";
 import { humanizeError } from "../lib/errors";
 import { timeAgo, sessionUpdatedTs } from "../lib/time";
+import { groupByRecency } from "../lib/recency";
+import { loadArchived, saveArchived, toggleArchived } from "../lib/archive";
 import type { EventEnvelope } from "@ocr/protocol";
 import type { Pairing } from "../lib/client";
 import { applySessionFilters, splitPilotSessions, type BadgeFilter } from "../lib/sessionFilter";
 import { dropCachedSession } from "../lib/sessionCache";
+import { IconArchive, IconPencil, IconUndo } from "./icons";
 
 interface Session {
   id: string;
@@ -41,6 +44,8 @@ interface Props {
   onCreateSession: () => Promise<string | null>;
   /** "grid" (mobile cards) | "rows" (desktop flat Claude-style list) */
   variant?: "grid" | "rows";
+  /** P3-084: currently open conversation — drives the sharp active row. */
+  activeSession?: string | null;
 }
 
 /** P1-064: collapsed header for autonomous-pilot sessions, pinned to the end
@@ -76,6 +81,16 @@ function PilotGroup({
   );
 }
 
+/** P3-084: temporal group header (Hoje/Ontem/Anteriores) — locale-proof hook
+ * via data-group for the desktop-flow gate. Hidden when the bucket is empty. */
+function GroupHead({ group, label }: { group: string; label: string }) {
+  return (
+    <div className="sess-group-head" data-group={group}>
+      {label}
+    </div>
+  );
+}
+
 export default function SessionsView({
   machineName,
   events,
@@ -96,6 +111,7 @@ export default function SessionsView({
   creating,
   onCreateSession,
   variant = "grid",
+  activeSession = null,
 }: Props) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const t = useT();
@@ -106,6 +122,9 @@ export default function SessionsView({
   const [badgeFilter, setBadgeFilter] = useState<BadgeFilter>("all");
   const [switching, setSwitching] = useState(false);
   const [pilotOpen, setPilotOpen] = useState(false);
+  // P3-084: client-side archive (this device's localStorage, reversible)
+  const [archivedIds, setArchivedIds] = useState<string[]>(() => loadArchived());
+  const [archivedOpen, setArchivedOpen] = useState(false);
 
   // silent restore: a device that already granted permission never re-authorizes
   useEffect(() => {
@@ -156,14 +175,36 @@ export default function SessionsView({
     void load();
   }
 
+  // P3-084: archive/restore — local-only, no server flag to call
+  function archiveConversation(id: string) {
+    const next = toggleArchived(archivedIds, id, true);
+    setArchivedIds(next);
+    saveArchived(next);
+  }
+
+  function restoreConversation(id: string) {
+    const next = toggleArchived(archivedIds, id, false);
+    setArchivedIds(next);
+    saveArchived(next);
+  }
+
   const filtered = applySessionFilters(sessions, unread, query, badgeFilter);
 
   // most recently touched first when the API gives us timestamps
   const sorted = filtered.sort((a, b) => sessionUpdatedTs(b) - sessionUpdatedTs(a));
 
+  // P3-084: archived conversations leave the main list (both variants) and
+  // live in their own collapsed group at the end
+  const archivedSet = new Set(archivedIds);
+  const archivedSessions = sorted.filter((s) => archivedSet.has(s.id));
+  const live = sorted.filter((s) => !archivedSet.has(s.id));
+
   // P1-064: autonomous-pilot sessions collapse into their own group at the
   // end of the list so the user's conversations stay on top
-  const { user: userSessions, pilot: pilotSessions } = splitPilotSessions(sorted);
+  const { user: userSessions, pilot: pilotSessions } = splitPilotSessions(live);
+
+  // P3-084: temporal buckets (Hoje/Ontem/Anteriores), local-midnight bounded
+  const groups = groupByRecency((s) => sessionUpdatedTs(s), userSessions);
 
   // live status per session, derived from the last relevant event of each one
   const statusOf = (() => {
@@ -201,17 +242,20 @@ export default function SessionsView({
     done: "var(--status-done)",
   };
 
-  function renderRow(s: Session) {
+  function renderRow(s: Session, archived = false) {
     const st = statusOf.get(s.id);
     const when = timeAgo(s.updatedAt ?? s.time?.updated, t("justNow"));
-    const n = unread[s.id] ?? 0;
+    const n = archived ? 0 : (unread[s.id] ?? 0);
+    const label = s.title || s.id.slice(0, 12);
     return (
       <div
         key={s.id}
-        className="sess-row"
+        className={`sess-row${!archived && s.id === activeSession ? " active" : ""}`}
         role="button"
         tabIndex={0}
-        aria-label={s.title || s.id.slice(0, 12)}
+        aria-label={label}
+        aria-current={!archived && s.id === activeSession ? "true" : undefined}
+        title={label}
         onClick={() => onOpen(s.id)}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") {
@@ -230,15 +274,47 @@ export default function SessionsView({
             opacity: st ? 1 : 0.5,
           }}
         />
-        <span className="sess-title">{s.title || s.id.slice(0, 12)}</span>
+        <span className="sess-title">{label}</span>
         {n > 0 && <span className="unread-badge">{n}</span>}
         {when && <span className="sess-when">{when}</span>}
+        {/* P3-084: hover-revealed actions (rename / archive|restore) */}
+        <span className="row-actions" onClick={(e) => e.stopPropagation()}>
+          {archived ? (
+            <button
+              className="row-restore"
+              aria-label={t("restore")}
+              title={t("restore")}
+              onClick={() => restoreConversation(s.id)}
+            >
+              <IconUndo size={14} />
+            </button>
+          ) : (
+            <>
+              <button
+                className="row-rename"
+                aria-label={t("rename")}
+                title={t("rename")}
+                onClick={() => void renameSession(s.id, s.title)}
+              >
+                <IconPencil size={14} />
+              </button>
+              <button
+                className="row-archive"
+                aria-label={t("archive")}
+                title={t("archive")}
+                onClick={() => archiveConversation(s.id)}
+              >
+                <IconArchive size={14} />
+              </button>
+            </>
+          )}
+        </span>
       </div>
     );
   }
 
-  function renderCard(s: Session) {
-    const st = statusOf.get(s.id);
+  function renderCard(s: Session, archived = false) {
+    const st = archived ? undefined : statusOf.get(s.id);
     const when = timeAgo(s.updatedAt ?? s.time?.updated, t("justNow"));
     return (
       <div
@@ -272,16 +348,24 @@ export default function SessionsView({
           {when && <span className="session-when">{when}</span>}
         </div>
         <div className="session-snippet">{st?.snippet || "\u00a0"}</div>
-        <div className="session-meta" style={{ color: st ? toneColor[st.tone] : "var(--status-done)" }}>
-          {st?.label ?? t("ready")}
-        </div>
+        {!archived && (
+          <div className="session-meta" style={{ color: st ? toneColor[st.tone] : "var(--status-done)" }}>
+            {st?.label ?? t("ready")}
+          </div>
+        )}
         <div className="session-actions" onClick={(e) => e.stopPropagation()}>
           <button aria-label={t("rename")} title={t("rename")} style={{ padding: "2px 8px" }} onClick={() => void renameSession(s.id, s.title)}>
             ✎
           </button>
-          <button className="danger" aria-label={t("delete")} title={t("delete")} style={{ padding: "2px 8px" }} onClick={() => void deleteSession(s.id)}>
-            ✕
-          </button>
+          {archived ? (
+            <button aria-label={t("restore")} title={t("restore")} style={{ padding: "2px 8px" }} onClick={() => restoreConversation(s.id)}>
+              ↩
+            </button>
+          ) : (
+            <button className="danger" aria-label={t("delete")} title={t("delete")} style={{ padding: "2px 8px" }} onClick={() => void deleteSession(s.id)}>
+              ✕
+            </button>
+          )}
         </div>
       </div>
     );
@@ -389,7 +473,12 @@ export default function SessionsView({
         {!loading && filtered.length === 0 && <p className="muted">{t("noSessions")}</p>}
         {variant === "rows" && (
           <div className="sess-rows">
-            {userSessions.map(renderRow)}
+            {groups.today.length > 0 && <GroupHead group="today" label={t("groupToday")} />}
+            {groups.today.map((s) => renderRow(s))}
+            {groups.yesterday.length > 0 && <GroupHead group="yesterday" label={t("groupYesterday")} />}
+            {groups.yesterday.map((s) => renderRow(s))}
+            {groups.earlier.length > 0 && <GroupHead group="earlier" label={t("groupEarlier")} />}
+            {groups.earlier.map((s) => renderRow(s))}
             {pilotSessions.length > 0 && (
               <PilotGroup
                 open={pilotOpen}
@@ -397,12 +486,33 @@ export default function SessionsView({
                 label={t("pilotGroup", { n: pilotSessions.length })}
               />
             )}
-            {pilotOpen && pilotSessions.map(renderRow)}
+            {pilotOpen && pilotSessions.map((s) => renderRow(s))}
+            {archivedSessions.length > 0 && (
+              <button
+                className="chip"
+                aria-expanded={archivedOpen}
+                onClick={() => setArchivedOpen((v) => !v)}
+                style={{
+                  gridColumn: "1 / -1",
+                  margin: "4px 0 2px",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  width: "fit-content",
+                }}
+              >
+                <span aria-hidden style={{ fontSize: "0.7rem", transform: archivedOpen ? "rotate(180deg)" : undefined, display: "inline-block" }}>
+                  ▾
+                </span>
+                {t("groupArchived", { n: archivedSessions.length })}
+              </button>
+            )}
+            {archivedOpen && archivedSessions.map((s) => renderRow(s, true))}
           </div>
         )}
         {variant !== "rows" && (
         <div className="session-grid">
-            {userSessions.map(renderCard)}
+            {userSessions.map((s) => renderCard(s))}
             {pilotSessions.length > 0 && (
               <PilotGroup
                 open={pilotOpen}
@@ -410,7 +520,21 @@ export default function SessionsView({
                 label={t("pilotGroup", { n: pilotSessions.length })}
               />
             )}
-            {pilotOpen && pilotSessions.map(renderCard)}
+            {pilotOpen && pilotSessions.map((s) => renderCard(s))}
+            {archivedSessions.length > 0 && (
+              <button
+                className="chip"
+                aria-expanded={archivedOpen}
+                onClick={() => setArchivedOpen((v) => !v)}
+                style={{ gridColumn: "1 / -1", width: "fit-content" }}
+              >
+                <span aria-hidden style={{ fontSize: "0.7rem", transform: archivedOpen ? "rotate(180deg)" : undefined, display: "inline-block" }}>
+                  ▾
+                </span>
+                {t("groupArchived", { n: archivedSessions.length })}
+              </button>
+            )}
+            {archivedOpen && archivedSessions.map((s) => renderCard(s, true))}
         </div>
         )}
       </div>

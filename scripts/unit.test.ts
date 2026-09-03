@@ -13,6 +13,9 @@ import { dict } from "../apps/web/src/lib/i18n";
 import { permissionPreview } from "../apps/web/src/lib/permission";
 import { applySessionFilters, isPilotTitle, splitPilotSessions } from "../apps/web/src/lib/sessionFilter";
 import { initialUnreadState, reduceUnread } from "../apps/web/src/lib/unread";
+import { recencyGroup, groupByRecency, startOfLocalDay } from "../apps/web/src/lib/recency";
+import { toggleArchived, ARCHIVED_MAX } from "../apps/web/src/lib/archive";
+import { previewFromEvents, clipPreview } from "../apps/web/src/lib/sessionPreview";
 import {
   capMessagePage,
   parsePageLimit,
@@ -5035,6 +5038,78 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       check("doctor branches: failed deletion reports ok=false", !r.ok && r.detail.includes("pilot/P9-001 (delete failed)"));
     }
   }
+}
+
+// --- P3-084: recency grouping, archive set + palette preview ------------------
+{
+  // fixed "now" = local noon today, so no wall-clock run-up can flip a group
+  const nowD = new Date();
+  nowD.setHours(12, 0, 0, 0);
+  const nowMs = nowD.getTime();
+  const noonAt = (dayOffset: number) =>
+    new Date(nowD.getFullYear(), nowD.getMonth(), nowD.getDate() + dayOffset, 12, 0, 0, 0).getTime();
+
+  check("recency: noon today is today", recencyGroup(nowMs, nowMs) === "today");
+  check("recency: 5 minutes ago is today", recencyGroup(nowMs - 5 * 60_000, nowMs) === "today");
+  check("recency: noon yesterday is yesterday", recencyGroup(noonAt(-1), nowMs) === "yesterday");
+  check("recency: 8 days ago is earlier", recencyGroup(noonAt(-8), nowMs) === "earlier");
+  check("recency: unknown (0) is earlier", recencyGroup(0, nowMs) === "earlier");
+  check("recency: NaN is earlier", recencyGroup(Number.NaN, nowMs) === "earlier");
+  check("recency: small clock skew into the future stays today", recencyGroup(nowMs + 90_000, nowMs) === "today");
+
+  // Reviewer pin (P3-084 round 1): the buckets are bounded by LOCAL CALENDAR
+  // MIDNIGHTS, never by a fixed `now - 86_400_000` offset. The decisive case
+  // is a 1 wall-clock-hour gap across midnight — epoch distance ≪ 24h, so any
+  // fixed-offset "today window" files it under today; calendar fields don't.
+  const earlyMorning = new Date(2026, 2, 8, 0, 30).getTime(); // Mar 8, 00:30 local
+  const lateNight = new Date(2026, 2, 7, 23, 30).getTime(); // Mar 7, 23:30 local
+  check("recency: 1h wall-clock gap across midnight is yesterday, not today", recencyGroup(lateNight, earlyMorning) === "yesterday");
+  const startToday = startOfLocalDay(new Date(nowMs));
+  const startYesterday = (() => {
+    const d = new Date(startToday);
+    d.setDate(d.getDate() - 1);
+    return d.getTime();
+  })();
+  check("recency: boundary — exactly local midnight today is today", recencyGroup(startToday, nowMs) === "today");
+  check("recency: boundary — 1ms before local midnight is yesterday", recencyGroup(startToday - 1, nowMs) === "yesterday");
+  check("recency: boundary — exactly yesterday's local midnight is yesterday", recencyGroup(startYesterday, nowMs) === "yesterday");
+  check("recency: boundary — 1ms before yesterday's midnight is earlier", recencyGroup(startYesterday - 1, nowMs) === "earlier");
+
+  const mk = (id: string, ts: number) => ({ id, ts });
+  const grouped = groupByRecency(
+    (s) => s.ts,
+    [mk("a", nowMs - 1_000), mk("b", nowMs - 2_000), mk("c", noonAt(-1)), mk("d", noonAt(-3)), mk("e", 0)],
+    nowMs,
+  );
+  check(
+    "recency: groupByRecency buckets and preserves recency order",
+    grouped.today.map((s) => s.id).join(",") === "a,b" &&
+      grouped.yesterday.map((s) => s.id).join(",") === "c" &&
+      grouped.earlier.map((s) => s.id).join(",") === "d,e",
+  );
+
+  let ids = toggleArchived([], "a", true);
+  ids = toggleArchived(ids, "b", true);
+  check("archive: newest archived first", ids[0] === "b" && ids[1] === "a");
+  ids = toggleArchived(ids, "a", true);
+  check("archive: re-archiving dedupes to the front", ids.length === 2 && ids[0] === "a");
+  ids = toggleArchived(ids, "a", false);
+  check("archive: restore removes only the target", ids.length === 1 && ids[0] === "b");
+  const capped = toggleArchived(Array.from({ length: ARCHIVED_MAX + 10 }, (_, i) => `s${i}`), "new", true);
+  check("archive: archived set is capped", capped.length === ARCHIVED_MAX && capped[0] === "new");
+
+  const previewEvents = [
+    { type: "session.idle", properties: { sessionID: "s-idle" } },
+    { type: "message.part.updated", properties: { sessionID: "s1", part: { text: "primeira  linha\ndupla" } } },
+    { type: "message.part.updated", properties: { sessionID: "s2", part: { text: "x".repeat(200) } } },
+    { type: "message.part.updated", properties: { sessionID: "s1", part: { text: "última" } } },
+  ];
+  const pv = previewFromEvents(previewEvents);
+  check("preview: the LAST text event wins per session", pv.s1 === "última");
+  check("preview: whitespace is collapsed to one line", clipPreview("primeira  linha\ndupla") === "primeira linha dupla");
+  check("preview: long text clipped with an ellipsis", pv.s2.length === 90 && pv.s2.endsWith("…"));
+  check("preview: sessions without text have no entry", !("s-idle" in pv));
+  check("preview: clipPreview trims the edges", clipPreview("  a   b  ") === "a b");
 }
 
 if (failures > 0) {

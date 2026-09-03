@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useT } from "../lib/i18n";
 import { applySessionFilters } from "../lib/sessionFilter";
+import { previewFromEvents } from "../lib/sessionPreview";
 import { humanizeError } from "../lib/errors";
 import {
   IconChat,
@@ -29,12 +30,16 @@ interface Props {
   onOpenSession: (id: string) => void;
   onNewChat: () => void;
   onOpenPane: (slot: "artifacts" | "browser" | "files" | "settings" | "mission") => void;
+  /** P3-084: live event buffer — feeds the last-message preview per session. */
+  events: { type: string; properties?: unknown }[];
 }
 
 interface Item {
   key: string;
   label: string;
   kind: string;
+  /** P3-084: last known message line (sessions only, optional). */
+  preview?: string;
   run: () => void;
 }
 
@@ -43,7 +48,7 @@ interface Item {
  * (panel background, hairline border, no gradients). Lists fixed navigation
  * actions plus the machine's conversations, filtered by one query.
  */
-export default function CommandPalette({ request, onClose, onOpenSession, onNewChat, onOpenPane }: Props) {
+export default function CommandPalette({ request, onClose, onOpenSession, onNewChat, onOpenPane, events }: Props) {
   const t = useT();
   const [query, setQuery] = useState("");
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -51,6 +56,8 @@ export default function CommandPalette({ request, onClose, onOpenSession, onNewC
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  // P3-084: last known message line per conversation (from the event buffer)
+  const previews = useMemo(() => previewFromEvents(events), [events]);
 
   useEffect(() => {
     void (async () => {
@@ -79,10 +86,11 @@ export default function CommandPalette({ request, onClose, onOpenSession, onNewC
         key: `s-${s.id}`,
         label: s.title || s.id.slice(0, 12),
         kind: "session",
+        preview: previews[s.id],
         run: () => onOpenSession(s.id),
       }));
     return [...actions, ...sess];
-  }, [query, sessions, t, onNewChat, onOpenPane, onOpenSession]);
+  }, [query, sessions, previews, t, onNewChat, onOpenPane, onOpenSession]);
 
   useEffect(() => {
     setActive(0);
@@ -139,7 +147,7 @@ export default function CommandPalette({ request, onClose, onOpenSession, onNewC
           {items.map((item, i) => (
             <button
               key={item.key}
-              className={`palette-item${i === active ? " active" : ""}`}
+              className={`palette-item${i === active ? " active" : ""}${item.preview ? " has-sub" : ""}`}
               data-active={i === active}
               onMouseEnter={() => setActive(i)}
               onClick={() => commit(i)}
@@ -147,7 +155,10 @@ export default function CommandPalette({ request, onClose, onOpenSession, onNewC
               <span className="palette-ico">
                 {item.kind === "session" ? <IconChat size={15} /> : <PaneIcon item={item.key} />}
               </span>
-              <span className="palette-label">{item.label}</span>
+              <span className="palette-label">
+                <span className="palette-label-main">{item.label}</span>
+                {item.preview && <span className="palette-sub">{item.preview}</span>}
+              </span>
               <span className="palette-kind">{item.kind === "session" ? t("paletteKindSession") : t("paletteKindAction")}</span>
             </button>
           ))}

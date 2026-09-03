@@ -276,6 +276,17 @@ including programmatic scrolls) and a six-step dark-gray ladder where every
 step has one role — canvas, chrome, raised surface, hover, resting and active
 borders. All color/type/spacing/motion literals live in `apps/web/src/tokens.css`.
 
+**Benchmark conversation list & ⌘K (P3-084)**: the sidebar groups conversations
+into **Today / Yesterday / Earlier** (bounded by local calendar midnights, so
+DST-change days group correctly), the open conversation gets a sharp active
+state (tinted row + accent bar), truncated titles ellipsize with a full-name
+tooltip, and hovering a row reveals **rename** and **archive** actions in the
+timestamp's slot. Archiving is per-device (localStorage) and reversible —
+archived conversations move to a collapsible "Archived" group at the end of
+the list (hidden on the phone board too, with a restore action in the group).
+The `Cmd+K` switcher now shows the **last known message line** under each
+conversation in the search results.
+
 **Auto-preview (P1-072)**: when the agent brings up a local site (http.server,
 vite, a dev server…) and mentions `http://localhost:<port>` in its reply, the
 Browser pane opens by itself next to the chat, pointed at that URL, rendered
