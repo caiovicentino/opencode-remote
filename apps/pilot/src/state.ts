@@ -222,13 +222,13 @@ export function loadState(file = STATE_FILE): PilotState {
       // rollover must not wipe them
       taskCosts: s.taskCosts && typeof s.taskCosts === "object" ? s.taskCosts : {},
       taskCostSessions: s.taskCostSessions && typeof s.taskCostSessions === "object" ? s.taskCostSessions : {},
-    // P1-077: cache breakdown backfilled for legacy files, never crash
-    taskCache: s.taskCache && typeof s.taskCache === "object" ? s.taskCache : {},
-    // P1-095: idle-window trigger + nightly skip record survive midnight (the
-    // timestamp stays a finite number or undefined — never NaN/garbage)
-    lastCycleAt: typeof s.lastCycleAt === "number" && Number.isFinite(s.lastCycleAt) ? s.lastCycleAt : undefined,
-    nightlySkipped: normalizeNightlySkipped(s.nightlySkipped),
-  };
+      // P1-077: cache breakdown backfilled for legacy files, never crash
+      taskCache: s.taskCache && typeof s.taskCache === "object" ? s.taskCache : {},
+      // P1-095: idle-window trigger + nightly skip record survive midnight (the
+      // timestamp stays a finite number or undefined — never NaN/garbage)
+      lastCycleAt: typeof s.lastCycleAt === "number" && Number.isFinite(s.lastCycleAt) ? s.lastCycleAt : undefined,
+      nightlySkipped: normalizeNightlySkipped(s.nightlySkipped),
+    };
     if (s.date === today) return { ...s, ...shared, merges, infraFails };
     return { date: today, tasks: 0, deploys: 0, failures: 0, merges: 0, infraFails: 0, ...shared };
   } catch {
