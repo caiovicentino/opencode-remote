@@ -71,8 +71,8 @@
   @keyframes frame { 50% { box-shadow:inset 0 0 0 3px var(--red), inset 0 0 120px rgba(248,113,113,.5); } }
   #toast { position:fixed; z-index:40; top:18px; left:50%; transform:translate(-50%,-140%); background:var(--panel); border:1px solid var(--red);
            color:var(--red); font-size:11px; font-weight:700; letter-spacing:.16em; text-transform:uppercase; padding:8px 16px; border-radius:8px;
-           transition:transform .25s ease-out; pointer-events:none; }
-  #toast.show { transform:translate(-50%,0); }
+           transition:transform .25s ease-out, opacity .25s ease-out; pointer-events:none; opacity:0; visibility:hidden; }
+  #toast.show { transform:translate(-50%,0); opacity:1; visibility:visible; }
   #toast.good { border-color:var(--green); color:var(--green); }
   /* ── tooltip ── */
   #tip { position:fixed; z-index:30; pointer-events:none; background:var(--panel); border:1px solid var(--hair); border-radius:6px;
@@ -82,6 +82,13 @@
   /* ── drill-down modal (text allowed here) ── */
   #modal { position:fixed; inset:0; z-index:50; display:none; align-items:center; justify-content:center; background:rgba(2,4,8,.66); backdrop-filter:blur(6px); }
   #modal.open { display:flex; }
+  #bform { margin-top:14px; padding-top:12px; border-top:1px solid rgba(160,190,220,.14); }
+  #bform .brow { display:flex; gap:14px; align-items:end; flex-wrap:wrap; }
+  #bform label { font:700 10px/1.6 ui-monospace, monospace; letter-spacing:.12em; color:#5f7f92; display:flex; flex-direction:column; gap:4px; }
+  #bform input { width:110px; background:#0a141d; border:1px solid rgba(160,190,220,.22); border-radius:6px; color:#cfe6f5; font:700 13px ui-monospace, monospace; padding:7px 9px; outline:none; }
+  #bform input:focus { border-color:#3fa7ff; }
+  #bform button { background:#12314a; color:#bfe3ff; border:1px solid #2b6ea8; border-radius:6px; font:700 11px ui-monospace, monospace; letter-spacing:.12em; padding:9px 16px; cursor:pointer; }
+  #bform button:hover { background:#1a4266; }
   #card { width:min(720px,92vw); max-height:82vh; overflow:auto; background:var(--panel); border:1px solid rgba(34,211,238,.28); border-radius:14px;
           padding:18px 22px; animation:rise .25s ease-out; }
   @keyframes rise { from { transform:translateY(16px); opacity:0 } to { transform:none; opacity:1 } }
@@ -162,6 +169,13 @@
     <h2 id="m-title"></h2>
     <div class="facts" id="m-facts"></div>
     <div class="tl" id="m-tl"></div>
+    <div id="bform" style="display:none">
+      <div class="brow">
+        <label>TASKS/DIA<input id="b-tasks" type="number" min="1" /></label>
+        <label>DEPLOYS/DIA<input id="b-dep" type="number" min="1" /></label>
+        <button id="bsave" onclick="saveBudget()">SALVAR</button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -445,7 +459,7 @@ function resize() {
   W = window.innerWidth; H = window.innerHeight;
   canvas.width = W * DPR; canvas.height = H * DPR; canvas.style.width = W + "px"; canvas.style.height = H + "px";
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-  R = Math.max(120, Math.min(W, H) / 2 - 64);
+  R = Math.max(110, Math.min(W, H) / 2 - 96);
   // starfield pre-render
   stars = document.createElement("canvas"); stars.width = W * DPR; stars.height = H * DPR;
   const sc = stars.getContext("2d"); sc.setTransform(DPR, 0, 0, DPR, 0, 0);
@@ -742,6 +756,7 @@ function openShip(s) {
   ];
   $("m-facts").innerHTML = facts.map(([k, v]) => `<span>${k}<b>${esc(v)}</b></span>`).join("");
   $("m-tl").innerHTML = s.events.length ? s.events.slice(-80).map(tlRow).join("") : `<div class="empty">sem eventos</div>`;
+  hideBudgetForm();
   $("modal").classList.add("open");
 }
 function openStation(st) {
@@ -749,6 +764,7 @@ function openStation(st) {
   $("m-title").innerHTML = `<i style="background:${st.color}"></i>${st.label}<small>${ws.last ? "último: " + hhmmss(ws.last) : "nunca rodou nesta janela"}</small>`;
   $("m-facts").innerHTML = `<span>ESTADO<b>${ws.st.toUpperCase()}</b></span>`;
   $("m-tl").innerHTML = ws.events.length ? ws.events.slice(-40).map(tlRow).join("") : `<div class="empty">sem eventos no feed</div>`;
+  hideBudgetForm();
   $("modal").classList.add("open");
 }
 function openCore() {
@@ -759,10 +775,25 @@ function openCore() {
   if (world.pwaDetail) facts.push(["PWA", world.pwaDetail]);
   $("m-facts").innerHTML = facts.map(([k, v]) => `<span>${k}<b>${esc(v)}</b></span>`).join("");
   $("m-tl").innerHTML = world.deployEvents.length ? world.deployEvents.slice(-40).map(tlRow).join("") : `<div class="empty">sem deploys no feed</div>`;
+  $("bform").style.display = "block";
+  $("b-tasks").value = world.maxTasks; $("b-dep").value = world.maxDeploys; $("bsave").textContent = "SALVAR"; $("bsave").disabled = false;
   $("modal").classList.add("open");
 }
 function closeModal() { $("modal").classList.remove("open"); }
 window.closeModal = closeModal;
+function hideBudgetForm() { $("bform").style.display = "none"; }
+async function saveBudget() {
+  const t = parseInt($("b-tasks").value, 10), d = parseInt($("b-dep").value, 10);
+  if (!Number.isFinite(t) || t <= 0 || !Number.isFinite(d) || d <= 0) return;
+  const btn = $("bsave"); btn.disabled = true; btn.textContent = "…";
+  const done = (ok) => { btn.textContent = ok ? "SALVO" : "ERRO"; setTimeout(() => (btn.textContent = "SALVAR"), 2400); btn.disabled = false; };
+  try {
+    const res = await fetch("/api/pilot-budget", { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token}` }, body: JSON.stringify({ maxTasksPerDay: t, maxDeploysPerDay: d }) });
+    const j = await res.json();
+    if (j.cfg) { world.maxTasks = j.cfg.maxTasksPerDay || t; world.maxDeploys = j.cfg.maxDeploysPerDay || d; renderHud(); done(true); } else done(false);
+  } catch { done(false); }
+}
+window.saveBudget = saveBudget;
 
 // hit-testing: ships, stations, core
 function hit(mx, my) {
