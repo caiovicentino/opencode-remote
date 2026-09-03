@@ -9,17 +9,28 @@
  *   backlog   — validate sections + unique task ids via loadBacklog
  *   branches  — delete pilot/* branches with no open PR (gh-verified)
  *   state     — normalize state.json to the current schema + defaults
+ *   tierb     — probe the tier-B claude binary (`claude --version`) (P2-114)
  *
  * The pilot calls runDoctor() after every boot (apps/pilot/src/index.ts) and
  * operators can run any subcommand manually:
- *   tsx apps/pilot/src/doctor.ts <refs|attempts|backlog|branches|state|all>
+ *   tsx apps/pilot/src/doctor.ts <refs|attempts|backlog|branches|state|tierb|all>
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { nowLocalISO } from "./log";
 import { exec } from "./runner";
+import { emit } from "./events";
+import { notifySupervisor } from "./notify";
 import { loadBacklog, parseBacklog } from "./backlog";
-import { loadConfig, loadState, saveState, defaultStateFile, type PilotConfig, type PilotState } from "./state";
+import {
+  loadConfig,
+  loadState,
+  saveState,
+  defaultStateFile,
+  type ModelsConfig,
+  type PilotConfig,
+  type PilotState,
+} from "./state";
 
 /** Injectable command runner — unit tests pin the exact git command sequence. */
 export type RunFn = (cmd: string) => { ok: boolean; output: string };
@@ -285,6 +296,30 @@ export function doctorState(file: string = defaultStateFile()): DoctorResult {
   return { ok: true, changed: true, detail: "state.json normalized to current schema" };
 }
 
+// ── tierb: P2-114 — probe the tier-B claude binary ───────────────────────────
+
+/**
+ * P2-114: boot-time diagnosis of the tier-B dispatch path. A missing/broken
+ * `claude` binary only produces a warn-level `tierB-fallback` log line per
+ * call, so the pilot once ran ~18h without tier-B unnoticed (the pipeline kept
+ * working through tier A). With a tier-B model configured this runs
+ * `claude --version`; failure → ok:false + the output tail. Diagnostic only —
+ * `changed` is always false (no repair attempted). Without any configured
+ * tier-B model the probe is skipped (a tier-A-only machine stays green).
+ */
+export function doctorTierB(models: ModelsConfig | undefined, run: RunFn): DoctorResult {
+  const tierB = models?.tierB;
+  if (!tierB || Object.keys(tierB).length === 0) {
+    return { ok: true, changed: false, detail: "no tier-B model configured — probe skipped" };
+  }
+  const r = run("claude --version");
+  if (r.ok) {
+    const first = r.output.split("\n").map((l) => l.trim()).filter(Boolean)[0] ?? "";
+    return { ok: true, changed: false, detail: `claude ${first}` };
+  }
+  return { ok: false, changed: false, detail: `tier-B binary unusable: claude --version failed — ${r.output.slice(-120)}` };
+}
+
 // ── orchestration ────────────────────────────────────────────────────────────
 
 export function doctorLog(level: string, msg: string, data?: unknown): void {
@@ -300,8 +335,16 @@ function protectedBranchIds(st: PilotState): Set<string> {
  * Boot pass (P1-030): run every subcommand against the production repo and
  * each slot workspace. Every operation is wrapped — a doctor failure logs a
  * warning and never keeps the pipeline from starting.
+ * P2-114: also probes the tier-B binary (`doctorTierB`); a red probe logs
+ * warn, emits a `tierB-binary` phase event and notifies the supervisor, but
+ * still never blocks the boot.
  */
-export function runDoctor(cfg: Pick<PilotConfig, "repo">, workspaces: string[], log: typeof doctorLog = doctorLog): void {
+export function runDoctor(
+  cfg: Pick<PilotConfig, "repo" | "models">,
+  workspaces: string[],
+  log: typeof doctorLog = doctorLog,
+  hooks?: { runTierB?: RunFn; notify?: typeof notifySupervisor; emitEvent?: typeof emit },
+): void {
   const st = loadState();
 
   const refsResults = workspaces.map((ws) => {
@@ -321,6 +364,24 @@ export function runDoctor(cfg: Pick<PilotConfig, "repo">, workspaces: string[], 
   }
   log(backlog.ok ? "info" : "warn", "doctor: backlog", { repo: cfg.repo, ...backlog });
 
+  // P2-114: bounded 1min timeout — a hung `claude --version` must not hold the
+  // boot; a slow/failing probe is reported, never fatal.
+  const tierB = safe(
+    () =>
+      doctorTierB(
+        cfg.models,
+        hooks?.runTierB ?? ((cmd) => exec(cmd, { cwd: cfg.repo, allowFail: true, timeoutMin: 1 })),
+      ),
+    "tierb",
+  );
+  log(tierB.ok ? "info" : "warn", "doctor: tierB", { repo: cfg.repo, ...tierB });
+  if (!tierB.ok) {
+    try {
+      (hooks?.emitEvent ?? emit)("phase", { task: "doctor", phase: "tierB-binary", ok: false, detail: tierB.detail });
+    } catch {}
+    void (hooks?.notify ?? notifySupervisor)("doctor", false, tierB.detail).catch(() => {});
+  }
+
   const branchResults = workspaces.map((ws) => {
     const r = safe(() => doctorBranches(ws, { protectedIds: protectedBranchIds(st) }), "branches");
     log(r.ok ? "info" : "warn", "doctor: branches", { ws, ...r });
@@ -328,7 +389,7 @@ export function runDoctor(cfg: Pick<PilotConfig, "repo">, workspaces: string[], 
   });
 
   log("info", "doctor pass complete", {
-    ok: refsResults.every(Boolean) && stateResult.ok && backlog.ok && branchResults.every(Boolean),
+    ok: refsResults.every(Boolean) && stateResult.ok && backlog.ok && tierB.ok && branchResults.every(Boolean),
   });
 }
 
@@ -340,7 +401,7 @@ function safe(fn: () => DoctorResult, what: string): DoctorResult {
   }
 }
 
-// ── CLI: tsx apps/pilot/src/doctor.ts <refs|attempts|backlog|branches|state|all> ─
+// ── CLI: tsx apps/pilot/src/doctor.ts <refs|attempts|backlog|branches|state|tierb|all> ─
 
 function main() {
   const cfg = loadConfig();
@@ -377,11 +438,21 @@ function main() {
       ok = r.ok;
       break;
     }
+    case "tierb": {
+      const r = safe(
+        () =>
+          doctorTierB(cfg.models, (cmd2) => exec(cmd2, { cwd: cfg.repo, allowFail: true, timeoutMin: 1 })),
+        "tierb",
+      );
+      log(r.ok ? "info" : "warn", "doctor: tierB", { repo: cfg.repo, ...r });
+      ok = r.ok;
+      break;
+    }
     case "all":
       runDoctor(cfg, [cfg.workspace]);
       break;
     default:
-      console.error(`usage: tsx apps/pilot/src/doctor.ts <refs|attempts --clear [id]|backlog|branches|state|all>`);
+      console.error(`usage: tsx apps/pilot/src/doctor.ts <refs|attempts --clear [id]|backlog|branches|state|tierb|all>`);
       process.exitCode = 1;
       return;
   }

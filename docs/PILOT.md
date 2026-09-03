@@ -204,6 +204,18 @@ mergeadas pelo workflow sem intervenção humana.
    claro (`disk low: Xgb free (need 5.0gb) — deploy aborted before npm ci/build`),
    evento `disk-guard` no feed e `notifySupervisor` em vez de falhar depois com
    um `git index.lock` críptico. Sonda indisponível = fail-open (não bloqueia).
+0d. **Guard de árvore suja (P2-114)**: entre o guard de disco e o primeiro
+   `git reset --hard`, um `git status --porcelain --untracked-files=no` no
+   checkout de produção (que também é o worktree humano do operador). Com
+   modificações rastreadas o deploy aborta ANTES do reset — detail
+   (`prod checkout dirty: N tracked file(s) modified (...) — deploy aborted
+   before reset`), evento `dirty-guard` no feed e notify pro supervisor; nada
+   é resetado e o SHA **não** vai pra quarentena (sem culpa — o self-heal de
+   pending deploy tenta de novo no próximo ciclo idle, até `maxDeploysPerDay`,
+   cada vez com notify). Sonda de status indisponível = **fail-closed** (estado
+   desconhecido não é seguro de resetar — propositalmente diferente do guard de
+   disco). Arquivos untracked (`opencode.json`) e gitignored (`dist/`,
+   `node_modules/`) nunca bloqueiam.
 1. `git reset --hard <sha>` no repo de produção + install + `npm run build`.
    **P1-021**: o install é decidido pelo hash do `package-lock.json` persistido
    em `~/.opencode-remote/pilot/last-install.json` — lock inalterado roda o fast
@@ -655,11 +667,21 @@ e logados em `apps/pilot/src/doctor.ts`:
   são pulados);
 - **`state`** — normaliza `state.json` pro schema atual + defaults (campos
   legados, tipos lixo e arquivo corrompido viram defaults; writeJsonAtomic);
-  segunda passada seguida loga `changed: false`.
+  segunda passada seguida loga `changed: false`;
+- **`tierb`** (P2-114) — sonda o binário tier-B (`claude --version`) quando
+  `models.tierB` tem algum role configurado; binário quebrado → `ok:false`
+  (exit 1) com a cauda do erro no detail. Sem tier-B configurado a sonda é
+  pulada (máquina tier-A-only fica verde).
 
 O boot do pilot roda o pass completo (refs/state/backlog/branches em cada slot,
 log `doctor: <cmd>` no JSONL) — falha do doctor nunca impede o pipeline de subir.
-Uso manual:
+Desde o P2-114 o pass também roda a sonda `tierb`: binário vermelho loga
+`doctor: tierB` em warn, emite o evento `tierB-binary` (`ok:false`) no feed e
+notifica o supervisor — sem nunca bloquear o boot. Em runtime, falhas de spawn
+do `claude` contínuas também alertam sozinhas: a cada **3 falhas consecutivas**
+(`tierB-spawn-broken` no log + evento `tierB-spawn` no feed + notify) — a
+sequência zera em qualquer resultado não-spawn, e o contador é de memória (o
+boot é coberto pela sonda do doctor). Uso manual:
 
 ```sh
 npx tsx apps/pilot/src/doctor.ts all                # pass completo
@@ -668,6 +690,7 @@ npx tsx apps/pilot/src/doctor.ts attempts --clear P1-030
 npx tsx apps/pilot/src/doctor.ts backlog            # exit 1 se inválido
 npx tsx apps/pilot/src/doctor.ts branches
 npx tsx apps/pilot/src/doctor.ts state
+npx tsx apps/pilot/src/doctor.ts tierb            # sonda o binário claude tier-B
 ```
 
 Cobertura: um bloco por subcomando em `scripts/unit.test.ts` (sequência exata de
