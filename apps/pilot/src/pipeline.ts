@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, dirname, relative, sep } from "node:path";
 import { homedir } from "node:os";
-import { agentStream, cachedExec, exec, runAgent, runAgentForRole, type AgentIds, type RerunResults } from "./runner";
+import { agentStream, cachedExec, exec, runAgent, runAgentForRole, runStepWithRetry, rerunKey, type AgentIds, type RerunResults } from "./runner";
 import { nowLocalISO } from "./log";
 import { markDone, type Task } from "./backlog";
 import { landMetaCommit, metaIo } from "./metapush";
@@ -1603,6 +1603,32 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       continue;
     }
 
+    // P1-101: deterministic gate BEFORE the reviewers — evidence, battery and
+    // invariants run on the builder's branch head first, so a red gate comes
+    // back as a finding in THIS attempt (P2-099 failure mode: the old order
+    // spent reviewer tokens and then killed the attempt at the gate).
+    const gateSha = headSha(ws);
+    emit("phase", { task: t.id, phase: "gatekeeper" });
+    const gate = deterministicGate(ws, t, build.output, startedAtMs, rerunResults, nameOnly);
+    for (const step of gate.flaky) {
+      emit("phase", { task: t.id, phase: "gate-flaky", ok: true, detail: step });
+      console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "gate-flaky", data: { task: t.id, round, step } }));
+    }
+    emit("phase", { task: t.id, phase: "gatekeeper-done", ok: gate.ok, detail: gate.ok ? "green" : gate.step });
+    if (!gate.ok) {
+      // a red gate is a builder finding, not an attempt killer: append it to
+      // the round's findings (review findings from a previous round coexist —
+      // the gate block comes first in the fix order) and let the builder fix
+      // it in the next round. Only the LAST round turns it terminal.
+      findings = `${findings}\n${gateFindingBlock(gate.step, gate.tail)}`;
+      if (round < cfg.maxReviewRounds) {
+        writeGateFailCarry(t.id, gate.step, gate.tail);
+        continue;
+      }
+      recordGateFail(state, t.id, gate.step, gate.tail);
+      return { ok: false, detail: `gatekeeper rejected at step ${gate.step}: ${gate.tail.slice(-300)}`, ...roundMeta() };
+    }
+
     // two adversarial reviewers in parallel, isolated contexts
     emit("phase", { task: t.id, phase: "reviewers" });
     console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "reviewers start", data: { task: t.id, round } }));
@@ -1702,12 +1728,22 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
     }
     emit("phase", { task: t.id, phase: "reviewers-done", ok: gateSecOk && gateQualOk });
     if (gateSecOk && gateQualOk) {
-      emit("phase", { task: t.id, phase: "gatekeeper" });
+      // P1-101: the reviewers approved the gate-green HEAD — anything that
+      // moved HEAD or dirtied tracked files since voids the approval
+      // (fail-closed: reviewers/agents must never edit code post-gate). The
+      // pipeline's own untracked plumbing (opencode.json sandbox config, …)
+      // does not count as tampering, tracked modifications do.
+      const headMoved = headSha(ws) !== gateSha;
+      const dirty = exec("git status --porcelain --untracked-files=no", { cwd: ws, allowFail: true }).output.trim();
+      if (headMoved || dirty) {
+        recordGateFail(state, t.id, "tamper", `HEAD moved since the gate: ${headMoved}; tracked worktree dirty: ${Boolean(dirty)}`);
+        return { ok: false, detail: "worktree changed after the gate ran — reviews void (tamper)", ...roundMeta() };
+      }
       // P1-099: gates run in parallel across slots — the battery is hermetic
       // (ephemeral ports since P1-081, unique OCR_DESKTOP_SESSION per run) and
       // concurrent main pushes are safe: the PR path is serialized server-side
       // by GitHub, the local fallback re-fetches and retries on non-fast-forward.
-      merged = await gatekeeper(cfg, ws, t, state, build.output, startedAtMs, rerunResults);
+      merged = await mergeTask(cfg, ws, t, state, rerunResults);
       emit("phase", { task: t.id, phase: "merge", ok: merged });
       if (merged) {
         // gate passed — the per-task carryover files have no reason to linger
@@ -1730,7 +1766,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
           );
         }
       }
-      if (!merged) return { ok: false, detail: "gatekeeper rejected: eval battery or invariants failed", ...roundMeta() };
+      if (!merged) return { ok: false, detail: "gate green but the PR merge failed — the next cycle retries the PR", ...roundMeta() };
     } else {
       // Only verified findings reach the builder prompt (P2-015). P1-059 round
       // 2: on escalation rejection the arbiter ADDS its verified findings to
@@ -1939,6 +1975,17 @@ function recordGateFail(state: PilotState, taskId: string, step: string, tail: s
   );
   // P2-045: structured step signal on the events feed — the dashboard failure
   // breakdown aggregates these instead of the operator grepping pilot.log
+  writeGateFailCarry(taskId, step, tail);
+  state.failures++;
+}
+
+/**
+ * P1-101: the events signal + carryover write extracted from recordGateFail,
+ * WITHOUT the failure counter — a red gate between builder rounds is a finding
+ * for the builder to fix in the same attempt (no attempt burned), so the
+ * terminal failure count must only grow when the gate actually kills one.
+ */
+function writeGateFailCarry(taskId: string, step: string, tail: string) {
   emit("phase", { task: taskId, phase: "gate-fail", ok: false, detail: step });
   const failFile = gateFailFile(taskId);
   if (failFile) {
@@ -1950,22 +1997,49 @@ function recordGateFail(state: PilotState, taskId: string, step: string, tail: s
       );
     } catch {}
   }
-  state.failures++;
 }
 
-/** Deterministic gate: evidence, typecheck, build, test battery, invariants. No judgement. */
-async function gatekeeper(
-  cfg: PilotConfig,
+/**
+ * P1-101: the finding block the builder receives when the deterministic gate
+ * goes red between rounds — it instructs the fix-first order and carries the
+ * failing step's output tail (pure; pinned by the unit battery).
+ */
+export function gateFindingBlock(step: string, tail: string): string {
+  return `[deterministic gate failed at step "${step}" — fix this FIRST and re-run the EVIDENCE commands]\n${tail.slice(-1500)}`;
+}
+
+/** P1-101: result of the deterministic gate (no judgement, no side effects). */
+export type GateResult =
+  | { ok: true; flaky: string[] }
+  | { ok: false; step: string; tail: string; flaky: string[] };
+
+/**
+ * Deterministic gate: evidence, typecheck, build, test battery, invariants. No
+ * judgement. P1-101: extracted from the old gatekeeper() so runPipeline runs it
+ * BEFORE the LLM reviewers — a red gate returns to the builder as a finding in
+ * the same attempt instead of burning reviewer tokens and killing the attempt.
+ * Pure: no state mutation, no events, no carryover writes — the caller decides
+ * what a red step means.
+ *
+ * Every step gets one flaky retry (runStepWithRetry): a single red execution of
+ * an otherwise green step no longer rejects the merge — it is classified as
+ * `flaky` and reported to the caller via the `gate-flaky` event. The evidence
+ * re-run retries once ONLY when a cited command itself failed (transient red);
+ * a pasted-output divergence is fabrication territory and never retries.
+ */
+export function deterministicGate(
   ws: string,
   t: Task,
-  state: PilotState,
   builderOutput: string,
   startedAtMs: number,
   // P2-040: the round's shared re-run cache — the preflight typecheck already
   // executed in this workspace, so the evidence re-run and the step battery
   // below reuse it (1 execution per round, not 3) while holding no lock.
   rerunResults: RerunResults,
-): Promise<boolean> {
+  nameOnly: string,
+  run?: (cmd: string, cwd: string) => { ok: boolean; output: string },
+): GateResult {
+  const flaky: string[] = [];
   const steps: Array<[string, string]> = [
     ["typecheck", "npm run typecheck --silent"],
     ["build", "npm run build --silent"],
@@ -1983,11 +2057,10 @@ async function gatekeeper(
   // console capture + #root mounted content — so a white window (e.g. asset
   // 404 on file://) is rejected. Most white-window regressions come from
   // apps/web/-only changes, hence the second trigger. Fail closed: when the
-  // diff cannot be computed, run the smoke anyway instead of skipping it.
-  const diff = exec(`git diff --name-only main...pilot/${t.id}`, { cwd: ws, allowFail: true });
+  // diff cannot be computed (empty/invalid nameOnly), run the smoke anyway.
   const renderTouched =
-    !diff.ok ||
-    diff.output.split("\n").some((l) => {
+    !nameOnly.trim() ||
+    nameOnly.split("\n").some((l) => {
       const p = l.trim();
       return p.startsWith("apps/desktop/") || p.startsWith("apps/web/");
     });
@@ -2004,38 +2077,60 @@ async function gatekeeper(
   // Round 2: shots are demanded under the SAME predicate the prompt used
   // (needsUiEvidence) — a non-UI-tagged task whose diff touches apps/web or
   // apps/desktop is instructed to bring shots and the gate enforces it.
-  // Round 2: re-run results are cached — the typecheck/build/unit steps below
-  // reuse them instead of re-executing the same commands (P1-006). P2-040: the
-  // cache is the round's shared map, so a command the preflight already ran in
-  // this workspace is not re-executed here either.
   const requireShots = needsUiEvidence(t.area, renderTouched);
   const evidence = verifyEvidence(ws, builderOutput, requireShots, startedAtMs, (cmd, cwd) =>
-    cachedExec(rerunResults, cmd, cwd, { timeoutMin: 20 }),
+    cachedExec(rerunResults, cmd, cwd, { timeoutMin: 20 }, run),
   );
   if (!evidence.ok) {
-    recordGateFail(state, t.id, "evidence", evidence.detail);
-    return false;
+    // P1-101 retry-once: a cited command that failed on re-run gets exactly one
+    // second chance (flaky npm/vite/Electron). Divergence and fabrication
+    // details never retry — the anti-fabrication gate (P2-009) stays intact.
+    if (evidence.detail.startsWith("cited command failed on re-run:")) {
+      for (const c of parseEvidenceBlock(builderOutput)?.commands ?? []) {
+        const key = rerunKey(c.cmd, ws);
+        const cached = rerunResults.get(key);
+        if (cached && !cached.ok) rerunResults.delete(key);
+      }
+      const retried = verifyEvidence(ws, builderOutput, requireShots, startedAtMs, (cmd, cwd) =>
+        cachedExec(rerunResults, cmd, cwd, { timeoutMin: 20 }, run),
+      );
+      if (retried.ok) flaky.push("evidence");
+      else return { ok: false, step: "evidence", tail: retried.detail, flaky };
+    } else {
+      return { ok: false, step: "evidence", tail: evidence.detail, flaky };
+    }
   }
   for (const [name, cmd] of steps) {
     // evidence already re-executed this exact command in this workspace — keep
     // its result; the step list uses the same canonical command strings
-    const r = cachedExec(rerunResults, cmd, ws, { timeoutMin: 20 });
-    if (!r.ok) {
-      recordGateFail(state, t.id, name, r.output);
-      return false;
-    }
+    const r = runStepWithRetry(rerunResults, cmd, ws, { timeoutMin: 20 }, run);
+    if (!r.ok) return { ok: false, step: name, tail: r.output, flaky };
+    if (r.flaky) flaky.push(name);
   }
   // P1-044 (a): a task that edits the pipeline's own code must leave the golden
   // corpus green — the gate's own calibration cannot regress through a merge.
   // Unknown diff → fail-closed (the corpus check is cheap and deterministic).
-  const pilotInfraTouched = !diff.ok || touchedPilotInfraFromDiff(diff.output);
+  const pilotInfraTouched = !nameOnly.trim() || touchedPilotInfraFromDiff(nameOnly);
   if (pilotInfraTouched) {
     const corpus = corpusGateDetail();
-    if (corpus) {
-      recordGateFail(state, t.id, "corpus", corpus);
-      return false;
-    }
+    if (corpus) return { ok: false, step: "corpus", tail: corpus, flaky };
   }
+  return { ok: true, flaky };
+}
+
+/**
+ * P1-101: merge half of the old gatekeeper() — push the branch, open + merge
+ * the audit-trail PR, record the verified merge sha and land the mark-done
+ * meta commit. Runs only after the deterministic gate AND the reviewers are
+ * green on the exact HEAD the gate certified (tamper-checked by the caller).
+ */
+async function mergeTask(
+  cfg: PilotConfig,
+  ws: string,
+  t: Task,
+  state: PilotState,
+  rerunResults: RerunResults,
+): Promise<boolean> {
   // merge via GitHub PR for audit trail
   const title = `pilot(${t.id}): ${t.title}`;
   // P2-058 (round 2): HEAD before the merge attempt — the post-merge record
