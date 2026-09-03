@@ -582,11 +582,13 @@ export function recordContextPressure(
  * P1-007 SCRIBE role: distill ≤3 reusable lessons from a just-merged diff.
  * The agent only OUTPUTS lesson lines — the runner validates, dedupes, appends
  * to docs/EXPERIENCE.md and commits, so an LLM never edits the file directly.
+ * P1-075: the scribe sees ONLY the diff — reviewer findings made it distill
+ * harness/process lessons instead of product-code ones.
  */
-export function scribePrompt(t: Task, diff: string, findings: string): string {
+export function scribePrompt(t: Task, diff: string): string {
   // P1-077 cache-aware assembly: stable role + rules + LESSONS contract first
-  // (the format line uses a generic <TASK-ID> placeholder), variable task/
-  // findings tail and the DIFF last.
+  // (the format line uses a generic <TASK-ID> placeholder), variable task tail
+  // and the DIFF last.
   return `You are the SCRIBE agent of the opencode-remote autonomous pipeline.
 The task at the end of this prompt was just merged after passing adversarial reviews and the deterministic gatekeeper.
 Your job: distill reusable engineering lessons for future agents.
@@ -605,7 +607,6 @@ SCRIBE:DONE
 
 TASK (${t.id}) [${t.priority}]: ${t.title}
 spec: ${t.spec || "(none)"}
-${findings ? `\nREVIEWER FINDINGS (already addressed by the merge):\n${findings}\n` : ""}
 DIFF:
 \`\`\`diff
 ${diff.slice(0, 30_000)}
@@ -660,7 +661,6 @@ async function runScribe(
   ws: string,
   t: Task,
   diff: string,
-  findings: string,
   trackSession?: (id: string | undefined) => string | undefined,
 ): Promise<void> {
   emit("phase", { task: t.id, phase: "scribe" });
@@ -668,7 +668,7 @@ async function runScribe(
   // come back as TEXT and the runner validates + commits them. The next
   // pipeline start rewrites the full sandbox config (writeSandboxConfig).
   writeAuxSandboxConfig(ws);
-  const out = await runAgent(scribePrompt(t, diff, findings), {
+  const out = await runAgent(scribePrompt(t, diff), {
     cwd: ws,
     timeoutMin: 10,
     label: `scribe-${t.id}`,
@@ -819,6 +819,11 @@ export interface PipelineResult {
    * (runner preflight/spawn, builder timeout without output) — runSlot's
    * classifier reads this instead of scanning the detail text. */
   infra?: InfraFailureKind;
+  /** P1-075: IER lessons injected into the builder prompt (peak across
+   * rounds; 0/absent = the "without lessons" instrumentation cohort). */
+  lessonsInjected?: number;
+  /** P1-075: builder rounds executed by the pipeline. */
+  rounds?: number;
 }
 
 /** Task IDs come from BACKLOG.md; only this charset ever reaches a shell command. */
@@ -1310,6 +1315,10 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
   } catch {}
   let merged = false;
   let lastStream = 0;
+  // P1-075: builder rounds executed + IER lessons injected (peak across
+  // rounds) — folded into state.lessonImpact by the caller.
+  const meta = { rounds: 0, lessons: 0 };
+  const roundMeta = () => ({ rounds: meta.rounds, lessonsInjected: meta.lessons });
   const stream = (chunk: string) => {
     touchHeartbeat();
     const now = Date.now();
@@ -1411,6 +1420,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
     }
   }
   for (let round = 1; round <= cfg.maxReviewRounds && !merged; round++) {
+    meta.rounds = round;
     emit("phase", { task: t.id, phase: "builder", detail: `round ${round}` });
     console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "builder round", data: { task: t.id, round } }));
     // P1-060 checkpoint review: for size-L tasks record the branch head at
@@ -1420,6 +1430,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
     if (isLong) saveCheckpoint(t.id, headSha(ws), round);
     // P1-007: top-5 lessons keyword-matched against this task, most recent first
     const lessons = pickRelevantLessons(readExperienceFile(ws), t.title, t.spec);
+    meta.lessons = Math.max(meta.lessons, lessons.length);
     // P1-079: context-pressure checkpoint — the builder session carries across
     // rounds (sessionId resume); past the critical threshold the work state is
     // recapped and the session is opened FRESH for this round. Overflowed
@@ -1505,9 +1516,9 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
         // A crash round whose output merely cites infra words (test failures,
         // reviewer findings) stays merit: build.infra is undefined then.
         if (build.timedOut && !build.output.trim()) {
-          return { ok: false, detail: `[infra] builder timed out without output (round ${round})`, infra: "timeout" };
+          return { ok: false, detail: `[infra] builder timed out without output (round ${round})`, infra: "timeout", ...roundMeta() };
         }
-        return { ok: false, detail: `${crash.detail}: ${build.output.slice(-300)}`, infra: build.infra };
+        return { ok: false, detail: `${crash.detail}: ${build.output.slice(-300)}`, infra: build.infra, ...roundMeta() };
       }
       continue;
     }
@@ -1548,7 +1559,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       // Refresh origin/main first so the merge check below isn't fooled by a
       // stale local ref (transient network failure → best-effort check).
       exec("git fetch -q origin main", { cwd: ws, allowFail: true });
-      if (!taskMergedIn(ws, t.id)) return { ok: false, detail: "builder produced an empty diff" };
+      if (!taskMergedIn(ws, t.id)) return { ok: false, detail: "builder produced an empty diff", ...roundMeta() };
       emit("phase", { task: t.id, phase: "already-merged" });
       console.log(
         JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "empty diff but task already merged, self-healing", data: { task: t.id } }),
@@ -1582,6 +1593,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
           : push.ok
             ? `task ${t.id} already merged on main — marked done (empty-diff self-heal)`
             : `task ${t.id} already merged but BACKLOG update failed`,
+        ...roundMeta(),
       };
     }
 
@@ -1720,14 +1732,14 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
         // latency must not block other slots) before the pipeline returns
         // (the next pipeline resets this worktree, which would race the agent).
         try {
-          await runScribe(ws, t, diff, findings, trackSession);
+          await runScribe(ws, t, diff, trackSession);
         } catch (err) {
           console.log(
             JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "scribe crashed", data: { task: t.id, err: String(err).slice(0, 200) } }),
           );
         }
       }
-      if (!merged) return { ok: false, detail: "gatekeeper rejected: eval battery or invariants failed" };
+      if (!merged) return { ok: false, detail: "gatekeeper rejected: eval battery or invariants failed", ...roundMeta() };
     } else {
       // Only verified findings reach the builder prompt (P2-015). P1-059 round
       // 2: on escalation rejection the arbiter ADDS its verified findings to
@@ -1749,7 +1761,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
         // burning out at review after an old gate failure would otherwise be
         // blocked with a stale step/tail in its failure lesson
         recordGateFail(state, t.id, "review", findings);
-        return { ok: false, detail: `max review rounds reached — findings: ${findings.slice(0, 400)}` };
+        return { ok: false, detail: `max review rounds reached — findings: ${findings.slice(0, 400)}`, ...roundMeta() };
       }
     }
   }
@@ -1758,6 +1770,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
     detail: `task ${t.id} merged`,
     sha: headSha(ws),
     touchedUi,
+    ...roundMeta(),
   };
 }
 

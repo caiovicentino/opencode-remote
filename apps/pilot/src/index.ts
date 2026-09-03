@@ -29,7 +29,7 @@ import {
   resultInfraKind,
 } from "./audit";
 import { apiHealthy } from "./runner";
-import { maintainExperienceFile, pickRelevantLessons, readExperienceFile } from "./experience";
+import { maintainExperienceWorkspace, pickRelevantLessons, readExperienceFile } from "./experience";
 import {
   ensureSingleton,
   frozen,
@@ -43,6 +43,7 @@ import {
   type PilotState,
 } from "./state";
 import { applySessionCosts, foldSlotCache, querySessionTokenRows } from "./costs";
+import { recordLessonImpact } from "./metrics";
 import { runDoctor } from "./doctor";
 
 let deployBusy = false;
@@ -259,8 +260,15 @@ async function main() {
     // nightly redteam + weekly maintenance — best effort, slots idle. P1-095:
     // the pass fires at the first >= 2h idle gap of the day instead of the old
     // unreachable hour===3 gate; a busy-through-the-window day is recorded.
-    if (running.size === 0) await maybeNightly(slotCfg.get(1)!, state);
-    else {
+    // P1-075: a crash inside the pass must never take the loop down — it is
+    // logged ("nightly pass crashed") and the cycle continues.
+    if (running.size === 0) {
+      try {
+        await maybeNightly(slotCfg.get(1)!, state);
+      } catch (err) {
+        log("warn", "nightly pass crashed", { err: String(err).slice(0, 200) });
+      }
+    } else {
       const today = nowLocalISO().slice(0, 10);
       const reason = nightlySkipDue(state, today, new Date().getHours(), true);
       if (reason) {
@@ -415,6 +423,17 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
     } catch (err) {
       log("warn", "task cost reconciliation failed", { task: task.id, err: String(err).slice(0, 200) });
     }
+    // P1-075: lesson-injection instrumentation — fold this outcome into the
+    // with/without cohorts (tokens from the reconciliation above, 0 when it
+    // failed) so the operator can measure whether lessons actually help.
+    const impact = {
+      lessons: result.lessonsInjected ?? 0,
+      rounds: result.rounds ?? 0,
+      ok: result.ok,
+      tokens: state.taskCosts?.[task.id] ?? 0,
+    };
+    recordLessonImpact(state, impact);
+    log("info", "lesson impact", { task: task.id, ...impact });
     state.tasks++;
     let blockedAttempts: number | null = null;
     if (result.ok) {
@@ -562,6 +581,28 @@ async function maybeNightly(cfg: PilotConfig, st: PilotState) {
     log("warn", "nightly workspace sync failed — nightly passes skipped");
   }
   writeSandboxConfig(cfg.workspace); // headless runs abort without sandbox perms
+  // P1-075 experience-memory maintenance — runs BEFORE the redteam agent and
+  // under its OWN guard (st.expMaintLast, stamped inside the flow): the
+  // deterministic dedupe+prune+archive can no longer be lost when the agent
+  // fails or the process exits mid-run. Best-effort: never throws.
+  if (wsReady) {
+    try {
+      maintainExperienceWorkspace(
+        cfg.workspace,
+        st,
+        today,
+        {
+          exec: (cmd) => exec(cmd, { cwd: cfg.workspace, allowFail: true }),
+          appendLesson: appendFailureLesson,
+          lessonsFile: defaultLessonsFile(),
+        },
+        log,
+      );
+      saveState(st);
+    } catch (err) {
+      log("warn", "experience maintenance failed", { err: String(err).slice(0, 200) });
+    }
+  }
   // P1-059: weekly failure-forensic taxonomy (tier B when configured) —
   // best-effort, never blocks the loop
   if (wsReady) await runForensic(cfg, st);
@@ -569,8 +610,6 @@ async function maybeNightly(cfg: PilotConfig, st: PilotState) {
   // day (own guard in state.explorerLast), budget-capped for predictable cost
   if (wsReady) await runExplorer(cfg, st);
   if (st.redteamLast === today) return;
-  st.redteamLast = today;
-  saveState(st);
   log("info", "nightly redteam starting");
   // P1-057: the red team reasons about attack surfaces but gets NO shell and
   // NO write access — findings come back as text and the runner lands them.
@@ -590,30 +629,12 @@ Output: either "REDTEAM: CLEAN" if you found nothing actionable, or
     { cwd: cfg.workspace, timeoutMin: 30, label: "redteam", onStdout: agentStream("redteam") },
   );
   writeSandboxConfig(cfg.workspace);
-  // P1-007 experience-memory maintenance: with slots running concurrently the
-  // SCRIBE appends can drift apart — the nightly pass is the only writer that
-  // dedupes + prunes docs/EXPERIENCE.md once it grows past EXPERIENCE_CAP.
-  if (wsReady) {
-    try {
-      const maint = maintainExperienceFile(cfg.workspace);
-      if (maint.changed) {
-        const commit = exec(
-          `git add docs/EXPERIENCE.md && git commit -qm "pilot(redteam): experience maintenance (-${maint.removed})"`,
-          { cwd: cfg.workspace, allowFail: true },
-        );
-        // P1-057 push guard: the only file this flow may ever push
-        const names = exec("git diff --name-only origin/main...HEAD", { cwd: cfg.workspace, allowFail: true });
-        if (!mayPush(names.output, "docs/EXPERIENCE.md")) {
-          log("warn", "aux push refused — experience diff not limited to docs/EXPERIENCE.md");
-        } else {
-          exec("git push -q origin main", { cwd: cfg.workspace, allowFail: true });
-        }
-        log("info", "experience maintained", { removed: maint.removed, lessons: maint.lessons, committed: commit.ok });
-      }
-    } catch (err) {
-      log("warn", "experience maintenance failed", { err: String(err).slice(0, 200) });
-    }
-  }
+  // P1-075: stamp only AFTER the agent completes — the old pre-agent stamp
+  // turned any process exit/reload during the 30-min window into a lost day
+  // (no "experience maintained"/finding lines ever after it).
+  st.redteamLast = today;
+  saveState(st);
+  log("info", r.ok ? "nightly redteam finished" : "nightly redteam failed", { ok: r.ok, timedOut: r.timedOut });
   if (r.output.includes("REDTEAM: FINDING")) {
     const id = nextId(cfg.workspace, "RT");
     const summary = r.output.split("REDTEAM: FINDING")[1]?.slice(0, 600) ?? "finding";

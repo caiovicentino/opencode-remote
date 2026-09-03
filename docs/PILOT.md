@@ -32,7 +32,7 @@ BACKLOG.md ──> BUILDER ────┬──> SECURITY REVIEWER ─┬──
 | `builder` | implementa a task em branch `pilot/<id>`, commita | 45 min |
 | `security reviewer` | foco: crypto, auth, injection, secrets | 20 min |
 | `quality reviewer` | foco: regressão, UX, docs, testes | 20 min |
-| `scribe` | após o merge: destila até 3 lições do diff + findings → `docs/EXPERIENCE.md` | 10 min |
+| `scribe` | após o merge: destila até 3 lições do diff (P1-075: só o diff — findings de review não entram no prompt) → `docs/EXPERIENCE.md` | 10 min |
 | `strategist` | quando a fila tem <2 tasks: lê código/memória/métricas e propõe as próximas tasks (o runner valida, commita e empurra com guard) | 25 min |
 | `red team` (1x/dia, janela >= 2h ocioso) | tenta quebrar segurança/robustez; achados viram task P0 | 30 min |
 | gatekeeper | **não é LLM** — roda scripts, decide por exit codes | — |
@@ -877,8 +877,18 @@ seção `## Lessons`. Três peças:
    ocioso do dia), além da caça a
    buracos de segurança, o pilot **deduplica e poda** `docs/EXPERIENCE.md`
    quando ele passa de **60 lições** — dedupe por chave normalizada (case/
-   pontuação/provenance-insensitive, vence a ocorrência mais recente) e poda
-   para as 60 mais recentes, com commit+push `pilot(redteam): experience maintenance`.
+   pontuação/provenance-insensitive, vence a ocorrência mais recente) **e, desde
+   P1-075, dedupe semântico** (Jaccard >= 0.6 sobre os tokens da lição, só para
+   pares com >= 5 tokens) — e poda para as 60 mais recentes, com commit+push
+   `pilot(redteam): experience maintenance`. A manutenção roda **antes** do
+   agent de redteam, sob guard própria (`expMaintLast`): falha/crash do agent
+   não perde mais o dia. Na poda, lições de **harness** (vocabulário do
+   pipeline: pilot/pipeline/builder/reviewer/scribe/gate/backlog/planner/slot…)
+   cujo `(fonte: ID)` já está em `## Done` são **arquivadas** — viram uma linha
+   `step:"archived"` em `~/.opencode-remote/pilot/lessons.jsonl` (fora de todo
+   worktree) em vez de serem apagadas; lições de código de produto têm
+   prioridade e nunca são arquivadas (acima do cap, cai primeiro a harness, e
+   dentro da classe a mais antiga).
 
 A memória cresce a cada merge (critério de aceite) e os prompts provam a injeção
 nos testes de `scripts/unit.test.ts` (parse, match, append-dedupe, cap e block do
@@ -900,7 +910,12 @@ duplicam entradas, e `findings` nunca repete o conteúdo de `tail` no caminho de
 re-bloqueio (que resume pelo step). O prompt do **strategist** recebe as **10
 lições de falha mais recentes** num bloco `FAILURE LESSONS` na hora de
 criar/refinar tasks, para não re-propor padrões que já queimaram o orçamento de
-tentativas.
+tentativas. P1-075: lições de experiência **arquivadas** pela manutenção
+noturna (`step: "archived"`) também pousam nesse jsonl, mas prefill no máximo
+**3 dos 10 slots** do bloco — falhas reais de task bloqueada mantêm o resto.
+O pipeline também instrumenta o efeito da injeção de lições: cada resultado de
+pipeline é dobrado em `state.lessonImpact` (coortes *with/without lessons*:
+merges, rounds totais e tokens totais) e logado como `lesson impact`.
 
 ## RESEARCHER role (daily frontier scan)
 
