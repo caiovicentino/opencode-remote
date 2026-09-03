@@ -8,7 +8,7 @@
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { listProblems, resolveBundleDir } from "../apps/desktop/scripts/dist-smoke.mjs";
+import { findDmg, listProblems, resolveBundleDir } from "../apps/desktop/scripts/dist-smoke.mjs";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -125,6 +125,17 @@ try {
   rmSync(join(distRoot, "win-unpacked"), { recursive: true });
   check("resolve: null when nothing matches", resolveBundleDir(distRoot) === null);
   check("resolve: null when dist root absent", resolveBundleDir(join(root, "ghost")) === null);
+
+  // --- P2-098: findDmg — the mac installer is the release artifact -------------
+  const dmgRoot = join(root, "dmgroot");
+  mkdirSync(dmgRoot, { recursive: true });
+  check("findDmg: no dmg in a fresh dist root", findDmg(dmgRoot) === null);
+  writeFileSync(join(dmgRoot, "OpenCode Remote-0.2.0.dmg"), "dmg");
+  check("findDmg: finds the dmg file", findDmg(dmgRoot) === join(dmgRoot, "OpenCode Remote-0.2.0.dmg"));
+  mkdirSync(join(dmgRoot, "aaa.dmg"), { recursive: true });
+  rmSync(join(dmgRoot, "OpenCode Remote-0.2.0.dmg"));
+  check("findDmg: directory named .dmg is not an artifact", findDmg(dmgRoot) === null);
+  check("findDmg: absent dist root → null", findDmg(join(root, "ghost")) === null);
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

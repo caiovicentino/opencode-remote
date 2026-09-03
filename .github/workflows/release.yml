@@ -22,3 +22,77 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" opencode-remote-*.tar.gz --generate-notes --title "$GITHUB_REF_NAME"
+
+      # P2-098 (round 3): the formula must never carry a checksum that was not
+      # computed from the published artifact — pin url/version/sha256 to the
+      # release that was just created and push to main. Direct pushes to main
+      # never deploy (P2-058), so this is inert for the runtime; fail-open:
+      # a refused push must not fail the release itself.
+      - name: Pin the Homebrew formula checksum to the published asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          SHA=$(shasum -a 256 "opencode-remote-${VERSION}.tar.gz" | awk '{print $1}')
+          URL_RE='https://github\.com/caiovicentino/opencode-remote/releases/download/v[0-9.]+/opencode-remote-v[0-9.]+\.tar\.gz'
+          NEW_URL="https://github.com/caiovicentino/opencode-remote/releases/download/${VERSION}/opencode-remote-${VERSION}.tar.gz"
+          sed -i -E \
+            -e "s|$URL_RE|$NEW_URL|" \
+            -e "s|version \"[0-9]+.[0-9]+.[0-9]+\"|version \"${VERSION#v}\"|" \
+            -e 's|sha256 "[a-f0-9]{64}"|sha256 "'"${SHA}"'"|' \
+            Formula/opencode-remote.rb
+          git config user.name "ocr-release-bot"
+          git config user.email "noreply@users.noreply.github.com"
+          git add Formula/opencode-remote.rb
+          if git diff --cached --quiet; then
+            echo "Formula already pinned to ${VERSION} — nothing to commit"
+          else
+            git commit -m "pilot(release): pin Formula checksum for ${VERSION}"
+            git push origin HEAD:main || echo "::warning::could not push the Formula pin — patch it manually from this run's log"
+          fi
+
+  # P2-098: third-party installability — a release ships a real macOS installer
+  # (DMG), not just the source tarball. When the APPLE_ID /
+  # APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID secrets are configured the DMG
+  # is notarized (electron-builder `-c.mac.notarize=true`); without them the
+  # build stays ad-hoc signed and users right-click → Open once (README).
+  desktop-dmg:
+    runs-on: macos-14
+    needs: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build + package DMG (notarized when Apple credentials exist)
+        env:
+          # no codesigning identity in CI — ad-hoc signing (right-click → Open),
+          # upgraded to full notarization when the Apple secrets are configured
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          NOTARIZE=""
+          if [ -n "$APPLE_ID" ] && [ -n "$APPLE_APP_SPECIFIC_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
+            NOTARIZE="-c.mac.notarize=true"
+          else
+            echo "Apple credentials not configured — shipping ad-hoc signed DMG (skip notarization)"
+          fi
+          npm run dist --workspace @ocr/desktop -- $NOTARIZE
+
+      - name: Attach DMG + update metadata to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" \
+            apps/desktop/dist/*.dmg apps/desktop/dist/latest-mac.yml \
+            --clobber

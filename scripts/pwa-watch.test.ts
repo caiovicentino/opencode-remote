@@ -5,11 +5,12 @@
  * guard, SPA-less 404s).
  * Run: npx tsx scripts/pwa-watch.test.ts
  */
-import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { request as httpsRequest } from "node:https";
 import {
   DEFAULT_PWA_HEALTHZ_URL,
   pwaOriginAlert,
@@ -128,6 +129,68 @@ await new Promise((r) => {
   child.on("exit", () => r(null));
   setTimeout(() => r(null), 3_000).unref();
 });
+
+// --- 5. P2-098: LAN mode — the origin serves TLS when PWA_TLS_CERT/KEY set ----
+// Uses the real server with a throwaway self-signed cert (openssl is present
+// on macOS dev machines and CI runners); no openssl → the beat is skipped.
+const oc = spawnSync("openssl", ["version"]);
+if (oc.status === 0) {
+  const tlsDir = join(plistDir, "tls");
+  mkdirSync(tlsDir, { recursive: true });
+  const cert = join(tlsDir, "cert.pem");
+  const key = join(tlsDir, "key.pem");
+  const gen = spawnSync(
+    "openssl",
+    [
+      "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+      "-keyout", key, "-out", cert, "-days", "2",
+      "-subj", "/CN=localhost",
+      "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1",
+    ],
+    { stdio: "ignore" },
+  );
+  check("tls: openssl generated the throwaway certificate", gen.status === 0 && existsSync(cert));
+  if (gen.status === 0) {
+    const tlsPort = 30_000 + Math.floor(Math.random() * 20_000);
+    const tlsChild = spawn(process.execPath, [fileURLToPath(new URL("../deploy/pwa-server.mjs", import.meta.url))], {
+      env: { ...process.env, PWA_PORT: String(tlsPort), PWA_DIST_DIR: dist, PWA_TLS_CERT: cert, PWA_TLS_KEY: key },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    tlsChild.stdout.on("data", () => {});
+    tlsChild.stderr.on("data", () => {});
+    const probe = () =>
+      new Promise<{ status: number | null; body: string }>((resolve) => {
+        const req = httpsRequest(
+          { host: "127.0.0.1", port: tlsPort, path: "/healthz", method: "GET", rejectUnauthorized: false, timeout: 8000 },
+          (res) => {
+            let data = "";
+            res.on("data", (c) => (data += c));
+            res.on("end", () => resolve({ status: res.statusCode ?? null, body: data }));
+          },
+        );
+        req.on("error", () => resolve({ status: null, body: "" }));
+        req.on("timeout", () => {
+          req.destroy();
+          resolve({ status: null, body: "" });
+        });
+        req.end();
+      });
+    // wait for the listener like the http beat above does
+    let up: { status: number | null; body: string } = { status: null, body: "" };
+    for (let i = 0; i < 50 && up.status !== 200; i++) {
+      up = await probe();
+      if (up.status !== 200) await new Promise((r) => setTimeout(r, 100));
+    }
+    check("tls: /healthz answers over https", up.status === 200 && JSON.parse(up.body).ok === true);
+    tlsChild.kill("SIGTERM");
+    await new Promise((r) => {
+      tlsChild.on("exit", () => r(null));
+      setTimeout(() => r(null), 3_000).unref();
+    });
+  }
+} else {
+  console.log("SKIP  tls beat (openssl not available)");
+}
 rmSync(plistDir, { recursive: true, force: true });
 
 console.log(failures === 0 ? "ALL OK" : `${failures} FAILURE(S)`);
