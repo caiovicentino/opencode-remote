@@ -588,7 +588,9 @@ async function maybeNightly(cfg: PilotConfig, st: PilotState) {
   // fails or the process exits mid-run. Best-effort: never throws.
   if (wsReady) {
     try {
-      maintainExperienceWorkspace(
+      // awaited so the catch below keeps covering the flow's fs/git failures
+      // and saveState persists the expMaintLast stamp written at the end
+      await maintainExperienceWorkspace(
         cfg.workspace,
         st,
         today,

@@ -5,9 +5,11 @@ import { exec } from "./runner";
  * PR, never via direct pushes to main. Every bookkeeping flow (backlog refills,
  * scribe lessons, mark-done, corpus growth, explorer findings, circuit breaker)
  * re-bases `pilot/meta` on origin/main, applies its deterministic edit, pushes
- * and arms the squash PR. A hostile deviation can therefore no longer camouflage
- * itself inside a trusted bookkeeping push: branch protection on `main` rejects
- * everything that did not travel through a PR (operator runbook in docs/PILOT.md).
+ * with a lease and arms the squash PR — success is only reported while our
+ * commit is still in the PR head. A hostile deviation can therefore no longer
+ * camouflage itself inside a trusted bookkeeping push: branch protection on
+ * `main` rejects everything that did not travel through a PR (operator runbook
+ * in docs/PILOT.md).
  */
 
 export const META_BRANCH = "pilot/meta";
@@ -112,12 +114,17 @@ async function armMetaPr(io: MetaPushIo): Promise<MetaPushResult> {
 
 /**
  * Deterministic meta landing (P1-076): fetch → re-base `pilot/meta` on
- * origin/main → apply the caller's edit → commit → push guard → force-push →
+ * origin/main → apply the caller's edit → commit → push guard → push →
  * auto-merge PR, retried up to `attempts` times because concurrent slots move
- * origin/main (and the meta branch) underneath us. The guard is re-read from
- * the actual branch diff on every attempt; a refused diff never pushes. There
- * is deliberately NO fallback to `git push origin main`: if gh is unavailable
- * the commit stays on origin/pilot/meta and the next cycle retries.
+ * origin/main (and the shared meta branch) underneath us. The push is
+ * --force-with-lease (a peer landing pushed after our fetch fails instead of
+ * being overwritten) and success is only reported when our commit is still an
+ * ancestor of origin/pilot/meta after the merge is armed — a dropped landing
+ * is retried and, at worst, honestly reported as "failed". The guard is
+ * re-read from the actual branch diff on every attempt; a refused diff never
+ * pushes. There is deliberately NO fallback to `git push origin main`: if gh
+ * is unavailable the commit stays on origin/pilot/meta and the next cycle
+ * retries.
  */
 export async function landMetaCommit(
   ws: string,
@@ -137,7 +144,14 @@ export async function landMetaCommit(
         await io.sleep(3_000);
         continue;
       }
-      const applied = spec.apply(ws);
+      let applied: MetaApplyResult;
+      try {
+        applied = spec.apply(ws);
+      } catch {
+        // the caller's edit is best-effort (fs hiccups must not crash the loop)
+        await io.sleep(3_000);
+        continue;
+      }
       if (applied.action === "abort") return "failed";
       if (applied.action === "noop") return "pushed";
       const commit = io.exec(
@@ -149,10 +163,28 @@ export async function landMetaCommit(
       }
       const names = io.exec("git diff --name-only origin/main...HEAD");
       if (!guard(names.output)) return "refused";
-      // force is required: -B rewinds the branch to main each landing, so the
-      // PR head is always exactly main + this commit
-      if (io.exec(`git push -q --force origin HEAD:${META_BRANCH}`).ok) return await armMetaPr(io);
-      await io.sleep(3_000);
+      // --force-with-lease: the rewind to main is deliberate (the PR head is
+      // always exactly main + this commit), but a peer landing that pushed
+      // after our fetch fails this push instead of being silently overwritten
+      if (!io.exec(`git push -q --force-with-lease origin HEAD:${META_BRANCH}`).ok) {
+        await io.sleep(3_000);
+        continue;
+      }
+      const armed = await armMetaPr(io);
+      if (armed !== "pushed") return armed;
+      // Round-2 review: success requires OUR commit to still be in the PR head
+      // the merge will squash — a concurrent landing that rewound the shared
+      // branch after our push would otherwise be reported as our success while
+      // our content was dropped. Re-apply on the newer head instead.
+      const pushedSha = io.exec("git rev-parse HEAD").output.trim();
+      if (pushedSha) {
+        io.exec("git fetch -q origin");
+        if (!io.exec(`git merge-base --is-ancestor ${shq(pushedSha)} origin/${META_BRANCH}`).ok) {
+          await io.sleep(3_000);
+          continue;
+        }
+      }
+      return "pushed";
     }
     return "failed";
   } finally {

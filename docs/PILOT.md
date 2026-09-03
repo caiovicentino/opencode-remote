@@ -30,9 +30,15 @@ Nenhum commit "meta" (mark-done, refill do strategist, lições do scribe, achad
 do red team/explorer, bloqueios do circuit breaker, amostras do corpus) é
 empurrado direto em `main`. Todos pousam pela branch permanente `pilot/meta`
 (`landMetaCommit` em `apps/pilot/src/metapush.ts`): re-base em `origin/main` →
-edição determinística → guard do diff (P1-057, relido a cada attempt) → force-push
-em `pilot/meta` → PR com squash + `--auto` (auto-merge quando a proteção de
-branch está ativa; sem proteção, merge imediato). O PR é reutilizado entre
+edição determinística → guard do diff (P1-057, relido a cada attempt) → push
+com `--force-with-lease` em `pilot/meta` (um landing concorrente que empurrou
+depois do nosso fetch falha o push em vez de ser sobrescrito) → PR com squash +
+`--auto` (auto-merge quando a proteção de branch está ativa; sem proteção,
+merge imediato). O sucesso só é reportado quando o **nosso** commit ainda é
+ancestral do head de `origin/pilot/meta` após armar o merge — um landing
+descartado por landing concorrente é re-aplicado e, no pior caso, reportado
+honestamente como `failed` (refill persiste no store P1-037, bloqueio
+re-tenta no próximo ciclo ocioso). O PR é reutilizado entre
 landings e a branch **nunca** é apagada. Falha do `gh` deixa o commit em
 `origin/pilot/meta` e é retentada no próximo ciclo — **não existe fallback para
 `git push origin main`** (a bateria de eval reprova qualquer `push -q origin main`
@@ -43,7 +49,11 @@ no código do pilot com um check grep-style).
 requeridas do CI existente. Nenhuma mudança de código é necessária: com a
 proteção ativa, `gh pr merge --squash --auto` passa a armar o auto-merge
 (o caminho sem proteção continua funcionando como fallback de merge imediato).
-Critério operacional: 24h de logs do pipeline sem nenhum push direto em `main`;
+**Janela conhecida**: enquanto a proteção não está ativa, o squash imediato do
+PR meta entra em `main` **sem checks** — a propriedade "auto-mergia quando a
+bateria leve passa" só vale pós-runbook; a segurança do deploy não muda,
+porque o deploy só embarca SHA verificado pós-gate (P2-058). Critério
+operacional: 24h de logs do pipeline sem nenhum push direto em `main`;
 deploys continuam saindo de PRs mergeados (SHAs verificados, P2-058).
 
 ### Roles (todos `opencode run` headless)

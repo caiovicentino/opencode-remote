@@ -958,6 +958,44 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
     });
     check("landMetaCommit: abort reports failed", abort === "failed");
 
+    // R2 review: success requires our commit to stay in the PR head — a peer
+    // landing that rewound the shared branch turns our landing into an honest
+    // "failed" (retried), never a false "pushed"
+    let dropPushes = 0;
+    const droppedIo: MetaPushIo = {
+      exec: (cmd) => {
+        if (cmd.startsWith("git diff")) return { ok: true, output: "BACKLOG.md\n" };
+        if (cmd.startsWith("git rev-parse")) return { ok: true, output: "abc12345\n" };
+        if (cmd.startsWith("git merge-base")) return { ok: false, output: "" }; // dropped
+        if (cmd.startsWith("git push")) dropPushes++;
+        return { ok: true, output: "" };
+      },
+      sleep: () => Promise.resolve(),
+    };
+    const dropped = await landMetaCommit(dir, droppedIo, {
+      files: ["BACKLOG.md"],
+      message: "dropped by peer",
+      guardFile: "BACKLOG.md",
+      apply: () => ({ action: "apply" }),
+    });
+    check("landMetaCommit: commit dropped by a peer ⇒ honest failure, never false success", dropped === "failed" && dropPushes === 3);
+    let unverifiablePushes = 0;
+    const unverifiable = await landMetaCommit(dir, {
+      exec: (cmd) => {
+        if (cmd.startsWith("git diff")) return { ok: true, output: "BACKLOG.md\n" };
+        if (cmd.startsWith("git rev-parse")) return { ok: true, output: "" }; // sha undeterminable
+        if (cmd.startsWith("git push")) unverifiablePushes++;
+        return { ok: true, output: "" };
+      },
+      sleep: () => Promise.resolve(),
+    }, {
+      files: ["BACKLOG.md"],
+      message: "unverifiable",
+      guardFile: "BACKLOG.md",
+      apply: () => ({ action: "apply" }),
+    });
+    check("landMetaCommit: undeterminable sha stays best-effort pushed (fake io compat)", unverifiable === "pushed" && unverifiablePushes === 1);
+
     // dir-prefix guard (corpus shape): several files inside the dir are allowed
     check("mayPushUnderDir: every file under the dir passes", mayPushUnderDir("d/a.txt\nd/b.txt\n", "d"));
     check("mayPushUnderDir: file outside the dir refuses", mayPushUnderDir("d/a.txt\nx.sh\n", "d") === false);
