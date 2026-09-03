@@ -624,40 +624,47 @@ try {
           15_000,
           localEnv,
         );
-        const injectAndMeasure = `(() => {
-          const msgs = document.querySelector('.messages');
-          if (!msgs) return { mounted: false };
-          document.getElementById('p1-080-bubble')?.remove();
-          document.getElementById('p1-080-noanim')?.remove();
-          // the chat screen slide-in (screen-in, 180ms) caught mid-flight reads
-          // as a 1-3px document offset — freeze animations before measuring
-          const st = document.createElement('style');
-          st.id = 'p1-080-noanim';
-          st.textContent = '* { animation: none !important; transition: none !important; }';
-          document.head.appendChild(st);
-          const doc = document.documentElement;
-          doc.scrollLeft = 0;
-          const clipped = (el) => {
+        // Shared DOM-probe helpers, interpolated into the evaluate strings below.
+        const MEASURE_HELPERS = `
+          const ocrFreeze = () => {
+            document.getElementById('p1-080-noanim')?.remove();
+            // the chat screen slide-in (screen-in, 180ms) caught mid-flight reads
+            // as a 1-3px document offset — freeze animations before measuring
+            const st = document.createElement('style');
+            st.id = 'p1-080-noanim';
+            st.textContent = '* { animation: none !important; transition: none !important; }';
+            document.head.appendChild(st);
+            document.documentElement.scrollLeft = 0;
+          };
+          const ocrClipped = (el) => {
             for (let a = el.parentElement; a; a = a.parentElement) {
               if (getComputedStyle(a).overflowX !== 'visible') return true;
             }
             return false;
           };
-          const label = (el) => el.tagName.toLowerCase() +
+          const ocrLabel = (el) => el.tagName.toLowerCase() +
             (el.id ? '#' + el.id : typeof el.className === 'string' && el.className ? '.' + el.className.split(' ').join('.') : '');
-          const scan = () => {
+          const ocrScan = () => {
             const out = [];
             for (const el of document.querySelectorAll('*')) {
               const r = el.getBoundingClientRect();
-              if ((r.right > window.innerWidth + 0.5 || r.left < -0.5) && !clipped(el)) {
-                out.push({ cls: label(el), left: Math.round(r.left), right: Math.round(r.right) });
+              if ((r.right > window.innerWidth + 0.5 || r.left < -0.5) && !ocrClipped(el)) {
+                out.push({ cls: ocrLabel(el), left: Math.round(r.left), right: Math.round(r.right) });
                 if (out.length >= 5) break;
               }
             }
             return out;
           };
+        `;
+        const injectAndMeasure = `(() => {
+          const msgs = document.querySelector('.messages');
+          if (!msgs) return { mounted: false };
+          document.getElementById('p1-080-bubble')?.remove();
+          ${MEASURE_HELPERS}
+          ocrFreeze();
+          const doc = document.documentElement;
           const preInject = doc.scrollWidth - doc.clientWidth;
-          const preOffenders = scan();
+          const preOffenders = ocrScan();
           const div = document.createElement('div');
           div.id = 'p1-080-bubble';
           div.className = 'msg assistant';
@@ -676,7 +683,65 @@ try {
             msgRight: Math.round(box.right),
             vw: window.innerWidth,
             preScrollsInside: pre.scrollWidth > pre.clientWidth,
-            postOffenders: scan(),
+            postOffenders: ocrScan(),
+          };
+        })()`;
+        // Criterion 4 — the artifact split-pane (P2-062): same class of repro,
+        // mounted as a sibling of the real .chat inside .chat-row the way
+        // ChatView renders it (screen gains .artifact-split, pane gets
+        // flexBasis), with a wide code block + a long URL inside.
+        const splitPaneProbe = `(() => {
+          const row = document.querySelector('.chat-row');
+          const screen = document.querySelector('.screen');
+          if (!row || !screen) return { mounted: false };
+          document.getElementById('p1-080-pane')?.remove();
+          document.getElementById('p1-080-divider')?.remove();
+          ${MEASURE_HELPERS}
+          ocrFreeze();
+          screen.classList.add('artifact-split');
+          const pane = document.createElement('div');
+          pane.id = 'p1-080-pane';
+          pane.className = 'artifact-pane';
+          pane.style.flexBasis = '40%';
+          pane.style.background = 'var(--bg)';
+          const header = document.createElement('div');
+          header.style.cssText = 'display:flex;align-items:center;gap:8;padding:10px 12px;background:var(--surface);border-bottom:1px solid var(--border)';
+          header.textContent = 'spec.md';
+          const scroll = document.createElement('div');
+          scroll.style.cssText = 'flex:1;min-height:0;overflow:auto;padding:14px';
+          const md = document.createElement('div');
+          md.style.cssText = 'max-width:min(900px,100%);overflow-wrap:anywhere';
+          const pre = document.createElement('pre');
+          pre.style.cssText = 'background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 10px;overflow-x:auto;max-width:100%;font-size:0.78rem';
+          const code = document.createElement('code');
+          code.textContent = '- const wideArtifactLine = "p1-080-' + 'y'.repeat(400) + '";';
+          pre.appendChild(code);
+          md.appendChild(pre);
+          const url = document.createElement('p');
+          url.style.cssText = 'margin:6px 0;word-break:break-word';
+          url.textContent = 'ref https://example.invalid/' + 'z'.repeat(300) + '/path';
+          md.appendChild(url);
+          scroll.appendChild(md);
+          pane.appendChild(header);
+          pane.appendChild(scroll);
+          const divider = document.createElement('div');
+          divider.id = 'p1-080-divider';
+          divider.className = 'split-divider';
+          const grip = document.createElement('span');
+          divider.appendChild(grip);
+          row.appendChild(divider);
+          row.appendChild(pane);
+          const doc = document.documentElement;
+          const paneBox = pane.getBoundingClientRect();
+          return {
+            mounted: true,
+            splitClass: screen.className.includes('artifact-split'),
+            docOverflow: doc.scrollWidth - doc.clientWidth,
+            paneRight: Math.round(paneBox.right),
+            paneWidth: Math.round(paneBox.width),
+            vw: window.innerWidth,
+            panePreScrollsInside: pre.scrollWidth > pre.clientWidth,
+            postOffenders: ocrScan(),
           };
         })()`;
         function assertBubbleContained(label: string, env: NodeJS.ProcessEnv) {
@@ -737,7 +802,40 @@ try {
             );
             if (desk) {
               assertBubbleContained("1440px", localEnv);
-              // evidence shot WITH the bubble in place (the operator print)
+              // criterion 4: the same containment guarantees for the artifact
+              // split-pane that opens next to the chat (≥ SPLIT_MIN_PX = 900)
+              const pane = run("P1-080: artifact pane mounted (split-pane)", ["ipc", splitPaneProbe], 15_000, localEnv);
+              if (pane.ok) {
+                let p: {
+                  mounted?: boolean;
+                  splitClass?: boolean;
+                  docOverflow?: number;
+                  paneRight?: number;
+                  paneWidth?: number;
+                  vw?: number;
+                  panePreScrollsInside?: boolean;
+                  postOffenders?: { cls: string }[];
+                } | null = null;
+                try {
+                  p = JSON.parse(pane.stdout) as typeof p;
+                } catch {}
+                console.log("     P1-080 measurements (split-pane):", pane.stdout.trim());
+                check("P1-080: split-pane structure mounted", p?.mounted === true && p.splitClass === true, pane.stdout);
+                check(
+                  "P1-080: artifact pane does not leave the viewport (split-pane)",
+                  p?.docOverflow !== undefined &&
+                    p.docOverflow <= 0 &&
+                    (p.paneRight ?? Infinity) <= (p.vw ?? 0) &&
+                    (p.paneWidth ?? 0) > 0,
+                  JSON.stringify(p),
+                );
+                check(
+                  "P1-080: wide artifact line scrolls INSIDE the pane (split-pane)",
+                  p?.panePreScrollsInside === true,
+                  JSON.stringify(p),
+                );
+              }
+              // evidence shot WITH the chat bubble + split-pane in place
               run("P1-080: 1440px repro shot", ["shot", overflowShot1440], 15_000, localEnv);
             }
           }
