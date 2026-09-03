@@ -170,3 +170,5 @@ Tasks feitas vão para `## Done` automaticamente.
 - [x] (P3-001) [P3] Título da sessão no header do chat — merged by pilot 2026-08-31
 - [x] (P2-003) [P2] Ordenar sessões por atividade recente — merged by pilot 2026-08-31
 - [x] (P2-002) [P2] Tempo relativo nas sessões — merged by pilot 2026-08-31 (PR #2)
+
+- [ ] (P2-120) [P3] Higiene de eventos: runs de teste poluem events.jsonl real — spec (audit P2-114, 20:42): testes do deployguard emitiram eventos com shas fake (3333333/4444444) direto no events.jsonl de produção, o ticker da v3 mostrou 'sha quarantined' fantasma; fix: sink de eventos isolado em teste (env var/param) ou teardown que remove os eventos de teste; criterio: unit roda suite completa sem acrescentar linhas em events.jsonl real, typecheck verdes.
