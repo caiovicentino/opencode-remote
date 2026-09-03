@@ -255,6 +255,13 @@ export const dict = {
     loadMore: "Load older messages",
     historyRetry: "Could not load the conversation history.",
     pilotGroup: "Pilot sessions ({n})",
+    // temporal grouping + archive (P3-084)
+    groupToday: "Today",
+    groupYesterday: "Yesterday",
+    groupEarlier: "Earlier",
+    groupArchived: "Archived ({n})",
+    archive: "Archive",
+    restore: "Restore",
   },
   pt: {
     search: "Buscar conversas…",
@@ -460,5 +467,12 @@ export const dict = {
     loadMore: "Carregar mensagens anteriores",
     historyRetry: "Não deu pra carregar o histórico da conversa.",
     pilotGroup: "Sessões do pilot ({n})",
+    // agrupamento temporal + arquivo (P3-084)
+    groupToday: "Hoje",
+    groupYesterday: "Ontem",
+    groupEarlier: "Anteriores",
+    groupArchived: "Arquivadas ({n})",
+    archive: "Arquivar",
+    restore: "Restaurar",
   },
 } satisfies Record<Lang, Record<string, string>>;

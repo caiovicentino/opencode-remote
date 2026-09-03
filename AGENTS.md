@@ -172,7 +172,9 @@ pra Conversas com split-pane (full-screen só em janela estreita), grupos da
 lista por título da conversa (daemon resolve id→titulo); P2-092 adicionou o
 beat do pane Browser: página de teste colorida carregada no pane real deve
 ocupar o bounding box do pane (elemento + viewport do guest), inclusive após
-mudança de largura (maximizar)); use `OCR_DESKTOP_SESSION` próprio para não colidir
+mudança de largura (maximizar); P3-084 adicionou os beats de agrupamento
+temporal (Hoje/Ontem/Anteriores) e do switcher ⌘K com preview da última
+mensagem — o fake backend serve sessões com `time.updated`)); use `OCR_DESKTOP_SESSION` próprio para não colidir
 com a sessão de outro processo. P1-081: com `OCR_DESKTOP_SESSION` setado o app
 NÃO mostra janela (`showMainWindow` no-op + `paintWhenInitiallyHidden`, interação
 100% via webContents) — a tela do operador nunca vê janela de teste; e

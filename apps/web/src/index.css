@@ -830,6 +830,15 @@ select {
   flex-direction: column;
   gap: 1px;
 }
+/* P3-084: temporal group headers (Hoje/Ontem/Anteriores) */
+.sess-group-head {
+  margin: 10px 10px 3px;
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
 .sess-row {
   display: flex;
   align-items: center;
@@ -841,6 +850,15 @@ select {
 }
 .sess-row:hover {
   background: var(--bg2);
+}
+/* P3-084: sharp active state — tinted fill + accent bar on the left edge */
+.sess-row.active {
+  background: var(--bg2);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.sess-row.active .sess-title {
+  color: var(--fg);
+  font-weight: 600;
 }
 .sess-title {
   flex: 1;
@@ -856,6 +874,36 @@ select {
   flex-shrink: 0;
   font-size: 0.68rem;
   color: var(--muted);
+}
+/* P3-084: hover-revealed row actions (rename / archive) — they take the
+   timestamp's slot, Claude-style, so the row never grows on hover */
+.row-actions {
+  display: none;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 2px;
+}
+.sess-row:hover .row-actions,
+.sess-row:focus-within .row-actions {
+  display: flex;
+}
+.sess-row:hover .sess-when,
+.sess-row:focus-within .sess-when {
+  display: none;
+}
+.row-actions button {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.row-actions button:hover {
+  color: var(--fg);
+  background: var(--border);
 }
 
 /* desktop-only chrome: hide mobile-only controls, style sidebar top action */
@@ -1210,6 +1258,13 @@ select {
 .palette-item.active {
   background: var(--bg2);
 }
+/* P3-084: session items carry a last-message preview line */
+.palette-item.has-sub {
+  align-items: flex-start;
+}
+.palette-item.has-sub .palette-ico {
+  margin-top: 2px;
+}
 .palette-ico {
   color: var(--muted);
   display: inline-flex;
@@ -1224,6 +1279,21 @@ select {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  text-align: left;
+}
+.palette-label-main {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.palette-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.78rem;
+  font-weight: 400;
+  color: var(--muted);
 }
 .palette-kind {
   flex-shrink: 0;

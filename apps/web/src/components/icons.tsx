@@ -165,6 +165,37 @@ export function IconImage(p: IconProps) {
   );
 }
 
+/** P3-084: row hover action — rename (sidebar rows). */
+export function IconPencil(p: IconProps) {
+  return (
+    <Icon {...p}>
+      <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+      <path d="m15 5 4 4" />
+    </Icon>
+  );
+}
+
+/** P3-084: row hover action — archive the conversation (client-side set). */
+export function IconArchive(p: IconProps) {
+  return (
+    <Icon {...p}>
+      <rect width="20" height="5" x="2" y="3" rx="1" />
+      <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" />
+      <path d="M10 12h4" />
+    </Icon>
+  );
+}
+
+/** P3-084: restore an archived conversation. */
+export function IconUndo(p: IconProps) {
+  return (
+    <Icon {...p}>
+      <path d="M3 7v6h6" />
+      <path d="M21 17a9 9 0 0 0-15-6.7L3 13" />
+    </Icon>
+  );
+}
+
 export function IconBookOpen(p: IconProps) {
   return (
     <Icon {...p}>

@@ -822,6 +822,7 @@ export default function App() {
       creating={creating}
       onCreateSession={createSession}
       variant={isDesktop ? "rows" : "grid"}
+      activeSession={session}
     />
   );
 
@@ -946,6 +947,7 @@ export default function App() {
       {paletteOpen && (
         <CommandPalette
           request={request}
+          events={events}
           onClose={() => setPaletteOpen(false)}
           onOpenSession={(id) => dispatchView({ type: "openChat", sessionId: id })}
           onNewChat={() => void createSession()}

@@ -123,7 +123,9 @@ const cliEnv = { ...process.env, OCR_DESKTOP_SESSION: session };
 // P1-093 added the AutoMode-failure beat (real Settings toggle + permission
 // ask the fake rejects + retry verification), growing it to 180s; P2-097
 // added the oversized-artifact beat (5 MB write + 413 round-trip) inside the
-// same budget — its probes poll at 500ms to pay for it.
+// same budget — its probes poll at 500ms to pay for it; P3-084 added the
+// sidebar-grouping + ⌘K-preview beat (fake backend serves time.updated
+// sessions) inside the same budget as well.
 const startedAt = Date.now();
 const DEADLINE_MS = 180_000;
 const shotPath = join(tmpdir(), "ocr-desktop-flow", `flow-${process.pid}.png`);
@@ -1144,7 +1146,14 @@ try {
           "    });",
           "    return;",
           "  }",
-          "  if (u.pathname === '/session') return json([{ id: 'ses-reentry-check', title: 'Reentry check' }, { id: 'ses-draft-a', title: 'Draft A' }, { id: 'ses-artifact-auto', title: 'Artifact auto' }, { id: 'ses-autofail', title: 'Auto fail' }]);",
+          "  const nowMs = Date.now();",
+          "  const yesterdayNoon = new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate() - 1, 12, 0, 0, 0).getTime();",
+          "  const recency = [",
+          "    { id: 'ses-recency-today', title: 'Sync de hoje', time: { updated: nowMs - 5 * 60 * 1000 } },",
+          "    { id: 'ses-recency-yesterday', title: 'Rascunho de ontem', time: { updated: yesterdayNoon } },",
+          "    { id: 'ses-recency-earlier', title: 'Setup antigo', time: { updated: nowMs - 10 * 24 * 3600 * 1000 } },",
+          "  ];",
+          "  if (u.pathname === '/session') return json([...recency, { id: 'ses-reentry-check', title: 'Reentry check' }, { id: 'ses-draft-a', title: 'Draft A' }, { id: 'ses-artifact-auto', title: 'Artifact auto' }, { id: 'ses-autofail', title: 'Auto fail' }]);",
           "  if (u.pathname === '/session/ses-reentry-check' || u.pathname === '/session/ses-draft-a' || u.pathname === '/session/ses-artifact-auto' || u.pathname === '/session/ses-autofail') return json({ id: u.pathname.split('/')[2], title: 'P1-089' });",
           "  if (u.pathname === '/session/ses-autofail/permissions/perm-fail') { res.writeHead(500); res.end('auto-approve always rejected'); return; }",
           "  if (/^\\/session\\/[^/]+\\/message$/.test(u.pathname)) return req.method === 'POST' ? json({ id: 'msg-fake' }) : json(ROWS);",
@@ -1533,6 +1542,98 @@ try {
               // narrow viewport keeps the list on the full-screen overlay path
               run("P2-091: 390 evidence shot", ["shot", join(shotsDir, "P2-091-nav-390.png"), "390", "844"], 15_000, localEnv2);
             }
+          }
+
+          // --- P3-084: conversation list at benchmark level ----------------------
+          // Temporal grouping (Hoje/Ontem/Anteriores) in the REAL sidebar, the
+          // hover action affordances, the sharp active row and the ⌘K switcher
+          // showing a last-message preview line. The fake backend now serves
+          // sessions with time.updated (today / yesterday / 10 days ago) and a
+          // message.part.updated is emitted so the preview map has data.
+          phase("P3-084: sidebar grouping + Cmd+K preview");
+          const p3Wide = run("P3-084: resize to desktop width", ["shot", join(shotsDir, "P3-084-resize.png"), "1440", "900"], 15_000, localEnv2);
+          if (p3Wide.ok) {
+            await waitProbe(
+              "P3-084: sidebar rows mounted",
+              "!!document.querySelector('.sess-rows')",
+              (v) => /true/.test(v),
+              localEnv2,
+            );
+            await fetch(`${fakeUrl}/__emit`, {
+              method: "POST",
+              body: JSON.stringify([
+                { type: "message.part.updated", properties: { sessionID: "ses-recency-today", part: { type: "text", text: "P3-084 preview marker — relatório pronto" } } },
+                { type: "session.idle", properties: { sessionID: "ses-recency-today" } },
+              ]),
+            });
+            // grouping: exactly the three temporal heads, in order. ipc results
+            // are JSON-encoded (strings come back quoted) — parse once.
+            const groupProbe = await waitProbe(
+              "P3-084: Hoje/Ontem/Anteriores heads rendered in order",
+              "[...document.querySelectorAll('.sess-group-head[data-group]')].map((el) => el.getAttribute('data-group')).join(',')",
+              (v) => {
+                let s = v.trim();
+                try {
+                  s = JSON.parse(s) as string;
+                } catch {}
+                return s === "today,yesterday,earlier";
+              },
+              localEnv2,
+            );
+            if (groupProbe) {
+              // hover action affordances exist on the rows (reveal is CSS)
+              const affordance = run("P3-084: row hover actions present", ["ipc", "document.querySelectorAll('.sess-row .row-rename').length > 0 && document.querySelectorAll('.sess-row .row-archive').length > 0"], 15_000, localEnv2);
+              if (affordance.ok) {
+                check("P3-084: rename + archive buttons rendered on rows", /true/.test(affordance.stdout));
+              }
+              // sharp active state: deep-link opens the today conversation and
+              // marks its row with .active + aria-current
+              run("P3-084: open the today conversation", ["ipc", "location.hash = '#/session/ses-recency-today'"], 15_000, localEnv2);
+              const activeRow = await waitProbe(
+                "P3-084: active row is the open conversation",
+                "document.querySelector('.sess-row.active .sess-title')?.textContent ?? 'MISS'",
+                (v) => v.includes("Sync de hoje"),
+                localEnv2,
+              );
+              if (activeRow) {
+                const aria = run("P3-084: active row carries aria-current", ["ipc", "document.querySelector('.sess-row.active')?.getAttribute('aria-current')"], 15_000, localEnv2);
+                if (aria.ok) check("P3-084: aria-current=true on the active row", /true/.test(aria.stdout));
+                run("P3-084: grouped sidebar evidence shot", ["shot", join(shotsDir, "P3-084-groups-1440.png")], 15_000, localEnv2);
+              }
+              // Cmd+K switcher with last-message preview
+              run("P3-084: open the palette via the Go menu", ["menu-click", "go-palette"], 15_000, localEnv2);
+              const paletteUp = await waitProbe(
+                "P3-084: palette rendered",
+                "!!document.querySelector('.palette')",
+                (v) => /true/.test(v),
+                localEnv2,
+              );
+              if (paletteUp) {
+                const previewLine = await waitProbe(
+                  "P3-084: preview line shows the last message",
+                  "[...document.querySelectorAll('.palette-item')].some((el) => (el.textContent || '').includes('P3-084 preview marker'))",
+                  (v) => /true/.test(v),
+                  localEnv2,
+                );
+                if (previewLine) {
+                  const sub = run("P3-084: .palette-sub element rendered", ["ipc", "!!document.querySelector('.palette-sub')"], 15_000, localEnv2);
+                  if (sub.ok) check("P3-084: preview sits on its own muted line", /true/.test(sub.stdout));
+                  run("P3-084: palette evidence shot", ["shot", join(shotsDir, "P3-084-palette-1440.png")], 15_000, localEnv2);
+                }
+                run("P3-084: close the palette (Escape)", ["ipc", "document.querySelector('.palette-input')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))"], 15_000, localEnv2);
+                await waitProbe(
+                  "P3-084: palette closed by Escape",
+                  "!!document.querySelector('.palette')",
+                  (v) => /false/.test(v),
+                  localEnv2,
+                );
+              }
+            }
+            run("P3-084: 390 evidence shot", ["shot", join(shotsDir, "P3-084-390.png"), "390", "844"], 15_000, localEnv2);
+            // restore the session context: the following beats emit events for
+            // AUTO_SES and expect its chat on screen after their resize
+            run("P3-084: return to the artifact session", ["ipc", `location.hash = '#/session/${AUTO_SES}'`], 15_000, localEnv2);
+            await waitProbe("P3-084: artifact session chat rendered again", "!!document.querySelector('.messages')", (v) => /true/.test(v), localEnv2);
           }
 
           // --- P2-097: oversized artifact shows the friendly 413 error ----------
