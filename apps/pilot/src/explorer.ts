@@ -136,15 +136,21 @@ function shq(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
+/** Injectable sinks for runExplorer — the P3-101 proof driver runs the real
+ * flow against a scratch workspace without touching the production state.json. */
+export interface ExplorerIo {
+  save?: (st: PilotState) => void;
+}
+
 /**
  * One nightly run. Once-per-day guarded via state, budget-capped, and
  * non-blocking: any error is logged, never rethrown.
  */
-export async function runExplorer(cfg: PilotConfig, state: PilotState): Promise<void> {
+export async function runExplorer(cfg: PilotConfig, state: PilotState, io: ExplorerIo = {}): Promise<void> {
   const today = nowLocalISO().slice(0, 10);
   if (state.explorerLast === today) return;
   state.explorerLast = today;
-  saveState(state); // persisted before the run: a crash must not re-run it same-day
+  (io.save ?? saveState)(state); // persisted before the run: a crash must not re-run it same-day
   const shotsDir = explorerShotsDir();
   try {
     mkdirSync(shotsDir, { recursive: true });

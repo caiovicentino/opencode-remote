@@ -85,6 +85,21 @@ export function shouldSelfReload(prev: string, head: string): boolean {
   return SHA_RE.test(prev) && SHA_RE.test(head) && prev !== head;
 }
 
+/**
+ * P3-101: stale-process detection — true when `headNow` is a valid sha that
+ * differs from the sha the running process booted on (`bootHead`). Covers the
+ * gap the deploy-time self-reload cannot: a process spawned BEFORE the
+ * deploy-time reload was fixed still carries the dead reload path in memory
+ * (the P1-095 trigger merged and deployed but never went live — the Sep-1
+ * process never picked it up). Empty/malformed shas → false: a failed probe
+ * can never flap restarts.
+ */
+export function headDrifted(bootHead: string | undefined, headNow: string | undefined): boolean {
+  return Boolean(
+    bootHead && headNow && SHA_RE.test(bootHead) && SHA_RE.test(headNow) && bootHead !== headNow,
+  );
+}
+
 /** P1-044: interval between soak health checks (the soak loop's clock). */
 export const SOAK_INTERVAL_SEC = 60;
 export const SOAK_INTERVAL_MS = SOAK_INTERVAL_SEC * 1000;

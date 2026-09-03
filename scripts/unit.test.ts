@@ -178,6 +178,7 @@ import {
   baselineHealthRate,
   deploy,
   FAST_INSTALL_CMD,
+  headDrifted,
   LIVE_INVARIANT_EVERY,
   quarantineWithEscalation,
   ROLLBACK_HEALTH_WINDOW_SEC,
@@ -2930,6 +2931,20 @@ check("disk guard: statfs probe returns bytes on a real dir", realFree !== null 
   // must stay out of deploy.ts
   const deploySrc = readFileSync(join(import.meta.dirname, "..", "apps", "pilot", "src", "deploy.ts"), "utf8");
   check("P1-034: sha-vs-HEAD self-reload diff removed", !deploySrc.includes("git diff --name-only ${sha} HEAD"));
+}
+
+// --- P3-101: stale-process detection (boot-HEAD drift) -----------------------
+{
+  const A = "a".padEnd(40, "1");
+  const B = "b".padEnd(40, "2");
+  check("P3-101: HEAD moved past boot sha → drifted", headDrifted(A, B) === true);
+  check("P3-101: same sha → not drifted", headDrifted(A, A) === false);
+  check("P3-101: undefined boot sha (git failed) → not drifted", headDrifted(undefined, B) === false);
+  check("P3-101: undefined current sha → not drifted", headDrifted(A, undefined) === false);
+  check(
+    "P3-101: malformed shas → not drifted (no restart flapping)",
+    headDrifted("", B) === false && headDrifted("nope", B) === false && headDrifted(A, "dirty") === false,
+  );
 }
 
 // --- P2-058 round 2: quarantine-write escalation + merge-identity validation --

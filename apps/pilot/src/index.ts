@@ -8,7 +8,7 @@ import { notifySupervisor } from "./notify";
 import { runResearcher } from "./researcher";
 import { runExplorer } from "./explorer";
 import { runPipeline, TASK_ID_RE, writeSandboxConfig, writeAuxSandboxConfig, lessonsBlock, budgetsFor, isOverCap } from "./pipeline";
-import { deploy, latestDeployableSha } from "./deploy";
+import { deploy, headDrifted, latestDeployableSha } from "./deploy";
 import { digest } from "./push";
 import { addTask, appendCommitAndPush, auxPushIo, blockTask, mayPush, nextId, parseAuxTaskLines, parseBacklog, type Task } from "./backlog";
 import { appendFailureLesson, defaultLessonsFile, failureLessonsBlock, readRecentFailureLessons } from "./failureLessons";
@@ -59,6 +59,9 @@ const log = (level: string, msg: string, data?: unknown) =>
 async function main() {
   await ensureSingleton();
   const cfg = loadConfig();
+  // P3-101: the sha this process booted on — the loop's stale-process self-heal
+  // exits whenever the production repo's HEAD moves past it (idle + no deploy).
+  const bootHead = exec("git rev-parse HEAD", { cwd: cfg.repo, allowFail: true }).output.trim() || undefined;
 
   // P1-006: one workspace clone per slot (pilot/repo-1, repo-2…), created via
   // `git clone --shared` the first time. All other slots inherit slot 1's
@@ -180,6 +183,25 @@ async function main() {
         if (once) return;
         await sleep(30_000);
         continue;
+      }
+    }
+
+    // P3-101: stale-process self-heal — if the production repo's HEAD moved
+    // after this process booted (deploy landed while an older process was
+    // still running, e.g. one spawned before the P1-034 reload fix), exit so
+    // launchd KeepAlive restarts on the NEW code. Only at a fully idle moment:
+    // never kill pipelines or an in-flight deploy. This is what made the
+    // P1-095 nightly trigger live — without it a stale process keeps the old
+    // trigger (or the old dead reload) in memory forever.
+    if (running.size === 0 && !deployBusy) {
+      const headNow = exec("git rev-parse HEAD", { cwd: cfg.repo, allowFail: true }).output.trim();
+      if (headDrifted(bootHead, headNow)) {
+        log("warn", "prod repo HEAD moved since boot — self-reloading onto new code", {
+          bootHead,
+          headNow,
+        });
+        emit("deploy", { phase: "self-reload", ok: true, detail: "boot HEAD drift (stale process)" });
+        process.exit(0); // pidfile singleton + KeepAlive cover the restart
       }
     }
 

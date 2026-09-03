@@ -412,6 +412,14 @@ A linha da task no BACKLOG.md pode carregar a tag opcional `(size: S|M|L)` (defa
    HEAD mudou no deploy (`prev !== HEAD` pós-reset, em vez do diff `apps/pilot` contra ele
    mesmo, sempre vazio) — sai com `process.exit(0)` imediato (log já flushado, sem órfão) e
    o KeepAlive reassume no código novo; heartbeat + watchdog — 30min sem sinal → exit → KeepAlive ressozinho
+4. **Processo stale (P3-101)**: o loop guarda o HEAD do repo de produção capturado no boot
+   (`bootHead`) e, num momento 100% ocioso (nenhum slot rodando, nenhum deploy em voo),
+   reexecuta `git rev-parse HEAD`; se driftou (`headDrifted`), sai com `exit(0)` e o
+   KeepAlive reassume no código novo — cobrindo o caso que o self-reload pós-deploy não
+   alcança: um processo **anterior** ao conserto do reload (o incidente do P1-095 — o
+   trigger novo mergeou e deployou, mas o processo de 01/09, com o reload morto em
+   memória, nunca reiniciou e a janela ociosa nunca ficou viva). Sem isso, o explorer /
+   red team de P3-052 só rodariam "de fato" após restart manual.
 
 ## Stop-loss por task (circuit breaker, P1-014)
 
