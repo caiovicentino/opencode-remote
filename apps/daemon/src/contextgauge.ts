@@ -43,6 +43,13 @@ export interface OpencodeProviders {
  * window` map. Covers both key shapes the session's model field produces
  * (bare "glm-5.2" and qualified "deepseek/deepseek-v4-flash") because the
  * lookup key is always the provider-qualified `${providerID}/${modelID}`.
+ *
+ * Round 3: the lookup must agree with the pilot's contextWindowFor on every
+ * catalog shape — bare key, entry `id` alias, provider-qualified key and
+ * unknown model — or the pipeline recycles at 85% while the desktop gauge
+ * shows nothing (or vice versa). So each entry registers every alias the
+ * pilot matches, first registration wins (mirrors the pilot's first-match
+ * iteration over the catalog).
  */
 export function buildWindowMap(providers: OpencodeProviders): Map<string, number> {
   const windows = new Map<string, number>();
@@ -51,7 +58,15 @@ export function buildWindowMap(providers: OpencodeProviders): Map<string, number
     for (const [key, m] of Object.entries(p.models ?? {})) {
       const ctx = m?.limit?.context;
       if (typeof ctx !== "number" || !Number.isFinite(ctx) || ctx <= 0) continue;
-      windows.set(`${p.id}/${key}`, ctx);
+      const aliases = new Set<string>([key]);
+      if (m?.id) aliases.add(m.id);
+      for (const a of aliases) {
+        const qualified = `${p.id}/${a}`;
+        if (!windows.has(qualified)) windows.set(qualified, ctx);
+        // A provider-qualified catalog key ("prov/model") doubles as the
+        // lookup shape for a session reporting the bare model id.
+        if (a.startsWith(`${p.id}/`) && !windows.has(a)) windows.set(a, ctx);
+      }
     }
   }
   return windows;

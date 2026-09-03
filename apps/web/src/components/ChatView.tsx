@@ -488,9 +488,16 @@ export default function ChatView({
 
   // P1-079: context gauge — daemon-computed pressure for this session
   // (opencode tokens vs the model window), refreshed when the agent goes idle.
+  // The sample is wiped ONLY on a session switch: an idle refetch keeps the
+  // previous gauge on screen until the fresh sample lands (no unmount flash
+  // at the end of every turn).
+  const ctxSessionRef = useRef<string | null>(null);
   useEffect(() => {
     let alive = true;
-    setCtx(null);
+    if (ctxSessionRef.current !== sessionId) {
+      ctxSessionRef.current = sessionId;
+      setCtx(null);
+    }
     void (async () => {
       try {
         const res = await request("GET", "/__ocr/context", undefined, { session: sessionId });

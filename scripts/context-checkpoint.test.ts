@@ -62,6 +62,10 @@ const catalog = {
       models: { "deepseek/deepseek-v4-flash": { id: "deepseek/deepseek-v4-flash", limit: { context: 1048576 } } },
     },
     { id: "broken", models: { "m1": { limit: { context: 0 } } } },
+    // m.id-aliased entry: catalog key is opaque, the session reports m.id
+    { id: "vend", models: { "model-x": { id: "glm-5.2", limit: { context: 4096 } } } },
+    // provider-qualified catalog key: the session reports the bare model id
+    { id: "qual", models: { "qual/glm-x": { limit: { context: 8192 } } } },
   ],
 };
 check("bare model key resolves", contextWindowFor(catalog, "glm52", "glm-5.2") === 262144);
@@ -255,6 +259,23 @@ check("dropResumeSession on null is null", dropResumeSession(null) === null);
   cache.clear();
   check("clear forces a miss", cache.lookup("glm52", "glm-5.2", 2_000) === 0);
   check("buildWindowMap matches contextWindowFor", buildWindowMap(catalog).get("glm52/glm-5.2") === contextWindowFor(catalog, "glm52", "glm-5.2"));
+  // round 3: the pipeline (pilot) and the desktop gauge (daemon) must resolve
+  // (providerID, modelID) identically on EVERY key shape — bare, qualified,
+  // m.id-aliased, provider-qualified catalog key and unknown — or the pipeline
+  // recycles at 85% while the gauge shows nothing (or vice versa).
+  for (const [prov, model, label] of [
+    ["glm52", "glm-5.2", "bare key"],
+    ["hpc-ai", "deepseek/deepseek-v4-flash", "qualified model id"],
+    ["vend", "glm-5.2", "m.id alias"],
+    ["vend", "model-x", "m.id alias via catalog key"],
+    ["qual", "glm-x", "provider-qualified catalog key"],
+    ["glm52", "nope", "unknown model"],
+    ["nope", "glm-5.2", "unknown provider"],
+  ] as const) {
+    const pilotWin = contextWindowFor(catalog, prov, model);
+    const daemonWin = buildWindowMap(catalog).get(`${prov}/${model}`) ?? 0;
+    check(`pilot and daemon window lookups agree (${label})`, pilotWin === daemonWin, `pilot=${pilotWin} daemon=${daemonWin}`);
+  }
 }
 
 // ── the checkpoint contract — a session recycle is infra, not merit ─────────
