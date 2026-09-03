@@ -83,6 +83,27 @@ function WebViewPane({
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const wvRef = useRef<WebviewElement | null>(null);
+  const frameRef = useRef<HTMLDivElement | null>(null);
+
+  // P2-092: the pane changes size without a remount (maximize toggle, window
+  // resize, hidden⇄shown flips). The Electron guest view sizes itself from the
+  // internal shadow iframe, so a missed layout sync shows up as content
+  // painted in a stale strip — re-assert the element box whenever the frame
+  // resizes.
+  useEffect(() => {
+    const frame = frameRef.current;
+    if (!frame) return;
+    const ro = new ResizeObserver(() => {
+      const wv = wvRef.current;
+      if (!wv) return;
+      const { width, height } = frame.getBoundingClientRect();
+      if (width < 1 || height < 1) return; // pane hidden — keep the last box
+      wv.style.width = `${width}px`;
+      wv.style.height = `${height}px`;
+    });
+    ro.observe(frame);
+    return () => ro.disconnect();
+  }, []);
 
   // Auto-preview: every new URL the daemon emits takes over the pane.
   useEffect(() => {
@@ -195,7 +216,7 @@ function WebViewPane({
         <button onClick={reload} aria-label="Recarregar" title="Recarregar">↻</button>
       </div>
       {error && <p className="browser-error">{error}</p>}
-      <div className="browser-frame">
+      <div className="browser-frame" ref={frameRef}>
         {/* allowpopups stays at its default (off); the page never escapes the pane */}
         <webview
           ref={(el) => {
