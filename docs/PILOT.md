@@ -816,6 +816,38 @@ outputs reais** dos três comandos de evidência:
   are independent); the next task starts immediately. `deployBusy` prevents
   concurrent deploys; pending-deploy self-heal covers a crashed deploy.
 
+## Deterministic gate before reviewers + retry-once (P1-101)
+
+The gate order changed: **the deterministic gate runs BEFORE the LLM
+reviewers**, right after the preflight typecheck (which shares the same re-run
+cache). Consequences:
+
+- **Gate-fail as a finding, not an attempt killer**: a red gate (evidence,
+  build, unit, invariants, corpus…) no longer burns reviewer tokens and kills
+  the attempt (the P2-099 failure mode). Instead the failing step + output tail
+  come back as a `[deterministic gate failed at step …]` block in the builder's
+  findings for the SAME attempt; the pipeline only turns terminal on the last
+  review round. The `pilot/gate-fail/<ID>.json` carryover is still written (so
+  the next attempt seeds it), and `state.failures` only grows on the terminal
+  path.
+- **Retry-once per step (`gate-flaky`)**: every battery step gets exactly one
+  automatic re-run when it fails. A fail→pass pair is classified deterministically
+  (no LLM) as flaky and reported as a `gate-flaky` phase event + JSON log line
+  with the step name; two reds still reject. The evidence re-run retries once
+  ONLY when a cited command itself failed — a pasted-output divergence never
+  retries (the P2-009 anti-fabrication gate stays intact).
+- **stderr captured**: `exec()` now runs via `spawnSync` and concatenates
+  stdout + stderr on success and failure. Vite/tsc warnings used to vanish
+  into the pilot terminal, making honest evidence pastes of `npm run build
+  --silent` diverge from the re-run.
+- **Tamper check**: reviewers approve the exact HEAD the gate certified —
+  between the green gate and the merge, HEAD must be unchanged and the tracked
+  worktree clean (`git status --porcelain --untracked-files=no`; the pipeline's
+  own untracked sandbox config doesn't count). Any drift fails closed.
+- **Metrics pairing**: `gatekeeper-done` (not `merge`) closes the gatekeeper
+  phase in `avgPhaseDurations`; `gate-flaky`/`gate-fail` events never open a
+  phase.
+
 ## Verifiable findings (P2-015)
 
 Reviewers are LLMs and hallucinate. When the pipeline parses `VERDICT:

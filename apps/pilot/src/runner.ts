@@ -1,4 +1,4 @@
-import { spawn, execSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { nowLocalISO } from "./log";
 import { tierBModelFor, startHeartbeat, touchHeartbeat, type TierBRole } from "./state";
 
@@ -323,28 +323,53 @@ export function cachedExec(
   return r;
 }
 
+/**
+ * P1-101: one gate step with a single flaky retry. The first execution is the
+ * shared-cache `cachedExec`; on a red result the cache entry is evicted and
+ * the command runs again (the second result stays cached, so a green step
+ * still executes at most once per round — P2-040 preserved). `flaky` classifies
+ * the fail→pass pair deterministically, no LLM in the loop. Never more than
+ * 2 executions; two reds return the second output.
+ */
+export function runStepWithRetry(
+  cache: RerunResults,
+  cmd: string,
+  cwd: string,
+  opts: { timeoutMin?: number } = {},
+  run?: (cmd: string, cwd: string) => { ok: boolean; output: string },
+): { ok: boolean; output: string; flaky: boolean } {
+  const first = cachedExec(cache, cmd, cwd, opts, run);
+  if (first.ok) return { ...first, flaky: false };
+  cache.delete(rerunKey(cmd, cwd));
+  const second = cachedExec(cache, cmd, cwd, opts, run);
+  return { ...second, flaky: second.ok };
+}
+
+/**
+ * P1-101: exec() via spawnSync so stderr is captured together with stdout —
+ * on success AND on failure. Vite/tsc/esbuild write warnings to stderr; when
+ * they vanished into the pilot terminal, an honestly pasted `npm run build
+ * --silent` output diverged from the gate's re-run ("pasted output diverges"
+ * false rejections). stdout comes first (separate buffers — interleave order
+ * is lost, which is acceptable for containment parsing).
+ */
 export function exec(
   cmd: string,
   opts: { cwd: string; timeoutMin?: number; allowFail?: boolean },
 ): { ok: boolean; output: string } {
-  try {
-    const out = Bun_shim_execSync(cmd, opts);
-    return { ok: true, output: out };
-  } catch (err) {
-    const e = err as { stdout?: Buffer; stderr?: Buffer; status?: number };
-    const output = `${e.stdout?.toString() ?? ""}${e.stderr?.toString() ?? ""}`;
-    if (opts.allowFail) return { ok: false, output };
-    throw new Error(`exec failed (status ${e.status}): ${cmd}\n${output.slice(-4000)}`);
-  }
-}
-
-function Bun_shim_execSync(cmd: string, opts: { cwd: string; timeoutMin?: number }): string {
-  return execSync(cmd, {
+  const r = spawnSync(cmd, {
+    shell: true,
     cwd: opts.cwd,
     encoding: "utf8",
     timeout: (opts.timeoutMin ?? 10) * 60_000,
     maxBuffer: 64 * 1024 * 1024,
-  }) as unknown as string;
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const output = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+  const ok = r.status === 0 && !r.error;
+  if (ok) return { ok: true, output };
+  if (opts.allowFail) return { ok: false, output };
+  throw new Error(`exec failed (status ${r.status}): ${cmd}\n${output.slice(-4000)}`);
 }
 
 // ── P1-059: tiered cognition — judgment roles may dispatch to the claude CLI ─

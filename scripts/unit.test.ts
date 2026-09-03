@@ -31,7 +31,7 @@ import {
 } from "../apps/web/src/lib/sessionCache";
 import { appendDraft, clearDraft, getDraft, setDraft, DRAFTS_MAX } from "../apps/web/src/lib/drafts";
 import { taskMergedIn } from "../apps/pilot/src/pipeline";
-import { cachedExec, rerunKey, type RerunResults } from "../apps/pilot/src/runner";
+import { cachedExec, exec, rerunKey, runStepWithRetry, type RerunResults } from "../apps/pilot/src/runner";
 import {
   applySessionCosts,
   cacheHitRatio,
@@ -52,6 +52,7 @@ import {
   codeChanges,
   budgetsFor,
   corpusGateDetail,
+  deterministicGate,
   isOverCap,
   MIN_CORPUS_SAMPLES,
   preserveBranch,
@@ -60,6 +61,7 @@ import {
   commitSpec,
   evidenceMatches,
   evidenceShotDimsOk,
+  gateFindingBlock,
   CONSTITUTION,
   lessonsBlock,
   needsPlanner,
@@ -2788,6 +2790,122 @@ check("stdlibShadow: non-stdlib root file passes", stdlibShadowHits("A\tmain.py\
   rmSync(ws, { recursive: true, force: true });
 }
 
+// --- P1-101: deterministic gate before reviewers + retry-once flaky -----------
+{
+  const ws = mkdtempSync(join(tmpdir(), "p1-101-"));
+
+  // exec() now captures stderr alongside stdout (vite warnings live on stderr;
+  // losing them faked "pasted output diverges" rejections)
+  const echo = exec("echo out; echo err 1>&2", { cwd: ws, allowFail: true });
+  check("P1-101: exec captures stdout AND stderr on success", echo.ok && echo.output.includes("out") && echo.output.includes("err"));
+  const boom = exec("echo boom 1>&2; exit 3", { cwd: ws, allowFail: true });
+  check("P1-101: exec keeps the stderr tail on failure", !boom.ok && boom.output.includes("boom"));
+
+  // runStepWithRetry: deterministic failure — exactly 2 executions, not flaky
+  {
+    const cache: RerunResults = new Map();
+    let n = 0;
+    const r = runStepWithRetry(cache, "step", "ws", {}, () => {
+      n++;
+      return { ok: false, output: `red ${n}` };
+    });
+    check("P1-101: runStepWithRetry deterministic failure — 2 executions, flaky=false", !r.ok && !r.flaky && n === 2 && r.output === "red 2");
+    check("P1-101: runStepWithRetry keeps the second (red) result cached", cache.get(rerunKey("step", "ws"))?.output === "red 2");
+  }
+  // runStepWithRetry: flaky — first red, second green
+  {
+    const cache: RerunResults = new Map();
+    let n = 0;
+    const r = runStepWithRetry(cache, "step", "ws", {}, () => {
+      n++;
+      return n === 1 ? { ok: false, output: "transient" } : { ok: true, output: "green" };
+    });
+    check("P1-101: runStepWithRetry flaky — fail 1st, pass 2nd", r.ok && r.flaky && n === 2 && r.output === "green");
+    // P2-040 preserved: a green step executes once per round — the next
+    // cachedExec call for the same (cmd, cwd) reads the cache
+    cachedExec(cache, "step", "ws", {}, () => {
+      n++;
+      return { ok: true, output: "green" };
+    });
+    check("P1-101: runStepWithRetry leaves a green cache entry (no re-execution)", n === 2);
+  }
+
+  // deterministicGate: hermetic harness — every battery command green unless
+  // failFirst says otherwise; cited evidence pastes match the real outputs.
+  const OK_OUT: Record<string, string> = {
+    "npm run typecheck --silent": "TS-OK",
+    "npm run test:unit --silent": "UNIT-OK",
+  };
+  const gateHarness = (failFirst: Record<string, number> = {}) => {
+    const calls = new Map<string, number>();
+    const run = (cmd: string) => {
+      const n = (calls.get(cmd) ?? 0) + 1;
+      calls.set(cmd, n);
+      if (n <= (failFirst[cmd] ?? 0)) return { ok: false, output: `${cmd} EXPLODED` };
+      return { ok: true, output: OK_OUT[cmd] ?? `${cmd} OK` };
+    };
+    return { calls, run };
+  };
+  const gateTask: Task = { id: "P1-101", priority: "P1", title: "gate", spec: "", area: "", line: "" };
+  const evidenceBlock = (unitPaste = "UNIT-OK", tsPaste = "TS-OK") =>
+    `EVIDENCE:\n$ npm run typecheck --silent\n${tsPaste}\n$ npm run test:unit --silent\n${unitPaste}\nPILOT:TASK-DONE`;
+  // nameOnly with no pilot-infra and no UI paths: no desktop steps, no corpus
+  const nameOnly = "README.md";
+
+  // build fails twice in the battery (it is NOT a cited evidence command) —
+  // the gate stops at "build" and later steps never execute
+  {
+    const { calls, run } = gateHarness({ "npm run build --silent": 999 });
+    const gate = deterministicGate(ws, gateTask, evidenceBlock(), 0, new Map(), nameOnly, run);
+    check(
+      "P1-101: gate — build failing 2x rejects at step build, later steps never run",
+      !gate.ok && gate.step === "build" && gate.tail.includes("EXPLODED") && calls.get("npm run build --silent") === 2,
+    );
+    check(
+      "P1-101: gate — battery stops at the red step (unit only ran at evidence, later steps skipped)",
+      calls.get("npm run test:unit --silent") === 1 && !calls.has("npx tsx scripts/reconnect.test.ts") && !calls.has("npx tsx scripts/invariants.ts"),
+    );
+  }
+  // unit flakes once (at the evidence re-run — it is a cited command): the
+  // evidence retry-once recovers and the gate is green with the flaky step
+  // reported; the battery then reads the green cache entry (P2-040)
+  {
+    const { calls, run } = gateHarness({ "npm run test:unit --silent": 1 });
+    const gate = deterministicGate(ws, gateTask, evidenceBlock(), 0, new Map(), nameOnly, run);
+    check(
+      "P1-101: gate — cited command failing once recovers via the evidence retry (flaky)",
+      gate.ok && gate.flaky.length === 1 && gate.flaky[0] === "evidence" && calls.get("npm run test:unit --silent") === 2,
+    );
+  }
+  // an UNCITED battery step flaking once is classified by runStepWithRetry
+  {
+    const { calls, run } = gateHarness({ "npx tsx scripts/integration.ts": 1 });
+    const gate = deterministicGate(ws, gateTask, evidenceBlock(), 0, new Map(), nameOnly, run);
+    check(
+      "P1-101: gate — battery step failing once is flaky, not a rejection",
+      gate.ok && gate.flaky.length === 1 && gate.flaky[0] === "integration" && calls.get("npx tsx scripts/integration.ts") === 2,
+    );
+  }
+  // a divergent paste is fabrication territory — never retried
+  {
+    const { calls, run } = gateHarness();
+    const gate = deterministicGate(ws, gateTask, evidenceBlock("FABRICATED-UNIT-OUTPUT"), 0, new Map(), nameOnly, run);
+    check(
+      "P1-101: gate — divergent paste fails at evidence with NO retry (P2-009 intact)",
+      !gate.ok && gate.step === "evidence" && gate.tail.includes("diverges") && calls.get("npm run typecheck --silent") === 1,
+    );
+  }
+  check("P1-101: gateFindingBlock — first line names the step, tail capped at 1500", (() => {
+    const block = gateFindingBlock("build", "x".repeat(2000));
+    const [head, ...rest] = block.split("\n");
+    return (
+      head === `[deterministic gate failed at step "build" — fix this FIRST and re-run the EVIDENCE commands]` &&
+      rest.join("\n").length === 1500
+    );
+  })());
+  rmSync(ws, { recursive: true, force: true });
+}
+
 // --- click coordinate bounds (P2-011, round-3) -------------------------------
 const vp = { width: 1280, height: 800 };
 check("clickPoint: in-range passes", clickPoint(100, 200, vp)?.x === 100 && clickPoint(100, 200, vp)?.y === 200);
@@ -4845,13 +4963,29 @@ check(
       { ts: t(6), type: "phase", task: "PA", phase: "reviewers" },
       { ts: t(7), type: "phase", task: "PA", phase: "reviewers-done", ok: true }, // 1s
       { ts: t(8), type: "phase", task: "PA", phase: "gatekeeper" },
-      { ts: t(9), type: "phase", task: "PA", phase: "merge", ok: true }, // 1s
+      { ts: t(9), type: "phase", task: "PA", phase: "gatekeeper-done", ok: true }, // 1s (P1-101: closes the gate phase, not merge)
     ];
     const avg = avgPhaseDurations(flow);
     check("phaseDur: averages multi-round phases", avg.find((p) => p.phase === "builder")?.avgMs === 1_000 && avg.find((p) => p.phase === "builder")?.n === 2);
     check("phaseDur: closes every tracked phase", avg.find((p) => p.phase === "planner")?.avgMs === 1_000 && avg.find((p) => p.phase === "reviewers")?.avgMs === 1_000 && avg.find((p) => p.phase === "gatekeeper")?.avgMs === 1_000);
     check("phaseDur: no completed sample → phase omitted", avg.find((p) => p.phase === "scribe") === undefined);
     check("phaseDur: empty feed → empty summary", avgPhaseDurations([]).length === 0);
+
+    // P1-101: aux gate phases sit between the opener and its terminator — they
+    // must not clobber the gatekeeper opener, and `merge` no longer closes it
+    const gateFlow: PilotEvent[] = [
+      { ts: t(0), type: "phase", task: "PB", phase: "gatekeeper" },
+      { ts: t(1), type: "phase", task: "PB", phase: "gate-flaky", ok: true, detail: "integration" },
+      { ts: t(2), type: "phase", task: "PB", phase: "gate-fail", ok: false, detail: "unit" },
+      { ts: t(3), type: "phase", task: "PB", phase: "gatekeeper-done", ok: false, detail: "unit" },
+      { ts: t(4), type: "phase", task: "PB", phase: "merge", ok: false },
+    ];
+    const gateAvg = avgPhaseDurations(gateFlow);
+    check(
+      "P1-101: gate-flaky/gate-fail don't break the gatekeeper pairing; one sample",
+      gateAvg.length === 1 && gateAvg[0]?.phase === "gatekeeper" && gateAvg[0]?.avgMs === 3_000 && gateAvg[0]?.n === 1,
+    );
+    check("P1-101: merge no longer closes the gatekeeper phase", !gateAvg.some((p) => p.phase === "merge"));
 
     // clearing audit mode also drops the persisted diagnosis (chip hygiene)
     const st = loadState(file);

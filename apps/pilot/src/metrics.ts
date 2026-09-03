@@ -124,14 +124,21 @@ const COMPLETES: Record<string, string> = {
   "planner-done": "planner",
   "builder-done": "builder",
   "reviewers-done": "reviewers",
-  merge: "gatekeeper",
+  // P1-101: the gate runs BEFORE the reviewers now, so `gatekeeper-done` —
+  // not `merge` — closes the gatekeeper phase.
+  "gatekeeper-done": "gatekeeper",
 };
+
+/** P1-101: informational gate phases that must never open a tracked phase —
+ * they fire between `gatekeeper` and `gatekeeper-done` and would otherwise
+ * clobber the opener, breaking the pairing above. */
+const AUX_PHASES = new Set(["gate-flaky", "gate-fail"]);
 
 /**
  * Average wall duration per pipeline phase, derived from phase transitions in
- * the events feed (planner→planner-done, …, gatekeeper→merge). Review rounds
- * are included in the builder/reviewers averages — that is real operator time.
- * Phases with no completed sample are omitted.
+ * the events feed (planner→planner-done, …, gatekeeper→gatekeeper-done).
+ * Review rounds are included in the builder/reviewers averages — that is real
+ * operator time. Phases with no completed sample are omitted.
  */
 export function avgPhaseDurations(events: PilotEvent[]): PhaseDuration[] {
   const totals = new Map<string, { sum: number; n: number }>();
@@ -151,9 +158,11 @@ export function avgPhaseDurations(events: PilotEvent[]): PhaseDuration[] {
         totals.set(closePhase, b);
       }
       open.delete(key);
-    } else {
+    } else if (!AUX_PHASES.has(e.phase)) {
       // opener (planner/builder/reviewers/gatekeeper) or an untracked aux
-      // phase — the next matching terminator closes it, stale opens never do
+      // phase — the next matching terminator closes it, stale opens never do.
+      // P1-101: gate-flaky/gate-fail are ignored as openers so the
+      // gatekeeper→gatekeeper-done pairing survives a red or flaky gate.
       open.set(key, { phase: e.phase, at: t });
     }
   }

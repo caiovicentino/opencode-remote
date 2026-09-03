@@ -5,8 +5,10 @@ Remote control for this opencode instance: mobile PWA -> relay -> daemon -> loca
 ## Pilot (autonomous development loop)
 
 This repo evolves autonomously via the Pilot service (`apps/pilot`, docs in `docs/PILOT.md`):
-agents implement tasks from `BACKLOG.md`, adversarial reviewers check them, a deterministic
-gatekeeper runs the eval battery + `scripts/invariants.ts` (see `docs/CONSTITUTION.md`), and
+agents implement tasks from `BACKLOG.md`, a deterministic gatekeeper runs the eval battery +
+`scripts/invariants.ts` BEFORE the reviewers (P1-101: a red gate returns as a same-attempt
+builder finding instead of killing the attempt, and flaky steps retry once — `gate-flaky`) —
+see `docs/CONSTITUTION.md` —, adversarial reviewers then check the branch, and
 deploys are staged with automatic rollback — production only ever runs gate-verified merge
 SHAs (P2-058): direct pushes to main never deploy, and a failed deploy quarantines its SHA
 so the redeploy loop cannot re-run a defective build. Meta-commits (scribe, refills,
@@ -51,7 +53,8 @@ journey/UX/robustness findings (shot + severity) as backlog lines,
 budget-capped per run. Builders must end
 their output with a final EVIDENCE block (real typecheck/test:unit outputs, plus 1440x900 and
 390px screenshot paths for UI tasks) — the gatekeeper re-executes the cited commands and rejects
-missing or fabricated evidence (P2-009). With `slots` > 1
+missing or fabricated evidence (P2-009), BEFORE the reviewers since P1-101 (the re-run now
+captures stderr too, so vite warnings no longer fake a divergence). With `slots` > 1
 in pilot.json the scheduler runs up to N pipelines concurrently, one workspace clone per slot
 (`~/.opencode-remote/pilot/repo-1`, `repo-2`…), always on tasks with distinct `area:` tags —
 two tasks of the same area never run in parallel, and deploys stay serial (P1-006). Slots
