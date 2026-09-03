@@ -914,10 +914,16 @@ export default function App() {
                 />
               </div>
             )}
-            {top === "artifacts" && artifactsNode}
-            {top === "files" && filesNode}
-            {top === "settings" && settingsNode}
-            {top === "share" && shareNode}
+            {top !== "browser" && (
+              <div className="pane-view" key={top}>
+                {top === "artifacts" && artifactsNode}
+                {top === "files" && filesNode}
+                {top === "settings" && settingsNode}
+                {top === "share" && shareNode}
+              </div>
+            )}
+            {/* Mission Control shows audit data — the motion pass (P3-087)
+                keeps it animation-free by design */}
             {top === "mission" && missionNode}
           </section>
         </div>

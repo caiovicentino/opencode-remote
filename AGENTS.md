@@ -177,7 +177,15 @@ temporal (Hoje/Ontem/Anteriores) e do switcher ⌘K com preview da última
 mensagem — o fake backend serve sessões com `time.updated`; P3-085 adicionou
 o beat do bloco de thinking (resposta longa simulada: reasoning expande e
 colapsa "Pensou por Xs", caret de streaming, pill ↓ flutuante, autoscroll
-que não briga com o leitor)); use `OCR_DESKTOP_SESSION` próprio para não colidir
+que não briga com o leitor); P3-087 adicionou o beat do motion pass: três
+evidências — duas 1440x900 com `prefers-reduced-motion` off/on e uma 390x844
+(via novo comando
+`motion` do harness, Playwright emulateMedia) provando que a media query
+global zera toda animação (`animation-name` computado vira `none`); a UI
+usa animações 150–300ms ease-out (slide-in/out do painel de artifact com
+backdrop, entrada de mensagens, hover da sidebar, transições de pane) e
+NADA anima em dados tabulares/auditoria (Mission Control/CSV); use
+`OCR_DESKTOP_SESSION` próprio para não colidir
 com a sessão de outro processo. P1-081: com `OCR_DESKTOP_SESSION` setado o app
 NÃO mostra janela (`showMainWindow` no-op + `paintWhenInitiallyHidden`, interação
 100% via webContents) — a tela do operador nunca vê janela de teste; e

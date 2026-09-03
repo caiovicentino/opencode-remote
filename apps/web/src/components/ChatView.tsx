@@ -22,6 +22,7 @@ import {
   type ArtifactAutoState,
 } from "../lib/artifactAuto";
 import { clampSplitPct, isSplitViewport, SPLIT_MIN_PX } from "../lib/split";
+import { useExitAnimation } from "../lib/motion";
 import { sessionTitleOf } from "../lib/title";
 import { permissionPreview } from "../lib/permission";
 import {
@@ -359,7 +360,18 @@ export default function ChatView({
   // P2-062: the manual pick wins over the P2-090 auto-open (a manual choice is
   // never overridden); both render in the same side-by-side pane.
   const shownArtifact = artifactView ?? autoArtifact;
-  const splitOpen = !!shownArtifact && wide;
+  // P3-087: the pane slides in/out (150–300ms ease-out) instead of popping.
+  // Each surface keeps its last artifact so the exit animation has content
+  // to render while useExitAnimation holds the tree mounted.
+  const lastSplitRef = useRef<ArtifactMeta | null>(null);
+  if (shownArtifact && wide) lastSplitRef.current = shownArtifact;
+  const lastOverlayRef = useRef<ArtifactMeta | null>(null);
+  if (artifactView && !wide) lastOverlayRef.current = artifactView;
+  const splitPhase = useExitAnimation(!!shownArtifact && wide);
+  const splitArtifact = shownArtifact ?? (splitPhase !== "closed" ? lastSplitRef.current : null);
+  const splitOpen = wide && splitPhase !== "closed" && !!splitArtifact;
+  const overlayPhase = useExitAnimation(!!artifactView && !wide);
+  const overlayArtifact = artifactView ?? (overlayPhase !== "closed" ? lastOverlayRef.current : null);
   const t = useT();
 
   const [exporting, setExporting] = useState(false);
@@ -2429,7 +2441,7 @@ export default function ChatView({
         </div>
       </div>
 
-      {shownArtifact && wide && (
+      {splitOpen && (
         <>
           <div
             className={`split-divider${draggingSplit ? " dragging" : ""}`}
@@ -2443,9 +2455,12 @@ export default function ChatView({
           >
             <span />
           </div>
-          <div className="artifact-pane" style={{ flexBasis: `${splitPct * 100}%` }}>
+          <div
+            className={`artifact-pane${splitPhase === "closing" ? " out" : ""}`}
+            style={{ flexBasis: `${splitPct * 100}%` }}
+          >
             <ArtifactViewer
-              meta={shownArtifact}
+              meta={splitArtifact!}
               request={request}
               onClose={() => {
                 if (artifactView) {
@@ -2626,8 +2641,13 @@ export default function ChatView({
           </div>
         </Modal>
       )}
-      {artifactView && !wide && (
-        <ArtifactViewer meta={artifactView} request={request} onClose={() => setArtifactView(null)} />
+      {overlayArtifact && !wide && overlayPhase !== "closed" && (
+        <ArtifactViewer
+          meta={overlayArtifact}
+          request={request}
+          closing={overlayPhase === "closing"}
+          onClose={() => setArtifactView(null)}
+        />
       )}
     </div>
   );

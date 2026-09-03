@@ -129,7 +129,9 @@ const cliEnv = { ...process.env, OCR_DESKTOP_SESSION: session };
 // beat (simulated long response: reasoning streaming, collapse-on-answer,
 // caret, jump-end pill, autoscroll yield) inside the same budget; P3-086
 // added the composer beat (attach preview chip, mic-disabled state, inline
-// agent/model selector, auto-grow clamp + Enter/Shift+Enter semantics).
+// agent/model selector, auto-grow clamp + Enter/Shift+Enter semantics);
+// P3-087 added the motion-pass beat (reduced-motion on/off screenshots +
+// the animation-name flip probe) inside the same budget.
 const startedAt = Date.now();
 const DEADLINE_MS = 180_000;
 const shotPath = join(tmpdir(), "ocr-desktop-flow", `flow-${process.pid}.png`);
@@ -1126,6 +1128,49 @@ try {
             run("P3-086: composer evidence shot", ["shot", composerShot], 15_000, localEnv);
           }
         }
+
+        // --- P3-087: motion pass — the reduced-motion kill switch ------------
+        // Spec criterion: the gate records TWO screenshots, reduced off and
+        // on, and the computed animation-name of a real animated element must
+        // flip from msg-in/screen-in to none. The emulation goes through the
+        // harness's `motion` command (Playwright emulateMedia), which drives
+        // the exact CSS media query the global reduced-motion rule in
+        // index.css listens on — the same kill switch users get from the OS.
+        phase("P3-087: motion pass — reduced on/off evidence");
+        // P1-080/P3-086 leave `animation: none !important` freeze styles in the
+        // DOM for their measurements — remove them before probing real motion.
+        const animExpr = "(() => { document.getElementById('p1-080-noanim')?.remove(); document.getElementById('p3-086-noanim')?.remove(); const el = document.querySelector('.messages .msg') ?? document.querySelector('.screen'); return el ? getComputedStyle(el).animationName : 'MISS'; })()";
+        const animOn = run("P3-087: reduced off — animated element computed", ["ipc", animExpr], 15_000, localEnv);
+        if (animOn.ok) {
+          check(
+            "P3-087: motion on — entrance animations live (msg-in|screen-in)",
+            animOn.stdout.includes("msg-in") || animOn.stdout.includes("screen-in"),
+            animOn.stdout,
+          );
+        }
+        run("P3-087: reduced-OFF evidence shot", ["shot", join(shotsDir, "P3-087-motion-on-1440.png")], 15_000, localEnv);
+        run("P3-087: emulate prefers-reduced-motion", ["motion", "reduce"], 15_000, localEnv);
+        const animOff = run(
+          "P3-087: reduced on — matchMedia + computed style",
+          ["ipc", `window.matchMedia('(prefers-reduced-motion: reduce)').matches + '|' + (${animExpr})`],
+          15_000,
+          localEnv,
+        );
+        if (animOff.ok) {
+          let raw = animOff.stdout.trim();
+          try {
+            raw = JSON.parse(raw) as string; // ipc results are JSON-encoded
+          } catch {}
+          const [mq, name] = raw.split("|");
+          check(
+            "P3-087: reduce matches and neutralizes every animation (name none)",
+            mq === "true" && name === "none",
+            animOff.stdout,
+          );
+        }
+        run("P3-087: reduced-ON evidence shot", ["shot", join(shotsDir, "P3-087-motion-reduced-1440.png")], 15_000, localEnv);
+        run("P3-087: restore motion preference", ["motion", "no-preference"], 15_000, localEnv);
+        run("P3-087: 390 evidence shot", ["shot", join(shotsDir, "P3-087-motion-390.png"), "390", "844"], 15_000, localEnv);
 
         // --- P2-092: the Browser pane's guest view fills the pane ------------
         // The operator's repro: the <webview> element box was correct but the

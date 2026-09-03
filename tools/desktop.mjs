@@ -91,7 +91,8 @@ async function clientMain() {
   if (!cmd || cmd === "help") {
     console.log(
       "usage: node tools/desktop.mjs open [shot.png [w h]] | see <texto> | click <sel> | " +
-        "type <sel> <texto> | shot <out.png> [w h] | ipc <expr> | menu <id> | menu-click <id> | wins | close",
+        "type <sel> <texto> | shot <out.png> [w h] | ipc <expr> | motion reduce|no-preference | " +
+        "menu <id> | menu-click <id> | wins | close",
     );
     process.exit(cmd ? 0 : 2);
   }
@@ -128,6 +129,10 @@ async function clientMain() {
     fail(await send({ cmd: "shot", out: args[0] ?? "shot.png", w: args[1], h: args[2] }));
   } else if (cmd === "ipc") {
     fail(await send({ cmd: "ipc", expr: args[0] }));
+  } else if (cmd === "motion") {
+    // P3-087: emulate (prefers-reduced-motion: reduce) | "no-preference" —
+    // drives the real CSS media query path in the renderer
+    fail(await send({ cmd: "motion", reduce: args[0] === "reduce" }));
   } else if (cmd === "menu") {
     fail(await send({ cmd: "menu", id: args[0] }));
   } else if (cmd === "menu-click") {
@@ -443,6 +448,12 @@ async function handle(electronApp, page, msg) {
     case "ipc": {
       const result = await page.evaluate(msg.expr);
       return { ok: true, result };
+    }
+    case "motion": {
+      // P3-087: Playwright media emulation — matchMedia() and the computed
+      // styles in the renderer honor it exactly like the OS setting would.
+      await page.emulateMedia({ reducedMotion: msg.reduce ? "reduce" : "no-preference" });
+      return { ok: true };
     }
     case "menu": {
       // P1-046: assert a Go-menu item exists (id registered in main.ts).
