@@ -59,3 +59,54 @@ export function contextWindowFor(providers: OpencodeProviders, providerID: strin
   }
   return 0;
 }
+
+/**
+ * P1-079 (round 2): flatten the catalog into a `providerID/modelKey → context
+ * window` map. Covers both key shapes the session's model field produces
+ * (bare "glm-5.2" and qualified "deepseek/deepseek-v4-flash") because the
+ * lookup key is always the provider-qualified `${providerID}/${modelID}`.
+ */
+export function buildWindowMap(providers: OpencodeProviders): Map<string, number> {
+  const windows = new Map<string, number>();
+  for (const p of providers.all ?? []) {
+    if (!p) continue;
+    for (const [key, m] of Object.entries(p.models ?? {})) {
+      const ctx = m?.limit?.context;
+      if (typeof ctx !== "number" || !Number.isFinite(ctx) || ctx <= 0) continue;
+      windows.set(`${p.id}/${key}`, ctx);
+    }
+  }
+  return windows;
+}
+
+/** Default freshness window for the provider window cache. */
+export const WINDOW_CACHE_TTL_MS = 60_000;
+
+/**
+ * Short-TTL cache of the flattened window map: the gauge endpoint fires on
+ * every idle transition of every open chat, and the raw /provider catalog is
+ * ~6MB — refetching + reparsing it per request is waste. A stale/missing
+ * lookup returns 0 and the caller refetches the catalog once, refreshing the
+ * cache (an unknown model therefore refetches per request — correct, and no
+ * worse than the pre-cache behavior).
+ */
+export class WindowCache {
+  private entry: { windows: Map<string, number>; at: number } | null = null;
+  constructor(private ttlMs = WINDOW_CACHE_TTL_MS) {}
+
+  /** Consume a freshly fetched catalog (rebuilds the map). */
+  refresh(providers: OpencodeProviders, now = Date.now()): void {
+    this.entry = { windows: buildWindowMap(providers), at: now };
+  }
+
+  /** Cached window for `providerID/modelID`; 0 on miss or stale entry. */
+  lookup(providerID: string, modelID: string, now = Date.now()): number {
+    if (!this.entry || now - this.entry.at > this.ttlMs) return 0;
+    return this.entry.windows.get(`${providerID}/${modelID}`) ?? 0;
+  }
+
+  /** Drop the cached map (tests / forced refresh). */
+  clear(): void {
+    this.entry = null;
+  }
+}

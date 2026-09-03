@@ -18,6 +18,7 @@ import {
   isContextCritical,
   loadRecapCarry,
   saveRecapCarry,
+  type SessionContext,
 } from "./context";
 
 export const CONSTITUTION = `CONSTITUTION (never violate):
@@ -491,6 +492,73 @@ export function parseRecap(output: string): string {
 export function recapBlock(recap: string): string {
   if (!recap) return "";
   return `\nCONTEXT RECAP (P1-079): the previous builder session reached the context checkpoint (~85% of the model window) and was closed CLEAN — this is infra, not a failure, and no attempt was burned. A fresh session starts now with this recap of the work state:\n${recap}\nContinue from this state: verify the branch yourself (git log/diff), do not redo work the recap marks as done, and do not re-open the old session.\n`;
+}
+
+/**
+ * P1-079 (round 2): a session recycled by the checkpoint must never be
+ * advertised as resumable — the resume block would tell the fresh builder to
+ * continue it "via -s" while the recap block announces a clean fresh start.
+ * The killed session's id is dropped; its resumable subagent task ids survive
+ * (they are still recoverable work).
+ */
+export function dropResumeSession(resume: AgentIds | null): AgentIds | null {
+  if (!resume) return null;
+  return { taskIds: resume.taskIds };
+}
+
+export interface CheckpointOutcome {
+  /** Measured pressure (0..100); null when the session was unmeasurable or
+   * there was no session to measure — both mean fail-open, keep going. */
+  pct: number | null;
+  /** True when the session must be recycled: critical pressure AND a usable
+   * recap. A unusable recap keeps the session (fail-open: killing the session
+   * without a recap loses context for nothing). */
+  recycle: boolean;
+  /** The recap to carry into the fresh round ("" when not recycling). */
+  recap: string;
+}
+
+/**
+ * P1-079 (round 2): the checkpoint decision, extracted from the runPipeline
+ * glue with injectable collaborators so the e2e battery can drive the full
+ * contract (measure → decide → recycle → no attempt burned) against a fake
+ * opencode server and a fake recap pass. Production wires `fetchContext` to
+ * `fetchSessionContext` and `generateRecap` to the scribe run.
+ */
+export async function evaluateCheckpoint(
+  builderSession: string | undefined,
+  t: Task,
+  findings: string,
+  fetchContext: (sessionId: string) => Promise<SessionContext | null>,
+  generateRecap: (t: Task, findings: string) => Promise<string>,
+): Promise<CheckpointOutcome> {
+  if (!builderSession) return { pct: null, recycle: false, recap: "" };
+  const ctx = await fetchContext(builderSession);
+  if (!ctx) return { pct: null, recycle: false, recap: "" };
+  if (!isContextCritical(ctx.pct)) return { pct: ctx.pct, recycle: false, recap: "" };
+  const recap = await generateRecap(t, findings);
+  if (!recap) return { pct: ctx.pct, recycle: false, recap: "" };
+  return { pct: ctx.pct, recycle: true, recap };
+}
+
+/** The state the checkpoint owns inside the round loop (by-value transitions). */
+export interface CheckpointState {
+  builderSession: string | undefined;
+  resume: AgentIds | null;
+  /** The task's attempt counter — pinned so the battery can prove a recycle
+   * never advances it (overflowed context is infra, P1-074). */
+  attempts: number;
+}
+
+/**
+ * Pure state transition applying a checkpoint outcome: the session id is
+ * killed (the next builder spawn opens a FRESH session), the killed session
+ * id is dropped from the resume state, and the attempt counter is returned
+ * UNTOUCHED. No-op (identity) when the decision is not a recycle.
+ */
+export function applyCheckpoint(st: CheckpointState, d: CheckpointOutcome): CheckpointState {
+  if (!d.recycle) return st;
+  return { builderSession: undefined, resume: dropResumeSession(st.resume), attempts: st.attempts };
 }
 
 /**
@@ -1352,52 +1420,48 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
     // rounds (sessionId resume); past the critical threshold the work state is
     // recapped and the session is opened FRESH for this round. Overflowed
     // context is infra (P1-074): no attempt is burned.
-    if (builderSession) {
-      const ctx = await fetchSessionContext(builderSession);
-      if (ctx) {
-        recordContextPressure(state, t.id, round, ctx.pct);
-        console.log(
-          JSON.stringify({
-            ts: nowLocalISO(),
-            level: "info",
-            msg: "contextPressure",
-            data: { task: t.id, round, pct: Math.round(ctx.pct * 10) / 10, tokens: ctx.tokens, window: ctx.window },
-          }),
-        );
-        if (isContextCritical(ctx.pct)) {
-          emit("phase", { task: t.id, phase: "context-checkpoint", detail: `${Math.round(ctx.pct)}%` });
-          const out = await runAgent(recapPrompt(t, findings), {
-            cwd: ws,
-            timeoutMin: CONTEXT_RECAP_TIMEOUT_MIN,
-            label: `recap-${t.id}-r${round}`,
-            onStdout: stream,
-          });
-          trackSession(out.sessionId);
-          const generated = parseRecap(out.output);
-          if (generated) {
-            saveRecapCarry(t.id, generated, round);
-            recap = generated;
-            builderSession = undefined; // killed CLEAN — next round opens a fresh session
-            console.log(
-              JSON.stringify({
-                ts: nowLocalISO(),
-                level: "info",
-                msg: "context checkpoint — builder session recycled with recap",
-                data: { task: t.id, round, pct: Math.round(ctx.pct) },
-              }),
-            );
-          } else {
-            console.log(
-              JSON.stringify({
-                ts: nowLocalISO(),
-                level: "warn",
-                msg: "context checkpoint recap unusable — keeping session",
-                data: { task: t.id, round },
-              }),
-            );
-          }
-        }
+    const ck = await evaluateCheckpoint(
+      builderSession,
+      t,
+      findings,
+      (sid) => fetchSessionContext(sid),
+      async (tk, f) => {
+        const out = await runAgent(recapPrompt(tk, f), {
+          cwd: ws,
+          timeoutMin: CONTEXT_RECAP_TIMEOUT_MIN,
+          label: `recap-${t.id}-r${round}`,
+          onStdout: stream,
+        });
+        trackSession(out.sessionId);
+        return parseRecap(out.output);
+      },
+    );
+    if (ck.pct !== null) {
+      recordContextPressure(state, t.id, round, ck.pct);
+      console.log(
+        JSON.stringify({
+          ts: nowLocalISO(),
+          level: "info",
+          msg: "contextPressure",
+          data: { task: t.id, round, pct: Math.round(ck.pct * 10) / 10 },
+        }),
+      );
+      if (ck.recycle) {
+        emit("phase", { task: t.id, phase: "context-checkpoint", detail: `${Math.round(ck.pct)}%` });
       }
+    }
+    ({ builderSession, resume } = applyCheckpoint({ builderSession, resume, attempts: attemptNo }, ck));
+    if (ck.recycle) {
+      saveRecapCarry(t.id, ck.recap, round);
+      recap = ck.recap;
+      console.log(
+        JSON.stringify({
+          ts: nowLocalISO(),
+          level: "info",
+          msg: "context checkpoint — builder session recycled with recap",
+          data: { task: t.id, round, pct: Math.round(ck.pct ?? 0) },
+        }),
+      );
     }
     const build = await runAgent(builderPrompt(t, round, findings, lessons, specFile, resume, attemptNo + 1, recap), {
       cwd: ws,

@@ -23,7 +23,9 @@ import {
   saveRecapCarry,
   setRecapCarryDir,
 } from "../apps/pilot/src/context";
-import { parseRecap, recapBlock, recapPrompt, recordContextPressure, builderPrompt } from "../apps/pilot/src/pipeline";
+import { parseRecap, recapBlock, recapPrompt, recordContextPressure, builderPrompt, applyCheckpoint, dropResumeSession, evaluateCheckpoint } from "../apps/pilot/src/pipeline";
+import { buildWindowMap, WindowCache } from "../apps/daemon/src/contextgauge";
+import type { AgentIds } from "../apps/pilot/src/runner";
 import { contextPct as webPct, firstSentence, pressureLevel } from "../apps/web/src/lib/context";
 import { contextPct as daemonPct, contextWindowFor as daemonWindow, sessionTokenTotal } from "../apps/daemon/src/contextgauge";
 
@@ -81,7 +83,7 @@ check(
   "recapBlock explains the clean recycle",
   recapBlock("the state").includes("CONTEXT RECAP") && recapBlock("the state").includes("the state") && recapBlock("the state").includes("P1-079"),
 );
-const task = { id: "P1-079", priority: "P1", title: "ctx gauge", spec: "s", area: "infra", size: "S" as const };
+const task = { id: "P1-079", priority: "P1", title: "ctx gauge", spec: "s", area: "infra", size: "S" as const, line: "P1-079 ctx gauge" };
 check(
   "builderPrompt carries the recap block",
   builderPrompt(task, 2, "", [], null, null, 1, "the state").includes("CONTEXT RECAP") &&
@@ -179,6 +181,80 @@ await withServer(
 );
 // unreachable server
 check("fetchSessionContext fail-open when the server is down", (await fetchSessionContext(SESSION, "http://127.0.0.1:1")) === null);
+
+// ── e2e: the full recycle contract — measure → decide → apply ───────────────
+// Drives the REAL evaluateCheckpoint + applyCheckpoint glue (the same functions
+// runPipeline calls) with the REAL fetchSessionContext against the fake
+// opencode server: past 85% the session is recycled with a recap and the
+// attempt counter is untouched; below it, nothing changes.
+{
+  const task = { id: "P1-079", priority: "P1", title: "ctx gauge", spec: "s", area: "infra", size: "S" as const, line: "P1-079 ctx gauge" };
+  const attempts = 2;
+  const resume: AgentIds | null = { sessionId: SESSION, taskIds: ["task_abcdef12"] };
+  const builderSession = SESSION;
+
+  await withServer(
+    (url) => (url.startsWith("/session/") ? { body: fullSession } : { body: catalog }),
+    async (port) => {
+      const base = `http://127.0.0.1:${port}`;
+      const fetchCtx = (sid: string) => fetchSessionContext(sid, base);
+      // fullSession tokens (~245k) sit ABOVE 85% of the 262144 window
+      const over = await evaluateCheckpoint(builderSession, task, "fix X", fetchCtx, async () => "1. task\n2. pending\n3. next");
+      check("critical session → recycle decision", over.recycle && over.recap.includes("next") && (over.pct ?? 0) >= 85);
+      const applied = applyCheckpoint({ builderSession, resume, attempts }, over);
+      check("applyCheckpoint kills the session (fresh one opens next round)", applied.builderSession === undefined);
+      check("applyCheckpoint never burns an attempt (infra, P1-074)", applied.attempts === attempts);
+      check("applyCheckpoint drops the killed session from the resume block", applied.resume?.sessionId === undefined);
+      check("resumable subagent task ids survive the recycle", applied.resume?.taskIds.length === 1 && applied.resume.taskIds[0] === "task_abcdef12");
+      // below the threshold nothing happens — identity transition
+      const low = await evaluateCheckpoint(
+        builderSession,
+        task,
+        "",
+        async (sid) => {
+          const c = await fetchCtx(sid);
+          return c ? { ...c, tokens: 1000, pct: contextPct(1000, WINDOW) } : null;
+        },
+        async () => "should not be asked",
+      );
+      check("sub-critical session is not recycled", !low.recycle && low.recap === "" && (low.pct ?? 0) < 85);
+      const untouched = applyCheckpoint({ builderSession, resume, attempts }, low);
+      check("applyCheckpoint is an identity below the threshold", untouched.builderSession === builderSession && untouched.resume === resume && untouched.attempts === attempts);
+      // recap pass fails → fail-open, the session is KEPT (recap-less recycle loses context for nothing)
+      const noRecap = await evaluateCheckpoint(builderSession, task, "", fetchCtx, async () => "");
+      check("unusable recap keeps the session (fail-open)", (noRecap.pct ?? 0) >= 85 && !noRecap.recycle);
+      // unmeasurable session → no decision, no recycle
+      const blind = await evaluateCheckpoint(builderSession, task, "", async () => null, async () => "r");
+      check("unmeasurable session is fail-open", blind.pct === null && !blind.recycle);
+      // no session (round 1 / already recycled) → nothing measured
+      const none = await evaluateCheckpoint(undefined, task, "", fetchCtx, async () => "r");
+      check("no session → no checkpoint", none.pct === null && !none.recycle);
+      // prompt glue: the recycled round must not tell the builder to resume "-s"
+      const prompt = builderPrompt(task, 2, "", [], null, applied.resume, 1, over.recap);
+      check("recycled round prompt no longer advertises the killed session via -s", !prompt.includes("continues it via -s"));
+      check("recycled round prompt carries the recap", prompt.includes("CONTEXT RECAP"));
+    },
+  );
+}
+
+// dropResumeSession edge cases (pure)
+check("dropResumeSession on null is null", dropResumeSession(null) === null);
+
+// ── provider window cache (round 2: no 6MB refetch per gauge request) �───────
+{
+  const cache = new WindowCache(60_000);
+  check("empty cache misses", cache.lookup("glm52", "glm-5.2") === 0);
+  cache.refresh(catalog, 1_000);
+  check("fresh cache hits the bare model key", cache.lookup("glm52", "glm-5.2", 2_000) === 262_144);
+  check("fresh cache hits the qualified model key", cache.lookup("hpc-ai", "deepseek/deepseek-v4-flash", 2_000) === 1_048_576);
+  check("stale cache misses (TTL)", cache.lookup("glm52", "glm-5.2", 1_000 + 60_001) === 0);
+  cache.refresh(catalog, 1_000);
+  check("unknown model misses even when fresh", cache.lookup("glm52", "nope", 2_000) === 0);
+  check("zero-context models are not cached", cache.lookup("broken", "m1", 2_000) === 0);
+  cache.clear();
+  check("clear forces a miss", cache.lookup("glm52", "glm-5.2", 2_000) === 0);
+  check("buildWindowMap matches contextWindowFor", buildWindowMap(catalog).get("glm52/glm-5.2") === contextWindowFor(catalog, "glm52", "glm-5.2"));
+}
 
 // ── the checkpoint contract — a session recycle is infra, not merit ─────────
 {

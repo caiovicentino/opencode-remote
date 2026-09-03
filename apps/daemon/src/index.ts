@@ -52,7 +52,7 @@ import { detectWhisper, transcribeAudio, type WhisperTool } from "./whisper.js";
 import { metrics, startMetricsServer, VERSION } from "./metrics.js";
 import { loadRoutines, saveRoutines, type Routine } from "./routines.js";
 import { ARTIFACTS_ROOT, artifactMime, kindFor, listArtifacts, readArtifact, sessionTitleMap } from "./artifacts.js";
-import { contextPct, contextWindowFor, sessionTokenTotal } from "./contextgauge.js";
+import { WindowCache, contextPct, sessionTokenTotal } from "./contextgauge.js";
 import { ArtifactWatcher } from "./artifactwatch.js";
 import { createShutdown, stopAccepting } from "./shutdown.js";
 import { localUpgradeAllowed } from "./localws.js";
@@ -79,6 +79,9 @@ const RELAY_URL = process.env.RELAY_URL ?? "ws://127.0.0.1:8787";
 const OPENCODE_URL = process.env.OPENCODE_URL ?? "http://127.0.0.1:4096";
 const OPENCODE_USER = process.env.OPENCODE_SERVER_USERNAME ?? "opencode";
 const OPENCODE_PASS = process.env.OPENCODE_SERVER_PASSWORD ?? "";
+// P1-079 (round 2): context gauge — shared short-TTL cache of the model
+// window map (the /provider catalog is ~6MB; do not refetch it per request).
+const providerWindows = new WindowCache();
 const MACHINE_NAME = process.env.OCR_MACHINE_NAME ?? "my-machine";
 let machineName = MACHINE_NAME;
 
@@ -381,19 +384,23 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
       const modelID = s.model?.modelID ?? "";
       let window = 0;
       if (providerID && modelID) {
-        try {
-          const pres = await fetch(new URL("/provider", OPENCODE_URL), {
-            headers: authHeader ? { authorization: authHeader } : {},
-          });
-          if (pres.ok) {
-            window = contextWindowFor(
-              (await pres.json()) as Parameters<typeof contextWindowFor>[0],
-              providerID,
-              modelID,
-            );
+        // P1-079 (round 2): the gauge fires on every idle transition of every
+        // open chat — a short-TTL cache of the flattened window map avoids
+        // refetching the ~6MB /provider catalog per request (an uncovered
+        // model still refetches per request: correct and no worse than before).
+        window = providerWindows.lookup(providerID, modelID);
+        if (!window) {
+          try {
+            const pres = await fetch(new URL("/provider", OPENCODE_URL), {
+              headers: authHeader ? { authorization: authHeader } : {},
+            });
+            if (pres.ok) {
+              providerWindows.refresh((await pres.json()) as Parameters<typeof providerWindows.refresh>[0]);
+              window = providerWindows.lookup(providerID, modelID);
+            }
+          } catch {
+            // provider catalog is optional — without it there is no gauge
           }
-        } catch {
-          // provider catalog is optional — without it there is no gauge
         }
       }
       return {
