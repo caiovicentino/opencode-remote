@@ -104,7 +104,9 @@ private. That is the product: **local power, remote control, zero trust**.
   includes a **Browser pane**: in the desktop shell it renders a real sandboxed Electron
   `<webview>` (scroll, click and edit work like in a browser; `contextIsolation`/`sandbox` on,
   `nodeIntegration` off, popups off), with an editable URL bar, reload and a maximize toggle
-  (~80% width). The Playwright screenshot mode (`/api/browse`) remains the fallback in the PWA
+  (~80% width). The webview guest always fills the whole pane — including after the maximize
+  toggle or a window resize — instead of painting in a top strip (P2-092). The Playwright
+  screenshot mode (`/api/browse`) remains the fallback in the PWA
   and the reviewer-driving path (`tools/browse.mjs`)
 - **Auto-preview** — when the agent mentions a `http(s)://localhost:<port>` / `127.0.0.1:<port>`
   URL in a reply, the daemon emits a synthetic `ocr.preview` event (deterministic URL parse,

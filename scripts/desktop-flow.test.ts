@@ -109,9 +109,10 @@ const cliEnv = { ...process.env, OCR_DESKTOP_SESSION: session };
 // spec and reflected in the <90s note in AGENTS.md. P2-090 added the artifact
 // auto-open beat (real watcher + three idle round-trips), growing it to 120s;
 // P2-091 added the artifact-navigation beats (card→split, list→split, title
-// headers), growing it to 150s.
+// headers), growing it to 150s; P2-092 added the Browser-pane fill beat
+// (colored test page + maximize-toggle measurement), growing it to 165s.
 const startedAt = Date.now();
-const DEADLINE_MS = 150_000;
+const DEADLINE_MS = 165_000;
 const shotPath = join(tmpdir(), "ocr-desktop-flow", `flow-${process.pid}.png`);
 // P1-051 round 2: session state (socket, token, log) lives in a 0700 dir.
 const logFile = join(tmpdir(), `ocr-desktop-${session}`, "keeper.log");
@@ -935,6 +936,130 @@ try {
                 }
               }
             }
+          }
+        }
+
+        // --- P2-092: the Browser pane's guest view fills the pane ------------
+        // The operator's repro: the <webview> element box was correct but the
+        // Electron guest view painted only a top strip — the shadow root's
+        // internal iframe has no height of its own and collapsed to its 150px
+        // default while the page CSS forced display:block on the host. The
+        // criterion: a colored test page loaded in the REAL pane occupies the
+        // pane's bounding box (element AND guest viewport), and keeps
+        // occupying it when the pane width changes (maximize toggle / window
+        // resize — the P2-092 ResizeObserver path).
+        const browserShot = join(shotsDir, "P2-092-browser-pane.png");
+        const p2PortProbe = spawnSync(
+          process.execPath,
+          ["-e", "const s=require('node:http').createServer();s.listen(0,'127.0.0.1',()=>{console.log('PORT='+s.address().port);s.close()})"],
+          { encoding: "utf8" },
+        );
+        const p2Port = Number((p2PortProbe.stdout.match(/PORT=(\d+)/) ?? [])[1]);
+        check("P2-092: test page server picked a free port", Number.isInteger(p2Port) && p2Port > 0, p2PortProbe.stdout + p2PortProbe.stderr);
+        if (Number.isInteger(p2Port) && p2Port > 0) {
+          const p2Server = spawn(
+            process.execPath,
+            [
+              "-e",
+              [
+                "const http = require('node:http');",
+                "http.createServer((req, res) => {",
+                "  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });",
+                "  res.end('<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"></head>' +",
+                "    '<body style=\"margin:0;background:#0e7c66\"><div style=\"position:fixed;inset:0;background:#0e7c66\"></div></body></html>');",
+                `}).listen(${p2Port}, '127.0.0.1');`,
+              ].join("\n"),
+            ],
+            { stdio: "ignore", detached: true },
+          );
+          p2Server.unref();
+          try {
+            // back to the desk layout (P1-088 left the window 390px wide)
+            run("P2-092: resize to desktop width", ["shot", browserShot, "1440", "900"], 15_000, localEnv);
+            await waitProbe(
+              "P2-092: desk layout mounted",
+              "!!document.querySelector('.desk')",
+              (v) => /true/.test(v),
+              localEnv,
+            );
+            run("P2-092: open Browser pane", ["menu-click", "go-pane-browser"], 15_000, localEnv);
+            const wvMounted = await waitProbe(
+              "P2-092: .browser-frame webview mounted",
+              "!!document.querySelector('.browser-frame webview')",
+              (v) => /true/.test(v),
+              localEnv,
+            );
+            if (wvMounted) {
+              const p2Measure = `(async () => {
+                const frame = document.querySelector('.browser-frame');
+                const wv = document.querySelector('.browser-frame webview');
+                if (!frame || !wv) return null;
+                const f = frame.getBoundingClientRect();
+                const w = wv.getBoundingClientRect();
+                const g = await wv.executeJavaScript('({ iw: window.innerWidth, ih: window.innerHeight })');
+                return {
+                  frame: { w: Math.round(f.width), h: Math.round(f.height) },
+                  el: { w: Math.round(w.width), h: Math.round(w.height) },
+                  guest: g,
+                };
+              })()`;
+              const navExpr = `(async () => {
+                const wv = document.querySelector('.browser-frame webview');
+                wv.loadURL('http://127.0.0.1:${p2Port}/');
+                await new Promise((resolve, reject) => {
+                  const t = setTimeout(() => reject(new Error('load timeout')), 15000);
+                  wv.addEventListener('did-stop-loading', () => { clearTimeout(t); resolve(); }, { once: true });
+                });
+                return 'OK';
+              })()`;
+              const loaded = run("P2-092: colored test page loads in the pane", ["ipc", navExpr], 25_000, localEnv);
+              if (loaded.ok) {
+                const base = run("P2-092: measure pane boxes", ["ipc", p2Measure], 15_000, localEnv);
+                if (base.ok) {
+                  const m = JSON.parse(base.stdout) as {
+                    frame: { w: number; h: number };
+                    el: { w: number; h: number };
+                    guest: { iw: number; ih: number };
+                  } | null;
+                  console.log("     P2-092 measurements (baseline):", base.stdout.trim());
+                  check(
+                    "P2-092: webview element occupies the pane bounding box",
+                    !!m && m.frame.w > 0 &&
+                      Math.abs(m.el.w - m.frame.w) <= 1 && Math.abs(m.el.h - m.frame.h) <= 1,
+                    base.stdout,
+                  );
+                  check(
+                    "P2-092: guest viewport fills the pane (no top strip)",
+                    !!m && m.frame.w > 0 &&
+                      Math.abs(m.guest.iw - m.frame.w) <= 2 && Math.abs(m.guest.ih - m.frame.h) <= 2,
+                    base.stdout,
+                  );
+                }
+                // pane width change #1: maximize toggle (36vw → 80vw) — the
+                // guest must track the wider box without a remount
+                run("P2-092: maximize the pane", ["click", 'button[title="Maximizar painel"]'], 15_000, localEnv);
+                const maxed = run("P2-092: measure pane boxes (maximized)", ["ipc", p2Measure], 15_000, localEnv);
+                if (maxed.ok) {
+                  const m = JSON.parse(maxed.stdout) as {
+                    frame: { w: number; h: number };
+                    el: { w: number; h: number };
+                    guest: { iw: number; ih: number };
+                  } | null;
+                  console.log("     P2-092 measurements (maximized):", maxed.stdout.trim());
+                  check(
+                    "P2-092: guest tracks the pane after a width change (resize path)",
+                    !!m && m.frame.w > 0 &&
+                      Math.abs(m.guest.iw - m.frame.w) <= 2 && Math.abs(m.guest.ih - m.frame.h) <= 2,
+                    maxed.stdout,
+                  );
+                }
+                run("P2-092: restore the pane", ["click", 'button[title="Restaurar painel"]'], 15_000, localEnv);
+                // evidence: the colored page filling the whole pane
+                run("P2-092: pane-filled evidence shot", ["shot", browserShot], 15_000, localEnv);
+              }
+            }
+          } finally {
+            p2Server.kill();
           }
         }
 
