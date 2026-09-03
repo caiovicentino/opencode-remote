@@ -2138,6 +2138,35 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       }
       return true;
     }
+    // POST /api/pilot-fleet — live fleet control from the v3 dashboard:
+    // slots (1-8, clamped) + tier-B coordinator model (fable/opus/…). The
+    // pilot hot-reloads pilot.json every scheduling cycle (refreshFleet).
+    if (seg[1] === "pilot-fleet" && req.method === "POST") {
+      const body = JSON.parse((await readBody(req)) || "{}") as { slots?: number; coordinator?: string };
+      const file = join(homedir(), ".opencode-remote", "pilot.json");
+      try {
+        const cfg = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+        const n = Number(body.slots);
+        if (Number.isInteger(n) && n >= 1 && n <= 8) cfg.slots = n;
+        if (typeof body.coordinator === "string" && /^[A-Za-z0-9._-]{3,64}$/.test(body.coordinator)) {
+          const prev = (cfg.models as { tierB?: Record<string, string> } | undefined)?.tierB ?? {};
+          cfg.models = {
+            tierB: {
+              ...prev,
+              planner: body.coordinator,
+              strategist: body.coordinator,
+              forensic: body.coordinator,
+              reviewerEscalation: body.coordinator,
+            },
+          };
+        }
+        writeFileSync(file, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+        send(200, { cfg });
+      } catch (err) {
+        send(500, { error: String(err) });
+      }
+      return true;
+    }
     // POST /api/pilot-notify — wake the supervisor session after a pipeline result
     if (seg[1] === "pilot-notify" && req.method === "POST") {
       const body = JSON.parse((await readBody(req)) || "{}") as { text?: string };

@@ -77,9 +77,32 @@ async function main() {
   // P1-006: one workspace clone per slot (pilot/repo-1, repo-2…), created via
   // `git clone --shared` the first time. All other slots inherit slot 1's
   // behavior; slot-1 is also the aux-agent (strategist/researcher) workspace.
-  const slotNumbers = Array.from({ length: cfg.slots }, (_, i) => i + 1);
+  let slotNumbers = Array.from({ length: cfg.slots }, (_, i) => i + 1);
   const slotCfg = new Map<number, PilotConfig>();
   for (const s of slotNumbers) slotCfg.set(s, ensureSlotWorkspace(cfg, s));
+  // Frota Cognitiva: re-read pilot.json on every fill — dashboard edits to
+  // slots / models.tierB land without a restart. Grow spawns slot worktrees
+  // on the fly (ensureSlotWorkspace is idempotent); shrink only stops NEW
+  // picks — running pipelines drain naturally, worktrees stay for regrowth.
+  const refreshFleet = (): void => {
+    let fresh: PilotConfig;
+    try {
+      fresh = loadConfig();
+    } catch {
+      return;
+    }
+    const modelsChanged = JSON.stringify(fresh.models) !== JSON.stringify(cfg.models);
+    if (fresh.slots === cfg.slots && !modelsChanged) return;
+    const before = cfg.slots;
+    cfg.slots = fresh.slots;
+    cfg.models = fresh.models;
+    for (let s = 1; s <= cfg.slots; s++) if (!slotCfg.has(s)) slotCfg.set(s, ensureSlotWorkspace(cfg, s));
+    for (const [, c] of slotCfg) c.models = cfg.models;
+    slotNumbers = Array.from({ length: cfg.slots }, (_, i) => i + 1);
+    const coord = cfg.models?.tierB?.planner ?? "default";
+    log("info", "fleet updated", { slots: `${before}→${cfg.slots}`, coordinator: coord });
+    emit("phase", { task: "fleet", phase: "resize", ok: true, detail: `${cfg.slots} slots · coord ${coord}` });
+  };
   startWatchdog();
 
   // P1-030: deterministic repair pass on every boot — refs/state/backlog/
@@ -105,6 +128,7 @@ async function main() {
    * retries in its next cycle. Never throws out of runSlot.finally.
    */
   const fillFreeSlots = (reason: "loop" | "eager-fill"): void => {
+    refreshFleet();
     // --once (eval battery): exactly one pipeline total — only the loop call picks
     if (once && reason === "eager-fill") return;
     if (frozen() || state.auditMode) return;
