@@ -814,6 +814,8 @@ select {
   display: flex;
   height: 100%;
   width: 100%;
+  /* P3-087: clips the pane slide so transforms never spill past the window */
+  overflow: hidden;
 }
 .desk-side {
   display: flex;
@@ -889,6 +891,25 @@ select {
   background: var(--bg);
   position: relative;
   overflow: hidden;
+  /* P3-087: opening a pane slides it in from the rail (display:none → block
+     restarts the animation; closing stays instant — nothing lingers) */
+  animation: pane-slide-in var(--motion-slow) var(--ease-out);
+}
+/* P3-087: content swap inside the pane — keyed by slot in App.tsx so each
+   rail pane eases in as it is raised (browser stays mounted, unmolested) */
+.pane-view {
+  height: 100%;
+  animation: pane-view-in var(--motion-fast) var(--ease-out);
+}
+@keyframes pane-view-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 .desk-pane .screen {
   max-width: none;
@@ -1083,6 +1104,10 @@ select {
   background: transparent;
   border: none;
   border-radius: var(--radius-sm);
+  /* P3-087: rail rows ease their hover/active fill */
+  transition:
+    color var(--motion-fast) var(--ease-out),
+    background var(--motion-fast) var(--ease-out);
 }
 .desk-nav button:hover,
 .desk-nav button.active {
@@ -1129,6 +1154,8 @@ select {
   border-radius: var(--radius-sm);
   cursor: pointer;
   min-width: 0;
+  /* P3-087: hover fill eases in instead of snapping */
+  transition: background var(--motion-fast) var(--ease-out);
 }
 .sess-row:hover {
   background: var(--bg2);
@@ -1481,6 +1508,90 @@ select {
   max-width: 100%;
   display: flex;
   flex-direction: column;
+  /* P3-087: the artifact surface enters on the calm 300ms beat; the exit
+     (kept mounted by lib/motion) leaves on the snappier 150ms one. The row
+     clips the slide so the transform never paints past the window edge. */
+  animation: pane-slide-in var(--motion-slow) var(--ease-out);
+}
+.artifact-pane.out {
+  animation: pane-slide-out var(--motion-fast) var(--ease-out) forwards;
+  pointer-events: none;
+}
+.screen.artifact-split .chat-row {
+  overflow: hidden;
+}
+
+/* P3-087: motion-pass keyframes. Entrances ride the 300ms surface beat,
+   exits the 150ms interaction beat — always ease-out, always neutralized
+   by the global prefers-reduced-motion query. */
+@keyframes pane-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes pane-slide-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+}
+@keyframes scrim-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes scrim-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+/* P3-087: full-screen artifact overlay (narrow viewports / Artifacts list) —
+   scrim backdrop fading behind a panel that slides in from the right,
+   Claude-Desktop style. The .out variants play while lib/motion keeps the
+   tree mounted, then the component unmounts. */
+.artifact-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: var(--scrim-soft);
+  animation: scrim-in var(--motion-slow) var(--ease-out);
+}
+.artifact-backdrop.out {
+  animation: scrim-out var(--motion-fast) var(--ease-out) forwards;
+}
+.artifact-overlay {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  /* P3-087: right-hand drawer over the scrim — a sliver of dimmed chat stays
+     visible on the left, Claude-Desktop style, so the backdrop reads as such */
+  width: min(92vw, 780px);
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--shadow-overlay);
+  animation: pane-slide-in var(--motion-slow) var(--ease-out);
+}
+.artifact-overlay.out {
+  animation: pane-slide-out var(--motion-fast) var(--ease-out) forwards;
+  pointer-events: none;
 }
 
 /* ── command palette (P1-046): flat Raycast/Linear-style overlay ── */

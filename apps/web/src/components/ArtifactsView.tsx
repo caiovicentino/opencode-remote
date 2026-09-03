@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   fmtBytes,
   listArtifactsDetailed,
@@ -6,6 +6,7 @@ import {
   type ArtifactMeta,
 } from "../lib/artifacts";
 import { isSplitViewport } from "../lib/split";
+import { useExitAnimation } from "../lib/motion";
 import type { OcrRequest } from "../lib/files";
 import ArtifactViewer from "./ArtifactViewer";
 import { ArtifactIcon } from "./icons";
@@ -30,6 +31,12 @@ export default function ArtifactsView({
   const [listing, setListing] = useState<ArtifactListing>({ artifacts: [], titles: {} });
   const [error, setError] = useState("");
   const [viewer, setViewer] = useState<ArtifactMeta | null>(null);
+  // P3-087: the overlay slides out before unmounting — keep the last meta
+  // so the exit animation has content to render
+  const lastViewerRef = useRef<ArtifactMeta | null>(null);
+  if (viewer) lastViewerRef.current = viewer;
+  const viewerPhase = useExitAnimation(!!viewer);
+  const shownViewer = viewer ?? (viewerPhase !== "closed" ? lastViewerRef.current : null);
 
   function load() {
     setError("");
@@ -106,10 +113,11 @@ export default function ArtifactsView({
           </div>
         ))}
       </div>
-      {viewer && (
+      {shownViewer && viewerPhase !== "closed" && (
         <ArtifactViewer
-          meta={viewer}
+          meta={shownViewer}
           request={request}
+          closing={viewerPhase === "closing"}
           onClose={() => {
             setViewer(null);
             load();

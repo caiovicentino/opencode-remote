@@ -134,12 +134,15 @@ export default function ArtifactViewer({
   request,
   onClose,
   variant = "overlay",
+  closing = false,
 }: {
   meta: ArtifactMeta;
   request: OcrRequest;
   onClose: () => void;
   /** "overlay" (default) renders fixed full-screen; "panel" fills its parent */
   variant?: "overlay" | "panel";
+  /** P3-087: true while the exit animation plays (parent keeps us mounted) */
+  closing?: boolean;
 }) {
   const [state, setState] = useState<ViewState>({ loading: true });
   const viewRef = useRef<ViewState>({ loading: true });
@@ -184,128 +187,143 @@ export default function ArtifactViewer({
     saveBlob(blob, meta.name);
   }
 
-  return (
+  const header = (
     <div
-      style={
-        variant === "panel"
-          ? {
-              flex: 1,
-              minWidth: 0,
-              background: "var(--bg)",
-              display: "flex",
-              flexDirection: "column",
-            }
-          : {
-              position: "fixed",
-              inset: 0,
-              zIndex: 1000,
-              background: "var(--bg)",
-              display: "flex",
-              flexDirection: "column",
-            }
-      }
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "10px 12px",
+        background: "var(--surface)",
+        color: "var(--text)",
+        borderBottom: "1px solid var(--border)",
+      }}
     >
-      <div
+      <button onClick={onClose} aria-label="Close">
+        ←
+      </button>
+      <span
         style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          padding: "10px 12px",
-          background: "var(--surface)",
-          color: "var(--text)",
-          borderBottom: "1px solid var(--border)",
+          flex: 1,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+          fontSize: "0.85rem",
         }}
       >
-        <button onClick={onClose} aria-label="Close">
-          ←
+        {meta.name}
+        {state.size ? <span className="muted"> · {fmtBytes(state.size)}</span> : null}
+      </span>
+      {/* P2-097: with the content refused there are no bytes to save — an
+         honest header hides the action instead of writing an empty file */}
+      {!state.tooLarge && (
+        <button className="primary" onClick={save}>
+          Save
         </button>
-        <span
-          style={{
-            flex: 1,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-            fontSize: "0.85rem",
-          }}
+      )}
+    </div>
+  );
+
+  const body = (
+    <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: state.text ? 14 : 0 }}>
+      {state.loading && <p className="muted">…</p>}
+      {state.error && <p style={{ color: "var(--danger)" }}>{state.error}</p>}
+      {!state.loading && !state.error && (
+        <>
+          {state.truncated && (
+            <p className="muted" style={{ margin: "0 0 8px" }}>
+              Large file — showing the first 500 KB. Use Save to get it whole.
+            </p>
+          )}
+          {meta.kind === "html" && (
+            <iframe
+              title={meta.name}
+              sandbox="allow-scripts"
+              srcDoc={state.text ?? ""}
+              style={{ width: "100%", height: "100%", border: "none", background: "var(--preview-bg)" }}
+            />
+          )}
+          {meta.kind === "md" && (
+            <div style={{ maxWidth: "min(900px, 100%)", overflowWrap: "anywhere" }}>
+              {blocks(parseMarkdown(state.text ?? ""))}
+            </div>
+          )}
+          {meta.kind === "csv" && <CsvTable text={state.text ?? ""} />}
+          {meta.kind === "text" && (
+            <pre
+              style={{
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+                maxWidth: "100%",
+                overflowWrap: "anywhere",
+                fontSize: "0.8rem",
+                margin: 0,
+              }}
+            >
+              {state.text}
+            </pre>
+          )}
+          {meta.kind === "pdf" && (
+            <iframe
+              title={meta.name}
+              src={state.url}
+              // P2-097: blob is same-origin — allow-same-origin keeps the
+              // browser's PDF viewer working while scripts/forms/popups stay
+              // blocked (the blob is created here, never attacker-navigable)
+              sandbox="allow-same-origin"
+              style={{ width: "100%", height: "100%", border: "none" }}
+            />
+          )}
+          {meta.kind === "image" && (
+            <img
+              src={state.url}
+              alt={meta.name}
+              style={{ maxWidth: "100%", maxHeight: "100%", display: "block", margin: "auto" }}
+            />
+          )}
+          {meta.kind === "binary" && (
+            <div style={{ textAlign: "center", padding: 40 }}>
+              <p className="muted">No inline preview for this file type.</p>
+              <button className="primary" onClick={save}>
+                Save
+              </button>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+
+  if (variant === "overlay") {
+    // P3-087: slide-in/out panel over a fading scrim backdrop (classes in
+    // index.css; the .out variants play while the parent keeps us mounted)
+    return (
+      <div className={`artifact-backdrop${closing ? " out" : ""}`}>
+        <div
+          className={`artifact-overlay${closing ? " out" : ""}`}
+          role="dialog"
+          aria-modal="true"
+          aria-label={meta.name}
         >
-          {meta.name}
-          {state.size ? <span className="muted"> · {fmtBytes(state.size)}</span> : null}
-        </span>
-        {/* P2-097: with the content refused there are no bytes to save — an
-           honest header hides the action instead of writing an empty file */}
-        {!state.tooLarge && (
-          <button className="primary" onClick={save}>
-            Save
-          </button>
-        )}
+          {header}
+          {body}
+        </div>
       </div>
-      <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: state.text ? 14 : 0 }}>
-        {state.loading && <p className="muted">…</p>}
-        {state.error && <p style={{ color: "var(--danger)" }}>{state.error}</p>}
-        {!state.loading && !state.error && (
-          <>
-            {state.truncated && (
-              <p className="muted" style={{ margin: "0 0 8px" }}>
-                Large file — showing the first 500 KB. Use Save to get it whole.
-              </p>
-            )}
-            {meta.kind === "html" && (
-              <iframe
-                title={meta.name}
-                sandbox="allow-scripts"
-                srcDoc={state.text ?? ""}
-                style={{ width: "100%", height: "100%", border: "none", background: "var(--preview-bg)" }}
-              />
-            )}
-            {meta.kind === "md" && (
-              <div style={{ maxWidth: "min(900px, 100%)", overflowWrap: "anywhere" }}>
-                {blocks(parseMarkdown(state.text ?? ""))}
-              </div>
-            )}
-            {meta.kind === "csv" && <CsvTable text={state.text ?? ""} />}
-            {meta.kind === "text" && (
-              <pre
-                style={{
-                  whiteSpace: "pre-wrap",
-                  wordBreak: "break-word",
-                  maxWidth: "100%",
-                  overflowWrap: "anywhere",
-                  fontSize: "0.8rem",
-                  margin: 0,
-                }}
-              >
-                {state.text}
-              </pre>
-            )}
-            {meta.kind === "pdf" && (
-              <iframe
-                title={meta.name}
-                src={state.url}
-                // P2-097: blob is same-origin — allow-same-origin keeps the
-                // browser's PDF viewer working while scripts/forms/popups stay
-                // blocked (the blob is created here, never attacker-navigable)
-                sandbox="allow-same-origin"
-                style={{ width: "100%", height: "100%", border: "none" }}
-              />
-            )}
-            {meta.kind === "image" && (
-              <img
-                src={state.url}
-                alt={meta.name}
-                style={{ maxWidth: "100%", maxHeight: "100%", display: "block", margin: "auto" }}
-              />
-            )}
-            {meta.kind === "binary" && (
-              <div style={{ textAlign: "center", padding: 40 }}>
-                <p className="muted">No inline preview for this file type.</p>
-                <button className="primary" onClick={save}>
-                  Save
-                </button>
-              </div>
-            )}
-          </>
-        )}
-      </div>
+    );
+  }
+
+  return (
+    <div
+      style={{
+        flex: 1,
+        minWidth: 0,
+        background: "var(--bg)",
+        display: "flex",
+        flexDirection: "column",
+      }}
+    >
+      {header}
+      {body}
     </div>
   );
 }
