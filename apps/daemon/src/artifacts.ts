@@ -100,6 +100,25 @@ export function listArtifacts(sessionId?: string, root: string = ARTIFACTS_ROOT)
   return out;
 }
 
+/**
+ * P2-091: build the sessionId → conversation title map for the artifacts
+ * list. Tolerant over the opencode `GET /session` rows (wrong shapes are
+ * skipped, never thrown) so a backend drift can never take the listing down;
+ * ids without a usable title are simply absent — clients fall back to the
+ * raw session id.
+ */
+export function sessionTitleMap(rows: unknown, ids: string[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!Array.isArray(rows)) return out;
+  const wanted = new Set(ids);
+  for (const row of rows) {
+    const r = row as { id?: unknown; title?: unknown } | null;
+    if (typeof r?.id !== "string" || !wanted.has(r.id)) continue;
+    if (typeof r.title === "string" && r.title.trim()) out[r.id] = r.title.trim();
+  }
+  return out;
+}
+
 /** Returns the artifact bytes, or null when ids are invalid / file is missing. */
 export function readArtifact(
   sessionId: string,

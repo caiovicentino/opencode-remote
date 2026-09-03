@@ -30,7 +30,7 @@ opencode-remote token
 | DELETE | `/api/session/:id` | delete session |
 | GET | `/api/session/:id/messages?limit=200` | message history (oldest→newest) |
 | POST | `/api/session/:id/message` | send a prompt `{ text }` → `202` |
-| GET | `/api/artifacts?session=<id>` | list agent artifacts (all sessions, or one) |
+| GET | `/api/artifacts?session=<id>` | list agent artifacts (all sessions, or one); the global listing also carries `titles: { sessionId: conversationTitle }` |
 | GET | `/api/artifacts/file?session=<id>&name=<file>` | raw artifact bytes |
 | GET | `/api/browse` | list live browser sessions |
 | POST | `/api/browse/open` | navigate `{ url, session?, width?, height? }` |

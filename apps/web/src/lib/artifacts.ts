@@ -27,14 +27,27 @@ export async function listArtifacts(
   request: OcrRequest,
   sessionId?: string,
 ): Promise<ArtifactMeta[]> {
-  const r = await request(
-    "GET",
-    "/__ocr/artifacts",
-    undefined,
-    sessionId ? { session: sessionId } : undefined,
-  );
-  if (r.status !== 200) return [];
-  return (r.body as { artifacts?: ArtifactMeta[] }).artifacts ?? [];
+  return (await listArtifactsDetailed(request, sessionId)).artifacts;
+}
+
+/**
+ * P2-091: listing + the sessionId → conversation-title map the daemon
+ * resolves for the global list (absent ids mean "no title known" — the UI
+ * falls back to the raw session id).
+ */
+export async function listArtifactsDetailed(
+  request: OcrRequest,
+  sessionId?: string,
+): Promise<ArtifactListing> {
+  const r = await request("GET", "/__ocr/artifacts", undefined, sessionId ? { session: sessionId } : undefined);
+  if (r.status !== 200) return { artifacts: [], titles: {} };
+  const body = (r.body ?? {}) as { artifacts?: ArtifactMeta[]; titles?: Record<string, string> };
+  return { artifacts: body.artifacts ?? [], titles: body.titles ?? {} };
+}
+
+export interface ArtifactListing {
+  artifacts: ArtifactMeta[];
+  titles: Record<string, string>;
 }
 
 /** fetch one artifact's content (base64) through the tunnel; null if missing */

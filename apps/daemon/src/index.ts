@@ -51,7 +51,7 @@ import {
 import { detectWhisper, transcribeAudio, type WhisperTool } from "./whisper.js";
 import { metrics, startMetricsServer, VERSION } from "./metrics.js";
 import { loadRoutines, saveRoutines, type Routine } from "./routines.js";
-import { ARTIFACTS_ROOT, artifactMime, kindFor, listArtifacts, readArtifact } from "./artifacts.js";
+import { ARTIFACTS_ROOT, artifactMime, kindFor, listArtifacts, readArtifact, sessionTitleMap } from "./artifacts.js";
 import { ArtifactWatcher } from "./artifactwatch.js";
 import { createShutdown, stopAccepting } from "./shutdown.js";
 import { localUpgradeAllowed } from "./localws.js";
@@ -354,11 +354,24 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
   }
 
   // --- artifacts: agent-produced documents (P1-010) ---------------------------
-  // listing
+  // listing. P2-091: the global listing (no ?session=) also carries a
+  // sessionId → conversation-title map resolved against the opencode session
+  // list, so the Artifacts pane groups by title instead of the raw
+  // ses_… id. Best effort: an unreachable backend degrades to the ids.
   if (req.path === "/__ocr/artifacts" && req.method === "GET") {
     const sessionId = req.query?.session || undefined;
     metrics.inc("ocr_artifacts_list_total");
-    return { id: req.id, status: 200, body: { artifacts: listArtifacts(sessionId) } };
+    const artifacts = listArtifacts(sessionId);
+    let titles: Record<string, string> = {};
+    if (artifacts.length > 0 && !sessionId) {
+      try {
+        const r = await proxy({ id: req.id, method: "GET", path: "/session" });
+        titles = sessionTitleMap(r.body, [...new Set(artifacts.map((a) => a.sessionId))]);
+      } catch {
+        // opencode unreachable — the client falls back to the raw session ids
+      }
+    }
+    return { id: req.id, status: 200, body: { artifacts, titles } };
   }
   // content of a single artifact (base64; the tunnel chunks oversized bodies)
   if (req.path === "/__ocr/artifact" && req.method === "GET") {
@@ -2263,7 +2276,19 @@ end tell`;
     }
     if (seg[1] === "artifacts" && req.method === "GET") {
       metrics.inc("ocr_artifacts_list_total");
-      send(200, { artifacts: listArtifacts(url.searchParams.get("session") ?? undefined) });
+      const artifacts = listArtifacts(url.searchParams.get("session") ?? undefined);
+      // P2-091: resolve sessionId → conversation title for the global listing
+      // (same contract as the tunnel route; best effort on backend failures).
+      let titles: Record<string, string> = {};
+      if (artifacts.length > 0 && !url.searchParams.get("session")) {
+        try {
+          const r = await op("GET", "/session");
+          titles = sessionTitleMap(r.body, [...new Set(artifacts.map((a) => a.sessionId))]);
+        } catch {
+          // backend unreachable — clients fall back to the raw session ids
+        }
+      }
+      send(200, { artifacts, titles });
       return true;
     }
     if (seg[1] !== "session") {

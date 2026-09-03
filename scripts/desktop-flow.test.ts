@@ -107,9 +107,11 @@ const cliEnv = { ...process.env, OCR_DESKTOP_SESSION: session };
 // "local boot" block (real hermetic daemon + fresh instance + degradation
 // probe), so the original 60s grew to 90s — documented in the commit per the
 // spec and reflected in the <90s note in AGENTS.md. P2-090 added the artifact
-// auto-open beat (real watcher + three idle round-trips), growing it to 120s.
+// auto-open beat (real watcher + three idle round-trips), growing it to 120s;
+// P2-091 added the artifact-navigation beats (card→split, list→split, title
+// headers), growing it to 150s.
 const startedAt = Date.now();
-const DEADLINE_MS = 120_000;
+const DEADLINE_MS = 150_000;
 const shotPath = join(tmpdir(), "ocr-desktop-flow", `flow-${process.pid}.png`);
 // P1-051 round 2: session state (socket, token, log) lives in a 0700 dir.
 const logFile = join(tmpdir(), `ocr-desktop-${session}`, "keeper.log");
@@ -1003,8 +1005,8 @@ try {
           "    });",
           "    return;",
           "  }",
-          "  if (u.pathname === '/session') return json([{ id: 'ses-reentry-check', title: 'Reentry check' }, { id: 'ses-draft-a', title: 'Draft A' }]);",
-          "  if (u.pathname === '/session/ses-reentry-check' || u.pathname === '/session/ses-draft-a') return json({ id: u.pathname.split('/')[2], title: 'P1-089' });",
+          "  if (u.pathname === '/session') return json([{ id: 'ses-reentry-check', title: 'Reentry check' }, { id: 'ses-draft-a', title: 'Draft A' }, { id: 'ses-artifact-auto', title: 'Artifact auto' }]);",
+          "  if (u.pathname === '/session/ses-reentry-check' || u.pathname === '/session/ses-draft-a' || u.pathname === '/session/ses-artifact-auto') return json({ id: u.pathname.split('/')[2], title: 'P1-089' });",
           "  if (/^\\/session\\/[^/]+\\/message$/.test(u.pathname)) return req.method === 'POST' ? json({ id: 'msg-fake' }) : json(ROWS);",
           "  if (u.pathname === '/permission' || u.pathname === '/question') return json([]);",
           "  if (u.pathname === '/provider') return json({ all: [] });",
@@ -1308,6 +1310,86 @@ try {
               if (browserStill.ok) check("P2-090: browser pane was not overridden either", /true/.test(browserStill.stdout));
               // evidence shots: 1440x900 (desktop, browser pane up) + 390 mobile
               run("P2-090: 390 evidence shot", ["shot", join(shotsDir, "P2-090-auto-pane-390.png"), "390", "844"], 15_000, localEnv2);
+            }
+          }
+
+          // --- P2-091: artifact navigation — card/list/pane without context swap --
+          // The operator's bug: clicking the artifact card surfaced the full-screen
+          // Artifacts tab and a list item opened a full-screen viewer instead of
+          // the side-by-side pane. Repro over the real UI: card click → split-pane
+          // beside the chat; list opens in the rail pane; a list click jumps back
+          // to Conversas with the split-pane; list groups carry the conversation
+          // title (daemon resolves id→title against the fake backend).
+          phase("P2-091: artifact navigation (card + list → split-pane)");
+          const navWide = run(
+            "P2-091: resize to desktop width",
+            ["shot", join(shotsDir, "P2-091-resize.png"), "1440", "900"],
+            15_000,
+            localEnv2,
+          );
+          if (navWide.ok) {
+            await waitProbe("P2-091: chat remounted at 1440px", "!!document.querySelector('.messages')", (v) => /true/.test(v), localEnv2);
+            run("P2-091: open the artifact session", ["ipc", `location.hash = '#/session/${AUTO_SES}'`], 15_000, localEnv2);
+            await waitProbe("P2-091: session chat rendered", "!!document.querySelector('.messages')", (v) => /true/.test(v), localEnv2);
+            // an assistant bubble mentioning the artifact renders its card
+            await fetch(`${fakeUrl}/__emit`, {
+              method: "POST",
+              body: JSON.stringify([
+                {
+                  type: "message.part.updated",
+                  properties: { sessionID: AUTO_SES, part: { type: "text", text: "Relatório pronto: index.html", messageID: "msg-p2-091" } },
+                },
+              ]),
+            });
+            await fetch(`${fakeUrl}/__emit`, {
+              method: "POST",
+              body: JSON.stringify([{ type: "session.idle", properties: { sessionID: AUTO_SES } }]),
+            });
+            const card = await waitProbe(
+              "P2-091: artifact card rendered under the bubble",
+              "!!document.querySelector('.artifact-card')",
+              (v) => /true/.test(v),
+              localEnv2,
+            );
+            if (card) {
+              run("P2-091: click the artifact card", ["click", ".artifact-card"], 15_000, localEnv2);
+              const split = await waitProbe(
+                "P2-091: card opens the split-pane beside the chat",
+                "!!document.querySelector('.artifact-pane') && !!document.querySelector('.messages')",
+                (v) => /true/.test(v),
+                localEnv2,
+              );
+              if (split) {
+                run("P2-091: card→split evidence shot", ["shot", join(shotsDir, "P2-091-card-split-1440.png"), "1440", "900"], 15_000, localEnv2);
+                // the list lives in the rail pane — never a full-screen tab
+                run("P2-091: open the artifacts list", ["click", 'button[data-pane="artifacts"]'], 15_000, localEnv2);
+                await waitProbe(
+                  "P2-091: list groups by conversation title (no raw session id)",
+                  "document.querySelector('.artifact-group')?.textContent ?? ''",
+                  (v) => v.includes("Artifact auto") && !v.includes(AUTO_SES),
+                  localEnv2,
+                );
+                run("P2-091: click the artifact in the list", ["click", '.artifact-row:has-text("index.html")'], 15_000, localEnv2);
+                const backToChat = await waitProbe(
+                  "P2-091: list item → Conversas with the split-pane (no full-screen detour)",
+                  "!!document.querySelector('.artifact-pane') && !!document.querySelector('.messages') && !document.querySelector('button[data-pane=\"artifacts\"]')?.classList.contains('active')",
+                  (v) => /true/.test(v),
+                  localEnv2,
+                );
+                if (backToChat) {
+                  run("P2-091: list→split evidence shot", ["shot", join(shotsDir, "P2-091-list-split-1440.png"), "1440", "900"], 15_000, localEnv2);
+                  // fix 4: the viewer's back arrow returns to the chat context
+                  run("P2-091: viewer back arrow closes the pane", ["click", '.artifact-pane button[aria-label="Close"]'], 15_000, localEnv2);
+                  await waitProbe(
+                    "P2-091: pane closed, chat stays",
+                    "!!document.querySelector('.artifact-pane')",
+                    (v) => /false/.test(v),
+                    localEnv2,
+                  );
+                }
+              }
+              // narrow viewport keeps the list on the full-screen overlay path
+              run("P2-091: 390 evidence shot", ["shot", join(shotsDir, "P2-091-nav-390.png"), "390", "844"], 15_000, localEnv2);
             }
           }
         } finally {

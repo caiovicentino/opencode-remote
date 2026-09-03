@@ -90,8 +90,18 @@ function WebViewPane({
     setInput(previewUrl);
     setError("");
     const wv = wvRef.current;
-    if (wv) wv.loadURL(previewUrl);
-    else setSrc(previewUrl); // not mounted yet — the attribute drives the first load
+    if (!wv) {
+      setSrc(previewUrl); // not mounted yet — the attribute drives the first load
+      return;
+    }
+    try {
+      wv.loadURL(previewUrl);
+    } catch {
+      // P2-091: a mobile⇄desk flip remounts this pane while the preview URL
+      // stays set — the fresh <webview> is not dom-ready yet and Electron
+      // throws on loadURL. The src attribute carries the navigation instead.
+      setSrc(previewUrl);
+    }
   }, [previewUrl]);
 
   useEffect(() => {
