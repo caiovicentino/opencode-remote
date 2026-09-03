@@ -14,15 +14,37 @@ BACKLOG.md ──> BUILDER ────┬──> SECURITY REVIEWER ─┬──
                            └──> QUALITY REVIEWER ───┘    reconnect · integration ·
                                 (contexto isolado)       invariants · download
                                    │                     │
-                                   └─ VERDICT: ... ───────┘
-                                                            │
-                                     merge (gh pr squash) <─┘
-                                          │
-                                     OPS: deploy staged
-                                     reset SHA → install (fast/ci) → build → kickstart
-                                     → health watch (90s) → soak (10min)
-                                     → OK: digest push / FAIL: auto-rollback
+                                    └─ VERDICT: ... ───────┘
+                                                             │
+                                      merge (gh pr squash) <─┘
+                                           │
+                                      OPS: deploy staged
+                                      reset SHA → install (fast/ci) → build → kickstart
+                                      → health watch (90s) → soak (10min)
+                                      → OK: digest push / FAIL: auto-rollback
 ```
+
+### Meta-commits: a branch `pilot/meta` (P1-076)
+
+Nenhum commit "meta" (mark-done, refill do strategist, lições do scribe, achados
+do red team/explorer, bloqueios do circuit breaker, amostras do corpus) é
+empurrado direto em `main`. Todos pousam pela branch permanente `pilot/meta`
+(`landMetaCommit` em `apps/pilot/src/metapush.ts`): re-base em `origin/main` →
+edição determinística → guard do diff (P1-057, relido a cada attempt) → force-push
+em `pilot/meta` → PR com squash + `--auto` (auto-merge quando a proteção de
+branch está ativa; sem proteção, merge imediato). O PR é reutilizado entre
+landings e a branch **nunca** é apagada. Falha do `gh` deixa o commit em
+`origin/pilot/meta` e é retentada no próximo ciclo — **não existe fallback para
+`git push origin main`** (a bateria de eval reprova qualquer `push -q origin main`
+no código do pilot com um check grep-style).
+
+**Runbook do operador (pós-merge)**: ativar a proteção de branch no GitHub para
+`main` — "Require a pull request before merging" + squash merges + as checks
+requeridas do CI existente. Nenhuma mudança de código é necessária: com a
+proteção ativa, `gh pr merge --squash --auto` passa a armar o auto-merge
+(o caminho sem proteção continua funcionando como fallback de merge imediato).
+Critério operacional: 24h de logs do pipeline sem nenhum push direto em `main`;
+deploys continuam saindo de PRs mergeados (SHAs verificados, P2-058).
 
 ### Roles (todos `opencode run` headless)
 
@@ -33,7 +55,7 @@ BACKLOG.md ──> BUILDER ────┬──> SECURITY REVIEWER ─┬──
 | `security reviewer` | foco: crypto, auth, injection, secrets | 20 min |
 | `quality reviewer` | foco: regressão, UX, docs, testes | 20 min |
 | `scribe` | após o merge: destila até 3 lições do diff (P1-075: só o diff — findings de review não entram no prompt) → `docs/EXPERIENCE.md` | 10 min |
-| `strategist` | quando a fila tem <2 tasks: lê código/memória/métricas e propõe as próximas tasks (o runner valida, commita e empurra com guard) | 25 min |
+| `strategist` | quando a fila tem <2 tasks: lê código/memória/métricas e propõe as próximas tasks (o runner valida e pousa via PR `pilot/meta` com guard) | 25 min |
 | `red team` (1x/dia, janela >= 2h ocioso) | tenta quebrar segurança/robustez; achados viram task P0 | 30 min |
 | gatekeeper | **não é LLM** — roda scripts, decide por exit codes | — |
 
@@ -141,8 +163,8 @@ mergeadas pelo workflow sem intervenção humana.
 
 0. **Guard de SHA verificado (P2-058)**: o `deploy()` só aceita SHA que o
    gatekeeper gravou em `~/.opencode-remote/pilot/verified-merges.jsonl` no
-   momento do merge (squash de PR ou merge local `--no-ff`, ambos pós-gate
-   verde, gravados por código determinístico — nunca por um agente). Commit direto em
+   momento do merge (squash de PR pós-gate verde, gravado por código
+   determinístico — nunca por um agente). Commit direto em
    main — bookkeeping (mark-done, scribe, refill do strategist) ou hostil — é
    pulado pela caminhada first-parent em `origin/main` e **nunca dispara
    deploy** (caminho da fábula de segurança #2/#3). Sem nenhum SHA verificado
@@ -459,13 +481,14 @@ reprovando até `maxReviewRounds`, gatekeeper vermelho, crash) incrementa
 default 4; task size L tem cap próprio de 6, P1-060) o breaker dispara:
 
 1. a linha da task sai de `## Ready` e vai para a seção `## Blocked` do
-   BACKLOG.md (commit + push, com resumo do último findings) — o painel FILA do
+   BACKLOG.md (landing via PR `pilot/meta`, com resumo do último findings) — o painel FILA do
    dashboard já mostra as duas filas;
 2. um **único** `notifySupervisor` "task blocked after N attempts" é enviado;
 3. a task não é re-agendada: cooldown infinito até um humano (ou o red team)
    mover de volta para `## Ready` — o contador é zerado quando a task passa no
    gate e também no momento do bloqueio, então a re-entrada começa limpa;
-4. **scribe de falha (P2-031)**: quando o bloqueio "pousa" em `main` (push ok),
+4. **scribe de falha (P2-031)**: quando o bloqueio pousa (landing do
+   PR `pilot/meta` armado com sucesso),
    uma lição estruturada `kind:"failure"` é gravada em
    `~/.opencode-remote/pilot/lessons.jsonl` com o step da falha, os findings e
    o tail do gatekeeper/review — ver "Lições de falha" na seção do IER.
@@ -516,7 +539,7 @@ independentes, alimentados por estado em `state.json` (`cycles`,
    normal por task). Falhas sem task atribuída (crashes de pipeline, amostras
    legacy) contam cada uma como distinta — sinal sistêmico conservador.
 2. **Rajada de bloqueios**: **2 tasks** indo para `## Blocked` em **30min**
-   (contagem nos landings reais do push em `main`).
+   (contagem nos landings reais do bloqueio via PR `pilot/meta`).
 
 Ao disparar, o pilot entra em **modo auditoria**:
 
@@ -728,9 +751,11 @@ outputs reais** dos três comandos de evidência:
   merges honestos.
 - **Crescimento automático**: a cada `corpusEveryNMerges` merges bem-sucedidos
   (config pilot.json, default 5; contador `mergesSinceCorpus` em state.json), o
-  gatekeeper grava os próprios outputs de re-execução da evidência (sem rodar
-  npm de novo) via `captureGateCorpus` e empurra `pilot(corpus): N gate
-  sample(s) from <ID>` direto em main — mesmo fluxo de retry do scribe. Amostra
+  gatekeeper grava as próprias saídas re-executadas (sem rodar
+  npm de novo) via `captureGateCorpus` e pousa `pilot(corpus): N gate
+  sample(s) from <ID>` via **PR `pilot/meta`** (P1-076) — mesmo fluxo de retry
+  do scribe, com guard por prefixo do diretório do corpus (1-3 amostras por
+  capture). Amostra
   idêntica à última é descartada (typecheck vazio não acumula arquivo).
 - **Correção que o corpus exigiu**: `normalizeEvidenceLine` agora mascara
   timestamps ISO-8601 (com data/milis/offset), contadores de processo
@@ -864,9 +889,10 @@ seção `## Lessons`. Três peças:
 1. **SCRIBE (pós-merge)**: logo depois que o gatekeeper mergea, um agent lê o diff
    da task + os findings de review (já endereçados) e **saída** de 1-3 lições no
    formato acima — o agent nunca edita o arquivo direto: o runner valida o formato,
-   deduplica contra o que já existe, appenda (máx. 3 por merge) e comita/pusha em
-   `main` (`pilot(scribe): N lesson(s) from <ID>`), com retry de push para lidar com
-   scribes concorrentes de slots paralelos. Falha do scribe nunca falha o pipeline
+   deduplica contra o que já existe, appenda (máx. 3 por merge) e pousa o commit
+   `pilot(scribe): N lesson(s) from <ID>` via **PR `pilot/meta`** (P1-076), com
+   retry do landing inteiro para lidar com scribes concorrentes de slots paralelos.
+   Falha do scribe nunca falha o pipeline
    (o merge já aconteceu); é log + evento `scribe-done`.
 2. **Injeção nos prompts**: `builderPrompt` e o prompt do strategist recebem o
    **top-5 de lições relevantes** — keyword-match (tokenizado, stopword-filtered)
@@ -897,15 +923,16 @@ builder).
 ### Lições de falha (P2-031)
 
 O IER acima só cobre merges bem-sucedidos; o caminho oposto — task **bloqueada**
-pelo stop-loss — também gera memória. Quando o bloqueio "pousa" em `main`
-(`push` ok), o pilot grava uma linha JSONL em
+pelo stop-loss — também gera memória. Quando o bloqueio pousa (landing via
+PR `pilot/meta` armado com sucesso), o pilot grava uma linha JSONL em
 `~/.opencode-remote/pilot/lessons.jsonl` com `kind:"failure"` e os campos
 `task`, `attempts`, `step` (o step real da última falha: um step do gatekeeper,
 `review` quando a task queima as rodadas de review — caminho que também grava o
 arquivo de falha, com os findings verificados dos reviewers — ou `pipeline`),
 `findings` (último motivo da falha, cap 500 chars) e `tail` (tail do output do
 gatekeeper/review, cap 1200 chars, vazio quando indisponível). A gravação só
-acontece quando o push do bloqueio pousa em `main`, então ciclos de retry não
+acontece quando o landing do bloqueio via `pilot/meta` arma o PR com sucesso,
+então ciclos de retry não
 duplicam entradas, e `findings` nunca repete o conteúdo de `tail` no caminho de
 re-bloqueio (que resume pelo step). O prompt do **strategist** recebe as **10
 lições de falha mais recentes** num bloco `FAILURE LESSONS` na hora de
@@ -941,7 +968,8 @@ rejeitado pelo parser — nunca um comando no host. Toda escrita em repo é feit
 (`mayPush`) que só aceita diff cujo `git diff --name-only origin/main...HEAD` seja
 exatamente `BACKLOG.md` (tarefas) ou `docs/EXPERIENCE.md` (lições); qualquer outro
 conteúdo loga `aux push refused` e não empurra. Retry de push (3x com fetch/reset)
-reavalia o guard a cada tentativa. O `npm ci` do deploy roda com `--ignore-scripts`
+reavalia o guard a cada tentativa; desde P1-076 o landing inteiro vai pela branch
+`pilot/meta` + PR (nunca direto em `main`). O `npm ci` do deploy roda com `--ignore-scripts`
 (lifecycle scripts de dependências são vetor de supply chain; o deploy só precisa de
 tsc/esbuild — rollback existente cobre falha de build num lock novo).
 
@@ -1063,8 +1091,9 @@ acontece antes do `npm ci`.
 Antes o `deploy()` aceitava qualquer HEAD de `origin/main`: um push direto em
 main (bookkeeping do pipeline ou, pior, um commit hostil) virava deploy. Agora:
 
-- **Merge verificado**: o gatekeeper grava o SHA do merge (squash de PR ou
-  merge local `--no-ff`, sempre pós-gate verde) em
+- **Merge verificado**: o gatekeeper grava o SHA do merge (squash de PR,
+  sempre pós-gate verde; o fallback de merge local `--no-ff` foi removido pelo
+  P1-076) em
   `~/.opencode-remote/pilot/verified-merges.jsonl` — código determinístico
   (nunca um agente). Round 2: a gravação só acontece quando o HEAD
   de main **andou** desde a ponta pré-merge **e** carrega a identidade de

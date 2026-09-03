@@ -21,6 +21,7 @@ import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { exec, rerunKey } from "./runner";
+import { landMetaCommit, mayPushUnderDir, metaIo, type MetaPushIo } from "./metapush";
 
 export const CORPUS_DIR = join(dirname(fileURLToPath(import.meta.url)), "__fixtures__", "gate-corpus");
 
@@ -106,16 +107,18 @@ export function appendCorpusSample(dir: string, cmd: string, sanitized: string, 
 /**
  * Post-merge corpus growth: record the gate's own re-run outputs (already
  * executed inside the evidence gate — no extra npm runs) as sanitized corpus
- * samples and push the commit to main (scribe-style retry loop: concurrent
- * slots can move main between reset and push). Called by the gatekeeper right
- * after a green merge, every `corpusEveryNMerges` successful merges. Writes
- * only inside the pilot workspace `ws`. Returns the files written, for logging.
+ * samples and land the commit via the `pilot/meta` PR (P1-076; scribe-style
+ * retry loop: concurrent slots can move origin/main). Called by the gatekeeper
+ * right after a green merge, every `corpusEveryNMerges` successful merges.
+ * Writes only inside the pilot workspace `ws`. Returns the files written, for
+ * logging.
  */
-export function captureGateCorpus(
+export async function captureGateCorpus(
   ws: string,
   taskId: string,
   reruns: Map<string, { ok: boolean; output: string }>,
-): string[] {
+  io: MetaPushIo = metaIo(ws),
+): Promise<string[]> {
   // interpolation guard: taskId reaches a shell command below
   const id = /^[A-Za-z0-9]+-[A-Za-z0-9-]+$/.test(taskId) ? taskId : "unknown-task";
   const label = exec("git rev-parse --short HEAD", { cwd: ws, allowFail: true }).output.trim() || "unknown";
@@ -127,24 +130,24 @@ export function captureGateCorpus(
     if (r?.ok) sanitized.set(cmd, sanitizeForCorpus(r.output).trimEnd() + "\n");
   }
   if (!sanitized.size) return [];
-  for (let attempt = 0; attempt < 3; attempt++) {
-    // git clean wipes the untracked samples on a retry — re-append every round;
-    // the dedupe in appendCorpusSample compares against the committed corpus
-    exec("git fetch -q origin", { cwd: ws, allowFail: true });
-    exec("git checkout -q main", { cwd: ws, allowFail: true });
-    exec("git reset -q --hard origin/main", { cwd: ws, allowFail: true });
-    exec("git clean -qfd", { cwd: ws, allowFail: true });
-    const written: string[] = [];
-    for (const [cmd, out] of sanitized) {
-      const f = appendCorpusSample(dir, cmd, out, label);
-      if (f) written.push(f);
-    }
-    if (!written.length) return []; // nothing new vs the committed corpus
-    const commit = exec(
-      `git add apps/pilot/src/__fixtures__/gate-corpus && git commit -qm "pilot(corpus): ${written.length} gate sample(s) from ${id}"`,
-      { cwd: ws, allowFail: true },
-    );
-    if (commit.ok && exec("git push -q origin main", { cwd: ws, allowFail: true }).ok) return written;
-  }
-  return [];
+  let written: string[] = [];
+  const landed = await landMetaCommit(ws, io, {
+    files: ["apps/pilot/src/__fixtures__/gate-corpus"],
+    message: `pilot(corpus): gate samples from ${id}`,
+    // the corpus may legitimately grow 1-3 files per capture — a prefix guard
+    // instead of the exact single-file allowlist
+    guard: (names) => mayPushUnderDir(names, "apps/pilot/src/__fixtures__/gate-corpus"),
+    apply: () => {
+      // git clean wipes the untracked samples on a retry — re-append every round;
+      // the dedupe in appendCorpusSample compares against the committed corpus
+      written = [];
+      for (const [cmd, out] of sanitized) {
+        const f = appendCorpusSample(dir, cmd, out, label);
+        if (f) written.push(f);
+      }
+      if (!written.length) return { action: "noop" }; // nothing new vs the committed corpus
+      return { action: "apply", message: `pilot(corpus): ${written.length} gate sample(s) from ${id}` };
+    },
+  });
+  return landed === "pushed" ? written : [];
 }

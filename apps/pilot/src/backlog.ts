@@ -1,6 +1,11 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { exec } from "./runner";
+import { landMetaCommit } from "./metapush";
+
+// P1-076: the guard moved to metapush.ts (single home for the landing flow);
+// re-exported here so existing importers keep working.
+export { mayPush } from "./metapush";
 
 export interface Task {
   id: string;
@@ -218,20 +223,6 @@ export function appendReadyLines(repoDir: string, lines: string[]): boolean {
   return true;
 }
 
-/**
- * Push guard (P1-057): an aux flow may only ever push a diff whose name-only
- * file list is EXACTLY the one allowed path (BACKLOG.md for task lines,
- * docs/EXPERIENCE.md for lessons). Anything else — leftover artifacts, agent
- * tampering — refuses the push.
- */
-export function mayPush(nameOnlyOutput: string, allowed: string): boolean {
-  const files = nameOnlyOutput
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean);
-  return files.length === 1 && files[0] === allowed;
-}
-
 /** Injectable sinks for appendCommitAndPush (unit battery pins the semantics). */
 export interface AuxPushIo {
   exec: (cmd: string) => { ok: boolean; output: string };
@@ -249,8 +240,9 @@ export function auxPushIo(cwd: string): AuxPushIo {
 export type AuxPushResult = "pushed" | "refused" | "failed";
 
 /**
- * Deterministic aux landing: fetch/reset main → append validated lines →
- * commit → push guard → push, retried up to `attempts` times because concurrent
+ * Deterministic aux landing: the validated lines land via the `pilot/meta`
+ * branch + auto-merge PR (P1-076) — fetch/reset → append → commit → push
+ * guard → force-push → PR, retried up to `attempts` times because concurrent
  * scribes/explorers move origin/main (P3-052 lesson). The guard is re-read from
  * the actual branch diff on every attempt; a refused diff never gets pushed.
  */
@@ -261,26 +253,15 @@ export async function appendCommitAndPush(
   io: AuxPushIo,
   attempts = 3,
 ): Promise<AuxPushResult> {
-  for (let attempt = 0; attempt < attempts; attempt++) {
-    io.exec("git fetch -q origin");
-    if (!io.exec("git reset -q --hard origin/main").ok || !io.exec("git clean -qfd").ok) {
-      await io.sleep(3_000);
-      continue;
-    }
-    if (!appendReadyLines(repoDir, lines)) return "failed"; // all duplicates/invalid — no commit
-    if (!io.exec(`git add ${BACKLOG} && git commit -qm ${shq(message)}`).ok) {
-      await io.sleep(3_000);
-      continue;
-    }
-    const names = io.exec("git diff --name-only origin/main...HEAD");
-    if (!mayPush(names.output, BACKLOG)) return "refused";
-    if (io.exec("git push -q origin main").ok) return "pushed";
-    await io.sleep(3_000);
-  }
-  return "failed";
-}
-
-/** POSIX single-quote shell escape (JSON.stringify is NOT shell quoting). */
-function shq(s: string): string {
-  return `'${s.replace(/'/g, `'\\''`)}'`;
+  return landMetaCommit(
+    repoDir,
+    io,
+    {
+      files: [BACKLOG],
+      message,
+      guardFile: BACKLOG,
+      apply: () => (appendReadyLines(repoDir, lines) ? { action: "apply" } : { action: "abort" }),
+    },
+    attempts,
+  );
 }

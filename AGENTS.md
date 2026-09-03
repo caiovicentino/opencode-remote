@@ -9,7 +9,10 @@ agents implement tasks from `BACKLOG.md`, adversarial reviewers check them, a de
 gatekeeper runs the eval battery + `scripts/invariants.ts` (see `docs/CONSTITUTION.md`), and
 deploys are staged with automatic rollback — production only ever runs gate-verified merge
 SHAs (P2-058): direct pushes to main never deploy, and a failed deploy quarantines its SHA
-so the redeploy loop cannot re-run a defective build. P0/P1 tasks first go through a PLANNER phase: a
+so the redeploy loop cannot re-run a defective build. Meta-commits (scribe, refills,
+mark-done, blocks, corpus) land via the long-lived `pilot/meta` branch + auto-merge PR —
+no pilot site pushes `origin main` (P1-076; operator enables GitHub branch protection
+post-merge, runbook in docs/PILOT.md). P0/P1 tasks first go through a PLANNER phase: a
 read-only agent writes `specs/<ID>.md` on the task branch (problem, approach, touched files,
 edge cases, acceptance criteria, out of scope) and the builder + quality reviewer are held to
 it; P2+ tasks go straight to the builder (P2-008). Cognition is tiered (P1-059): pilot.json may set a

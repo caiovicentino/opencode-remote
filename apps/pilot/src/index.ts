@@ -10,7 +10,8 @@ import { runExplorer } from "./explorer";
 import { runPipeline, TASK_ID_RE, writeSandboxConfig, writeAuxSandboxConfig, budgetsFor, isOverCap, strategistPrompt, STRATEGIST_MARKER } from "./pipeline";
 import { deploy, latestDeployableSha, shouldSelfHealReload } from "./deploy";
 import { digest } from "./push";
-import { addTask, appendCommitAndPush, auxPushIo, blockTask, mayPush, nextId, parseAuxTaskLines, parseBacklog, type Task } from "./backlog";
+import { addTask, appendCommitAndPush, auxPushIo, blockTask, nextId, parseAuxTaskLines, parseBacklog, type Task } from "./backlog";
+import { landMetaCommit, metaIo } from "./metapush";
 import { appendFailureLesson, defaultLessonsFile, failureLessonsBlock, readRecentFailureLessons } from "./failureLessons";
 import { defaultPendingRefillFile, readPendingRefill, relandDetail, relandPendingRefill, savePendingRefill } from "./refill";
 import { forensicDue, runForensic } from "./forensic";
@@ -352,7 +353,7 @@ async function main() {
         // P2-031: findings and tail must not repeat the same string in the
         // failure lesson — the step name summarizes, the tail carries detail
         const gate = lastGateFail(t.id);
-        blockAndPush(idle, state, t, state.taskAttempts[t.id] ?? budgetsFor(t.size).attempts, gate?.step ? `kept failing at step "${gate.step}"` : "max attempts reached", false);
+        await blockAndPush(idle, state, t, state.taskAttempts[t.id] ?? budgetsFor(t.size).attempts, gate?.step ? `kept failing at step "${gate.step}"` : "max attempts reached", false);
         blockedAny = true;
       }
       if (blockedAny) {
@@ -452,7 +453,7 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
         if (wake) await runDoctorPass(state);
       } else {
         recordCycle(state, false, task.id);
-        blockedAttempts = tripCircuitBreaker(taskCfg, state, task, result.detail);
+        blockedAttempts = await tripCircuitBreaker(taskCfg, state, task, result.detail);
       }
     }
     saveState(state);
@@ -483,7 +484,7 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
     // (P2-063: each crash counts as its own distinct entry, never as the task's)
     recordCycle(state, false, undefined);
     const detail = String(err).slice(0, 300);
-    tripCircuitBreaker(taskCfg, state, task, `pipeline crashed: ${detail}`);
+    await tripCircuitBreaker(taskCfg, state, task, `pipeline crashed: ${detail}`);
     saveState(state);
     log("error", "pipeline crashed", { task: task.id, slot, err: detail });
     await sleep(30_000);
@@ -638,19 +639,20 @@ Output: either "REDTEAM: CLEAN" if you found nothing actionable, or
   if (r.output.includes("REDTEAM: FINDING")) {
     const id = nextId(cfg.workspace, "RT");
     const summary = r.output.split("REDTEAM: FINDING")[1]?.slice(0, 600) ?? "finding";
-    addTask(cfg.workspace, id, "P0", `Redteam finding ${today}`, summary);
-    const commit = exec(`git add BACKLOG.md && git commit -qm "pilot(redteam): add ${id}"`, {
-      cwd: cfg.workspace,
-      allowFail: true,
+    // P1-076: the finding lands via the pilot/meta PR, guarded to BACKLOG.md
+    const landed = await landMetaCommit(cfg.workspace, metaIo(cfg.workspace), {
+      files: ["BACKLOG.md"],
+      message: `pilot(redteam): add ${id}`,
+      guardFile: "BACKLOG.md",
+      apply: () => {
+        addTask(cfg.workspace, id, "P0", `Redteam finding ${today}`, summary);
+        return { action: "apply" };
+      },
     });
-    // P1-057 push guard: only a diff that is exactly BACKLOG.md may be pushed
-    const names = exec("git diff --name-only origin/main...HEAD", { cwd: cfg.workspace, allowFail: true });
-    if (!mayPush(names.output, "BACKLOG.md")) {
+    if (landed === "refused") {
       log("warn", "aux push refused — redteam diff not limited to BACKLOG.md", { id });
-    } else {
-      exec("git push -q origin main", { cwd: cfg.workspace, allowFail: true });
     }
-    log("info", "redteam finding committed", { id, committed: commit.ok });
+    log("info", "redteam finding committed", { id, landed: landed === "pushed" });
     await digest("🚨 Pilot redteam: achado", summary.slice(0, 120), "#/");
   }
 }
@@ -720,18 +722,18 @@ async function runStrategist(cfg: PilotConfig, ready: Task[] = []) {
  * (commit+push so the workspace sync can't resurrect it) and notify the
  * supervisor once. Returns the attempt count when the breaker tripped, else null.
  */
-function tripCircuitBreaker(cfg: PilotConfig, st: PilotState, task: Task, detail: string): number | null {
+async function tripCircuitBreaker(cfg: PilotConfig, st: PilotState, task: Task, detail: string): Promise<number | null> {
   if (!recordTaskFailure(st, task.id, cfg.maxAttemptsPerTask)) return null;
   const attempts = st.taskAttempts[task.id] ?? 0;
-  blockAndPush(cfg, st, task, attempts, detail, true);
+  await blockAndPush(cfg, st, task, attempts, detail, true);
   return attempts;
 }
 
-/** Move the task line to ## Blocked and push. Clears the counter on success so
- * a human/red-team re-queue starts with a fresh allowance. Never notifies twice.
- * Syncs the slot worktree to main first: a failed pipeline leaves it on the
- * task branch, and the BACKLOG commit must land on main. */
-function blockAndPush(cfg: PilotConfig, st: PilotState, task: Task, attempts: number, detail: string, notify: boolean) {
+/** Move the task line to ## Blocked and land it via the pilot/meta PR (P1-076).
+ * Clears the counter on success so a human/red-team re-queue starts with a
+ * fresh allowance. Never notifies twice. Syncs the slot worktree to main first:
+ * a failed pipeline leaves it on the task branch. */
+async function blockAndPush(cfg: PilotConfig, st: PilotState, task: Task, attempts: number, detail: string, notify: boolean) {
   if (!TASK_ID_RE.test(task.id)) return;
   try {
     syncWorkspace(cfg.workspace);
@@ -739,12 +741,13 @@ function blockAndPush(cfg: PilotConfig, st: PilotState, task: Task, attempts: nu
     return; // no clean main reachable from this worktree — retry next cycle
   }
   const summary = `blocked after ${attempts} attempts: ${detail}`;
-  if (!blockTask(cfg.workspace, task.id, summary)) return;
-  const push = exec(
-    `git add BACKLOG.md && git commit -qm "pilot(${task.id}): block after ${attempts} failed attempts" && git push -q origin main`,
-    { cwd: cfg.workspace, allowFail: true },
-  );
-  if (push.ok) {
+  const push = await landMetaCommit(cfg.workspace, metaIo(cfg.workspace), {
+    files: ["BACKLOG.md"],
+    message: `pilot(${task.id}): block after ${attempts} failed attempts`,
+    guardFile: "BACKLOG.md",
+    apply: () => (blockTask(cfg.workspace, task.id, summary) ? { action: "apply" } : { action: "abort" }),
+  });
+  if (push === "pushed") {
     delete st.taskAttempts[task.id];
     recordBlockEvent(st); // P2-032: block-burst trigger watches landings on main
     // P2-031 failure scribe: one structured lesson per landed block (recording
@@ -760,6 +763,8 @@ function blockAndPush(cfg: PilotConfig, st: PilotState, task: Task, attempts: nu
       tail: gate?.tail ?? "",
     });
     if (!recorded) log("warn", "failure lesson not recorded", { task: task.id });
+  } else if (push === "refused") {
+    log("warn", "aux push refused — block diff not limited to BACKLOG.md", { task: task.id });
   }
   log("warn", "task blocked (circuit breaker)", { task: task.id, attempts });
   emit("phase", { task: task.id, phase: "blocked", ok: false, detail: `moved to ## Blocked after ${attempts} attempts` });
