@@ -19,6 +19,12 @@ import { artifactMentions, listArtifacts, type ArtifactMeta } from "../lib/artif
 import { clampSplitPct, isSplitViewport, SPLIT_MIN_PX } from "../lib/split";
 import { sessionTitleOf } from "../lib/title";
 import { permissionPreview } from "../lib/permission";
+import {
+  collectPermissionAsks,
+  isPermissionResolvedElsewhere,
+  reconcilePermissionCards,
+  type PermissionAsk,
+} from "../lib/permissionCards";
 import { getCachedSession, putCachedSession } from "../lib/sessionCache";
 import { initialUnreadState, reduceUnread, sendUnreadToShell } from "../lib/unread";
 import { ArtifactIcon, IconChat, IconDownload, IconLaptop, IconWrench } from "./icons";
@@ -45,14 +51,6 @@ interface Bubble {
   messageID?: string;
   /** true while the relay round-trip is in flight; "queued" when offline */
   pending?: boolean | "queued";
-}
-
-interface PermissionAsk {
-  permissionID: string;
-  label: string;
-  messageID?: string;
-  /** first lines of the requested command/patch, shown before Approve/Deny */
-  preview?: string;
 }
 
 interface QuestionInfo {
@@ -145,30 +143,6 @@ interface Skill {
   id: string;
   label: string;
   prompt: string;
-}
-
-function extractPermission(
-  evt: EventEnvelope,
-  sessionId: string,
-): PermissionAsk | null {
-  if (!evt.type.toLowerCase().includes("permission")) return null;
-  const p = evt.properties as {
-    sessionID?: string;
-    id?: string;
-    permissionID?: string;
-    type?: string;
-    messageID?: string;
-  };
-  const id = p?.permissionID ?? p?.id;
-  if (p?.sessionID && id && p.sessionID === sessionId) {
-    return {
-      permissionID: id,
-      label: p.type ?? "action",
-      messageID: p.messageID,
-      preview: permissionPreview(p),
-    };
-  }
-  return null;
 }
 
 interface PendingImage {
@@ -460,24 +434,8 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
     lastEventId.current = events[events.length - 1]?.id ?? null;
     // ask the daemon for pending permissions on this session — covers asks that
     // happened before the app was open (otherwise the agent stays stuck invisibly)
+    void fetchPendingPermissions();
     void (async () => {
-      try {
-        const res = await request("GET", "/permission");
-        const list = (Array.isArray(res.body) ? res.body : []) as {
-          id: string;
-          sessionID?: string;
-          permission?: string;
-        }[];
-        setPersistedAsks(
-          list
-            .filter((x) => x.sessionID === sessionId)
-            .map((x) => ({
-              permissionID: x.id,
-              label: x.permission ?? "action",
-              preview: permissionPreview(x),
-            })),
-        );
-      } catch {}
       try {
         const q = await request("GET", "/question");
         const list = (Array.isArray(q.body) ? q.body : []) as {
@@ -493,6 +451,63 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
       } catch {}
     })();
   }, [sessionId]);
+
+  // P1-082: the daemon's pending list (GET /permission) is the source of truth
+  // for actionable approval cards — events only trigger this re-fetch.
+  async function fetchPendingPermissions() {
+    try {
+      const res = await request("GET", "/permission");
+      const list = (Array.isArray(res.body) ? res.body : []) as {
+        id: string;
+        sessionID?: string;
+        permission?: string;
+      }[];
+      setPersistedAsks(
+        list
+          .filter((x) => x.sessionID === sessionIdRef.current)
+          .map((x) => ({
+            permissionID: x.id,
+            label: x.permission ?? "action",
+            preview: permissionPreview(x),
+          })),
+      );
+    } catch {}
+  }
+
+  // P1-082: AutoMode — the daemon answers permission asks on the user's behalf.
+  // While on, no actionable card is ever rendered (passive badge only); the
+  // daemon's audit log is the record.
+  const [autoMode, setAutoMode] = useState(false);
+  async function refreshAutoMode() {
+    try {
+      const res = await request("GET", "/__ocr/settings");
+      if (res.status === 200) setAutoMode((res.body as { autoMode?: boolean }).autoMode === true);
+    } catch {}
+  }
+  useEffect(() => {
+    void refreshAutoMode();
+  }, [sessionId]);
+
+  // P1-082: permission events no longer render cards by themselves — they
+  // (debounced) re-fetch the daemon's pending list instead.
+  const permEventCount = events.filter((e) =>
+    e.type.toLowerCase().includes("permission"),
+  ).length;
+  const permRefetchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (permEventCount === 0) return;
+    if (permRefetchTimer.current) clearTimeout(permRefetchTimer.current);
+    permRefetchTimer.current = setTimeout(() => {
+      permRefetchTimer.current = null;
+      void fetchPendingPermissions();
+    }, 300);
+    return () => {
+      if (permRefetchTimer.current) {
+        clearTimeout(permRefetchTimer.current);
+        permRefetchTimer.current = null;
+      }
+    };
+  }, [permEventCount]);
 
   useEffect(() => {
     setLoadingHistory(true);
@@ -713,19 +728,29 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
   }, [connStatus]);
 
   // AutoMode: the daemon answered a permission ask on the user's behalf —
-  // clear the local ask UI and surface a transient note.
+  // drop the local ask UI, surface a transient note and move the card to a
+  // collapsed "auto-approved" line (the synthetic WS event carries the id).
   const autoSeenRef = useRef<Set<string>>(new Set());
   const [autoNote, setAutoNote] = useState("");
   useEffect(() => {
+    let sawAuto = false;
     for (const evt of events.slice(-20)) {
       if (evt.type !== "ocr.permission.auto") continue;
       const p = evt.properties as { sessionID?: string; permissionID?: string; action?: string };
       if (p?.sessionID !== sessionId || !p?.permissionID) continue;
       if (autoSeenRef.current.has(p.permissionID)) continue;
       autoSeenRef.current.add(p.permissionID);
+      sawAuto = true;
       setResponded((prev) => new Set(prev).add(p.permissionID!));
       setPersistedAsks((prev) => prev.filter((x) => x.permissionID !== p.permissionID));
       setAutoNote(t("autoApproved", { action: p.action ?? "action" }));
+    }
+    if (sawAuto) {
+      // the daemon only auto-approves while AutoMode is on — reflect it
+      // immediately, then re-check settings so a mid-session toggle-off
+      // also takes effect without a reload
+      setAutoMode(true);
+      void refreshAutoMode();
     }
   }, [events, sessionId]);
   useEffect(() => {
@@ -871,15 +896,15 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
     return [...map.entries()].reverse();
   })();
 
-  const pending: PermissionAsk[] = [];  for (const evt of events.slice(-50)) {
-    const ask = extractPermission(evt, sessionId);
-    if (ask && !responded.has(ask.permissionID)) pending.push(ask);
-  }
-  // persisted asks (server-side pending list) — covers events lost before mount
-  for (const pa of persistedAsks) {
-    if (!responded.has(pa.permissionID) && !pending.some((p) => p.permissionID === pa.permissionID))
-      pending.push(pa);
-  }
+  // P1-082: actionable cards come from the daemon's pending list; every ask
+  // seen in the event buffer that is no longer pending becomes a collapsed
+  // resolved line. 10 duplicate events for one request → one card.
+  const { actionable: pending, resolved: resolvedPerms } = reconcilePermissionCards(
+    collectPermissionAsks(events.slice(-50), sessionId),
+    persistedAsks,
+    responded,
+    autoMode,
+  );
 
   // agent questions (question.asked / replied / rejected) — live events win,
   // persisted list (GET /question) covers asks that predate the view
@@ -974,6 +999,13 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
         response: response === "approve" ? "once" : "reject",
       });
       if (res.status !== 200) {
+        if (isPermissionResolvedElsewhere(res.status)) {
+          // P1-082: the ask was already answered (another device or AutoMode) —
+          // friendly inline note instead of the raw `approve failed (404)`
+          setPersistedAsks((prev) => prev.filter((p) => p.permissionID !== permissionID));
+          setAutoNote(t("alreadyResolved"));
+          return;
+        }
         setResponded((prev) => {
           const next = new Set(prev);
           next.delete(permissionID);
@@ -1794,6 +1826,34 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
             </div>
           </div>
         ))}
+          </div>
+        )}
+
+        {autoMode && (
+          <p className="muted" role="status" style={{ fontSize: "0.72rem", margin: "4px 0" }}>
+            {t("autoBadge")}
+          </p>
+        )}
+        {resolvedPerms.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 2, margin: "4px 0" }}>
+            {resolvedPerms.map((r) => (
+              <div
+                key={r.permissionID}
+                className="muted"
+                style={{
+                  display: "flex",
+                  gap: 6,
+                  fontSize: "0.72rem",
+                  minWidth: 0,
+                  alignItems: "baseline",
+                }}
+              >
+                <span aria-hidden>·</span>
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {r.label} — {r.origin === "auto" ? t("permAutoLine") : t("permResolvedLine")}
+                </span>
+              </div>
+            ))}
           </div>
         )}
 

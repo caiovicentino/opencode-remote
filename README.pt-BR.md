@@ -38,7 +38,10 @@ remoto, zero confiança**.
   horizontalmente dentro do próprio bloco — nada sai do viewport (chat, modal
   de diff e painel de artifact)
 - **AutoMode** — o agente roda solto; toda aprovação automática vira auditoria
-  (e notificação, se você quiser)
+  (e notificação, se você quiser). Com o AutoMode ligado o chat não mostra
+  nenhum card de aprovação — só um badge passivo; pedidos já respondidos viram
+  linha "resolvida", duplicatas do mesmo pedido aparecem uma vez só e tocar
+  num card velho diz "Permissão já resolvida" em vez de um 404 cru
 - **Preview de aprovação** — o card de permissão mostra as primeiras linhas
   do comando/patch pedido (direto do evento de permissão) antes de aprovar
   ou negar, pra você sempre saber o que está liberando
