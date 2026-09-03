@@ -34,9 +34,15 @@ edição determinística → guard do diff (P1-057, relido a cada attempt) → p
 com `--force-with-lease` em `pilot/meta` (um landing concorrente que empurrou
 depois do nosso fetch falha o push em vez de ser sobrescrito) → PR com squash +
 `--auto` (auto-merge quando a proteção de branch está ativa; sem proteção,
-merge imediato). O sucesso só é reportado quando o **nosso** commit ainda é
-ancestral do head de `origin/pilot/meta` após armar o merge — um landing
-descartado por landing concorrente é re-aplicado e, no pior caso, reportado
+merge imediato). O sucesso só é reportado com **dupla verificação fail-closed**
+(P1-076 R4): (1) o **nosso** commit ainda é ancestral do head de
+`origin/pilot/meta` — um sha indeterminável (`rev-parse` vazio/malformado)
+também reprova, nunca passa; (2) o squash merge foi **confirmado** via
+`gh pr view` (estado `MERGED`) — armar o `--auto` não é sucesso, porque o
+squash só dispara depois das checks; um landing pendente é honestamente
+reportado como `failed` e o ciclo seguinte re-tenta (a edição determinística
+vira noop quando o merge enfileirado pousa). Um landing descartado por landing
+concorrente é re-aplicado e, no pior caso, reportado
 honestamente como `failed` (refill persiste no store P1-037, bloqueio
 re-tenta no próximo ciclo ocioso). O PR é reutilizado entre
 landings e a branch **nunca** é apagada. Falha do `gh` deixa o commit em

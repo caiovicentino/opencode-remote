@@ -798,6 +798,7 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
     let pushCalls = 0;
     let diffBehavior = "BACKLOG.md\n";
     let sleeps = 0;
+    let prMerged = false;
     const fakeIo = (pushFails = 0) => ({
       exec: (cmd: string) => {
         // P1-076: the landing re-bases pilot/meta on origin/main — the fake
@@ -807,6 +808,14 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
         if (cmd.startsWith("git push")) {
           pushCalls++;
           return { ok: pushCalls > pushFails, output: "" };
+        }
+        // R4: the landing verifies our sha (40-hex) and confirms the merge
+        if (cmd.startsWith("git rev-parse")) return { ok: true, output: `${"c".repeat(40)}\n` };
+        if (cmd.startsWith("gh ") && cmd.includes("pr view"))
+          return { ok: true, output: JSON.stringify({ state: prMerged ? "MERGED" : "OPEN", url: "fake" }) };
+        if (cmd.startsWith("gh ") && cmd.includes("pr merge")) {
+          prMerged = true;
+          return { ok: true, output: "" };
         }
         return { ok: true, output: "" };
       },
@@ -833,6 +842,7 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
 
     pristine = pristineBase.replace("(P2-900)", "(P2-901)"); // line already landed
     pushCalls = 0;
+    prMerged = false;
     check(
       "appendCommitAndPush: all-duplicate lines land nothing",
       (await appendCommitAndPush(dir, [okLine], "m4", fakeIo())) === "failed" && pushCalls === 0,
@@ -853,16 +863,7 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
       execSync(`git -C ${JSON.stringify(work)} push -q origin main`);
       const message = "pilot(researcher): it's a scan — 'quoted'";
       const realIo = auxPushIo(work);
-      const ghFakedIo: AuxPushIo = {
-        exec: (cmd) => {
-          if (cmd.startsWith("gh ")) {
-            if (cmd.includes("pr view")) return { ok: true, output: JSON.stringify({ state: "OPEN", url: "fake" }) };
-            return { ok: true, output: "" };
-          }
-          return realIo.exec(cmd);
-        },
-        sleep: realIo.sleep,
-      };
+      const ghFakedIo = ghMergingIo(realIo);
       check("appendCommitAndPush real-git smoke: apostrophed message lands", (await appendCommitAndPush(work, [okLine], message, ghFakedIo)) === "pushed");
       const shown = execSync(`git -C ${JSON.stringify(work)} show origin/${META_BRANCH}:BACKLOG.md`, { encoding: "utf8" });
       const subject = execSync(`git -C ${JSON.stringify(work)} log -1 --format=%s origin/${META_BRANCH}`, { encoding: "utf8" }).trim();
@@ -892,6 +893,29 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
   } finally {
     rmSync(sandboxDir, { recursive: true, force: true });
   }
+}
+
+/**
+ * Fake GitHub for landing smokes (R4 merge confirmation): `pr view` reports
+ * OPEN until a `pr merge` succeeds, then MERGED — a landing may only report
+ * "pushed" once the squash merge is confirmed.
+ */
+function ghMergingIo(realIo: { exec: (cmd: string) => { ok: boolean; output: string } }) {
+  let state = "OPEN";
+  return {
+    exec: (cmd: string) => {
+      if (cmd.startsWith("gh ")) {
+        if (cmd.includes("pr view")) return { ok: true, output: JSON.stringify({ state, url: "fake" }) };
+        if (cmd.includes("pr merge")) {
+          state = "MERGED";
+          return { ok: true, output: "" };
+        }
+        return { ok: true, output: "" };
+      }
+      return realIo.exec(cmd);
+    },
+    sleep: () => Promise.resolve(),
+  };
 }
 
 // --- P1-076: meta commits land via pilot/meta + PR, never via direct main pushes --
@@ -965,7 +989,7 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
     const droppedIo: MetaPushIo = {
       exec: (cmd) => {
         if (cmd.startsWith("git diff")) return { ok: true, output: "BACKLOG.md\n" };
-        if (cmd.startsWith("git rev-parse")) return { ok: true, output: "abc12345\n" };
+        if (cmd.startsWith("git rev-parse")) return { ok: true, output: `${"a".repeat(40)}\n` };
         if (cmd.startsWith("git merge-base")) return { ok: false, output: "" }; // dropped
         if (cmd.startsWith("git push")) dropPushes++;
         return { ok: true, output: "" };
@@ -979,6 +1003,9 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
       apply: () => ({ action: "apply" }),
     });
     check("landMetaCommit: commit dropped by a peer ⇒ honest failure, never false success", dropped === "failed" && dropPushes === 3);
+    // R4 review: an undeterminable sha must fail CLOSED — the landing is
+    // retried and, at worst, honestly reported as "failed"; it can never be
+    // reported as pushed when the verification could not even run.
     let unverifiablePushes = 0;
     const unverifiable = await landMetaCommit(dir, {
       exec: (cmd) => {
@@ -994,7 +1021,28 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
       guardFile: "BACKLOG.md",
       apply: () => ({ action: "apply" }),
     });
-    check("landMetaCommit: undeterminable sha stays best-effort pushed (fake io compat)", unverifiable === "pushed" && unverifiablePushes === 1);
+    check("landMetaCommit: undeterminable sha fails closed (retried, never reported pushed)", unverifiable === "failed" && unverifiablePushes === 3);
+    // R4 review (arm-vs-merge TOCTOU): an armed --auto that never confirms the
+    // merge is an honest failure — caller state (P1-037 pending refill) must
+    // not be cleared on an unconfirmed landing.
+    const neverMerged: MetaPushIo = {
+      exec: (cmd) => {
+        if (cmd.startsWith("git diff")) return { ok: true, output: "BACKLOG.md\n" };
+        if (cmd.startsWith("git rev-parse")) return { ok: true, output: `${"b".repeat(40)}\n` };
+        if (cmd.startsWith("git merge-base")) return { ok: true, output: "" };
+        if (cmd.startsWith("gh ") && cmd.includes("pr view"))
+          return { ok: true, output: JSON.stringify({ state: "OPEN", url: "fake" }) };
+        return { ok: true, output: "" }; // gh pr merge "succeeds" but stays queued forever
+      },
+      sleep: () => Promise.resolve(),
+    };
+    const queued = await landMetaCommit(dir, neverMerged, {
+      files: ["BACKLOG.md"],
+      message: "queued auto-merge",
+      guardFile: "BACKLOG.md",
+      apply: () => ({ action: "apply" }),
+    });
+    check("landMetaCommit: auto-merge armed but unconfirmed ⇒ honest failure, state not cleared", queued === "failed");
 
     // dir-prefix guard (corpus shape): several files inside the dir are allowed
     check("mayPushUnderDir: every file under the dir passes", mayPushUnderDir("d/a.txt\nd/b.txt\n", "d"));
@@ -1003,15 +1051,20 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
 
     // real-git smoke: landing lands the commit on origin/pilot/meta with gh faked
     const realIo = metaIo(dir);
+    let prState = "OPEN";
     const ghIo: MetaPushIo = {
       exec: (cmd) => {
         if (cmd.startsWith("gh ")) {
-          if (cmd.includes("pr view")) return { ok: true, output: JSON.stringify({ state: "OPEN", url: "fake" }) };
+          if (cmd.includes("pr view")) return { ok: true, output: JSON.stringify({ state: prState, url: "fake" }) };
+          if (cmd.includes("pr merge")) {
+            prState = "MERGED"; // fake GitHub: the squash merge completes
+            return { ok: true, output: "" };
+          }
           return { ok: true, output: "" };
         }
         return realIo.exec(cmd);
       },
-      sleep: realIo.sleep,
+      sleep: () => Promise.resolve(),
     };
     const landed = await landMetaCommit(dir, ghIo, {
       files: ["BACKLOG.md"],
@@ -1080,25 +1133,16 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
       execSync(`git -C ${JSON.stringify(work)} push -q origin main`);
       const realIo = auxPushIo(work);
       // P1-076: landings go through the pilot/meta PR — fake gh as OPEN+mergeable
-      const ghFaked = (io: AuxPushIo): AuxPushIo => ({
-        exec: (cmd) => {
-          if (cmd.startsWith("gh ")) {
-            if (cmd.includes("pr view")) return { ok: true, output: JSON.stringify({ state: "OPEN", url: "fake" }) };
-            return { ok: true, output: "" };
-          }
-          return io.exec(cmd);
-        },
-        sleep: io.sleep,
-      });
+      const gh = ghMergingIo(realIo);
       const pushDownIo: AuxPushIo = {
-        exec: (cmd) => (cmd.startsWith("git push") ? { ok: false, output: "" } : ghFaked(realIo).exec(cmd)),
+        exec: (cmd) => (cmd.startsWith("git push") ? { ok: false, output: "" } : gh.exec(cmd)),
         sleep: () => Promise.resolve(),
       };
       let pushes = 0;
       const countingIo: AuxPushIo = {
         exec: (cmd) => {
           if (cmd.startsWith("git push")) pushes++;
-          return ghFaked(realIo).exec(cmd);
+          return gh.exec(cmd);
         },
         sleep: () => Promise.resolve(),
       };
@@ -2298,19 +2342,7 @@ check("stdlibShadow: non-stdlib root file passes", stdlibShadowHits("A\tmain.py\
         [rerunKey("npm run build --silent", ws), { ok: true, output: "built in 1.2s\n" }],
       ]);
       // P1-076: gh faked via the injectable io — landings go to origin/pilot/meta
-      const ghFakedIo = (wsDir: string): MetaPushIo => {
-        const real = metaIo(wsDir);
-        return {
-          exec: (cmd) => {
-            if (cmd.startsWith("gh ")) {
-              if (cmd.includes("pr view")) return { ok: true, output: JSON.stringify({ state: "OPEN", url: "fake" }) };
-              return { ok: true, output: "" };
-            }
-            return real.exec(cmd);
-          },
-          sleep: real.sleep,
-        };
-      };
+      const ghFakedIo = (wsDir: string): MetaPushIo => ghMergingIo(metaIo(wsDir));
       const written = await captureGateCorpus(ws, "P3-033", reruns, ghFakedIo(ws));
       check("corpus: capture records the gate re-runs and lands via pilot/meta", written.length === 3);
       const mainSha = execSync(`git -C "${ws}" ls-remote origin main`).toString().split("\t")[0];
@@ -3565,9 +3597,18 @@ check("experience: isHarnessLesson matches process vocabulary", isHarnessLesson(
     const freshContent = readFileSync(join(dir4, "docs", "EXPERIENCE.md"), "utf8").replace("STALE-ARCHIVE", "FRESH-ARCHIVE");
     const landed4: FailureLesson[] = [];
     const st4: { expMaintLast?: string } = {};
+    let prMerged4 = false;
     const res4 = await maintainExperienceWorkspace(dir4, st4, "2026-09-03", {
       exec: (cmd) => {
         if (cmd.includes(`git checkout -q -B ${META_BRANCH}`)) writeFileSync(join(dir4, "docs", "EXPERIENCE.md"), freshContent);
+        // R4: the landing verifies our sha (40-hex) and confirms the merge
+        if (cmd.startsWith("git rev-parse")) return { ok: true, output: `${"f".repeat(40)}\n` };
+        if (cmd.startsWith("gh ") && cmd.includes("pr view"))
+          return { ok: true, output: JSON.stringify({ state: prMerged4 ? "MERGED" : "OPEN", url: "fake" }) };
+        if (cmd.startsWith("gh ") && cmd.includes("pr merge")) {
+          prMerged4 = true;
+          return { ok: true, output: "" };
+        }
         return { ok: true, output: cmd.includes("--name-only") ? "docs/EXPERIENCE.md" : "" };
       },
       appendLesson: (_file, lesson) => {
@@ -4671,6 +4712,10 @@ check(
         if (cmd.includes(`git checkout -q -B ${META_BRANCH}`)) writeFileSync(join(dir, "BACKLOG.md"), pristine);
         if (cmd.startsWith("git diff")) return { ok: true, output: "BACKLOG.md\n" };
         if (cmd.includes(`origin HEAD:${META_BRANCH}`)) return { ok: ++pushes >= 3, output: "" };
+        // R4: the landing verifies our sha (40-hex) and confirms the merge
+        if (cmd.startsWith("git rev-parse")) return { ok: true, output: `${"e".repeat(40)}\n` };
+        if (cmd.startsWith("gh ") && cmd.includes("pr view"))
+          return { ok: true, output: JSON.stringify({ state: pushes >= 3 ? "MERGED" : "OPEN", url: "fake" }) };
         return { ok: true, output: "" };
       },
       sleep: async (ms) => {
@@ -4741,10 +4786,15 @@ check(
         return { ok: false, output: "" };
       }
     };
+    let prMerged = false;
     const smoke = await commitAndPushFindings(repo, findings, "pilot(explorer): smoke'd run", {
       exec: (cmd) => {
         if (cmd.startsWith("gh ")) {
-          if (cmd.includes("pr view")) return { ok: true, output: JSON.stringify({ state: "OPEN", url: "fake" }) };
+          if (cmd.includes("pr view")) return { ok: true, output: JSON.stringify({ state: prMerged ? "MERGED" : "OPEN", url: "fake" }) };
+          if (cmd.includes("pr merge")) {
+            prMerged = true;
+            return { ok: true, output: "" };
+          }
           return { ok: true, output: "" };
         }
         return realExec(cmd);
