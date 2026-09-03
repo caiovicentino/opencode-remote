@@ -14,6 +14,8 @@ export interface PermissionAsk {
   label: string;
   messageID?: string;
   preview?: string;
+  /** P1-093: set on actionable entries whose auto-approval finally failed */
+  autoFailed?: boolean;
 }
 
 export type ResolvedOrigin = "auto" | "other";
@@ -21,6 +23,8 @@ export type ResolvedOrigin = "auto" | "other";
 export interface CollectedAsk extends PermissionAsk {
   /** true when the last event seen for this id was the daemon's auto-approve */
   auto: boolean;
+  /** true when the last event seen was the daemon's final auto-approve failure (P1-093) */
+  autoFailed: boolean;
 }
 
 export interface ResolvedPermission {
@@ -47,8 +51,10 @@ interface PermissionEventProps {
  * Extract permission asks from the event buffer, deduped by permissionID
  * (opencode emits one event per state change — the same request can appear
  * many times). Last occurrence wins, so a trailing `ocr.permission.auto`
- * flips the entry to auto-approved. Events from other sessions are ignored;
- * ids may arrive as `permissionID` or the legacy `id` field.
+ * flips the entry to auto-approved and clears a recorded auto-fail, while a
+ * trailing `ocr.permission.autoFailed` marks it as failed (P1-093). Events
+ * from other sessions are ignored; ids may arrive as `permissionID` or the
+ * legacy `id` field.
  */
 export function collectPermissionAsks(
   events: { type: string; properties?: unknown }[],
@@ -67,6 +73,7 @@ export function collectPermissionAsks(
       messageID: p.messageID,
       preview: permissionPreview(p),
       auto: type === "ocr.permission.auto",
+      autoFailed: type === "ocr.permission.autofailed",
     });
   }
   return [...byId.values()];
@@ -74,12 +81,13 @@ export function collectPermissionAsks(
 
 /**
  * Reconcile the asks seen in the event buffer against the daemon's pending
- * list. A card is actionable only while the daemon still lists the permission,
- * the user has not answered it locally and AutoMode is off. Everything else
- * that was seen becomes a collapsed resolved line ("auto-approved" when the
- * daemon answered it, plain "resolved" otherwise). Asks that are still pending
- * but already answered locally (or while AutoMode is on) render nothing —
- * never a ghost card.
+ * list. A card is actionable only while the daemon still lists the permission
+ * and the user has not answered it locally — AutoMode suppresses cards except
+ * when the daemon's auto-approval finally failed for that ask (P1-093): the
+ * operator must get a manual affordance instead of a silent stall. Everything
+ * else that was seen becomes a collapsed resolved line ("auto-approved" when
+ * the daemon answered it, plain "resolved" otherwise). Asks that are still
+ * pending but already answered locally render nothing — never a ghost card.
  */
 export function reconcilePermissionCards(
   asks: CollectedAsk[],
@@ -92,15 +100,15 @@ export function reconcilePermissionCards(
   for (const ask of asks) seen.set(ask.permissionID, ask);
   // the server list covers asks that predate the view (events already trimmed)
   for (const sp of serverPending) {
-    if (!seen.has(sp.permissionID)) seen.set(sp.permissionID, { ...sp, auto: false });
+    if (!seen.has(sp.permissionID)) seen.set(sp.permissionID, { ...sp, auto: false, autoFailed: false });
   }
   const actionable: PermissionAsk[] = [];
   const resolved: ResolvedPermission[] = [];
   for (const [id, ask] of seen) {
     if (pendingIds.has(id)) {
-      if (!responded.has(id) && !autoMode) {
-        const { permissionID, label, messageID, preview } = ask;
-        actionable.push({ permissionID, label, messageID, preview });
+      if (!responded.has(id) && (!autoMode || ask.autoFailed)) {
+        const { permissionID, label, messageID, preview, autoFailed } = ask;
+        actionable.push({ permissionID, label, messageID, preview, autoFailed });
       }
       continue;
     }

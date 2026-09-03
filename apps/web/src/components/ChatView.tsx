@@ -897,6 +897,22 @@ export default function ChatView({
     return () => clearTimeout(t);
   }, [autoNote]);
 
+  // P1-093: AutoMode's approval finally failed — the ask must surface as a
+  // manual card instead of stalling silently. The note is persistent but only
+  // rendered while a failed id is still pending (see the composer render).
+  const autoFailedRef = useRef<Set<string>>(new Set());
+  const [autoFailNote, setAutoFailNote] = useState("");
+  useEffect(() => {
+    for (const evt of events.slice(-20)) {
+      if (evt.type !== "ocr.permission.autoFailed") continue;
+      const p = evt.properties as { sessionID?: string; permissionID?: string; action?: string };
+      if (p?.sessionID !== sessionId || !p?.permissionID) continue;
+      if (autoFailedRef.current.has(p.permissionID)) continue;
+      autoFailedRef.current.add(p.permissionID);
+      setAutoFailNote(t("autoFailed", { action: p.action ?? "action" }));
+    }
+  }, [events, sessionId]);
+
   // P2-049: follow the tail only when the reader is already at the bottom;
   // otherwise surface a "go to end" affordance instead of stealing the scroll
   useEffect(() => {
@@ -1941,7 +1957,19 @@ export default function ChatView({
         {pending.length > 0 && (
           <div className="card">
         {pending.map((p) => (
-          <div key={p.permissionID} style={{ marginBottom: 8 }}>
+          <div
+            key={p.permissionID}
+            style={
+              p.autoFailed
+                ? {
+                    marginBottom: 8,
+                    border: "1px solid var(--danger)",
+                    borderRadius: 8,
+                    padding: "6px 8px",
+                  }
+                : { marginBottom: 8 }
+            }
+          >
             {p.preview && (
               <pre
                 style={{
@@ -1982,6 +2010,15 @@ export default function ChatView({
         {autoMode && (
           <p className="muted" role="status" style={{ fontSize: "0.72rem", margin: "4px 0" }}>
             {t("autoBadge")}
+          </p>
+        )}
+        {autoFailNote && pending.some((p) => p.autoFailed) && (
+          <p
+            className="auto-fail-note"
+            role="alert"
+            style={{ color: "var(--danger)", fontSize: "0.72rem", margin: "4px 0" }}
+          >
+            {autoFailNote}
           </p>
         )}
         {resolvedPerms.length > 0 && (
