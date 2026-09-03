@@ -55,7 +55,11 @@ import { ARTIFACTS_ROOT, artifactMime, kindFor, listArtifacts, readArtifact, ses
 import { ArtifactWatcher } from "./artifactwatch.js";
 import { createShutdown, stopAccepting } from "./shutdown.js";
 import { localUpgradeAllowed } from "./localws.js";
-import { injectArtifactsSystem, workspaceCoversArtifacts } from "./sessionctx.js";
+import {
+  injectArtifactsPathPart,
+  injectArtifactsSystem,
+  workspaceCoversArtifacts,
+} from "./sessionctx.js";
 import { previewsFromEvent, PreviewDedupe } from "./preview.js";
 import { UPDATE_CONTENT_TYPES, resolveUpdatePath, updatesDir } from "./updates.js";
 // P2-075: PWA origin watchdog — pure helpers in their own module (P1-072 lesson)
@@ -726,7 +730,13 @@ end tell`;
     // injection point for both tunnels; the marker keeps it idempotent.
     const sid = req.path.split("/")[2] ?? "";
     if (sid && artifactSessions.has(sid) && body && typeof body === "object") {
-      injectArtifactsSystem(body, sid);
+      injectArtifactsSystem(body);
+      // P1-096: the per-session artifacts dir rides the first turn's parts
+      // (the line then lives in the history); the system block stays
+      // byte-identical across sessions so the provider prefix-caches it.
+      if (!artifactPathTold.has(sid) && injectArtifactsPathPart(body, sid)) {
+        artifactPathTold.add(sid);
+      }
     }
   }
   if (req.path === "/__ocr/push-subscription" && req.method === "POST") {
@@ -974,6 +984,12 @@ const sessions = new Map<string, ClientSession>();
 // restart only newly created sessions are injected (documented behavior).
 const artifactSessions = new Set<string>();
 
+// P1-096: sessions that already received the one-shot artifacts path line
+// (injected on the first turn only — afterwards the line lives in the
+// history). In-memory by design, same tradeoff as artifactSessions: after a
+// restart only newly created sessions are told the path again.
+const artifactPathTold = new Set<string>();
+
 /** Register a daemon-created session unless its workspace already teaches the
  * artifacts protocol via AGENTS.md. Missing `directory` fails open (register):
  * a redundant instruction is cheaper than a session without the protocol. */
@@ -1010,7 +1026,10 @@ async function fireRoutine(r: Routine) {
     const promptBody: { parts: { type: string; text: string }[]; system?: string } = {
       parts: [{ type: "text", text: r.prompt }],
     };
-    if (artifactSessions.has(created.id)) injectArtifactsSystem(promptBody, created.id);
+    if (artifactSessions.has(created.id)) {
+      injectArtifactsSystem(promptBody);
+      if (injectArtifactsPathPart(promptBody, created.id)) artifactPathTold.add(created.id);
+    }
     await fetch(new URL(`/session/${created.id}/message`, OPENCODE_URL), {
       method: "POST",
       headers,

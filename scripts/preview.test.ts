@@ -181,7 +181,7 @@ function check(name: string, ok: boolean, detail = "") {
 // --- session prompt pin (spec acceptance 5) -----------------------------------
 
 {
-  const prompt = buildArtifactsPrompt("ses_preview");
+  const prompt = buildArtifactsPrompt();
   check(
     "prompt still carries the artifacts marker",
     prompt.includes(ARTIFACTS_MARKER),
