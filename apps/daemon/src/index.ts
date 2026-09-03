@@ -52,6 +52,7 @@ import { detectWhisper, transcribeAudio, type WhisperTool } from "./whisper.js";
 import { metrics, startMetricsServer, VERSION } from "./metrics.js";
 import { loadRoutines, saveRoutines, type Routine } from "./routines.js";
 import { ARTIFACTS_ROOT, artifactMime, kindFor, listArtifacts, readArtifact, sessionTitleMap } from "./artifacts.js";
+import { contextPct, contextWindowFor, sessionTokenTotal } from "./contextgauge.js";
 import { ArtifactWatcher } from "./artifactwatch.js";
 import { createShutdown, stopAccepting } from "./shutdown.js";
 import { localUpgradeAllowed } from "./localws.js";
@@ -355,6 +356,54 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
     routines = routines.filter((r) => r.id !== id);
     saveRoutines(routines);
     return { id: req.id, status: 200, body: { ok: true } };
+  }
+
+  // --- context pressure (P1-079): token totals + model window for one session.
+  // The client gauge reads this instead of the whole /provider catalog (~6MB).
+  // Tokens come from the opencode server, which materializes the same
+  // per-session totals it persists in opencode.db.
+  if (req.path === "/__ocr/context" && req.method === "GET") {
+    const sessionId = req.query?.session ?? "";
+    if (!/^ses_[A-Za-z0-9]{4,64}$/.test(sessionId)) {
+      return { id: req.id, status: 400, body: { error: "valid session id required" } };
+    }
+    try {
+      const sres = await fetch(new URL(`/session/${sessionId}`, OPENCODE_URL), {
+        headers: authHeader ? { authorization: authHeader } : {},
+      });
+      if (!sres.ok) return { id: req.id, status: 502, body: { error: `opencode ${sres.status}` } };
+      const s = (await sres.json()) as {
+        tokens?: { input?: number; output?: number; reasoning?: number; cache?: { read?: number; write?: number } };
+        model?: { providerID?: string; modelID?: string };
+      };
+      const tokens = sessionTokenTotal(s);
+      const providerID = s.model?.providerID ?? "";
+      const modelID = s.model?.modelID ?? "";
+      let window = 0;
+      if (providerID && modelID) {
+        try {
+          const pres = await fetch(new URL("/provider", OPENCODE_URL), {
+            headers: authHeader ? { authorization: authHeader } : {},
+          });
+          if (pres.ok) {
+            window = contextWindowFor(
+              (await pres.json()) as Parameters<typeof contextWindowFor>[0],
+              providerID,
+              modelID,
+            );
+          }
+        } catch {
+          // provider catalog is optional — without it there is no gauge
+        }
+      }
+      return {
+        id: req.id,
+        status: 200,
+        body: { tokens, window, pct: contextPct(tokens, window), model: modelID },
+      };
+    } catch (err) {
+      return { id: req.id, status: 502, body: { error: String(err instanceof Error ? err.message : err) } };
+    }
   }
 
   // --- artifacts: agent-produced documents (P1-010) ---------------------------

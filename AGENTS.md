@@ -26,7 +26,11 @@ after `maxAttemptsPerTask` (default 4; a `(size: L)` task has its own cap of 6) 
 findings and never re-scheduled until a human/red team moves them back (P1-014). A task line may also carry a
 `(size: L)` tag (P1-060): long-horizon epics scale budgets to 6 rounds/90min/6 attempts, and from round 2 on are
 reviewed on the incremental diff since the round checkpoint (`~/.opencode-remote/pilot/checkpoints/<ID>.json`)
-instead of the truncated whole-branch diff. Branch preservation across attempts is all-task behavior
+instead of the truncated whole-branch diff. Before every builder round the
+pipeline checks the session's context pressure (P1-079): past 85% of the model
+window a scribe pass distills a state recap into `~/.opencode-remote/pilot/carryover/<ID>.json`
+and the next round opens a FRESH session with the recap in the prompt — without
+burning an attempt (overflowed context is infra). Branch preservation across attempts is all-task behavior
 (P1-060/P1-036): after any failed attempt the retry keeps the existing `pilot/<ID>` branch (the builder continues
 the preserved history); only the first attempt starts clean at origin/main. A global
 "fever" breaker (P2-032) pauses the whole queue in audit mode when >=3 DISTINCT tasks

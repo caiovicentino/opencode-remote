@@ -252,6 +252,10 @@ export const dict = {
     queuedTitle: "queued — will send when back online",
     connTitle: "connection: {status}",
     sessionFallback: "session",
+    ctxGauge: "Context usage",
+    ctxGaugeDetail: "Context: {pct}% of the model window ({tokens} of {window} tokens)",
+    recapLabel: "Recap",
+    recapDetail: "Where the conversation left off",
     jumpToEnd: "Go to end",
     resizeSplit: "Resize artifact preview",
     // a11y (P2-049)
@@ -470,6 +474,10 @@ export const dict = {
     queuedTitle: "na fila — envia quando voltar a conexão",
     connTitle: "conexão: {status}",
     sessionFallback: "sessão",
+    ctxGauge: "Uso de contexto",
+    ctxGaugeDetail: "Contexto: {pct}% da janela do modelo ({tokens} de {window} tokens)",
+    recapLabel: "Recap",
+    recapDetail: "Onde a conversa parou",
     jumpToEnd: "Ir pro fim",
     resizeSplit: "Redimensionar preview do artifact",
     // a11y (P2-049)

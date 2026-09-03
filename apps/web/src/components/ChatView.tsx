@@ -33,6 +33,7 @@ import {
 } from "../lib/permissionCards";
 import { getCachedSession, putCachedSession } from "../lib/sessionCache";
 import { appendDraft, getDraft, setDraft } from "../lib/drafts";
+import { firstSentence, pressureLevel } from "../lib/context";
 import { clampComposerHeight, composerSelectorLabel } from "../lib/composer";
 import { mergeBubbles, rowsToBubbles, type Bubble, type HistoryRow } from "../lib/bubbleMerge";
 import {
@@ -316,6 +317,9 @@ export default function ChatView({
   const [paging, setPaging] = useState(false);
   const pagingRef = useRef(false);
   const [sessionTitle, setSessionTitle] = useState("");
+  // P1-079: per-session context gauge + pinned recap under the composer
+  const [ctx, setCtx] = useState<{ pct: number; tokens: number; window: number } | null>(null);
+  const [sessionSummary, setSessionSummary] = useState("");
   // P2-049: autoscroll only when the reader is at the bottom — scrolling up to
   // read must not be yanked back by the streaming tail
   const [atBottom, setAtBottom] = useState(true);
@@ -482,6 +486,27 @@ export default function ChatView({
     };
   }, [sessionId, idleCount, request]);
 
+  // P1-079: context gauge — daemon-computed pressure for this session
+  // (opencode tokens vs the model window), refreshed when the agent goes idle.
+  useEffect(() => {
+    let alive = true;
+    setCtx(null);
+    void (async () => {
+      try {
+        const res = await request("GET", "/__ocr/context", undefined, { session: sessionId });
+        if (alive && res.status === 200) {
+          const b = (res.body ?? {}) as { pct?: number; tokens?: number; window?: number };
+          if (typeof b.pct === "number" && (b.window ?? 0) > 0) {
+            setCtx({ pct: b.pct, tokens: b.tokens ?? 0, window: b.window ?? 0 });
+          }
+        }
+      } catch {}
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [sessionId, idleCount, request]);
+
   // P2-090: auto-open refs — the effect itself is declared after the
   // [sessionId] reset effect below so a session switch always re-anchors
   // before any event batch is consumed.
@@ -519,7 +544,12 @@ export default function ChatView({
       try {
         const res = await request("GET", `/session/${sessionId}`);
         // a response from a previous session must not overwrite this header
-        if (alive && res.status === 200) setSessionTitle(sessionTitleOf(res.body));
+        if (alive && res.status === 200) {
+          setSessionTitle(sessionTitleOf(res.body));
+          // P1-079: a string session summary wins over the derived recap
+          const s = res.body as { summary?: unknown };
+          setSessionSummary(typeof s?.summary === "string" ? s.summary : "");
+        }
       } catch {}
     })();
     return () => {
@@ -1766,6 +1796,18 @@ export default function ChatView({
     setRecState("idle");
   }
 
+  // P1-079: pinned recap — the session summary when the backend provides one,
+  // else the first sentence of the last assistant message.
+  let lastAssistant = "";
+  for (let i = bubbles.length - 1; i >= 0; i--) {
+    const b = bubbles[i];
+    if (b && b.role === "assistant" && b.text?.trim()) {
+      lastAssistant = b.text;
+      break;
+    }
+  }
+  const recap = sessionSummary ? firstSentence(sessionSummary) : firstSentence(lastAssistant);
+
   return (
     <div className={`screen${splitOpen ? " artifact-split" : ""}`}>
       <header>
@@ -1783,6 +1825,26 @@ export default function ChatView({
         >
           {sessionTitle || t("sessionFallback")}
         </h1>
+        {ctx && (
+          <div
+            className="ctx-gauge"
+            data-level={pressureLevel(ctx.pct)}
+            aria-label={t("ctxGauge")}
+            title={t("ctxGaugeDetail", {
+              pct: Math.round(ctx.pct),
+              tokens: ctx.tokens.toLocaleString(),
+              window: ctx.window.toLocaleString(),
+            })}
+          >
+            <span className="ctx-gauge-bar" aria-hidden>
+              <span
+                className="ctx-gauge-fill"
+                style={{ width: `${Math.max(2, Math.min(100, ctx.pct))}%` }}
+              />
+            </span>
+            <span className="ctx-gauge-label">{Math.round(ctx.pct)}%</span>
+          </div>
+        )}
         <button
           className="chat-handoff"
           onClick={() => void handoffToDesktop()}
@@ -2439,6 +2501,13 @@ export default function ChatView({
             </button>
           </div>
         </div>
+
+        {recap && (
+          <div className="chat-recap" title={t("recapDetail")}>
+            <span className="chat-recap-label">{t("recapLabel")}</span>
+            <span className="chat-recap-text">{recap}</span>
+          </div>
+        )}
       </div>
 
       {splitOpen && (

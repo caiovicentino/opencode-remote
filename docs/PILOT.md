@@ -484,6 +484,21 @@ doctor roda um pass de diagnóstico no log (`audit diagnosis`, com `api=…`), s
 entrar em modo auditoria — a fila continua rodando e a task é re-agendada pelo
 scheduler no ciclo seguinte.
 
+**Checkpoint de pressão de contexto (P1-079)**: o builder resume a MESMA sessão
+opencode entre rounds (cache de contexto), então o total de tokens só cresce. Antes
+de cada round o pipeline mede a pressão — tokens da sessão (API do opencode, os
+mesmos números de `opencode.db`) contra a janela do modelo (`GET /provider`) — e
+registra a amostra em `state.json` (`contextPressure`, últimas 8 por task). Acima
+de **85%** o pipeline roda um pass de scribe curto que destila o estado do trabalho
+(task id, pendências, próximo passo), grava o recap em
+`~/.opencode-remote/pilot/carryover/<ID>.json`, mata a sessão LIMPO e abre sessão
+fresca na próxima round com o recap no prompt (`CONTEXT RECAP` block). Pressão de
+contexto estourada é infra, não mérito: **nenhum attempt é queimado**. Se o pass
+de recap falha, a sessão segue como antes (fail-open); o carryover é consumido na
+primeira round que o usar e removido no merge. O mesmo cálculo alimenta o gauge de
+contexto do chat (apps/web via `GET /__ocr/context` do daemon, amarelo ~70%,
+vermelho ~85%) e o recap fixado sob o composer — ver README.
+
 ## Circuit breaker de febre — modo auditoria (P2-032)
 
 O stop-loss acima é **por task**; o breaker de febre é **global**: pausa o

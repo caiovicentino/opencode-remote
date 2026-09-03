@@ -12,6 +12,13 @@ import { appendLessonsToWorkspace, pickRelevantLessons, readExperienceFile } fro
 import { defaultLessonsFile, failureLessonsBlock, readRecentFailureLessons } from "./failureLessons";
 import { captureGateCorpus, CORPUS_COMMANDS, CORPUS_DIR, loadGateCorpus } from "./gate-corpus";
 import type { InfraFailureKind } from "./audit";
+import {
+  clearRecapCarry,
+  fetchSessionContext,
+  isContextCritical,
+  loadRecapCarry,
+  saveRecapCarry,
+} from "./context";
 
 export const CONSTITUTION = `CONSTITUTION (never violate):
 1. E2E crypto stays E2E: the relay must remain a blind router; never log plaintext frames.
@@ -89,6 +96,9 @@ Your LAST line must be exactly: ${STRATEGIST_MARKER}`;
 /** Planner agents are read-only code readers; 10 min like the scribe. */
 export const PLANNER_TIMEOUT_MIN = 10;
 export const PLANNER_MARKER = "PLANNER:DONE";
+
+/** P1-079: the context recap pass is a tiny read-only scribe run. */
+export const CONTEXT_RECAP_TIMEOUT_MIN = 5;
 export const SPEC_SECTIONS = [
   "Problem",
   "Approach",
@@ -361,6 +371,7 @@ export function builderPrompt(
   specFile: string | null = null,
   resume: AgentIds | null = null,
   attempt = 1,
+  recap = "",
 ): string {
   const uiTask = needsUiEvidence(t.area, false);
   // P2-008: when a planner spec exists on the branch, the builder must follow it
@@ -422,9 +433,81 @@ $ npm run test:unit --silent
 
 TASK (${t.id}) [${t.priority}]: ${t.title}
 spec: ${t.spec || "(no extra spec — use judgement, keep the change small and shippable)"}
-This is builder round ${round} of this task.${specBlock}${longBlock}${attemptBlock}${resumeBlock(resume, round - 1)}${findings ? `\nREVIEWER FINDINGS TO ADDRESS:\n${findings}\n` : ""}${lessonsBlock(lessons)}${roundBlock}${uiBullet}
+This is builder round ${round} of this task.${specBlock}${longBlock}${attemptBlock}${recapBlock(recap)}${resumeBlock(resume, round - 1)}${findings ? `\nREVIEWER FINDINGS TO ADDRESS:\n${findings}\n` : ""}${lessonsBlock(lessons)}${roundBlock}${uiBullet}
 
 Your LAST line of output must be exactly: PILOT:TASK-DONE`;
+}
+
+// ── P1-079: context-pressure recap (session recycled without burning an
+// attempt) ────────────────────────────────────────────────────────────────────
+
+/** The recap agent output is parsed between these markers. */
+export const RECAP_MARKER = "RECAP:";
+
+/**
+ * Prompt for the SCRIBE-style recap pass that runs when a builder session
+ * crosses the critical context pressure. The agent is a fresh, tiny session —
+ * it reads the branch + the pending findings and distills the work state.
+ */
+export function recapPrompt(t: Task, findings: string): string {
+  return `You are the SCRIBE agent of the opencode-remote autonomous pipeline, running a CONTEXT RECAP pass.
+The builder session working on the task below reached ~85% of the model context window and is being
+closed CLEAN (this is infra, not a failure). A fresh session will continue the work from your recap.
+
+Read the work state on the current branch (git log/diff/status, open files as needed) and write a compact
+state recap the next session can act on. Exactly these three items, plain text, no markdown headings:
+1. Task id and one-line goal.
+2. Pending work: what is already done on the branch vs what the findings still demand.
+3. Next step: the single most important action for the next session.
+
+Rules:
+- Do NOT modify any files. Read-only pass.
+- Max ~120 words. Concrete file paths and commands beat prose.
+- No secrets, no verbatim reviewer text beyond the short quotes needed.
+
+Your LAST lines must be exactly:
+${RECAP_MARKER}
+<the recap>
+RECAP-END
+
+TASK (${t.id}) [${t.priority}]: ${t.title}
+spec: ${t.spec || "(none)"}
+${findings ? `\nPENDING REVIEWER FINDINGS:\n${findings}\n` : ""}`;
+}
+
+/**
+ * Parse the recap body between RECAP: and RECAP-END (last marker wins, like
+ * the verdict/lessons parsers). Empty string when malformed or empty.
+ */
+export function parseRecap(output: string): string {
+  const start = output.lastIndexOf(RECAP_MARKER);
+  if (start < 0) return "";
+  const tail = output.slice(start + RECAP_MARKER.length);
+  const body = tail.split("RECAP-END")[0] ?? "";
+  return body.trim().slice(0, 2_000);
+}
+
+/** Prompt block carrying the recap into the fresh session's first round. */
+export function recapBlock(recap: string): string {
+  if (!recap) return "";
+  return `\nCONTEXT RECAP (P1-079): the previous builder session reached the context checkpoint (~85% of the model window) and was closed CLEAN — this is infra, not a failure, and no attempt was burned. A fresh session starts now with this recap of the work state:\n${recap}\nContinue from this state: verify the branch yourself (git log/diff), do not redo work the recap marks as done, and do not re-open the old session.\n`;
+}
+
+/**
+ * P1-079: record one context-pressure sample per builder round in state.json
+ * (bounded: the last 8 samples per task). Best-effort instrumentation.
+ */
+export function recordContextPressure(
+  state: { contextPressure?: Record<string, { round: number; pct: number; at: string }[]> },
+  taskId: string,
+  round: number,
+  pct: number,
+): void {
+  if (!Number.isFinite(pct)) return;
+  state.contextPressure ??= {};
+  const list = state.contextPressure[taskId] ?? [];
+  list.push({ round, pct: Math.round(pct * 10) / 10, at: nowLocalISO() });
+  state.contextPressure[taskId] = list.slice(-8);
 }
 
 /**
@@ -1147,6 +1230,12 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       if (prev.task === t.id && prev.tail) findings += `[previous gatekeeper failure]\n${prev.tail}\n`;
     }
   } catch {}
+  // P1-079: a context recap recorded by an earlier cycle's checkpoint (or by
+  // the checkpoint later in this loop) rides into the builder prompt
+  let recap = "";
+  try {
+    recap = loadRecapCarry(t.id)?.recap ?? "";
+  } catch {}
   let merged = false;
   let lastStream = 0;
   const stream = (chunk: string) => {
@@ -1259,7 +1348,58 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
     if (isLong) saveCheckpoint(t.id, headSha(ws), round);
     // P1-007: top-5 lessons keyword-matched against this task, most recent first
     const lessons = pickRelevantLessons(readExperienceFile(ws), t.title, t.spec);
-    const build = await runAgent(builderPrompt(t, round, findings, lessons, specFile, resume, attemptNo + 1), {
+    // P1-079: context-pressure checkpoint — the builder session carries across
+    // rounds (sessionId resume); past the critical threshold the work state is
+    // recapped and the session is opened FRESH for this round. Overflowed
+    // context is infra (P1-074): no attempt is burned.
+    if (builderSession) {
+      const ctx = await fetchSessionContext(builderSession);
+      if (ctx) {
+        recordContextPressure(state, t.id, round, ctx.pct);
+        console.log(
+          JSON.stringify({
+            ts: nowLocalISO(),
+            level: "info",
+            msg: "contextPressure",
+            data: { task: t.id, round, pct: Math.round(ctx.pct * 10) / 10, tokens: ctx.tokens, window: ctx.window },
+          }),
+        );
+        if (isContextCritical(ctx.pct)) {
+          emit("phase", { task: t.id, phase: "context-checkpoint", detail: `${Math.round(ctx.pct)}%` });
+          const out = await runAgent(recapPrompt(t, findings), {
+            cwd: ws,
+            timeoutMin: CONTEXT_RECAP_TIMEOUT_MIN,
+            label: `recap-${t.id}-r${round}`,
+            onStdout: stream,
+          });
+          trackSession(out.sessionId);
+          const generated = parseRecap(out.output);
+          if (generated) {
+            saveRecapCarry(t.id, generated, round);
+            recap = generated;
+            builderSession = undefined; // killed CLEAN — next round opens a fresh session
+            console.log(
+              JSON.stringify({
+                ts: nowLocalISO(),
+                level: "info",
+                msg: "context checkpoint — builder session recycled with recap",
+                data: { task: t.id, round, pct: Math.round(ctx.pct) },
+              }),
+            );
+          } else {
+            console.log(
+              JSON.stringify({
+                ts: nowLocalISO(),
+                level: "warn",
+                msg: "context checkpoint recap unusable — keeping session",
+                data: { task: t.id, round },
+              }),
+            );
+          }
+        }
+      }
+    }
+    const build = await runAgent(builderPrompt(t, round, findings, lessons, specFile, resume, attemptNo + 1, recap), {
       cwd: ws,
       timeoutMin: cfg.taskTimeoutMin,
       label: `builder-${t.id}-r${round}`,
@@ -1267,6 +1407,12 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       printLogs: true,
       onStdout: stream,
     });
+    // the recap is consumed by this round's prompt — the carryover must not
+    // re-inject it on a later cycle unless the checkpoint fires again
+    if (recap) {
+      clearRecapCarry(t.id);
+      recap = "";
+    }
     if (build.sessionId) builderSession = build.sessionId;
     trackSession(build.sessionId);
     // P2-013 (round 2): only a failed round leaves resumable state — a
@@ -1492,13 +1638,14 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       merged = await gatekeeper(cfg, ws, t, state, build.output, startedAtMs, rerunResults);
       emit("phase", { task: t.id, phase: "merge", ok: merged });
       if (merged) {
-        // gate passed — the per-task carryover file has no reason to linger
+        // gate passed — the per-task carryover files have no reason to linger
         const f = gateFailFile(t.id);
         if (f) {
           try {
             rmSync(f);
           } catch {}
         }
+        clearRecapCarry(t.id); // P1-079: context recap fully consumed
         // P1-007 SCRIBE: distill lessons from the merged diff while the
         // workspace still sits on updated main — a separate agent pass (LLM
         // latency must not block other slots) before the pipeline returns
