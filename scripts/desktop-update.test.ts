@@ -324,18 +324,25 @@ check("publicFeedUrl: dev unpackaged has no public feed", publicFeedUrl({}, fals
 
 {
   const savedFeed = process.env.OCR_UPDATE_FEED;
-  process.env.OCR_UPDATE_FEED = "http://127.0.0.1:1/staged.json";
+  // Round 4: the packaged loopback default is the only feed with a public
+  // fallback — delete the env override so resolvedFeedUrl() takes that path.
+  delete process.env.OCR_UPDATE_FEED;
+  const savedMetrics = process.env.OCR_METRICS_PORT;
+  delete process.env.OCR_METRICS_PORT;
+  delete process.env.OCR_DAEMON_METRICS_PORT;
+  const staged = resolvedFeedUrl({}, true);
   const fetchedUrls: string[] = [];
   const sequenceFetcher = ((input: RequestInfo | URL) => {
     const url = String(input);
     fetchedUrls.push(url);
-    if (url.endsWith("staged.json")) return Promise.reject(new Error("ECONNREFUSED"));
+    if (url === staged || url.endsWith("staged.json")) return Promise.reject(new Error("ECONNREFUSED"));
     return Promise.resolve(new Response(YML, { status: 200 }));
   }) as unknown as typeof fetch;
   const fallbackLogs: string[] = [];
   check(
-    "P2-098: staged feed down → public latest-mac.yml fallback answers",
+    "P2-098: staged loopback down → public latest-mac.yml fallback answers (packaged default)",
     (await checkForUpdatesOnBoot({
+      packaged: true,
       publicFeed: "http://127.0.0.1:9/latest-mac.yml",
       currentVersion: "0.2.0",
       updater: fakeUpdater(),
@@ -345,11 +352,13 @@ check("publicFeedUrl: dev unpackaged has no public feed", publicFeedUrl({}, fals
   );
   check(
     "P2-098: fallback fetch order = staged first, public second (one retry)",
-    JSON.stringify(fetchedUrls) === JSON.stringify(["http://127.0.0.1:1/staged.json", "http://127.0.0.1:9/latest-mac.yml"]),
+    JSON.stringify(fetchedUrls) === JSON.stringify([staged, "http://127.0.0.1:9/latest-mac.yml"]),
   );
+  fetchedUrls.length = 0;
   check(
     "P2-098: staged AND public down → feed-unreachable (fail-open)",
     (await checkForUpdatesOnBoot({
+      packaged: true,
       publicFeed: "http://127.0.0.1:1/public.yml",
       currentVersion: "0.2.0",
       updater: fakeUpdater(),
@@ -360,6 +369,7 @@ check("publicFeedUrl: dev unpackaged has no public feed", publicFeedUrl({}, fals
   check(
     "P2-098: staged feed up → fallback never consulted",
     (await checkForUpdatesOnBoot({
+      packaged: true,
       publicFeed: "http://127.0.0.1:1/public.yml",
       currentVersion: "0.2.0",
       updater: fakeUpdater(),
@@ -367,10 +377,31 @@ check("publicFeedUrl: dev unpackaged has no public feed", publicFeedUrl({}, fals
       log: () => {},
     })) === "update-available",
   );
+  fetchedUrls.length = 0;
+  // Round 4: an OCR_UPDATE_FEED-configured feed is explicit operator intent —
+  // when it is down the check fails loudly instead of silently requesting
+  // github.com from a dev/staging machine.
+  process.env.OCR_UPDATE_FEED = "http://127.0.0.1:1/staged.json";
+  fetchedUrls.length = 0;
+  check(
+    "P2-098 round 4: OCR_UPDATE_FEED feed down → feed-unreachable, no public fallback fetch",
+    (await checkForUpdatesOnBoot({
+      packaged: true,
+      publicFeed: "http://127.0.0.1:9/latest-mac.yml",
+      currentVersion: "0.2.0",
+      updater: fakeUpdater(),
+      fetchImpl: sequenceFetcher,
+      log: () => {},
+    })) === "feed-unreachable" && JSON.stringify(fetchedUrls) === JSON.stringify(["http://127.0.0.1:1/staged.json"]),
+  );
+  delete process.env.OCR_UPDATE_FEED;
+  if (savedFeed !== undefined) process.env.OCR_UPDATE_FEED = savedFeed;
+  if (savedMetrics !== undefined) process.env.OCR_METRICS_PORT = savedMetrics;
   check(
     "P2-098: injected feedUrl is authoritative — no public fallback fetch",
     (await checkForUpdatesOnBoot({
       feedUrl: "http://127.0.0.1:1/feed.json",
+      packaged: true,
       publicFeed: "http://127.0.0.1:9/latest-mac.yml",
       currentVersion: "0.2.0",
       updater: fakeUpdater(),
@@ -378,8 +409,6 @@ check("publicFeedUrl: dev unpackaged has no public feed", publicFeedUrl({}, fals
       log: () => {},
     })) === "feed-unreachable",
   );
-  if (savedFeed === undefined) delete process.env.OCR_UPDATE_FEED;
-  else process.env.OCR_UPDATE_FEED = savedFeed;
 }
 
 

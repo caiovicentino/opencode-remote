@@ -187,7 +187,10 @@ Then on the phone (same Wi-Fi): AirDrop `$(mkcert -CAROOT)/rootCA.pem` →
 install profile → enable in **Settings → General → About → Certificate Trust
 Settings**; open `https://<LAN_IP>:5173` in Safari → **Add to Home Screen** →
 scan the QR. Omit the `PWA_*`/`RELAY_TLS_*` overrides to keep the default
-tailscale layout; every port and cert path is an environment variable
+tailscale layout — **but note that a fresh clone has no `.certs/`**: without
+generated certificates the relay installs plain-ws on 8788, so pair it with
+`RELAY_URL="ws://$LAN_IP:8788"` and leave the `PWA_TLS_*`/`NODE_EXTRA_CA_CERTS`
+vars out too. Every port and cert path is an environment variable
 (`RELAY_PORT`, `PWA_PORT`, `PWA_HOST`…). The autonomous pilot service follows
 the same rule: `deploy/install-pilot.sh` has no hardcoded hostname — set
 `RELAY_URL` in the environment (re-installs without it keep the value already
@@ -198,11 +201,13 @@ CA — Node never trusts the macOS keychain.
 
 Every GitHub release ships a real macOS installer,
 `OpenCode Remote-<version>-arm64.dmg` (electron-builder `dmg` target, branded
-window). Releases are **notarized** when the release runner has Apple
-credentials configured; otherwise the build is ad-hoc signed and you
-right-click → **Open** once to pass Gatekeeper. Homebrew users get the same
-code via the `Formula/opencode-remote.rb` formula (AGPL-3.0-only, checksum
-pinned automatically by the release pipeline at tag time).
+window). Releases are **signed and notarized** only when the release runner
+has a Developer ID Application certificate configured (plus the Apple
+notarization credentials); without a signing identity the build is ad-hoc
+signed and you right-click → **Open** once to pass Gatekeeper. Homebrew users
+get the same code via the `Formula/opencode-remote.rb` formula
+(AGPL-3.0-only, checksum pinned automatically by the release pipeline at tag
+time).
 
 ## CLI
 
@@ -305,8 +310,8 @@ name) — and `npm run dist:smoke --workspace @ocr/desktop` verifies the
 bundle **and** the DMG artifact. Builds are ad-hoc signed — on first launch,
 right-click → **Open** once to pass Gatekeeper; afterwards the app behaves
 like any installed app. Tag releases ship that DMG + `latest-mac.yml` on
-GitHub (`.github/workflows/release.yml`), notarized automatically when Apple
-credentials are configured on the runner.
+GitHub (`.github/workflows/release.yml`), signed and notarized only when the
+runner also has a Developer ID certificate + Apple credentials configured.
 
 **Auto-updates with consent (P1-050)**: the packaged shell checks the daemon's
 loopback updates folder (`http://127.0.0.1:8792/__ocr/updates/` — a versioned
@@ -316,7 +321,9 @@ absent — the normal case on a plain DMG install — the shell falls back to th
 public `latest-mac.yml` attached to the latest GitHub release, so the tray
 still reports "update available" on third-party machines (the decision is
 log/tray only for yml feeds; the background download + consent flow needs a
-Squirrel JSON feed like the staged one). When a newer `feed.json` is
+Squirrel JSON feed like the staged one). The fallback triggers for the
+packaged default only — a feed pointed at explicitly via `OCR_UPDATE_FEED`
+never produces an outbound request behind your back. When a newer `feed.json` is
 found, the release downloads in the background and a consent dialog offers
 **Restart now / Later** — nothing installs without an explicit click, a
 deferred version is not re-offered during the session, and repeated checks

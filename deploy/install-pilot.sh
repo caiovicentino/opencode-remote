@@ -5,7 +5,7 @@
 # P2-098: the relay URL is fully parametrized — no operator hostname is
 # hardcoded. RELAY_URL env wins; a re-install without it reuses the value
 # from the existing plist; a first install requires it (LAN mode:
-# RELAY_URL=ws://<lan-ip>:8787, see README "Install as a third party").
+# RELAY_URL=wss://<lan-ip>:8788, see README "Install as a third party").
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"

@@ -47,7 +47,10 @@ Since P2-098, a machine with **no** staged feed falls back to the public
 `latest-mac.yml` attached to the latest GitHub release
 (`OCR_PUBLIC_UPDATE_FEED` overrides it; the tray then reports
 "update available" but the background download still requires a Squirrel JSON
-feed — stage one as above to get the consent flow).
+feed — stage one as above to get the consent flow). The fallback fires for
+the packaged loopback default only: a feed explicitly set via
+`OCR_UPDATE_FEED` (dev/staging) fails with "feed unreachable" instead of
+making a surprise outbound request.
 
 ## Health endpoints
 

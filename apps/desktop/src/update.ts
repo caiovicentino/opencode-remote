@@ -191,6 +191,9 @@ export interface UpdateCheckOptions {
   feedUrl?: string | null;
   /** Overrides the public fallback feed (tests); undefined uses publicFeedUrl(). */
   publicFeed?: string | null;
+  /** Overrides app.isPackaged (tests drive the packaged-default fallback path
+   * without a real Electron app). */
+  packaged?: boolean;
   /** Overrides app.getVersion() (tests/dev fixtures). */
   currentVersion?: string;
   /** Overrides the real Electron autoUpdater (tests inject fakes). */
@@ -339,7 +342,8 @@ export async function checkForUpdatesOnBoot(opts: UpdateCheckOptions = {}): Prom
   // An explicitly injected feedUrl (tests, tray re-checks) is authoritative —
   // the public fallback only applies to the resolved packaged default.
   const injected = opts.feedUrl !== undefined;
-  let feedUrl = injected ? opts.feedUrl! : resolvedFeedUrl();
+  const packaged = opts.packaged ?? app?.isPackaged ?? false;
+  let feedUrl = injected ? opts.feedUrl! : resolvedFeedUrl(process.env, packaged);
   // No feed source → the feature is off: no fetch, no listeners, no log noise.
   if (!feedUrl) return "disabled";
   const updater = opts.updater !== undefined ? opts.updater : (autoUpdater as UpdaterLike | undefined);
@@ -362,11 +366,16 @@ export async function checkForUpdatesOnBoot(opts: UpdateCheckOptions = {}): Prom
     // Staged feed unreachable: P2-098 — a plain DMG install has no staged
     // loopback feed, so retry once against the public release feed before
     // giving up. Still fail-open: every failure is log-only by design.
-    const fallback = injected
+    //
+    // Round-4 guard: the fallback fires for the PACKAGED LOOPBACK DEFAULT
+    // only. A feed explicitly configured via OCR_UPDATE_FEED (dev / staging)
+    // must never cause a surprise outbound request to github.com — it fails
+    // with feed-unreachable so the operator sees the misconfiguration.
+    const fallback = injected || feedUrlFromEnv(process.env)
       ? null
       : opts.publicFeed !== undefined
         ? opts.publicFeed
-        : publicFeedUrl();
+        : publicFeedUrl(process.env, packaged);
     if (!fallback || fallback === feedUrl) {
       log(`update check: feed unreachable (${feedUrl}): ${err instanceof Error ? err.message : String(err)}`);
       return finish("feed-unreachable");
