@@ -8,10 +8,17 @@
  * origin (mkdtemp + bare origin + clone, P1-036 lesson) and the state save is
  * injected as a spy, never touching the production state.json.
  *
+ * The scratch workspace gets a full COPY of node_modules (round-3 review):
+ * the agent runs with bash/edit allowed, so a shared tree (symlink) would let
+ * an accidental `npm ci`/install in the scratch follow straight into the real
+ * dependency tree — a copy keeps every write inside the throwaway dir.
+ * All interpolated shell values go through shq + SHA validation. On success
+ * the scratch is removed; on failure it is kept for inspection (path printed).
+ *
  * Usage: node --import tsx/esm scripts/explorer-proof.ts
  * Prints a PROOF line per assertion and exits non-zero on any failure.
  */
-import { cpSync, existsSync, mkdtempSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -27,6 +34,11 @@ function proof(label: string, ok: boolean, detail = ""): void {
   console.log(`${ok ? "PROOF" : "FAIL "} ${label}${detail ? ` — ${detail}` : ""}`);
 }
 
+/** POSIX single-quote escape (JSON.stringify is NOT shell quoting). */
+const shq = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
+/** Only a validated full sha may be interpolated into a git command. */
+const SHA_RE = /^[0-9a-f]{40}$/;
+
 const tmp = mkdtempSync(join(tmpdir(), "explorer-proof-"));
 const origin = join(tmp, "origin.git");
 const ws = join(tmp, "ws");
@@ -35,10 +47,10 @@ const startedAt = new Date().toISOString();
 const sh = (c: string) => execSync(c, { encoding: "utf8" }).trim();
 
 // throwaway bare origin + scratch workspace on main (mirrors production shape)
-sh(`git clone --bare -q '${REPO}/.git' '${origin}'`);
-sh(`git -C '${origin}' update-ref refs/heads/main HEAD`);
-const baseSha = sh(`git -C '${origin}' rev-parse main`);
-sh(`git clone -q '${origin}' '${ws}' -b main`);
+sh(`git clone --bare -q ${shq(`${REPO}/.git`)} ${shq(origin)}`);
+sh(`git -C ${shq(origin)} update-ref refs/heads/main HEAD`);
+const baseSha = sh(`git -C ${shq(origin)} rev-parse main`);
+sh(`git clone -q ${shq(origin)} ${shq(ws)} -b main`);
 writeFileSync(
   join(ws, "opencode.json"),
   JSON.stringify(
@@ -50,8 +62,9 @@ writeFileSync(
     2,
   ),
 );
-// deps + prebuilt dists so the agent spends its budget exploring, not building
-symlinkSync(join(REPO, "node_modules"), join(ws, "node_modules"));
+// deps (full copy — see header) + prebuilt dists so the agent spends its
+// budget exploring, not building
+cpSync(join(REPO, "node_modules"), join(ws, "node_modules"), { recursive: true });
 for (const d of ["apps/web/dist", "apps/desktop/dist-electron"]) {
   if (existsSync(join(REPO, d))) cpSync(join(REPO, d), join(ws, d), { recursive: true });
 }
@@ -77,14 +90,27 @@ const shots = existsSync(explorerShotsDir())
   : [];
 proof("fresh shots on disk", shots.length >= 1, shots.join(" ").slice(0, 200));
 
-const headNow = sh(`git -C '${origin}' rev-parse main`);
-execSync(`git -C '${origin}' cat-file -e ${headNow}^{commit}`);
-if (headNow !== baseSha) {
-  const msg = sh(`git -C '${origin}' log -1 --format=%s main`);
-  const filed = events.some((e) => e.phase === "filed");
-  proof("findings commit resolves on throwaway origin/main", msg.startsWith("pilot(explorer):") && filed, `${headNow.slice(0, 7)} ${msg}`);
+if (!SHA_RE.test(baseSha)) {
+  proof("origin main sha is a validated 40-hex sha", false, baseSha.slice(0, 12));
 } else {
-  proof("run completed with no findings filed (origin main unchanged)", true, baseSha.slice(0, 7));
+  const headNow = sh(`git -C ${shq(origin)} rev-parse main`);
+  if (!SHA_RE.test(headNow)) {
+    proof("origin main sha is a validated 40-hex sha", false, headNow.slice(0, 12));
+  } else {
+    execSync(`git -C ${shq(origin)} cat-file -e ${shq(`${headNow}^{commit}`)}`);
+    if (headNow !== baseSha) {
+      const msg = sh(`git -C ${shq(origin)} log -1 --format=%s main`);
+      const filed = events.some((e) => e.phase === "filed");
+      proof("findings commit resolves on throwaway origin/main", msg.startsWith("pilot(explorer):") && filed, `${headNow.slice(0, 7)} ${msg}`);
+    } else {
+      proof("run completed with no findings filed (origin main unchanged)", true, baseSha.slice(0, 7));
+    }
+  }
 }
-console.log(`PROOF scratch dir: ${tmp}`);
+if (failures === 0) {
+  rmSync(tmp, { recursive: true, force: true }); // success = throwaway proven, keep disk clean
+  console.log("PROOF all assertions green — scratch removed");
+} else {
+  console.log(`PROOF scratch kept for inspection: ${tmp}`);
+}
 process.exit(failures === 0 ? 0 : 1);
