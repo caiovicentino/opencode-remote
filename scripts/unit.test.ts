@@ -150,7 +150,7 @@ import {
 } from "../apps/pilot/src/backlog";
 import { clearPendingRefill, readPendingRefill, relandDetail, relandPendingRefill, savePendingRefill } from "../apps/pilot/src/refill";
 import { landMetaCommit, mayPushUnderDir, metaIo, META_BRANCH, type MetaPushIo } from "../apps/pilot/src/metapush";
-import { EXPLORER_MAX_FINDINGS, EXPLORER_MAX_STEPS, EXPLORER_TIMEOUT_MIN, EXPLORER_PUSH_RETRIES, EXPLORER_PUSH_WAIT_MS, claimExplorerRun, commitAndPushFindings, explorerPrompt, explorerSessionName, explorerSpec, parseExplorerFindings, type ExplorerFinding } from "../apps/pilot/src/explorer";
+import { EXPLORER_MAX_FINDINGS, EXPLORER_MAX_STEPS, EXPLORER_TIMEOUT_MIN, EXPLORER_PUSH_RETRIES, EXPLORER_PUSH_WAIT_MS, FABLE_MARKER, FABLE_MAX_FINDINGS, JOURNEY_STEPS, claimExplorerRun, commitAndPushFindings, commitAndPushFableFindings, explorerPrompt, explorerSessionName, explorerSpec, fablePrompt, fableSpec, journeyShotName, parseExplorerFindings, parseFableFindings, type ExplorerFinding, type FableFinding } from "../apps/pilot/src/explorer";
 import { runAgent, API_PREFLIGHT, apiHealthy, claudeArgs, idScanner, mergeAgentIds, OPENCODE_URL_DEFAULT, scanIds, shouldFallbackTierB, waitForApi } from "../apps/pilot/src/runner";
 import { mkdtempSync, mkdirSync, readdirSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync, utimesSync } from "node:fs";
 import { execSync, spawn } from "node:child_process";
@@ -5360,6 +5360,126 @@ check(
     rmSync(gdir2, { recursive: true, force: true });
   }
 }
+
+// --- P2-105 fable product review: visual findings parser + journey shot set --------
+{
+  const dir = mkdtempSync(join(tmpdir(), "pilot-fable-"));
+  try {
+    const shot = join(dir, "journey-first-boot-20260903.png");
+    writeFileSync(shot, "png");
+    const output = [
+      "prelude noise FABLE: FINDING inline mentions are ignored",
+      "FABLE: FINDING",
+      "title: Pairing screen shouts instead of guiding",
+      "priority: p1",
+      "area: ui",
+      `evidence: ${shot}`,
+      "where: apps/web/src/components/PairingView.tsx:42",
+      "detail: The error headline uses alarm styling for a recoverable typo.",
+      "",
+      "FABLE: FINDING",
+      "title: Unknown area improvement",
+      "priority: P3",
+      "area: bogus",
+      `evidence: ${shot}`,
+      "detail: Kept but serial.",
+      "",
+      "FABLE: FINDING",
+      "title: Bad priority is dropped",
+      "priority: urgent",
+      `evidence: ${shot}`,
+      "detail: Not a known product priority.",
+      "",
+      "FABLE: FINDING",
+      "title: Missing evidence is dropped",
+      "priority: P2",
+      "evidence: /nonexistent/shot.png",
+      "detail: No real evidence, no finding.",
+      "",
+      "FABLE: FINDING",
+      "title: Duplicate title is deduped",
+      "priority: P2",
+      `evidence: ${shot}`,
+      "detail: first",
+      "",
+      "FABLE: FINDING",
+      "title:   Duplicate   TITLE   is   deduped  ",
+      "priority: P2",
+      `evidence: ${shot}`,
+      "detail: second",
+    ].join("\n");
+    const found = parseFableFindings(output, { exists: (p) => p === shot });
+    check("fable: parses prioritized improvements with evidence and file:line", found[0]?.title === "Pairing screen shouts instead of guiding" && found[0]?.priority === "P1" && found[0]?.area === "ui" && found[0]?.where === "apps/web/src/components/PairingView.tsx:42" && found[0]?.shot === shot);
+    check("fable: lowercase priority normalizes, unknown area degrades to serial", found[0]?.priority === "P1" && found[1]?.area === "" && found[1]?.priority === "P3");
+    check("fable: unknown priority dropped (fail closed)", !found.some((f) => f.title === "Bad priority is dropped"));
+    check("fable: nonexistent evidence dropped", !found.some((f) => f.title === "Missing evidence is dropped"));
+    check("fable: duplicate titles deduped keeping the first", found.length === 3 && found[2]?.detail === "first");
+    check("fable: title whitespace collapses", found[2]?.title === "Duplicate title is deduped");
+    const three = [1, 2, 3].map((i) => `FABLE: FINDING\ntitle: T${i}\npriority: P2\nevidence: ${shot}\ndetail: d${i}`).join("\n");
+    check("fable: max option caps insertion", parseFableFindings(three, { exists: () => true, max: 2 }).length === 2);
+    check("fable: default budget cap is the module constant", parseFableFindings(three, { exists: () => true, max: FABLE_MAX_FINDINGS }).length === 3 && FABLE_MAX_FINDINGS === 10);
+
+    const fableFinding: FableFinding = { title: "Tighten pairing errors", priority: "P1", area: "ui", shot, where: "PairingView.tsx:42", detail: "Calm the error state." };
+    check("fable: spec carries priority, evidence and where", fableSpec(fableFinding).includes("(priority: P1, evidence: " + shot + ", where: PairingView.tsx:42)") && fableSpec(fableFinding).endsWith("(area: ui)"));
+
+    // landing: [fable][<priority>] lines as P3 refill candidates
+    const backlogDir = mkdtempSync(join(tmpdir(), "pilot-fable-land-"));
+    try {
+      writeFileSync(join(backlogDir, "BACKLOG.md"), "# B\n\n## Ready\n\n## Done\n");
+      let prCreated = false;
+      let prMerged = false;
+      const landed = await commitAndPushFableFindings(backlogDir, [fableFinding], "pilot(fable): test run", {
+        exec: (cmd) => {
+          if (cmd.startsWith("git diff")) return { ok: true, output: "BACKLOG.md\n" };
+          if (cmd.startsWith("git rev-parse")) return { ok: true, output: `${"f".repeat(40)}\n` };
+          if (cmd.startsWith("gh ") && cmd.includes("pr view"))
+            return prCreated
+              ? { ok: true, output: JSON.stringify({ state: prMerged ? "MERGED" : "OPEN", headRefOid: "f".repeat(40) }) }
+              : { ok: false, output: "no pull requests" };
+          if (cmd.startsWith("gh ") && cmd.includes("pr create")) {
+            prCreated = true;
+            return { ok: true, output: "" };
+          }
+          if (cmd.startsWith("gh ") && cmd.includes("pr merge")) {
+            prMerged = true;
+            return { ok: true, output: "" };
+          }
+          return { ok: true, output: "" };
+        },
+        sleep: async () => {},
+      });
+      const backlog = readFileSync(join(backlogDir, "BACKLOG.md"), "utf8");
+      check("fable landing: reports pushed when the meta PR merges", landed === true);
+      check("fable landing: improvement lands as a [fable][P1] P3 backlog line", /\(P3-\d+\) \[P3\] \[fable\]\[P1\] Tighten pairing errors/.test(backlog));
+      check("fable landing: spec keeps priority + evidence + where", backlog.includes("(priority: P1, evidence: ") && backlog.includes("where: PairingView.tsx:42"));
+    } finally {
+      rmSync(backlogDir, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  // journey shot set: stable names, six steps, prompt + fable contract
+  check("fable: journey set has exactly the six mandated steps", JOURNEY_STEPS.length === 6 && JOURNEY_STEPS[0] === "first-boot" && JOURNEY_STEPS[5] === "mission-control");
+  check("fable: journey shot names are stable and digits-only dated", journeyShotName("pairing", "2026-09-03") === "journey-pairing-20260903.png");
+  const prompt = explorerPrompt("/abs/shots", "explorer-fresh-20260903", "2026-09-03");
+  const journeyPaths = JOURNEY_STEPS.map((s) => journeyShotName(s, "2026-09-03"));
+  check("fable: explorer prompt lists every journey shot with its stable name", journeyPaths.every((n) => prompt.includes(n)));
+  check("fable: explorer prompt mandates the exact-name shot set", prompt.includes("EXACTLY as listed in the SESSION PARAMETERS") && prompt.includes("a missing file is not"));
+  const fable = fablePrompt(journeyPaths.map((n) => `/abs/shots/${n}`));
+  check("fable: fable prompt cites every journey shot path", journeyPaths.every((n) => fable.includes(`/abs/shots/${n}`)));
+  check("fable: fable prompt demands PRODUCT.md grounding and verified file:line", fable.includes("docs/PRODUCT.md") && fable.includes("never an invented line number"));
+  check("fable: fable prompt keeps the structured output contract", fable.includes("FABLE: FINDING") && fable.trimEnd().endsWith(`Your LAST line of output must be exactly: ${FABLE_MARKER}`));
+  check("fable: tier-B budget keeps the review bounded", FABLE_MAX_FINDINGS === 10 && FABLE_MARKER === "FABLE: DONE");
+}
+
+// --- P2-105: tier-B dispatch mounts the journey shots dir --------------------------
+check(
+  "p2-105 claudeArgs mounts extra evidence dirs after the workspace",
+  JSON.stringify(claudeArgs("opus", "/w", ["/shots"])) ===
+    JSON.stringify(["-p", "--model", "opus", "--add-dir", "/w", "--add-dir", "/shots", "--permission-mode", "acceptEdits"]) &&
+    JSON.stringify(claudeArgs("opus", "/w")) === JSON.stringify(["-p", "--model", "opus", "--add-dir", "/w", "--permission-mode", "acceptEdits"]),
+);
 
 // --- P1-095 nightly pass: idle-window trigger + skipped event ---------------------
 {

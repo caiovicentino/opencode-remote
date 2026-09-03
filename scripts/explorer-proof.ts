@@ -18,11 +18,17 @@
  * Usage: node --import tsx/esm scripts/explorer-proof.ts
  * Prints a PROOF line per assertion and exits non-zero on any failure.
  */
-import { cpSync, existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { explorerShotsDir, runExplorer, commitAndPushFindings } from "../apps/pilot/src/explorer";
+import {
+  JOURNEY_STEPS,
+  explorerShotsDir,
+  journeyShotName,
+  runExplorer,
+  commitAndPushFindings,
+} from "../apps/pilot/src/explorer";
 import { readEvents } from "../apps/pilot/src/events";
 import { nowLocalISO } from "../apps/pilot/src/log";
 import type { PilotConfig, PilotState } from "../apps/pilot/src/state";
@@ -80,6 +86,9 @@ for (const d of ["apps/web/dist", "apps/desktop/dist-electron"]) {
 const fakeGhBin = join(tmp, "bin");
 const fakeGhState = join(tmp, "fake-gh-merged");
 const fakeGhCreated = join(tmp, "fake-gh-created");
+// P2-105: mkdtemp only creates the root — without this the shim write ENOENTs
+// and the driver crashes before the first assertion (the repro never ran).
+mkdirSync(fakeGhBin, { recursive: true });
 writeFileSync(
   join(fakeGhBin, "gh"),
   `#!/bin/bash\nstate=${shq(fakeGhState)}\ncreated=${shq(fakeGhCreated)}\nws=${shq(ws)}\ncase "$1 $2" in\n  "pr view")\n    if [ ! -f "$created" ]; then echo "no pull requests" >&2; exit 1; fi\n    head=$(git -C "$ws" rev-parse origin/pilot/meta 2>/dev/null || echo "")\n    if [ -f "$state" ]; then echo "{\\"state\\":\\"MERGED\\",\\"headRefOid\\":\\"$head\\"}"; else echo "{\\"state\\":\\"OPEN\\",\\"headRefOid\\":\\"$head\\"}"; fi\n    ;;\n  "pr create") touch "$created" ;;\n  "pr merge") touch "$state" ;;\n  *) : ;;\nesac\n`,
@@ -102,11 +111,19 @@ proof(
   events.some((e) => e.phase === "done" && e.ok),
   events.map((e) => e.phase).join(","),
 );
-const digits = today.replace(/[^0-9]/g, "");
-const shots = existsSync(explorerShotsDir())
-  ? readdirSync(explorerShotsDir()).filter((f) => f.includes(digits) && f.endsWith(".png"))
-  : [];
-proof("fresh shots on disk", shots.length >= 1, shots.join(" ").slice(0, 200));
+// P2-105: the closed product-review loop — the six stable journey shots must
+// exist and the fable pass must have emitted its product-review event.
+const missingShots = JOURNEY_STEPS.filter((step) => !existsSync(join(explorerShotsDir(), journeyShotName(step, today))));
+proof(
+  "6 stable journey shots on disk (first-boot/pairing/chat/artifact/browser/mission-control)",
+  missingShots.length === 0,
+  missingShots.length ? `missing: ${missingShots.join(",")}` : JOURNEY_STEPS.map((s) => journeyShotName(s, today)).join(" "),
+);
+proof(
+  "fable product-review event in events.jsonl",
+  events.some((e) => e.phase === "product-review" && e.ok),
+  events.map((e) => e.phase).join(","),
+);
 
 if (!SHA_RE.test(baseSha)) {
   proof("origin main sha is a validated 40-hex sha", false, baseSha.slice(0, 12));
@@ -126,13 +143,15 @@ if (!SHA_RE.test(baseSha)) {
     if (SHA_RE.test(agentMeta)) {
       const agentSubject = sh(`git -C ${shq(origin)} log -1 --format=%s pilot/meta`);
       proof(
-        "agent landing keeps the pilot(explorer) subject on pilot/meta",
-        agentSubject.startsWith("pilot(explorer):"),
+        // P2-105: the last agent-phase landing may be the explorer's findings
+        // or the fable product review — both are valid agent-phase subjects.
+        "agent landing keeps a pilot(explorer|fable) subject on pilot/meta",
+        agentSubject.startsWith("pilot(explorer):") || agentSubject.startsWith("pilot(fable):"),
         agentSubject,
       );
       proof(
         "agent landing fired the filed event (fake gh confirms the merge)",
-        events.some((e) => e.phase === "filed" && e.ok),
+        events.some((e) => e.phase === "filed" && e.ok) || events.some((e) => e.phase === "product-review-filed" && e.ok),
         events.map((e) => e.phase).join(","),
       );
     } else {

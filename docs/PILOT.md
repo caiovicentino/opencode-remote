@@ -1097,28 +1097,54 @@ que complementa os reviewers adversariais: em vez de olhar diffs, olha o
 única `explorer-fresh-<AAAAMMDD>` (`explorerSessionName`), que nunca foi usada
 antes — o keeper do harness nasce novo e o `hermeticEnv()` cria um userData
 virgem, simulando uma primeira instalação real. O prompt manda abrir o app já
-tirando o shot `first-boot-<data>.png` 1440x900 (tela intacta, pré-interação) e
-responder as **perguntas de premissa** do produto: por que um app local mostraria
-cerimonia de auth/pareamento? Todo fluxo é alcançável a partir do first boot?
-Como ficam os empty states? Um segundo boot (best-effort, mesma sessão) com
-`OCR_DAEMON_FORCE_RECONNECTING=1` (knob P1-053, sem mudança no harness) cobre o
-estado "daemon detectado, primeiro contato".
+tirando o shot `journey-first-boot-<data>.png` 1440x900 (tela intacta,
+pré-interação) e responder as **perguntas de premissa** do produto: por que um
+app local mostraria cerimonia de auth/pareamento? Todo fluxo é alcançável a
+partir do first boot? Como ficam os empty states? Um boot extra (best-effort,
+mesma sessão) com `OCR_DAEMON_FORCE_RECONNECTING=1` (knob P1-053, sem mudança
+no harness) cobre o estado "daemon detectado, primeiro contato".
+
+Desde o **P2-105** a run captura um **set obrigatório de 6 shots de jornada**
+com nomes estáveis — `journey-first-boot|pairing|chat|artifact-pane|browser-pane|
+mission-control-<AAAAMMDD>.png` em `pilot/shots/explorer/` — e, em seguida,
+despacha o **review visual do fable** (role tier-B `fable` em
+`models.tierB`, fallback tier A): o reviewer julga os 6 shots contra
+`docs/PRODUCT.md` e destila o top-10 de melhorias priorizadas (P1/P2/P3) com
+`file:line` verificado no repo. Os findings viram eventos `product-review` no
+events.jsonl/dashboard e linhas `- [ ] (P3-0XX) [P3] [fable][Pn] ...` no
+BACKLOG (candidatas de refill). Para o tier-B enxergar as evidências, o
+dispatch `claude` monta o diretório de shots via `--add-dir` — a regra do
+P1-059 ("nada sob `~/.opencode-remote` é montado") fica restrita a este
+diretório de evidência, somente a pass do fable.
 
 - **O que explora**: a jornada de first boot com state limpo — premissa do produto
   (cerimonia de auth num app local, alcançabilidade de fluxos, empty states),
   onboarding/pairing (incl. código inválido e campos vazios), segundo boot com
   daemon "detectado", fluxos completos entre panes, states de erro deliberados,
   dead ends de navegação. Achados de jornada exigem o shot do first boot citado.
+  Se uma tela não é alcançável, o shot do passo é tirado mesmo assim no estado
+  mais próximo verdadeiro (empty state / entry point / erro) — empty state
+  honesto é evidência, arquivo faltando não.
 - **Budget de custo previsível**: no máx. **24 comandos de harness** por run
-  (enforced no prompt), timeout de agente de **25min** e cap de **5 findings**
-  inseridos por run (`EXPLORER_MAX_*` em `apps/pilot/src/explorer.ts`).
+  (enforced no prompt), timeout de agente de **25min**, review do fable com
+  timeout de **15min** e cap de **5 findings** do explorer + **10 melhorias**
+  do fable por run (`EXPLORER_MAX_*`/`FABLE_MAX_FINDINGS` em
+  `apps/pilot/src/explorer.ts`).
 - **Findings viram backlog**: o parser determinístico (`parseExplorerFindings`)
   só aceita achados com `title`, `severity` (high|medium|low) e **shot que
   existe em disco**; unknown area degrada para fila serial; títulos duplicados
   são dedupados. Cada achado vira linha `- [ ] (P3-0XX) [P3] [explorer][sev]
   Título — spec: ... (severity: ..., evidence: /abs/shot.png) (area: ...)` no
   `## Ready`, commitada com `pilot(explorer): N finding(s) from nightly run`
-  e push com retry.
+  e push com retry. As melhorias do fable seguem o mesmo caminho
+  (`parseFableFindings`, fail-closed: priority P1|P2|P3 + evidence existente
+  obrigatórias) via `pilot(fable): N improvement(s) from product review`.
+- **Sandbox auto-regenerada (fix P2-105)**: landings de meta-commit rodam
+  `git clean -qfd` no workspace e apagavam o `opencode.json` full-allow
+  escrito no início da janela noturna — o explorer spawnava sem permissões, o
+  opencode headless rejeitava o primeiro comando bash e o evento
+  `task:explorer done` nunca chegava ao events.jsonl. `runExplorer` e
+  `runFableReview` re-escrevem a sandbox config antes de cada spawn.
 - **Nunca bloqueia**: qualquer falha (sync, agente, push) é log-only — o
   explorer não participa do circuit breaker nem reprova merge. Guard diário
   próprio em `state.json` (`explorerLast`), independente do `redteamLast`
@@ -1127,8 +1153,9 @@ estado "daemon detectado, primeiro contato".
 - **Driver de prova (`scripts/explorer-proof.ts`)**: roda o fluxo REAL do
   explorer em sandbox hermético (bare origin + clone scratch jogáveis, save
   injetado como spy) e imprime uma linha `PROOF` por assertion — eventos
-  `task:explorer` no events.jsonl, shots do dia em `shots/explorer/` e o
-  commit `pilot(explorer):` resolvido por SHA no origin jogável. Prova o
+  `task:explorer` (done + product-review) no events.jsonl, os **6 shots de
+  jornada** com nomes estáveis em `shots/explorer/` e o commit
+  `pilot(explorer):` resolvido por SHA no origin jogável. Prova o
   mecanismo de ponta a ponta sem tocar `state.json` de produção nem GitHub.
 - **Watchdog**: a pass bloqueia o loop por ~25min; desde o P1-035 o `runAgent`
   alimenta o self-watchdog num timer interno (60s) durante qualquer await de

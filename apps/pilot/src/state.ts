@@ -25,7 +25,7 @@ export interface PilotConfig {
 // ── P1-059: tiered cognition (strong models plan/judge, flash executes) ──────
 
 /** Judgment roles: may be dispatched to a stronger model via the claude CLI. */
-export type TierBRole = "strategist" | "planner" | "forensic" | "reviewerEscalation";
+export type TierBRole = "strategist" | "planner" | "forensic" | "reviewerEscalation" | "fable";
 /** Execution roles: always run the configured opencode model. Names in tierA
  * are documentation only — tier A dispatch never changes binaries. */
 export type TierARole = "builder" | "reviewer" | "scribe";

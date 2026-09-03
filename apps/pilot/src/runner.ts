@@ -381,15 +381,21 @@ export interface AgentRunOpts {
   sessionId?: string;
   printLogs?: boolean;
   onStdout?: (chunk: string) => void;
+  /** P2-105: extra directories mounted for tier-B dispatch (evidence shots). */
+  extraDirs?: string[];
 }
 
 /**
  * Exact argv of the tier-B dispatch, pinned by the unit battery. `-p` print
  * mode + `--add-dir` restricted to the slot workspace clone (anti-exfiltration:
  * nothing under ~/.opencode-remote is ever mounted) + edits auto-accepted.
+ * P2-105: `extraDirs` mounts additional read-mostly evidence directories (the
+ * fable product review reads the explorer's journey shots); the default stays
+ * empty so every pre-existing role dispatch is argv-identical.
  */
-export function claudeArgs(model: string, ws: string): string[] {
-  return ["-p", "--model", model, "--add-dir", ws, "--permission-mode", "acceptEdits"];
+export function claudeArgs(model: string, ws: string, extraDirs: string[] = []): string[] {
+  const dirs = [ws, ...extraDirs].flatMap((d) => ["--add-dir", d]);
+  return ["-p", "--model", model, ...dirs, "--permission-mode", "acceptEdits"];
 }
 
 /**
@@ -414,10 +420,10 @@ export function shouldFallbackTierB(r: Pick<RunResult, "ok" | "timedOut" | "outp
 export async function runTierB(
   model: string,
   prompt: string,
-  opts: { cwd: string; timeoutMin: number },
+  opts: { cwd: string; timeoutMin: number; extraDirs?: string[] },
 ): Promise<RunResult> {
   return new Promise((resolve) => {
-    const child = spawn("claude", claudeArgs(model, opts.cwd), {
+    const child = spawn("claude", claudeArgs(model, opts.cwd, opts.extraDirs), {
       cwd: opts.cwd,
       env: process.env,
       stdio: ["pipe", "pipe", "pipe"],
@@ -483,7 +489,7 @@ export async function runAgentForRole(
   const model = tierBModelFor(opts.models as Parameters<typeof tierBModelFor>[0], role);
   if (!model) return runAgent(prompt, opts);
   logDispatch("info", "agent-dispatch", { role, tier: "B", model, label: opts.label });
-  const r = await runTierB(model, prompt, { cwd: opts.cwd, timeoutMin: opts.timeoutMin });
+  const r = await runTierB(model, prompt, { cwd: opts.cwd, timeoutMin: opts.timeoutMin, extraDirs: opts.extraDirs });
   if (!shouldFallbackTierB(r, opts.marker)) return r;
   logDispatch("warn", "tierB-fallback", {
     role,
