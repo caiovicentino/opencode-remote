@@ -772,12 +772,14 @@ export function parseVerdict(output: string): ReviewerVerdict | null {
 
 /**
  * P2-038: one reviewer's verdict outcome. The LAST marker decides
- * (`parseVerdict`); an APPROVE that carries verified findings is a rejection —
- * findings that verify are evidence, not noise. P1-073: fail-closed — a
- * REQUEST_CHANGES never approves, even when its findings ALL fail mechanical
- * verification (the incident path: hallucinated findings used to degenerate
- * to an effective approve). Without an arbiter it stays a rejection, and an
- * output without any marker fails closed too.
+ * (`parseVerdict`). P1-102: `parseFindings` yields nothing under an APPROVE,
+ * so in the pipeline an APPROVE always arrives here with an empty `kept` —
+ * the "APPROVE carrying verified findings rejects" rule survives only for
+ * explicitly passed findings (unit battery, direct callers). P1-073:
+ * fail-closed — a REQUEST_CHANGES never approves, even when its findings ALL
+ * fail mechanical verification (the incident path: hallucinated findings used
+ * to degenerate to an effective approve). Without an arbiter it stays a
+ * rejection, and an output without any marker fails closed too.
  */
 export function reviewerOk(output: string, kept: string[], _dropped: string[]): boolean {
   const verdict = parseVerdict(output);
@@ -804,6 +806,18 @@ export function needsEscalation(
   if (secAllDropped || qualAllDropped) return true;
   if (round !== 1) return false;
   return secOk !== qualOk;
+}
+
+/**
+ * P1-102: mechanically-dropped findings are not fabricated by definition —
+ * real findings died in the verifier (nonexistent file, empty line, span
+ * mismatch). Every dropped list passed here (round-1 reviewers, tier-B
+ * arbiter) is deduped, order-preserving, and tagged `[unverified]` for the
+ * builder prompt. Pure; pinned by the unit battery.
+ */
+export function tagUnverified(droppedLists: string[][]): string[] {
+  const all = droppedLists.flat();
+  return all.filter((f, i) => all.indexOf(f) === i).map((f) => `[unverified] ${f.trim()}`);
 }
 
 export interface PipelineResult {
@@ -1698,6 +1712,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
     let gateSecOk = secOk;
     let gateQualOk = qualOk;
     let escalationFindings: string[] | null = null;
+    let escalationDropped: string[] = [];
     if (cfg.models?.tierB?.reviewerEscalation && needsEscalation(round, secOk, qualOk, secAllDropped, qualAllDropped)) {
       emit("phase", { task: t.id, phase: "review-escalation", detail: `round ${round}` });
       console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "review escalation", data: { task: t.id, round } }));
@@ -1721,6 +1736,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
         gateSecOk = false;
         gateQualOk = false;
         escalationFindings = escVerified.kept;
+        escalationDropped = escVerified.dropped;
       }
       console.log(
         JSON.stringify({
@@ -1783,11 +1799,13 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       // P1-102: dropped is not fabricated by definition — the audit showed REAL
       // findings dying in mechanical verification (file nonexistent, symbol
       // spans). A rejecting reviewer's dropped findings are repassed as
-      // [unverified] hints so the builder sees the full concern list.
-      const round1Dropped = [...(secOk ? [] : secVerified.dropped), ...(qualOk ? [] : qualVerified.dropped)];
-      const unverified = round1Dropped
-        .filter((f, i) => round1Dropped.indexOf(f) === i)
-        .map((f) => `[unverified] ${f.trim()}`);
+      // [unverified] hints so the builder sees the full concern list — round-1
+      // reviewers and the tier-B arbiter alike.
+      const unverified = tagUnverified([
+        secOk ? [] : secVerified.dropped,
+        qualOk ? [] : qualVerified.dropped,
+        escalationDropped,
+      ]);
       // P1-073: fail-closed — an all-unverifiable REQUEST_CHANGES no longer
       // approves. When no tier-B arbiter ran, the builder gets the rejection
       // with an explicit instruction to re-raise the concern citing verifiable
@@ -1943,8 +1961,11 @@ function findingDropReason(finding: string, ws: string, diff: string, wsFiles: s
   // P1-102: a verbatim quote of the reviewed diff is proof the finding touches
   // the real change — checked BEFORE path:line resolution, so a real finding
   // (audit fixtures: shell injection via t.id, the qrcode devDep) is never
-  // dropped because its file:line citation failed to resolve.
-  if (rawQuoteSpans(cleaned, 6).some((s) => diff.includes(s))) {
+  // dropped because its file:line citation failed to resolve. Path-shaped
+  // spans are excluded (`quotedSpans`): every unified-diff header repeats the
+  // touched file's path, so a bare quoted path would otherwise self-verify and
+  // bypass FILE_CITE_RE/resolveCite/the symbol check entirely.
+  if (quotedSpans(cleaned, 6).some((s) => diff.includes(s))) {
     return null;
   }
   const fileCites: FileCite[] = [...cleaned.matchAll(FILE_CITE_RE)].map((m) => ({

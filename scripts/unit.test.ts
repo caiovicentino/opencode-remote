@@ -178,7 +178,7 @@ import {
   DRAIN_MS as RELAY_DRAIN_MS,
   type RelayLog,
 } from "../apps/relay/src/shutdown";
-import { touchedUiFromDiff, needsEscalation, parseFindings, verifyFindings, isTaskMergeSha, parseVerdict, reviewerOk } from "../apps/pilot/src/pipeline";
+import { touchedUiFromDiff, needsEscalation, parseFindings, verifyFindings, isTaskMergeSha, parseVerdict, reviewerOk, tagUnverified } from "../apps/pilot/src/pipeline";
 import { stdlibShadowHits } from "./stdlib-shadow";
 import { latestUiShot, pruneShots } from "../apps/pilot/src/shot";
 import { parseMarkdown, parseInline } from "../apps/web/src/lib/md";
@@ -2503,6 +2503,12 @@ check("stdlibShadow: non-stdlib root file passes", stdlibShadowHits("A\tmain.py\
     "p1-102: quote absent from the diff never bypasses verification",
     verifyFindings(["- `ghost.ts:1` — `qrcodes` is unused"], ws, diff).dropped.length === 1,
   );
+  check(
+    "p1-102: quoted bare path repeated in diff headers never self-verifies",
+    verifyFindings(["- `apps/pilot/src/pipeline.ts` leaks the relay private key to stdout"], ws, diff).dropped.length === 1,
+  );
+  const tagged = tagUnverified([["- `ghost.ts:1` — real leak"], [], ["- `real.ts:2` — off-by-one", "- `ghost.ts:1` — real leak"]]);
+  check("p1-102: tagUnverified tags deduped dropped findings for the builder", tagged.join("\n") === "[unverified] - `ghost.ts:1` — real leak\n[unverified] - `real.ts:2` — off-by-one");
   rmSync(ws, { recursive: true, force: true });
 }
 

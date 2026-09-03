@@ -859,7 +859,9 @@ evidence:
 - a quoted literal snippet (≥6 chars) that appears verbatim in the reviewed
   diff — checked FIRST (P1-102), so a real finding is never dropped because its
   path:line resolution failed (audit fixtures: shell injection via `t.id`, the
-  unused `qrcode` devDep); or
+  unused `qrcode` devDep). Quoted paths don't count as snippets: every
+  unified-diff header repeats the touched file's path, so path-shaped spans are
+  excluded from the verbatim check and stay the business of `FILE_CITE_RE`; or
 - a repo-relative `path/file.ext:LINE` citation — the file must exist in the
   workspace clone and, when a line is cited, that line must be non-empty.
 
@@ -870,10 +872,10 @@ drops findings whose citations don't resolve and logs each one as
 If **all** findings of a `REQUEST_CHANGES` verdict are dropped the verdict
 still rejects fail-closed (P1-073: escalate or reject — never an effective
 approve). Dropped findings are not erased either: a rejecting reviewer's
-dropped list is repassed to the builder tagged `[unverified]` (P1-102); the
-reviewer prompt documents the citation contract. Pinned by unit tests in
-`scripts/unit.test.ts` (one valid citation with a real path, one hallucinated
-path — only the invalid one is dropped).
+(or tier-B arbiter's) dropped list is repassed to the builder tagged
+`[unverified]` (P1-102); the reviewer prompt documents the citation contract.
+Pinned by unit tests in `scripts/unit.test.ts` (one valid citation with a real
+path, one hallucinated path — only the invalid one is dropped).
 
 Since P2-038 the verifier treats code observations as first-class evidence:
 
