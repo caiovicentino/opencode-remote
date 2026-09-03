@@ -90,11 +90,14 @@ $RELAY_TLS_ENV
     <key>RELAY_METRICS_PORT</key><string>8790</string>"
 
 # watchdog probe follows the origin scheme: plain http locally, https when the
-# pwa origin itself serves TLS (LAN mode). With TLS the probe needs the CA —
-# NODE_EXTRA_CA_CERTS (mkcert root) is passed through so Node trusts it.
-PWA_HEALTHZ_URL="${PWA_HEALTHZ_URL:-http://127.0.0.1:$PWA_PORT/healthz}"
+# pwa origin itself serves TLS (LAN mode). An explicit PWA_HEALTHZ_URL always
+# wins — the scheme-aware default applies only when the user set nothing.
+# With TLS the probe needs the CA — NODE_EXTRA_CA_CERTS (mkcert root) is passed
+# through so Node trusts it.
 if [ -n "$PWA_TLS_CERT" ]; then
-  PWA_HEALTHZ_URL="${PWA_HEALTHZ_URL_OVERRIDE:-https://127.0.0.1:$PWA_PORT/healthz}"
+  PWA_HEALTHZ_URL="${PWA_HEALTHZ_URL:-https://127.0.0.1:$PWA_PORT/healthz}"
+else
+  PWA_HEALTHZ_URL="${PWA_HEALTHZ_URL:-http://127.0.0.1:$PWA_PORT/healthz}"
 fi
 DAEMON_ENV="    <key>RELAY_URL</key><string>$RELAY_URL</string>
     <key>OCR_METRICS_PORT</key><string>8792</string>

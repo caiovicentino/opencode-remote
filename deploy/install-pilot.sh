@@ -22,8 +22,18 @@ fi
 if [ -z "$RELAY_URL" ]; then
   echo "error: RELAY_URL is required on first install — no default hostname is baked in." >&2
   echo "       LAN mode (no tailnet): RELAY_URL=wss://<lan-ip>:8788 $0" >&2
+  echo "         (wss with a local CA needs the root too:" >&2
+  echo "          NODE_EXTRA_CA_CERTS=\"\$(mkcert -CAROOT)/rootCA.pem\")" >&2
   echo "       Tailnet/public relay:  RELAY_URL=wss://host:8788 $0" >&2
   exit 1
+fi
+
+# P2-098 round 2: pass the custom CA through when provided — Node does not
+# trust the macOS keychain, so a wss:// mkcert relay is unreachable without it
+# (same passthrough deploy/install.sh wires into the daemon plist).
+CA_ENV=""
+if [ -n "${NODE_EXTRA_CA_CERTS:-}" ]; then
+  CA_ENV="    <key>NODE_EXTRA_CA_CERTS</key><string>${NODE_EXTRA_CA_CERTS}</string>"
 fi
 
 # dedicated clone where the agents work (production runs from $REPO)
@@ -51,6 +61,7 @@ cat > "$PLIST" <<EOF
     <key>PATH</key><string>$HOME/.opencode/bin:$(dirname $(which node)):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     <key>HOME</key><string>$HOME</string>
     <key>RELAY_URL</key><string>${RELAY_URL}</string>
+$CA_ENV
   </dict>
 </dict></plist>
 EOF

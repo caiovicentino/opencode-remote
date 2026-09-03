@@ -196,7 +196,7 @@ stored in the plist).
 ### Desktop app installer (DMG)
 
 Every GitHub release ships a real macOS installer,
-`OpenCode Remote-<version>.dmg` (electron-builder `dmg` target, branded
+`OpenCode Remote-<version>-arm64.dmg` (electron-builder `dmg` target, branded
 window). Releases are **notarized** when the release runner has Apple
 credentials configured; otherwise the build is ad-hoc signed and you
 right-click → **Open** once to pass Gatekeeper. Homebrew users get the same
@@ -298,7 +298,7 @@ During web development, point the shell at the Vite dev server:
 clean checkout.
 
 **Packaging (P1-050)**: `npm run dist --workspace @ocr/desktop` now also
-produces a distributable **`OpenCode Remote-<version>.dmg`** (branded
+produces a distributable **`OpenCode Remote-<version>-arm64.dmg`** (branded
 installer window, semantic version in the About panel and in the DMG file
 name) — and `npm run dist:smoke --workspace @ocr/desktop` verifies the
 bundle **and** the DMG artifact. Builds are ad-hoc signed — on first launch,
