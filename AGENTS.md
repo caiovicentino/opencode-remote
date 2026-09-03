@@ -177,8 +177,9 @@ temporal (Hoje/Ontem/Anteriores) e do switcher ⌘K com preview da última
 mensagem — o fake backend serve sessões com `time.updated`; P3-085 adicionou
 o beat do bloco de thinking (resposta longa simulada: reasoning expande e
 colapsa "Pensou por Xs", caret de streaming, pill ↓ flutuante, autoscroll
-que não briga com o leitor); P3-087 adicionou o beat do motion pass: duas
-evidências 1440x900 com `prefers-reduced-motion` off/on (via novo comando
+que não briga com o leitor); P3-087 adicionou o beat do motion pass: três
+evidências — duas 1440x900 com `prefers-reduced-motion` off/on e uma 390x844
+(via novo comando
 `motion` do harness, Playwright emulateMedia) provando que a media query
 global zera toda animação (`animation-name` computado vira `none`); a UI
 usa animações 150–300ms ease-out (slide-in/out do painel de artifact com

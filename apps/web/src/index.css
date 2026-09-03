@@ -1574,6 +1574,9 @@ select {
 }
 .artifact-backdrop.out {
   animation: scrim-out var(--motion-fast) var(--ease-out) forwards;
+  /* the scrim is invisible but still mounted during the exit hold — it must
+     not eat clicks aimed at the chat that just got revealed */
+  pointer-events: none;
 }
 .artifact-overlay {
   position: absolute;
