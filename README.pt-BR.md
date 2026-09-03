@@ -176,7 +176,17 @@ Certificado**; abra `https://<LAN_IP>:5173` no Safari → **Adicionar à Tela de
 Início** → escaneie o QR. Sem os overrides `PWA_*`/`RELAY_TLS_*` vale o layout
 tailscale padrão; portas e certificados são variáveis de ambiente. O serviço
 do pilot segue a mesma regra: `deploy/install-pilot.sh` não tem hostname
-fixo — defina `RELAY_URL`.
+fixo — defina `RELAY_URL` (e `NODE_EXTRA_CA_CERTS` para wss com CA local).
+
+### Instalador do app desktop (DMG)
+
+Todo release do GitHub traz o instalador macOS de verdade,
+`OpenCode Remote-<version>-arm64.dmg` (alvo `dmg` do electron-builder, janela
+com a marca do projeto). Releases são **notarizados** quando o runner tem as
+credenciais Apple configuradas; sem elas o build é ad-hoc e basta
+right-click → **Open** uma vez para passar pelo Gatekeeper. Quem prefere
+Homebrew usa o `Formula/opencode-remote.rb` (AGPL-3.0-only, checksum fixado
+automaticamente pelo pipeline de release a cada tag).
 
 ## CLI
 

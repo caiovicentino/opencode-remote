@@ -23,6 +23,34 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" opencode-remote-*.tar.gz --generate-notes --title "$GITHUB_REF_NAME"
 
+      # P2-098 (round 3): the formula must never carry a checksum that was not
+      # computed from the published artifact — pin url/version/sha256 to the
+      # release that was just created and push to main. Direct pushes to main
+      # never deploy (P2-058), so this is inert for the runtime; fail-open:
+      # a refused push must not fail the release itself.
+      - name: Pin the Homebrew formula checksum to the published asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          SHA=$(shasum -a 256 "opencode-remote-${VERSION}.tar.gz" | awk '{print $1}')
+          URL_RE='https://github\.com/caiovicentino/opencode-remote/releases/download/v[0-9.]+/opencode-remote-v[0-9.]+\.tar\.gz'
+          NEW_URL="https://github.com/caiovicentino/opencode-remote/releases/download/${VERSION}/opencode-remote-${VERSION}.tar.gz"
+          sed -i -E \
+            -e "s|$URL_RE|$NEW_URL|" \
+            -e "s|version \"[0-9]+.[0-9]+.[0-9]+\"|version \"${VERSION#v}\"|" \
+            -e 's|sha256 "[a-f0-9]{64}"|sha256 "'"${SHA}"'"|' \
+            Formula/opencode-remote.rb
+          git config user.name "ocr-release-bot"
+          git config user.email "noreply@users.noreply.github.com"
+          git add Formula/opencode-remote.rb
+          if git diff --cached --quiet; then
+            echo "Formula already pinned to ${VERSION} — nothing to commit"
+          else
+            git commit -m "pilot(release): pin Formula checksum for ${VERSION}"
+            git push origin HEAD:main || echo "::warning::could not push the Formula pin — patch it manually from this run's log"
+          fi
+
   # P2-098: third-party installability — a release ships a real macOS installer
   # (DMG), not just the source tarball. When the APPLE_ID /
   # APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID secrets are configured the DMG

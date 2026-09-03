@@ -191,7 +191,8 @@ tailscale layout; every port and cert path is an environment variable
 (`RELAY_PORT`, `PWA_PORT`, `PWA_HOST`…). The autonomous pilot service follows
 the same rule: `deploy/install-pilot.sh` has no hardcoded hostname — set
 `RELAY_URL` in the environment (re-installs without it keep the value already
-stored in the plist).
+stored in the plist), plus `NODE_EXTRA_CA_CERTS` when the relay uses a local
+CA — Node never trusts the macOS keychain.
 
 ### Desktop app installer (DMG)
 
@@ -200,8 +201,8 @@ Every GitHub release ships a real macOS installer,
 window). Releases are **notarized** when the release runner has Apple
 credentials configured; otherwise the build is ad-hoc signed and you
 right-click → **Open** once to pass Gatekeeper. Homebrew users get the same
-code via the `Formula/opencode-remote.rb` template (AGPL-3.0-only, checksum
-pinned per release).
+code via the `Formula/opencode-remote.rb` formula (AGPL-3.0-only, checksum
+pinned automatically by the release pipeline at tag time).
 
 ## CLI
 

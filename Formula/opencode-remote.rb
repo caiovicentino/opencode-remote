@@ -1,19 +1,21 @@
 # frozen_string_literal: true
 
-# Homebrew formula template — bump the tag on each release.
-# Local test: brew install --build-from-source Formula/opencode-remote.rb
-# P2-098: url points at the release asset produced by .github/workflows/
-# release.yml (git archive with the opencode-remote-<tag>/ prefix). Regenerate
-# the checksum on each release:
-#   git archive --format=tar.gz --prefix="opencode-remote-<tag>/" -o \
-#     opencode-remote-<tag>.tar.gz <tag>
-#   shasum -a 256 opencode-remote-<tag>.tar.gz
+# Homebrew formula — the release pipeline keeps it installable. Bumping tags
+# is automatic: on every v* tag, .github/workflows/release.yml publishes the
+# tarball asset and rewrites the url/version/sha256 below from the actual
+# artifact (no manual shasum step).
+#
+# Until the FIRST release exists, the sha256 placeholder below is intentionally
+# not installable — there is no published artifact to checksum yet.
 class OpencodeRemote < Formula
   desc "Control opencode from your phone — E2E encrypted, blind relay"
   homepage "https://github.com/caiovicentino/opencode-remote"
   url "https://github.com/caiovicentino/opencode-remote/releases/download/v0.2.0/opencode-remote-v0.2.0.tar.gz"
   version "0.2.0"
-  sha256 "1b21b1e92bfbe98461a4c99f0dffa2f8feaa703813370f9de322fda6fb5cb37d"
+  # P2-098 (round 3): placeholder until release.yml pins the real checksum of
+  # the published asset at tag time — never checksum a tarball that does not
+  # exist yet.
+  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   # matches the SPDX license in package.json (P2-098: was "MIT")
   license "AGPL-3.0-only"
   depends_on "node@22"
