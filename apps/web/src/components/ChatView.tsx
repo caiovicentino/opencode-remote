@@ -32,6 +32,7 @@ import {
 } from "../lib/permissionCards";
 import { getCachedSession, putCachedSession } from "../lib/sessionCache";
 import { appendDraft, getDraft, setDraft } from "../lib/drafts";
+import { clampComposerHeight, composerSelectorLabel } from "../lib/composer";
 import { mergeBubbles, rowsToBubbles, type Bubble, type HistoryRow } from "../lib/bubbleMerge";
 import {
   reduceThinking,
@@ -40,7 +41,7 @@ import {
   type ThinkingState,
 } from "../lib/thinking";
 import { initialUnreadState, reduceUnread, sendUnreadToShell } from "../lib/unread";
-import { ArtifactIcon, IconChat, IconDownload, IconLaptop, IconWrench } from "./icons";
+import { ArtifactIcon, IconArrowUp, IconChat, IconChevronDown, IconDownload, IconLaptop, IconMic, IconPlus, IconWrench } from "./icons";
 
 interface Props {
   sessionId: string;
@@ -294,6 +295,10 @@ export default function ChatView({
   const [models, setModels] = useState<{ providerID: string; modelID: string; name: string }[]>([]);
   const [model, setModel] = useState(localStorage.getItem("ocr_model") ?? "");
   const [agent, setAgent] = useState(localStorage.getItem("ocr_agent") ?? "");
+  // P3-086: inline agent/model dropdown in the composer (Claude Desktop parity)
+  const [modelMenu, setModelMenu] = useState(false);
+  const modelMenuRef = useRef<HTMLDivElement>(null);
+  const taRef = useRef<HTMLTextAreaElement>(null);
   const [tapToggle, setTapToggle] = useState(false);
   const [responded, setResponded] = useState<Set<string>>(new Set());
   const [persistedAsks, setPersistedAsks] = useState<PermissionAsk[]>([]);
@@ -526,6 +531,46 @@ export default function ChatView({
   function appendToInput(text: string, sid: string) {
     const next = appendDraft(sid, text);
     if (sid === sessionIdRef.current) setInput(next);
+  }
+
+  // P3-086: auto-grow — the textarea grows with its content up to ~6 lines,
+  // then stops and scrolls internally (lib/composer clamps; CSS overflow-y).
+  // Re-runs on every draft write including session-switch restores.
+  useEffect(() => {
+    const el = taRef.current;
+    if (!el) return;
+    const cs = getComputedStyle(el);
+    const lh = parseFloat(cs.lineHeight) || 20;
+    const padY = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+    el.style.height = "auto";
+    el.style.height = `${clampComposerHeight(el.scrollHeight, lh, padY)}px`;
+  }, [input, sessionId]);
+
+  // P3-086: dropdown discipline — pointer-down outside or Escape closes the
+  // inline agent/model menu; selection stays a click inside.
+  useEffect(() => {
+    if (!modelMenu) return;
+    const onDown = (e: PointerEvent) => {
+      if (!modelMenuRef.current?.contains(e.target as Node)) setModelMenu(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setModelMenu(false);
+    };
+    window.addEventListener("pointerdown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [modelMenu]);
+
+  function pickAgent(value: string) {
+    setAgent(value);
+    localStorage.setItem("ocr_agent", value);
+  }
+  function pickModel(value: string) {
+    setModel(value);
+    localStorage.setItem("ocr_model", value);
   }
 
   // streaming tail state lives ABOVE the [sessionId] switch effect so that
@@ -1752,19 +1797,6 @@ export default function ChatView({
         >
           <IconWrench />
         </button>
-        <select
-          value={agent}
-          onChange={(e) => {
-            setAgent(e.target.value);
-            localStorage.setItem("ocr_agent", e.target.value);
-          }}
-          aria-label={t("agentMode")}
-          style={{ maxWidth: 90 }}
-        >
-          <option value="">{t("agentOption")}</option>
-          <option value="build">build</option>
-          <option value="plan">plan</option>
-        </select>
       </header>
 
       {connStatus !== "paired" && (
@@ -2164,6 +2196,7 @@ export default function ChatView({
 
         <input
           ref={fileRef}
+          className="composer-file"
           type="file"
           accept="image/*,video/*"
           multiple
@@ -2226,59 +2259,6 @@ export default function ChatView({
           </div>
         )}
 
-        {images.length > 0 && (
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            {images.map((img) => (
-              <span key={img.id} style={{ position: "relative", display: "inline-block" }}>
-                <img
-                  src={img.thumb}
-                  alt=""
-                  style={{ width: 44, height: 44, objectFit: "cover", borderRadius: 8 }}
-                />
-                <button
-                  onClick={() => setImages((prev) => prev.filter((i) => i.id !== img.id))}
-                  aria-label={t("removeImage")}
-                  style={{
-                    position: "absolute",
-                    top: -6,
-                    right: -6,
-                    width: 18,
-                    height: 18,
-                    borderRadius: 9,
-                    border: "none",
-                    background: "var(--danger)",
-                    color: "var(--on-danger)",
-                    fontSize: 11,
-                    lineHeight: 1,
-                    cursor: "pointer",
-                  }}
-                >
-                  x
-                </button>
-              </span>
-            ))}
-          </div>
-        )}
-
-        {models.length > 0 && (
-          <select
-            value={model}
-            onChange={(e) => {
-              setModel(e.target.value);
-              localStorage.setItem("ocr_model", e.target.value);
-            }}
-            aria-label={t("model")}
-            style={{ width: "100%", marginBottom: 6 }}
-          >
-            <option value="">default model</option>
-            {models.map((m) => (
-              <option key={`${m.providerID}/${m.modelID}`} value={`${m.providerID}/${m.modelID}`}>
-                {m.name}
-              </option>
-            ))}
-          </select>
-        )}
-
         {skills.length > 0 && (
           <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 2 }}>
             {skills.map((s) => (
@@ -2300,32 +2280,51 @@ export default function ChatView({
           </div>
         )}
 
+
         <div className="composer">
-          <button
-            onClick={() => fileRef.current?.click()}
-            disabled={uploading || recState === "busy"}
-            aria-label={t("attachImage")}
-          >
-            {uploading ? (
-              "…"
-            ) : (
-              <svg
-                width="18"
-                height="18"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
-              </svg>
-            )}
-          </button>
-          {voice && (
+          {images.length > 0 && (
+            <div className="composer-atts">
+              {images.map((img) => (
+                <span key={img.id} className="composer-att">
+                  <img src={img.thumb} alt="" className="composer-att-thumb" />
+                  <span className="composer-att-name">{img.filename}</span>
+                  <button
+                    className="composer-att-x"
+                    onClick={() => setImages((prev) => prev.filter((i) => i.id !== img.id))}
+                    aria-label={t("removeImage")}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+          <textarea
+            ref={taRef}
+            className="composer-text"
+            rows={1}
+            placeholder={recState === "rec" ? t("recording") : t("messagePlaceholder")}
+            value={input}
+            onChange={(e) => updateInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                void send();
+              }
+            }}
+          />
+          <div className="composer-bar">
             <button
-              className={recState === "rec" ? "danger" : ""}
+              className="composer-btn composer-attach"
+              onClick={() => fileRef.current?.click()}
+              disabled={uploading || recState === "busy"}
+              aria-label={t("attachFile")}
+              title={t("attachFile")}
+            >
+              {uploading ? "…" : <IconPlus />}
+            </button>
+            <button
+              className="composer-btn composer-mic"
               onPointerDown={(e) => {
                 e.preventDefault();
                 if (recState === "idle") void micDown();
@@ -2339,43 +2338,94 @@ export default function ChatView({
                   setTapToggle(true);
                 }
               }}
-              disabled={recState === "busy"}
+              disabled={!voice || recState === "busy"}
               aria-label={recState === "rec" ? t("stopRecording") : t("recordVoice")}
+              title={!voice ? t("micNeedsPermission") : recState === "rec" ? t("stopRecording") : t("recordVoice")}
             >
               {recState === "busy" ? (
                 "…"
               ) : recState === "rec" ? (
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-                  <rect x="6" y="6" width="12" height="12" rx="2" />
-                </svg>
+                <span className="composer-mic-rec" aria-hidden />
               ) : (
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z" />
-                  <path d="M19 11a1 1 0 1 0-2 0 5 5 0 0 1-10 0 1 1 0 1 0-2 0 7 7 0 0 0 6 6.93V20H8a1 1 0 1 0 0 2h8a1 1 0 1 0 0-2h-3v-2.07A7 7 0 0 0 19 11Z" />
-                </svg>
+                <IconMic />
               )}
             </button>
-          )}
-          <textarea
-            rows={1}
-            placeholder={recState === "rec" ? t("recording") : t("messagePlaceholder")}
-            value={input}
-            onChange={(e) => updateInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                void send();
-              }
-            }}
-          />
-          <button
-            className="primary"
-            onClick={() => void send()}
-            disabled={sending || !!liveText || !!liveThinking}
-            title={liveText || liveThinking ? t("streamingWait") : t("send")}
-          >
-            {(liveText || liveThinking) ? "…" : t("send")}
-          </button>
+            <div className="composer-spacer" />
+            <div className="composer-model" ref={modelMenuRef}>
+              <button
+                className="composer-model-btn"
+                onClick={() => setModelMenu((v) => !v)}
+                aria-expanded={modelMenu}
+                aria-haspopup="listbox"
+                title={t("modelSelector")}
+              >
+                <span className="composer-model-label">
+                  {composerSelectorLabel(
+                    agent || t("agentOption"),
+                    model ? (model.split("/")[1] ?? model) : t("defaultModel"),
+                  )}
+                </span>
+                <IconChevronDown size={13} />
+              </button>
+              {modelMenu && (
+                <div className="composer-menu" role="listbox" aria-label={t("modelSelector")}>
+                  <div className="composer-menu-head">{t("agentMode")}</div>
+                  {["build", "plan"].map((a) => (
+                    <button
+                      key={a}
+                      role="option"
+                      aria-selected={agent === a}
+                      data-agent={a}
+                      className={`composer-menu-item${agent === a ? " selected" : ""}`}
+                      onClick={() => {
+                        pickAgent(a);
+                        setModelMenu(false);
+                      }}
+                    >
+                      {a}
+                    </button>
+                  ))}
+                  <div className="composer-menu-head">{t("model")}</div>
+                  <button
+                    role="option"
+                    aria-selected={!model}
+                    data-model=""
+                    className={`composer-menu-item${!model ? " selected" : ""}`}
+                    onClick={() => {
+                      pickModel("");
+                      setModelMenu(false);
+                    }}
+                  >
+                    {t("defaultModel")}
+                  </button>
+                  {models.map((m) => (
+                    <button
+                      key={`${m.providerID}/${m.modelID}`}
+                      role="option"
+                      aria-selected={model === `${m.providerID}/${m.modelID}`}
+                      data-model={`${m.providerID}/${m.modelID}`}
+                      className={`composer-menu-item${model === `${m.providerID}/${m.modelID}` ? " selected" : ""}`}
+                      onClick={() => {
+                        pickModel(`${m.providerID}/${m.modelID}`);
+                        setModelMenu(false);
+                      }}
+                    >
+                      {m.name}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <button
+              className="primary composer-send"
+              onClick={() => void send()}
+              disabled={sending || !!liveText || !!liveThinking}
+              aria-label={t("send")}
+              title={liveText || liveThinking ? t("streamingWait") : t("send")}
+            >
+              {(liveText || liveThinking) ? "…" : <IconArrowUp size={16} />}
+            </button>
+          </div>
         </div>
       </div>
 

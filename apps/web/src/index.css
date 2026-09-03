@@ -578,10 +578,221 @@ select {
   border: 1px solid var(--border);
 }
 
+/* ── Composer (P3-086): one raised card — attachments, auto-grow input,
+   bottom bar with attach / mic / agent·model selector / send ── */
 .composer {
   display: flex;
-  gap: 8px;
-  align-items: flex-end;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 2px 4px 6px;
+  transition: border-color var(--motion-fast) var(--ease-out);
+}
+.composer:focus-within {
+  border-color: var(--border-strong);
+}
+/* attached files preview: chips inside the card, above the input */
+.composer-atts {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 8px 8px 0;
+}
+.composer-att {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 4px 6px 4px 4px;
+}
+.composer-att-thumb {
+  width: 26px;
+  height: 26px;
+  object-fit: cover;
+  border-radius: 7px;
+  flex-shrink: 0;
+}
+.composer-att-name {
+  font-size: var(--font-size-xs);
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 180px;
+}
+.composer-att-x {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1;
+  padding: 2px 4px;
+  cursor: pointer;
+  border-radius: 6px;
+  min-width: 18px;
+  min-height: 18px;
+}
+.composer-att-x:hover {
+  color: var(--danger);
+}
+/* auto-grow input: JS clamps the height to ~6 lines (lib/composer); this
+   max-height is the CSS backstop — past the cap it scrolls internally */
+.composer-text {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: var(--font-size-md);
+  line-height: 1.45;
+  padding: 10px 10px 2px;
+  resize: none;
+  outline: none;
+  max-height: 145px;
+  overflow-y: auto;
+  min-height: 34px;
+}
+.composer-text::placeholder {
+  color: var(--muted);
+}
+.composer-bar {
+  display: flex;
+  gap: 2px;
+  align-items: center;
+  padding: 2px 2px 0;
+}
+.composer-btn {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  padding: 7px;
+  border-radius: 9px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.composer-btn:hover:not(:disabled) {
+  background: var(--bg2);
+  color: var(--text);
+}
+.composer-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.composer-btn:active:not(:disabled) {
+  transform: none;
+}
+/* recording state: pulsing dot inside the mic button */
+.composer-mic-rec {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--danger);
+  animation: mic-pulse 1.2s ease-in-out infinite;
+}
+@keyframes mic-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.composer-spacer {
+  flex: 1;
+  min-width: 0;
+}
+/* inline agent/model selector (Claude Desktop parity): quiet trigger, menu
+   opens upward because the composer sits on the page floor */
+.composer-model {
+  position: relative;
+  min-width: 0;
+}
+.composer-model-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: var(--font-size-xs);
+  padding: 6px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  max-width: 220px;
+  min-width: 0;
+}
+.composer-model-btn:hover {
+  background: var(--bg2);
+  color: var(--text);
+}
+.composer-model-btn:active {
+  transform: none;
+}
+.composer-model-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.composer-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 30;
+  min-width: 200px;
+  max-height: 280px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-overlay);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.composer-menu-head {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  padding: 6px 8px 3px;
+}
+.composer-menu-item {
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-size: var(--font-size-sm);
+  text-align: left;
+  padding: 7px 9px;
+  border-radius: 8px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.composer-menu-item:hover {
+  background: var(--bg2);
+}
+.composer-menu-item:active {
+  transform: none;
+}
+.composer-menu-item.selected {
+  color: var(--accent);
+}
+.composer-send {
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  padding: 0;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
 }
 
 .approval {

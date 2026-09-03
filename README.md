@@ -79,6 +79,13 @@ private. That is the product: **local power, remote control, zero trust**.
 - **Per-conversation drafts (P1-088)** — the composer keeps one draft per
   conversation: switch sessions mid-typing and each chat holds its own text;
   sending clears only the conversation you sent from
+- **Complete composer (P3-086)** — the chat input is one raised card: a "+"
+  button attaches files with an inline preview chip (thumbnail, name, one-tap
+  remove), a mic button sits next to it (functional placeholder — disabled,
+  with an explanatory tooltip, until the daemon reports transcription
+  capability), an inline **agent · model** dropdown replaces the old header
+  select and the full-width model list, the textarea auto-grows up to ~6 lines
+  and then scrolls internally, Enter sends / Shift+Enter breaks the line
 - **Routines** — real cron: daily, specific weekdays, or interval loop
 - **Secure by construction** — passkey (WebAuthn) gate, ECDH P-256 + AES-256-GCM,
   replay protection, device allowlist, audit log, biometric unlock

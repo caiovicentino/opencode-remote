@@ -127,7 +127,9 @@ const cliEnv = { ...process.env, OCR_DESKTOP_SESSION: session };
 // sidebar-grouping + ⌘K-preview beat (fake backend serves time.updated
 // sessions) inside the same budget as well; P3-085 added the thinking-block
 // beat (simulated long response: reasoning streaming, collapse-on-answer,
-// caret, jump-end pill, autoscroll yield) inside the same budget.
+// caret, jump-end pill, autoscroll yield) inside the same budget; P3-086
+// added the composer beat (attach preview chip, mic-disabled state, inline
+// agent/model selector, auto-grow clamp + Enter/Shift+Enter semantics).
 const startedAt = Date.now();
 const DEADLINE_MS = 180_000;
 const shotPath = join(tmpdir(), "ocr-desktop-flow", `flow-${process.pid}.png`);
@@ -953,6 +955,175 @@ try {
                 }
               }
             }
+          }
+        }
+
+        // --- P3-086: complete composer — the four elements --------------------
+        // attach (+) with file preview, mic (functional placeholder, disabled
+        // without perms), inline agent/model selector, auto-grow textarea with
+        // Enter-sends / Shift+Enter-newline. The window is 390px wide here
+        // (P1-088's last shot); the first shot call restores desktop width.
+        const composerShot = join(shotsDir, "P3-086-composer-1440.png");
+        const composerReady = run("P3-086: resize to desktop width", ["shot", composerShot, "1440", "900"], 15_000, localEnv);
+        if (composerReady.ok) {
+          // (1) attach: a real 1x1 PNG flows through the hidden input — the
+          // downscale+upload pipeline runs against the hermetic daemon and the
+          // file previews as a chip inside the composer, removable with ×.
+          const inject = run(
+            "P3-086: attach a PNG through the hidden input",
+            ["ipc", `(() => {
+              const input = document.querySelector('.composer-file');
+              if (!input) return 'NO-INPUT';
+              const b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+              const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+              const dt = new DataTransfer();
+              dt.items.add(new File([bytes], "flow-p3-086.png", { type: "image/png" }));
+              input.files = dt.files;
+              input.dispatchEvent(new Event("change", { bubbles: true }));
+              return "OK";
+            })()`],
+            15_000,
+            localEnv,
+          );
+          if (inject.ok && inject.stdout.includes("OK")) {
+            await waitProbe(
+              "P3-086: attached file previews as a chip in the composer",
+              "!!document.querySelector('.composer-att')",
+              (v) => /true/.test(v),
+              localEnv,
+            );
+            run("P3-086: remove the attachment chip", ["click", ".composer-att-x"], 15_000, localEnv);
+            await waitProbe(
+              "P3-086: chip removed",
+              "!!document.querySelector('.composer-att')",
+              (v) => /false/.test(v),
+              localEnv,
+            );
+          }
+          // (2) mic: always rendered, disabled while the daemon reports no
+          // transcribe capability (the hermetic case) — functional placeholder.
+          const mic = run(
+            "P3-086: mic rendered but disabled without perms",
+            ["ipc", "(() => { const m = document.querySelector('.composer-mic'); return m ? { rendered: true, disabled: m.disabled, label: m.getAttribute('aria-label') ?? '' } : { rendered: false }; })()"],
+            15_000,
+            localEnv,
+          );
+          if (mic.ok) {
+            let mm: { rendered?: boolean; disabled?: boolean; label?: string } | null = null;
+            try {
+              mm = JSON.parse(mic.stdout) as typeof mm;
+            } catch {}
+            check(
+              "P3-086: mic is a real disabled placeholder (no transcribe cap)",
+              mm?.rendered === true && mm.disabled === true && (mm.label ?? "").length > 0,
+              mic.stdout,
+            );
+          }
+          // (3) inline agent/model selector: opens upward, picks plan, persists
+          run("P3-086: open the agent/model menu", ["click", ".composer-model-btn"], 15_000, localEnv);
+          const menu = await waitProbe(
+            "P3-086: menu rendered with agent options",
+            "!!document.querySelector('.composer-menu .composer-menu-item[data-agent=\"plan\"]')",
+            (v) => /true/.test(v),
+            localEnv,
+          );
+          if (menu !== null) {
+            run("P3-086: pick plan in the inline menu", ["click", '.composer-menu-item[data-agent="plan"]'], 15_000, localEnv);
+            await waitProbe(
+              "P3-086: trigger reflects the picked agent",
+              "document.querySelector('.composer-model-label')?.textContent ?? 'MISS'",
+              (v) => v.includes("plan"),
+              localEnv,
+            );
+          }
+          // (4) textarea: auto-grow clamps at ~6 lines and scrolls past it;
+          // Shift+Enter keeps the draft, Enter sends (offline ⇒ optimistic clear).
+          const growSet = run(
+            "P3-086: paste 30 lines into the composer",
+            ["ipc", `(() => {
+              const ta = document.querySelector('.composer-text');
+              if (!ta) return 'NO-TA';
+              document.getElementById('p3-086-noanim')?.remove();
+              const st = document.createElement('style');
+              st.id = 'p3-086-noanim';
+              st.textContent = '* { animation: none !important; transition: none !important; }';
+              document.head.appendChild(st);
+              const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+              setter.call(ta, Array.from({ length: 30 }, (_, i) => 'linha ' + i).join('\\n'));
+              ta.dispatchEvent(new Event('input', { bubbles: true }));
+              return 'OK';
+            })()`],
+            15_000,
+            localEnv,
+          );
+          if (growSet.ok && growSet.stdout.includes("OK")) {
+            const grown = await waitProbe(
+              "P3-086: auto-grow clamps the box past ~6 lines",
+              "(() => { const ta = document.querySelector('.composer-text'); if (!ta) return { mounted: false }; const r = ta.getBoundingClientRect(); return { mounted: true, h: Math.round(r.height), scroll: ta.scrollHeight, client: ta.clientHeight }; })()",
+              (v) => {
+                try {
+                  const m = JSON.parse(v) as { mounted: boolean; h: number };
+                  return m.mounted && m.h >= 100;
+                } catch {
+                  return false;
+                }
+              },
+              localEnv,
+            );
+            if (grown) {
+              try {
+                const m = JSON.parse(grown) as { h: number; scroll: number; client: number };
+                check(
+                  "P3-086: box grew from one line but stays clamped (~6 lines)",
+                  m.h >= 100 && m.h <= 160,
+                  grown,
+                );
+                check("P3-086: past the cap the textarea scrolls internally", m.scroll > m.client, grown);
+              } catch {
+                check("P3-086: auto-grow measurement parseable", false, grown);
+              }
+            }
+            // restore a one-line draft for the Enter/Shift+Enter semantics check
+            run("P3-086: reset the draft", ["type", ".composer-text", "linha1"], 15_000, localEnv);
+            const shiftEnter = run(
+              "P3-086: Shift+Enter does not send",
+              ["ipc", `(() => {
+                const ta = document.querySelector('.composer-text');
+                if (!ta) return 'NO-TA';
+                ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true, cancelable: true }));
+                return ta.value;
+              })()`],
+              15_000,
+              localEnv,
+            );
+            if (shiftEnter.ok) check("P3-086: Shift+Enter kept the draft (no send)", shiftEnter.stdout.includes("linha1"), shiftEnter.stdout);
+            run(
+              "P3-086: Enter sends",
+              ["ipc", `(() => {
+                const ta = document.querySelector('.composer-text');
+                if (!ta) return 'NO-TA';
+                ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+                return 'OK';
+              })()`],
+              15_000,
+              localEnv,
+            );
+            await waitProbe(
+              "P3-086: Enter cleared the composer (send fired)",
+              "document.querySelector('.composer-text')?.value ?? 'MOUNT-MISS'",
+              (v) => v.trim() === '""',
+              localEnv,
+            );
+            await waitProbe(
+              "P3-086: offline send lands the optimistic bubble",
+              "[...document.querySelectorAll('.msg.user')].some((m) => m.textContent?.includes('linha1'))",
+              (v) => /true/.test(v),
+              localEnv,
+              6,
+              500,
+            );
+            // evidence: the full composer state
+            run("P3-086: composer evidence shot", ["shot", composerShot], 15_000, localEnv);
           }
         }
 
