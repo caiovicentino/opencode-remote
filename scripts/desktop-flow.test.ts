@@ -854,6 +854,73 @@ try {
           }
         }
 
+        // --- P1-088: per-session drafts (the operator's repro) ----------------
+        // Type in A, switch to B (composer starts empty — no bleed), type in
+        // B, return to A (A's draft intact), send in A (clears only A; the
+        // sent draft is never restored). The hermetic daemon has no opencode
+        // backend, so the send fails offline — the optimistic clear is the
+        // behavior under test.
+        const toA = run("P1-088: deep-link to session A", ["ipc", "location.hash = '#/session/ses-draft-a'"], 15_000, localEnv);
+        if (toA.ok) {
+          await waitProbe(
+            "P1-088: A's restore effect committed (empty draft)",
+            "document.querySelector('.composer textarea')?.value ?? 'MOUNT-MISS'",
+            (v) => v.trim() === '""',
+            localEnv,
+          );
+          run("P1-088: type draft in A", ["type", ".composer textarea", "rascunho A"], 15_000, localEnv);
+          // evidence: composer in A holding its own draft (window is already
+          // 1440x900 from the P1-080 repro — no-size shot avoids a remount)
+          run("P1-088: 1440x900 evidence shot", ["shot", join(shotsDir, "P1-088-draft-1440.png")], 15_000, localEnv);
+          const toB = run("P1-088: switch to session B", ["ipc", "location.hash = '#/session/ses-draft-b'"], 15_000, localEnv);
+          if (toB.ok) {
+            const probeValue = "document.querySelector('.composer textarea')?.value ?? 'MOUNT-MISS'";
+            await waitProbe(
+              "P1-088: B's composer starts empty (no bleed from A)",
+              probeValue,
+              (v) => v.trim() === '""',
+              localEnv,
+            );
+            run("P1-088: type draft in B", ["type", ".composer textarea", "rascunho B"], 15_000, localEnv);
+            const backA = run("P1-088: back to session A", ["ipc", "location.hash = '#/session/ses-draft-a'"], 15_000, localEnv);
+            if (backA.ok) {
+              await waitProbe(
+                "P1-088: A's draft intact after the B round-trip",
+                probeValue,
+                (v) => v.includes("rascunho A"),
+                localEnv,
+              );
+              run("P1-088: send in A (offline — optimistic clear)", ["click", ".composer button.primary"], 15_000, localEnv);
+              await waitProbe(
+                "P1-088: sending cleared A's composer",
+                probeValue,
+                (v) => v.trim() === '""',
+                localEnv,
+              );
+              const toB2 = run("P1-088: switch to B after send", ["ipc", "location.hash = '#/session/ses-draft-b'"], 15_000, localEnv);
+              if (toB2.ok) {
+                await waitProbe(
+                  "P1-088: B's draft survived A's send",
+                  probeValue,
+                  (v) => v.includes("rascunho B"),
+                  localEnv,
+                );
+                const backA2 = run("P1-088: back to A after send", ["ipc", "location.hash = '#/session/ses-draft-a'"], 15_000, localEnv);
+                if (backA2.ok) {
+                  await waitProbe(
+                    "P1-088: sent draft is never restored in A",
+                    "document.querySelector('.composer textarea')?.value ?? 'MOUNT-MISS'",
+                    (v) => v.trim() === '""',
+                    localEnv,
+                  );
+                  // evidence: 390px narrow viewport after the full round-trip
+                  run("P1-088: 390 evidence shot", ["shot", join(shotsDir, "P1-088-draft-390.png"), "390", "844"], 15_000, localEnv);
+                }
+              }
+            }
+          }
+        }
+
         // Stop the daemon ⇒ the existing degradation (yellow reconnecting
         // banner), never the QR ceremony.
         killDaemon("SIGKILL");

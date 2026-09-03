@@ -71,6 +71,9 @@ remoto, zero confiança**.
   qualquer parte do título (a heurística não adivinha intenção), então uma
   conversa sua que menciona ex. `P2-049` no título também agrupa — renomeie
   pra tirar do grupo
+- **Rascunho por conversa (P1-088)** — o campo de mensagem guarda um rascunho
+  por conversa: alternar de sessão no meio da digitação não perde nem mistura
+  texto; enviar limpa só o rascunho da conversa onde você enviou
 - **Rotinas** — cron de verdade: diário, dias da semana ou loop por intervalo
 - **Seguro por construção** — gate com passkey (WebAuthn), ECDH P-256 +
   AES-256-GCM, anti-replay, allowlist de dispositivos, audit log, biometria

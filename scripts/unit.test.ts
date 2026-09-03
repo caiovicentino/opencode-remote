@@ -26,6 +26,7 @@ import {
   putCachedSession,
   SESSION_CACHE_MAX,
 } from "../apps/web/src/lib/sessionCache";
+import { appendDraft, clearDraft, getDraft, setDraft, DRAFTS_MAX } from "../apps/web/src/lib/drafts";
 import { taskMergedIn } from "../apps/pilot/src/pipeline";
 import { cachedExec, rerunKey, type RerunResults } from "../apps/pilot/src/runner";
 import {
@@ -506,6 +507,27 @@ check("empty query string passes all", applySessionFilters(all, funread, "   ", 
   check("P1-064: cache keeps at most 3 sessions, evicting the oldest", touched !== null && ra !== null && rb === null && rc === null && rd !== null && re !== null);
   check("P1-064: unknown session id is a cache miss", getCachedSession("cache-zzz") === null);
   check("P1-064: cache cap is 3", SESSION_CACHE_MAX === 3);
+}
+
+// --- P1-088: per-session composer drafts --------------------------------------
+{
+  // start clean regardless of test order
+  for (const id of ["draft-a", "draft-b", "draft-empty"]) clearDraft(id);
+  setDraft("draft-a", "x");
+  check("P1-088: drafts are independent per session", getDraft("draft-empty") === "" && getDraft("draft-a") === "x");
+  setDraft("draft-a", "");
+  check("P1-088: emptying the composer deletes the draft key", getDraft("draft-a") === "");
+  setDraft("draft-a", "x");
+  check("P1-088: append joins with a single space", appendDraft("draft-a", "y") === "x y");
+  setDraft("draft-empty", "");
+  check("P1-088: append onto an empty draft has no leading space", appendDraft("draft-empty", "y") === "y");
+  clearDraft("draft-a");
+  clearDraft("draft-empty");
+  check("P1-088: clearDraft empties the entry", getDraft("draft-a") === "" && getDraft("draft-empty") === "");
+  // eviction: insert DRAFTS_MAX + 1 distinct keys, the first must be evicted
+  for (let i = 0; i <= DRAFTS_MAX; i++) setDraft(`draft-cap-${i}`, `t${i}`);
+  check("P1-088: oldest draft is evicted past the cap", getDraft("draft-cap-0") === "" && getDraft(`draft-cap-${DRAFTS_MAX}`) === `t${DRAFTS_MAX}`);
+  for (let i = 0; i <= DRAFTS_MAX; i++) clearDraft(`draft-cap-${i}`);
 }
 
 // --- P1-064: pilot session grouping heuristic --------------------------------
