@@ -251,7 +251,11 @@ export async function applySessionCosts(
   let sawRow = false;
   // P2-113: per-model token groups — the pricing table is applied per model,
   // never against a blended total, so tier attribution stays honest.
-  const perModel: Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }> = {};
+  // Null prototype (round 2 review): session.model text is arbitrary — a row
+  // with model "__proto__"/"constructor" must not resolve inherited keys and
+  // pollute Object.prototype from the long-lived pilot process.
+  const perModel: Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }> =
+    Object.create(null);
   let legacyTokens = 0;
   for (const id of known) {
     const r = rows[id];

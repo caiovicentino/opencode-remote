@@ -5990,6 +5990,19 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   await applySessionCosts(legacy, "P2-113b", ["ses_usd000002"], async () => ({ ses_usd000002: 500 }));
   const legacyUsd = (legacy as unknown as { taskUSD?: Record<string, { unpricedTokens: number; tokens: number }> }).taskUSD?.["P2-113b"];
   check("pricing: legacy totals-only fold counts tokens as unpriced", !!legacyUsd && legacyUsd.total === 0 && legacyUsd.unpricedTokens === 500 && legacyUsd.tokens === 500);
+
+  // round 2 review: session.model text is arbitrary — "__proto__" style keys
+  // must stay own-key/hasOwn-safe (no built-in pollution, no NaN pricing)
+  const sneaky: Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }> = Object.create(null);
+  sneaky["__proto__"] = { input: 1, output: 0, cacheRead: 0, cacheWrite: 0 };
+  sneaky["constructor"] = { input: 0, output: 1, cacheRead: 0, cacheWrite: 0 };
+  const guarded = taskCostUSD(sneaky);
+  check("pricing: __proto__/constructor keys price as unpriced, never NaN", guarded.total === 0 && guarded.unpricedTokens === 2 && guarded.tokens === 2 && Number.isFinite(guarded.total));
+  const pstore: { taskCosts: Record<string, number>; taskCostSessions: Record<string, string[]> } = { taskCosts: {}, taskCostSessions: {} };
+  await applySessionCosts(pstore, "P2-113c", ["ses_usd000003"], async () => ({ ses_usd000003: { id: "ses_usd000003", tokens_input: 10, tokens_output: 0, tokens_cache_read: 0, tokens_cache_write: 0, model: "__proto__" } }));
+  const pUsd = (pstore as unknown as { taskUSD?: Record<string, { total: number; unpricedTokens: number; tokens: number }> }).taskUSD?.["P2-113c"];
+  check("pricing: __proto__ model cannot pollute Object.prototype or drop tokens", (Object.prototype as unknown as Record<string, unknown>).input === undefined && !!pUsd && pUsd.total === 0 && pUsd.unpricedTokens === 10 && pUsd.tokens === 10);
+  check("pricing: __proto__ passes through normalization as an inert key", normalizeSessionModel("__proto__") === "__proto__");
   // REPLACE-by-recompute: re-folding replaces the dollar view too
   await applySessionCosts(store, "P2-113", ["ses_usd000001"], async () => ({ ses_usd000001: row("mystery-model") }));
   const refolded = (store as unknown as { taskUSD?: Record<string, { total: number; unpricedTokens: number }> }).taskUSD?.["P2-113"];

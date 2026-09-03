@@ -458,6 +458,9 @@ async function poll() {
     lastCosts = data.state?.taskCosts || {};
     // P2-113: BYOK list-price dollar view (taskUSD) drives the $ chips
     lastUsd = data.state?.taskUSD || {};
+    // tooltip source line comes from pricing.ts via the daemon payload —
+    // bumping PRICE_AS_OF there updates the dashboard without a drift
+    if (typeof data.priceSource === "string" && data.priceSource) priceSourceLabel = data.priceSource;
     // P2-028: keep the cost chips fresh while a FILA/CONCLUÍDAS view is open
     if (logsOpen) {
       if (document.getElementById("readylist").style.display === "block") renderReady();
@@ -496,8 +499,9 @@ function costChip(id) {
 // The dollar figure is a product-transparency metric ("what a BYOK cloud user
 // would have paid at list price"), never the operator's own ops cost — own ops
 // are metered in tokens (primary chip) and cache hit = GPU saved. Tooltip
-// carries the per-tier split + the cited public source.
-const PRICE_SOURCE_LABEL = "fonte: docs.z.ai + platform.claude.com (preços de lista, 2026-09-03)";
+// carries the per-tier split + the cited public source, served by the daemon
+// from pricing.ts (single module — no drifted date copy here).
+let priceSourceLabel = "preços de lista BYOK";
 function fmtUsd(n) {
   if (!Number.isFinite(n) || n <= 0) return "";
   return n >= 0.01 ? n.toFixed(2) : String(parseFloat(n.toFixed(4)));
@@ -509,7 +513,7 @@ function usdChip(id) {
   if (u.tierA > 0) parts.push(`tier A $${fmtUsd(u.tierA)}`);
   if (u.tierB > 0) parts.push(`tier B $${fmtUsd(u.tierB)}`);
   if (u.unpricedTokens > 0) parts.push(`${fmtTok(u.unpricedTokens) || "0 tok"} sem preço`);
-  return `<span class="cost usd" title="preço de lista BYOK (${parts.join(" · ")}) · ${PRICE_SOURCE_LABEL}">$${fmtUsd(u.total)}</span>`;
+  return `<span class="cost usd" title="preço de lista BYOK (${parts.join(" · ")}) · ${priceSourceLabel}">$${fmtUsd(u.total)}</span>`;
 }
 
 // P2-045: queue + blocked counters on the FILA button (## Ready / ## Blocked)

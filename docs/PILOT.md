@@ -497,7 +497,9 @@ A linha da task no BACKLOG.md pode carregar a tag opcional `(size: S|M|L)` (defa
   **cache-hit** (cache poupado = GPU/export poupada, não dólar poupado). No
   dashboard, o chip de tokens permanece primeiro; o chip dourado `$` (views
   FILA e CONCLUÍDAS — tasks merged/bloqueadas) tem tooltip com o split
-  tier A/tier B e a fonte citada. Modelos fora da tabela não são
+  tier A/tier B e a fonte citada (a linha de fonte é servida pelo daemon a
+  partir de `pricing.ts` — bump de `asOf` na tabela atualiza o tooltip sem
+  drift). Modelos fora da tabela não são
   convertidos silenciosamente para $0: os tokens aparecem como `sem preço`
   no tooltip (`unpricedTokens`). Sinal best-effort como o resto do P2-028:
   nada de gate consome `taskUSD`.

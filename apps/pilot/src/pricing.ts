@@ -107,7 +107,10 @@ export function taskCostUSD(perModel: Record<string, TokenCols>): TaskUsd {
     const cacheWrite = c.cacheWrite || 0;
     const colTotal = input + output + cacheRead + cacheWrite;
     tokens += colTotal;
-    const price = PRICE_TABLE[model];
+    // hasOwn guard (round 2 review): a model id like "__proto__" or
+    // "constructor" must resolve to "no price", never to an inherited
+    // Object.prototype member (which would truthy-pass and yield NaN).
+    const price = Object.hasOwn(PRICE_TABLE, model) ? PRICE_TABLE[model] : undefined;
     if (!price) {
       unpricedTokens += colTotal;
       continue;
