@@ -165,7 +165,9 @@ When finished, your LAST line of output must be exactly: PLANNER:DONE`;
  */
 export function validateSpec(content: string): boolean {
   if (content.split("\n").length > 400 || content.length > 40_000) return false;
-  if (/VERDICT:|PILOT:TASK-DONE|PLANNER:DONE|SCRIBE:DONE/i.test(content)) return false;
+  // anchored: a spec may DISCUSS these markers inline (e.g. a parseFindings fix
+  // quotes `VERDICT:`); only a line that fakes a harness output is a hack
+  if (/^\s*(VERDICT:|PILOT:TASK-DONE|PLANNER:DONE|SCRIBE:DONE)/im.test(content)) return false;
   const headings = content
     .split("\n")
     .filter((l) => l.startsWith("## "))
