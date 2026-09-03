@@ -850,31 +850,42 @@ cache). Consequences:
 
 ## Verifiable findings (P2-015)
 
-Reviewers are LLMs and hallucinate. When the pipeline parses `VERDICT:
-REQUEST_CHANGES`, every finding bullet must carry verifiable evidence:
+Reviewers are LLMs and hallucinate. Finding bullets are parsed ONLY from a
+`VERDICT: REQUEST_CHANGES` tail (P1-102: bullets after a `VERDICT: APPROVE`
+are rationale, not findings — 830 of the 1189 findings dropped in the audit
+came from APPROVE outputs), and every finding bullet must carry verifiable
+evidence:
 
+- a quoted literal snippet (≥6 chars) that appears verbatim in the reviewed
+  diff — checked FIRST (P1-102), so a real finding is never dropped because its
+  path:line resolution failed (audit fixtures: shell injection via `t.id`, the
+  unused `qrcode` devDep). Quoted paths don't count as snippets: every
+  unified-diff header repeats the touched file's path, so path-shaped spans are
+  excluded from the verbatim check and stay the business of `FILE_CITE_RE`; or
 - a repo-relative `path/file.ext:LINE` citation — the file must exist in the
-  workspace clone and, when a line is cited, that line must be non-empty; or
-- a quoted literal snippet (≥6 chars) that appears verbatim in the reviewed diff.
+  workspace clone and, when a line is cited, that line must be non-empty.
 
 A cheap mechanical verifier (`verifyFindings` in `apps/pilot/src/pipeline.ts`)
 drops findings whose citations don't resolve and logs each one as
-`finding hallucinated, dropped` (level `warn`). If **all** findings of a
-`REQUEST_CHANGES` verdict are dropped, the review degenerates to an effective
-APPROVE — a reviewer that provides no real evidence cannot block a merge.
-Only verified findings reach the builder prompt in the next round; the
-reviewer prompt documents the citation contract. Pinned by unit tests in
-`scripts/unit.test.ts` (one valid citation with a real path, one hallucinated
-path — only the invalid one is dropped).
+`finding hallucinated, dropped` (level `warn`) **with the mechanical reason**
+(file not found, line empty/beyond EOF, no quoted span resolves — P1-102).
+If **all** findings of a `REQUEST_CHANGES` verdict are dropped the verdict
+still rejects fail-closed (P1-073: escalate or reject — never an effective
+approve). Dropped findings are not erased either: a rejecting reviewer's
+(or tier-B arbiter's) dropped list is repassed to the builder tagged
+`[unverified]` (P1-102); the reviewer prompt documents the citation contract.
+Pinned by unit tests in `scripts/unit.test.ts` (one valid citation with a real
+path, one hallucinated path — only the invalid one is dropped).
 
 Since P2-038 the verifier treats code observations as first-class evidence:
 
 - **Last marker wins**: the verdict is the LAST `VERDICT:` marker in the
   reviewer output (`parseVerdict`), not a substring test — a
   `VERDICT: REQUEST_CHANGES` written after an APPROVE in prose rejects the
-  build. An `APPROVE` that still carries verified findings is also processed
-  as a rejection: findings that verify are evidence, not noise
-  (`reviewerOk`).
+  build. P1-102: finding bullets are parsed only under a REQUEST_CHANGES
+  verdict — an APPROVE's rationale bullets are never treated as findings
+  (`reviewerOk` still rejects an APPROVE when findings are passed to it
+  explicitly).
 - **Bare-name citations resolve**: a citation like `CommandPalette.tsx:63`
   without a directory is resolved by suffix match against the workspace
   listing instead of being dropped. (The same audit fixed a regex truncation
