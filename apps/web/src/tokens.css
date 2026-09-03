@@ -58,7 +58,7 @@
   --font-size-xs: 0.72rem;
   --font-size-sm: 0.85rem;
   --font-size-md: 0.95rem;
-  --font-size-body: 0.95rem; /* 15.2px conversation body */
+  --font-size-body: var(--font-size-md); /* 15.2px conversation body */
   --font-size-lg: 1.15rem;
   --line-height-body: 1.65; /* PRODUCT.md: 1.6–1.7 */
   --line-height-tight: 1.35;
