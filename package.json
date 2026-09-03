@@ -19,7 +19,7 @@
     "build": "npm run build --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "eslint apps packages scripts --quiet",
-    "test:unit": "tsx scripts/unit.test.ts && tsx scripts/preview.test.ts && tsx scripts/message-paging.test.ts && tsx scripts/bubble-merge.test.ts && tsx scripts/thinking.test.ts && tsx scripts/relay-ratelimit.test.ts && tsx scripts/relay-healthz.test.ts && tsx scripts/relay-ipcap.test.ts && tsx scripts/relay-rooms.test.ts && tsx scripts/relay-liveness.test.ts && tsx scripts/desktop-log.test.ts && tsx scripts/dist-smoke.test.ts && tsx scripts/sidecar-log.test.ts && tsx scripts/client-ready.test.ts && tsx scripts/pwa-watch.test.ts && tsx scripts/permission-cards.test.ts && tsx scripts/artifact-auto.test.ts && tsx scripts/release-watch.test.ts && tsx scripts/e2e-orphans.test.ts",
+    "test:unit": "tsx scripts/unit.test.ts && tsx scripts/preview.test.ts && tsx scripts/message-paging.test.ts && tsx scripts/bubble-merge.test.ts && tsx scripts/thinking.test.ts && tsx scripts/composer.test.ts && tsx scripts/relay-ratelimit.test.ts && tsx scripts/relay-healthz.test.ts && tsx scripts/relay-ipcap.test.ts && tsx scripts/relay-rooms.test.ts && tsx scripts/relay-liveness.test.ts && tsx scripts/desktop-log.test.ts && tsx scripts/dist-smoke.test.ts && tsx scripts/sidecar-log.test.ts && tsx scripts/client-ready.test.ts && tsx scripts/pwa-watch.test.ts && tsx scripts/permission-cards.test.ts && tsx scripts/artifact-auto.test.ts && tsx scripts/release-watch.test.ts && tsx scripts/e2e-orphans.test.ts",
     "test:desktop": "tsx scripts/desktop-sidecar.test.ts",
     "test:desktop-update": "tsx scripts/desktop-update.test.ts",
     "test:desktop-render": "tsx scripts/desktop-render.test.ts",

@@ -186,6 +186,45 @@ export function IconArchive(p: IconProps) {
   );
 }
 
+/** P3-086: composer attach trigger ("+"). */
+export function IconPlus(p: IconProps) {
+  return (
+    <Icon {...p}>
+      <path d="M5 12h14" />
+      <path d="M12 5v14" />
+    </Icon>
+  );
+}
+
+/** P3-086: composer mic (functional placeholder — disabled without perms). */
+export function IconMic(p: IconProps) {
+  return (
+    <Icon {...p}>
+      <path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z" />
+      <path d="M19 11a1 1 0 1 0-2 0 5 5 0 0 1-10 0 1 1 0 1 0-2 0 7 7 0 0 0 6 6.93V20H8a1 1 0 1 0 0 2h8a1 1 0 1 0 0-2h-3v-2.07A7 7 0 0 0 19 11Z" />
+    </Icon>
+  );
+}
+
+/** P3-086: inline agent/model dropdown chevron. */
+export function IconChevronDown(p: IconProps) {
+  return (
+    <Icon {...p}>
+      <path d="m6 9 6 6 6-6" />
+    </Icon>
+  );
+}
+
+/** P3-086: send button glyph (arrow-up, Claude Desktop parity). */
+export function IconArrowUp(p: IconProps) {
+  return (
+    <Icon {...p}>
+      <path d="M12 19V5" />
+      <path d="m5 12 7-7 7 7" />
+    </Icon>
+  );
+}
+
 /** P3-084: restore an archived conversation. */
 export function IconUndo(p: IconProps) {
   return (
