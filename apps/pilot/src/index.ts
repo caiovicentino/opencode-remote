@@ -8,7 +8,7 @@ import { notifySupervisor } from "./notify";
 import { runResearcher } from "./researcher";
 import { runExplorer } from "./explorer";
 import { runPipeline, TASK_ID_RE, writeSandboxConfig, writeAuxSandboxConfig, lessonsBlock, budgetsFor, isOverCap } from "./pipeline";
-import { deploy, headDrifted, latestDeployableSha } from "./deploy";
+import { deploy, latestDeployableSha, shouldSelfHealReload } from "./deploy";
 import { digest } from "./push";
 import { addTask, appendCommitAndPush, auxPushIo, blockTask, mayPush, nextId, parseAuxTaskLines, parseBacklog, type Task } from "./backlog";
 import { appendFailureLesson, defaultLessonsFile, failureLessonsBlock, readRecentFailureLessons } from "./failureLessons";
@@ -190,12 +190,12 @@ async function main() {
     // after this process booted (deploy landed while an older process was
     // still running, e.g. one spawned before the P1-034 reload fix), exit so
     // launchd KeepAlive restarts on the NEW code. Only at a fully idle moment:
-    // never kill pipelines or an in-flight deploy. This is what made the
-    // P1-095 nightly trigger live — without it a stale process keeps the old
-    // trigger (or the old dead reload) in memory forever.
+    // never kill pipelines or an in-flight deploy (gates pinned by the battery
+    // via shouldSelfHealReload). The outer guard is the cheap short-circuit
+    // that skips the git probe while slots are busy.
     if (running.size === 0 && !deployBusy) {
       const headNow = exec("git rev-parse HEAD", { cwd: cfg.repo, allowFail: true }).output.trim();
-      if (headDrifted(bootHead, headNow)) {
+      if (shouldSelfHealReload(running.size, deployBusy, bootHead, headNow)) {
         log("warn", "prod repo HEAD moved since boot — self-reloading onto new code", {
           bootHead,
           headNow,

@@ -135,7 +135,7 @@ import {
   type Task,
 } from "../apps/pilot/src/backlog";
 import { clearPendingRefill, readPendingRefill, relandDetail, relandPendingRefill, savePendingRefill } from "../apps/pilot/src/refill";
-import { EXPLORER_MAX_FINDINGS, EXPLORER_MAX_STEPS, EXPLORER_TIMEOUT_MIN, EXPLORER_PUSH_RETRIES, EXPLORER_PUSH_WAIT_MS, commitAndPushFindings, explorerPrompt, explorerSessionName, explorerSpec, parseExplorerFindings, type ExplorerFinding } from "../apps/pilot/src/explorer";
+import { EXPLORER_MAX_FINDINGS, EXPLORER_MAX_STEPS, EXPLORER_TIMEOUT_MIN, EXPLORER_PUSH_RETRIES, EXPLORER_PUSH_WAIT_MS, claimExplorerRun, commitAndPushFindings, explorerPrompt, explorerSessionName, explorerSpec, parseExplorerFindings, type ExplorerFinding } from "../apps/pilot/src/explorer";
 import { runAgent, API_PREFLIGHT, apiHealthy, claudeArgs, idScanner, mergeAgentIds, OPENCODE_URL_DEFAULT, scanIds, shouldFallbackTierB, waitForApi } from "../apps/pilot/src/runner";
 import { mkdtempSync, mkdirSync, readdirSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync, utimesSync } from "node:fs";
 import { execSync, spawn } from "node:child_process";
@@ -182,6 +182,7 @@ import {
   LIVE_INVARIANT_EVERY,
   quarantineWithEscalation,
   ROLLBACK_HEALTH_WINDOW_SEC,
+  shouldSelfHealReload,
   shouldSelfReload,
   soakFailureRateExceeded,
   soakMinutesFor,
@@ -2945,6 +2946,19 @@ check("disk guard: statfs probe returns bytes on a real dir", realFree !== null 
     "P3-101: malformed shas → not drifted (no restart flapping)",
     headDrifted("", B) === false && headDrifted("nope", B) === false && headDrifted(A, "dirty") === false,
   );
+  // round 2: the exit decision is a pure seam — both idle gates pinned here so
+  // a refactor can never silently enable mid-pipeline self-kills
+  check("P3-101: idle + no deploy + drift → reload", shouldSelfHealReload(0, false, A, B) === true);
+  check("P3-101: slot running → never reload (no mid-pipeline self-kill)", shouldSelfHealReload(1, false, A, B) === false && shouldSelfHealReload(2, false, A, B) === false);
+  check("P3-101: deploy in flight → never reload", shouldSelfHealReload(0, true, A, B) === false);
+  check("P3-101: no drift → no reload even when idle", shouldSelfHealReload(0, false, A, A) === false);
+  // P1-034 precedent: source pin — the loop's process.exit(0) must be routed
+  // through the pure seam, never a bare headDrifted() check
+  const pilotIndexSrc = readFileSync(join(import.meta.dirname, "..", "apps", "pilot", "src", "index.ts"), "utf8");
+  check(
+    "P3-101: loop self-heal exit routed through shouldSelfHealReload",
+    pilotIndexSrc.includes("shouldSelfHealReload(running.size, deployBusy, bootHead, headNow)") && !pilotIndexSrc.includes("headDrifted(bootHead"),
+  );
 }
 
 // --- P2-058 round 2: quarantine-write escalation + merge-identity validation --
@@ -4106,6 +4120,19 @@ check(
     const parsed = parseBacklog(readFileSync(join(dir, "BACKLOG.md"), "utf8"));
     check("explorer: inserted line lands as a parseable Ready task", parsed.length === 1 && parsed[0]!.id === "P3-099" && parsed[0]!.priority === "P3" && parsed[0]!.area === "ui");
     check("explorer: inserted spec carries severity + evidence path", parsed[0]!.spec.includes("(severity: high, evidence: ") && parsed[0]!.spec.includes(shot));
+
+    // P3-101 round 2: the once-per-day claim persists BEFORE the agent spawns —
+    // the exact property "a crash must not re-run it same-day" depends on
+    const claimState: any = { taskAttempts: {} };
+    let claimSaves = 0;
+    const claimed = claimExplorerRun(claimState, "2026-09-03", () => {
+      claimSaves++;
+    });
+    check("explorer claim: first call sets explorerLast and persists before the run", claimed === true && claimState.explorerLast === "2026-09-03" && claimSaves === 1);
+    const reclaim = claimExplorerRun(claimState, "2026-09-03", () => {
+      claimSaves++;
+    });
+    check("explorer claim: same-day re-claim is a no-op that never re-saves", reclaim === false && claimState.explorerLast === "2026-09-03" && claimSaves === 1);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

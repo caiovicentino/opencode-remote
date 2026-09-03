@@ -136,10 +136,25 @@ function shq(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
-/** Injectable sinks for runExplorer — the P3-101 proof driver runs the real
- * flow against a scratch workspace without touching the production state.json. */
+/** Injectable sinks for runExplorer — scripts/explorer-proof.ts (committed
+ * proof driver) runs the real flow against a hermetic scratch workspace and
+ * injects a no-op save so the production state.json is never touched. */
 export interface ExplorerIo {
   save?: (st: PilotState) => void;
+}
+
+/**
+ * Once-per-day guard: claim today's run in `state` and persist it BEFORE the
+ * agent spawns — a crash mid-run must not re-run it same-day. Returns false
+ * when today's run was already claimed (no save, no run). Extracted from
+ * runExplorer so the battery can pin the persistence property without
+ * spawning an agent.
+ */
+export function claimExplorerRun(state: PilotState, today: string, save: (st: PilotState) => void = saveState): boolean {
+  if (state.explorerLast === today) return false;
+  state.explorerLast = today;
+  save(state);
+  return true;
 }
 
 /**
@@ -148,9 +163,7 @@ export interface ExplorerIo {
  */
 export async function runExplorer(cfg: PilotConfig, state: PilotState, io: ExplorerIo = {}): Promise<void> {
   const today = nowLocalISO().slice(0, 10);
-  if (state.explorerLast === today) return;
-  state.explorerLast = today;
-  (io.save ?? saveState)(state); // persisted before the run: a crash must not re-run it same-day
+  if (!claimExplorerRun(state, today, io.save ?? saveState)) return;
   const shotsDir = explorerShotsDir();
   try {
     mkdirSync(shotsDir, { recursive: true });

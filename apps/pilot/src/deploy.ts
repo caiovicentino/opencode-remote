@@ -100,6 +100,22 @@ export function headDrifted(bootHead: string | undefined, headNow: string | unde
   );
 }
 
+/**
+ * P3-101 (round 2): the self-heal exit decision as a pure seam — the process
+ * may only exit for a HEAD drift at a FULLY idle moment (no slot running a
+ * pipeline, no deploy in flight). A refactor that drops either idle gate
+ * would silently enable mid-pipeline self-kills (killing builders/reviewers
+ * and burning the round), so both gates are pinned by the unit battery.
+ */
+export function shouldSelfHealReload(
+  runningSlots: number,
+  deployBusy: boolean,
+  bootHead: string | undefined,
+  headNow: string | undefined,
+): boolean {
+  return runningSlots === 0 && !deployBusy && headDrifted(bootHead, headNow);
+}
+
 /** P1-044: interval between soak health checks (the soak loop's clock). */
 export const SOAK_INTERVAL_SEC = 60;
 export const SOAK_INTERVAL_MS = SOAK_INTERVAL_SEC * 1000;

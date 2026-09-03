@@ -940,7 +940,15 @@ estado "daemon detectado, primeiro contato".
   e push com retry.
 - **Nunca bloqueia**: qualquer falha (sync, agente, push) é log-only — o
   explorer não participa do circuit breaker nem reprova merge. Guard diário
-  próprio em `state.json` (`explorerLast`), independente do `redteamLast`.
+  próprio em `state.json` (`explorerLast`), independente do `redteamLast`
+  (`claimExplorerRun` persiste o claim ANTES do spawn — crash no meio da run
+  não re-executa no mesmo dia).
+- **Driver de prova (`scripts/explorer-proof.ts`)**: roda o fluxo REAL do
+  explorer em sandbox hermético (bare origin + clone scratch jogáveis, save
+  injetado como spy) e imprime uma linha `PROOF` por assertion — eventos
+  `task:explorer` no events.jsonl, shots do dia em `shots/explorer/` e o
+  commit `pilot(explorer):` resolvido por SHA no origin jogável. Prova o
+  mecanismo de ponta a ponta sem tocar `state.json` de produção nem GitHub.
 - **Watchdog**: a pass bloqueia o loop por ~25min; desde o P1-035 o `runAgent`
   alimenta o self-watchdog num timer interno (60s) durante qualquer await de
   aux agent — o toque extra no callback de stdout do explorer é redundante,
