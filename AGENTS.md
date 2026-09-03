@@ -23,7 +23,10 @@ it; P2+ tasks go straight to the builder (P2-008). Cognition is tiered (P1-059):
 (`claude -p --model <m> --add-dir <workspace>`, prompt via stdin) with automatic tier-A fallback
 on spawn error/timeout/empty output/missing completion marker (`tierB-fallback` in the log),
 while builder/reviewers/scribe stay tier A (flash via `opencode run`) and the deterministic
-evidence gate is unchanged; round-1 review divergence — or all-unverifiable findings in ANY
+evidence gate is unchanged; reviewers tag every finding bullet [BLOCKING]/[NIT]
+(P1-103: only a verified BLOCKING finding rejects — a nit-only review approves,
+untagged fails closed) and the tier-B arbiter fires when a verified concern
+REPEATS between rounds — or all-unverifiable findings in ANY
 round (P1-073: fail-closed, never an effective approve) — triggers at
 most one tier-B escalation reviewer (`review-escalation` phase; without tier-B the
 REQUEST_CHANGES stands and the builder is told to restate it with verifiable path:line
