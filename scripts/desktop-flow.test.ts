@@ -1158,6 +1158,7 @@ try {
           "  if (u.pathname === '/session') return json([...recency, { id: 'ses-reentry-check', title: 'Reentry check' }, { id: 'ses-draft-a', title: 'Draft A' }, { id: 'ses-artifact-auto', title: 'Artifact auto' }, { id: 'ses-autofail', title: 'Auto fail' }]);",
           "  if (u.pathname === '/session/ses-reentry-check' || u.pathname === '/session/ses-draft-a' || u.pathname === '/session/ses-artifact-auto' || u.pathname === '/session/ses-autofail' || u.pathname === '/session/ses-thinking') return json({ id: u.pathname.split('/')[2], title: 'P1-089' });",
           "  if (u.pathname === '/session/ses-autofail/permissions/perm-fail') { res.writeHead(500); res.end('auto-approve always rejected'); return; }",
+          "  if (/^\\/session\\/ses-thinking\\/message$/.test(u.pathname)) { const t = ROWS.slice(); t[5] = { info: t[5].info, parts: [{ type: 'reasoning', text: 'Raciocinio persistido no historico.' }, ...(t[5].parts ?? [])] }; return json(t); }",
           "  if (/^\\/session\\/[^/]+\\/message$/.test(u.pathname)) return req.method === 'POST' ? json({ id: 'msg-fake' }) : json(ROWS);",
           "  if (u.pathname === '/__arm-perm') { armPerm = req.method === 'POST'; return json({ armed: armPerm }); }",
           "  if (u.pathname === '/permission') return json(armPerm ? [{ id: 'perm-fail', sessionID: 'ses-autofail', permission: 'bash' }] : []);",
@@ -1676,14 +1677,16 @@ try {
             ]);
             const openWhileThinking = await waitProbe(
               "P3-085: thinking block expanded while streaming reasoning",
-              "document.querySelector('.thinking-head')?.getAttribute('aria-expanded') ?? 'MISS'",
+              // the live block is the LAST .thinking in document order (the
+              // fake's history row also renders a collapsed block)
+              "[...document.querySelectorAll('.thinking-head')].pop()?.getAttribute('aria-expanded') ?? 'MISS'",
               (v) => v.trim() === '"true"',
               localEnv2,
             );
             if (openWhileThinking) {
               const headLabel = await waitProbe(
                 "P3-085: live thinking label rendered",
-                "document.querySelector('.thinking-head')?.textContent ?? ''",
+                "[...document.querySelectorAll('.thinking-head')].pop()?.textContent ?? ''",
                 (v) => /Pensando|Thinking/.test(v),
                 localEnv2,
               );
@@ -1697,7 +1700,7 @@ try {
                 ]);
                 const collapsed = await waitProbe(
                   "P3-085: block collapses to 'Pensou por Xs' when the answer starts",
-                  "document.querySelector('.thinking-head')?.getAttribute('aria-expanded') + '|' + (document.querySelector('.thinking-head')?.textContent ?? '')",
+                  "(() => { const h = [...document.querySelectorAll('.thinking-head')].pop(); return h?.getAttribute('aria-expanded') + '|' + (h?.textContent ?? ''); })()",
                   (v) => {
                     const s = JSON.parse(v.trim());
                     return s === "false|" || /^false\|Pensou por \d+s$/.test(s) || /^false\|Thought for \d+s$/.test(s);
@@ -1768,10 +1771,10 @@ try {
                     (v) => /false/.test(v),
                     localEnv2,
                   );
-                  run("P3-085: click the collapsed thinking head", ["click", ".thinking-head"], 15_000, localEnv2);
+                  run("P3-085: click the collapsed thinking head", ["ipc", "[...document.querySelectorAll('.thinking-head')].pop()?.click(); 'clicked'"], 15_000, localEnv2);
                   const reopened = await waitProbe(
                     "P3-085: click expands the reasoning text",
-                    "document.querySelector('.thinking')?.className + '|' + !!document.querySelector('.thinking.open .thinking-inner')",
+                    "(() => { const b = [...document.querySelectorAll('.thinking')].pop(); return b?.className + '|' + !!b?.querySelector('.thinking-inner'); })()",
                     (v) => {
                       const s = JSON.parse(v.trim());
                       return s.startsWith("thinking open|true");
@@ -1781,14 +1784,24 @@ try {
                   if (reopened) {
                     run("P3-085: 1440 evidence shot", ["shot", join(shotsDir, "P3-085-thinking-1440.png"), "1440", "900"], 15_000, localEnv2);
                     run("P3-085: 390 evidence shot", ["shot", join(shotsDir, "P3-085-thinking-390.png"), "390", "844"], 15_000, localEnv2);
+                    // the resize remounts the chat and refetches history — the
+                    // reasoning part served by the fake must render as a
+                    // COLLAPSED thinking block (history path, no timing)
+                    await waitProbe("P3-085: chat remounted at 390px", "!!document.querySelector('.messages')", (v) => /true/.test(v), localEnv2);
+                    await waitProbe(
+                      "P3-085: thinking block from history starts collapsed",
+                      "document.querySelector('.thinking-head')?.getAttribute('aria-expanded') ?? 'MISS'",
+                      (v) => v.trim() === '"false"',
+                      localEnv2,
+                    );
                   }
+                }
+              }
             }
             // restore the session context: the following beats emit events for
             // AUTO_SES and expect its chat on screen after their resize
             run("P3-085: return to the artifact session", ["ipc", `location.hash = '#/session/${AUTO_SES}'`], 15_000, localEnv2);
             await waitProbe("P3-085: artifact session chat rendered again", "!!document.querySelector('.messages')", (v) => /true/.test(v), localEnv2);
-          }
-            }
           }
 
           // --- P2-097: oversized artifact shows the friendly 413 error ----------
