@@ -347,7 +347,10 @@ export async function maintainExperienceWorkspace(
   );
   let committed = false;
   if (maint.changed) {
-    committed = result !== "failed";
+    // audit integrity: "refused" means the landing was REJECTED by the guard
+    // (potential tampering) and "failed" means unconfirmed — only a confirmed
+    // merge may be reported as a commit.
+    committed = result === "pushed";
     if (result === "refused") {
       log("warn", "aux push refused — experience diff not limited to docs/EXPERIENCE.md");
     }

@@ -37,6 +37,9 @@ export function corpusSlug(cmd: string): string {
   return cmd.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "");
 }
 
+/** Exact filename shape appendCorpusSample writes (`<seq>-<label>.txt`). */
+export const CORPUS_SAMPLE_RE = /^\d+-[A-Za-z0-9.-]+\.txt$/;
+
 /**
  * Mask machine-specific text before a real output enters the repo: usernames
  * in absolute paths and any long hex blob (defensive secret guard). Matching
@@ -134,9 +137,14 @@ export async function captureGateCorpus(
   const landed = await landMetaCommit(ws, io, {
     files: ["apps/pilot/src/__fixtures__/gate-corpus"],
     message: `pilot(corpus): gate samples from ${id}`,
-    // the corpus may legitimately grow 1-3 files per capture — a prefix guard
-    // instead of the exact single-file allowlist
-    guard: (names) => mayPushUnderDir(names, "apps/pilot/src/__fixtures__/gate-corpus"),
+    // the corpus may legitimately grow 1-3 files per capture (one per evidence
+    // command) — a prefix guard capped at that count and restricted to the
+    // exact sample filenames appendCorpusSample writes
+    guard: (names) =>
+      mayPushUnderDir(names, "apps/pilot/src/__fixtures__/gate-corpus", {
+        maxFiles: CORPUS_COMMANDS.length,
+        fileName: CORPUS_SAMPLE_RE,
+      }),
     apply: () => {
       // git clean wipes the untracked samples on a retry — re-append every round;
       // the dedupe in appendCorpusSample compares against the committed corpus

@@ -46,7 +46,7 @@ import {
   TASK_COST_CAP,
   tokensSql,
 } from "../apps/pilot/src/costs";
-import { CORPUS_COMMANDS, appendCorpusSample, captureGateCorpus, corpusSlug, loadGateCorpus, sanitizeForCorpus } from "../apps/pilot/src/gate-corpus";
+import { CORPUS_COMMANDS, CORPUS_SAMPLE_RE, appendCorpusSample, captureGateCorpus, corpusSlug, loadGateCorpus, sanitizeForCorpus } from "../apps/pilot/src/gate-corpus";
 import {
   builderPrompt,
   codeChanges,
@@ -1043,11 +1043,79 @@ function ghMergingIo(realIo: { exec: (cmd: string) => { ok: boolean; output: str
       apply: () => ({ action: "apply" }),
     });
     check("landMetaCommit: auto-merge armed but unconfirmed ⇒ honest failure, state not cleared", queued === "failed");
+    // R4/R5 review: arm-phase interleaving — the arm command only QUEUES the
+    // merge, so the landing must (a) try --auto first, (b) fall back to the
+    // immediate squash when --auto is refused, and (c) keep polling `pr view`
+    // with sleeps in between, reporting "pushed" only when GitHub itself
+    // reports MERGED (never on the arm command's own success).
+    {
+      const ghCalls: string[] = [];
+      let views = 0;
+      let sleeps = 0;
+      const interleaved: MetaPushIo = {
+        exec: (cmd) => {
+          if (cmd.startsWith("gh ")) {
+            ghCalls.push(cmd);
+            if (cmd.includes("pr view")) {
+              views++;
+              // initial OPEN (openMetaPr), then poll 0 OPEN, poll 1 MERGED
+              return { ok: true, output: JSON.stringify({ state: views >= 3 ? "MERGED" : "OPEN", url: "fake" }) };
+            }
+            if (cmd.includes("pr merge")) {
+              // --auto refused (branch protection not configured yet)
+              if (cmd.includes("--auto")) return { ok: false, output: "gh: no protection" };
+              return { ok: true, output: "" }; // immediate squash accepted
+            }
+            return { ok: true, output: "" };
+          }
+          if (cmd.startsWith("git diff")) return { ok: true, output: "BACKLOG.md\n" };
+          if (cmd.startsWith("git rev-parse")) return { ok: true, output: `${"d".repeat(40)}\n` };
+          if (cmd.startsWith("git merge-base")) return { ok: true, output: "" };
+          return { ok: true, output: "" };
+        },
+        sleep: () => {
+          sleeps++;
+          return Promise.resolve();
+        },
+      };
+      const interl = await landMetaCommit(dir, interleaved, {
+        files: ["BACKLOG.md"],
+        message: "arm-phase interleaving",
+        guardFile: "BACKLOG.md",
+        apply: () => ({ action: "apply" }),
+      });
+      const ghShape = ghCalls.map((c) =>
+        c.includes("pr view") ? "view" : c.includes("--auto") ? "auto" : "merge",
+      );
+      check("landMetaCommit: arm-phase interleaving lands only on confirmed MERGED", interl === "pushed");
+      check(
+        "landMetaCommit: arm order is view → auto → immediate squash → confirm polls",
+        ghShape[0] === "view" && ghShape[1] === "auto" && ghShape[2] === "merge" && ghShape.slice(3).every((s) => s === "view"),
+      );
+      check(
+        "landMetaCommit: confirmation polls interleave with sleeps until MERGED (never trusts the arm)",
+        views === 3 && sleeps === 1,
+      );
+    }
 
     // dir-prefix guard (corpus shape): several files inside the dir are allowed
     check("mayPushUnderDir: every file under the dir passes", mayPushUnderDir("d/a.txt\nd/b.txt\n", "d"));
     check("mayPushUnderDir: file outside the dir refuses", mayPushUnderDir("d/a.txt\nx.sh\n", "d") === false);
     check("mayPushUnderDir: empty diff refuses", mayPushUnderDir("", "d") === false);
+    // R5 review: the corpus guard is the one multi-file path into main — the
+    // landing cap and the appendCorpusSample filename shape must be enforced,
+    // not just the directory prefix (arbitrary planted files refuse).
+    const corpusFiles = [
+      "apps/pilot/src/__fixtures__/gate-corpus/npm-run-typecheck-silent/1-abc1234.txt",
+      "apps/pilot/src/__fixtures__/gate-corpus/npm-run-test-unit-silent/7-def5678.txt",
+    ].join("\n");
+    const corpusOpts = { maxFiles: 3, fileName: CORPUS_SAMPLE_RE };
+    check("mayPushUnderDir: real sample filenames within the cap pass", mayPushUnderDir(corpusFiles + "\n", "apps/pilot/src/__fixtures__/gate-corpus", corpusOpts));
+    check("mayPushUnderDir: over the per-landing file cap refuses", mayPushUnderDir(`${corpusFiles}\napps/pilot/src/__fixtures__/gate-corpus/npm-run-build-silent/2-abc1234.txt\n`, "apps/pilot/src/__fixtures__/gate-corpus", { ...corpusOpts, maxFiles: 2 }) === false);
+    check(
+      "mayPushUnderDir: filename not matching the sample shape refuses",
+      mayPushUnderDir("apps/pilot/src/__fixtures__/gate-corpus/npm-run-typecheck-silent/planted.sh\n", "apps/pilot/src/__fixtures__/gate-corpus", corpusOpts) === false,
+    );
 
     // real-git smoke: landing lands the commit on origin/pilot/meta with gh faked
     const realIo = metaIo(dir);
@@ -3559,8 +3627,8 @@ check("experience: isHarnessLesson matches process vocabulary", isHarnessLesson(
     (level, msg) => logs2.push(`${level}:${msg}`),
   );
   check(
-    "expmaint: refused push never throws — archive lands, guard stamps",
-    logs2.some((l) => l.includes("aux push refused")) && landed2.length === 1 && st2.expMaintLast === "2026-09-03" && res2.committed,
+    "expmaint: refused push never throws — archive lands, guard stamps, committed stays honest",
+    logs2.some((l) => l.includes("aux push refused")) && landed2.length === 1 && st2.expMaintLast === "2026-09-03" && res2.committed === false,
   );
   rmSync(dir2, { recursive: true, force: true });
 

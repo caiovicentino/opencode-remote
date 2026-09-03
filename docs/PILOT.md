@@ -770,8 +770,9 @@ outputs reais** dos três comandos de evidência:
   gatekeeper grava as próprias saídas re-executadas (sem rodar
   npm de novo) via `captureGateCorpus` e pousa `pilot(corpus): N gate
   sample(s) from <ID>` via **PR `pilot/meta`** (P1-076) — mesmo fluxo de retry
-  do scribe, com guard por prefixo do diretório do corpus (1-3 amostras por
-  capture). Amostra
+  do scribe, com guard por prefixo do diretório do corpus, teto de 3 arquivos
+  por capture e formato exato de filename de amostra (`<seq>-<label>.txt`;
+  qualquer coisa fora desse formato recusa o push). Amostra
   idêntica à última é descartada (typecheck vazio não acumula arquivo).
 - **Correção que o corpus exigiu**: `normalizeEvidenceLine` agora mascara
   timestamps ISO-8601 (com data/milis/offset), contadores de processo

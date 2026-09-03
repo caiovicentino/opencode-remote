@@ -1,4 +1,5 @@
 import { exec } from "./runner";
+import { basename } from "node:path";
 
 /**
  * P1-076 — meta commits land via the long-lived `pilot/meta` branch + auto-merge
@@ -32,14 +33,25 @@ export function mayPush(nameOnlyOutput: string, allowed: string): boolean {
 /**
  * Prefix guard for flows that legitimately touch several files inside one
  * directory (the golden corpus grows up to three samples per capture). Every
- * changed file must live under `dir` and at least one file must change.
+ * changed file must live under `dir`, at least one file must change, and —
+ * when provided — the per-landing file count is capped at `maxFiles` and every
+ * BASENAME must match `fileName` (the corpus sample shape `<seq>-<label>.txt`,
+ * written by appendCorpusSample). Without a cap/pattern this guard is the one
+ * path that would carry arbitrary planted workspace files into main.
  */
-export function mayPushUnderDir(nameOnlyOutput: string, dir: string): boolean {
+export function mayPushUnderDir(
+  nameOnlyOutput: string,
+  dir: string,
+  opts: { maxFiles?: number; fileName?: RegExp } = {},
+): boolean {
   const files = nameOnlyOutput
     .split("\n")
     .map((l) => l.trim())
     .filter(Boolean);
-  return files.length > 0 && files.every((f) => f.startsWith(`${dir}/`));
+  if (files.length === 0 || !files.every((f) => f.startsWith(`${dir}/`))) return false;
+  if (opts.maxFiles !== undefined && files.length > opts.maxFiles) return false;
+  if (opts.fileName && !files.every((f) => opts.fileName!.test(basename(f)))) return false;
+  return true;
 }
 
 /** Injectable sinks for landMetaCommit (unit battery pins the semantics). */
