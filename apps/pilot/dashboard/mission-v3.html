@@ -981,7 +981,7 @@ function mockTick() {
     const s = SCRIPT[mockIdx++];
     if (s.sys === "offline") setOffline(true, 8);
     else if (s.sys === "online") setOffline(false);
-    else if (s.sys === "loop") { mockStart = now; mockIdx = 0; mockLoops++; world.tasks = world.deploys = world.failures = world.merges = 0; } // a new day
+    else if (s.sys === "loop") { mockStart = now; mockIdx = 0; mockLoops++; world.tasks = world.deploys = world.failures = world.merges = 0; renderHud(); break; } // a new day — restart cleanly on the next frame (stale t would re-consume the whole script forever)
     else apply({ ts: new Date().toISOString(), ...s.ev }, false);
     renderHud();
   }
