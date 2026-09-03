@@ -18,7 +18,7 @@
  * Usage: node --import tsx/esm scripts/explorer-proof.ts
  * Prints a PROOF line per assertion and exits non-zero on any failure.
  */
-import { cpSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -86,6 +86,9 @@ for (const d of ["apps/web/dist", "apps/desktop/dist-electron"]) {
 const fakeGhBin = join(tmp, "bin");
 const fakeGhState = join(tmp, "fake-gh-merged");
 const fakeGhCreated = join(tmp, "fake-gh-created");
+// P2-105: mkdtemp only creates the root — without this the shim write ENOENTs
+// and the driver crashes before the first assertion (the repro never ran).
+mkdirSync(fakeGhBin, { recursive: true });
 writeFileSync(
   join(fakeGhBin, "gh"),
   `#!/bin/bash\nstate=${shq(fakeGhState)}\ncreated=${shq(fakeGhCreated)}\nws=${shq(ws)}\ncase "$1 $2" in\n  "pr view")\n    if [ ! -f "$created" ]; then echo "no pull requests" >&2; exit 1; fi\n    head=$(git -C "$ws" rev-parse origin/pilot/meta 2>/dev/null || echo "")\n    if [ -f "$state" ]; then echo "{\\"state\\":\\"MERGED\\",\\"headRefOid\\":\\"$head\\"}"; else echo "{\\"state\\":\\"OPEN\\",\\"headRefOid\\":\\"$head\\"}"; fi\n    ;;\n  "pr create") touch "$created" ;;\n  "pr merge") touch "$state" ;;\n  *) : ;;\nesac\n`,
