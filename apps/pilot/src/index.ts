@@ -752,7 +752,14 @@ async function blockAndPush(cfg: PilotConfig, st: PilotState, task: Task, attemp
     files: ["BACKLOG.md"],
     message: `pilot(${task.id}): block after ${attempts} failed attempts`,
     guardFile: "BACKLOG.md",
-    apply: () => (blockTask(cfg.workspace, task.id, summary) ? { action: "apply" } : { action: "abort" }),
+    // R6: "already blocked" is the desired state present (a queued auto-merge
+    // from a previous cycle landed between the retries) — the landing must
+    // converge as success so the attempts counter is cleared and the P2-031
+    // lesson is recorded exactly once, never reported as an abort-forever.
+    apply: () => {
+      const r = blockTask(cfg.workspace, task.id, summary);
+      return r === "applied" ? { action: "apply" } : r === "noop" ? { action: "noop" } : { action: "abort" };
+    },
   });
   if (push === "pushed") {
     delete st.taskAttempts[task.id];

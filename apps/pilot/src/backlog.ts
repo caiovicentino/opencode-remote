@@ -104,18 +104,22 @@ export function doneTaskIds(md: string): Set<string> {
 /**
  * P1-014 stop-loss: move a task line from ## Ready to a `## Blocked` section
  * (created before ## Done, or at the end of the file) with a one-line summary
- * of the last findings. Idempotent: returns false when the line is missing or
- * already under ## Blocked.
+ * of the last findings. Tri-state (R6): "applied" moves the line, "noop" means
+ * the task is ALREADY under ## Blocked — the desired state is present, so a
+ * meta-landing retry after a queued merge converges as success — and "missing"
+ * means the line does not exist at all (a real failure).
  */
-export function blockTask(repoDir: string, id: string, findings: string): boolean {
+export type BacklogEditResult = "applied" | "noop" | "missing";
+
+export function blockTask(repoDir: string, id: string, findings: string): BacklogEditResult {
   const p = join(repoDir, BACKLOG);
   const md = readFileSync(p, "utf8");
   const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const re = new RegExp(`^(- \\[ \\] \\(${escaped}\\).*)$`, "m");
   const match = re.exec(md);
-  if (!match) return false;
+  if (!match) return "missing";
   const blockedAt = md.search(/^## Blocked$/m);
-  if (blockedAt >= 0 && match.index > blockedAt) return false; // already blocked
+  if (blockedAt >= 0 && match.index > blockedAt) return "noop"; // already blocked
   const summary = findings.replace(/\s+/g, " ").trim().slice(0, 200);
   const entry = `${match[1]} — ${summary}`;
   const removed = md.replace(re, "").replace(/\n{3,}/g, "\n\n");
@@ -123,7 +127,7 @@ export function blockTask(repoDir: string, id: string, findings: string): boolea
     ? removed.replace(/^## Done$/m, `## Blocked\n${entry}\n\n## Done`)
     : `${removed.replace(/\s*$/, "")}\n\n## Blocked\n${entry}\n`;
   writeFileSync(p, updated);
-  return true;
+  return "applied";
 }
 
 /** Add a task at the top of ## Ready (used by redteam findings). */
@@ -193,15 +197,17 @@ export function parseAuxTaskLines(output: string, max = 5): string[] {
 
 /**
  * Append validated lines to the END of ## Ready (before the next section).
- * Rejects ids already present anywhere in the current file. Returns false when
- * nothing was appended — the git state stays untouched (no empty commits).
+ * Rejects ids already present anywhere in the current file. Tri-state (R6):
+ * "noop" when every id is already present — the desired state is present, so
+ * a meta-landing retry after a queued merge converges as success instead of
+ * aborting; "missing" when there are no lines or no ## Ready section at all.
  */
-export function appendReadyLines(repoDir: string, lines: string[]): boolean {
-  if (!lines.length) return false;
+export function appendReadyLines(repoDir: string, lines: string[]): BacklogEditResult {
+  if (!lines.length) return "missing";
   const p = join(repoDir, BACKLOG);
   const md = readFileSync(p, "utf8");
   const readyAt = md.search(/^## Ready$/m);
-  if (readyAt < 0) return false;
+  if (readyAt < 0) return "missing";
   const afterReady = md.slice(readyAt + 1);
   const nextAt = afterReady.search(/^## /m);
   const insertAt = nextAt < 0 ? md.length : readyAt + 1 + nextAt;
@@ -213,14 +219,14 @@ export function appendReadyLines(repoDir: string, lines: string[]): boolean {
     taken.add(id);
     return true;
   });
-  if (!fresh.length) return false;
+  if (!fresh.length) return "noop";
   const updated =
     md.slice(0, insertAt).replace(/\s*$/, "\n") +
     fresh.join("\n") +
     "\n\n" +
     md.slice(insertAt).replace(/^\n+/, "");
   writeFileSync(p, updated);
-  return true;
+  return "applied";
 }
 
 /** Injectable sinks for appendCommitAndPush (unit battery pins the semantics). */
@@ -260,7 +266,13 @@ export async function appendCommitAndPush(
       files: [BACKLOG],
       message,
       guardFile: BACKLOG,
-      apply: () => (appendReadyLines(repoDir, lines) ? { action: "apply" } : { action: "abort" }),
+      // R6: all-duplicates is the desired state already present — a retry
+      // after a queued auto-merge finally lands must converge as success
+      // (clearing the P1-037 pending store), not abort forever.
+      apply: () => {
+        const r = appendReadyLines(repoDir, lines);
+        return r === "applied" ? { action: "apply" } : r === "noop" ? { action: "noop" } : { action: "abort" };
+      },
     },
     attempts,
   );

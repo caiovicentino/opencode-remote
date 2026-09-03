@@ -69,17 +69,20 @@ for (const d of ["apps/web/dist", "apps/desktop/dist-electron"]) {
   if (existsSync(join(REPO, d))) cpSync(join(REPO, d), join(ws, d), { recursive: true });
 }
 
-// Fake gh shim (P1-076 R4): landings go through the pilot/meta PR whose merge
-// is only confirmed via `gh pr view` — against a throwaway local origin the
-// real gh can never work, so the shim emulates the PR lifecycle (OPEN until a
-// merge is armed, then MERGED). On PATH it covers both the agent-phase landing
-// and the deterministic beat below; a hostile gh call inside the scratch stays
-// harmless by construction.
+// Fake gh shim (P1-076 R4/R6): landings go through the pilot/meta PR whose
+// merge is only confirmed via `gh pr view` — against a throwaway local origin
+// the real gh can never work, so the shim emulates the full PR lifecycle: no
+// PR until `pr create`, OPEN with the real branch head as headRefOid until a
+// merge is armed, then MERGED with the same head (the landing only reports
+// success when the merged head is its own commit). On PATH it covers both the
+// agent-phase landing and the deterministic beat below; a hostile gh call
+// inside the scratch stays harmless by construction.
 const fakeGhBin = join(tmp, "bin");
 const fakeGhState = join(tmp, "fake-gh-merged");
+const fakeGhCreated = join(tmp, "fake-gh-created");
 writeFileSync(
   join(fakeGhBin, "gh"),
-  `#!/bin/bash\nstate=${shq(fakeGhState)}\ncase "$1 $2" in\n  "pr view")\n    if [ -f "$state" ]; then echo '{"state":"MERGED"}'; else echo '{"state":"OPEN"}'; fi\n    ;;\n  "pr merge") touch "$state" ;;\n  *) : ;;\nesac\n`,
+  `#!/bin/bash\nstate=${shq(fakeGhState)}\ncreated=${shq(fakeGhCreated)}\nws=${shq(ws)}\ncase "$1 $2" in\n  "pr view")\n    if [ ! -f "$created" ]; then echo "no pull requests" >&2; exit 1; fi\n    head=$(git -C "$ws" rev-parse origin/pilot/meta 2>/dev/null || echo "")\n    if [ -f "$state" ]; then echo "{\\"state\\":\\"MERGED\\",\\"headRefOid\\":\\"$head\\"}"; else echo "{\\"state\\":\\"OPEN\\",\\"headRefOid\\":\\"$head\\"}"; fi\n    ;;\n  "pr create") touch "$created" ;;\n  "pr merge") touch "$state" ;;\n  *) : ;;\nesac\n`,
   { mode: 0o755 },
 );
 process.env.PATH = `${fakeGhBin}:${process.env.PATH ?? ""}`;

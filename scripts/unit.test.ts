@@ -710,7 +710,7 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
     check("breaker: attempts tracked in state", st.taskAttempts["T-001"] === 4);
     check("breaker: other task unaffected", recordTaskFailure(st, "T-002", 4) === false);
 
-    check("blockTask moves the Ready line under ## Blocked", blockTask(dir, "T-001", "max review rounds reached — findings:\n- bad\n- thing") === true);
+    check("blockTask moves the Ready line under ## Blocked", blockTask(dir, "T-001", "max review rounds reached — findings:\n- bad\n- thing") === "applied");
     const md = readFileSync(join(dir, "BACKLOG.md"), "utf8");
     const blockedChunk = md.split("\n## Blocked\n")[1] ?? "";
     check(
@@ -719,9 +719,9 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
     );
     check("blocked section sits before ## Done", md.indexOf("## Blocked") < md.indexOf("## Done"));
     check("blocked task leaves the Ready queue (no solo reschedule)", loadBacklog(dir).map((t) => t.id).join(",") === "T-002");
-    check("blockTask is idempotent", blockTask(dir, "T-001", "again") === false && (md.match(/\(T-001\)/g) ?? []).length === 1);
-    check("blockTask unknown id returns false", blockTask(dir, "T-999", "x") === false);
-    check("blockTask escapes the id regex", blockTask(dir, "T-001) [P1] x.*", "y") === false);
+    check("blockTask is idempotent", blockTask(dir, "T-001", "again") === "noop" && (md.match(/\(T-001\)/g) ?? []).length === 1);
+    check("blockTask unknown id returns false", blockTask(dir, "T-999", "x") === "missing");
+    check("blockTask escapes the id regex", blockTask(dir, "T-001) [P1] x.*", "y") === "missing");
 
     // reset on gate pass: deleting the counter gives a fresh allowance
     delete st.taskAttempts["T-001"];
@@ -780,7 +780,7 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
       ["# BACKLOG", "", "## Ready", "", "- [ ] (P2-900) [P2] Existing — spec: x (area: ui)", "", "## Done", "- [x] (P2-899) [P2] Old — done"].join("\n"),
     );
     const pristineBase = readFileSync(join(dir, "BACKLOG.md"), "utf8");
-    check("appendReadyLines: appends at the end of ## Ready", appendReadyLines(dir, [okLine, okLine2]));
+    check("appendReadyLines: appends at the end of ## Ready", appendReadyLines(dir, [okLine, okLine2]) === "applied");
     let md = readFileSync(join(dir, "BACKLOG.md"), "utf8");
     const readyChunk = md.split("\n## Ready\n")[1]?.split("\n## Done")[0] ?? "";
     check(
@@ -788,16 +788,17 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
       readyChunk.includes("(P2-901)") && readyChunk.includes("(P2-902)") && readyChunk.indexOf("(P2-900)") < readyChunk.indexOf("(P2-901)"),
     );
     check("appendReadyLines: Blocked/Done untouched", md.indexOf("(P2-899)") > md.indexOf("(P2-902)"));
-    check("appendReadyLines: duplicate id refused", appendReadyLines(dir, ["- [ ] (P2-901) [P2] Dup — spec: x (area: ui)"]) === false);
+    check("appendReadyLines: duplicate id refused", appendReadyLines(dir, ["- [ ] (P2-901) [P2] Dup — spec: x (area: ui)"]) === "noop");
     md = readFileSync(join(dir, "BACKLOG.md"), "utf8");
     check("appendReadyLines: duplicate did not double-insert", (md.match(/\(P2-901\)/g) ?? []).length === 1);
-    check("appendReadyLines: empty input is a no-op", appendReadyLines(dir, []) === false);
+    check("appendReadyLines: empty input is a no-op", appendReadyLines(dir, []) === "missing");
 
     // appendCommitAndPush with fake git: guard refusal must never push, retries re-append
     let pristine = pristineBase;
     let pushCalls = 0;
     let diffBehavior = "BACKLOG.md\n";
     let sleeps = 0;
+    let prCreated = false;
     let prMerged = false;
     const fakeIo = (pushFails = 0) => ({
       exec: (cmd: string) => {
@@ -811,8 +812,16 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
         }
         // R4: the landing verifies our sha (40-hex) and confirms the merge
         if (cmd.startsWith("git rev-parse")) return { ok: true, output: `${"c".repeat(40)}\n` };
+        // R6: no PR exists until the landing creates one; after that the view
+        // carries headRefOid = the landing's own push (fake rev-parse sha)
         if (cmd.startsWith("gh ") && cmd.includes("pr view"))
-          return { ok: true, output: JSON.stringify({ state: prMerged ? "MERGED" : "OPEN", url: "fake" }) };
+          return prCreated
+            ? { ok: true, output: JSON.stringify({ state: prMerged ? "MERGED" : "OPEN", headRefOid: "c".repeat(40) }) }
+            : { ok: false, output: "no pull requests" };
+        if (cmd.startsWith("gh ") && cmd.includes("pr create")) {
+          prCreated = true;
+          return { ok: true, output: "" };
+        }
         if (cmd.startsWith("gh ") && cmd.includes("pr merge")) {
           prMerged = true;
           return { ok: true, output: "" };
@@ -842,10 +851,9 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
 
     pristine = pristineBase.replace("(P2-900)", "(P2-901)"); // line already landed
     pushCalls = 0;
-    prMerged = false;
     check(
-      "appendCommitAndPush: all-duplicate lines land nothing",
-      (await appendCommitAndPush(dir, [okLine], "m4", fakeIo())) === "failed" && pushCalls === 0,
+      "appendCommitAndPush: all-duplicate lines converge as a noop success (desired state present)",
+      (await appendCommitAndPush(dir, [okLine], "m4", fakeIo())) === "pushed" && pushCalls === 0,
     );
 
     // real-git smoke (P3-052 lesson): bare remote + apostrophed commit message.
@@ -896,16 +904,26 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
 }
 
 /**
- * Fake GitHub for landing smokes (R4 merge confirmation): `pr view` reports
- * OPEN until a `pr merge` succeeds, then MERGED — a landing may only report
- * "pushed" once the squash merge is confirmed.
+ * Fake GitHub for landing smokes (R4/R6 merge confirmation): the PR only
+ * exists after `pr create`, and `pr view` reports OPEN until a `pr merge`
+ * succeeds, then MERGED with the REAL branch head as headRefOid — a landing
+ * may only report "pushed" once the squash merge is confirmed with its own
+ * commit as the merged head.
  */
 function ghMergingIo(realIo: { exec: (cmd: string) => { ok: boolean; output: string } }) {
+  let exists = false;
   let state = "OPEN";
   return {
     exec: (cmd: string) => {
       if (cmd.startsWith("gh ")) {
-        if (cmd.includes("pr view")) return { ok: true, output: JSON.stringify({ state, url: "fake" }) };
+        if (cmd.includes("pr view")) {
+          if (!exists) return { ok: false, output: "no pull requests" };
+          return { ok: true, output: JSON.stringify({ state, headRefOid: realIo.exec(`git rev-parse origin/${META_BRANCH}`).output.trim() }) };
+        }
+        if (cmd.includes("pr create")) {
+          exists = true;
+          return { ok: true, output: "" };
+        }
         if (cmd.includes("pr merge")) {
           state = "MERGED";
           return { ok: true, output: "" };
@@ -937,6 +955,7 @@ function ghMergingIo(realIo: { exec: (cmd: string) => { ok: boolean; output: str
       exec: (cmd) => {
         calls.push(cmd);
         if (cmd.startsWith("git diff")) return { ok: true, output: "BACKLOG.md\nevil.sh\n" };
+        if (cmd.startsWith("gh ")) return { ok: false, output: "gh unavailable" };
         return baseIo.exec(cmd);
       },
       sleep: () => Promise.resolve(),
@@ -960,7 +979,7 @@ function ghMergingIo(realIo: { exec: (cmd: string) => { ok: boolean; output: str
       "landMetaCommit: guard refusal ⇒ zero pilot/meta pushes",
       !calls.some((c) => c.startsWith("git push")),
     );
-    check("landMetaCommit: refused diff never armed a PR", !calls.some((c) => c.startsWith("gh ")));
+    check("landMetaCommit: refused diff never armed a PR", !calls.some((c) => c.startsWith("gh ") && (c.includes("pr create") || c.includes("pr merge"))));
 
     // noop vs abort semantics
     let applied = 0;
@@ -1025,14 +1044,24 @@ function ghMergingIo(realIo: { exec: (cmd: string) => { ok: boolean; output: str
     // R4 review (arm-vs-merge TOCTOU): an armed --auto that never confirms the
     // merge is an honest failure — caller state (P1-037 pending refill) must
     // not be cleared on an unconfirmed landing.
+    let queuedPrKnown = false;
     const neverMerged: MetaPushIo = {
       exec: (cmd) => {
         if (cmd.startsWith("git diff")) return { ok: true, output: "BACKLOG.md\n" };
         if (cmd.startsWith("git rev-parse")) return { ok: true, output: `${"b".repeat(40)}\n` };
         if (cmd.startsWith("git merge-base")) return { ok: true, output: "" };
-        if (cmd.startsWith("gh ") && cmd.includes("pr view"))
-          return { ok: true, output: JSON.stringify({ state: "OPEN", url: "fake" }) };
-        return { ok: true, output: "" }; // gh pr merge "succeeds" but stays queued forever
+        if (cmd.startsWith("gh ")) {
+          if (cmd.includes("pr view"))
+            return queuedPrKnown
+              ? { ok: true, output: JSON.stringify({ state: "OPEN", headRefOid: "b".repeat(40) }) }
+              : { ok: false, output: "no pull requests" };
+          if (cmd.includes("pr create")) {
+            queuedPrKnown = true;
+            return { ok: true, output: "" };
+          }
+          return { ok: true, output: "" }; // gh pr merge "succeeds" but stays queued forever
+        }
+        return { ok: true, output: "" };
       },
       sleep: () => Promise.resolve(),
     };
@@ -1047,19 +1076,27 @@ function ghMergingIo(realIo: { exec: (cmd: string) => { ok: boolean; output: str
     // merge, so the landing must (a) try --auto first, (b) fall back to the
     // immediate squash when --auto is refused, and (c) keep polling `pr view`
     // with sleeps in between, reporting "pushed" only when GitHub itself
-    // reports MERGED (never on the arm command's own success).
+    // reports MERGED with our commit as the head (never on the arm command's
+    // own success).
     {
       const ghCalls: string[] = [];
       let views = 0;
       let sleeps = 0;
+      let prKnown = false;
+      const ourSha = "d".repeat(40);
       const interleaved: MetaPushIo = {
         exec: (cmd) => {
           if (cmd.startsWith("gh ")) {
             ghCalls.push(cmd);
             if (cmd.includes("pr view")) {
               views++;
-              // initial OPEN (openMetaPr), then poll 0 OPEN, poll 1 MERGED
-              return { ok: true, output: JSON.stringify({ state: views >= 3 ? "MERGED" : "OPEN", url: "fake" }) };
+              if (!prKnown) return { ok: false, output: "no pull requests" };
+              // poll 0 OPEN (checks pending), poll 1 MERGED with our head
+              return { ok: true, output: JSON.stringify({ state: views >= 4 ? "MERGED" : "OPEN", headRefOid: ourSha }) };
+            }
+            if (cmd.includes("pr create")) {
+              prKnown = true;
+              return { ok: true, output: "" };
             }
             if (cmd.includes("pr merge")) {
               // --auto refused (branch protection not configured yet)
@@ -1069,7 +1106,7 @@ function ghMergingIo(realIo: { exec: (cmd: string) => { ok: boolean; output: str
             return { ok: true, output: "" };
           }
           if (cmd.startsWith("git diff")) return { ok: true, output: "BACKLOG.md\n" };
-          if (cmd.startsWith("git rev-parse")) return { ok: true, output: `${"d".repeat(40)}\n` };
+          if (cmd.startsWith("git rev-parse")) return { ok: true, output: `${ourSha}\n` };
           if (cmd.startsWith("git merge-base")) return { ok: true, output: "" };
           return { ok: true, output: "" };
         },
@@ -1085,17 +1122,162 @@ function ghMergingIo(realIo: { exec: (cmd: string) => { ok: boolean; output: str
         apply: () => ({ action: "apply" }),
       });
       const ghShape = ghCalls.map((c) =>
-        c.includes("pr view") ? "view" : c.includes("--auto") ? "auto" : "merge",
+        c.includes("pr view") ? "view" : c.includes("pr create") ? "create" : c.includes("--auto") ? "auto" : "merge",
       );
       check("landMetaCommit: arm-phase interleaving lands only on confirmed MERGED", interl === "pushed");
       check(
-        "landMetaCommit: arm order is view → auto → immediate squash → confirm polls",
-        ghShape[0] === "view" && ghShape[1] === "auto" && ghShape[2] === "merge" && ghShape.slice(3).every((s) => s === "view"),
+        "landMetaCommit: arm order is view → create → auto → immediate squash → confirm polls",
+        ghShape[0] === "view" && ghShape[1] === "view" && ghShape[2] === "create" && ghShape[3] === "auto" && ghShape[4] === "merge" && ghShape.slice(5).every((s) => s === "view"),
       );
       check(
         "landMetaCommit: confirmation polls interleave with sleeps until MERGED (never trusts the arm)",
-        views === 3 && sleeps === 1,
+        views === 4 && sleeps === 1,
       );
+    }
+
+    // R6 review: the drop-during-arm window — a peer force-push between our
+    // ancestry check and the deferred squash replaces the PR head; a MERGED
+    // confirmation whose headRefOid is NOT our sha is an honest failure.
+    {
+      let pushes = 0;
+      let armViews = 0;
+      let prKnown = false;
+      const ourSha = "b".repeat(40);
+      const peerSha = "e".repeat(40);
+      const dropArm: MetaPushIo = {
+        exec: (cmd) => {
+          if (cmd.startsWith("git diff")) return { ok: true, output: "BACKLOG.md\n" };
+          if (cmd.startsWith("git rev-parse")) return { ok: true, output: `${ourSha}\n` };
+          if (cmd.startsWith("git merge-base")) return { ok: true, output: "" };
+          if (cmd.startsWith("git push")) pushes++;
+          if (cmd.startsWith("gh ")) {
+            if (cmd.includes("pr view")) {
+              armViews++;
+              if (!prKnown) return { ok: false, output: "no pull requests" };
+              // after arming: the peer replaces the head and ITS content
+              // merges — MERGED without our sha must never read as success
+              return {
+                ok: true,
+                output: JSON.stringify({ state: armViews >= 3 ? "MERGED" : "OPEN", headRefOid: armViews >= 3 ? peerSha : ourSha }),
+              };
+            }
+            if (cmd.includes("pr create")) {
+              prKnown = true;
+              return { ok: true, output: "" };
+            }
+            return { ok: true, output: "" }; // pr merge --auto armed
+          }
+          return { ok: true, output: "" };
+        },
+        sleep: () => Promise.resolve(),
+      };
+      const droppedInArm = await landMetaCommit(dir, dropArm, {
+        files: ["BACKLOG.md"],
+        message: "drop-during-arm",
+        guardFile: "BACKLOG.md",
+        apply: () => ({ action: "apply" }),
+      });
+      check("landMetaCommit: MERGED with a replaced head is an honest failure (drop-during-arm)", droppedInArm === "failed" && pushes === 1);
+    }
+
+    // R6 review: a landing that starts while a PEER's meta PR is pending must
+    // wait for the squash to confirm (no rewind of the pending head, no
+    // check-restart livelock) — its own push may only happen after MERGED.
+    {
+      let state = "OPEN";
+      let head = "f".repeat(40); // peer's pending landing
+      let views = 0;
+      let pushes = 0;
+      let sleepsBeforePush = 0;
+      const ourSha = "9".repeat(40);
+      const peerPending: MetaPushIo = {
+        exec: (cmd) => {
+          if (cmd.startsWith("git diff")) return { ok: true, output: "BACKLOG.md\n" };
+          if (cmd.startsWith("git rev-parse")) return { ok: true, output: `${ourSha}\n` };
+          if (cmd.startsWith("git merge-base")) return { ok: true, output: "" };
+          if (cmd.startsWith("git push")) {
+            pushes++;
+            head = ourSha;
+          }
+          if (cmd.startsWith("gh ")) {
+            if (cmd.includes("pr view")) {
+              views++;
+              if (views >= 3) state = "MERGED"; // peer's checks finish mid-wait
+              return { ok: true, output: JSON.stringify({ state, headRefOid: head }) };
+            }
+            if (cmd.includes("pr create")) return { ok: true, output: "" };
+            if (cmd.includes("pr merge")) {
+              state = "MERGED";
+              return { ok: true, output: "" };
+            }
+            return { ok: true, output: "" };
+          }
+          return { ok: true, output: "" };
+        },
+        sleep: () => {
+          if (pushes === 0) sleepsBeforePush++;
+          return Promise.resolve();
+        },
+      };
+      const waited = await landMetaCommit(dir, peerPending, {
+        files: ["BACKLOG.md"],
+        message: "wait for pending peer",
+        guardFile: "BACKLOG.md",
+        apply: () => ({ action: "apply" }),
+      });
+      check("landMetaCommit: pending peer PR is waited out, then landed after MERGED", waited === "pushed" && pushes === 1 && sleepsBeforePush >= 2);
+    }
+
+    // R6 review: budget exhausted while the checks run ⇒ honest failure with
+    // caller state intact; the next-cycle retry after the queued merge lands
+    // converges as a noop success (desired state present) — never abort forever.
+    {
+      let known = false;
+      let merged = false;
+      let convPushes = 0;
+      const ourSha = "7".repeat(40);
+      const landedLine = "- [ ] (P2-911) [P2] Convergence — spec: x (area: ui)";
+      const convIo: MetaPushIo = {
+        exec: (cmd) => {
+          if (cmd.startsWith("git diff")) return { ok: true, output: "BACKLOG.md\n" };
+          if (cmd.startsWith("git rev-parse")) return { ok: true, output: `${ourSha}\n` };
+          if (cmd.startsWith("git merge-base")) return { ok: true, output: "" };
+          if (cmd.startsWith("git push")) convPushes++;
+          // model the deferred squash finally landing: after the merge the
+          // rewind to origin/main restores a BACKLOG that already has the line
+          if (cmd.includes(`git checkout -q -B ${META_BRANCH}`) && merged)
+            writeFileSync(join(dir, "BACKLOG.md"), `# B\n\n## Ready\n${landedLine}\n\n## Done\n`);
+          if (cmd.startsWith("gh ")) {
+            if (cmd.includes("pr view"))
+              return known
+                ? { ok: true, output: JSON.stringify({ state: merged ? "MERGED" : "OPEN", headRefOid: ourSha }) }
+                : { ok: false, output: "no pull requests" };
+            if (cmd.includes("pr create")) {
+              known = true;
+              return { ok: true, output: "" };
+            }
+            return { ok: true, output: "" }; // pr merge --auto arms, checks pending
+          }
+          return { ok: true, output: "" };
+        },
+        sleep: () => Promise.resolve(),
+      };
+      const spec = {
+        files: ["BACKLOG.md"],
+        message: "convergence",
+        guardFile: "BACKLOG.md",
+        apply: () => {
+          const md = readFileSync(join(dir, "BACKLOG.md"), "utf8");
+          if (md.includes("(P2-911)")) return { action: "noop" as const };
+          writeFileSync(join(dir, "BACKLOG.md"), md.replace("## Ready\n", `## Ready\n${landedLine}\n`));
+          return { action: "apply" as const };
+        },
+      };
+      const firstTry = await landMetaCommit(dir, convIo, spec);
+      check("landMetaCommit: checks running past the budget ⇒ honest failure, no false success", firstTry === "failed" && convPushes === 1);
+      merged = true; // the queued auto-merge finally lands between cycles
+      const retry = await landMetaCommit(dir, convIo, spec);
+      check("landMetaCommit: next-cycle retry after the queued merge converges as a noop success", retry === "pushed" && convPushes === 1);
     }
 
     // dir-prefix guard (corpus shape): several files inside the dir are allowed
@@ -1120,10 +1302,19 @@ function ghMergingIo(realIo: { exec: (cmd: string) => { ok: boolean; output: str
     // real-git smoke: landing lands the commit on origin/pilot/meta with gh faked
     const realIo = metaIo(dir);
     let prState = "OPEN";
+    let prExists = false;
     const ghIo: MetaPushIo = {
       exec: (cmd) => {
         if (cmd.startsWith("gh ")) {
-          if (cmd.includes("pr view")) return { ok: true, output: JSON.stringify({ state: prState, url: "fake" }) };
+          if (cmd.includes("pr view")) {
+            if (!prExists) return { ok: false, output: "no pull requests" };
+            const head = realIo.exec(`git rev-parse origin/${META_BRANCH}`).output.trim();
+            return { ok: true, output: JSON.stringify({ state: prState, headRefOid: head }) };
+          }
+          if (cmd.includes("pr create")) {
+            prExists = true;
+            return { ok: true, output: "" };
+          }
           if (cmd.includes("pr merge")) {
             prState = "MERGED"; // fake GitHub: the squash merge completes
             return { ok: true, output: "" };
@@ -3666,13 +3857,20 @@ check("experience: isHarnessLesson matches process vocabulary", isHarnessLesson(
     const landed4: FailureLesson[] = [];
     const st4: { expMaintLast?: string } = {};
     let prMerged4 = false;
+    let prCreated4 = false;
     const res4 = await maintainExperienceWorkspace(dir4, st4, "2026-09-03", {
       exec: (cmd) => {
         if (cmd.includes(`git checkout -q -B ${META_BRANCH}`)) writeFileSync(join(dir4, "docs", "EXPERIENCE.md"), freshContent);
         // R4: the landing verifies our sha (40-hex) and confirms the merge
         if (cmd.startsWith("git rev-parse")) return { ok: true, output: `${"f".repeat(40)}\n` };
         if (cmd.startsWith("gh ") && cmd.includes("pr view"))
-          return { ok: true, output: JSON.stringify({ state: prMerged4 ? "MERGED" : "OPEN", url: "fake" }) };
+          return prCreated4
+            ? { ok: true, output: JSON.stringify({ state: prMerged4 ? "MERGED" : "OPEN", headRefOid: "f".repeat(40) }) }
+            : { ok: false, output: "no pull requests" };
+        if (cmd.startsWith("gh ") && cmd.includes("pr create")) {
+          prCreated4 = true;
+          return { ok: true, output: "" };
+        }
         if (cmd.startsWith("gh ") && cmd.includes("pr merge")) {
           prMerged4 = true;
           return { ok: true, output: "" };
@@ -4774,6 +4972,7 @@ check(
     const calls: string[] = [];
     const sleeps: number[] = [];
     let pushes = 0;
+    let prCreated = false;
     const landed = await commitAndPushFindings(dir, findings, "pilot(explorer): test run", {
       exec: (cmd) => {
         calls.push(cmd);
@@ -4783,7 +4982,13 @@ check(
         // R4: the landing verifies our sha (40-hex) and confirms the merge
         if (cmd.startsWith("git rev-parse")) return { ok: true, output: `${"e".repeat(40)}\n` };
         if (cmd.startsWith("gh ") && cmd.includes("pr view"))
-          return { ok: true, output: JSON.stringify({ state: pushes >= 3 ? "MERGED" : "OPEN", url: "fake" }) };
+          return prCreated
+            ? { ok: true, output: JSON.stringify({ state: pushes >= 3 ? "MERGED" : "OPEN", headRefOid: "e".repeat(40) }) }
+            : { ok: false, output: "no pull requests" };
+        if (cmd.startsWith("gh ") && cmd.includes("pr create")) {
+          prCreated = true;
+          return { ok: true, output: "" };
+        }
         return { ok: true, output: "" };
       },
       sleep: async (ms) => {
@@ -4827,7 +5032,7 @@ check(
     });
     check(
       "explorer push retry: broken worktree fails without pushing or arming a PR",
-      noLanding === false && cmds2.some((c) => c.startsWith("git ")) && !cmds2.some((c) => c.includes(`origin HEAD:${META_BRANCH}`)) && !cmds2.some((c) => c.startsWith("gh ")),
+      noLanding === false && cmds2.some((c) => c.startsWith("git ")) && !cmds2.some((c) => c.includes(`origin HEAD:${META_BRANCH}`)) && !cmds2.some((c) => c.startsWith("gh ") && (c.includes("pr create") || c.includes("pr merge"))),
     );
   } finally {
     rmSync(dir2, { recursive: true, force: true });
@@ -4855,10 +5060,18 @@ check(
       }
     };
     let prMerged = false;
+    let prExists = false;
     const smoke = await commitAndPushFindings(repo, findings, "pilot(explorer): smoke'd run", {
       exec: (cmd) => {
         if (cmd.startsWith("gh ")) {
-          if (cmd.includes("pr view")) return { ok: true, output: JSON.stringify({ state: prMerged ? "MERGED" : "OPEN", url: "fake" }) };
+          if (cmd.includes("pr view")) {
+            if (!prExists) return { ok: false, output: "no pull requests" };
+            return { ok: true, output: JSON.stringify({ state: prMerged ? "MERGED" : "OPEN", headRefOid: realExec(`git rev-parse origin/${META_BRANCH}`).output.trim() }) };
+          }
+          if (cmd.includes("pr create")) {
+            prExists = true;
+            return { ok: true, output: "" };
+          }
           if (cmd.includes("pr merge")) {
             prMerged = true;
             return { ok: true, output: "" };

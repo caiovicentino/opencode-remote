@@ -34,15 +34,21 @@ edição determinística → guard do diff (P1-057, relido a cada attempt) → p
 com `--force-with-lease` em `pilot/meta` (um landing concorrente que empurrou
 depois do nosso fetch falha o push em vez de ser sobrescrito) → PR com squash +
 `--auto` (auto-merge quando a proteção de branch está ativa; sem proteção,
-merge imediato). O sucesso só é reportado com **dupla verificação fail-closed**
-(P1-076 R4): (1) o **nosso** commit ainda é ancestral do head de
-`origin/pilot/meta` — um sha indeterminável (`rev-parse` vazio/malformado)
-também reprova, nunca passa; (2) o squash merge foi **confirmado** via
-`gh pr view` (estado `MERGED`) — armar o `--auto` não é sucesso, porque o
-squash só dispara depois das checks; um landing pendente é honestamente
-reportado como `failed` e o ciclo seguinte re-tenta (a edição determinística
-vira noop quando o merge enfileirado pousa). Um landing descartado por landing
-concorrente é re-aplicado e, no pior caso, reportado
+merge imediato). Antes do rewind, um PR meta ainda **aberto** (landing pendente
+esperando checks) é **esperado até o merge** — rebobinar o head pendente
+reiniciaria as checks a cada re-entrada (livelock do circuit breaker) e
+descartaria landings do mesmo slot (mark-done → corpus → scribe). O sucesso só
+é reportado com **verificação fail-closed no mesmo poll** (P1-076 R4/R6):
+`gh pr view --json state,headRefOid` deve retornar `state === "MERGED"` **e**
+`headRefOid ===` o nosso sha empurrado — armar o `--auto` não é sucesso, e um
+`MERGED` com head substituído por landing concorrente é `failed` honesto (o
+ancestral de `origin/pilot/meta` e o sha indeterminável continuam reprovando).
+Orçamento de confirmação/espera: ~5 min por fase (60 polls × 5s), cobrindo um
+run verde de checks sob proteção. O retry do ciclo seguinte **converge como
+noop** quando o estado desejado já existe: o `apply` de refill/bloqueio detecta
+linha duplicada / task já bloqueada (`"applied" | "noop" | "missing"`) e o
+landing reporta sucesso sem novo commit — nunca um abort eterno. Um landing
+descartado por landing concorrente é re-aplicado e, no pior caso, reportado
 honestamente como `failed` (refill persiste no store P1-037, bloqueio
 re-tenta no próximo ciclo ocioso). O PR é reutilizado entre
 landings e a branch **nunca** é apagada. Falha do `gh` deixa o commit em
@@ -53,8 +59,11 @@ no código do pilot com um check grep-style).
 **Runbook do operador (pós-merge)**: ativar a proteção de branch no GitHub para
 `main` — "Require a pull request before merging" + squash merges + as checks
 requeridas do CI existente. Nenhuma mudança de código é necessária: com a
-proteção ativa, `gh pr merge --squash --auto` passa a armar o auto-merge
-(o caminho sem proteção continua funcionando como fallback de merge imediato).
+proteção ativa, `gh pr merge --squash --auto` arma o auto-merge e o landing
+confirma o squash via `gh pr view` (estado + headRefOid) dentro do orçamento de
+~5 min, esperando as checks terminarem (o caminho sem proteção continua
+funcionando como fallback de merge imediato; landings pendentes de outros
+landings são esperados, nunca rebobinados).
 **Janela conhecida**: enquanto a proteção não está ativa, o squash imediato do
 PR meta entra em `main` **sem checks** — a propriedade "auto-mergia quando a
 bateria leve passa" só vale pós-runbook; a segurança do deploy não muda,

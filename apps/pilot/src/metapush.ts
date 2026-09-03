@@ -7,11 +7,12 @@ import { basename } from "node:path";
  * scribe lessons, mark-done, corpus growth, explorer findings, circuit breaker)
  * re-bases `pilot/meta` on origin/main, applies its deterministic edit, pushes
  * with a lease and arms the squash PR — success is only reported after the
- * squash merge is confirmed on GitHub and our commit is verified to still be
- * in the PR head. A hostile deviation can therefore no longer
- * camouflage itself inside a trusted bookkeeping push: branch protection on
- * `main` rejects everything that did not travel through a PR (operator runbook
- * in docs/PILOT.md).
+ * squash merge is confirmed on GitHub with our commit still the PR/merged head
+ * (state MERGED + headRefOid === pushed sha at the same poll), and a landing
+ * still pending on its checks is waited out, never rewound. A hostile
+ * deviation can therefore no longer camouflage itself inside a trusted
+ * bookkeeping push: branch protection on `main` rejects everything that did
+ * not travel through a PR (operator runbook in docs/PILOT.md).
  */
 
 export const META_BRANCH = "pilot/meta";
@@ -103,12 +104,7 @@ function shq(s: string): string {
 
 /** Find an OPEN PR for pilot/meta, else create the long-lived one. */
 function openMetaPr(io: MetaPushIo): boolean {
-  const view = io.exec(`gh pr view ${META_BRANCH} --json state,url`);
-  let state = "";
-  try {
-    state = JSON.parse(view.output)?.state ?? "";
-  } catch {}
-  if (view.ok && state === "OPEN") return true;
+  if (prSnapshot(io)?.state === "OPEN") return true;
   return io.exec(
     `gh pr create --head ${META_BRANCH} --base main --title "pilot: meta commits" --body ${shq(
       "Bookkeeping landings (backlog refills, scribe lessons, mark-done, corpus samples). Auto-merged when the light checks pass.",
@@ -116,15 +112,45 @@ function openMetaPr(io: MetaPushIo): boolean {
   ).ok;
 }
 
-/** Bounded confirmation budget: ~30s per landing call. */
-const MERGE_CONFIRM_POLLS = 6;
+/**
+ * GitHub's view of the long-lived meta PR. `headRefOid` is the PR head —
+ * always exactly the branch head, i.e. main + the one pending meta commit.
+ */
+interface PrSnapshot {
+  state: string;
+  headRefOid: string;
+}
+
+function prSnapshot(io: MetaPushIo): PrSnapshot | null {
+  const view = io.exec(`gh pr view ${META_BRANCH} --json state,headRefOid`);
+  if (!view.ok) return null; // no PR yet / gh unavailable — undeterminable
+  try {
+    const parsed = JSON.parse(view.output);
+    if (typeof parsed?.state !== "string") return null;
+    return {
+      state: parsed.state,
+      headRefOid: typeof parsed.headRefOid === "string" ? parsed.headRefOid : "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Bounded confirmation/waiting budget. Under branch protection the deferred
+ * squash fires only after the required checks (typecheck/build plus the
+ * runner spin-up — minutes), so the budget must cover a green check run:
+ * otherwise EVERY protected landing would be reported as an honest failure
+ * and no caller state would ever clear. ~5 minutes per phase.
+ */
+const MERGE_CONFIRM_POLLS = 60;
 const MERGE_CONFIRM_DELAY_MS = 5_000;
 
 /**
- * Arm the squash merge of the meta PR and CONFIRM it landed. NEVER
- * --delete-branch: pilot/meta is long-lived.
+ * Arm the squash merge of the meta PR and CONFIRM it landed with OUR commit
+ * as the merged head. NEVER --delete-branch: pilot/meta is long-lived.
  */
-async function armMetaPr(io: MetaPushIo): Promise<MetaPushResult> {
+async function armMetaPr(io: MetaPushIo, pushedSha: string): Promise<MetaPushResult> {
   if (!openMetaPr(io)) return "failed";
   // --auto only works once branch protection exists (operator runbook); the
   // immediate squash keeps landings moving while protection is still off.
@@ -132,36 +158,63 @@ async function armMetaPr(io: MetaPushIo): Promise<MetaPushResult> {
     io.exec(`gh pr merge ${META_BRANCH} --squash --auto`).ok ||
     io.exec(`gh pr merge ${META_BRANCH} --squash`).ok;
   if (!armed) return "failed";
-  // R4 review (arm-vs-merge TOCTOU): --auto only QUEUES the merge — reporting
-  // success here would let callers clear their state (e.g. the P1-037 pending
-  // refill store) before the content actually landed on main. Poll the PR
-  // state until GitHub confirms the squash; an unconfirmed landing is an
-  // honest failure whose next-cycle retry is a noop once the queued merge
-  // lands (the caller's edit is deterministic and idempotent).
+  // R4/R6 review (arm-vs-merge TOCTOU): --auto only QUEUES the merge — the
+  // squash fires minutes later, after the required checks. Reporting success
+  // here would let callers clear their state (P1-037 pending refill,
+  // taskAttempts, lessons.jsonl) for content that never landed. Both
+  // conditions must hold at the same poll: GitHub reports MERGED and the
+  // merged head is still OUR commit (headRefOid === pushedSha) — a peer that
+  // rewound the shared branch between our ancestry check and the squash must
+  // never be reported as our success. An undeterminable view (gh down,
+  // malformed JSON, missing headRefOid) keeps polling: only the budget
+  // decides, and the answer is an honest "failed".
   for (let poll = 0; poll < MERGE_CONFIRM_POLLS; poll++) {
     if (poll > 0) await io.sleep(MERGE_CONFIRM_DELAY_MS);
-    const view = io.exec(`gh pr view ${META_BRANCH} --json state`);
-    try {
-      if (JSON.parse(view.output)?.state === "MERGED") return "pushed";
-    } catch {}
+    const snap = prSnapshot(io);
+    if (!snap) continue;
+    if (snap.headRefOid && snap.headRefOid !== pushedSha) return "failed"; // our head was replaced
+    if (snap.state === "MERGED") return snap.headRefOid === pushedSha ? "pushed" : "failed";
   }
   return "failed";
 }
 
 /**
- * Deterministic meta landing (P1-076): fetch → re-base `pilot/meta` on
- * origin/main → apply the caller's edit → commit → push guard → push →
- * auto-merge PR, retried up to `attempts` times because concurrent slots move
- * origin/main (and the shared meta branch) underneath us. The push is
- * --force-with-lease (a peer landing pushed after our fetch fails instead of
- * being overwritten) and success is only reported when BOTH verifications
- * hold: our commit is still an ancestor of origin/pilot/meta, and GitHub
- * confirmed the squash merge into main. Anything unverifiable fails closed —
- * it is retried and, at worst, honestly reported as "failed". The guard is
- * re-read from the actual branch diff on every attempt; a refused diff never
- * pushes. There is deliberately NO fallback to `git push origin main`: if gh
- * is unavailable the commit stays on origin/pilot/meta and the next cycle
- * retries.
+ * R6 review: `checkout -B` rewinds the shared branch, throwing away any
+ * landing still pending on the OPEN meta PR (under branch protection its
+ * squash fires only after the required checks). Rewinding anyway restarts
+ * those checks on every re-entry — a livelock for callers that retry each
+ * idle cycle (blockAndPush) and lost work for same-slot sequences
+ * (mark-done → corpus → scribe). So a pending PR is waited out before the
+ * rewind; a headRefOid changing mid-wait is fine (the new head owns the
+ * branch now and is waited out the same way). Returns false when the PR is
+ * still pending after the budget — the rewind is refused this round.
+ */
+async function waitPendingMetaPr(io: MetaPushIo): Promise<boolean> {
+  for (let poll = 0; poll < MERGE_CONFIRM_POLLS; poll++) {
+    if (poll > 0) await io.sleep(MERGE_CONFIRM_DELAY_MS);
+    const snap = prSnapshot(io);
+    if (!snap || snap.state !== "OPEN") return true; // absent/MERGED/CLOSED → safe
+  }
+  return false;
+}
+
+/**
+ * Deterministic meta landing (P1-076): fetch → wait out any pending meta PR →
+ * re-base `pilot/meta` on origin/main → apply the caller's edit → commit →
+ * push guard → push → auto-merge PR, retried up to `attempts` times because
+ * concurrent slots move origin/main (and the shared meta branch) underneath
+ * us. The push is --force-with-lease (a peer landing pushed after our fetch
+ * fails instead of being overwritten) and success is only reported when BOTH
+ * verifications hold: our commit is still an ancestor of origin/pilot/meta,
+ * and GitHub confirmed the squash merge into main with our sha as the merged
+ * head (state MERGED + headRefOid === pushedSha). Anything unverifiable fails
+ * closed — it is retried and, at worst, honestly reported as "failed". The
+ * guard is re-read from the actual branch diff on every attempt; a refused
+ * diff never pushes. There is deliberately NO fallback to `git push origin
+ * main`: if gh is unavailable the commit stays on origin/pilot/meta and the
+ * next cycle retries — and once the queued merge lands, the retry converges
+ * as a noop because the caller's edit is deterministic (desired state already
+ * present).
  */
 export async function landMetaCommit(
   ws: string,
@@ -173,6 +226,13 @@ export async function landMetaCommit(
   try {
     for (let attempt = 0; attempt < attempts; attempt++) {
       io.exec("git fetch -q origin");
+      // R6: an OPEN meta PR means a landing is still pending (its squash fires
+      // only after the required checks) — wait it out instead of rewinding
+      // its head away, which would restart the checks on every re-entry
+      if (!(await waitPendingMetaPr(io))) {
+        await io.sleep(3_000);
+        continue;
+      }
       // discard any dirty state first: checkout -B with a start point refuses
       // on a dirty tree, and the slot worktree may arrive on any branch
       io.exec("git reset -q --hard HEAD");
@@ -223,7 +283,7 @@ export async function landMetaCommit(
         await io.sleep(3_000);
         continue;
       }
-      return await armMetaPr(io);
+      return await armMetaPr(io, pushedSha);
     }
     return "failed";
   } finally {
