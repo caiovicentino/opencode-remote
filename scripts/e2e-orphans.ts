@@ -88,35 +88,48 @@ export function collectCandidates(psOutput: string): OrphanCandidate[] {
 }
 
 /**
- * Reads a process environment without killing it: darwin via `ps -wwE`
- * (environment appended to the command line), Linux via /proc. Returns null
- * when the env cannot be read (other user, hardened runtime) — callers MUST
- * spare the process in that case (fail-safe, never guess-kill).
+ * Reads a process environment without killing it. On darwin the env is NOT
+ * split out of the whole `ps -E` line naively: any argv token shaped
+ * KEY=VALUE would be absorbed as an environment entry, so a process whose
+ * ARGUMENTS contain a `<tmpdir>/ocr-` path would be marked for kill from
+ * argv text alone (fail direction = kill, P1-081 round-2 finding). Instead
+ * the plain command is read first (`ps -ww -o command=`) and the env is
+ * exactly the suffix that follows it on the `-E` read. When the two reads
+ * disagree (exec race, zombie), return null — callers MUST spare.
+ * Linux reads /proc/<pid>/environ, which never contains argv. Returns null
+ * when the env cannot be read (other user, hardened runtime) — fail-safe.
  */
 export function readProcessEnv(pid: number): Record<string, string> | null {
   const procEnv: Record<string, string> = {};
   if (process.platform === "darwin") {
-    const res = spawnSync("ps", ["-wwE", "-p", String(pid)], { encoding: "utf8", timeout: 5_000 });
-    const line = res.stdout.split("\n").find((l) => l.trim() && !l.trimStart().startsWith("PID"));
-    if (!line) return null;
-    // `ps -E` appends ` KEY=VALUE KEY=VALUE ...` after the command; values may
-    // contain spaces, so tokens without '=' continue the previous value.
-    let started = false;
+    const cmdRes = spawnSync("ps", ["-ww", "-o", "command=", "-p", String(pid)], {
+      encoding: "utf8",
+      timeout: 5_000,
+    });
+    const envRes = spawnSync("ps", ["-wwE", "-o", "command=", "-p", String(pid)], {
+      encoding: "utf8",
+      timeout: 5_000,
+    });
+    const command = cmdRes.stdout.trimEnd();
+    const line = envRes.stdout.trimEnd();
+    if (!command || !line || !line.startsWith(command)) return null;
+    const envBlob = line.slice(command.length).trim();
+    if (!envBlob) return null;
+    // Values may contain spaces: tokens without '=' continue the previous
+    // value. Only the genuine env suffix is parsed — never the argv.
     let currentKey = "";
-    for (const token of line.trim().split(/\s+/)) {
+    for (const token of envBlob.split(/\s+/)) {
       const m = token.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s);
       if (m) {
-        started = true;
         currentKey = m[1];
-        procEnv[currentKey] = m[2];
-      } else if (started && currentKey) {
+        procEnv[m[1]] = m[2];
+      } else if (currentKey) {
         procEnv[currentKey] += ` ${token}`;
       }
     }
-    if (!started) return null;
+    if (Object.keys(procEnv).length === 0) return null;
   } else if (process.platform === "linux") {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const raw = spawnSync("cat", [`/proc/${pid}/environ`], { encoding: "utf8", timeout: 5_000 });
       if (raw.status !== 0) return null;
       for (const pair of raw.stdout.split("\0")) {

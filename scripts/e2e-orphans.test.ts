@@ -6,7 +6,7 @@
  * bootOnEphemeralPort anti-thief re-check.
  * Run: npx tsx scripts/e2e-orphans.test.ts
  */
-import type { ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,6 +17,7 @@ import {
   envHasTempMarker,
   E2E_ARGV_MARKERS,
   killOrphans,
+  readProcessEnv,
   settled,
   type OrphanCandidate,
 } from "./e2e-orphans";
@@ -245,6 +246,53 @@ check(
   timeoutBoot !== null && timeoutBoot.message.includes("never came up") && timeoutBoot.message.includes("lsof"),
   timeoutBoot?.message,
 );
+
+if (process.platform === "darwin" || process.platform === "linux") {
+  const decoy = spawn(
+    process.execPath,
+    [
+      "-e",
+      "setInterval(()=>{},1000)",
+      "FOO=notenv",
+      "OCR_E2E_MARKER=1",
+      join(TMP, "ocr-int-FAKE", "path"),
+      "apps/relay/src/index.ts",
+    ],
+    { stdio: "ignore", env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: "/Users/operator" } },
+  );
+  await new Promise((r) => setTimeout(r, 400));
+  check("poisoned decoy is running", decoy.pid !== undefined && !decoy.killed);
+  const env = readProcessEnv(decoy.pid!);
+  check(
+    "readProcessEnv: argv KEY=VALUE tokens never become env entries",
+    env !== null && env.FOO === undefined && env.OCR_E2E_MARKER === undefined,
+    JSON.stringify(env),
+  );
+  check(
+    "readProcessEnv: an <tmpdir>/ocr- path in ARGV does not mark the env (spare direction)",
+    env !== null && envHasTempMarker(env, TMP) === false,
+    JSON.stringify(env),
+  );
+  check(
+    "readProcessEnv: genuine env keys still parse (PATH present)",
+    env !== null && typeof env.PATH === "string" && env.PATH.length > 0,
+  );
+  // end-to-end through the kill decision: the poisoned argv alone must NOT kill
+  const kills: number[] = [];
+  const report = await killOrphans({
+    candidates: [{ pid: decoy.pid!, command: "node ... apps/relay/src/index.ts", marker: "relay" }],
+    readEnv: readProcessEnv,
+    envMarked: (e) => envHasTempMarker(e, TMP),
+    isAlive: () => true,
+    kill: (pid) => void kills.push(pid),
+    graceMs: 10,
+  });
+  check(
+    "killOrphans: poisoned-argv process with clean env is SPARED end-to-end",
+    report.spared.length === 1 && report.killed.length === 0 && kills.length === 0,
+  );
+  decoy.kill("SIGKILL");
+}
 
 console.log(failures === 0 ? "\ne2e-orphans tests: all green" : `\nFAILURES: ${failures}`);
 process.exit(failures === 0 ? 0 : 1);

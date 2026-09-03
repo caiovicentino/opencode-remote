@@ -268,13 +268,14 @@ try {
   // screen-level guarantee is BrowserWindow.isVisible()=false for every
   // window (document.visibilityState stays "visible" precisely because
   // paintWhenInitiallyHidden keeps the hidden window painting for shots).
+  // Round 2: a failed probe FAILS the check — the guarantee can never be
+  // silently skipped by an `if (probe.ok)` short-circuit.
   const wins = run("P1-081: window stays invisible (wins probe)", ["wins"], 15_000);
-  if (wins.ok)
-    check(
-      "P1-081: every BrowserWindow reports isVisible()=false during the hermetic run",
-      /"visible":\s*false/.test(wins.stdout) && !/"visible":\s*true/.test(wins.stdout),
-      wins.stdout,
-    );
+  check(
+    "P1-081: every BrowserWindow reports isVisible()=false during the hermetic run",
+    wins.ok && /"visible":\s*false/.test(wins.stdout) && !/"visible":\s*true/.test(wins.stdout),
+    wins.ok ? wins.stdout : "wins probe failed — window visibility unproven",
+  );
   run("type invalid pairing code", ["type", "textarea", "opencode-remote://not-a-valid-code"], 15_000);
   // P2-049: the pairing screen copy moved into the i18n dictionary — on a
   // pt-BR host the button reads "Parear", so the old text="Pair" click broke
