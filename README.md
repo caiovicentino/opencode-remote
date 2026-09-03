@@ -31,7 +31,10 @@ private. That is the product: **local power, remote control, zero trust**.
   with quick tips (audio, photo or text). The view only auto-follows the
   newest message while you are already at the bottom — scroll up to read and
   a small ↓ pill appears to jump back to the tail; when the connection drops
-  a slim banner with the reconnection attempt count replaces the old header dot
+  a slim banner with the reconnection attempt count replaces the old header dot.
+  Code blocks and long lines never clip at the right edge: text and URLs wrap,
+  and wide code/diff blocks scroll horizontally inside their own block, so
+  nothing ever leaves the viewport (chat, diff modal and artifact pane)
 - **AutoMode** — the agent runs hands-free; every auto-approved action is
   audited and pushable
 - **Approval preview** — permission cards show the first lines of the

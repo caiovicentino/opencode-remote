@@ -1549,7 +1549,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
           )}
           {historyError && (
             <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "8px auto" }}>
-              <p style={{ color: "var(--danger)", margin: 0, flex: 1 }}>
+              <p style={{ color: "var(--danger)", margin: 0, flex: 1, minWidth: 0 }}>
                 {t("historyRetry")}
                 <span
                   style={{ display: "block", fontSize: "0.75rem", color: "var(--muted)" }}
@@ -1771,6 +1771,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
                   fontSize: "0.72rem",
                   lineHeight: 1.45,
                   overflowX: "auto",
+                  maxWidth: "100%",
                   whiteSpace: "pre-wrap",
                   wordBreak: "break-word",
                   color: "var(--muted)",
@@ -1798,7 +1799,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
 
         {error && (
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <p style={{ color: "var(--danger)", margin: 0, flex: 1 }}>{humanizeError(error, t)}</p>
+            <p style={{ color: "var(--danger)", margin: 0, flex: 1, minWidth: 0 }}>{humanizeError(error, t)}</p>
             {retryText && (
               <button
                 className="danger"
@@ -2203,6 +2204,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
                     borderRadius: 8,
                     padding: "8px 10px",
                     overflowX: "auto",
+                    maxWidth: "100%", // P1-080: scroll inside the block, never the page
                     fontSize: "0.72rem",
                     lineHeight: 1.45,
                     margin: 0,

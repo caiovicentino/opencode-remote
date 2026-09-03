@@ -198,6 +198,7 @@ function codeBlock(code: string, lang: string, key: string): ReactElement {
         borderRadius: 8,
         padding: "8px 10px",
         overflowX: "auto",
+        maxWidth: "100%", // P1-080: scroll inside the block, never the page
         fontSize: "0.78rem",
         lineHeight: 1.45,
         margin: "4px 0",

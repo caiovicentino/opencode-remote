@@ -608,6 +608,239 @@ try {
         if (s1.ok) check("local: 1440x900 shot is a real PNG", pngSize(localShot).join("x") === "1440x900");
         const s2 = run("local: 390 evidence shot", ["shot", localShot390, "390", "844"], 15_000, localEnv);
         if (s2.ok) check("local: 390 shot is a real PNG", pngSize(localShot390)[0] === 390);
+
+        // --- P1-080: the operator's overflow repro (narrow window, long diff) ---
+        // The hermetic daemon has no opencode backend, so no real message can
+        // stream in; the long-diff bubble is injected at the DOM level into the
+        // REAL ChatView flex chain (.screen → .chat-row → .chat → .msg-wrap →
+        // .messages → .msg → pre → code) — the exact layout the CSS fix
+        // constrains. Regression criterion: nothing leaves the viewport and the
+        // long line scrolls INSIDE the code block, never the page.
+        const overflowShot1440 = join(shotsDir, "P1-080-overflow-1440.png");
+        const overflowShot390 = join(shotsDir, "P1-080-overflow-390.png");
+        const openChat = run(
+          "P1-080: deep-link opens the chat column",
+          ["ipc", "location.hash = '#/session/ses-p1-080-overflow'"],
+          15_000,
+          localEnv,
+        );
+        // Shared DOM-probe helpers, interpolated into the evaluate strings below.
+        const MEASURE_HELPERS = `
+          const ocrFreeze = () => {
+            document.getElementById('p1-080-noanim')?.remove();
+            // the chat screen slide-in (screen-in, 180ms) caught mid-flight reads
+            // as a 1-3px document offset — freeze animations before measuring
+            const st = document.createElement('style');
+            st.id = 'p1-080-noanim';
+            st.textContent = '* { animation: none !important; transition: none !important; }';
+            document.head.appendChild(st);
+            document.documentElement.scrollLeft = 0;
+          };
+          const ocrClipped = (el) => {
+            for (let a = el.parentElement; a; a = a.parentElement) {
+              if (getComputedStyle(a).overflowX !== 'visible') return true;
+            }
+            return false;
+          };
+          const ocrLabel = (el) => el.tagName.toLowerCase() +
+            (el.id ? '#' + el.id : typeof el.className === 'string' && el.className ? '.' + el.className.split(' ').join('.') : '');
+          const ocrScan = () => {
+            const out = [];
+            for (const el of document.querySelectorAll('*')) {
+              const r = el.getBoundingClientRect();
+              if ((r.right > window.innerWidth + 0.5 || r.left < -0.5) && !ocrClipped(el)) {
+                out.push({ cls: ocrLabel(el), left: Math.round(r.left), right: Math.round(r.right) });
+                if (out.length >= 5) break;
+              }
+            }
+            return out;
+          };
+        `;
+        const injectAndMeasure = `(() => {
+          const msgs = document.querySelector('.messages');
+          if (!msgs) return { mounted: false };
+          document.getElementById('p1-080-bubble')?.remove();
+          ${MEASURE_HELPERS}
+          ocrFreeze();
+          const doc = document.documentElement;
+          const preInject = doc.scrollWidth - doc.clientWidth;
+          const preOffenders = ocrScan();
+          const div = document.createElement('div');
+          div.id = 'p1-080-bubble';
+          div.className = 'msg assistant';
+          const pre = document.createElement('pre');
+          const code = document.createElement('code');
+          code.textContent = '- const veryLongDiffLine = "p1-080-' + 'x'.repeat(400) + '";';
+          pre.appendChild(code);
+          div.appendChild(pre);
+          msgs.appendChild(div);
+          const box = div.getBoundingClientRect();
+          return {
+            mounted: true,
+            preInject,
+            preOffenders,
+            docOverflow: doc.scrollWidth - doc.clientWidth,
+            msgRight: Math.round(box.right),
+            vw: window.innerWidth,
+            preScrollsInside: pre.scrollWidth > pre.clientWidth,
+            postOffenders: ocrScan(),
+          };
+        })()`;
+        // Criterion 4 — the artifact split-pane (P2-062): same class of repro,
+        // mounted as a sibling of the real .chat inside .chat-row the way
+        // ChatView renders it (screen gains .artifact-split, pane gets
+        // flexBasis), with a wide code block + a long URL inside.
+        const splitPaneProbe = `(() => {
+          const row = document.querySelector('.chat-row');
+          const screen = document.querySelector('.screen');
+          if (!row || !screen) return { mounted: false };
+          document.getElementById('p1-080-pane')?.remove();
+          document.getElementById('p1-080-divider')?.remove();
+          ${MEASURE_HELPERS}
+          ocrFreeze();
+          screen.classList.add('artifact-split');
+          const pane = document.createElement('div');
+          pane.id = 'p1-080-pane';
+          pane.className = 'artifact-pane';
+          pane.style.flexBasis = '40%';
+          pane.style.background = 'var(--bg)';
+          const header = document.createElement('div');
+          header.style.cssText = 'display:flex;align-items:center;gap:8;padding:10px 12px;background:var(--surface);border-bottom:1px solid var(--border)';
+          header.textContent = 'spec.md';
+          const scroll = document.createElement('div');
+          scroll.style.cssText = 'flex:1;min-height:0;overflow:auto;padding:14px';
+          const md = document.createElement('div');
+          md.style.cssText = 'max-width:min(900px,100%);overflow-wrap:anywhere';
+          const pre = document.createElement('pre');
+          pre.style.cssText = 'background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 10px;overflow-x:auto;max-width:100%;font-size:0.78rem';
+          const code = document.createElement('code');
+          code.textContent = '- const wideArtifactLine = "p1-080-' + 'y'.repeat(400) + '";';
+          pre.appendChild(code);
+          md.appendChild(pre);
+          const url = document.createElement('p');
+          url.style.cssText = 'margin:6px 0;word-break:break-word';
+          url.textContent = 'ref https://example.invalid/' + 'z'.repeat(300) + '/path';
+          md.appendChild(url);
+          scroll.appendChild(md);
+          pane.appendChild(header);
+          pane.appendChild(scroll);
+          const divider = document.createElement('div');
+          divider.id = 'p1-080-divider';
+          divider.className = 'split-divider';
+          const grip = document.createElement('span');
+          divider.appendChild(grip);
+          row.appendChild(divider);
+          row.appendChild(pane);
+          const doc = document.documentElement;
+          const paneBox = pane.getBoundingClientRect();
+          return {
+            mounted: true,
+            splitClass: screen.className.includes('artifact-split'),
+            docOverflow: doc.scrollWidth - doc.clientWidth,
+            paneRight: Math.round(paneBox.right),
+            paneWidth: Math.round(paneBox.width),
+            vw: window.innerWidth,
+            panePreScrollsInside: pre.scrollWidth > pre.clientWidth,
+            postOffenders: ocrScan(),
+          };
+        })()`;
+        function assertBubbleContained(label: string, env: NodeJS.ProcessEnv) {
+          const res = run(`P1-080: long diff bubble contained (${label})`, ["ipc", injectAndMeasure], 15_000, env);
+          if (!res.ok) return;
+          let m: {
+            mounted?: boolean;
+            preInject?: number;
+            preOffenders?: { cls: string }[];
+            docOverflow?: number;
+            msgRight?: number;
+            vw?: number;
+            preScrollsInside?: boolean;
+            postOffenders?: { cls: string }[];
+          } | null = null;
+          try {
+            m = JSON.parse(res.stdout) as typeof m;
+          } catch {}
+          console.log(`     P1-080 measurements (${label}):`, res.stdout.trim());
+          check(`P1-080: chat chain mounted (${label})`, m?.mounted === true, res.stdout);
+          check(
+            `P1-080: nothing leaves the viewport (${label})`,
+            m?.docOverflow !== undefined &&
+              m.docOverflow <= (m.preInject ?? 0) && // the bubble adds no overflow
+              (m.docOverflow as number) <= 0 && // and the document doesn't overflow at all
+              (m.msgRight ?? Infinity) <= (m.vw ?? 0),
+            JSON.stringify(m),
+          );
+          check(
+            `P1-080: long line scrolls INSIDE the code block (${label})`,
+            m?.preScrollsInside === true,
+            JSON.stringify(m),
+          );
+        }
+        if (openChat.ok) {
+          // the window is still 390px wide from the previous shot — the narrow
+          // repro goes first, then the desktop-width one (operator's print)
+          const narrow = await waitProbe(
+            "P1-080: .messages mounted (390px)",
+            "!!document.querySelector('.messages')",
+            (v) => /true/.test(v),
+            localEnv,
+          );
+          if (narrow) {
+            assertBubbleContained("390px", localEnv);
+            // no size args: resizing remounts the shell and would drop the bubble
+            run("P1-080: 390px repro shot", ["shot", overflowShot390], 15_000, localEnv);
+          }
+          // resize to desktop width: the layout remounts (mobile ⇄ desk shells
+          // occupy different tree positions), so re-wait and re-inject
+          const wide = run("P1-080: resize to desktop width", ["shot", overflowShot1440, "1440", "900"], 15_000, localEnv);
+          if (wide.ok) {
+            const desk = await waitProbe(
+              "P1-080: .messages mounted (1440px)",
+              "!!document.querySelector('.messages')",
+              (v) => /true/.test(v),
+              localEnv,
+            );
+            if (desk) {
+              assertBubbleContained("1440px", localEnv);
+              // criterion 4: the same containment guarantees for the artifact
+              // split-pane that opens next to the chat (≥ SPLIT_MIN_PX = 900)
+              const pane = run("P1-080: artifact pane mounted (split-pane)", ["ipc", splitPaneProbe], 15_000, localEnv);
+              if (pane.ok) {
+                let p: {
+                  mounted?: boolean;
+                  splitClass?: boolean;
+                  docOverflow?: number;
+                  paneRight?: number;
+                  paneWidth?: number;
+                  vw?: number;
+                  panePreScrollsInside?: boolean;
+                  postOffenders?: { cls: string }[];
+                } | null = null;
+                try {
+                  p = JSON.parse(pane.stdout) as typeof p;
+                } catch {}
+                console.log("     P1-080 measurements (split-pane):", pane.stdout.trim());
+                check("P1-080: split-pane structure mounted", p?.mounted === true && p.splitClass === true, pane.stdout);
+                check(
+                  "P1-080: artifact pane does not leave the viewport (split-pane)",
+                  p?.docOverflow !== undefined &&
+                    p.docOverflow <= 0 &&
+                    (p.paneRight ?? Infinity) <= (p.vw ?? 0) &&
+                    (p.paneWidth ?? 0) > 0,
+                  JSON.stringify(p),
+                );
+                check(
+                  "P1-080: wide artifact line scrolls INSIDE the pane (split-pane)",
+                  p?.panePreScrollsInside === true,
+                  JSON.stringify(p),
+                );
+              }
+              // evidence shot WITH the chat bubble + split-pane in place
+              run("P1-080: 1440px repro shot", ["shot", overflowShot1440], 15_000, localEnv);
+            }
+          }
+        }
+
         // Stop the daemon ⇒ the existing degradation (yellow reconnecting
         // banner), never the QR ceremony.
         killDaemon("SIGKILL");

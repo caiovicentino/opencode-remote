@@ -295,6 +295,11 @@ select {
   flex-direction: column;
   flex: 1;
   min-height: 0;
+  /* P1-080: flex item on a ROW axis — without min-width: 0 the min-content
+     width of a wide code line inflates .chat past the window (the reading
+     column gets clipped at the right edge by .desk-chat's overflow: hidden) */
+  min-width: 0;
+  max-width: 100%;
 }
 
 .messages {
@@ -305,6 +310,9 @@ select {
   gap: 8px;
   padding-bottom: 8px;
   overscroll-behavior: contain;
+  /* P1-080: same row-axis flex item as .chat — keep the bubble chain shrinkable */
+  min-width: 0;
+  max-width: 100%;
 }
 
 /* welcome empty state (P3-003): shown when the conversation has no bubbles */
@@ -343,10 +351,19 @@ select {
   max-width: 92%;
   white-space: pre-wrap;
   word-break: break-word;
+  /* P1-080: long URLs / unbroken tokens wrap instead of pushing the bubble out */
+  overflow-wrap: anywhere;
   font-size: 0.95rem;
   line-height: 1.5;
   animation: msg-in 0.16s ease;
   contain: content;
+}
+
+/* P1-080: code blocks scroll horizontally INSIDE the block — never the page */
+.msg pre {
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
 }
 
 @keyframes msg-in {
@@ -1031,6 +1048,8 @@ select {
   position: relative;
   flex: 1;
   min-height: 0;
+  min-width: 0;
+  max-width: 100%;
   display: flex;
 }
 
@@ -1097,9 +1116,6 @@ select {
 .desk-pane .screen.artifact-split {
   max-width: none;
 }
-.screen.artifact-split .chat {
-  min-width: 0;
-}
 .split-divider {
   flex: 0 0 9px;
   display: flex;
@@ -1118,6 +1134,7 @@ select {
 }
 .artifact-pane {
   min-width: 0;
+  max-width: 100%;
   display: flex;
   flex-direction: column;
 }
