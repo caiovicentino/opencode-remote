@@ -16,6 +16,11 @@ import { getVoiceSettings } from "./SettingsView";
 import { renderBubbleText } from "./FileCard";
 import ArtifactViewer from "./ArtifactViewer";
 import { artifactMentions, listArtifacts, type ArtifactMeta } from "../lib/artifacts";
+import {
+  artifactKindFor,
+  consumeArtifactEvents,
+  type ArtifactAutoState,
+} from "../lib/artifactAuto";
 import { clampSplitPct, isSplitViewport, SPLIT_MIN_PX } from "../lib/split";
 import { sessionTitleOf } from "../lib/title";
 import { permissionPreview } from "../lib/permission";
@@ -36,6 +41,10 @@ interface Props {
   events: EventEnvelope[];
   connStatus: string;
   voice?: boolean;
+  /** P2-090: true while the right-hand Browser pane is the visible slot —
+   * the browser (manual or P1-072 auto-open) keeps priority over the artifact
+   * auto-open, which must never cover it. */
+  browserActive?: boolean;
   request: (
     method: string,
     path: string,
@@ -206,7 +215,15 @@ function Modal({
   );
 }
 
-export default function ChatView({ sessionId, events, connStatus, voice, request, onBack }: Props) {
+export default function ChatView({
+  sessionId,
+  events,
+  connStatus,
+  voice,
+  browserActive,
+  request,
+  onBack,
+}: Props) {
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
   // message windowing: render only the tail of long conversations and page in
@@ -261,6 +278,9 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
   // agent artifacts (P1-010): cards under messages that reference them
   const [artifacts, setArtifacts] = useState<ArtifactMeta[]>([]);
   const [artifactView, setArtifactView] = useState<ArtifactMeta | null>(null);
+  // P2-090: artifact auto-opened by the daemon's session.artifact event —
+  // kept separate from the manual pick so a user choice is never overridden.
+  const [autoArtifact, setAutoArtifact] = useState<ArtifactMeta | null>(null);
   // P2-062: side-by-side preview — wide viewports render the artifact in a
   // right-hand pane (chat stays visible/navigable); narrow ones keep overlay.
   const [wide, setWide] = useState(() => isSplitViewport(window.innerWidth));
@@ -292,7 +312,10 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
     e.currentTarget.releasePointerCapture(e.pointerId);
     setDraggingSplit(false);
   }
-  const splitOpen = !!artifactView && wide;
+  // P2-062: the manual pick wins over the P2-090 auto-open (a manual choice is
+  // never overridden); both render in the same side-by-side pane.
+  const shownArtifact = artifactView ?? autoArtifact;
+  const splitOpen = !!shownArtifact && wide;
   const t = useT();
 
   const [exporting, setExporting] = useState(false);
@@ -403,6 +426,21 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
     };
   }, [sessionId, idleCount, request]);
 
+  // P2-090: auto-open refs — the effect itself is declared after the
+  // [sessionId] reset effect below so a session switch always re-anchors
+  // before any event batch is consumed.
+  const autoArtifactState = useRef<ArtifactAutoState & { anchor: string | null }>({
+    anchor: null,
+    pending: null,
+  });
+  const artifactDismissedRef = useRef<Set<string>>(new Set());
+  const artifactViewRef = useRef<ArtifactMeta | null>(null);
+  const wideRef = useRef(wide);
+  useEffect(() => {
+    artifactViewRef.current = artifactView;
+    wideRef.current = wide;
+  }, [artifactView, wide]);
+
   useEffect(() => {
     let alive = true;
     sessionIdRef.current = sessionId;
@@ -451,6 +489,11 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
     setQResponded(new Set());
     setQSel({});
     setQCustom({});
+    // P2-090: auto-open state is per session — a pending write of session A
+    // must never fire on B's idle, and the pane closes with the switch.
+    autoArtifactState.current = { anchor: null, pending: null };
+    artifactDismissedRef.current = new Set();
+    setAutoArtifact(null);
     // events that arrived before this view opened are covered by the message
     // fetch below — streaming starts from the next event
     lastEventId.current = events[events.length - 1]?.id ?? null;
@@ -477,6 +520,44 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
     liveRef.current = { text: "" };
     setLiveText("");
   }, [sessionId]);
+
+  // P2-090: auto-open the split-pane when the turn goes idle right after the
+  // agent wrote an artifact. The pure pairing (write → next idle) lives in
+  // lib/artifactAuto; the guards here encode the spec's priorities:
+  // - a manual artifact choice is never overridden;
+  // - a pane the user closed is not re-opened for the same file;
+  // - the browser pane (manual or ocr.preview auto-open) keeps priority.
+  // Declared AFTER the [sessionId] reset effect so a switch re-anchors before
+  // any event batch is consumed.
+  useEffect(() => {
+    const st = autoArtifactState.current;
+    if (!st.anchor) {
+      // first run after mount / session switch: only future events count
+      st.anchor = events[events.length - 1]?.id ?? null;
+      return;
+    }
+    const idx = events.findIndex((e) => e.id === st.anchor);
+    if (idx < 0) {
+      // the watermark slid out of the 500-cap buffer — re-anchor silently,
+      // never replay old artifact/idle pairs from an unknown position
+      st.anchor = events[events.length - 1]?.id ?? null;
+      return;
+    }
+    st.anchor = events[events.length - 1]?.id ?? null;
+    const { open } = consumeArtifactEvents(events.slice(idx + 1), sessionId, st);
+    if (!open) return;
+    if (!wideRef.current) return; // P2-062 split-pane is a wide-viewport feature
+    if (browserActive) return; // P1-072 browser pane has priority
+    if (artifactViewRef.current) return; // user is viewing another artifact
+    if (artifactDismissedRef.current.has(open)) return; // user closed it before
+    setAutoArtifact({
+      sessionId,
+      name: open,
+      size: 0,
+      mtime: Date.now(),
+      kind: artifactKindFor(open),
+    });
+  }, [events, sessionId, browserActive]);
 
   // P1-082: the daemon's pending list (GET /permission) is the source of truth
   // for actionable approval cards — events only trigger this re-fetch.
@@ -1691,7 +1772,12 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
                       marginTop: 4,
                       width: "100%",
                     }}
-                    onClick={() => setArtifactView(a)}
+                    onClick={() => {
+                      setArtifactView(a);
+                      // manual pick replaces the auto pane (without dismissal —
+                      // the user is still engaging with artifacts)
+                      setAutoArtifact(null);
+                    }}
                     title={t("openArtifact")}
                   >
                     <span aria-hidden className="artifact-icon">
@@ -2149,7 +2235,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
         </div>
       </div>
 
-      {artifactView && wide && (
+      {shownArtifact && wide && (
         <>
           <div
             className={`split-divider${draggingSplit ? " dragging" : ""}`}
@@ -2165,9 +2251,18 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
           </div>
           <div className="artifact-pane" style={{ flexBasis: `${splitPct * 100}%` }}>
             <ArtifactViewer
-              meta={artifactView}
+              meta={shownArtifact}
               request={request}
-              onClose={() => setArtifactView(null)}
+              onClose={() => {
+                if (artifactView) {
+                  setArtifactView(null);
+                } else if (autoArtifact) {
+                  // P2-090: closing the auto-opened pane is a choice — the same
+                  // file is not re-opened by the next idle
+                  artifactDismissedRef.current.add(autoArtifact.name);
+                  setAutoArtifact(null);
+                }
+              }}
               variant="panel"
             />
           </div>
