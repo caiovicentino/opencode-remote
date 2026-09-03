@@ -89,6 +89,10 @@
   #bform input:focus { border-color:#3fa7ff; }
   #bform button { background:#12314a; color:#bfe3ff; border:1px solid #2b6ea8; border-radius:6px; font:700 11px ui-monospace, monospace; letter-spacing:.12em; padding:9px 16px; cursor:pointer; }
   #bform button:hover { background:#1a4266; }
+  #bform .stepper { display:flex; align-items:center; gap:8px; }
+  #bform .stepper button { width:30px; height:30px; padding:0; font-size:14px; line-height:1; }
+  #bform .stepper b { min-width:34px; text-align:center; font:700 15px ui-monospace, monospace; color:#cfe6f5; }
+  #bform .rochip { display:inline-block; padding:8px 12px; border:1px dashed rgba(160,190,220,.3); border-radius:6px; font:700 11px ui-monospace, monospace; color:#8fb4c9; letter-spacing:.1em; }
   #card { width:min(720px,92vw); max-height:82vh; overflow:auto; background:var(--panel); border:1px solid rgba(34,211,238,.28); border-radius:14px;
           padding:18px 22px; animation:rise .25s ease-out; }
   @keyframes rise { from { transform:translateY(16px); opacity:0 } to { transform:none; opacity:1 } }
@@ -174,6 +178,17 @@
         <label>TASKS/DIA<input id="b-tasks" type="number" min="1" /></label>
         <label>DEPLOYS/DIA<input id="b-dep" type="number" min="1" /></label>
         <button id="bsave" onclick="saveBudget()">SALVAR</button>
+      </div>
+      <div class="brow" style="margin-top:12px">
+        <label>FROTA · PARALELISMO
+          <span class="stepper"><button onclick="fleetStep(-1)">−</button><b id="f-slots">2</b><button onclick="fleetStep(1)">+</button></span>
+        </label>
+        <label>COORDENADOR (TIER-B)
+          <input id="f-coord" list="coord-presets" placeholder="claude-fable-5-1" />
+          <datalist id="coord-presets"><option value="claude-fable-5-1"></option><option value="claude-opus-5"></option><option value="opus"></option></datalist>
+        </label>
+        <label>CONSTRUTOR<span class="rochip">GLM · flash</span></label>
+        <button id="fsave" onclick="saveFleet()">APLICAR FROTA</button>
       </div>
     </div>
   </div>
@@ -777,6 +792,7 @@ function openCore() {
   $("m-tl").innerHTML = world.deployEvents.length ? world.deployEvents.slice(-40).map(tlRow).join("") : `<div class="empty">sem deploys no feed</div>`;
   $("bform").style.display = "block";
   $("b-tasks").value = world.maxTasks; $("b-dep").value = world.maxDeploys; $("bsave").textContent = "SALVAR"; $("bsave").disabled = false;
+  $("f-slots").textContent = world.fleetSlots || 2; $("f-coord").value = world.coordinator || "";
   $("modal").classList.add("open");
 }
 function closeModal() { $("modal").classList.remove("open"); }
@@ -794,6 +810,31 @@ async function saveBudget() {
   } catch { done(false); }
 }
 window.saveBudget = saveBudget;
+function fleetStep(d) {
+  const cur = parseInt($("f-slots").textContent, 10) || world.fleetSlots || 2;
+  $("f-slots").textContent = Math.max(1, Math.min(8, cur + d));
+}
+window.fleetStep = fleetStep;
+async function saveFleet() {
+  const slots = parseInt($("f-slots").textContent, 10);
+  const coordinator = $("f-coord").value.trim();
+  const body = {};
+  if (Number.isInteger(slots) && slots >= 1 && slots <= 8) body.slots = slots;
+  if (coordinator) body.coordinator = coordinator;
+  if (!body.slots && !body.coordinator) return;
+  const btn = $("fsave"); btn.disabled = true; btn.textContent = "…";
+  const done = (ok) => { btn.textContent = ok ? "APLICADO" : "ERRO"; setTimeout(() => { btn.textContent = "APLICAR FROTA"; btn.disabled = false; }, 2400); };
+  try {
+    const res = await fetch("/api/pilot-fleet", { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token}` }, body: JSON.stringify(body) });
+    const j = await res.json();
+    if (j.cfg) {
+      world.fleetSlots = j.cfg.slots || world.fleetSlots;
+      world.coordinator = j.cfg?.models?.tierB?.planner || world.coordinator;
+      renderHud(); done(true);
+    } else done(false);
+  } catch { done(false); }
+}
+window.saveFleet = saveFleet;
 
 // hit-testing: ships, stations, core
 function hit(mx, my) {
@@ -872,6 +913,8 @@ async function poll() {
     lastHb = world.hbMs;
     world.tasks = st.tasks ?? 0; world.deploys = st.deploys ?? 0; world.failures = st.failures ?? 0; world.merges = st.merges ?? 0;
     world.maxTasks = cfg.maxTasksPerDay || 6; world.maxDeploys = cfg.maxDeploysPerDay || 6;
+    world.fleetSlots = Number.isInteger(cfg.slots) ? cfg.slots : world.fleetSlots || 2;
+    world.coordinator = (cfg.models && cfg.models.tierB && cfg.models.tierB.planner) || world.coordinator || "";
     world.audit = st.auditMode && st.auditMode.reason ? st.auditMode : null;
     world.nightlySkipped = st.nightlySkipped || null;
     world.taskCosts = st.taskCosts || {}; world.taskAttempts = st.taskAttempts || {}; world.contextPressure = st.contextPressure || {};
@@ -997,6 +1040,7 @@ function gateSteps(t0, task, failAt) {
 let mockStart = 0, mockIdx = 0, mockHbAt = 0, mockLoops = 0;
 function mockInit() {
   world.maxTasks = 6; world.maxDeploys = 6; world.hbMs = 0;
+  world.fleetSlots = 2; world.coordinator = "claude-fable-5-1";
   world.readyList = [{ id:"P2-106", title:"Jornada de pareamento nível benchmark" }, { id:"P2-107", title:"Cromo do chat nível benchmark" }, { id:"P2-108", title:"Sidebar + estado vazio" }, { id:"P2-109", title:"Torre PR1 — eventos" }, { id:"P2-110", title:"Torre PR2 — SSE" }];
   world.blockedList = [{ id:"P2-099", title:"bloqueada" }]; world.ready = 5; world.blocked = 1;
   world.history = [3,5,4,6,2,5,4].map((n, i) => ({ day:`09-${String(i+1).padStart(2,"0")}`, ok:n, failed: i % 3 === 1 ? 1 : 0 }));
