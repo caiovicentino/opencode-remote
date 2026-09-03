@@ -268,6 +268,14 @@ the whole navigation lives behind a single view stack. Keyboard shortcuts
 (search conversations and actions), `Cmd+1..6` switch to chat / Artifacts /
 Browser / Files / Settings / Mission Control.
 
+**Design tokens & reading typography (P3-083)**: the conversation column is
+capped at ~46rem and centered like the Claude Desktop benchmark, with a
+purposeful type scale (15–16px body, 1.65 line-height), motion standardized
+on 150/300ms ease-out tokens (fully disabled under `prefers-reduced-motion`,
+including programmatic scrolls) and a six-step dark-gray ladder where every
+step has one role — canvas, chrome, raised surface, hover, resting and active
+borders. All color/type/spacing/motion literals live in `apps/web/src/tokens.css`.
+
 **Auto-preview (P1-072)**: when the agent brings up a local site (http.server,
 vite, a dev server…) and mentions `http://localhost:<port>` in its reply, the
 Browser pane opens by itself next to the chat, pointed at that URL, rendered

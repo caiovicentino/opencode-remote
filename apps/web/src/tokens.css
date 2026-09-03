@@ -1,19 +1,31 @@
 /* P1-047: single source of every color literal in apps/web/src.
-   Dark values are the pre-existing palette, unchanged; light values are the
-   tuned per-theme counterparts. index.css imports this file first. */
+   Dark values are the pre-existing palette, refined into an explicit gray
+   ladder by P3-083; light values are the tuned per-theme counterparts.
+   index.css imports this file first. */
 :root {
-  --bg: #0a0a0a;
-  --surface: #161616;
-  --border: #262626;
+  /* gray ladder (P3-083): dark hierarchy where every step has a job —
+     canvas (app background) < panel (chrome/rails) < raised (cards, bubbles)
+     < hover (interactive fill) < line (resting border) < line-strong
+     (hover/active border). Steps are even and slightly cool; no decorative
+     grays: text uses --text/--fg/--muted, borders use the ladder. */
+  --gray-canvas: #0a0a0b;
+  --gray-panel: #0f0f12;
+  --gray-raised: #151518;
+  --gray-hover: #1b1b20;
+  --gray-line: #26262b;
+  --gray-line-strong: #33333a;
+  --bg: var(--gray-canvas);
+  --surface: var(--gray-raised);
+  --border: var(--gray-line);
   --text: #ededed;
   --muted: #8a8a8a;
   --accent: #4ade80;
   --danger: #f87171;
   --warn: #fbbf24;
   --user-bubble: #1d3b26;
-  /* shell tokens (P2-055) */
-  --panel: #101014;
-  --bg2: #1a1a20;
+  /* shell tokens (P2-055), mapped onto the gray ladder (P3-083) */
+  --panel: var(--gray-panel);
+  --bg2: var(--gray-hover);
   --fg: #ededed;
   /* semantic status colors (connection dot, banners, session tones) */
   --status-ok: #2ecc71;
@@ -41,11 +53,23 @@
   --space-4: 16px;
   --space-5: 24px;
   --space-6: 32px;
-  /* typography scale */
+  /* typography scale (P3-083): conversation-first, PRODUCT.md benchmark —
+     body 15–16px with 1.6–1.7 line-height; everything smaller is support text */
   --font-size-xs: 0.72rem;
   --font-size-sm: 0.85rem;
   --font-size-md: 0.95rem;
+  --font-size-body: 0.95rem; /* 15.2px conversation body */
   --font-size-lg: 1.15rem;
+  --line-height-body: 1.65; /* PRODUCT.md: 1.6–1.7 */
+  --line-height-tight: 1.35;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* motion (P3-083): 150ms for interactions/entrances, 300ms for surfaces,
+     always ease-out, always overridable by prefers-reduced-motion */
+  --motion-fast: 150ms;
+  --motion-slow: 300ms;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  /* reading column (P3-083): PRODUCT.md ~46rem max, centered on the ChatView */
+  --reading-max: 46rem;
   --font-weight-medium: 500;
   /* radius scale */
   --radius-sm: 8px;
