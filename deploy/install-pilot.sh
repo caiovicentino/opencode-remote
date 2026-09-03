@@ -6,6 +6,8 @@
 # hardcoded. RELAY_URL env wins; a re-install without it reuses the value
 # from the existing plist; a first install requires it (LAN mode:
 # RELAY_URL=wss://<lan-ip>:8788, see README "Install as a third party").
+# NODE_EXTRA_CA_CERTS follows the same rule: env wins, re-install recovers
+# from the plist (round 5 — dropping it silently broke mkcert wss:// relays).
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -16,8 +18,17 @@ PLIST="$HOME/Library/LaunchAgents/com.ocr.pilot.plist"
 mkdir -p "$LOGS" "$DIR/pilot"
 
 RELAY_URL="${RELAY_URL:-}"
-if [ -z "$RELAY_URL" ] && [ -f "$PLIST" ]; then
-  RELAY_URL="$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:RELAY_URL' "$PLIST" 2>/dev/null || true)"
+NODE_EXTRA_CA_CERTS="${NODE_EXTRA_CA_CERTS:-}"
+if [ -f "$PLIST" ]; then
+  if [ -z "$RELAY_URL" ]; then
+    RELAY_URL="$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:RELAY_URL' "$PLIST" 2>/dev/null || true)"
+  fi
+  # Round 5: recover the CA exactly like RELAY_URL — an idempotent re-install
+  # without the env var must not silently strip it from the plist (Node does
+  # not trust the macOS keychain, so the wss:// relay becomes unreachable).
+  if [ -z "$NODE_EXTRA_CA_CERTS" ]; then
+    NODE_EXTRA_CA_CERTS="$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:NODE_EXTRA_CA_CERTS' "$PLIST" 2>/dev/null || true)"
+  fi
 fi
 if [ -z "$RELAY_URL" ]; then
   echo "error: RELAY_URL is required on first install — no default hostname is baked in." >&2

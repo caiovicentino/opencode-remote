@@ -195,7 +195,8 @@ vars out too. Every port and cert path is an environment variable
 the same rule: `deploy/install-pilot.sh` has no hardcoded hostname — set
 `RELAY_URL` in the environment (re-installs without it keep the value already
 stored in the plist), plus `NODE_EXTRA_CA_CERTS` when the relay uses a local
-CA — Node never trusts the macOS keychain.
+CA — recovered from the plist on re-install as well, never silently dropped;
+Node never trusts the macOS keychain.
 
 ### Desktop app installer (DMG)
 

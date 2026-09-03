@@ -179,7 +179,8 @@ gerados o relay sobe em ws puro na 8788, então use `RELAY_URL="ws://$LAN_IP:878
 e deixe de fora `PWA_TLS_*`/`NODE_EXTRA_CA_CERTS` também. Portas e certificados
 são variáveis de ambiente. O serviço do pilot segue a mesma regra:
 `deploy/install-pilot.sh` não tem hostname fixo — defina `RELAY_URL` (e
-`NODE_EXTRA_CA_CERTS` para wss com CA local).
+`NODE_EXTRA_CA_CERTS` para wss com CA local; na reinstalação os dois são
+recuperados do plist, nunca descartados sem querença).
 
 ### Instalador do app desktop (DMG)
 
