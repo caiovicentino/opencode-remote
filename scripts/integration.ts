@@ -18,12 +18,9 @@ import {
   type OpResponse,
 } from "@ocr/protocol";
 import WebSocket from "ws";
+import { bootOnEphemeralPort, portHolders } from "./e2e-orphans";
 
 const OPENCODE_BIN = process.env.OPENCODE_BIN ?? "opencode";
-const OPENCODE_PORT = 4377;
-const RELAY_PORT = 4378;
-const OPENCODE_URL = `http://127.0.0.1:${OPENCODE_PORT}`;
-const RELAY_URL = `ws://127.0.0.1:${RELAY_PORT}`;
 
 const children: ChildProcess[] = [];
 function cleanup() {
@@ -49,35 +46,69 @@ function bg(cmd: string, args: string[], env: Record<string, string> = {}) {
   return child;
 }
 
-// the star: a REAL opencode server, isolated on its own port
-const oc = bg(OPENCODE_BIN, ["serve", "--port", String(OPENCODE_PORT)]);
-oc.on("error", (e) => {
-  if ((e as NodeJS.ErrnoException).code === "ENOENT") {
-    console.log("SKIP: opencode binary not found");
-    process.exit(0);
-  }
-});
-
-// wait for its health endpoint
-let healthy = false;
-for (let i = 0; i < 60; i++) {
-  try {
-    const r = await fetch(`${OPENCODE_URL}/global/health`);
-    if (r.ok) {
-      healthy = true;
-      break;
-    }
-  } catch {}
-  await new Promise((r) => setTimeout(r, 250));
-}
-if (!healthy) {
+// the star: a REAL opencode server, isolated on its own EPHEMERAL port
+// (P1-081: fixed 4377 died to zombies from previous runs)
+let ocBoot: { port: number; child: ChildProcess };
+try {
+  ocBoot = await bootOnEphemeralPort({
+    label: "opencode server",
+    spawn: (port) => {
+      const child = bg(OPENCODE_BIN, ["serve", "--port", String(port)]);
+      child.on("error", (e) => {
+        if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+          console.log("SKIP: opencode binary not found");
+          process.exit(0);
+        }
+      });
+      return child;
+    },
+    probe: async (port) => {
+      try {
+        const r = await fetch(`http://127.0.0.1:${port}/global/health`);
+        return r.ok;
+      } catch {
+        return false;
+      }
+    },
+    timeoutMs: 20_000,
+  });
+} catch (err) {
   console.log("SKIP: opencode server never became healthy");
+  console.error(String((err as Error)?.message ?? err));
   process.exit(0);
 }
+const OPENCODE_URL = `http://127.0.0.1:${ocBoot.port}`;
 console.log("real opencode server healthy:", OPENCODE_URL);
 
-// relay (fresh port, ephemeral)
-bg("npx", ["tsx", "apps/relay/src/index.ts"], { RELAY_PORT: String(RELAY_PORT) });
+// relay on an ephemeral port too (fixed 4378 was the P1-077 handshake killer),
+// marked so the e2e pre-flight can reap it if it ever outlives this run
+let relayBoot: { port: number; child: ChildProcess };
+try {
+  relayBoot = await bootOnEphemeralPort({
+    label: "relay",
+    spawn: (port) =>
+      bg("npx", ["tsx", "apps/relay/src/index.ts"], {
+        RELAY_PORT: String(port),
+        OCR_E2E_MARKER: tmp,
+      }),
+    probe: (port) =>
+      new Promise<boolean>((resolve) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+        ws.on("open", () => {
+          ws.close();
+          resolve(true);
+        });
+        ws.on("error", () => resolve(false));
+      }),
+    timeoutMs: 20_000,
+  });
+} catch (err) {
+  console.error("INTEGRATION FAILED: relay never came up");
+  console.error(String((err as Error)?.message ?? err));
+  process.exit(1);
+}
+const RELAY_URL = `ws://127.0.0.1:${relayBoot.port}`;
+
 // daemon with throwaway HOME -> fresh identity + empty allowlist (bootstrap)
 bg("npx", ["tsx", "apps/daemon/src/index.ts"], {
   HOME: tmp,
@@ -85,23 +116,6 @@ bg("npx", ["tsx", "apps/daemon/src/index.ts"], {
   OPENCODE_URL,
   OCR_MACHINE_NAME: "integration-test",
 });
-
-// wait for the relay to accept connections
-for (let i = 0; i < 40; i++) {
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const ws = new WebSocket(RELAY_URL);
-      ws.on("open", () => {
-        ws.close();
-        resolve();
-      });
-      ws.on("error", reject);
-    });
-    break;
-  } catch {
-    await new Promise((r) => setTimeout(r, 250));
-  }
-}
 
 // --- client flow against the real daemon -----------------------------------
 const stateFile = join(tmp, ".opencode-remote", "daemon.json");
@@ -168,15 +182,19 @@ function request(
   });
 }
 
-// pairing: bootstrap (empty allowlist) must accept us
-ws.send(
-  JSON.stringify({
-    room: state.room,
-    from: myId,
-    payload: Buffer.from(JSON.stringify({ type: "hello", hello })).toString("base64"),
-  }),
-);
+// pairing: bootstrap (empty allowlist) must accept us. P1-081: the relay is a
+// blind router — a hello sent before the daemon joins the relay room is
+// dropped forever (the state file lands a beat before connectRelay()), so the
+// hello is retried until the confirm comes back.
 const paired = await new Promise<boolean>((resolve) => {
+  let settledPairing = false;
+  const retry: NodeJS.Timeout[] = [];
+  const finish = (ok: boolean) => {
+    if (settledPairing) return;
+    settledPairing = true;
+    retry.forEach((t) => clearInterval(t));
+    resolve(ok);
+  };
   ws.on("message", (data) => {
     const frame = JSON.parse(data.toString()) as { from?: string; payload?: string };
     if (!frame.from || frame.from === myId) return;
@@ -190,16 +208,31 @@ const paired = await new Promise<boolean>((resolve) => {
           c.confirm,
           sessionKey,
           new TextEncoder().encode("ocr-confirm"),
-        ).then((r) => resolve(r?.ok === true));
+        ).then((r) => finish(r?.ok === true));
       }
     } catch {
       // data frame, not control
     }
   });
-  setTimeout(() => resolve(false), 12_000);
+  const helloFrame = JSON.stringify({
+    room: state.room,
+    from: myId,
+    payload: Buffer.from(JSON.stringify({ type: "hello", hello })).toString("base64"),
+  });
+  ws.send(helloFrame);
+  retry.push(setInterval(() => ws.send(helloFrame), 500));
+  retry.push(
+    setTimeout(() => {
+      finish(false);
+    }, 12_000),
+  );
 });
 if (!paired) {
   console.error("INTEGRATION FAILED: handshake");
+  // P1-081: name the culprit instead of failing blind — a zombie from a
+  // previous gate run holding the relay port shows up right here.
+  console.error(`port holder dump for the relay port ${relayBoot.port}:`);
+  console.error(portHolders(relayBoot.port));
   process.exit(1);
 }
 console.log("pairing against real daemon: OK");

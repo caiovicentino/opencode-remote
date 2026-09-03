@@ -64,7 +64,7 @@ async function startRelay(env: Record<string, string>) {
   const [port, metrics] = [await freePort(), await freePort()];
   const proc = spawn("npx", ["tsx", "apps/relay/src/index.ts"], {
     cwd: join(import.meta.dirname, ".."),
-    env: { ...process.env, ...env, RELAY_PORT: String(port), RELAY_METRICS_PORT: String(metrics) },
+    env: { ...process.env, ...env, RELAY_PORT: String(port), RELAY_METRICS_PORT: String(metrics), OCR_E2E_MARKER: "1" },
     stdio: ["ignore", "ignore", "inherit"],
   });
   proc.on("error", (e) => console.error("relay spawn error:", e));
