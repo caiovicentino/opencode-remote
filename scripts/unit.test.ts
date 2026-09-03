@@ -116,10 +116,10 @@ import {
   enterAuditMode,
   feverReason,
   formatDiagnosis,
-  infraFailureKind,
   recordBlockEvent,
   recordCycle,
   recordInfraFailure,
+  resultInfraKind,
 } from "../apps/pilot/src/audit";
 import {
   appendCommitAndPush,
@@ -3805,23 +3805,28 @@ check(
 }
 
 // --- P1-074 infra failures must not burn attempts or fever samples ----------------
+// P1-094: classification rides the structured `infra` flag, never the detail text
 {
-  // classifier positives (spec criteria)
-  check("infra kind: preflight API unreachable → api-down", infraFailureKind("...[preflight] opencode API unreachable...") === "api-down");
-  check("infra kind: Cannot connect to API → api-down", infraFailureKind("Cannot connect to API") === "api-down");
-  check("infra kind: spawn error → spawn", infraFailureKind("x\nspawn error: ENOENT") === "spawn");
-  check("infra kind: ECONNREFUSED → network", infraFailureKind("ECONNREFUSED ...") === "network");
-  check("infra kind: timeout-without-output marker → timeout", infraFailureKind("[infra] builder timed out without output (round 2)") === "timeout");
+  // positives: only the producer-set structured flag counts
+  check("infra kind: structured api-down flag → api-down", resultInfraKind({ ok: false, infra: "api-down" }) === "api-down");
+  check("infra kind: structured spawn flag → spawn", resultInfraKind({ ok: false, infra: "spawn" }) === "spawn");
+  check("infra kind: structured timeout flag → timeout", resultInfraKind({ ok: false, infra: "timeout" }) === "timeout");
+  // THE task criterion: a merit finding citing infra words must stay merit
+  check("infra kind: finding citing ECONNREFUSED is merit", resultInfraKind({ ok: false, detail: "max review rounds reached — findings: fix flaky test (got ECONNREFUSED at setup)" }) === null);
   // negatives — merit failures stay merit
-  check("infra kind: gatekeeper rejection is merit", infraFailureKind("gatekeeper rejected: eval battery or invariants failed") === null);
-  check("infra kind: review rounds exhausted is merit", infraFailureKind("max review rounds reached — findings: ...") === null);
-  check("infra kind: empty diff is merit", infraFailureKind("builder produced an empty diff") === null);
+  check("infra kind: gatekeeper rejection is merit", resultInfraKind({ ok: false, detail: "gatekeeper rejected: eval battery or invariants failed" }) === null);
+  check("infra kind: review rounds exhausted is merit", resultInfraKind({ ok: false, detail: "max review rounds reached — findings: ..." }) === null);
+  check("infra kind: empty diff is merit", resultInfraKind({ ok: false, detail: "builder produced an empty diff" }) === null);
+  // ok outcomes are never infra, even with a text mention of infra words
+  check("infra kind: ok result with econnrefused text is not infra", resultInfraKind({ ok: true, detail: "anything-econnrefused", infra: "spawn" }) === null);
+  // preflight/spawn producer sites keep the free retry
+  check("infra kind: preflight failure carries api-down", resultInfraKind({ ok: false, detail: "[preflight] opencode API unreachable", infra: "api-down" }) === "api-down");
 
   // fever immunity: 12 consecutive infra outcomes (the runSlot infra branch:
   // recordInfraFailure + skip recordCycle) add no cycle sample and no attempt
   const infraRun = { date: "2026-09-01", tasks: 0, deploys: 0, failures: 0, taskAttempts: {} } as PilotState;
   for (let i = 0; i < 12; i++) {
-    const infra = infraFailureKind("[preflight] opencode API unreachable at http://127.0.0.1:4096");
+    const infra = resultInfraKind({ ok: false, detail: "[preflight] opencode API unreachable at http://127.0.0.1:4096", infra: "api-down" });
     if (infra) recordInfraFailure(infraRun);
     else recordCycle(infraRun, false, "P1-074", i);
   }
@@ -3830,7 +3835,7 @@ check(
 
   // merit control: one non-infra failure still takes the existing path
   const meritRun = { date: "2026-09-01", tasks: 0, deploys: 0, failures: 0, taskAttempts: {} } as PilotState;
-  if (!infraFailureKind("gatekeeper rejected: eval battery or invariants failed")) {
+  if (!resultInfraKind({ ok: false, detail: "gatekeeper rejected: eval battery or invariants failed" })) {
     recordCycle(meritRun, false, "P1-074");
     recordTaskFailure(meritRun, "P1-074", 4);
   }

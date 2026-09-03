@@ -60,32 +60,15 @@ export type InfraFailureKind = "api-down" | "spawn" | "timeout" | "network";
  * pass without entering audit mode). */
 export const INFRA_DOCTOR_EVERY = 3;
 
-/** Case-insensitive needles, highest-fidelity signature first. `[infra] …` is
- * the marker pipeline.ts emits for a builder timeout with no output. */
-const INFRA_SIGNATURES: Array<[InfraFailureKind, string]> = [
-  ["timeout", "[infra] builder timed out without output"],
-  ["api-down", "[preflight] opencode api unreachable"],
-  ["api-down", "cannot connect to api"],
-  ["spawn", "spawn error:"],
-  ["network", "econnrefused"],
-  ["network", "econnreset"],
-  ["network", "etimedout"],
-];
-
 /**
- * P1-074: classify a pipeline failure detail as infrastructure noise (opencode
- * API down, agent spawn failure, network error, builder timeout with no
- * output) or null for a merit failure. Case-insensitive; first match wins.
- * A merit detail that merely mentions infra words in a builder log tail may
- * classify as infra — the false-positive direction is safe (the retry is free:
- * no attempt is burned, no block can land).
+ * P1-094: classify a pipeline failure as infrastructure noise **only** from the
+ * structured `infra` flag the failure's producer set (runner stage flags,
+ * timeout-without-output) — never by scanning `detail` text, which often embeds
+ * reviewer findings that may legitimately mention infra words (a merit finding
+ * citing ECONNREFUSED must stay merit). Successful outcomes are never infra.
  */
-export function infraFailureKind(text: string): InfraFailureKind | null {
-  const t = text.toLowerCase();
-  for (const [kind, needle] of INFRA_SIGNATURES) {
-    if (t.includes(needle)) return kind;
-  }
-  return null;
+export function resultInfraKind(result: { ok: boolean; infra?: InfraFailureKind }): InfraFailureKind | null {
+  return result.ok ? null : result.infra ?? null;
 }
 
 /**
