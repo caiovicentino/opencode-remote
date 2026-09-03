@@ -112,7 +112,7 @@ import {
 } from "../apps/pilot/src/failureLessons";
 import { AtomicWriteIo, clampSlots, ensureSingleton, loadState, normalizeModels, recordTaskFailure, saveState, startHeartbeat, tierBModelFor, writeJsonAtomic } from "../apps/pilot/src/state";
 import type { PilotState } from "../apps/pilot/src/state";
-import { clearTaskAttempts, doctorBacklog, doctorBranches, doctorRefs, doctorState, normalizePilotState, parseAttemptsArgs, runAttemptsCommand, validateBacklog, type AttemptsRequest, type RunFn } from "../apps/pilot/src/doctor";
+import { clearTaskAttempts, doctorBacklog, doctorBranches, doctorRefs, doctorState, doctorTierB, normalizePilotState, parseAttemptsArgs, runAttemptsCommand, runDoctor, validateBacklog, type AttemptsRequest, type RunFn } from "../apps/pilot/src/doctor";
 import { avgPhaseDurations, burnDown, countFailSteps, recordLessonImpact, rollbackHealthAlert } from "../apps/pilot/src/metrics";
 import type { PilotEvent } from "../apps/pilot/src/events";
 import { areaKey, NIGHTLY_IDLE_MS, nightlyIdleDue, nightlySkipDue, pickBatch, pickTasks, AFFINITY_TTL_MS, assignSlots, SLOT_START_STAGGER_MS, startDelayMs, type SlotAffinity } from "../apps/pilot/src/scheduler";
@@ -152,7 +152,7 @@ import {
 import { clearPendingRefill, readPendingRefill, relandDetail, relandPendingRefill, savePendingRefill } from "../apps/pilot/src/refill";
 import { landMetaCommit, mayPushUnderDir, metaIo, META_BRANCH, type MetaPushIo } from "../apps/pilot/src/metapush";
 import { EXPLORER_MAX_FINDINGS, EXPLORER_MAX_STEPS, EXPLORER_TIMEOUT_MIN, EXPLORER_PUSH_RETRIES, EXPLORER_PUSH_WAIT_MS, FABLE_MARKER, FABLE_MAX_FINDINGS, JOURNEY_STEPS, claimExplorerRun, commitAndPushFindings, commitAndPushFableFindings, explorerPrompt, explorerSessionName, explorerSpec, fablePrompt, fableSpec, journeyShotName, parseExplorerFindings, parseFableFindings, type ExplorerFinding, type FableFinding } from "../apps/pilot/src/explorer";
-import { runAgent, API_PREFLIGHT, apiHealthy, claudeArgs, idScanner, mergeAgentIds, OPENCODE_URL_DEFAULT, scanIds, shouldFallbackTierB, waitForApi } from "../apps/pilot/src/runner";
+import { noteTierBOutcome, resetTierBSpawnStreak, runAgent, API_PREFLIGHT, apiHealthy, TIERB_SPAWN_ALERT_EVERY, shouldAlertTierBSpawn, claudeArgs, idScanner, mergeAgentIds, OPENCODE_URL_DEFAULT, scanIds, shouldFallbackTierB, waitForApi } from "../apps/pilot/src/runner";
 import { mkdtempSync, mkdirSync, readdirSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync, utimesSync } from "node:fs";
 import { execSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
@@ -210,6 +210,7 @@ import {
   verifyRollbackHealth,
 } from "../apps/pilot/src/deploy";
 import {
+  dirtyGuardDetail,
   installModeFor,
   LOCK_HASH_RE,
   MAX_QUARANTINE_ENTRIES,
@@ -3518,6 +3519,144 @@ check("disk guard: statfs probe returns bytes on a real dir", realFree !== null 
     "deploy guard: quarantined sha refused before any git step",
     banned.ok === false && banned.rolledBack === false && banned.detail.startsWith("sha quarantined"),
   );
+}
+
+// --- P2-114 ops fail-closed: dirty prod checkout + tier-B binary probe --------
+{
+  check("dirty guard: empty status → null", dirtyGuardDetail("") === null);
+  check("dirty guard: untracked-only status → null", dirtyGuardDetail("?? foo\n") === null);
+  const dgDirty = dirtyGuardDetail(" M a.ts\nM  b.ts\n") ?? "";
+  check(
+    "dirty guard: tracked modifications abort with paths",
+    dgDirty.includes("2 tracked file(s)") && dgDirty.includes("a.ts") && dgDirty.includes("deploy aborted before reset"),
+  );
+  check("dirty guard: failed probe fails closed", (dirtyGuardDetail(null) ?? "").includes("state unknown"));
+  const dgMany = dirtyGuardDetail(" M a.ts\n M b.ts\n M c.ts\n M d.ts\nM  e.ts\n") ?? "";
+  check(
+    "dirty guard: >3 paths summarized with +k more",
+    dgMany.includes("5 tracked file(s)") && dgMany.includes("a.ts, b.ts, c.ts +2 more"),
+  );
+
+  // Real-git acceptance (P1-036 lesson: never mock git): a dirty prod checkout
+  // must abort BEFORE any reset — the operator edit survives and HEAD holds.
+  const gdir = mkdtempSync(join(tmpdir(), "ocr-dirty-deploy-"));
+  execSync("git init -q && git config user.email t@t && git config user.name t", { cwd: gdir });
+  writeFileSync(join(gdir, "f.txt"), "original\n");
+  execSync("git add f.txt && git commit -q -m init", { cwd: gdir });
+  writeFileSync(join(gdir, "f.txt"), "operator edit\n");
+  const dirtySha = execSync("git rev-parse HEAD", { cwd: gdir, encoding: "utf8" }).trim();
+  const dirtyEvents: Array<{ phase?: string; ok?: boolean }> = [];
+  const dirtyNotifies: Array<{ task: string; ok: boolean; detail: string }> = [];
+  const cfgDirty: PilotConfig = {
+    repo: gdir,
+    workspace: gdir,
+    slots: 1,
+    maxTasksPerDay: 1,
+    maxDeploysPerDay: 1,
+    maxReviewRounds: 1,
+    maxAttemptsPerTask: 1,
+    taskTimeoutMin: 1,
+    reviewTimeoutMin: 1,
+    monitorMin: 1,
+    digest: false,
+  };
+  const dirtyRes = await deploy(cfgDirty, dirtySha, { task: "P2-114" }, {
+    verifiedMerges: [{ sha: dirtySha, task: "P2-114", at: "t" }],
+    quarantine: [],
+    probeFreeBytes: async () => 100 * GB,
+    notify: async (task, ok, detail) => {
+      dirtyNotifies.push({ task, ok, detail });
+      return true;
+    },
+    emitEvent: (_t, fields) => {
+      dirtyEvents.push(fields);
+    },
+  });
+  check(
+    "dirty guard: dirty prod checkout aborts the deploy before reset",
+    dirtyRes.ok === false && dirtyRes.rolledBack === false && dirtyRes.detail.startsWith("prod checkout dirty"),
+  );
+  check(
+    "dirty guard: start + dirty-guard events emitted, ok:false",
+    dirtyEvents.length === 2 && dirtyEvents[1]!.phase === "dirty-guard" && dirtyEvents[1]!.ok === false,
+  );
+  check(
+    "dirty guard: supervisor notified once under the task id",
+    dirtyNotifies.length === 1 && dirtyNotifies[0]!.task === "P2-114" && dirtyNotifies[0]!.ok === false,
+  );
+  check("dirty guard: operator edit survives (nothing reset)", readFileSync(join(gdir, "f.txt"), "utf8") === "operator edit\n");
+  check("dirty guard: HEAD unchanged", execSync("git rev-parse HEAD", { cwd: gdir, encoding: "utf8" }).trim() === dirtySha);
+  rmSync(gdir, { recursive: true, force: true });
+
+  // tier-B binary probe (doctor)
+  let probeCalls: string[] = [];
+  const okRun: RunFn = (cmd) => {
+    probeCalls.push(cmd);
+    return { ok: true, output: "1.2.3 (Claude Code)\n" };
+  };
+  check(
+    "tierb doctor: no models configured → probe skipped, run never called",
+    doctorTierB(undefined, okRun).ok && probeCalls.length === 0,
+  );
+  const failRun: RunFn = () => ({ ok: false, output: "command not found: claude" });
+  const badTierB = doctorTierB({ tierB: { planner: "opus" } }, failRun);
+  check(
+    "tierb doctor: broken binary → red with output tail",
+    !badTierB.ok && !badTierB.changed && badTierB.detail.includes("tier-B binary unusable") && badTierB.detail.includes("command not found: claude"),
+  );
+  probeCalls = [];
+  const goodTierB = doctorTierB({ tierB: { planner: "opus" } }, okRun);
+  check(
+    "tierb doctor: healthy binary → first line of claude --version",
+    goodTierB.ok && goodTierB.detail.includes("1.2.3") && probeCalls.length === 1 && probeCalls[0] === "claude --version",
+  );
+
+  // runDoctor wiring: red tierb probe → warn log + tierB-binary event + notify
+  const tierBLogs: Array<{ level: string; msg: string; data?: unknown }> = [];
+  const tierBNotifies: Array<{ task: string; ok: boolean }> = [];
+  const tierBEvents: Array<{ task?: string; phase?: string; ok?: boolean }> = [];
+  runDoctor(
+    { repo: tmpdir(), models: { tierB: { planner: "x" } } },
+    [],
+    (level, msg, data) => tierBLogs.push({ level, msg, data }),
+    {
+      runTierB: () => ({ ok: false, output: "spawn claude ENOENT" }),
+      notify: async (task, ok) => {
+        tierBNotifies.push({ task, ok });
+        return true;
+      },
+      emitEvent: (_t, fields) => {
+        tierBEvents.push({ ...fields });
+      },
+    },
+  );
+  check(
+    "tierb doctor: runDoctor notifies the supervisor once with doctor/ok:false",
+    tierBNotifies.length === 1 && tierBNotifies[0]!.task === "doctor" && tierBNotifies[0]!.ok === false,
+  );
+  check(
+    "tierb doctor: runDoctor emits a red tierB-binary phase",
+    tierBEvents.length === 1 && tierBEvents[0]!.phase === "tierB-binary" && tierBEvents[0]!.ok === false,
+  );
+  check(
+    "tierb doctor: doctor pass complete goes red",
+    (tierBLogs.find((l) => l.msg === "doctor pass complete")?.data as { ok?: boolean } | undefined)?.ok === false,
+  );
+
+  // consecutive spawn-failure alert
+  check("tierb spawn: alert cadence pinned at 3", TIERB_SPAWN_ALERT_EVERY === 3);
+  check(
+    "tierb spawn: 0/1/2 consecutive failures stay quiet",
+    !shouldAlertTierBSpawn(0) && !shouldAlertTierBSpawn(1) && !shouldAlertTierBSpawn(2),
+  );
+  check("tierb spawn: fires on 3 and 6, not 4", shouldAlertTierBSpawn(3) && shouldAlertTierBSpawn(6) && !shouldAlertTierBSpawn(4));
+  resetTierBSpawnStreak();
+  noteTierBOutcome({ infra: "spawn" });
+  noteTierBOutcome({ infra: "spawn" });
+  check("tierb spawn: consecutive spawn failures accumulate to 3", noteTierBOutcome({ infra: "spawn" }) === 3);
+  check("tierb spawn: any non-spawn outcome resets the streak", noteTierBOutcome({}) === 0);
+  check("tierb spawn: fresh failure starts at 1", noteTierBOutcome({ infra: "spawn" }) === 1);
+  resetTierBSpawnStreak();
 }
 
 // --- P1-021 fast install: skip npm ci when the lockfile is unchanged ----------

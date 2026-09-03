@@ -1,6 +1,8 @@
 import { spawn, spawnSync } from "node:child_process";
 import { nowLocalISO } from "./log";
 import { tierBModelFor, startHeartbeat, touchHeartbeat, type TierBRole } from "./state";
+import { emit } from "./events";
+import { notifySupervisor } from "./notify";
 
 export interface RunResult {
   ok: boolean;
@@ -462,6 +464,39 @@ export async function runTierB(
   });
 }
 
+/**
+ * P2-114: alert cadence for consecutive tier-B spawn failures — every Nth
+ * failure (3rd, 6th, …), never per call: a persistently broken binary must
+ * surface without spamming ~1 notify per dispatch.
+ */
+export const TIERB_SPAWN_ALERT_EVERY = 3;
+
+/** Pure alert rule: true on positive multiples of `every`. */
+export function shouldAlertTierBSpawn(streak: number, every = TIERB_SPAWN_ALERT_EVERY): boolean {
+  return streak > 0 && streak % every === 0;
+}
+
+/** In-memory consecutive-spawn-failure counter (boot health is the doctor's
+ * `tierb` probe; no persistence in state.json by design). */
+let tierBSpawnStreak = 0;
+
+/**
+ * P2-114: fold one tier-B result into the streak. Only `infra: "spawn"` (the
+ * child could not be started at all — missing/broken binary) increments; any
+ * other outcome (success, timeout, missing marker) resets it, so a slow model
+ * never trips the alert — only a genuinely broken spawn does. Returns the new
+ * streak.
+ */
+export function noteTierBOutcome(r: Pick<RunResult, "infra">): number {
+  tierBSpawnStreak = r.infra === "spawn" ? tierBSpawnStreak + 1 : 0;
+  return tierBSpawnStreak;
+}
+
+/** Test seam: reset the module-level streak between hermetic checks. */
+export function resetTierBSpawnStreak(): void {
+  tierBSpawnStreak = 0;
+}
+
 function logDispatch(level: string, msg: string, data: Record<string, unknown>) {
   console.log(JSON.stringify({ ts: nowLocalISO(), level, msg, data }));
 }
@@ -490,6 +525,18 @@ export async function runAgentForRole(
   if (!model) return runAgent(prompt, opts);
   logDispatch("info", "agent-dispatch", { role, tier: "B", model, label: opts.label });
   const r = await runTierB(model, prompt, { cwd: opts.cwd, timeoutMin: opts.timeoutMin, extraDirs: opts.extraDirs });
+  // P2-114: a broken `claude` binary only ever produced a warn tierB-fallback
+  // line — the pilot once ran ~18h with tier-B dead unnoticed. Count
+  // consecutive spawn failures and alert on the Nth.
+  const streak = noteTierBOutcome(r);
+  if (shouldAlertTierBSpawn(streak)) {
+    const detail = `tier-B spawn failed ${streak}x in a row (claude binary?) — falling back to tier A`;
+    logDispatch("error", "tierB-spawn-broken", { role, model, streak });
+    try {
+      emit("phase", { task: "doctor", phase: "tierB-spawn", ok: false, detail });
+    } catch {}
+    void notifySupervisor("tierB", false, detail).catch(() => {});
+  }
   if (!shouldFallbackTierB(r, opts.marker)) return r;
   logDispatch("warn", "tierB-fallback", {
     role,

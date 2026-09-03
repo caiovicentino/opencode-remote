@@ -21,6 +21,7 @@ import {
   shaGuardDetail,
   SHA_RE,
   writeLastInstall,
+  dirtyGuardDetail,
   type QuarantinedSha,
   type VerifiedMerge,
 } from "./deployguard";
@@ -281,6 +282,9 @@ export interface DeployOpts {
   holdNewPicks?: (hold: boolean) => void;
   /** Injectable clock for the drain wait (tests). */
   sleep?: (ms: number) => Promise<void>;
+  /** P2-114: injectable `git status --porcelain --untracked-files=no` probe of
+   * the prod checkout (tests); returns the porcelain text or null on failure. */
+  probeDirty?: (repo: string) => string | null;
 }
 
 /**
@@ -339,6 +343,25 @@ export async function deploy(
     emitEvent("deploy", { phase: "disk-guard", ok: false, detail: guard });
     await (opts?.notify ?? notifySupervisor)(meta?.task ?? "deploy", false, guard);
     return { ok: false, rolledBack: false, detail: guard };
+  }
+  // P2-114 dirty guard: the production checkout doubles as the operator's
+  // working tree — a blind `git reset --hard` would silently destroy tracked
+  // local edits. Untracked/gitignored files never block; a FAILED probe aborts
+  // (fail-closed, unlike the disk guard: an unknown tree state is not safe to
+  // reset away). No quarantine — the sha is not at fault, same as the disk
+  // guard; the pending-deploy self-heal simply retries later.
+  const probeDirty =
+    opts?.probeDirty ??
+    ((repo: string) => {
+      const r = exec("git status --porcelain --untracked-files=no", { cwd: repo, allowFail: true });
+      return r.ok ? r.output : null;
+    });
+  const dirty = dirtyGuardDetail(probeDirty(cfg.repo));
+  if (dirty) {
+    log("warn", dirty);
+    emitEvent("deploy", { phase: "dirty-guard", ok: false, detail: dirty });
+    await (opts?.notify ?? notifySupervisor)(meta?.task ?? "deploy", false, dirty);
+    return { ok: false, rolledBack: false, detail: dirty };
   }
   const prev = exec("git rev-parse HEAD", { cwd: cfg.repo }).output.trim();
   // P1-044: the lane applies when this deploy changes the pilot's own code —

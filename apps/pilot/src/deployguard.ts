@@ -179,6 +179,38 @@ export function shaGuardDetail(sha: string, verified: VerifiedMerge[], quarantin
   return null;
 }
 
+// ── P2-114: dirty guard — the production checkout is also a human worktree ──
+
+/**
+ * Pure verdict for a `git status --porcelain --untracked-files=no` probe of
+ * the production checkout. The prod repo doubles as the operator's working
+ * tree, so a blind `git reset --hard` would silently destroy tracked local
+ * edits — the deploy must abort BEFORE any mutation instead.
+ *
+ * - `null` (probe failed / repo unreadable) → abort text: fail-closed, an
+ *   unknown tree state is not a safe state to reset away (deliberately unlike
+ *   the disk guard, which fails open).
+ * - Untracked (`??`) lines are ignored: `opencode.json` or scratch files must
+ *   never block a deploy; gitignored paths never reach porcelain anyway.
+ * - Clean tree (0 tracked lines) → null (proceed).
+ * - Otherwise → a detail naming up to 3 modified paths (`+k more` after that).
+ */
+export function dirtyGuardDetail(porcelain: string | null): string | null {
+  if (porcelain === null) {
+    return "prod checkout state unknown (git status failed) — deploy aborted before reset";
+  }
+  const tracked = porcelain
+    .split("\n")
+    .filter((l) => l.trim())
+    .filter((l) => !l.trim().startsWith("??"))
+    .map((l) => l.slice(3));
+  if (tracked.length === 0) return null;
+  const shown = tracked.slice(0, 3);
+  const rest = tracked.length - shown.length;
+  const paths = rest > 0 ? `${shown.join(", ")} +${rest} more` : shown.join(", ");
+  return `prod checkout dirty: ${tracked.length} tracked file(s) modified (${paths}) — deploy aborted before reset`;
+}
+
 // ── P1-021: last-install state — skip npm ci when the lockfile is unchanged ─
 
 /** sha256 hex digest — the package-lock.json hash persisted in last-install.json. */
