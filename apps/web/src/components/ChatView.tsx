@@ -117,6 +117,16 @@ function toolsFromRows(rows: HistoryRow[]): Map<string, ToolActivity> {
   return map;
 }
 
+/** P3-083: imperative scrolls honor prefers-reduced-motion — the global CSS
+ * media query already neutralizes animations/transitions, but scrollIntoView
+ * with an explicit behavior would override it. */
+function scrollBehavior(): ScrollBehavior {
+  return typeof matchMedia !== "undefined" &&
+    matchMedia("(prefers-reduced-motion: reduce)").matches
+    ? "auto"
+    : "smooth";
+}
+
 /** P1-064: paged-history envelope served by the daemon (?limit&before). */
 interface HistoryPage {
   rows?: HistoryRow[];
@@ -914,10 +924,11 @@ export default function ChatView({
   }, [events, sessionId]);
 
   // P2-049: follow the tail only when the reader is already at the bottom;
-  // otherwise surface a "go to end" affordance instead of stealing the scroll
+  // otherwise surface a "go to end" affordance instead of stealing the scroll.
+  // P3-083: JS scrolls honor prefers-reduced-motion like the CSS animations do.
   useEffect(() => {
     if (!atBottomRef.current) return;
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    bottomRef.current?.scrollIntoView({ behavior: scrollBehavior() });
   }, [bubbles, sending, liveText]);
 
   const lastScrollTop = useRef(0);
@@ -940,7 +951,7 @@ export default function ChatView({
   function jumpToEnd() {
     atBottomRef.current = true;
     setAtBottom(true);
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    bottomRef.current?.scrollIntoView({ behavior: scrollBehavior() });
   }
 
   // switching conversations starts the reader at the tail again
