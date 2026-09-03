@@ -42,7 +42,7 @@ import {
   type PilotConfig,
   type PilotState,
 } from "./state";
-import { applySessionCosts, querySessionTokenRows } from "./costs";
+import { applySessionCosts, foldSlotCache, querySessionTokenRows } from "./costs";
 import { runDoctor } from "./doctor";
 
 let deployBusy = false;
@@ -395,9 +395,7 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
         log("info", "task cache", cacheFold);
         // P1-078: per-slot view of the same reconciliation — replaced by the
         // task's value each time (live window), proves the affinity effect.
-        state.slotCache ??= {};
-        state.slotCache[slot] = { input: cacheFold.input, cacheRead: cacheFold.cacheRead, cacheWrite: cacheFold.cacheWrite };
-        log("info", "slot cache", { slot, ...cacheFold });
+        log("info", "slot cache", foldSlotCache(state, slot, cacheFold));
       }
     } catch (err) {
       log("warn", "task cost reconciliation failed", { task: task.id, err: String(err).slice(0, 200) });

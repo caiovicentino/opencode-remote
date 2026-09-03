@@ -32,6 +32,7 @@ import { cachedExec, rerunKey, type RerunResults } from "../apps/pilot/src/runne
 import {
   applySessionCosts,
   cacheHitRatio,
+  foldSlotCache,
   isSessionId,
   parseSessionTokenRows,
   parseSessionTokens,
@@ -4782,6 +4783,19 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check("cache: failed DB read keeps the previous fold", store.taskCache?.["P1-077"].cacheRead === 600);
 
   check("cache: ratio helper", cacheHitRatio(300, 900) === 0.25 && cacheHitRatio(0, 0) === 0 && cacheHitRatio(0, 100) === 0);
+
+  // P1-078: per-slot fold — REPLACE by task (live window), independent entries
+  // per slot, payload carries slot + the full breakdown for the log line
+  const slotStore: { slotCache?: Record<number, { input: number; cacheRead: number; cacheWrite: number }> } = {};
+  const foldA = { task: "P1-078", input: 900, cacheRead: 300, cacheWrite: 100, ratio: 0.25 };
+  check("slot cache: fold returns the log payload with the slot", JSON.stringify(foldSlotCache(slotStore, 1, foldA)) === JSON.stringify({ slot: 1, task: "P1-078", input: 900, cacheRead: 300, cacheWrite: 100, ratio: 0.25 }));
+  check("slot cache: fold writes the breakdown under the slot key", JSON.stringify(slotStore.slotCache?.[1]) === JSON.stringify({ input: 900, cacheRead: 300, cacheWrite: 100 }));
+  foldSlotCache(slotStore, 1, { task: "P1-079", input: 1200, cacheRead: 600, cacheWrite: 200, ratio: 1 / 3 });
+  check("slot cache: re-fold replaces instead of accumulating", JSON.stringify(slotStore.slotCache?.[1]) === JSON.stringify({ input: 1200, cacheRead: 600, cacheWrite: 200 }));
+  foldSlotCache(slotStore, 2, foldA);
+  check("slot cache: slots fold independently", slotStore.slotCache?.[2]?.cacheRead === 300 && slotStore.slotCache?.[1]?.cacheRead === 600);
+  check("slot cache: nothing to fold → null, store untouched", foldSlotCache(slotStore, 3, null) === null && !(3 in (slotStore.slotCache ?? {})));
+  check("slot cache: zero-denominator ratio stays 0", cacheHitRatio(0, 0) === 0);
 
   // the rolling window prunes taskCache in lockstep with taskCosts
   const big: { taskCosts: Record<string, number>; taskCostSessions: Record<string, string[]>; taskCache: Record<string, { input: number; cacheRead: number; cacheWrite: number }> } = { taskCosts: {}, taskCostSessions: {}, taskCache: {} };
