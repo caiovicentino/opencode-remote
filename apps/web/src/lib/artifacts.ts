@@ -22,6 +22,17 @@ interface ArtifactContentRaw {
 
 export type ArtifactContent = ArtifactContentRaw;
 
+/** client-side mirror of the daemon's MAX_ARTIFACT_BYTES (P2-097) */
+export const ARTIFACT_MAX_BYTES = 5_000_000;
+
+/** P2-097: the daemon refused the read (HTTP 413) — actionable, not a glitch */
+export class ArtifactTooLarge extends Error {
+  constructor() {
+    super(`File too large to preview (limit ${fmtBytes(ARTIFACT_MAX_BYTES)}).`);
+    this.name = "ArtifactTooLarge";
+  }
+}
+
 /** list artifacts, optionally scoped to one session (E2E tunnel, works everywhere) */
 export async function listArtifacts(
   request: OcrRequest,
@@ -50,13 +61,15 @@ export interface ArtifactListing {
   titles: Record<string, string>;
 }
 
-/** fetch one artifact's content (base64) through the tunnel; null if missing */
+/** fetch one artifact's content (base64) through the tunnel; null if missing.
+ * Throws ArtifactTooLarge when the daemon refuses the read (size cap). */
 export async function fetchArtifact(
   request: OcrRequest,
   sessionId: string,
   name: string,
 ): Promise<ArtifactContent | null> {
   const r = await request("GET", "/__ocr/artifact", undefined, { session: sessionId, name });
+  if (r.status === 413) throw new ArtifactTooLarge();
   if (r.status !== 200) return null;
   return r.body as ArtifactContent;
 }

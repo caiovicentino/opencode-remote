@@ -147,7 +147,7 @@ import { tmpdir, homedir } from "node:os";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { artifactMime, kindFor, listArtifacts, readArtifact, validSegment } from "../apps/daemon/src/artifacts";
+import { MAX_ARTIFACT_BYTES, artifactMime, kindFor, listArtifacts, readArtifact, validSegment } from "../apps/daemon/src/artifacts";
 import {
   ARTIFACTS_MARKER,
   buildArtifactsPathLine,
@@ -169,7 +169,7 @@ import { stdlibShadowHits } from "./stdlib-shadow";
 import { latestUiShot, pruneShots } from "../apps/pilot/src/shot";
 import { parseMarkdown, parseInline } from "../apps/web/src/lib/md";
 import { parseCsv } from "../apps/web/src/lib/csv";
-import { artifactMentions, fmtBytes } from "../apps/web/src/lib/artifacts";
+import { ARTIFACT_MAX_BYTES, ArtifactTooLarge, artifactMentions, fetchArtifact, fmtBytes } from "../apps/web/src/lib/artifacts";
 import { clampSplitPct, isSplitViewport, SPLIT_MIN_PX } from "../apps/web/src/lib/split";
 import { DISK_MIN_FREE_BYTES, diskGuardDetail, freeDiskBytes } from "../apps/pilot/src/disk";
 import {
@@ -1197,6 +1197,15 @@ check("validSegment accepts ids/names", validSegment("ses_abc123") && validSegme
 check("validSegment rejects traversal", !validSegment("..") && !validSegment("../etc") && !validSegment("a/b"));
 check("kindFor kinds", kindFor("a.pdf") === "pdf" && kindFor("a.html") === "html" && kindFor("a.md") === "md" && kindFor("a.csv") === "csv" && kindFor("a.exe") === "binary");
 check("artifactMime csv", artifactMime("a.csv") === "text/csv; charset=utf-8");
+// P2-097: preview MIME is derived from the file name — pin the shape the
+// viewer blobs carry (case-insensitive ext, safe default for unknowns)
+check(
+  "artifactMime derives from the name (case-insensitive, safe default)",
+  artifactMime("relatorio.PDF") === "application/pdf" &&
+    artifactMime("img.PNG") === "image/png" &&
+    artifactMime("noext") === "application/octet-stream" &&
+    artifactMime("a.svg") === "image/svg+xml",
+);
 const aroot = mkdtempSync(join(tmpdir(), "ocr-artifacts-"));
 try {
   mkdirSync(join(aroot, "ses_test"));
@@ -1204,21 +1213,26 @@ try {
   writeFileSync(join(aroot, "ses_test", "data.csv"), "a,b\n1,2");
   symlinkSync(join(aroot, "ses_test", "index.html"), join(aroot, "ses_test", "symlink.html"));
   symlinkSync("/etc/hosts", join(aroot, "ses_test", "outside.html"));
+  const readOf = (sid: string, name: string) => {
+    const r = readArtifact(sid, name, aroot);
+    return r.ok ? "ok" : r.reason;
+  };
   check(
     "readArtifact reads inside root",
-    readArtifact("ses_test", "index.html", aroot)?.toString() === "<h1>oi</h1>",
+    readOf("ses_test", "index.html") === "ok" &&
+      readArtifact("ses_test", "index.html", aroot).ok &&
+      (readArtifact("ses_test", "index.html", aroot) as { data: Buffer }).data.toString() === "<h1>oi</h1>",
   );
   check(
     "readArtifact blocks traversal",
-    readArtifact("ses_test", "..", aroot) === null &&
-      readArtifact("ses_test", "../../daemon.json", aroot) === null &&
-      readArtifact("../evil", "x.html", aroot) === null,
+    readOf("ses_test", "..") === "invalid" &&
+      readOf("ses_test", "../../daemon.json") === "invalid" &&
+      readOf("../evil", "x.html") === "invalid",
   );
-  check("readArtifact missing is null", readArtifact("ses_test", "nope.html", aroot) === null);
+  check("readArtifact missing is missing", readOf("ses_test", "nope.html") === "missing");
   check(
     "readArtifact refuses symlinks (even to outside the root)",
-    readArtifact("ses_test", "symlink.html", aroot) === null &&
-      readArtifact("ses_test", "outside.html", aroot) === null,
+    readOf("ses_test", "symlink.html") === "missing" && readOf("ses_test", "outside.html") === "missing",
   );
   const list = listArtifacts(undefined, aroot);
   const listNames = list.map((a) => a.name).sort().join(",");
@@ -1229,6 +1243,16 @@ try {
       kindFor("index.html") === "html",
   );
   check("listArtifacts filters by session", listArtifacts("other", aroot).length === 0);
+  // P2-097: size cap — at the limit the bytes flow, one byte over is refused
+  // with a distinct reason so routes can answer 413 instead of eating RAM
+  writeFileSync(join(aroot, "ses_test", "max.bin"), Buffer.alloc(MAX_ARTIFACT_BYTES, 7));
+  writeFileSync(join(aroot, "ses_test", "over.bin"), Buffer.alloc(MAX_ARTIFACT_BYTES + 1, 7));
+  check(
+    "readArtifact caps at MAX_ARTIFACT_BYTES with a distinct too-large reason",
+    MAX_ARTIFACT_BYTES === 5_000_000 &&
+      readOf("ses_test", "max.bin") === "ok" &&
+      readOf("ses_test", "over.bin") === "too-large",
+  );
 } finally {
   rmSync(aroot, { recursive: true, force: true });
 }
@@ -1338,6 +1362,26 @@ check(
     artifactMentions("nada aqui", mentionsList).length === 0 &&
     artifactMentions("", mentionsList).length === 0,
 );
+
+// --- P2-097: client maps the daemon's 413 to the friendly too-large error -----
+{
+  let caught: unknown = null;
+  try {
+    await fetchArtifact(async () => ({ status: 413, body: { error: "artifact too large" } }), "ses", "big.pdf");
+  } catch (e) {
+    caught = e;
+  }
+  check(
+    "P2-097: fetchArtifact throws the friendly ArtifactTooLarge on 413",
+    caught instanceof ArtifactTooLarge &&
+      (caught as Error).message.includes("5.0 MB") &&
+      ARTIFACT_MAX_BYTES === 5_000_000,
+  );
+  check(
+    "P2-097: fetchArtifact keeps null for missing artifacts",
+    (await fetchArtifact(async () => ({ status: 404, body: {} }), "ses", "x.pdf")) === null,
+  );
+}
 
 // --- side-by-side artifact preview thresholds (P2-062) ------------------------
 check(

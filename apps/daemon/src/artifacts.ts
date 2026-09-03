@@ -119,22 +119,35 @@ export function sessionTitleMap(rows: unknown, ids: string[]): Record<string, st
   return out;
 }
 
-/** Returns the artifact bytes, or null when ids are invalid / file is missing. */
+/**
+ * P2-097: artifact content is served base64-in-RAM over the tunnel (a 4/3
+ * size bloat on top of the buffer itself) — anything above this cap is
+ * refused with a distinct reason so clients can show an actionable error
+ * instead of OOM-ing the daemon on an accidental video/pdf artifact.
+ */
+export const MAX_ARTIFACT_BYTES = 5_000_000;
+
+export type ArtifactRead =
+  | { ok: true; data: Buffer }
+  | { ok: false; reason: "invalid" | "missing" | "too-large" };
+
+/** Reads the artifact bytes under the size cap, or explains why it can't. */
 export function readArtifact(
   sessionId: string,
   name: string,
   root: string = ARTIFACTS_ROOT,
-): Buffer | null {
-  if (!validSegment(sessionId) || !validSegment(name)) return null;
+): ArtifactRead {
+  if (!validSegment(sessionId) || !validSegment(name)) return { ok: false, reason: "invalid" };
   const base = resolve(root);
   const abs = resolve(base, sessionId, name);
-  if (!abs.startsWith(base + "/")) return null; // defense in depth
+  if (!abs.startsWith(base + "/")) return { ok: false, reason: "invalid" }; // defense in depth
   try {
     // lstat: a symlink pointing outside the root must not be served
     const st = lstatSync(abs);
-    if (!st.isFile()) return null;
-    return readFileSync(abs);
+    if (!st.isFile()) return { ok: false, reason: "missing" };
+    if (st.size > MAX_ARTIFACT_BYTES) return { ok: false, reason: "too-large" };
+    return { ok: true, data: readFileSync(abs) };
   } catch {
-    return null;
+    return { ok: false, reason: "missing" };
   }
 }

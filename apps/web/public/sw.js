@@ -1,6 +1,8 @@
 // Placeholder service worker: makes the PWA installable and keeps a shell
 // cache. Real precache/invalidate strategy lands with the offline roadmap.
-const CACHE = "ocr-shell-v1";
+// P2-097: the name is versioned so shipping a new SW evicts every cache
+// written by older (possibly poisoned) versions — activate deletes the rest.
+const CACHE = "ocr-shell-v2";
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((c) => c.addAll(["/"])));
@@ -21,8 +23,12 @@ self.addEventListener("fetch", (event) => {
   event.respondWith(
     fetch(event.request)
       .then((res) => {
-        const copy = res.clone();
-        caches.open(CACHE).then((c) => c.put(event.request, copy));
+        // P2-097: only clean 200s enter the cache — errors/redirects/opaque
+        // responses used to be cached forever under the constant cache name
+        if (res.status === 200) {
+          const copy = res.clone();
+          event.waitUntil(caches.open(CACHE).then((c) => c.put(event.request, copy)));
+        }
         return res;
       })
       .catch(() => caches.match(event.request)),

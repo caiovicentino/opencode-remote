@@ -121,7 +121,9 @@ const cliEnv = { ...process.env, OCR_DESKTOP_SESSION: session };
 // headers), growing it to 150s; P2-092 added the Browser-pane fill beat
 // (colored test page + maximize-toggle measurement), growing it to 165s;
 // P1-093 added the AutoMode-failure beat (real Settings toggle + permission
-// ask the fake rejects + retry verification), growing it to 180s.
+// ask the fake rejects + retry verification), growing it to 180s; P2-097
+// added the oversized-artifact beat (5 MB write + 413 round-trip) inside the
+// same budget — its probes poll at 500ms to pay for it.
 const startedAt = Date.now();
 const DEADLINE_MS = 180_000;
 const shotPath = join(tmpdir(), "ocr-desktop-flow", `flow-${process.pid}.png`);
@@ -1528,8 +1530,60 @@ try {
                   );
                 }
               }
-                // narrow viewport keeps the list on the full-screen overlay path
-                run("P2-091: 390 evidence shot", ["shot", join(shotsDir, "P2-091-nav-390.png"), "390", "844"], 15_000, localEnv2);
+              // narrow viewport keeps the list on the full-screen overlay path
+              run("P2-091: 390 evidence shot", ["shot", join(shotsDir, "P2-091-nav-390.png"), "390", "844"], 15_000, localEnv2);
+            }
+          }
+
+          // --- P2-097: oversized artifact shows the friendly 413 error ----------
+          // The daemon refuses reads above MAX_ARTIFACT_BYTES (5 MB) with HTTP
+          // 413 — the viewer must show an actionable note (and hide the header
+          // Save, which would otherwise write an empty file) instead of
+          // hanging or OOM-ing the tunnel with a multi-MB base64 blob.
+          phase("P2-097: oversized artifact shows a friendly 413 error");
+          // P2-091 leaves the window at 390px — back to desktop width so the
+          // card opens the split-pane (.artifact-pane), not the overlay
+          const bigWide = run("P2-097: resize to desktop width", ["shot", join(shotsDir, "P2-097-resize.png"), "1440", "900"], 15_000, localEnv2);
+          if (bigWide.ok) {
+            await waitProbe("P2-097: chat remounted at 1440px", "!!document.querySelector('.messages')", (v) => /true/.test(v), localEnv2);
+            writeFileSync(join(artDir, "big.txt"), Buffer.alloc(5_000_001, 0x61));
+            await fetch(`${fakeUrl}/__emit`, {
+              method: "POST",
+              body: JSON.stringify([
+                {
+                  type: "message.part.updated",
+                  properties: { sessionID: AUTO_SES, part: { type: "text", text: "Enorme: big.txt", messageID: "msg-p2-097" } },
+                },
+              ]),
+            });
+            await fetch(`${fakeUrl}/__emit`, {
+              method: "POST",
+              body: JSON.stringify([{ type: "session.idle", properties: { sessionID: AUTO_SES } }]),
+            });
+            const bigCard = await waitProbe(
+              "P2-097: artifact card rendered for big.txt",
+              "[...document.querySelectorAll('.artifact-card')].some((c) => (c.textContent ?? '').includes('big.txt'))",
+              (v) => /true/.test(v),
+              localEnv2,
+              6,
+              500,
+            );
+            if (bigCard) {
+              run("P2-097: click the big.txt card", ["click", '.artifact-card:has-text("big.txt")'], 15_000, localEnv2);
+              const errUp = await waitProbe(
+                "P2-097: pane shows the friendly too-large error",
+                "document.querySelector('.artifact-pane')?.textContent ?? ''",
+                (v) => /too large to preview/i.test(v),
+                localEnv2,
+                8,
+                500,
+              );
+              if (errUp) {
+                const noSave = run("P2-097: header Save hidden for refused bytes", ["ipc", "!!document.querySelector('.artifact-pane button.primary')"], 15_000, localEnv2);
+                if (noSave.ok) check("P2-097: Save is hidden (no empty-file save)", /false/.test(noSave.stdout));
+                run("P2-097: 1440 evidence shot", ["shot", join(shotsDir, "P2-097-413-1440.png"), "1440", "900"], 15_000, localEnv2);
+                run("P2-097: 390 evidence shot", ["shot", join(shotsDir, "P2-097-413-390.png"), "390", "844"], 15_000, localEnv2);
+              }
             }
           }
 

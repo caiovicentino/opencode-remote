@@ -96,7 +96,11 @@ private. That is the product: **local power, remote control, zero trust**.
   When the agent writes a new artifact the daemon emits a `session.artifact`
   event, and on the turn's next idle the desktop app opens the preview pane
   by itself — never overriding a manual pick, a pane the user closed, or an
-  open Browser pane. Every session created by the daemon carries the artifacts
+  open Browser pane. Previews are capped at **5 MB**: larger artifacts show a
+  clear "too large to preview" note instead of stalling the app (the daemon
+  answers `413`; the header Save button is hidden because there are no bytes
+  to save). The PDF preview runs in a sandboxed iframe (scripts/forms/popups
+  blocked). Every session created by the daemon carries the artifacts
   protocol — it is
   injected into the agent's system prompt even in workspaces without an
   `AGENTS.md` (a workspace AGENTS.md that already documents the protocol
