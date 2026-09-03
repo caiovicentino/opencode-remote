@@ -46,7 +46,7 @@ import {
   TASK_COST_CAP,
   tokensSql,
 } from "../apps/pilot/src/costs";
-import { CORPUS_COMMANDS, appendCorpusSample, captureGateCorpus, corpusSlug, loadGateCorpus, sanitizeForCorpus } from "../apps/pilot/src/gate-corpus";
+import { CORPUS_COMMANDS, CORPUS_SAMPLE_RE, appendCorpusSample, captureGateCorpus, corpusSlug, loadGateCorpus, sanitizeForCorpus } from "../apps/pilot/src/gate-corpus";
 import {
   builderPrompt,
   codeChanges,
@@ -146,6 +146,7 @@ import {
   type Task,
 } from "../apps/pilot/src/backlog";
 import { clearPendingRefill, readPendingRefill, relandDetail, relandPendingRefill, savePendingRefill } from "../apps/pilot/src/refill";
+import { landMetaCommit, mayPushUnderDir, metaIo, META_BRANCH, type MetaPushIo } from "../apps/pilot/src/metapush";
 import { EXPLORER_MAX_FINDINGS, EXPLORER_MAX_STEPS, EXPLORER_TIMEOUT_MIN, EXPLORER_PUSH_RETRIES, EXPLORER_PUSH_WAIT_MS, claimExplorerRun, commitAndPushFindings, explorerPrompt, explorerSessionName, explorerSpec, parseExplorerFindings, type ExplorerFinding } from "../apps/pilot/src/explorer";
 import { runAgent, API_PREFLIGHT, apiHealthy, claudeArgs, idScanner, mergeAgentIds, OPENCODE_URL_DEFAULT, scanIds, shouldFallbackTierB, waitForApi } from "../apps/pilot/src/runner";
 import { mkdtempSync, mkdirSync, readdirSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync, utimesSync } from "node:fs";
@@ -709,7 +710,7 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
     check("breaker: attempts tracked in state", st.taskAttempts["T-001"] === 4);
     check("breaker: other task unaffected", recordTaskFailure(st, "T-002", 4) === false);
 
-    check("blockTask moves the Ready line under ## Blocked", blockTask(dir, "T-001", "max review rounds reached — findings:\n- bad\n- thing") === true);
+    check("blockTask moves the Ready line under ## Blocked", blockTask(dir, "T-001", "max review rounds reached — findings:\n- bad\n- thing") === "applied");
     const md = readFileSync(join(dir, "BACKLOG.md"), "utf8");
     const blockedChunk = md.split("\n## Blocked\n")[1] ?? "";
     check(
@@ -718,9 +719,9 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
     );
     check("blocked section sits before ## Done", md.indexOf("## Blocked") < md.indexOf("## Done"));
     check("blocked task leaves the Ready queue (no solo reschedule)", loadBacklog(dir).map((t) => t.id).join(",") === "T-002");
-    check("blockTask is idempotent", blockTask(dir, "T-001", "again") === false && (md.match(/\(T-001\)/g) ?? []).length === 1);
-    check("blockTask unknown id returns false", blockTask(dir, "T-999", "x") === false);
-    check("blockTask escapes the id regex", blockTask(dir, "T-001) [P1] x.*", "y") === false);
+    check("blockTask is idempotent", blockTask(dir, "T-001", "again") === "noop" && (md.match(/\(T-001\)/g) ?? []).length === 1);
+    check("blockTask unknown id returns false", blockTask(dir, "T-999", "x") === "missing");
+    check("blockTask escapes the id regex", blockTask(dir, "T-001) [P1] x.*", "y") === "missing");
 
     // reset on gate pass: deleting the counter gives a fresh allowance
     delete st.taskAttempts["T-001"];
@@ -779,7 +780,7 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
       ["# BACKLOG", "", "## Ready", "", "- [ ] (P2-900) [P2] Existing — spec: x (area: ui)", "", "## Done", "- [x] (P2-899) [P2] Old — done"].join("\n"),
     );
     const pristineBase = readFileSync(join(dir, "BACKLOG.md"), "utf8");
-    check("appendReadyLines: appends at the end of ## Ready", appendReadyLines(dir, [okLine, okLine2]));
+    check("appendReadyLines: appends at the end of ## Ready", appendReadyLines(dir, [okLine, okLine2]) === "applied");
     let md = readFileSync(join(dir, "BACKLOG.md"), "utf8");
     const readyChunk = md.split("\n## Ready\n")[1]?.split("\n## Done")[0] ?? "";
     check(
@@ -787,23 +788,43 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
       readyChunk.includes("(P2-901)") && readyChunk.includes("(P2-902)") && readyChunk.indexOf("(P2-900)") < readyChunk.indexOf("(P2-901)"),
     );
     check("appendReadyLines: Blocked/Done untouched", md.indexOf("(P2-899)") > md.indexOf("(P2-902)"));
-    check("appendReadyLines: duplicate id refused", appendReadyLines(dir, ["- [ ] (P2-901) [P2] Dup — spec: x (area: ui)"]) === false);
+    check("appendReadyLines: duplicate id refused", appendReadyLines(dir, ["- [ ] (P2-901) [P2] Dup — spec: x (area: ui)"]) === "noop");
     md = readFileSync(join(dir, "BACKLOG.md"), "utf8");
     check("appendReadyLines: duplicate did not double-insert", (md.match(/\(P2-901\)/g) ?? []).length === 1);
-    check("appendReadyLines: empty input is a no-op", appendReadyLines(dir, []) === false);
+    check("appendReadyLines: empty input is a no-op", appendReadyLines(dir, []) === "missing");
 
     // appendCommitAndPush with fake git: guard refusal must never push, retries re-append
     let pristine = pristineBase;
     let pushCalls = 0;
     let diffBehavior = "BACKLOG.md\n";
     let sleeps = 0;
+    let prCreated = false;
+    let prMerged = false;
     const fakeIo = (pushFails = 0) => ({
       exec: (cmd: string) => {
-        if (cmd.includes("git reset")) writeFileSync(join(dir, "BACKLOG.md"), pristine);
+        // P1-076: the landing re-bases pilot/meta on origin/main — the fake
+        // restores the pristine file at that rewind instead of a git reset
+        if (cmd.includes(`git checkout -q -B ${META_BRANCH}`)) writeFileSync(join(dir, "BACKLOG.md"), pristine);
         if (cmd.startsWith("git diff")) return { ok: true, output: diffBehavior };
         if (cmd.startsWith("git push")) {
           pushCalls++;
           return { ok: pushCalls > pushFails, output: "" };
+        }
+        // R4: the landing verifies our sha (40-hex) and confirms the merge
+        if (cmd.startsWith("git rev-parse")) return { ok: true, output: `${"c".repeat(40)}\n` };
+        // R6: no PR exists until the landing creates one; after that the view
+        // carries headRefOid = the landing's own push (fake rev-parse sha)
+        if (cmd.startsWith("gh ") && cmd.includes("pr view"))
+          return prCreated
+            ? { ok: true, output: JSON.stringify({ state: prMerged ? "MERGED" : "OPEN", headRefOid: "c".repeat(40) }) }
+            : { ok: false, output: "no pull requests" };
+        if (cmd.startsWith("gh ") && cmd.includes("pr create")) {
+          prCreated = true;
+          return { ok: true, output: "" };
+        }
+        if (cmd.startsWith("gh ") && cmd.includes("pr merge")) {
+          prMerged = true;
+          return { ok: true, output: "" };
         }
         return { ok: true, output: "" };
       },
@@ -831,11 +852,13 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
     pristine = pristineBase.replace("(P2-900)", "(P2-901)"); // line already landed
     pushCalls = 0;
     check(
-      "appendCommitAndPush: all-duplicate lines land nothing",
-      (await appendCommitAndPush(dir, [okLine], "m4", fakeIo())) === "failed" && pushCalls === 0,
+      "appendCommitAndPush: all-duplicate lines converge as a noop success (desired state present)",
+      (await appendCommitAndPush(dir, [okLine], "m4", fakeIo())) === "pushed" && pushCalls === 0,
     );
 
-    // real-git smoke (P3-052 lesson): bare remote + apostrophed commit message
+    // real-git smoke (P3-052 lesson): bare remote + apostrophed commit message.
+    // P1-076: gh is faked via the injectable io — the commit must land on
+    // origin/pilot/meta and NEVER on origin/main.
     const gdir = mkdtempSync(join(tmpdir(), "pilot-aux-git-"));
     try {
       const remote = join(gdir, "remote.git");
@@ -847,12 +870,16 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
       execSync(`git -C ${JSON.stringify(work)} -c user.name=t -c user.email=t@t commit -qm init`);
       execSync(`git -C ${JSON.stringify(work)} push -q origin main`);
       const message = "pilot(researcher): it's a scan — 'quoted'";
-      check("appendCommitAndPush real-git smoke: apostrophed message lands", (await appendCommitAndPush(work, [okLine], message, auxPushIo(work))) === "pushed");
-      const shown = execSync(`git -C ${JSON.stringify(work)} show origin/main:BACKLOG.md`, { encoding: "utf8" });
-      const subject = execSync(`git -C ${JSON.stringify(work)} log -1 --format=%s origin/main`, { encoding: "utf8" }).trim();
-      check("appendCommitAndPush real-git smoke: line landed on origin/main", shown.includes("(P2-901)"));
+      const realIo = auxPushIo(work);
+      const ghFakedIo = ghMergingIo(realIo);
+      check("appendCommitAndPush real-git smoke: apostrophed message lands", (await appendCommitAndPush(work, [okLine], message, ghFakedIo)) === "pushed");
+      const shown = execSync(`git -C ${JSON.stringify(work)} show origin/${META_BRANCH}:BACKLOG.md`, { encoding: "utf8" });
+      const subject = execSync(`git -C ${JSON.stringify(work)} log -1 --format=%s origin/${META_BRANCH}`, { encoding: "utf8" }).trim();
+      check("appendCommitAndPush real-git smoke: line landed on origin/pilot/meta", shown.includes("(P2-901)"));
       check("appendCommitAndPush real-git smoke: apostrophed subject intact", subject === message);
-      const names = execSync(`git -C ${JSON.stringify(work)} diff --name-only origin/main~1 origin/main`, { encoding: "utf8" }).trim();
+      const mainShown = execSync(`git -C ${JSON.stringify(work)} show origin/main:BACKLOG.md`, { encoding: "utf8" });
+      check("appendCommitAndPush real-git smoke: origin/main untouched (no direct push)", !mainShown.includes("(P2-901)"));
+      const names = execSync(`git -C ${JSON.stringify(work)} diff --name-only origin/${META_BRANCH}~1 origin/${META_BRANCH}`, { encoding: "utf8" }).trim();
       check("appendCommitAndPush real-git smoke: diff is exactly BACKLOG.md", names === "BACKLOG.md");
     } finally {
       rmSync(gdir, { recursive: true, force: true });
@@ -874,6 +901,461 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
   } finally {
     rmSync(sandboxDir, { recursive: true, force: true });
   }
+}
+
+/**
+ * Fake GitHub for landing smokes (R4/R6 merge confirmation): the PR only
+ * exists after `pr create`, and `pr view` reports OPEN until a `pr merge`
+ * succeeds, then MERGED with the REAL branch head as headRefOid — a landing
+ * may only report "pushed" once the squash merge is confirmed with its own
+ * commit as the merged head.
+ */
+function ghMergingIo(realIo: { exec: (cmd: string) => { ok: boolean; output: string } }) {
+  let exists = false;
+  let state = "OPEN";
+  return {
+    exec: (cmd: string) => {
+      if (cmd.startsWith("gh ")) {
+        if (cmd.includes("pr view")) {
+          if (!exists) return { ok: false, output: "no pull requests" };
+          return { ok: true, output: JSON.stringify({ state, headRefOid: realIo.exec(`git rev-parse origin/${META_BRANCH}`).output.trim() }) };
+        }
+        if (cmd.includes("pr create")) {
+          exists = true;
+          return { ok: true, output: "" };
+        }
+        if (cmd.includes("pr merge")) {
+          state = "MERGED";
+          return { ok: true, output: "" };
+        }
+        return { ok: true, output: "" };
+      }
+      return realIo.exec(cmd);
+    },
+    sleep: () => Promise.resolve(),
+  };
+}
+
+// --- P1-076: meta commits land via pilot/meta + PR, never via direct main pushes --
+{
+  // guard refusal (real git, fake gh): the branch push must never happen
+  const gdir = mkdtempSync(join(tmpdir(), "pilot-meta-"));
+  try {
+    const remote = join(gdir, "origin.git");
+    const dir = join(gdir, "work");
+    execSync(`git init -q --bare -b main ${JSON.stringify(remote)}`);
+    execSync(`git clone -q ${JSON.stringify(remote)} ${JSON.stringify(dir)}`);
+    execSync("git config user.email t@t.local && git config user.name t", { cwd: dir });
+    writeFileSync(join(dir, "BACKLOG.md"), "# B\n\n## Ready\n\n## Done\n");
+    execSync(`git -C ${JSON.stringify(dir)} add BACKLOG.md && git -C ${JSON.stringify(dir)} -c user.name=t -c user.email=t@t commit -qm init`);
+    execSync(`git -C ${JSON.stringify(dir)} push -q -u origin main`);
+    const baseIo = metaIo(dir);
+    const calls: string[] = [];
+    const io: MetaPushIo = {
+      exec: (cmd) => {
+        calls.push(cmd);
+        if (cmd.startsWith("git diff")) return { ok: true, output: "BACKLOG.md\nevil.sh\n" };
+        if (cmd.startsWith("gh ")) return { ok: false, output: "gh unavailable" };
+        return baseIo.exec(cmd);
+      },
+      sleep: () => Promise.resolve(),
+    };
+    const refused = await landMetaCommit(
+      dir,
+      io,
+      {
+        files: ["BACKLOG.md"],
+        message: "contaminated",
+        guardFile: "BACKLOG.md",
+        apply: () => {
+          // the edit must be real: an empty commit would abort before the guard
+          writeFileSync(join(dir, "BACKLOG.md"), "# B\n\n## Ready\n- [ ] (P2-910) [P2] Evil — spec: x (area: ui)\n\n## Done\n");
+          return { action: "apply" };
+        },
+      },
+    );
+    check("landMetaCommit: guard refusal refuses", refused === "refused");
+    check(
+      "landMetaCommit: guard refusal ⇒ zero pilot/meta pushes",
+      !calls.some((c) => c.startsWith("git push")),
+    );
+    check("landMetaCommit: refused diff never armed a PR", !calls.some((c) => c.startsWith("gh ") && (c.includes("pr create") || c.includes("pr merge"))));
+
+    // noop vs abort semantics
+    let applied = 0;
+    const noop = await landMetaCommit(dir, baseIo, {
+      files: ["BACKLOG.md"],
+      message: "noop",
+      guardFile: "BACKLOG.md",
+      apply: () => {
+        applied++;
+        return { action: "noop" };
+      },
+    });
+    check("landMetaCommit: noop is success with zero commits", noop === "pushed" && applied === 1);
+    const abort = await landMetaCommit(dir, baseIo, {
+      files: ["BACKLOG.md"],
+      message: "abort",
+      guardFile: "BACKLOG.md",
+      apply: () => ({ action: "abort" }),
+    });
+    check("landMetaCommit: abort reports failed", abort === "failed");
+
+    // R2 review: success requires our commit to stay in the PR head — a peer
+    // landing that rewound the shared branch turns our landing into an honest
+    // "failed" (retried), never a false "pushed"
+    let dropPushes = 0;
+    const droppedIo: MetaPushIo = {
+      exec: (cmd) => {
+        if (cmd.startsWith("git diff")) return { ok: true, output: "BACKLOG.md\n" };
+        if (cmd.startsWith("git rev-parse")) return { ok: true, output: `${"a".repeat(40)}\n` };
+        if (cmd.startsWith("git merge-base")) return { ok: false, output: "" }; // dropped
+        if (cmd.startsWith("git push")) dropPushes++;
+        return { ok: true, output: "" };
+      },
+      sleep: () => Promise.resolve(),
+    };
+    const dropped = await landMetaCommit(dir, droppedIo, {
+      files: ["BACKLOG.md"],
+      message: "dropped by peer",
+      guardFile: "BACKLOG.md",
+      apply: () => ({ action: "apply" }),
+    });
+    check("landMetaCommit: commit dropped by a peer ⇒ honest failure, never false success", dropped === "failed" && dropPushes === 3);
+    // R4 review: an undeterminable sha must fail CLOSED — the landing is
+    // retried and, at worst, honestly reported as "failed"; it can never be
+    // reported as pushed when the verification could not even run.
+    let unverifiablePushes = 0;
+    const unverifiable = await landMetaCommit(dir, {
+      exec: (cmd) => {
+        if (cmd.startsWith("git diff")) return { ok: true, output: "BACKLOG.md\n" };
+        if (cmd.startsWith("git rev-parse")) return { ok: true, output: "" }; // sha undeterminable
+        if (cmd.startsWith("git push")) unverifiablePushes++;
+        return { ok: true, output: "" };
+      },
+      sleep: () => Promise.resolve(),
+    }, {
+      files: ["BACKLOG.md"],
+      message: "unverifiable",
+      guardFile: "BACKLOG.md",
+      apply: () => ({ action: "apply" }),
+    });
+    check("landMetaCommit: undeterminable sha fails closed (retried, never reported pushed)", unverifiable === "failed" && unverifiablePushes === 3);
+    // R4 review (arm-vs-merge TOCTOU): an armed --auto that never confirms the
+    // merge is an honest failure — caller state (P1-037 pending refill) must
+    // not be cleared on an unconfirmed landing.
+    let queuedPrKnown = false;
+    const neverMerged: MetaPushIo = {
+      exec: (cmd) => {
+        if (cmd.startsWith("git diff")) return { ok: true, output: "BACKLOG.md\n" };
+        if (cmd.startsWith("git rev-parse")) return { ok: true, output: `${"b".repeat(40)}\n` };
+        if (cmd.startsWith("git merge-base")) return { ok: true, output: "" };
+        if (cmd.startsWith("gh ")) {
+          if (cmd.includes("pr view"))
+            return queuedPrKnown
+              ? { ok: true, output: JSON.stringify({ state: "OPEN", headRefOid: "b".repeat(40) }) }
+              : { ok: false, output: "no pull requests" };
+          if (cmd.includes("pr create")) {
+            queuedPrKnown = true;
+            return { ok: true, output: "" };
+          }
+          return { ok: true, output: "" }; // gh pr merge "succeeds" but stays queued forever
+        }
+        return { ok: true, output: "" };
+      },
+      sleep: () => Promise.resolve(),
+    };
+    const queued = await landMetaCommit(dir, neverMerged, {
+      files: ["BACKLOG.md"],
+      message: "queued auto-merge",
+      guardFile: "BACKLOG.md",
+      apply: () => ({ action: "apply" }),
+    });
+    check("landMetaCommit: auto-merge armed but unconfirmed ⇒ honest failure, state not cleared", queued === "failed");
+    // R4/R5 review: arm-phase interleaving — the arm command only QUEUES the
+    // merge, so the landing must (a) try --auto first, (b) fall back to the
+    // immediate squash when --auto is refused, and (c) keep polling `pr view`
+    // with sleeps in between, reporting "pushed" only when GitHub itself
+    // reports MERGED with our commit as the head (never on the arm command's
+    // own success).
+    {
+      const ghCalls: string[] = [];
+      let views = 0;
+      let sleeps = 0;
+      let prKnown = false;
+      const ourSha = "d".repeat(40);
+      const interleaved: MetaPushIo = {
+        exec: (cmd) => {
+          if (cmd.startsWith("gh ")) {
+            ghCalls.push(cmd);
+            if (cmd.includes("pr view")) {
+              views++;
+              if (!prKnown) return { ok: false, output: "no pull requests" };
+              // poll 0 OPEN (checks pending), poll 1 MERGED with our head
+              return { ok: true, output: JSON.stringify({ state: views >= 4 ? "MERGED" : "OPEN", headRefOid: ourSha }) };
+            }
+            if (cmd.includes("pr create")) {
+              prKnown = true;
+              return { ok: true, output: "" };
+            }
+            if (cmd.includes("pr merge")) {
+              // --auto refused (branch protection not configured yet)
+              if (cmd.includes("--auto")) return { ok: false, output: "gh: no protection" };
+              return { ok: true, output: "" }; // immediate squash accepted
+            }
+            return { ok: true, output: "" };
+          }
+          if (cmd.startsWith("git diff")) return { ok: true, output: "BACKLOG.md\n" };
+          if (cmd.startsWith("git rev-parse")) return { ok: true, output: `${ourSha}\n` };
+          if (cmd.startsWith("git merge-base")) return { ok: true, output: "" };
+          return { ok: true, output: "" };
+        },
+        sleep: () => {
+          sleeps++;
+          return Promise.resolve();
+        },
+      };
+      const interl = await landMetaCommit(dir, interleaved, {
+        files: ["BACKLOG.md"],
+        message: "arm-phase interleaving",
+        guardFile: "BACKLOG.md",
+        apply: () => ({ action: "apply" }),
+      });
+      const ghShape = ghCalls.map((c) =>
+        c.includes("pr view") ? "view" : c.includes("pr create") ? "create" : c.includes("--auto") ? "auto" : "merge",
+      );
+      check("landMetaCommit: arm-phase interleaving lands only on confirmed MERGED", interl === "pushed");
+      check(
+        "landMetaCommit: arm order is view → create → auto → immediate squash → confirm polls",
+        ghShape[0] === "view" && ghShape[1] === "view" && ghShape[2] === "create" && ghShape[3] === "auto" && ghShape[4] === "merge" && ghShape.slice(5).every((s) => s === "view"),
+      );
+      check(
+        "landMetaCommit: confirmation polls interleave with sleeps until MERGED (never trusts the arm)",
+        views === 4 && sleeps === 1,
+      );
+    }
+
+    // R6 review: the drop-during-arm window — a peer force-push between our
+    // ancestry check and the deferred squash replaces the PR head; a MERGED
+    // confirmation whose headRefOid is NOT our sha is an honest failure.
+    {
+      let pushes = 0;
+      let armViews = 0;
+      let prKnown = false;
+      const ourSha = "b".repeat(40);
+      const peerSha = "e".repeat(40);
+      const dropArm: MetaPushIo = {
+        exec: (cmd) => {
+          if (cmd.startsWith("git diff")) return { ok: true, output: "BACKLOG.md\n" };
+          if (cmd.startsWith("git rev-parse")) return { ok: true, output: `${ourSha}\n` };
+          if (cmd.startsWith("git merge-base")) return { ok: true, output: "" };
+          if (cmd.startsWith("git push")) pushes++;
+          if (cmd.startsWith("gh ")) {
+            if (cmd.includes("pr view")) {
+              armViews++;
+              if (!prKnown) return { ok: false, output: "no pull requests" };
+              // after arming: the peer replaces the head and ITS content
+              // merges — MERGED without our sha must never read as success
+              return {
+                ok: true,
+                output: JSON.stringify({ state: armViews >= 3 ? "MERGED" : "OPEN", headRefOid: armViews >= 3 ? peerSha : ourSha }),
+              };
+            }
+            if (cmd.includes("pr create")) {
+              prKnown = true;
+              return { ok: true, output: "" };
+            }
+            return { ok: true, output: "" }; // pr merge --auto armed
+          }
+          return { ok: true, output: "" };
+        },
+        sleep: () => Promise.resolve(),
+      };
+      const droppedInArm = await landMetaCommit(dir, dropArm, {
+        files: ["BACKLOG.md"],
+        message: "drop-during-arm",
+        guardFile: "BACKLOG.md",
+        apply: () => ({ action: "apply" }),
+      });
+      check("landMetaCommit: MERGED with a replaced head is an honest failure (drop-during-arm)", droppedInArm === "failed" && pushes === 1);
+    }
+
+    // R6 review: a landing that starts while a PEER's meta PR is pending must
+    // wait for the squash to confirm (no rewind of the pending head, no
+    // check-restart livelock) — its own push may only happen after MERGED.
+    {
+      let state = "OPEN";
+      let head = "f".repeat(40); // peer's pending landing
+      let views = 0;
+      let pushes = 0;
+      let sleepsBeforePush = 0;
+      const ourSha = "9".repeat(40);
+      const peerPending: MetaPushIo = {
+        exec: (cmd) => {
+          if (cmd.startsWith("git diff")) return { ok: true, output: "BACKLOG.md\n" };
+          if (cmd.startsWith("git rev-parse")) return { ok: true, output: `${ourSha}\n` };
+          if (cmd.startsWith("git merge-base")) return { ok: true, output: "" };
+          if (cmd.startsWith("git push")) {
+            pushes++;
+            head = ourSha;
+          }
+          if (cmd.startsWith("gh ")) {
+            if (cmd.includes("pr view")) {
+              views++;
+              if (views >= 3) state = "MERGED"; // peer's checks finish mid-wait
+              return { ok: true, output: JSON.stringify({ state, headRefOid: head }) };
+            }
+            if (cmd.includes("pr create")) return { ok: true, output: "" };
+            if (cmd.includes("pr merge")) {
+              state = "MERGED";
+              return { ok: true, output: "" };
+            }
+            return { ok: true, output: "" };
+          }
+          return { ok: true, output: "" };
+        },
+        sleep: () => {
+          if (pushes === 0) sleepsBeforePush++;
+          return Promise.resolve();
+        },
+      };
+      const waited = await landMetaCommit(dir, peerPending, {
+        files: ["BACKLOG.md"],
+        message: "wait for pending peer",
+        guardFile: "BACKLOG.md",
+        apply: () => ({ action: "apply" }),
+      });
+      check("landMetaCommit: pending peer PR is waited out, then landed after MERGED", waited === "pushed" && pushes === 1 && sleepsBeforePush >= 2);
+    }
+
+    // R6 review: budget exhausted while the checks run ⇒ honest failure with
+    // caller state intact; the next-cycle retry after the queued merge lands
+    // converges as a noop success (desired state present) — never abort forever.
+    {
+      let known = false;
+      let merged = false;
+      let convPushes = 0;
+      const ourSha = "7".repeat(40);
+      const landedLine = "- [ ] (P2-911) [P2] Convergence — spec: x (area: ui)";
+      const convIo: MetaPushIo = {
+        exec: (cmd) => {
+          if (cmd.startsWith("git diff")) return { ok: true, output: "BACKLOG.md\n" };
+          if (cmd.startsWith("git rev-parse")) return { ok: true, output: `${ourSha}\n` };
+          if (cmd.startsWith("git merge-base")) return { ok: true, output: "" };
+          if (cmd.startsWith("git push")) convPushes++;
+          // model the deferred squash finally landing: after the merge the
+          // rewind to origin/main restores a BACKLOG that already has the line
+          if (cmd.includes(`git checkout -q -B ${META_BRANCH}`) && merged)
+            writeFileSync(join(dir, "BACKLOG.md"), `# B\n\n## Ready\n${landedLine}\n\n## Done\n`);
+          if (cmd.startsWith("gh ")) {
+            if (cmd.includes("pr view"))
+              return known
+                ? { ok: true, output: JSON.stringify({ state: merged ? "MERGED" : "OPEN", headRefOid: ourSha }) }
+                : { ok: false, output: "no pull requests" };
+            if (cmd.includes("pr create")) {
+              known = true;
+              return { ok: true, output: "" };
+            }
+            return { ok: true, output: "" }; // pr merge --auto arms, checks pending
+          }
+          return { ok: true, output: "" };
+        },
+        sleep: () => Promise.resolve(),
+      };
+      const spec = {
+        files: ["BACKLOG.md"],
+        message: "convergence",
+        guardFile: "BACKLOG.md",
+        apply: () => {
+          const md = readFileSync(join(dir, "BACKLOG.md"), "utf8");
+          if (md.includes("(P2-911)")) return { action: "noop" as const };
+          writeFileSync(join(dir, "BACKLOG.md"), md.replace("## Ready\n", `## Ready\n${landedLine}\n`));
+          return { action: "apply" as const };
+        },
+      };
+      const firstTry = await landMetaCommit(dir, convIo, spec);
+      check("landMetaCommit: checks running past the budget ⇒ honest failure, no false success", firstTry === "failed" && convPushes === 1);
+      merged = true; // the queued auto-merge finally lands between cycles
+      const retry = await landMetaCommit(dir, convIo, spec);
+      check("landMetaCommit: next-cycle retry after the queued merge converges as a noop success", retry === "pushed" && convPushes === 1);
+    }
+
+    // dir-prefix guard (corpus shape): several files inside the dir are allowed
+    check("mayPushUnderDir: every file under the dir passes", mayPushUnderDir("d/a.txt\nd/b.txt\n", "d"));
+    check("mayPushUnderDir: file outside the dir refuses", mayPushUnderDir("d/a.txt\nx.sh\n", "d") === false);
+    check("mayPushUnderDir: empty diff refuses", mayPushUnderDir("", "d") === false);
+    // R5 review: the corpus guard is the one multi-file path into main — the
+    // landing cap and the appendCorpusSample filename shape must be enforced,
+    // not just the directory prefix (arbitrary planted files refuse).
+    const corpusFiles = [
+      "apps/pilot/src/__fixtures__/gate-corpus/npm-run-typecheck-silent/1-abc1234.txt",
+      "apps/pilot/src/__fixtures__/gate-corpus/npm-run-test-unit-silent/7-def5678.txt",
+    ].join("\n");
+    const corpusOpts = { maxFiles: 3, fileName: CORPUS_SAMPLE_RE };
+    check("mayPushUnderDir: real sample filenames within the cap pass", mayPushUnderDir(corpusFiles + "\n", "apps/pilot/src/__fixtures__/gate-corpus", corpusOpts));
+    check("mayPushUnderDir: over the per-landing file cap refuses", mayPushUnderDir(`${corpusFiles}\napps/pilot/src/__fixtures__/gate-corpus/npm-run-build-silent/2-abc1234.txt\n`, "apps/pilot/src/__fixtures__/gate-corpus", { ...corpusOpts, maxFiles: 2 }) === false);
+    check(
+      "mayPushUnderDir: filename not matching the sample shape refuses",
+      mayPushUnderDir("apps/pilot/src/__fixtures__/gate-corpus/npm-run-typecheck-silent/planted.sh\n", "apps/pilot/src/__fixtures__/gate-corpus", corpusOpts) === false,
+    );
+
+    // real-git smoke: landing lands the commit on origin/pilot/meta with gh faked
+    const realIo = metaIo(dir);
+    let prState = "OPEN";
+    let prExists = false;
+    const ghIo: MetaPushIo = {
+      exec: (cmd) => {
+        if (cmd.startsWith("gh ")) {
+          if (cmd.includes("pr view")) {
+            if (!prExists) return { ok: false, output: "no pull requests" };
+            const head = realIo.exec(`git rev-parse origin/${META_BRANCH}`).output.trim();
+            return { ok: true, output: JSON.stringify({ state: prState, headRefOid: head }) };
+          }
+          if (cmd.includes("pr create")) {
+            prExists = true;
+            return { ok: true, output: "" };
+          }
+          if (cmd.includes("pr merge")) {
+            prState = "MERGED"; // fake GitHub: the squash merge completes
+            return { ok: true, output: "" };
+          }
+          return { ok: true, output: "" };
+        }
+        return realIo.exec(cmd);
+      },
+      sleep: () => Promise.resolve(),
+    };
+    const landed = await landMetaCommit(dir, ghIo, {
+      files: ["BACKLOG.md"],
+      message: "pilot(meta): smoke",
+      guardFile: "BACKLOG.md",
+      apply: () => {
+        writeFileSync(join(dir, "BACKLOG.md"), "# B\n\n## Ready\n- [ ] (P2-909) [P2] Meta smoke — spec: x (area: ui)\n\n## Done\n");
+        return { action: "apply" };
+      },
+    });
+    check("landMetaCommit real-git smoke: landing reports pushed", landed === "pushed");
+    const branchShown = execSync(`git -C ${JSON.stringify(dir)} show origin/${META_BRANCH}:BACKLOG.md`, { encoding: "utf8" });
+    check("landMetaCommit real-git smoke: commit is on origin/pilot/meta", branchShown.includes("(P2-909)"));
+    const mainShown = execSync(`git -C ${JSON.stringify(dir)} show origin/main:BACKLOG.md`, { encoding: "utf8" });
+    check("landMetaCommit real-git smoke: origin/main untouched", !mainShown.includes("(P2-909)"));
+    const branchName = execSync(`git -C ${JSON.stringify(dir)} rev-parse --abbrev-ref HEAD`, { encoding: "utf8" }).trim();
+    check("landMetaCommit real-git smoke: worktree left on main", branchName === "main");
+  } finally {
+    rmSync(gdir, { recursive: true, force: true });
+  }
+
+  // grep-style acceptance check (P1-076): no pilot source site may push or
+  // locally merge into main anymore — the meta PR is the only path.
+  const pilotSrc = join(dirname(fileURLToPath(import.meta.url)), "..", "apps", "pilot", "src");
+  const offenders: string[] = [];
+  for (const entry of readdirSync(pilotSrc, { recursive: true })) {
+    const rel = entry.toString();
+    if (!rel.endsWith(".ts") || rel.includes("__fixtures__")) continue;
+    const src = readFileSync(join(pilotSrc, rel), "utf8");
+    if (/push -q origin main/.test(src) || /git merge -q --no-ff/.test(src)) offenders.push(rel);
+  }
+  check("metapush: no site pushes origin main or locally merges into main", offenders.length === 0 && offenders.join(",") === "");
 }
 
 // --- P1-037 pending refill: drafted tasks survive a failed push ------------------
@@ -909,15 +1391,17 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
       execSync(`git -C ${JSON.stringify(work)} -c user.name=t -c user.email=t@t commit -qm init`);
       execSync(`git -C ${JSON.stringify(work)} push -q origin main`);
       const realIo = auxPushIo(work);
+      // P1-076: landings go through the pilot/meta PR — fake gh as OPEN+mergeable
+      const gh = ghMergingIo(realIo);
       const pushDownIo: AuxPushIo = {
-        exec: (cmd) => (cmd.startsWith("git push") ? { ok: false, output: "" } : realIo.exec(cmd)),
+        exec: (cmd) => (cmd.startsWith("git push") ? { ok: false, output: "" } : gh.exec(cmd)),
         sleep: () => Promise.resolve(),
       };
       let pushes = 0;
       const countingIo: AuxPushIo = {
         exec: (cmd) => {
           if (cmd.startsWith("git push")) pushes++;
-          return realIo.exec(cmd);
+          return gh.exec(cmd);
         },
         sleep: () => Promise.resolve(),
       };
@@ -929,8 +1413,10 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
       check("pendingRefill: syncWorkspace reset does not lose drafted tasks", (readPendingRefill(file)?.lines ?? []).join("\n") === line1);
       check("pendingRefill: reland pushes when git recovers", (await relandPendingRefill(work, file, countingIo)) === "pushed");
       check("pendingRefill: reland clears the store", readPendingRefill(file) === null);
-      const shown = execSync(`git -C ${JSON.stringify(work)} show origin/main:BACKLOG.md`, { encoding: "utf8" });
-      check("pendingRefill: relanded line is on origin/main", shown.includes("(P3-951)"));
+      const shown = execSync(`git -C ${JSON.stringify(work)} show origin/${META_BRANCH}:BACKLOG.md`, { encoding: "utf8" });
+      check("pendingRefill: relanded line is on origin/pilot/meta", shown.includes("(P3-951)"));
+      // simulate the meta PR's squash-merge completing so origin/main carries it
+      execSync(`git -C ${JSON.stringify(work)} push -q origin ${META_BRANCH}:main`);
       savePendingRefill(file, [line1], "m2");
       pushes = 0;
       check("pendingRefill: already-landed ids reland as empty", (await relandPendingRefill(work, file, countingIo)) === "empty");
@@ -2114,16 +2600,21 @@ check("stdlibShadow: non-stdlib root file passes", stdlibShadowHits("A\tmain.py\
         [rerunKey("npm run test:unit --silent", ws), { ok: true, output: "OK   a\n" }],
         [rerunKey("npm run build --silent", ws), { ok: true, output: "built in 1.2s\n" }],
       ]);
-      const written = captureGateCorpus(ws, "P3-033", reruns);
-      check("corpus: capture records the gate re-runs and pushes to main", written.length === 3);
-      const pushed = execSync(`git -C "${ws}" ls-remote origin main`).toString().trim();
-      const head = execSync(`git -C "${ws}" rev-parse main`).toString().trim();
-      check("corpus: capture commit is on origin/main", pushed.includes(head));
-      const again = captureGateCorpus(ws, "P3-033", reruns);
+      // P1-076: gh faked via the injectable io — landings go to origin/pilot/meta
+      const ghFakedIo = (wsDir: string): MetaPushIo => ghMergingIo(metaIo(wsDir));
+      const written = await captureGateCorpus(ws, "P3-033", reruns, ghFakedIo(ws));
+      check("corpus: capture records the gate re-runs and lands via pilot/meta", written.length === 3);
+      const mainSha = execSync(`git -C "${ws}" ls-remote origin main`).toString().split("\t")[0];
+      const metaSha = execSync(`git -C "${ws}" ls-remote origin pilot/meta`).toString().split("\t")[0];
+      check("corpus: capture commit is on origin/pilot/meta, not on origin/main", !!metaSha && metaSha !== mainSha);
+      // (the dedupe compares against the committed corpus — simulate the meta
+      // PR's squash-merge completing so origin/main carries the samples)
+      execSync(`git -C "${ws}" push -q origin ${META_BRANCH}:main`);
+      const again = await captureGateCorpus(ws, "P3-033", reruns, ghFakedIo(ws));
       check("corpus: identical re-capture dedupes away", again.length === 0);
       const hostileReruns = new Map([[rerunKey("npm run build --silent", ws), { ok: true, output: "hostile-id output\n" }]]);
-      const hFiles = captureGateCorpus(ws, 'x" ; rm -rf /; echo "', hostileReruns);
-      const subjects = execSync(`git -C "${ws}" log --format=%s -5 main`).toString();
+      const hFiles = await captureGateCorpus(ws, 'x" ; rm -rf /; echo "', hostileReruns, ghFakedIo(ws));
+      const subjects = execSync(`git -C "${ws}" log --format=%s -5 origin/pilot/meta`).toString();
       check(
         "corpus: hostile task id neutralized in the commit message",
         hFiles.length === 1 && subjects.includes("pilot(corpus): 1 gate sample(s) from unknown-task") && !subjects.includes("rm -rf"),
@@ -3274,13 +3765,17 @@ check("experience: isHarnessLesson matches process vocabulary", isHarnessLesson(
   const logs: string[] = [];
   const landed: FailureLesson[] = [];
   const st: { expMaintLast?: string } = {};
-  const res = maintainExperienceWorkspace(
+  const pristineExp = readFileSync(join(dir, "docs", "EXPERIENCE.md"), "utf8");
+  const res = await maintainExperienceWorkspace(
     dir,
     st,
     "2026-09-03",
     {
       exec: (cmd) => {
         cmds.push(cmd);
+        // P1-076: the landing re-bases pilot/meta — simulate the rewind of the
+        // worktree file so the apply callback re-dedupes the fresh copy
+        if (cmd.includes(`git checkout -q -B ${META_BRANCH}`)) writeFileSync(join(dir, "docs", "EXPERIENCE.md"), pristineExp);
         return { ok: true, output: cmd.includes("--name-only") ? "docs/EXPERIENCE.md" : "" };
       },
       appendLesson: (_file, lesson) => {
@@ -3293,9 +3788,9 @@ check("experience: isHarnessLesson matches process vocabulary", isHarnessLesson(
   );
   check("expmaint: prune runs, archives the harness lesson, stamps its own guard", res.changed && res.archived === 1 && st.expMaintLast === "2026-09-03");
   check("expmaint: archived entry is a failure lesson with step archived + fonte task", landed.length === 1 && landed[0]!.step === "archived" && landed[0]!.task === "P1-001" && landed[0]!.attempts === 0);
-  check("expmaint: commit + guarded push executed", cmds.some((c) => c.includes("experience maintenance")) && cmds.some((c) => c.includes("git push -q origin main")));
+  check("expmaint: commit + guarded push executed", cmds.some((c) => c.includes("experience maintenance")) && cmds.some((c) => c.includes("origin HEAD:pilot/meta") && c.startsWith("git push")));
   check("expmaint: logs the maintenance line", logs.some((l) => l.includes("experience maintained")));
-  const again = maintainExperienceWorkspace(dir, st, "2026-09-03", { exec: () => ({ ok: true, output: "" }), appendLesson: () => true, lessonsFile: "x" });
+  const again = await maintainExperienceWorkspace(dir, st, "2026-09-03", { exec: () => ({ ok: true, output: "" }), appendLesson: () => true, lessonsFile: "x" });
   check("expmaint: same-day re-run is a guarded no-op", !again.changed && again.archived === 0);
   rmSync(dir, { recursive: true, force: true });
 
@@ -3304,12 +3799,16 @@ check("experience: isHarnessLesson matches process vocabulary", isHarnessLesson(
   const logs2: string[] = [];
   const landed2: FailureLesson[] = [];
   const st2: { expMaintLast?: string } = {};
-  const res2 = maintainExperienceWorkspace(
+  const pristineExp2 = readFileSync(join(dir2, "docs", "EXPERIENCE.md"), "utf8");
+  const res2 = await maintainExperienceWorkspace(
     dir2,
     st2,
     "2026-09-03",
     {
-      exec: (cmd) => ({ ok: true, output: cmd.includes("--name-only") ? "BACKLOG.md" : "" }),
+      exec: (cmd) => {
+        if (cmd.includes(`git checkout -q -B ${META_BRANCH}`)) writeFileSync(join(dir2, "docs", "EXPERIENCE.md"), pristineExp2);
+        return { ok: true, output: cmd.includes("--name-only") ? "BACKLOG.md" : "" };
+      },
       appendLesson: (_file, lesson) => {
         landed2.push(lesson);
         return true;
@@ -3319,15 +3818,15 @@ check("experience: isHarnessLesson matches process vocabulary", isHarnessLesson(
     (level, msg) => logs2.push(`${level}:${msg}`),
   );
   check(
-    "expmaint: refused push never throws — archive lands, guard stamps",
-    logs2.some((l) => l.includes("aux push refused")) && landed2.length === 1 && st2.expMaintLast === "2026-09-03" && res2.committed,
+    "expmaint: refused push never throws — archive lands, guard stamps, committed stays honest",
+    logs2.some((l) => l.includes("aux push refused")) && landed2.length === 1 && st2.expMaintLast === "2026-09-03" && res2.committed === false,
   );
   rmSync(dir2, { recursive: true, force: true });
 
   // real fs roundtrip: archived lessons land in the shared jsonl (P1-037)
   const dir3 = setup();
   const st3: { expMaintLast?: string } = {};
-  maintainExperienceWorkspace(
+  await maintainExperienceWorkspace(
     dir3,
     st3,
     "2026-09-03",
@@ -3340,6 +3839,58 @@ check("experience: isHarnessLesson matches process vocabulary", isHarnessLesson(
   const stored = readRecentFailureLessons(join(dir3, "out", "lessons.jsonl"));
   check("expmaint: real appendFailureLesson roundtrip (fs-first, outside worktrees)", stored.length === 1 && stored[0]!.step === "archived" && stored[0]!.findings.includes("gatekeeper"));
   rmSync(dir3, { recursive: true, force: true });
+
+  // R3 review: on a successful landing the archived lessons must come from the
+  // pass that actually landed (fresh origin/main recompute), not the stale
+  // workspace copy — pre.archived only covers the failed-landing case (P1-037)
+  const dir4 = mkdtempSync(join(tmpdir(), "pilot-expmaint-r3-"));
+  try {
+    mkdirSync(join(dir4, "docs"), { recursive: true });
+    const staleHarness = "- When the pilot gatekeeper backlog STALE-ARCHIVE marker breaks, do re-check the slot checkpoint (fonte: P1-001)";
+    const freshHarness = "- When the pilot gatekeeper backlog FRESH-ARCHIVE marker breaks, do re-check the slot checkpoint (fonte: P1-001)";
+    const mdFor = (harness: string) =>
+      `# Experience memory (IER)\n\n## Lessons\n- When the relay frames duplicate, do check the seq watermark first (fonte: P9-001)\n${Array.from({ length: 59 }, (_, i) => lessonOf(i + 10)).join("\n")}\n${harness}\n`;
+    // workspace holds the stale copy; the fake checkout restores the fresh one
+    writeFileSync(join(dir4, "docs", "EXPERIENCE.md"), mdFor(staleHarness));
+    writeFileSync(join(dir4, "BACKLOG.md"), "# Backlog\n\n## Done\n- [x] (P1-001) done task — merged\n");
+    const freshContent = readFileSync(join(dir4, "docs", "EXPERIENCE.md"), "utf8").replace("STALE-ARCHIVE", "FRESH-ARCHIVE");
+    const landed4: FailureLesson[] = [];
+    const st4: { expMaintLast?: string } = {};
+    let prMerged4 = false;
+    let prCreated4 = false;
+    const res4 = await maintainExperienceWorkspace(dir4, st4, "2026-09-03", {
+      exec: (cmd) => {
+        if (cmd.includes(`git checkout -q -B ${META_BRANCH}`)) writeFileSync(join(dir4, "docs", "EXPERIENCE.md"), freshContent);
+        // R4: the landing verifies our sha (40-hex) and confirms the merge
+        if (cmd.startsWith("git rev-parse")) return { ok: true, output: `${"f".repeat(40)}\n` };
+        if (cmd.startsWith("gh ") && cmd.includes("pr view"))
+          return prCreated4
+            ? { ok: true, output: JSON.stringify({ state: prMerged4 ? "MERGED" : "OPEN", headRefOid: "f".repeat(40) }) }
+            : { ok: false, output: "no pull requests" };
+        if (cmd.startsWith("gh ") && cmd.includes("pr create")) {
+          prCreated4 = true;
+          return { ok: true, output: "" };
+        }
+        if (cmd.startsWith("gh ") && cmd.includes("pr merge")) {
+          prMerged4 = true;
+          return { ok: true, output: "" };
+        }
+        return { ok: true, output: cmd.includes("--name-only") ? "docs/EXPERIENCE.md" : "" };
+      },
+      appendLesson: (_file, lesson) => {
+        landed4.push(lesson);
+        return true;
+      },
+      lessonsFile: join(dir4, "out", "lessons.jsonl"),
+    });
+    check(
+      "expmaint: archived lessons come from the landed fresh-copy pass, not the stale workspace",
+      res4.archived === 1 && landed4.length === 1 && landed4[0]!.findings.includes("FRESH-ARCHIVE"),
+    );
+    check("expmaint: the stale workspace archive decision is discarded on success", !landed4.some((l) => l.findings.includes("STALE-ARCHIVE")));
+  } finally {
+    rmSync(dir4, { recursive: true, force: true });
+  }
 }
 
 check("experience: lessonsBlock injects nothing when empty", lessonsBlock([]) === "" && !builderPrompt(EXP_TASK, 1, "", []).includes("EXPERIENCE"));
@@ -4406,76 +4957,137 @@ check(
   }
 }
 
-// --- P3-052 round 2: push retry semantics (commitAndPushFindings) -----------------
+// --- P3-052 round 2 + P1-076: explorer findings land via pilot/meta -------------
 {
-  // fake-driven: lands on the 3rd attempt — commit once, push 3x, sleep only between
-  const calls: string[] = [];
-  const sleeps: number[] = [];
-  let pushes = 0;
-  const landed = await commitAndPushFindings("pilot(explorer): test run", {
-    exec: (cmd) => {
-      calls.push(cmd);
-      if (cmd.includes("git push")) return { ok: ++pushes >= 3, output: "" };
-      return { ok: true, output: "" };
-    },
-    sleep: async (ms) => {
-      sleeps.push(ms);
-    },
-  });
-  check("explorer push retry: lands on a later attempt", landed === true);
-  check("explorer push retry: commit once, then pushes", calls.filter((c) => c.includes("git commit")).length === 1 && calls.filter((c) => c.includes("git push")).length === 3);
-  check("explorer push retry: waits between attempts only", sleeps.length === 2 && sleeps.every((s) => s === EXPLORER_PUSH_WAIT_MS));
+  const pristine = "# B\n\n## Ready\n\n## Done\n";
+  const findings: ExplorerFinding[] = [
+    { title: "First", severity: "medium", area: "ui", shot: "/x.png", detail: "detail one" },
+  ];
 
-  // always-failing push (commit itself succeeds): budget exhausted, false reported
-  let failPushes = 0;
-  const exhausted = await commitAndPushFindings("msg", {
-    exec: (cmd) => {
-      if (cmd.includes("git push")) {
-        failPushes++;
-        return { ok: false, output: "" };
-      }
-      return { ok: true, output: "" };
-    },
-    sleep: async () => {},
-  });
-  check("explorer push retry: false after exhausting the budget", exhausted === false && failPushes === EXPLORER_PUSH_RETRIES);
-
-  // commit failure: aborts before any push is attempted
-  let calls2 = 0;
-  const noCommit = await commitAndPushFindings("msg", {
-    exec: () => {
-      calls2++;
-      return { ok: false, output: "" };
-    },
-    sleep: async () => {},
-  });
-  check("explorer push retry: commit failure aborts before pushing", noCommit === false && calls2 === 1);
-
-  // real git smoke: apostrophe in the message pins the shq escaping, and the
-  // commit must actually land on the bare remote's main
-  const repo = mkdtempSync(join(tmpdir(), "pilot-explorer-push-"));
+  // fake-driven: lands on the 3rd attempt — checkout+apply+commit per attempt,
+  // push 3x, sleep only between attempts
+  const dir = mkdtempSync(join(tmpdir(), "pilot-explorer-"));
   try {
-    const git = (cmd: string, opts: { cwd: string }) => execSync(cmd, { cwd: opts.cwd, stdio: "pipe" }).toString();
-    execSync("git init -q -b main && git config user.email t@t.local && git config user.name t", { cwd: repo });
-    const bare = join(repo, "origin.git");
-    execSync(`git init -q --bare "${bare}"`, { cwd: repo });
-    execSync(`git remote add origin "${bare}"`, { cwd: repo });
-    writeFileSync(join(repo, "BACKLOG.md"), "# B\n\n## Ready\n");
-    const smoke = await commitAndPushFindings("pilot(explorer): smoke'd run", {
+    writeFileSync(join(dir, "BACKLOG.md"), pristine);
+    const calls: string[] = [];
+    const sleeps: number[] = [];
+    let pushes = 0;
+    let prCreated = false;
+    const landed = await commitAndPushFindings(dir, findings, "pilot(explorer): test run", {
       exec: (cmd) => {
-        try {
-          execSync(cmd, { cwd: repo, stdio: "pipe" });
+        calls.push(cmd);
+        if (cmd.includes(`git checkout -q -B ${META_BRANCH}`)) writeFileSync(join(dir, "BACKLOG.md"), pristine);
+        if (cmd.startsWith("git diff")) return { ok: true, output: "BACKLOG.md\n" };
+        if (cmd.includes(`origin HEAD:${META_BRANCH}`)) return { ok: ++pushes >= 3, output: "" };
+        // R4: the landing verifies our sha (40-hex) and confirms the merge
+        if (cmd.startsWith("git rev-parse")) return { ok: true, output: `${"e".repeat(40)}\n` };
+        if (cmd.startsWith("gh ") && cmd.includes("pr view"))
+          return prCreated
+            ? { ok: true, output: JSON.stringify({ state: pushes >= 3 ? "MERGED" : "OPEN", headRefOid: "e".repeat(40) }) }
+            : { ok: false, output: "no pull requests" };
+        if (cmd.startsWith("gh ") && cmd.includes("pr create")) {
+          prCreated = true;
           return { ok: true, output: "" };
-        } catch {
+        }
+        return { ok: true, output: "" };
+      },
+      sleep: async (ms) => {
+        sleeps.push(ms);
+      },
+    });
+    check("explorer push retry: lands on a later attempt", landed === true);
+    check("explorer push retry: re-applies and commits on each attempt", calls.filter((c) => c.includes("git commit")).length === 3);
+    check("explorer push retry: waits between attempts only", sleeps.length === 2 && sleeps.every((s) => s === EXPLORER_PUSH_WAIT_MS));
+    check("explorer push retry: finding inserted into BACKLOG", readFileSync(join(dir, "BACKLOG.md"), "utf8").includes("[explorer][medium] First"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  // always-failing push: budget exhausted, false reported
+  const dir2 = mkdtempSync(join(tmpdir(), "pilot-explorer-"));
+  try {
+    writeFileSync(join(dir2, "BACKLOG.md"), pristine);
+    let failPushes = 0;
+    const exhausted = await commitAndPushFindings(dir2, findings, "msg", {
+      exec: (cmd) => {
+        if (cmd.startsWith("git diff")) return { ok: true, output: "BACKLOG.md\n" };
+        if (cmd.includes(`origin HEAD:${META_BRANCH}`)) {
+          failPushes++;
           return { ok: false, output: "" };
         }
+        return { ok: true, output: "" };
       },
       sleep: async () => {},
     });
-    const remoteLog = execSync(`git --git-dir "${bare}" log --format=%s main`).toString();
-    check("explorer push retry: real git lands the commit on origin/main", smoke === true && remoteLog.includes("smoke'd run"));
+    check("explorer push retry: false after exhausting the budget", exhausted === false && failPushes === EXPLORER_PUSH_RETRIES);
+
+    // broken git (checkout impossible): no commit, no push, no PR ever armed
+    const cmds2: string[] = [];
+    const noLanding = await commitAndPushFindings(dir2, findings, "msg", {
+      exec: (cmd) => {
+        cmds2.push(cmd);
+        return { ok: false, output: "" };
+      },
+      sleep: async () => {},
+    });
+    check(
+      "explorer push retry: broken worktree fails without pushing or arming a PR",
+      noLanding === false && cmds2.some((c) => c.startsWith("git ")) && !cmds2.some((c) => c.includes(`origin HEAD:${META_BRANCH}`)) && !cmds2.some((c) => c.startsWith("gh ") && (c.includes("pr create") || c.includes("pr merge"))),
+    );
   } finally {
-    rmSync(repo, { recursive: true, force: true });
+    rmSync(dir2, { recursive: true, force: true });
+  }
+
+  // real git smoke: apostrophe in the message pins the shq escaping, and the
+  // commit must actually land on the bare remote's pilot/meta (never on main).
+  // The bare remote lives OUTSIDE the work tree — `git clean -qfd` inside the
+  // landing loop would otherwise delete it (untracked directory).
+  const gdir2 = mkdtempSync(join(tmpdir(), "pilot-explorer-push-"));
+  const repo = join(gdir2, "work");
+  try {
+    const bare = join(gdir2, "origin.git");
+    execSync(`git init -q --bare -b main "${bare}"`);
+    execSync(`git clone -q "${bare}" "${repo}"`);
+    execSync("git config user.email t@t.local && git config user.name t", { cwd: repo });
+    writeFileSync(join(repo, "BACKLOG.md"), pristine);
+    execSync(`git -C ${JSON.stringify(repo)} add BACKLOG.md && git -C ${JSON.stringify(repo)} -c user.name=t -c user.email=t@t commit -qm init`);
+    execSync(`git -C ${JSON.stringify(repo)} push -q -u origin main`);
+    const realExec = (cmd: string) => {
+      try {
+        return { ok: true, output: execSync(cmd, { cwd: repo, stdio: "pipe" }).toString() };
+      } catch {
+        return { ok: false, output: "" };
+      }
+    };
+    let prMerged = false;
+    let prExists = false;
+    const smoke = await commitAndPushFindings(repo, findings, "pilot(explorer): smoke'd run", {
+      exec: (cmd) => {
+        if (cmd.startsWith("gh ")) {
+          if (cmd.includes("pr view")) {
+            if (!prExists) return { ok: false, output: "no pull requests" };
+            return { ok: true, output: JSON.stringify({ state: prMerged ? "MERGED" : "OPEN", headRefOid: realExec(`git rev-parse origin/${META_BRANCH}`).output.trim() }) };
+          }
+          if (cmd.includes("pr create")) {
+            prExists = true;
+            return { ok: true, output: "" };
+          }
+          if (cmd.includes("pr merge")) {
+            prMerged = true;
+            return { ok: true, output: "" };
+          }
+          return { ok: true, output: "" };
+        }
+        return realExec(cmd);
+      },
+      sleep: async () => {},
+    });
+    const remoteLog = execSync(`git --git-dir "${bare}" log --format=%s ${META_BRANCH}`).toString();
+    const mainLog = execSync(`git --git-dir "${bare}" log --format=%s main`).toString();
+    check("explorer push retry: real git lands the commit on origin/pilot/meta", smoke === true && remoteLog.includes("smoke'd run"));
+    check("explorer push retry: origin/main never receives the finding directly", !mainLog.includes("smoke'd run"));
+  } finally {
+    rmSync(gdir2, { recursive: true, force: true });
   }
 }
 

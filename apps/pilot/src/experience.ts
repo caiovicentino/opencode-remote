@@ -6,7 +6,8 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { doneTaskIds, mayPush } from "./backlog";
+import { doneTaskIds } from "./backlog";
+import { landMetaCommit } from "./metapush";
 import type { FailureLesson } from "./failureLessons";
 import { nowLocalISO } from "./log";
 
@@ -308,15 +309,16 @@ export interface ExpMaintIo {
  * harness lessons in the shared lessons.jsonl (outside every worktree,
  * P1-037) and stamp `st.expMaintLast` — own daily guard, independent of the
  * redteam agent's fate. Best-effort by design: commit/push/fs failures are
- * logged and reported, never thrown, so the loop is never blocked.
+ * logged and reported, never thrown, so the loop is never blocked. The commit
+ * lands via the `pilot/meta` PR (P1-076), guarded to docs/EXPERIENCE.md.
  */
-export function maintainExperienceWorkspace(
+export async function maintainExperienceWorkspace(
   ws: string,
   st: { expMaintLast?: string },
   today: string,
   io: ExpMaintIo,
   log: (level: string, msg: string, data?: unknown) => void = () => {},
-): ExpMaintResult {
+): Promise<ExpMaintResult> {
   if (st.expMaintLast === today) {
     return { changed: false, removed: 0, lessons: 0, archived: 0, committed: false };
   }
@@ -324,19 +326,33 @@ export function maintainExperienceWorkspace(
   try {
     done = doneTaskIds(readFileSync(join(ws, "BACKLOG.md"), "utf8"));
   } catch {}
-  const maint = maintainExperienceFile(ws, done);
+  // P1-037 fs-first: the archive decision is computed before any git work so
+  // the lessons.jsonl entries survive even when the landing fails; the apply
+  // callback re-runs the dedupe against the fresh origin/main copy.
+  const pre = maintainExperienceFile(ws, done);
+  let maint = pre;
+  const result = await landMetaCommit(
+    ws,
+    { exec: io.exec, sleep: (ms) => new Promise<void>((r) => setTimeout(r, ms)) },
+    {
+      files: [EXPERIENCE_FILE],
+      message: "pilot(redteam): experience maintenance",
+      guardFile: EXPERIENCE_FILE,
+      apply: () => {
+        maint = maintainExperienceFile(ws, done);
+        if (!maint.changed) return { action: "noop" };
+        return { action: "apply", message: `pilot(redteam): experience maintenance (-${maint.removed})` };
+      },
+    },
+  );
   let committed = false;
   if (maint.changed) {
-    const commit = io.exec(
-      `git add ${EXPERIENCE_FILE} && git commit -qm "pilot(redteam): experience maintenance (-${maint.removed})"`,
-    );
-    committed = commit.ok;
-    // P1-057 push guard: the only file this flow may ever push
-    const names = io.exec("git diff --name-only origin/main...HEAD");
-    if (!mayPush(names.output, EXPERIENCE_FILE)) {
+    // audit integrity: "refused" means the landing was REJECTED by the guard
+    // (potential tampering) and "failed" means unconfirmed — only a confirmed
+    // merge may be reported as a commit.
+    committed = result === "pushed";
+    if (result === "refused") {
       log("warn", "aux push refused — experience diff not limited to docs/EXPERIENCE.md");
-    } else {
-      io.exec("git push -q origin main");
     }
     log("info", "experience maintained", {
       removed: maint.removed,
@@ -346,7 +362,13 @@ export function maintainExperienceWorkspace(
     });
   }
   let archivedLanded = 0;
-  for (const lesson of maint.archived) {
+  // On a successful landing the apply callback recomputed the pass against the
+  // fresh origin/main copy — ITS archived list is what the landed commit pruned,
+  // so only those lessons may reach lessons.jsonl. pre.archived (stale workspace
+  // copy) covers the failed-landing case the P1-037 fs-first guarantee exists
+  // for; using it on success would archive lessons the landed pass never saw.
+  const archivedSource = result === "pushed" ? maint.archived : pre.archived;
+  for (const lesson of archivedSource) {
     const landed = io.appendLesson(io.lessonsFile, {
       kind: "failure",
       ts: nowLocalISO(),

@@ -1,6 +1,11 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { exec } from "./runner";
+import { landMetaCommit } from "./metapush";
+
+// P1-076: the guard moved to metapush.ts (single home for the landing flow);
+// re-exported here so existing importers keep working.
+export { mayPush } from "./metapush";
 
 export interface Task {
   id: string;
@@ -99,18 +104,22 @@ export function doneTaskIds(md: string): Set<string> {
 /**
  * P1-014 stop-loss: move a task line from ## Ready to a `## Blocked` section
  * (created before ## Done, or at the end of the file) with a one-line summary
- * of the last findings. Idempotent: returns false when the line is missing or
- * already under ## Blocked.
+ * of the last findings. Tri-state (R6): "applied" moves the line, "noop" means
+ * the task is ALREADY under ## Blocked — the desired state is present, so a
+ * meta-landing retry after a queued merge converges as success — and "missing"
+ * means the line does not exist at all (a real failure).
  */
-export function blockTask(repoDir: string, id: string, findings: string): boolean {
+export type BacklogEditResult = "applied" | "noop" | "missing";
+
+export function blockTask(repoDir: string, id: string, findings: string): BacklogEditResult {
   const p = join(repoDir, BACKLOG);
   const md = readFileSync(p, "utf8");
   const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const re = new RegExp(`^(- \\[ \\] \\(${escaped}\\).*)$`, "m");
   const match = re.exec(md);
-  if (!match) return false;
+  if (!match) return "missing";
   const blockedAt = md.search(/^## Blocked$/m);
-  if (blockedAt >= 0 && match.index > blockedAt) return false; // already blocked
+  if (blockedAt >= 0 && match.index > blockedAt) return "noop"; // already blocked
   const summary = findings.replace(/\s+/g, " ").trim().slice(0, 200);
   const entry = `${match[1]} — ${summary}`;
   const removed = md.replace(re, "").replace(/\n{3,}/g, "\n\n");
@@ -118,7 +127,7 @@ export function blockTask(repoDir: string, id: string, findings: string): boolea
     ? removed.replace(/^## Done$/m, `## Blocked\n${entry}\n\n## Done`)
     : `${removed.replace(/\s*$/, "")}\n\n## Blocked\n${entry}\n`;
   writeFileSync(p, updated);
-  return true;
+  return "applied";
 }
 
 /** Add a task at the top of ## Ready (used by redteam findings). */
@@ -188,15 +197,17 @@ export function parseAuxTaskLines(output: string, max = 5): string[] {
 
 /**
  * Append validated lines to the END of ## Ready (before the next section).
- * Rejects ids already present anywhere in the current file. Returns false when
- * nothing was appended — the git state stays untouched (no empty commits).
+ * Rejects ids already present anywhere in the current file. Tri-state (R6):
+ * "noop" when every id is already present — the desired state is present, so
+ * a meta-landing retry after a queued merge converges as success instead of
+ * aborting; "missing" when there are no lines or no ## Ready section at all.
  */
-export function appendReadyLines(repoDir: string, lines: string[]): boolean {
-  if (!lines.length) return false;
+export function appendReadyLines(repoDir: string, lines: string[]): BacklogEditResult {
+  if (!lines.length) return "missing";
   const p = join(repoDir, BACKLOG);
   const md = readFileSync(p, "utf8");
   const readyAt = md.search(/^## Ready$/m);
-  if (readyAt < 0) return false;
+  if (readyAt < 0) return "missing";
   const afterReady = md.slice(readyAt + 1);
   const nextAt = afterReady.search(/^## /m);
   const insertAt = nextAt < 0 ? md.length : readyAt + 1 + nextAt;
@@ -208,28 +219,14 @@ export function appendReadyLines(repoDir: string, lines: string[]): boolean {
     taken.add(id);
     return true;
   });
-  if (!fresh.length) return false;
+  if (!fresh.length) return "noop";
   const updated =
     md.slice(0, insertAt).replace(/\s*$/, "\n") +
     fresh.join("\n") +
     "\n\n" +
     md.slice(insertAt).replace(/^\n+/, "");
   writeFileSync(p, updated);
-  return true;
-}
-
-/**
- * Push guard (P1-057): an aux flow may only ever push a diff whose name-only
- * file list is EXACTLY the one allowed path (BACKLOG.md for task lines,
- * docs/EXPERIENCE.md for lessons). Anything else — leftover artifacts, agent
- * tampering — refuses the push.
- */
-export function mayPush(nameOnlyOutput: string, allowed: string): boolean {
-  const files = nameOnlyOutput
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean);
-  return files.length === 1 && files[0] === allowed;
+  return "applied";
 }
 
 /** Injectable sinks for appendCommitAndPush (unit battery pins the semantics). */
@@ -249,8 +246,9 @@ export function auxPushIo(cwd: string): AuxPushIo {
 export type AuxPushResult = "pushed" | "refused" | "failed";
 
 /**
- * Deterministic aux landing: fetch/reset main → append validated lines →
- * commit → push guard → push, retried up to `attempts` times because concurrent
+ * Deterministic aux landing: the validated lines land via the `pilot/meta`
+ * branch + auto-merge PR (P1-076) — fetch/reset → append → commit → push
+ * guard → force-push → PR, retried up to `attempts` times because concurrent
  * scribes/explorers move origin/main (P3-052 lesson). The guard is re-read from
  * the actual branch diff on every attempt; a refused diff never gets pushed.
  */
@@ -261,26 +259,21 @@ export async function appendCommitAndPush(
   io: AuxPushIo,
   attempts = 3,
 ): Promise<AuxPushResult> {
-  for (let attempt = 0; attempt < attempts; attempt++) {
-    io.exec("git fetch -q origin");
-    if (!io.exec("git reset -q --hard origin/main").ok || !io.exec("git clean -qfd").ok) {
-      await io.sleep(3_000);
-      continue;
-    }
-    if (!appendReadyLines(repoDir, lines)) return "failed"; // all duplicates/invalid — no commit
-    if (!io.exec(`git add ${BACKLOG} && git commit -qm ${shq(message)}`).ok) {
-      await io.sleep(3_000);
-      continue;
-    }
-    const names = io.exec("git diff --name-only origin/main...HEAD");
-    if (!mayPush(names.output, BACKLOG)) return "refused";
-    if (io.exec("git push -q origin main").ok) return "pushed";
-    await io.sleep(3_000);
-  }
-  return "failed";
-}
-
-/** POSIX single-quote shell escape (JSON.stringify is NOT shell quoting). */
-function shq(s: string): string {
-  return `'${s.replace(/'/g, `'\\''`)}'`;
+  return landMetaCommit(
+    repoDir,
+    io,
+    {
+      files: [BACKLOG],
+      message,
+      guardFile: BACKLOG,
+      // R6: all-duplicates is the desired state already present — a retry
+      // after a queued auto-merge finally lands must converge as success
+      // (clearing the P1-037 pending store), not abort forever.
+      apply: () => {
+        const r = appendReadyLines(repoDir, lines);
+        return r === "applied" ? { action: "apply" } : r === "noop" ? { action: "noop" } : { action: "abort" };
+      },
+    },
+    attempts,
+  );
 }

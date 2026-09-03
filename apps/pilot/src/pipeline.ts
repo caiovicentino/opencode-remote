@@ -3,7 +3,8 @@ import { join, dirname, relative, sep } from "node:path";
 import { homedir } from "node:os";
 import { agentStream, cachedExec, exec, runAgent, runAgentForRole, type AgentIds, type RerunResults } from "./runner";
 import { nowLocalISO } from "./log";
-import { markDone, mayPush, type Task } from "./backlog";
+import { markDone, type Task } from "./backlog";
+import { landMetaCommit, metaIo } from "./metapush";
 import { emit } from "./events";
 import { latestUiShot } from "./shot";
 import { defaultVerifiedMergesFile, recordVerifiedMerge } from "./deployguard";
@@ -627,34 +628,27 @@ export function parseScribeLessons(output: string): string[] {
 }
 
 /**
- * Append lessons to the workspace EXPERIENCE.md and push to main. Retries the
- * whole append+commit+push cycle: concurrent slots' scribes can move main
- * between the reset and the push, so a non-fast-forward is expected and cheap
- * to redo (the append is recomputed from the freshly fetched file each time).
+ * Append lessons to the workspace EXPERIENCE.md and land via the `pilot/meta`
+ * PR (P1-076). Retries the whole checkout+append+commit+push cycle: concurrent
+ * slots' scribes can move origin/main between the reset and the push, so a
+ * non-fast-forward is expected and cheap to redo (the append is recomputed from
+ * the freshly fetched file each time).
  */
-function commitLessons(ws: string, id: string, lessons: string[]): boolean {
-  for (let attempt = 0; attempt < 3; attempt++) {
-    exec("git fetch -q origin", { cwd: ws, allowFail: true });
-    exec("git checkout -q main", { cwd: ws, allowFail: true });
-    exec("git reset -q --hard origin/main", { cwd: ws, allowFail: true });
-    exec("git clean -qfd", { cwd: ws, allowFail: true });
-    const added = appendLessonsToWorkspace(ws, lessons, id);
-    if (!added) return true; // all deduped away — nothing to commit
-    const commit = exec(`git add docs/EXPERIENCE.md && git commit -qm "pilot(scribe): ${added} lesson(s) from ${id}"`, {
-      cwd: ws,
-      allowFail: true,
-    });
-    if (!commit.ok) return false; // e.g. index.lock churn — give up, next merge tries again
-    // P1-057 push guard: the scribe may only ever push docs/EXPERIENCE.md —
-    // re-read from the real branch diff on every retry attempt.
-    const names = exec("git diff --name-only origin/main...HEAD", { cwd: ws, allowFail: true });
-    if (!mayPush(names.output, "docs/EXPERIENCE.md")) {
-      logScribe(id, "aux push refused — diff not limited to docs/EXPERIENCE.md", false);
-      return false;
-    }
-    if (exec("git push -q origin main", { cwd: ws, allowFail: true }).ok) return true;
+async function commitLessons(ws: string, id: string, lessons: string[]): Promise<boolean> {
+  const result = await landMetaCommit(ws, metaIo(ws), {
+    files: ["docs/EXPERIENCE.md"],
+    message: `pilot(scribe): lessons from ${id}`,
+    guardFile: "docs/EXPERIENCE.md",
+    apply: () => {
+      const added = appendLessonsToWorkspace(ws, lessons, id);
+      if (!added) return { action: "noop" }; // all deduped away — nothing to commit
+      return { action: "apply", message: `pilot(scribe): ${added} lesson(s) from ${id}` };
+    },
+  });
+  if (result === "refused") {
+    logScribe(id, "aux push refused — diff not limited to docs/EXPERIENCE.md", false);
   }
-  return false;
+  return result === "pushed";
 }
 
 async function runScribe(
@@ -684,7 +678,7 @@ async function runScribe(
     logScribe(t.id, "no parsable lessons — nothing recorded");
     return;
   }
-  const ok = commitLessons(ws, t.id, lessons);
+  const ok = await commitLessons(ws, t.id, lessons);
   logScribe(t.id, `committed ${lessons.length} lesson(s) to docs/EXPERIENCE.md`, ok);
   emit("phase", { task: t.id, phase: "scribe-done", ok, detail: `${lessons.length} lesson(s)` });
 }
@@ -1564,35 +1558,32 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       console.log(
         JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "empty diff but task already merged, self-healing", data: { task: t.id } }),
       );
-      // clean worktree BEFORE moving to main: a dirty empty-diff workspace
-      // would otherwise dirty the wrong branch or block the checkout
+      // clean worktree BEFORE moving to pilot/meta: a dirty empty-diff
+      // workspace would otherwise dirty the wrong branch or block the checkout.
+      // landMetaCommit resets/cleans again after the fetch.
       exec("git reset -q --hard HEAD", { cwd: ws, allowFail: true });
       exec("git clean -qfd", { cwd: ws, allowFail: true });
-      const co = exec("git checkout -q -B main origin/main", { cwd: ws, allowFail: true });
-      let push = { ok: false, output: "" };
-      if (co.ok) {
-        markDone(ws, t.id, `already merged — empty-diff self-heal ${nowLocalISO().slice(0, 10)}`);
-        exec("git add BACKLOG.md", { cwd: ws, allowFail: true });
-        // idempotent: if markDone was a no-op (task already marked), skip the
-        // commit instead of failing on an empty commit
-        const staged = exec("git diff --cached --quiet", { cwd: ws, allowFail: true });
-        if (!staged.ok) {
-          exec(`git commit -qm "pilot(${t.id}): mark done (empty-diff self-heal)"`, { cwd: ws, allowFail: true });
-          // PERMISSION-SURFACE NOTE (constitution #3 spirit): direct push to
-          // origin/main outside the reviewer/gatekeeper path — kept restricted
-          // to this bookkeeping path (only BACKLOG.md staged, fixed message).
-          push = exec("git push -q origin main", { cwd: ws, allowFail: true });
-        } else {
-          push = { ok: true, output: "" };
-        }
-      }
+      // P1-076: the mark-done lands via the pilot/meta PR — no direct main push
+      const push = await landMetaCommit(ws, metaIo(ws), {
+        files: ["BACKLOG.md"],
+        message: `pilot(${t.id}): mark done (empty-diff self-heal)`,
+        guardFile: "BACKLOG.md",
+        apply: () => {
+          markDone(ws, t.id, `already merged — empty-diff self-heal ${nowLocalISO().slice(0, 10)}`);
+          exec("git add BACKLOG.md", { cwd: ws, allowFail: true });
+          // idempotent: if markDone was a no-op (task already marked), skip the
+          // commit instead of failing on an empty commit
+          return exec("git diff --cached --quiet", { cwd: ws, allowFail: true }).ok
+            ? { action: "noop" }
+            : { action: "apply" };
+        },
+      });
       return {
-        ok: co.ok && push.ok,
-        detail: !co.ok
-          ? `task ${t.id} already merged on main but workspace checkout failed`
-          : push.ok
+        ok: push === "pushed",
+        detail:
+          push === "pushed"
             ? `task ${t.id} already merged on main — marked done (empty-diff self-heal)`
-            : `task ${t.id} already merged but BACKLOG update failed`,
+            : `task ${t.id} already merged on main but the mark-done landing ${push === "refused" ? "was refused by the push guard" : "failed"}`,
         ...roundMeta(),
       };
     }
@@ -2063,20 +2054,10 @@ async function gatekeeper(
     });
     if (!merge.ok) return false;
   } else {
-    // fallback: local merge to main and push. origin/main may have moved
-    // (concurrent slot/aux pushes): fetch + retry so a non-fast-forward never
-    // crashes a post-green pipeline with an unhandled exec error.
-    let pushed = false;
-    for (let i = 0; i < 3 && !pushed; i++) {
-      exec("git fetch -q origin", { cwd: ws, allowFail: true });
-      exec("git checkout -q main", { cwd: ws, allowFail: true });
-      // reset --hard also clears a conflicted-merge state from a prior attempt
-      const base = exec("git reset -q --hard origin/main", { cwd: ws, allowFail: true });
-      const merge = exec(`git merge -q --no-ff --no-edit pilot/${t.id}`, { cwd: ws, allowFail: true });
-      if (!base.ok || !merge.ok) break; // conflict — only a full pipeline round fixes it
-      pushed = exec("git push -q origin main", { cwd: ws, allowFail: true }).ok;
-    }
-    if (!pushed) return false; // branch is on origin; the next cycle re-runs the task
+    // P1-076: no local-merge fallback — a merge without a PR has no audit
+    // trail, and a direct push to main defeats branch protection. The branch
+    // is on origin; the next cycle retries the PR.
+    return false;
   }
   // bring workspace main up to date with the merge, then mark the task done
   exec("git checkout -q main", { cwd: ws, allowFail: true });
@@ -2097,10 +2078,16 @@ async function gatekeeper(
   } else {
     console.log(JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "merge sha not identifiable on main — deploy stays refused until the next verified merge", data: { task: t.id, sha: postMergeHead.slice(0, 7), moved: postMergeHead !== preMergeHead } }));
   }
-  markDone(ws, t.id, `merged by pilot ${nowLocalISO().slice(0, 10)}`);
-  exec(`git add BACKLOG.md && git commit -qm "pilot(${t.id}): mark done" && git push -q origin main`, {
-    cwd: ws,
-    allowFail: true,
+  // P1-076: the mark-done bookkeeping commit lands via the pilot/meta PR —
+  // direct pushes to main no longer exist anywhere in the pipeline
+  await landMetaCommit(ws, metaIo(ws), {
+    files: ["BACKLOG.md"],
+    message: `pilot(${t.id}): mark done`,
+    guardFile: "BACKLOG.md",
+    apply: () => {
+      markDone(ws, t.id, `merged by pilot ${nowLocalISO().slice(0, 10)}`);
+      return { action: "apply" };
+    },
   });
   // P2-045: honest daily merge counter for the dashboard — state.json resets
   // at midnight (loadState), matching `git log --since=00:00` exactly
@@ -2112,7 +2099,7 @@ async function gatekeeper(
   if (mergesSinceCorpus >= (cfg.corpusEveryNMerges ?? 5)) {
     state.mergesSinceCorpus = 0;
     try {
-      const files = captureGateCorpus(ws, t.id, rerunResults);
+      const files = await captureGateCorpus(ws, t.id, rerunResults);
       if (files.length) {
         emit("phase", { task: t.id, phase: "corpus", ok: true, detail: `${files.length} sample(s)` });
         exec("git pull -q origin main", { cwd: ws, allowFail: true });

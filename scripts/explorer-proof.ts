@@ -22,7 +22,7 @@ import { cpSync, existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } f
 import { execSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { explorerShotsDir, runExplorer } from "../apps/pilot/src/explorer";
+import { explorerShotsDir, runExplorer, commitAndPushFindings } from "../apps/pilot/src/explorer";
 import { readEvents } from "../apps/pilot/src/events";
 import { nowLocalISO } from "../apps/pilot/src/log";
 import type { PilotConfig, PilotState } from "../apps/pilot/src/state";
@@ -69,6 +69,24 @@ for (const d of ["apps/web/dist", "apps/desktop/dist-electron"]) {
   if (existsSync(join(REPO, d))) cpSync(join(REPO, d), join(ws, d), { recursive: true });
 }
 
+// Fake gh shim (P1-076 R4/R6): landings go through the pilot/meta PR whose
+// merge is only confirmed via `gh pr view` — against a throwaway local origin
+// the real gh can never work, so the shim emulates the full PR lifecycle: no
+// PR until `pr create`, OPEN with the real branch head as headRefOid until a
+// merge is armed, then MERGED with the same head (the landing only reports
+// success when the merged head is its own commit). On PATH it covers both the
+// agent-phase landing and the deterministic beat below; a hostile gh call
+// inside the scratch stays harmless by construction.
+const fakeGhBin = join(tmp, "bin");
+const fakeGhState = join(tmp, "fake-gh-merged");
+const fakeGhCreated = join(tmp, "fake-gh-created");
+writeFileSync(
+  join(fakeGhBin, "gh"),
+  `#!/bin/bash\nstate=${shq(fakeGhState)}\ncreated=${shq(fakeGhCreated)}\nws=${shq(ws)}\ncase "$1 $2" in\n  "pr view")\n    if [ ! -f "$created" ]; then echo "no pull requests" >&2; exit 1; fi\n    head=$(git -C "$ws" rev-parse origin/pilot/meta 2>/dev/null || echo "")\n    if [ -f "$state" ]; then echo "{\\"state\\":\\"MERGED\\",\\"headRefOid\\":\\"$head\\"}"; else echo "{\\"state\\":\\"OPEN\\",\\"headRefOid\\":\\"$head\\"}"; fi\n    ;;\n  "pr create") touch "$created" ;;\n  "pr merge") touch "$state" ;;\n  *) : ;;\nesac\n`,
+  { mode: 0o755 },
+);
+process.env.PATH = `${fakeGhBin}:${process.env.PATH ?? ""}`;
+
 const saved: string[] = [];
 const scratch: PilotState = { date: "scratch", tasks: 0, deploys: 0, failures: 0, merges: 0, taskAttempts: {} };
 await runExplorer({ workspace: ws } as PilotConfig, scratch, {
@@ -98,12 +116,66 @@ if (!SHA_RE.test(baseSha)) {
     proof("origin main sha is a validated 40-hex sha", false, headNow.slice(0, 12));
   } else {
     execSync(`git -C ${shq(origin)} cat-file -e ${shq(`${headNow}^{commit}`)}`);
-    if (headNow !== baseSha) {
-      const msg = sh(`git -C ${shq(origin)} log -1 --format=%s main`);
-      const filed = events.some((e) => e.phase === "filed");
-      proof("findings commit resolves on throwaway origin/main", msg.startsWith("pilot(explorer):") && filed, `${headNow.slice(0, 7)} ${msg}`);
+    // P1-076 R4: findings land via the pilot/meta PR — main itself must never
+    // move (post-merge, branch protection rejects direct pushes).
+    proof("landing never touches origin/main directly", headNow === baseSha, `${baseSha.slice(0, 7)} -> ${headNow.slice(0, 7)}`);
+    // Agent-phase evidence (conditional: the nightly agent may file nothing)
+    // — snapshotted before the deterministic beat below force-pushes the
+    // shared pilot/meta branch with its own landing.
+    const agentMeta = sh(`git -C ${shq(origin)} rev-parse --verify -q refs/heads/pilot/meta || true`);
+    if (SHA_RE.test(agentMeta)) {
+      const agentSubject = sh(`git -C ${shq(origin)} log -1 --format=%s pilot/meta`);
+      proof(
+        "agent landing keeps the pilot(explorer) subject on pilot/meta",
+        agentSubject.startsWith("pilot(explorer):"),
+        agentSubject,
+      );
+      proof(
+        "agent landing fired the filed event (fake gh confirms the merge)",
+        events.some((e) => e.phase === "filed" && e.ok),
+        events.map((e) => e.phase).join(","),
+      );
     } else {
-      proof("run completed with no findings filed (origin main unchanged)", true, baseSha.slice(0, 7));
+      proof("run completed with no findings filed (no pilot/meta landing)", true, baseSha.slice(0, 7));
+    }
+    // Deterministic landing beat (P1-076 R4): the real commitAndPushFindings
+    // against the throwaway origin, with the fake gh confirming the squash —
+    // a broken landing now fails the proof even when the agent filed nothing
+    // (the old driver passed vacuously on an unchanged main).
+    const landed = await commitAndPushFindings(
+      ws,
+      [
+        {
+          title: "proof landing",
+          severity: "low",
+          area: "infra",
+          shot: "proof.png",
+          detail: "deterministic proof beat for the P1-076 landing path",
+        },
+      ],
+      `pilot(explorer): proof landing ${today}`,
+      {
+        exec: (cmd) => {
+          try {
+            return { ok: true, output: execSync(cmd, { cwd: ws, stdio: "pipe" }).toString() };
+          } catch {
+            return { ok: false, output: "" };
+          }
+        },
+        sleep: () => Promise.resolve(),
+      },
+    );
+    proof("deterministic landing reports pushed (merge confirmed via fake gh)", landed === true, String(landed));
+    const metaSha = sh(`git -C ${shq(origin)} rev-parse --verify -q refs/heads/pilot/meta || true`);
+    if (!SHA_RE.test(metaSha)) {
+      proof("pilot/meta ref exists on the throwaway origin", false, metaSha || "(missing)");
+    } else {
+      const subject = sh(`git -C ${shq(origin)} log -1 --format=%s pilot/meta`);
+      proof("landed subject keeps the pilot(explorer) prefix on pilot/meta", subject.startsWith("pilot(explorer):"), subject);
+      const backlog = sh(`git -C ${shq(origin)} show pilot/meta:BACKLOG.md`);
+      proof("landed finding is in BACKLOG.md on pilot/meta", backlog.includes("[explorer]"), "");
+      const mainAfter = sh(`git -C ${shq(origin)} rev-parse main`);
+      proof("origin/main still untouched after the deterministic landing", mainAfter === baseSha, `${baseSha.slice(0, 7)} -> ${mainAfter.slice(0, 7)}`);
     }
   }
 }

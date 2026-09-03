@@ -6,6 +6,7 @@ import { log, nowLocalISO } from "./log";
 import { notifySupervisor } from "./notify";
 import { emit } from "./events";
 import { addTask, nextId } from "./backlog";
+import { landMetaCommit } from "./metapush";
 import { saveState, touchHeartbeat, type PilotConfig, type PilotState } from "./state";
 
 /**
@@ -111,29 +112,37 @@ export interface PushIo {
 }
 
 /**
- * Commit the BACKLOG.md edit and push origin/main with retry. The retry loop
- * (round 2 review): pushes land concurrently from the researcher/scribes, and
- * a one-shot push used to silently lose the findings on the next sync. Returns
- * true only when the push actually landed; commit failure aborts before any
- * push is attempted.
+ * Land the findings as a BACKLOG.md commit on the `pilot/meta` PR branch
+ * (P1-076). The addTask insertions are re-applied inside every attempt — the
+ * `checkout -B` rewind wipes prior edits, and nextId derives from the rewound
+ * file so retried commits are byte-identical. Returns true only when the
+ * landing actually armed (or completed) the PR merge.
  */
 export async function commitAndPushFindings(
+  ws: string,
+  findings: ExplorerFinding[],
   message: string,
   io: PushIo,
   attempts: number = EXPLORER_PUSH_RETRIES,
 ): Promise<boolean> {
-  const add = io.exec(`git add BACKLOG.md && git commit -qm ${shq(message)}`);
-  if (!add.ok) return false;
-  for (let i = 1; i <= attempts; i++) {
-    if (io.exec("git push -q origin main").ok) return true;
-    if (i < attempts) await io.sleep(EXPLORER_PUSH_WAIT_MS);
-  }
-  return false;
-}
-
-/** POSIX single-quote escape (JSON.stringify is NOT shell quoting). */
-function shq(s: string): string {
-  return `'${s.replace(/'/g, `'\\''`)}'`;
+  const result = await landMetaCommit(
+    ws,
+    io,
+    {
+      files: ["BACKLOG.md"],
+      message,
+      guardFile: "BACKLOG.md",
+      apply: () => {
+        for (const f of findings) {
+          const id = nextId(ws, "P3");
+          addTask(ws, id, "P3", `[explorer][${f.severity}] ${f.title}`, explorerSpec(f));
+        }
+        return { action: "apply" };
+      },
+    },
+    attempts,
+  );
+  return result === "pushed";
 }
 
 /** Injectable sinks for runExplorer — scripts/explorer-proof.ts (committed
@@ -192,13 +201,10 @@ export async function runExplorer(cfg: PilotConfig, state: PilotState, io: Explo
       log("info", "explorer produced no backed findings");
       return;
     }
-    let inserted = 0;
-    for (const f of findings) {
-      const id = nextId(cfg.workspace, "P3");
-      addTask(cfg.workspace, id, "P3", `[explorer][${f.severity}] ${f.title}`, explorerSpec(f));
-      inserted++;
-    }
+    const inserted = findings.length;
     const push = await commitAndPushFindings(
+      cfg.workspace,
+      findings,
       `pilot(explorer): ${inserted} finding(s) from nightly run ${today}`,
       {
         exec: (cmd) => exec(cmd, { cwd: cfg.workspace, allowFail: true }),
