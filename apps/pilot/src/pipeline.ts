@@ -775,23 +775,26 @@ export function parseVerdict(output: string): ReviewerVerdict | null {
 /**
  * P2-038: one reviewer's verdict outcome. The LAST marker decides
  * (`parseVerdict`); an APPROVE that carries verified findings is a rejection —
- * findings that verify are evidence, not noise. A REQUEST_CHANGES whose
- * findings ALL fail verification degenerates to an effective approve, and an
- * output without any marker fails closed.
+ * findings that verify are evidence, not noise. P1-073: fail-closed — a
+ * REQUEST_CHANGES never approves, even when its findings ALL fail mechanical
+ * verification (the incident path: hallucinated findings used to degenerate
+ * to an effective approve). Without an arbiter it stays a rejection, and an
+ * output without any marker fails closed too.
  */
-export function reviewerOk(output: string, kept: string[], dropped: string[]): boolean {
+export function reviewerOk(output: string, kept: string[], _dropped: string[]): boolean {
   const verdict = parseVerdict(output);
-  if (verdict === "APPROVE") return kept.length === 0;
-  return verdict === "REQUEST_CHANGES" && dropped.length > 0 && kept.length === 0;
+  if (verdict !== "APPROVE") return false;
+  return kept.length === 0;
 }
 
 /**
- * P1-059: pure escalation predicate — round-1 review outcomes that are
- * ambiguous enough to deserve a stronger-model arbitration: divergent verdicts
- * (one approve, one request-changes) or a reviewer whose findings all failed
- * verification (allDropped ⇒ "effective approve" is unproven). Round > 1
- * already carries the previous round's findings into the builder — no
- * escalation. Both-approve (nothing suspicious) → false.
+ * P1-059: pure escalation predicate — review outcomes ambiguous enough to
+ * deserve a stronger-model arbitration: divergent verdicts (one approve, one
+ * request-changes) or a reviewer whose findings all failed verification
+ * (allDropped ⇒ the concerns are unproven either way). P1-073: all-unverifiable
+ * findings are the fail-open incident path, so they escalate in ANY round;
+ * plain divergence stays a round-1 signal (later rounds already carry the
+ * previous round's findings into the builder).
  */
 export function needsEscalation(
   round: number,
@@ -800,8 +803,9 @@ export function needsEscalation(
   secAllDropped: boolean,
   qualAllDropped: boolean,
 ): boolean {
+  if (secAllDropped || qualAllDropped) return true;
   if (round !== 1) return false;
-  return secOk !== qualOk || secAllDropped || qualAllDropped;
+  return secOk !== qualOk;
 }
 
 export interface PipelineResult {
@@ -1626,8 +1630,9 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
     const secParsed = parseFindings(sec.output);
     const qualParsed = parseFindings(qual.output);
     // P2-015: reviewers are LLMs — findings citing files/lines that don't exist
-    // (or snippets absent from the diff) are mechanically dropped. A verdict
-    // whose findings all fail verification degenerates to an effective APPROVE.
+    // (or snippets absent from the diff) are mechanically dropped.
+    // P1-073: a verdict whose findings all fail verification no longer
+    // degenerates to an approve — it escalates (tier B) or rejects fail-closed.
     // P1-060: verification runs against the same diff the reviewers saw
     // (incremental on later rounds of size-L tasks).
     const secVerified = verifyFindings(secParsed, ws, reviewDiff);
@@ -1647,7 +1652,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
         JSON.stringify({
           ts: nowLocalISO(),
           level: "info",
-          msg: "review findings all unverifiable → effective approve",
+          msg: "review findings all unverifiable → fail-closed (escalate or reject)",
           data: { task: t.id, round },
         }),
       );
@@ -1730,7 +1735,15 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       // the reviewers' evidence (union, deduped line-wise).
       const round1Kept = [...(secOk ? [] : secVerified.kept), ...(qualOk ? [] : qualVerified.kept)];
       const allKept = escalationFindings !== null ? [...round1Kept, ...escalationFindings] : round1Kept;
-      findings = allKept.filter((f, i) => allKept.indexOf(f) === i).join("\n");
+      const deduped = allKept.filter((f, i) => allKept.indexOf(f) === i);
+      // P1-073: fail-closed — an all-unverifiable REQUEST_CHANGES no longer
+      // approves. When no tier-B arbiter ran, the builder gets the rejection
+      // with an explicit instruction to re-raise the concern citing verifiable
+      // path:line evidence, instead of the round silently merging.
+      findings = deduped.join("\n");
+      if ((secAllDropped || qualAllDropped) && escalationFindings === null) {
+        findings = `${findings}\n[a reviewer voted REQUEST_CHANGES but every finding failed mechanical verification — if the concern is real, restate it citing verifiable path:line evidence from the diff]`.trim();
+      }
       if (round === cfg.maxReviewRounds) {
         // P2-031: the carryover file must reflect the REAL last failure — a task
         // burning out at review after an old gate failure would otherwise be

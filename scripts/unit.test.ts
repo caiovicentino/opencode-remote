@@ -1896,7 +1896,7 @@ check("stdlibShadow: non-stdlib root file passes", stdlibShadowHits("A\tmain.py\
   check("p2-038: reviewerOk — APPROVE with verified findings REJECTS", !reviewerOk("VERDICT: APPROVE\n- real.ts:1 — wrong", ["- real.ts:1 — wrong"], []));
   check("p2-038: reviewerOk — clean APPROVE approves", reviewerOk("VERDICT: APPROVE", [], []));
   check("p2-038: reviewerOk — REQUEST_CHANGES with verified findings rejects", !reviewerOk("VERDICT: REQUEST_CHANGES\n- real.ts:1 — wrong", ["- real.ts:1 — wrong"], []));
-  check("p2-038: reviewerOk — all findings dropped → effective approve", reviewerOk("VERDICT: REQUEST_CHANGES\n- ghost.ts:1 — nope", [], ["- ghost.ts:1 — nope"]));
+  check("p1-073: reviewerOk — all findings dropped → fail-closed rejection (incident path)", !reviewerOk("VERDICT: REQUEST_CHANGES\n- ghost.ts:1 — nope", [], ["- ghost.ts:1 — nope"]));
   check("p2-038: reviewerOk — no marker fails closed", !reviewerOk("all good", [], []));
   const twoMarkers = parseFindings("VERDICT: APPROVE\n- early bullet\nVERDICT: REQUEST_CHANGES\n- late bullet");
   check("p2-038: parseFindings anchored at the LAST marker", twoMarkers.some((f) => f.includes("late bullet")) && !twoMarkers.some((f) => f.includes("early")));
@@ -4406,12 +4406,14 @@ check(
 check("p1-059 normalizeModels: non-object → undefined", normalizeModels("nope") === undefined && normalizeModels(null) === undefined);
 check("p1-059 normalizeModels: empty tiers → undefined", normalizeModels({ tierA: {}, tierB: { planner: "" } }) === undefined);
 
-// escalation table (P1-059 acceptance): divergent ⇒ true; both APPROVE ⇒ false; round>1 ⇒ false
+// escalation table (P1-059 acceptance): divergent ⇒ true; both APPROVE ⇒ false; round>1 divergence ⇒ false
 check("p1-059 needsEscalation: divergent round 1", needsEscalation(1, true, false, false, false) && needsEscalation(1, false, true, false, false));
 check("p1-059 needsEscalation: both approve round 1", !needsEscalation(1, true, true, false, false));
 check("p1-059 needsEscalation: both reject with kept findings", !needsEscalation(1, false, false, false, false));
 check("p1-059 needsEscalation: all-dropped triggers", needsEscalation(1, true, true, true, false) && needsEscalation(1, false, false, false, true));
-check("p1-059 needsEscalation: never past round 1", !needsEscalation(2, true, false, true, true));
+check("p1-059 needsEscalation: divergence never past round 1", !needsEscalation(2, true, false, false, false) && !needsEscalation(3, false, true, false, false));
+// P1-073: all-unverifiable findings escalate in ANY round (fail-closed incident path)
+check("p1-073 needsEscalation: all-dropped round 2+ escalates", needsEscalation(2, false, false, true, false) && needsEscalation(2, false, false, false, true) && needsEscalation(3, false, false, true, true));
 
 // forensic guards + report extraction
 check("p1-059 forensicDue: never ran", forensicDue(undefined) === true);

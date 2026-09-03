@@ -234,14 +234,17 @@ intacto). Bloco opcional:
   **reviewer de escalada** e **forensic semanal** (abaixo). O gatekeeper e a
   bateria de evidência não mudam: modelo forte planeja/julga, mas o merge passa
   pela mesma evidência.
-- **Escalada de review** (round 1): vereditos divergentes (1× APPROVE vs
-  1× REQUEST_CHANGES) ou findings **todos** unverificados disparam **1** reviewer
+- **Escalada de review**: vereditos divergentes (1× APPROVE vs
+  1× REQUEST_CHANGES) no round 1, ou findings **todos** unverificados **em
+  qualquer round** (P1-073), disparam **1** reviewer
   extra com o modelo `reviewerEscalation` (fase `review-escalation` no feed);
   o veredito dele decide e, quando rejeita, os findings verificados dele se
   **somam** (união, dedup) aos findings verificados do round 1 que seguem para
-  o builder. Máx. 1 escalada por round; sem
-  `reviewerEscalation` configurado, divergência e `allDropped` seguem o fluxo
-  atual.
+  o builder. Máx. 1 escalada por round. Sem `reviewerEscalation` configurado —
+  ou quando um REQUEST_CHANGES tem **todos** os findings unverificados — vale
+  fail-closed (P1-073): o veredito de rejeição permanece e o builder recebe a
+  instrução de reformular a concern citando evidência verificável
+  `path:line` do diff; findings unverificados nunca mais aprovam por padrão.
 - **Forensic semanal**: na passada noturna (primeira janela >= 2h ocioso do
   dia — P1-095), um agente analisa as últimas
   100 failure lessons (`lessons.jsonl`), os carryovers de gate-fail e o
