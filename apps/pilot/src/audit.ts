@@ -86,6 +86,20 @@ export function recordInfraFailure(st: PilotState): boolean {
 }
 
 /**
+ * P1-104: bookkeeping for a thrown pipeline crash (the runSlot catch). A crash
+ * never produced a merit verdict, so it must never burn a per-task attempt or
+ * block the task (P1-074: bias the false-positive direction toward infra — the
+ * retry is free). It still counts as fever evidence, un-attributed (P2-063:
+ * each crash is its own distinct entry), so a systemic crash loop keeps
+ * tripping the global breaker. Returns true when the caller should wake the
+ * doctor (every INFRA_DOCTOR_EVERY-th crash).
+ */
+export function recordPipelineCrash(st: PilotState, now = Date.now()): boolean {
+  recordCycle(st, false, undefined, now);
+  return recordInfraFailure(st);
+}
+
+/**
  * Record a task block that landed on main (stop-loss P1-014) and prune the
  * 30min burst window. Counts as fresh failure evidence for the resume clock.
  */

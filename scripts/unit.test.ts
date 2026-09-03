@@ -131,6 +131,7 @@ import {
   recordBlockEvent,
   recordCycle,
   recordInfraFailure,
+  recordPipelineCrash,
   resultInfraKind,
 } from "../apps/pilot/src/audit";
 import {
@@ -191,10 +192,12 @@ import {
   baselineFailureRate,
   baselineHealthRate,
   deploy,
+  drainForReload,
   FAST_INSTALL_CMD,
   headDrifted,
   LIVE_INVARIANT_EVERY,
   quarantineWithEscalation,
+  RELOAD_DRAIN_POLL_MS,
   ROLLBACK_HEALTH_WINDOW_SEC,
   shouldSelfHealReload,
   shouldSelfReload,
@@ -3694,6 +3697,59 @@ check("disk guard: statfs probe returns bytes on a real dir", realFree !== null 
   );
 }
 
+// --- P1-104: deploy self-reload waits for the slots to drain ------------------
+{
+  // the drain loop: holds new picks, polls until 0 running, feeds the heartbeat
+  let running = 2;
+  const holds: boolean[] = [];
+  const sleeps: number[] = [];
+  let beats = 0;
+  const waited = await drainForReload({
+    slotsRunning: () => running,
+    holdNewPicks: (h) => holds.push(h),
+    sleep: async (ms) => {
+      sleeps.push(ms);
+      running--; // each poll drains one slot
+    },
+    heartbeat: () => {
+      beats++;
+    },
+  });
+  check("P1-104: drain polls at RELOAD_DRAIN_POLL_MS until slots reach 0", sleeps.length === 2 && sleeps.every((ms) => ms === RELOAD_DRAIN_POLL_MS));
+  check("P1-104: drain holds new picks while waiting, releases when drained", holds[0] === true && holds[holds.length - 1] === false);
+  check("P1-104: drain feeds the heartbeat on every poll", beats === 2);
+  check("P1-104: drain returns the waited ms (0 when already drained)", waited === 2 * RELOAD_DRAIN_POLL_MS);
+
+  let idleBeats = 0;
+  const idleSleeps: number[] = [];
+  await drainForReload({
+    slotsRunning: () => 0,
+    sleep: async (ms) => idleSleeps.push(ms),
+    heartbeat: () => {
+      idleBeats++;
+    },
+  });
+  check("P1-104: already-drained slots reload immediately (no poll, no beat)", idleSleeps.length === 0 && idleBeats === 0);
+
+  // wiring pins: the deploy reload site routes through the drain and the
+  // scheduler honors the hold — a refactor cannot re-enable mid-pipeline exits
+  const deploySrc = readFileSync(join(import.meta.dirname, "..", "apps", "pilot", "src", "deploy.ts"), "utf8");
+  const pilotIndexSrc = readFileSync(join(import.meta.dirname, "..", "apps", "pilot", "src", "index.ts"), "utf8");
+  check(
+    "P1-104: deploy reload drains before process.exit when slots are running",
+    deploySrc.includes("await drainForReload({ slotsRunning, holdNewPicks: opts?.holdNewPicks, sleep: opts?.sleep })") &&
+      deploySrc.includes("opts?.slotsRunning ?? (() => 0)"),
+  );
+  check(
+    "P1-104: launchDeploy wires slotsRunning + holdNewPicks into deploy",
+    pilotIndexSrc.includes("slotsRunning: () => running.size") && pilotIndexSrc.includes("drainNewPicks = hold"),
+  );
+  check(
+    "P1-104: fillFreeSlots honors the drain hold (no new picks while draining)",
+    pilotIndexSrc.includes("if (drainNewPicks) return; // P1-104: self-reload draining — no new picks"),
+  );
+}
+
 // --- P2-058 round 2: quarantine-write escalation + merge-identity validation --
 {
   const dir = mkdtempSync(join(tmpdir(), "ocr-qesc-"));
@@ -4951,6 +5007,32 @@ check(
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+// --- P1-104: a thrown pipeline crash is infra — never a merit attempt ----------
+{
+  // THE task criterion: 12 crash loops (the runSlot catch path) burn no
+  // per-task attempt and can never block the task
+  const crashRun = { date: "2026-09-01", tasks: 0, deploys: 0, failures: 0, taskAttempts: {} } as PilotState;
+  for (let i = 0; i < 12; i++) recordPipelineCrash(crashRun, i);
+  check("P1-104: 12 crashes burn no per-task attempts", Object.keys(crashRun.taskAttempts).length === 0);
+  check("P1-104: crashes count in the diagnostic infraFails counter", crashRun.infraFails === 12);
+  // the systemic guard stays: each crash is its own un-attributed fever entry
+  check("P1-104: a crash loop still trips the global fever breaker", feverReason(crashRun) !== null);
+  // doctor wake cadence is shared with the result-infra path (every 3rd)
+  const wakeRun = { date: "2026-09-01", tasks: 0, deploys: 0, failures: 0, taskAttempts: {} } as PilotState;
+  const wakes: boolean[] = [];
+  for (let i = 0; i < 7; i++) wakes.push(recordPipelineCrash(wakeRun, i));
+  check("P1-104: doctor wakes exactly on the 3rd and 6th crash", wakes[2] === true && wakes[5] === true && wakes.filter(Boolean).length === 2);
+
+  // wiring pin: the catch must record infra evidence and must NOT feed the
+  // merit circuit breaker (the old `pipeline crashed:` detail is gone)
+  const pilotIndexSrc = readFileSync(join(import.meta.dirname, "..", "apps", "pilot", "src", "index.ts"), "utf8");
+  check(
+    "P1-104: crash catch routes through recordPipelineCrash, never tripCircuitBreaker",
+    pilotIndexSrc.includes("const wake = recordPipelineCrash(state);") &&
+      !pilotIndexSrc.includes("pipeline crashed: ${detail}"),
+  );
 }
 
 // --- P2-045 dashboard v2: honest counters + diagnostics aggregations --------------

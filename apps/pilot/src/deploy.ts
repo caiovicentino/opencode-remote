@@ -116,6 +116,48 @@ export function shouldSelfHealReload(
   return runningSlots === 0 && !deployBusy && headDrifted(bootHead, headNow);
 }
 
+/** P1-104: poll cadence for the self-reload drain wait. */
+export const RELOAD_DRAIN_POLL_MS = 5_000;
+
+export interface DrainOpts {
+  /** Running-slot counter (the scheduler's `running.size`). */
+  slotsRunning: () => number;
+  /** Hold switch for new pipeline picks while the drain waits. */
+  holdNewPicks?: (hold: boolean) => void;
+  /** Injectable clock (tests); default = real setTimeout. */
+  sleep?: (ms: number) => Promise<void>;
+  /** Heartbeat feeder override (tests); default = touchHeartbeat. */
+  heartbeat?: () => void;
+}
+
+/**
+ * P1-104: the deploy-time self-reload must never kill a mid-flight pipeline
+ * (the old immediate process.exit burned builder rounds whenever a fire-and-
+ * forget deploy overlapped a busy slot). Instead: hold new picks, poll until
+ * the running slots drain — every pipeline ends by itself (task timeout) —
+ * then let the caller exit so KeepAlive restarts on the new code. Feeds the
+ * heartbeat on every poll: the pending-deploy path awaits deploy() on the main
+ * loop, which is otherwise the heartbeat's only feeder. Returns the waited ms.
+ */
+export async function drainForReload(o: DrainOpts): Promise<number> {
+  const sleep = o.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const heartbeat = o.heartbeat ?? touchHeartbeat;
+  o.holdNewPicks?.(true);
+  let waitedMs = 0;
+  try {
+    while (o.slotsRunning() > 0) {
+      await sleep(RELOAD_DRAIN_POLL_MS);
+      waitedMs += RELOAD_DRAIN_POLL_MS;
+      heartbeat();
+    }
+  } finally {
+    // production exits right after this returns (synchronously — no pick can
+    // sneak back in); the release keeps the hold scoped to the wait in tests
+    o.holdNewPicks?.(false);
+  }
+  return waitedMs;
+}
+
 /** P1-044: interval between soak health checks (the soak loop's clock). */
 export const SOAK_INTERVAL_SEC = 60;
 export const SOAK_INTERVAL_MS = SOAK_INTERVAL_SEC * 1000;
@@ -230,6 +272,12 @@ export interface DeployOpts {
   pilotInfra?: boolean;
   /** P1-044: injectable health probe for the pre-deploy baseline (tests). */
   probeHealth?: () => Promise<boolean>;
+  /** P1-104: self-reload drain hooks. Absent = 0 running slots — the reload
+   * exits immediately (eval battery / --once semantics). */
+  slotsRunning?: () => number;
+  holdNewPicks?: (hold: boolean) => void;
+  /** Injectable clock for the drain wait (tests). */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 /**
@@ -414,8 +462,18 @@ export async function deploy(
   const headNow = exec("git rev-parse HEAD", { cwd: cfg.repo, allowFail: true }).output.trim();
   if (shouldSelfReload(prev, headNow)) {
     const moved = `HEAD moved ${prev.slice(0, 7)} → ${headNow.slice(0, 7)}`;
-    log("warn", `${moved} — self-reloading`);
-    emitEvent("deploy", { phase: "self-reload", ok: true, detail: moved });
+    // P1-104: never exit mid-pipeline — hold new picks and wait for the
+    // running slots to drain; KeepAlive then restarts on the new code.
+    const slotsRunning = opts?.slotsRunning ?? (() => 0);
+    const runningNow = slotsRunning();
+    if (runningNow > 0) {
+      log("warn", `${moved} — self-reload waiting for slots to drain`);
+      emitEvent("deploy", { phase: "self-reload", ok: true, detail: `${moved} — draining ${runningNow} running slot(s) before reload` });
+      await drainForReload({ slotsRunning, holdNewPicks: opts?.holdNewPicks, sleep: opts?.sleep });
+    } else {
+      log("warn", `${moved} — self-reloading`);
+      emitEvent("deploy", { phase: "self-reload", ok: true, detail: moved });
+    }
     process.exit(0); // log is flushed synchronously; the pidfile singleton covers any overlap
   }
   return { ok: true, rolledBack: false, detail: `deployed ${sha.slice(0, 7)} (prev ${prev.slice(0, 7)})` };
