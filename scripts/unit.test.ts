@@ -3291,8 +3291,8 @@ check("disk guard: statfs probe returns bytes on a real dir", realFree !== null 
 // --- P1-044 autocatalysis lane: reinforced soak for apps/pilot/** deploys ----
 {
   check("soak lane: regular deploy keeps the configured window", soakMinutesFor(10, false) === 10 && soakMinutesFor(3, false) === 3);
-  check("soak lane: pilot-infra deploy doubles the window (10 → 20)", soakMinutesFor(10, true) === 20);
-  check("soak lane: the lane never soaks less than 20min", soakMinutesFor(5, true) === 20 && soakMinutesFor(15, true) === 30);
+  check("soak lane: pilot-infra deploy soaks 3min (operator override 2026-09-03)", soakMinutesFor(10, true) === 3);
+  check("soak lane: the pilot lane is flat 3min regardless of monitorMin", soakMinutesFor(5, true) === 3 && soakMinutesFor(15, true) === 3);
 
   check("baseline: no samples → rate 0", baselineFailureRate([]) === 0);
   check("baseline: 1 failing probe of 3 → 1/3", Math.abs(baselineFailureRate([true, false, true]) - 1 / 3) < 1e-9);
