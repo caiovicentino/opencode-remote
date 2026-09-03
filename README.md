@@ -36,7 +36,10 @@ private. That is the product: **local power, remote control, zero trust**.
   and wide code/diff blocks scroll horizontally inside their own block, so
   nothing ever leaves the viewport (chat, diff modal and artifact pane)
 - **AutoMode** — the agent runs hands-free; every auto-approved action is
-  audited and pushable
+  audited and pushable. In AutoMode the chat shows no approval cards at all —
+  just a passive badge; asks that are already answered collapse into
+  "resolved" lines, duplicates of the same request render once, and tapping a
+  stale card says "Permission already resolved" instead of a raw 404
 - **Approval preview** — permission cards show the first lines of the
   command/patch being requested (from the permission event payload) before
   you Approve/Deny, so you always know what you're green-lighting
