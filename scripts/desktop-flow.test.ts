@@ -125,7 +125,9 @@ const cliEnv = { ...process.env, OCR_DESKTOP_SESSION: session };
 // added the oversized-artifact beat (5 MB write + 413 round-trip) inside the
 // same budget — its probes poll at 500ms to pay for it; P3-084 added the
 // sidebar-grouping + ⌘K-preview beat (fake backend serves time.updated
-// sessions) inside the same budget as well.
+// sessions) inside the same budget as well; P3-085 added the thinking-block
+// beat (simulated long response: reasoning streaming, collapse-on-answer,
+// caret, jump-end pill, autoscroll yield) inside the same budget.
 const startedAt = Date.now();
 const DEADLINE_MS = 180_000;
 const shotPath = join(tmpdir(), "ocr-desktop-flow", `flow-${process.pid}.png`);
@@ -1154,7 +1156,7 @@ try {
           "    { id: 'ses-recency-earlier', title: 'Setup antigo', time: { updated: nowMs - 10 * 24 * 3600 * 1000 } },",
           "  ];",
           "  if (u.pathname === '/session') return json([...recency, { id: 'ses-reentry-check', title: 'Reentry check' }, { id: 'ses-draft-a', title: 'Draft A' }, { id: 'ses-artifact-auto', title: 'Artifact auto' }, { id: 'ses-autofail', title: 'Auto fail' }]);",
-          "  if (u.pathname === '/session/ses-reentry-check' || u.pathname === '/session/ses-draft-a' || u.pathname === '/session/ses-artifact-auto' || u.pathname === '/session/ses-autofail') return json({ id: u.pathname.split('/')[2], title: 'P1-089' });",
+          "  if (u.pathname === '/session/ses-reentry-check' || u.pathname === '/session/ses-draft-a' || u.pathname === '/session/ses-artifact-auto' || u.pathname === '/session/ses-autofail' || u.pathname === '/session/ses-thinking') return json({ id: u.pathname.split('/')[2], title: 'P1-089' });",
           "  if (u.pathname === '/session/ses-autofail/permissions/perm-fail') { res.writeHead(500); res.end('auto-approve always rejected'); return; }",
           "  if (/^\\/session\\/[^/]+\\/message$/.test(u.pathname)) return req.method === 'POST' ? json({ id: 'msg-fake' }) : json(ROWS);",
           "  if (u.pathname === '/__arm-perm') { armPerm = req.method === 'POST'; return json({ armed: armPerm }); }",
@@ -1634,6 +1636,159 @@ try {
             // AUTO_SES and expect its chat on screen after their resize
             run("P3-084: return to the artifact session", ["ipc", `location.hash = '#/session/${AUTO_SES}'`], 15_000, localEnv2);
             await waitProbe("P3-084: artifact session chat rendered again", "!!document.querySelector('.messages')", (v) => /true/.test(v), localEnv2);
+          }
+
+          // --- P3-085: collapsible thinking block + streaming polish -----------
+          // Simulated long response over the fake backend: reasoning parts
+          // stream into the "Pensou por Xs" block (expanded while thinking,
+          // collapsed once the answer starts), the streaming caret shows in
+          // the live bubble, scrolling away raises the floating jump-end pill
+          // and the follow-tail autoscroll never fights the reader.
+          phase("P3-085: thinking block + streaming polish");
+          const THINK_SES = "ses-thinking";
+          const thinkWide = run(
+            "P3-085: resize to desktop width",
+            ["shot", join(shotsDir, "P3-085-resize.png"), "1440", "900"],
+            15_000,
+            localEnv2,
+          );
+          if (thinkWide.ok) {
+            await waitProbe(
+              "P3-085: chat remounted at 1440px",
+              "!!document.querySelector('.messages')",
+              (v) => /true/.test(v),
+              localEnv2,
+            );
+            run("P3-085: open the thinking session", ["ipc", `location.hash = '#/session/${THINK_SES}'`], 15_000, localEnv2);
+            await waitProbe(
+              "P3-085: session chat rendered",
+              "!!document.querySelector('.messages')",
+              (v) => /true/.test(v),
+              localEnv2,
+            );
+            const emit = (events: unknown[]) =>
+              fetch(`${fakeUrl}/__emit`, { method: "POST", body: JSON.stringify(events) });
+            // beat 1 — reasoning only: the block renders EXPANDED while the
+            // model is still thinking and no answer text has arrived
+            await emit([
+              { type: "message.updated", properties: { sessionID: THINK_SES, info: { id: "msg-think", role: "assistant" } } },
+              { type: "message.part.updated", properties: { sessionID: THINK_SES, part: { type: "reasoning", text: "Primeiro vou estruturar a resposta…", messageID: "msg-think" } } },
+            ]);
+            const openWhileThinking = await waitProbe(
+              "P3-085: thinking block expanded while streaming reasoning",
+              "document.querySelector('.thinking-head')?.getAttribute('aria-expanded') ?? 'MISS'",
+              (v) => v.trim() === '"true"',
+              localEnv2,
+            );
+            if (openWhileThinking) {
+              const headLabel = await waitProbe(
+                "P3-085: live thinking label rendered",
+                "document.querySelector('.thinking-head')?.textContent ?? ''",
+                (v) => /Pensando|Thinking/.test(v),
+                localEnv2,
+              );
+              if (headLabel) {
+                // beat 2 — the answer starts: the block collapses to
+                // "Pensou por Xs" and the streaming caret shows on the tail
+                const longLine = "detalhe do raciocínio e da resposta — ";
+                await emit([
+                  { type: "message.part.updated", properties: { sessionID: THINK_SES, part: { type: "reasoning", text: "Pensando: passo 1, passo 2, passo 3.", messageID: "msg-think" } } },
+                  { type: "message.part.updated", properties: { sessionID: THINK_SES, part: { type: "text", text: `Resposta longa simulada.\n\n${longLine.repeat(40)}`, messageID: "msg-think" } } },
+                ]);
+                const collapsed = await waitProbe(
+                  "P3-085: block collapses to 'Pensou por Xs' when the answer starts",
+                  "document.querySelector('.thinking-head')?.getAttribute('aria-expanded') + '|' + (document.querySelector('.thinking-head')?.textContent ?? '')",
+                  (v) => {
+                    const s = JSON.parse(v.trim());
+                    return s === "false|" || /^false\|Pensou por \d+s$/.test(s) || /^false\|Thought for \d+s$/.test(s);
+                  },
+                  localEnv2,
+                );
+                if (collapsed) {
+                  const caret = await waitProbe(
+                    "P3-085: streaming caret visible in the live bubble",
+                    "!!document.querySelector('.messages .msg.assistant .caret')",
+                    (v) => /true/.test(v),
+                    localEnv2,
+                  );
+                  if (caret) {
+                    // beat 3 — scroll away: floating jump-end appears, the
+                    // follow-tail autoscroll must NOT yank the reader back
+                    await emit([
+                      { type: "message.part.updated", properties: { sessionID: THINK_SES, part: { type: "text", text: `Resposta longa simulada.\n\n${longLine.repeat(120)}`, messageID: "msg-think" } } },
+                    ]);
+                    await waitProbe(
+                      "P3-085: long response overflows the viewport",
+                      "document.querySelector('.messages')?.scrollHeight",
+                      (v) => Number(v) > 1200,
+                      localEnv2,
+                    );
+                    await run(
+                      "P3-085: reader scrolls away from the tail",
+                      ["ipc", "(() => { const m = document.querySelector('.messages'); m.scrollTop = 0; m.dispatchEvent(new Event('scroll')); return m.scrollTop; })()"],
+                      15_000,
+                      localEnv2,
+                    );
+                    const pill = await waitProbe(
+                      "P3-085: floating jump-end pill appears",
+                      "!!document.querySelector('.jump-end')",
+                      (v) => /true/.test(v),
+                      localEnv2,
+                    );
+                    if (pill) {
+                      await emit([
+                        { type: "message.part.updated", properties: { sessionID: THINK_SES, part: { type: "text", text: `Resposta longa simulada.\n\n${longLine.repeat(200)}`, messageID: "msg-think" } } },
+                      ]);
+                      await new Promise((r) => setTimeout(r, 1_200));
+                      const stayed = await run(
+                        "P3-085: autoscroll does not fight the reader",
+                        ["ipc", "(() => { const m = document.querySelector('.messages'); return m.scrollHeight - m.scrollTop - m.clientHeight; })()"],
+                        15_000,
+                        localEnv2,
+                      );
+                      if (stayed.ok) {
+                        const dist = Number(JSON.parse(stayed.stdout.trim()));
+                        check("P3-085: scroll stays put while the tail grows (far from tail)", Number.isFinite(dist) && dist > 200, stayed.stdout);
+                      }
+                      run("P3-085: click jump-end", ["click", ".jump-end"], 15_000, localEnv2);
+                      await waitProbe(
+                        "P3-085: jump returns to the tail (pill gone)",
+                        "!!document.querySelector('.jump-end')",
+                        (v) => /false/.test(v),
+                        localEnv2,
+                      );
+                    }
+                  }
+                  // beat 4 — idle finalizes: caret gone, block stays collapsed
+                  // with the frozen duration; clicking re-opens the reasoning
+                  await emit([{ type: "session.idle", properties: { sessionID: THINK_SES } }]);
+                  await waitProbe(
+                    "P3-085: caret gone after idle",
+                    "!!document.querySelector('.messages .caret')",
+                    (v) => /false/.test(v),
+                    localEnv2,
+                  );
+                  run("P3-085: click the collapsed thinking head", ["click", ".thinking-head"], 15_000, localEnv2);
+                  const reopened = await waitProbe(
+                    "P3-085: click expands the reasoning text",
+                    "document.querySelector('.thinking')?.className + '|' + !!document.querySelector('.thinking.open .thinking-inner')",
+                    (v) => {
+                      const s = JSON.parse(v.trim());
+                      return s.startsWith("thinking open|true");
+                    },
+                    localEnv2,
+                  );
+                  if (reopened) {
+                    run("P3-085: 1440 evidence shot", ["shot", join(shotsDir, "P3-085-thinking-1440.png"), "1440", "900"], 15_000, localEnv2);
+                    run("P3-085: 390 evidence shot", ["shot", join(shotsDir, "P3-085-thinking-390.png"), "390", "844"], 15_000, localEnv2);
+                  }
+            }
+            // restore the session context: the following beats emit events for
+            // AUTO_SES and expect its chat on screen after their resize
+            run("P3-085: return to the artifact session", ["ipc", `location.hash = '#/session/${AUTO_SES}'`], 15_000, localEnv2);
+            await waitProbe("P3-085: artifact session chat rendered again", "!!document.querySelector('.messages')", (v) => /true/.test(v), localEnv2);
+          }
+            }
           }
 
           // --- P2-097: oversized artifact shows the friendly 413 error ----------

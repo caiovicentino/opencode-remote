@@ -32,7 +32,13 @@ import {
 } from "../lib/permissionCards";
 import { getCachedSession, putCachedSession } from "../lib/sessionCache";
 import { appendDraft, getDraft, setDraft } from "../lib/drafts";
-import { mergeBubbles, type Bubble } from "../lib/bubbleMerge";
+import { mergeBubbles, rowsToBubbles, type Bubble, type HistoryRow } from "../lib/bubbleMerge";
+import {
+  reduceThinking,
+  thinkingExpanded,
+  thinkingSeconds,
+  type ThinkingState,
+} from "../lib/thinking";
 import { initialUnreadState, reduceUnread, sendUnreadToShell } from "../lib/unread";
 import { ArtifactIcon, IconChat, IconDownload, IconLaptop, IconWrench } from "./icons";
 
@@ -88,18 +94,6 @@ interface ToolActivity {
   output: string;
 }
 
-interface HistoryRow {
-  info: { id?: string; role?: string };
-  parts: {
-    type: string;
-    text?: string;
-    url?: string;
-    callID?: string;
-    tool?: string;
-    state?: { status?: string; title?: string; output?: string };
-  }[];
-}
-
 function toolsFromRows(rows: HistoryRow[]): Map<string, ToolActivity> {
   const map = new Map<string, ToolActivity>();
   for (const row of rows) {
@@ -134,29 +128,6 @@ interface HistoryPage {
   oldest?: string | null;
 }
 
-/** text/file parts -> chat bubbles, in the order the rows arrive */
-function rowsToBubbles(rows: HistoryRow[]): Bubble[] {
-  const out: Bubble[] = [];
-  for (const row of rows) {
-    const text = row.parts
-      .filter((p) => p.type === "text" && p.text)
-      .map((p) => p.text)
-      .join("\n");
-    const images = row.parts
-      .filter((p) => p.type === "file" && typeof p.url === "string" && p.url.startsWith("data:image/"))
-      .map((p) => p.url as string);
-    if (text || images.length) {
-      out.push({
-        role: row.info.role === "user" ? "user" : "assistant",
-        text,
-        images,
-        messageID: row.info.id,
-      });
-    }
-  }
-  return out;
-}
-
 interface Skill {
   id: string;
   label: string;
@@ -169,6 +140,56 @@ interface PendingImage {
   filename: string;
   thumb: string;
   raw?: Uint8Array;
+}
+
+/** P3-085: collapsible reasoning block ("Pensou por Xs", Claude Desktop
+ * parity). Expanded while the model is still thinking, collapsed the moment
+ * the answer starts; the header stays clickable either way. The open state
+ * lives in the DOM — aria-expanded is the locale-proof test hook. */
+function ThinkingBlock({
+  text,
+  label,
+  streaming,
+}: {
+  text: string;
+  label: string;
+  streaming: boolean;
+}) {
+  const [open, setOpen] = useState(streaming);
+  const wasStreaming = useRef(streaming);
+  useEffect(() => {
+    if (wasStreaming.current !== streaming) {
+      wasStreaming.current = streaming;
+      setOpen(streaming);
+    }
+  }, [streaming]);
+  return (
+    <div className={`thinking${open ? " open" : ""}`}>
+      <button className="thinking-head" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+        <svg
+          className="thinking-chevron"
+          width="12"
+          height="12"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.4"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden
+        >
+          <path d="m9 18 6-6-6-6" />
+        </svg>
+        <span>{label}</span>
+      </button>
+      <div className="thinking-body">
+        <div className="thinking-inner">
+          {text}
+          {streaming && <span className="caret" aria-hidden />}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 /** P2-049: accessible modal shell — Esc closes, Tab is trapped inside while
@@ -512,6 +533,10 @@ export default function ChatView({
   // into session B's transcript on a mid-stream switch.
   const [liveText, setLiveText] = useState("");
   const liveRef = useRef<{ text: string; messageID?: string }>({ text: "" });
+  // P3-085: streaming reasoning ("Pensou por Xs" block) — refs above the
+  // [sessionId] switch effect, cleared on every switch (P1-089 rule).
+  const [liveThinking, setLiveThinking] = useState<ThinkingState | null>(null);
+  const thinkingRef = useRef<ThinkingState | null>(null);
 
   useEffect(() => {
     rolesRef.current = {};
@@ -551,6 +576,8 @@ export default function ChatView({
     // finalize racing the switch appends it to the new session's bubbles
     liveRef.current = { text: "" };
     setLiveText("");
+    thinkingRef.current = null;
+    setLiveThinking(null);
   }, [sessionId]);
 
   // P2-090: auto-open the split-pane when the turn goes idle right after the
@@ -810,12 +837,24 @@ export default function ChatView({
         idle = false;
       }
       if (evt.type === "session.idle") idle = true;
+      // P3-085: fold reasoning/thinking events into the collapsible block
+      // state (pure reducer, pinned by scripts/thinking.test.ts)
+      thinkingRef.current = reduceThinking(thinkingRef.current, evt, sessionId, Date.now());
     }
+    if (thinkingRef.current) setLiveThinking(thinkingRef.current);
     if (text) {
       liveRef.current = { text, messageID: textId };
       setLiveText(text);
     }
     if (idle) {
+      // P3-085: freeze the thinking duration and persist it on the final
+      // bubble — the collapsed "Pensou por Xs" block stays in the transcript
+      const finalThinking = thinkingRef.current
+        ? {
+            text: thinkingRef.current.text,
+            secs: thinkingRef.current.endedAt ? thinkingSeconds(thinkingRef.current) : undefined,
+          }
+        : undefined;
       if (liveRef.current.text) {
         const final = liveRef.current;
         setBubbles((b) => {
@@ -829,11 +868,18 @@ export default function ChatView({
           if (!final.messageID && b[b.length - 1]?.text === final.text) return b;
           return [
             ...b,
-            { role: "assistant" as const, text: final.text, messageID: final.messageID },
+            {
+              role: "assistant" as const,
+              text: final.text,
+              messageID: final.messageID,
+              thinking: finalThinking,
+            },
           ];
         });
         liveRef.current = { text: "" };
       }
+      thinkingRef.current = null;
+      setLiveThinking(null);
       setLiveText("");
       setSending(false);
       if (errored) setError(`agent error: ${errored}`);
@@ -870,6 +916,8 @@ export default function ChatView({
       hadDropRef.current = false;
       setLiveText("");
       liveRef.current = { text: "" };
+      thinkingRef.current = null;
+      setLiveThinking(null);
       lastEventId.current = events[events.length - 1]?.id ?? null;
       void loadHistory();
     }
@@ -929,7 +977,7 @@ export default function ChatView({
   useEffect(() => {
     if (!atBottomRef.current) return;
     bottomRef.current?.scrollIntoView({ behavior: scrollBehavior() });
-  }, [bubbles, sending, liveText]);
+  }, [bubbles, sending, liveText, liveThinking]);
 
   const lastScrollTop = useRef(0);
   function handleScroll() {
@@ -1305,7 +1353,7 @@ export default function ChatView({
 
   async function send(override?: string) {
     const text = (override ?? input).trim();
-    if ((!text && images.length === 0) || sending || liveText) return;
+    if ((!text && images.length === 0) || sending || liveText || liveThinking) return;
     // the reader's own message always lands on the newest tail
     atBottomRef.current = true;
     setAtBottom(true);
@@ -1742,7 +1790,7 @@ export default function ChatView({
               <div className="skel" style={{ width: "70%", height: 64 }} />
             </>
           )}
-          {!loadingHistory && bubbles.length === 0 && !liveText && !historyError && (
+          {!loadingHistory && bubbles.length === 0 && !liveText && !liveThinking && !historyError && (
             <div className="chat-empty">
               <span className="chat-empty-icon" aria-hidden>
                 <IconChat />
@@ -1807,6 +1855,17 @@ export default function ChatView({
                   ))}
                 </div>
               )}
+              {b.role === "assistant" && b.thinking && (
+                <ThinkingBlock
+                  text={b.thinking.text}
+                  label={
+                    b.thinking.secs
+                      ? t("thoughtFor", { n: b.thinking.secs })
+                      : t("thoughtLabel")
+                  }
+                  streaming={false}
+                />
+              )}
               {renderBubbleText(b.text, request, setError)}
               {b.role === "assistant" &&
                 artifactMentions(b.text, artifacts).map((a) => (
@@ -1859,13 +1918,28 @@ export default function ChatView({
               )}
             </div>
           ))}
-          {liveText && (
+          {(liveText || liveThinking) && (
             <div className="msg assistant" aria-live="polite">
-              {renderBubbleText(liveText, request, setError)}
-              <span className="caret" aria-hidden />
+              {liveThinking && (
+                <ThinkingBlock
+                  text={liveThinking.text}
+                  label={
+                    liveThinking.endedAt
+                      ? t("thoughtFor", { n: thinkingSeconds(liveThinking) })
+                      : t("thinkingLive")
+                  }
+                  streaming={!liveThinking.endedAt}
+                />
+              )}
+              {liveText && (
+                <>
+                  {renderBubbleText(liveText, request, setError)}
+                  <span className="caret" aria-hidden />
+                </>
+              )}
             </div>
           )}
-          {sending && !liveText && (
+          {sending && !liveText && !liveThinking && (
             <div className="msg assistant">
               <div className="typing">
                 <span />
@@ -1874,7 +1948,7 @@ export default function ChatView({
               </div>
             </div>
           )}
-          {(sending || liveText) && (
+          {(sending || liveText || !!liveThinking) && (
             <button
               className="danger"
               style={{ margin: "4px auto", display: "block" }}
@@ -2217,7 +2291,7 @@ export default function ChatView({
                   borderRadius: 16,
                   flexShrink: 0,
                 }}
-                disabled={sending || !!liveText}
+                disabled={sending || !!liveText || !!liveThinking}
                 onClick={() => void send(s.prompt)}
               >
                 {s.label}
@@ -2297,10 +2371,10 @@ export default function ChatView({
           <button
             className="primary"
             onClick={() => void send()}
-            disabled={sending || !!liveText}
-            title={liveText ? t("streamingWait") : t("send")}
+            disabled={sending || !!liveText || !!liveThinking}
+            title={liveText || liveThinking ? t("streamingWait") : t("send")}
           >
-            {liveText ? "…" : t("send")}
+            {(liveText || liveThinking) ? "…" : t("send")}
           </button>
         </div>
       </div>

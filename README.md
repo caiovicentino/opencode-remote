@@ -32,6 +32,9 @@ private. That is the product: **local power, remote control, zero trust**.
   newest message while you are already at the bottom — scroll up to read and
   a small ↓ pill appears to jump back to the tail; when the connection drops
   a slim banner with the reconnection attempt count replaces the old header dot.
+  The model's reasoning streams into a collapsible "Thought for Xs" block —
+  expanded while it thinks, collapsed as soon as the answer starts, click to
+  re-open; a streaming caret marks the live tail. 
   Code blocks and long lines never clip at the right edge: text and URLs wrap,
   and wide code/diff blocks scroll horizontally inside their own block, so
   nothing ever leaves the viewport (chat, diff modal and artifact pane)

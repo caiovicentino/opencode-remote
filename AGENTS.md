@@ -174,7 +174,10 @@ beat do pane Browser: página de teste colorida carregada no pane real deve
 ocupar o bounding box do pane (elemento + viewport do guest), inclusive após
 mudança de largura (maximizar); P3-084 adicionou os beats de agrupamento
 temporal (Hoje/Ontem/Anteriores) e do switcher ⌘K com preview da última
-mensagem — o fake backend serve sessões com `time.updated`)); use `OCR_DESKTOP_SESSION` próprio para não colidir
+mensagem — o fake backend serve sessões com `time.updated`; P3-085 adicionou
+o beat do bloco de thinking (resposta longa simulada: reasoning expande e
+colapsa "Pensou por Xs", caret de streaming, pill ↓ flutuante, autoscroll
+que não briga com o leitor)); use `OCR_DESKTOP_SESSION` próprio para não colidir
 com a sessão de outro processo. P1-081: com `OCR_DESKTOP_SESSION` setado o app
 NÃO mostra janela (`showMainWindow` no-op + `paintWhenInitiallyHidden`, interação
 100% via webContents) — a tela do operador nunca vê janela de teste; e

@@ -10,6 +10,52 @@ export interface Bubble {
   messageID?: string;
   /** true while the relay round-trip is in flight; "queued" when offline */
   pending?: boolean | "queued";
+  /** P3-085: the model's reasoning for this turn — collapsible "Pensou por Xs"
+   * block above the answer text. secs is only known for live-streamed turns. */
+  thinking?: { text: string; secs?: number };
+}
+
+/** History row as served by GET /session/:id/message (paginated or legacy). */
+export interface HistoryRow {
+  info: { id?: string; role?: string };
+  parts: {
+    type: string;
+    text?: string;
+    url?: string;
+    callID?: string;
+    tool?: string;
+    state?: { status?: string; title?: string; output?: string };
+  }[];
+}
+
+/** text/file/reasoning parts -> chat bubbles, in the order the rows arrive */
+export function rowsToBubbles(rows: HistoryRow[]): Bubble[] {
+  const out: Bubble[] = [];
+  for (const row of rows) {
+    const text = row.parts
+      .filter((p) => p.type === "text" && p.text)
+      .map((p) => p.text)
+      .join("\n");
+    const images = row.parts
+      .filter((p) => p.type === "file" && typeof p.url === "string" && p.url.startsWith("data:image/"))
+      .map((p) => p.url as string);
+    // P3-085: persisted reasoning renders as the collapsed thinking block;
+    // history carries no timing, so the label falls back to "Pensou"
+    const thinkingText = row.parts
+      .filter((p) => p.type === "reasoning" && p.text)
+      .map((p) => p.text)
+      .join("\n");
+    if (text || images.length || thinkingText) {
+      out.push({
+        role: row.info.role === "user" ? "user" : "assistant",
+        text,
+        images,
+        messageID: row.info.id,
+        thinking: thinkingText ? { text: thinkingText } : undefined,
+      });
+    }
+  }
+  return out;
 }
 
 /**

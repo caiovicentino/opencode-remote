@@ -312,6 +312,10 @@ select {
   gap: 8px;
   padding-bottom: 8px;
   overscroll-behavior: contain;
+  /* P3-085: the follow-tail effect owns scrolling while streaming — Chromium
+     scroll anchoring otherwise micro-adjusts scrollTop as the live bubble
+     grows, fighting the "at bottom" heuristic */
+  overflow-anchor: none;
   /* P1-080: same row-axis flex item as .chat — keep the bubble chain shrinkable */
   min-width: 0;
   max-width: 100%;
@@ -429,6 +433,73 @@ select {
   50% {
     opacity: 0;
   }
+}
+
+/* P3-085: collapsible reasoning block ("Pensou por Xs") — Claude Desktop
+   parity. Quiet by design: muted 12px header, hairline border, no fill. The
+   body animates via the 0fr→1fr grid-row trick (height animates without JS
+   measurement); the global prefers-reduced-motion query neutralizes it. */
+.thinking {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  min-width: 0;
+  max-width: 100%;
+  margin-bottom: 8px;
+}
+.thinking-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 9px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--font-size-xs);
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  border-radius: inherit;
+}
+.thinking-head:hover {
+  color: var(--text);
+}
+.thinking-head:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.thinking-chevron {
+  flex-shrink: 0;
+  transition: transform var(--motion-fast) var(--ease-out);
+}
+.thinking.open .thinking-chevron {
+  transform: rotate(90deg);
+}
+.thinking-body {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows var(--motion-slow) var(--ease-out),
+    opacity var(--motion-fast) var(--ease-out);
+}
+.thinking.open .thinking-body {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+.thinking-inner {
+  overflow: hidden;
+  min-height: 0;
+  min-width: 0;
+  padding: 0 10px;
+  font-size: var(--font-size-sm);
+  line-height: 1.55;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.thinking.open .thinking-inner {
+  padding-bottom: 9px;
 }
 
 /* skeleton shimmer for loading states */
