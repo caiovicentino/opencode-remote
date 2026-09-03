@@ -3548,6 +3548,42 @@ check("experience: isHarnessLesson matches process vocabulary", isHarnessLesson(
   const stored = readRecentFailureLessons(join(dir3, "out", "lessons.jsonl"));
   check("expmaint: real appendFailureLesson roundtrip (fs-first, outside worktrees)", stored.length === 1 && stored[0]!.step === "archived" && stored[0]!.findings.includes("gatekeeper"));
   rmSync(dir3, { recursive: true, force: true });
+
+  // R3 review: on a successful landing the archived lessons must come from the
+  // pass that actually landed (fresh origin/main recompute), not the stale
+  // workspace copy — pre.archived only covers the failed-landing case (P1-037)
+  const dir4 = mkdtempSync(join(tmpdir(), "pilot-expmaint-r3-"));
+  try {
+    mkdirSync(join(dir4, "docs"), { recursive: true });
+    const staleHarness = "- When the pilot gatekeeper backlog STALE-ARCHIVE marker breaks, do re-check the slot checkpoint (fonte: P1-001)";
+    const freshHarness = "- When the pilot gatekeeper backlog FRESH-ARCHIVE marker breaks, do re-check the slot checkpoint (fonte: P1-001)";
+    const mdFor = (harness: string) =>
+      `# Experience memory (IER)\n\n## Lessons\n- When the relay frames duplicate, do check the seq watermark first (fonte: P9-001)\n${Array.from({ length: 59 }, (_, i) => lessonOf(i + 10)).join("\n")}\n${harness}\n`;
+    // workspace holds the stale copy; the fake checkout restores the fresh one
+    writeFileSync(join(dir4, "docs", "EXPERIENCE.md"), mdFor(staleHarness));
+    writeFileSync(join(dir4, "BACKLOG.md"), "# Backlog\n\n## Done\n- [x] (P1-001) done task — merged\n");
+    const freshContent = readFileSync(join(dir4, "docs", "EXPERIENCE.md"), "utf8").replace("STALE-ARCHIVE", "FRESH-ARCHIVE");
+    const landed4: FailureLesson[] = [];
+    const st4: { expMaintLast?: string } = {};
+    const res4 = await maintainExperienceWorkspace(dir4, st4, "2026-09-03", {
+      exec: (cmd) => {
+        if (cmd.includes(`git checkout -q -B ${META_BRANCH}`)) writeFileSync(join(dir4, "docs", "EXPERIENCE.md"), freshContent);
+        return { ok: true, output: cmd.includes("--name-only") ? "docs/EXPERIENCE.md" : "" };
+      },
+      appendLesson: (_file, lesson) => {
+        landed4.push(lesson);
+        return true;
+      },
+      lessonsFile: join(dir4, "out", "lessons.jsonl"),
+    });
+    check(
+      "expmaint: archived lessons come from the landed fresh-copy pass, not the stale workspace",
+      res4.archived === 1 && landed4.length === 1 && landed4[0]!.findings.includes("FRESH-ARCHIVE"),
+    );
+    check("expmaint: the stale workspace archive decision is discarded on success", !landed4.some((l) => l.findings.includes("STALE-ARCHIVE")));
+  } finally {
+    rmSync(dir4, { recursive: true, force: true });
+  }
 }
 
 check("experience: lessonsBlock injects nothing when empty", lessonsBlock([]) === "" && !builderPrompt(EXP_TASK, 1, "", []).includes("EXPERIENCE"));

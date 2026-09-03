@@ -639,22 +639,27 @@ Output: either "REDTEAM: CLEAN" if you found nothing actionable, or
   saveState(st);
   log("info", r.ok ? "nightly redteam finished" : "nightly redteam failed", { ok: r.ok, timedOut: r.timedOut });
   if (r.output.includes("REDTEAM: FINDING")) {
-    const id = nextId(cfg.workspace, "RT");
     const summary = r.output.split("REDTEAM: FINDING")[1]?.slice(0, 600) ?? "finding";
-    // P1-076: the finding lands via the pilot/meta PR, guarded to BACKLOG.md
+    // P1-076: the finding lands via the pilot/meta PR, guarded to BACKLOG.md.
+    // The id derives INSIDE the apply callback — from the freshly re-based
+    // BACKLOG.md — so a concurrent meta landing that added task lines since
+    // our last sync can't produce a duplicate-id insert (same fix as the
+    // explorer flow), and every retry re-derives instead of reusing a stale id.
+    let landedId = "";
     const landed = await landMetaCommit(cfg.workspace, metaIo(cfg.workspace), {
       files: ["BACKLOG.md"],
-      message: `pilot(redteam): add ${id}`,
+      message: "pilot(redteam): add finding",
       guardFile: "BACKLOG.md",
       apply: () => {
-        addTask(cfg.workspace, id, "P0", `Redteam finding ${today}`, summary);
-        return { action: "apply" };
+        landedId = nextId(cfg.workspace, "RT");
+        addTask(cfg.workspace, landedId, "P0", `Redteam finding ${today}`, summary);
+        return { action: "apply", message: `pilot(redteam): add ${landedId}` };
       },
     });
     if (landed === "refused") {
-      log("warn", "aux push refused — redteam diff not limited to BACKLOG.md", { id });
+      log("warn", "aux push refused — redteam diff not limited to BACKLOG.md", { id: landedId });
     }
-    log("info", "redteam finding committed", { id, landed: landed === "pushed" });
+    log("info", "redteam finding committed", { id: landedId, landed: landed === "pushed" });
     await digest("🚨 Pilot redteam: achado", summary.slice(0, 120), "#/");
   }
 }

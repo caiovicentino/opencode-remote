@@ -359,7 +359,13 @@ export async function maintainExperienceWorkspace(
     });
   }
   let archivedLanded = 0;
-  for (const lesson of pre.archived) {
+  // On a successful landing the apply callback recomputed the pass against the
+  // fresh origin/main copy — ITS archived list is what the landed commit pruned,
+  // so only those lessons may reach lessons.jsonl. pre.archived (stale workspace
+  // copy) covers the failed-landing case the P1-037 fs-first guarantee exists
+  // for; using it on success would archive lessons the landed pass never saw.
+  const archivedSource = result === "pushed" ? maint.archived : pre.archived;
+  for (const lesson of archivedSource) {
     const landed = io.appendLesson(io.lessonsFile, {
       kind: "failure",
       ts: nowLocalISO(),
