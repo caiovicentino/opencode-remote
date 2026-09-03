@@ -23,10 +23,10 @@ import {
   enterAuditMode,
   feverReason,
   formatDiagnosis,
-  infraFailureKind,
   recordBlockEvent,
   recordCycle,
   recordInfraFailure,
+  resultInfraKind,
 } from "./audit";
 import { apiHealthy } from "./runner";
 import { maintainExperienceFile, pickRelevantLessons, readExperienceFile } from "./experience";
@@ -334,7 +334,9 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
       // P1-074: infra noise (API down, spawn error, timeout without output)
       // burns no attempt, adds no fever sample and blocks nothing — it counts
       // in the diagnostic infraFails, with a doctor pass every 3rd occurrence
-      const infra = infraFailureKind(result.detail);
+      // (P1-094: classified only from the structured result.infra flag — the
+      // detail text embeds findings and may legitimately mention infra words)
+      const infra = resultInfraKind(result);
       if (infra) {
         const wake = recordInfraFailure(state);
         log("warn", "pipeline infra-failure", { task: task.id, kind: infra, infraFails: state.infraFails });

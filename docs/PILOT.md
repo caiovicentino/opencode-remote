@@ -435,11 +435,13 @@ O contador **não** é zerado pelo reset diário de `state.json` (virar a noite 
 reabre o breaker) e, se o push do bloqueio falhar, o guard do loop re-bloqueia a
 task no ciclo seguinte em vez de executá-la de novo.
 
-**Falhas de infraestrutura não queimam attempt (P1-074)**: detalhes de falha com
-assinatura de infra — API do opencode fora (`[preflight] opencode API
-unreachable`, `Cannot connect to API`), `spawn error:` e timeout do builder sem
-output (`[infra] builder timed out without output`) — são classificados pelo
-`infraFailureKind` e seguem por outro caminho: incrementam apenas o contador
+**Falhas de infraestrutura não queimam attempt (P1-074)**: falhas de infra — API
+do opencode fora (preflight), `spawn error:` e timeout do builder sem output
+(`[infra] builder timed out without output`) — são classificadas (P1-094) apenas
+pelo campo estruturado `infra` que o produtor da falha preenche
+(`resultInfraKind`; o texto do `detail` nunca é escaneado, pois findings de
+review podem citar palavras de infra sem ser infra) e seguem por outro caminho:
+incrementam apenas o contador
 diagnóstico `infraFails` em `state.json` (reset diário), **sem** incrementar
 `taskAttempts` e **sem** alimentar a janela de febre. A cada 3 ocorrências o
 doctor roda um pass de diagnóstico no log (`audit diagnosis`, com `api=…`), sem

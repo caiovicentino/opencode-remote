@@ -9,6 +9,10 @@ export interface RunResult {
   sessionId?: string;
   /** P2-013: resumable subagent task ids seen in stdout (opencode >=1.18.20). */
   taskIds: string[];
+  /** P1-094: structured infra flag set only by the producer of an unambiguous
+   * infra failure (preflight API unreachable, spawn error) — the classifier
+   * reads this, never the output text. */
+  infra?: "api-down" | "spawn";
 }
 
 // ── P2-013: cheap resumption — id capture from agent stdout ─────────────────
@@ -224,6 +228,7 @@ export async function runAgent(
       timedOut: false,
       output: `[preflight] opencode API unreachable at ${OPENCODE_URL} after ${API_PREFLIGHT.retries} retries (~${(API_PREFLIGHT.retries * API_PREFLIGHT.waitMs) / 1000}s) — aborting before spawn`,
       taskIds: [],
+      infra: "api-down",
     };
   }
   return new Promise((resolve) => {
@@ -276,6 +281,7 @@ export async function runAgent(
         timedOut,
         sessionId: ids.sessionId,
         taskIds: ids.taskIds,
+        infra: "spawn",
       });
     });
   });
@@ -420,7 +426,7 @@ export async function runTierB(
       finish({ ok: !timedOut && code === 0, output, timedOut, taskIds: [] });
     });
     child.on("error", (err) => {
-      finish({ ok: false, output: output + `\nspawn error: ${String(err)}`, timedOut, taskIds: [] });
+      finish({ ok: false, output: output + `\nspawn error: ${String(err)}`, timedOut, taskIds: [], infra: "spawn" });
     });
   });
 }

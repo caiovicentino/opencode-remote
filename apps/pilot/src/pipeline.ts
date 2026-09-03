@@ -11,6 +11,7 @@ import { touchHeartbeat, type PilotConfig, type PilotState } from "./state";
 import { appendLessonsToWorkspace, pickRelevantLessons, readExperienceFile } from "./experience";
 import { defaultLessonsFile, failureLessonsBlock, readRecentFailureLessons } from "./failureLessons";
 import { captureGateCorpus, CORPUS_COMMANDS, CORPUS_DIR, loadGateCorpus } from "./gate-corpus";
+import type { InfraFailureKind } from "./audit";
 
 export const CONSTITUTION = `CONSTITUTION (never violate):
 1. E2E crypto stays E2E: the relay must remain a blind router; never log plaintext frames.
@@ -602,6 +603,10 @@ export interface PipelineResult {
   /** P2-011: true when the merged diff touched the UI (apps/web | apps/desktop)
    * — triggers a post-deploy screenshot for the review log. */
   touchedUi?: boolean;
+  /** P1-094: structured infra kind set ONLY at unambiguous infra sites
+   * (runner preflight/spawn, builder timeout without output) — runSlot's
+   * classifier reads this instead of scanning the detail text. */
+  infra?: InfraFailureKind;
 }
 
 /** Task IDs come from BACKLOG.md; only this charset ever reaches a shell command. */
@@ -1224,12 +1229,14 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       const crash = crashRoundDecision(round, cfg.maxReviewRounds);
       if (!crash.retry) {
         // P1-074: a timeout with no output is infra (the agent process died
-        // silently) — the marker lets runSlot's classifier spare the attempt
-        // budget; only empty-output timeouts are infra
+        // silently) — the marker stays for log greppability but, since P1-094,
+        // classification rides the structured `infra` field, not the text.
+        // A crash round whose output merely cites infra words (test failures,
+        // reviewer findings) stays merit: build.infra is undefined then.
         if (build.timedOut && !build.output.trim()) {
-          return { ok: false, detail: `[infra] builder timed out without output (round ${round})` };
+          return { ok: false, detail: `[infra] builder timed out without output (round ${round})`, infra: "timeout" };
         }
-        return { ok: false, detail: `${crash.detail}: ${build.output.slice(-300)}` };
+        return { ok: false, detail: `${crash.detail}: ${build.output.slice(-300)}`, infra: build.infra };
       }
       continue;
     }
