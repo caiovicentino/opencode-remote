@@ -88,7 +88,11 @@ import {
   dedupeAndPrune,
   EXPERIENCE_CAP,
   experienceTemplate,
+  isHarnessLesson,
+  jaccard,
+  JACCARD_DUPE,
   maintainExperienceFile,
+  maintainExperienceWorkspace,
   normalizeLesson,
   parseLessons,
   pickRelevantLessons,
@@ -106,7 +110,7 @@ import {
 import { AtomicWriteIo, clampSlots, ensureSingleton, loadState, normalizeModels, recordTaskFailure, saveState, startHeartbeat, tierBModelFor, writeJsonAtomic } from "../apps/pilot/src/state";
 import type { PilotState } from "../apps/pilot/src/state";
 import { clearTaskAttempts, doctorBacklog, doctorBranches, doctorRefs, doctorState, normalizePilotState, parseAttemptsArgs, runAttemptsCommand, validateBacklog, type AttemptsRequest, type RunFn } from "../apps/pilot/src/doctor";
-import { avgPhaseDurations, burnDown, countFailSteps, rollbackHealthAlert } from "../apps/pilot/src/metrics";
+import { avgPhaseDurations, burnDown, countFailSteps, recordLessonImpact, rollbackHealthAlert } from "../apps/pilot/src/metrics";
 import type { PilotEvent } from "../apps/pilot/src/events";
 import { areaKey, NIGHTLY_IDLE_MS, nightlyIdleDue, nightlySkipDue, pickBatch, pickTasks, AFFINITY_TTL_MS, assignSlots, SLOT_START_STAGGER_MS, startDelayMs, type SlotAffinity } from "../apps/pilot/src/scheduler";
 import { researcherPrompt } from "../apps/pilot/src/researcher";
@@ -132,6 +136,7 @@ import {
   appendReadyLines,
   auxPushIo,
   blockTask,
+  doneTaskIds,
   loadBacklog,
   mayPush,
   parseAuxTaskLines,
@@ -1709,10 +1714,12 @@ check("touchedUi: lookalike apps/webs rejected", !touchedUiFromDiff("apps/webs/s
     check("cache: reviewer prefix byte-identical through the verdict contract", commonPrefix(rA, rB) > rA.indexOf("VERDICT: APPROVE"));
     check("cache: reviewer constitution precedes the task text", rA.indexOf(CONSTITUTION) < rA.indexOf(TASK_A.title));
 
-    const sA = scribePrompt(TASK_A, "diff A", "finding");
-    const sB = scribePrompt(TASK_B, "diff B", "");
+    const sA = scribePrompt(TASK_A, "diff A");
+    const sB = scribePrompt(TASK_B, "diff B");
     check("cache: scribe prefix byte-identical through the LESSONS contract", commonPrefix(sA, sB) > sA.indexOf("SCRIBE:DONE"));
     check("cache: scribe constitution precedes the task text", sA.indexOf(CONSTITUTION) < sA.indexOf(TASK_A.title));
+    // P1-075: the scribe sees only the diff — findings never re-enter the prompt
+    check("cache: scribe prompt carries no findings block", !sA.includes("REVIEWER FINDINGS") && !sA.includes("finding") && sA.includes("diff A"));
 
     // --- P1-078: aux templates — no slot/repo path anywhere, variable blocks last ---
     const strategist = strategistPrompt("MISSION TEXT", CACHE_LESSONS, "FAILURE LESSONS block");
@@ -3114,7 +3121,9 @@ check("disk guard: statfs probe returns bytes on a real dir", realFree !== null 
 check("experience: cap pinned at 60", EXPERIENCE_CAP === 60);
 
 const EXP_TASK: Task = { id: "P1-007", priority: "P1", title: "Memory of experience", spec: "scribe lessons", area: "infra", line: "" };
-const lessonOf = (n: number) => `- When case ${n} happens, do remedy ${n} on the relay frames (fonte: P0-001)`;
+// P1-075: each lesson carries a DISTINCT pair of tokens (topicN/fixN) — with
+// semantic dedupe on, same-token synthetic lessons would collapse to one.
+const lessonOf = (n: number) => `- When topic${n} spikes, do fix${n} inside the relay frames (fonte: P0-001)`;
 
 {
   const md = `# Experience memory (IER)\n\nintro text\n\n## Lessons\n${lessonOf(1)}\n${lessonOf(2)}\n\n## Done\n- not a lesson\n`;
@@ -3171,10 +3180,166 @@ const lessonOf = (n: number) => `- When case ${n} happens, do remedy ${n} on the
   const pruned = dedupeAndPrune(capMd);
   const kept = parseLessons(pruned.md);
   check("experience: prune removes dupes + oldest above cap", pruned.removed === 6 && kept.length === EXPERIENCE_CAP);
-  check("experience: dedupe keeps the newest occurrence only", kept.filter((l) => l.includes("case 0")).length === 1);
-  check("experience: keeps the most recent lessons", kept[0]!.includes("case 6") && kept[kept.length - 1]!.includes("case 0"));
+  check("experience: dedupe keeps the newest occurrence only", kept.filter((l) => l.includes("topic0")).length === 1);
+  check("experience: keeps the most recent lessons", kept[0]!.includes("topic6") && kept[kept.length - 1]!.includes("topic0"));
   const underCap = "# Experience memory (IER)\n\n## Lessons\n" + lessonOf(1) + "\n" + lessonOf(2) + "\n";
   check("experience: at/under cap is a no-op", dedupeAndPrune(underCap).md === underCap && dedupeAndPrune(underCap).removed === 0);
+}
+
+// --- P1-075 semantic dedupe + scored prune/archive ----------------------------
+check("experience: JACCARD_DUPE pinned at 0.6", JACCARD_DUPE === 0.6);
+check("experience: jaccard of identical sets is 1, disjoint is 0", jaccard(new Set(["relay", "frames", "seq"]), new Set(["relay", "frames", "seq"])) === 1 && jaccard(new Set(["relay"]), new Set(["frames"])) === 0);
+check("experience: isHarnessLesson matches process vocabulary", isHarnessLesson("when the pilot slot refresh breaks the gate") && !isHarnessLesson("when the relay frames duplicate, check the seq watermark"));
+
+{
+  // paraphrased re-landing of the same lesson (same token set, different fonte)
+  const original = "- When topic0 spikes inside the relay frames, do fix0 now (fonte: P0-001)";
+  const paraphrased = "- do fix0 now: topic0 spikes inside the relay frames (fonte: P9-009)";
+  const different = "- When the daemon freezes, do drop the stale pidfile (fonte: P9-008)";
+  const base = `# Experience memory (IER)\n\n## Lessons\n${original}\n`;
+  const appended = appendLessons(base, [paraphrased, different], "P9-009");
+  check("experience: paraphrase with jaccard >= 0.6 is dropped on append", appended.added.length === 1 && appended.added[0]!.includes("daemon freezes"));
+  // above cap so the dedupe pass actually runs (under cap it is a no-op)
+  const fillers = Array.from({ length: 60 }, (_, i) => lessonOf(i + 100));
+  const both = dedupeAndPrune(`# Experience memory (IER)\n\n## Lessons\n${fillers.join("\n")}\n${original}\n${paraphrased}\n`);
+  const keptLessons = parseLessons(both.md);
+  check("experience: dedupeAndPrune drops the older paraphrase", keptLessons.includes(paraphrased) && !keptLessons.includes(original));
+  // short lessons (< 5 tokens each): only exact-key dedupe applies
+  const shortA = "- alpha beta gamma delta (fonte: P0-001)";
+  const shortB = "- alpha then beta then gamma then delta (fonte: P9-009)";
+  const shorts = appendLessons(`# Experience memory (IER)\n\n## Lessons\n${shortA}\n`, [shortB], "P9-009");
+  check("experience: short lessons skip the semantic dedupe", shorts.added.length === 1);
+}
+
+{
+  const backlogMd = [
+    "# Backlog",
+    "",
+    "## Ready",
+    "- [ ] (P9-900) [P1] pending thing — spec: x",
+    "",
+    "## Blocked",
+    "- [ ] (P9-901) [P1] blocked thing — spec: y",
+    "",
+    "## Done",
+    "- [x] (P1-001) first done task — merged",
+    "- [x] (P1-002) second done task — merged",
+  ].join("\n");
+  check("backlog: doneTaskIds parses only the Done section", doneTaskIds(backlogMd).size === 2 && doneTaskIds(backlogMd).has("P1-001") && doneTaskIds(backlogMd).has("P1-002"));
+
+  const harnessDone = "- When the pilot gatekeeper slot refresh breaks, do re-check the backlog checkpoint (fonte: P1-001)";
+  const productOld = "- When the relay frames duplicate, do check the seq watermark first (fonte: P9-001)";
+  // 59 distinct product fillers + 1 harness-done + product-old (oldest overall) = 61 → cap+1
+  const fillers = Array.from({ length: 59 }, (_, i) => lessonOf(i + 10));
+  const md = `# Experience memory (IER)\n\n## Lessons\n${productOld}\n${fillers.join("\n")}\n${harnessDone}\n`;
+  const pruned = dedupeAndPrune(md, EXPERIENCE_CAP, doneTaskIds(backlogMd));
+  check(
+    "experience: prune archives the harness-done lesson only",
+    pruned.archived.length === 1 && pruned.archived[0] === harnessDone && pruned.removed === 1,
+  );
+  const kept = parseLessons(pruned.md);
+  check("experience: product lesson is never archived, even when oldest", kept.includes(productOld) && kept.length === EXPERIENCE_CAP);
+
+  const twoHarness = `# Experience memory (IER)\n\n## Lessons\n${productOld}\n${fillers.join("\n")}\n${harnessDone}\n- When the planner slot refresh loses the builder checkpoint, do consult the backlog (fonte: P1-002)\n`;
+  const pruned2 = dedupeAndPrune(twoHarness, EXPERIENCE_CAP, doneTaskIds(backlogMd));
+  check("experience: archived equals the removed harness lines", pruned2.archived.length === 2 && pruned2.removed === 2 && parseLessons(pruned2.md).includes(productOld));
+  // unknown/undone fonte: never archived — but still dropped harness-first by
+  // the generic prune (product lessons last)
+  const undone = `# Experience memory (IER)\n\n## Lessons\n${productOld}\n${fillers.join("\n")}\n- When the pilot gatekeeper slot refresh breaks, do re-check the backlog checkpoint (fonte: P9-999)\n`;
+  const pruned3 = dedupeAndPrune(undone, EXPERIENCE_CAP, doneTaskIds(backlogMd));
+  check(
+    "experience: harness lesson from an undone fonte is not archived",
+    pruned3.archived.length === 0 && pruned3.removed === 1 && parseLessons(pruned3.md).includes(productOld),
+  );
+}
+
+// --- P1-075 nightly maintenance flow (own guard, archive sink, guarded push) ---
+{
+  const harnessDone = "- When the pilot gatekeeper slot refresh breaks, do re-check the backlog checkpoint (fonte: P1-001)";
+  const setup = () => {
+    const dir = mkdtempSync(join(tmpdir(), "ocr-expmaint-"));
+    mkdirSync(join(dir, "docs"), { recursive: true });
+    // 62 lessons: watermark (oldest) + 60 fillers + 1 harness-done → cap+2
+    const lines = [
+      "- When the relay frames duplicate, do check the seq watermark first (fonte: P9-001)",
+      ...Array.from({ length: 60 }, (_, i) => lessonOf(i + 10)),
+      harnessDone,
+    ];
+    writeFileSync(join(dir, "docs", "EXPERIENCE.md"), `# Experience memory (IER)\n\n## Lessons\n${lines.join("\n")}\n`);
+    writeFileSync(join(dir, "BACKLOG.md"), "# Backlog\n\n## Done\n- [x] (P1-001) done task — merged\n");
+    return dir;
+  };
+  const dir = setup();
+  const cmds: string[] = [];
+  const logs: string[] = [];
+  const landed: FailureLesson[] = [];
+  const st: { expMaintLast?: string } = {};
+  const res = maintainExperienceWorkspace(
+    dir,
+    st,
+    "2026-09-03",
+    {
+      exec: (cmd) => {
+        cmds.push(cmd);
+        return { ok: true, output: cmd.includes("--name-only") ? "docs/EXPERIENCE.md" : "" };
+      },
+      appendLesson: (_file, lesson) => {
+        landed.push(lesson);
+        return true;
+      },
+      lessonsFile: join(dir, "lessons.jsonl"),
+    },
+    (level, msg) => logs.push(`${level}:${msg}`),
+  );
+  check("expmaint: prune runs, archives the harness lesson, stamps its own guard", res.changed && res.archived === 1 && st.expMaintLast === "2026-09-03");
+  check("expmaint: archived entry is a failure lesson with step archived + fonte task", landed.length === 1 && landed[0]!.step === "archived" && landed[0]!.task === "P1-001" && landed[0]!.attempts === 0);
+  check("expmaint: commit + guarded push executed", cmds.some((c) => c.includes("experience maintenance")) && cmds.some((c) => c.includes("git push -q origin main")));
+  check("expmaint: logs the maintenance line", logs.some((l) => l.includes("experience maintained")));
+  const again = maintainExperienceWorkspace(dir, st, "2026-09-03", { exec: () => ({ ok: true, output: "" }), appendLesson: () => true, lessonsFile: "x" });
+  check("expmaint: same-day re-run is a guarded no-op", !again.changed && again.archived === 0);
+  rmSync(dir, { recursive: true, force: true });
+
+  // push-guard refusal: logged + never thrown, archive still lands, guard stamps
+  const dir2 = setup();
+  const logs2: string[] = [];
+  const landed2: FailureLesson[] = [];
+  const st2: { expMaintLast?: string } = {};
+  const res2 = maintainExperienceWorkspace(
+    dir2,
+    st2,
+    "2026-09-03",
+    {
+      exec: (cmd) => ({ ok: true, output: cmd.includes("--name-only") ? "BACKLOG.md" : "" }),
+      appendLesson: (_file, lesson) => {
+        landed2.push(lesson);
+        return true;
+      },
+      lessonsFile: join(dir2, "out", "lessons.jsonl"),
+    },
+    (level, msg) => logs2.push(`${level}:${msg}`),
+  );
+  check(
+    "expmaint: refused push never throws — archive lands, guard stamps",
+    logs2.some((l) => l.includes("aux push refused")) && landed2.length === 1 && st2.expMaintLast === "2026-09-03" && res2.committed,
+  );
+  rmSync(dir2, { recursive: true, force: true });
+
+  // real fs roundtrip: archived lessons land in the shared jsonl (P1-037)
+  const dir3 = setup();
+  const st3: { expMaintLast?: string } = {};
+  maintainExperienceWorkspace(
+    dir3,
+    st3,
+    "2026-09-03",
+    {
+      exec: () => ({ ok: false, output: "" }),
+      appendLesson: appendFailureLesson,
+      lessonsFile: join(dir3, "out", "lessons.jsonl"),
+    },
+  );
+  const stored = readRecentFailureLessons(join(dir3, "out", "lessons.jsonl"));
+  check("expmaint: real appendFailureLesson roundtrip (fs-first, outside worktrees)", stored.length === 1 && stored[0]!.step === "archived" && stored[0]!.findings.includes("gatekeeper"));
+  rmSync(dir3, { recursive: true, force: true });
 }
 
 check("experience: lessonsBlock injects nothing when empty", lessonsBlock([]) === "" && !builderPrompt(EXP_TASK, 1, "", []).includes("EXPERIENCE"));
@@ -3266,6 +3431,34 @@ check(
   );
   check("failure lessons: readRecentFailureLessons caps at max", readRecentFailureLessons(file, 1).length === 1);
   rmSync(dir, { recursive: true, force: true });
+}
+
+// --- P1-075 archived experience lessons ride the failure block, capped --------
+{
+  const realOf = (n: number): FailureLesson => ({ kind: "failure", ts: `2026-09-01T10:${String(n).padStart(2, "0")}:00-03:00`, task: `P2-${String(n).padStart(3, "0")}`, attempts: 4, step: "typecheck", findings: `finding ${n}`, tail: "" });
+  const archivedOf = (n: number): FailureLesson => ({ kind: "failure", ts: `2026-09-02T10:${String(n).padStart(2, "0")}:00-03:00`, task: `P1-${String(n).padStart(3, "0")}`, attempts: 0, step: "archived", findings: `archived lesson ${n}`, tail: "" });
+  // 8 real failures then 5 archived — the last-10 window holds 5 real + 5 archived
+  const mixed = [...Array.from({ length: 8 }, (_, i) => realOf(i)), ...Array.from({ length: 5 }, (_, i) => archivedOf(i))];
+  const block = failureLessonsBlock(mixed);
+  const archivedLines = (block.match(/step: archived/g) ?? []).length;
+  const realLines = (block.match(/step: typecheck/g) ?? []).length;
+  check("failure lessons: archived entries cap at 3 of the slots", archivedLines === 3);
+  check("failure lessons: real failures keep >= 7 slots via backfill", realLines === 7 && block.includes("finding 1") && block.includes("finding 7"));
+  check("failure lessons: all-real window is untouched", (failureLessonsBlock(mixed.slice(0, 8)).match(/step: typecheck/g) ?? []).length === 8);
+}
+
+// --- P1-075 lesson-injection impact instrumentation ---------------------------
+{
+  const st: { lessonImpact?: import("../apps/pilot/src/state").LessonImpact } = {};
+  recordLessonImpact(st, { lessons: 5, rounds: 2, ok: true, tokens: 100 });
+  recordLessonImpact(st, { lessons: 3, rounds: 1, ok: false, tokens: 40 });
+  recordLessonImpact(st, { lessons: 0, rounds: 3, ok: true, tokens: 7 });
+  recordLessonImpact(st, { lessons: 0, rounds: 1, ok: false, tokens: 0 });
+  check(
+    "lesson impact: folds merges/rounds/tokens into the right cohort",
+    st.lessonImpact!.with.merges === 1 && st.lessonImpact!.with.roundsTotal === 3 && st.lessonImpact!.with.tokensTotal === 140 &&
+      st.lessonImpact!.without.merges === 1 && st.lessonImpact!.without.roundsTotal === 4 && st.lessonImpact!.without.tokensTotal === 7,
+  );
 }
 
 // --- desktop first-run pairing overlay (P2-007) ------------------------------

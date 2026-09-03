@@ -81,6 +81,22 @@ export function markDone(repoDir: string, id: string, note: string) {
 }
 
 /**
+ * P1-075: task ids recorded under `## Done` (`- [x] (ID) ...` lines). The
+ * experience-memory nightly pass uses this set to archive harness lessons
+ * whose bug already shipped. Pure: parses the md string.
+ */
+export function doneTaskIds(md: string): Set<string> {
+  const start = md.search(/^## Done$/m);
+  if (start < 0) return new Set();
+  const rest = md.slice(start);
+  const end = rest.search(/^## (?!Done)/m); // next section, if any
+  const body = end >= 0 ? rest.slice(0, end) : rest;
+  const out = new Set<string>();
+  for (const m of body.matchAll(/^- \[x\] \(([^)]+)\)/gm)) out.add(m[1]!.trim());
+  return out;
+}
+
+/**
  * P1-014 stop-loss: move a task line from ## Ready to a `## Blocked` section
  * (created before ## Done, or at the end of the file) with a one-line summary
  * of the last findings. Idempotent: returns false when the line is missing or

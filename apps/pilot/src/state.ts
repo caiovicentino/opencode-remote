@@ -130,6 +130,19 @@ export interface AuditMode {
   lastFailure: number; // epoch ms of the most recent failure (drives the 2h resume)
 }
 
+/** P1-075: one instrumentation cohort (builder got lessons, or not). */
+export interface LessonImpactCohort {
+  merges: number;
+  roundsTotal: number;
+  tokensTotal: number;
+}
+
+/** P1-075: lesson-injection impact — with vs without injected IER lessons. */
+export interface LessonImpact {
+  with: LessonImpactCohort;
+  without: LessonImpactCohort;
+}
+
 export interface PilotState {
   date: string; // YYYY-MM-DD
   tasks: number;
@@ -188,6 +201,12 @@ export interface PilotState {
    * session tokens vs the model window). Bounded to the last 8 samples per
    * task by recordContextPressure; diagnostic signal only. */
   contextPressure?: Record<string, { round: number; pct: number; at: string }[]>;
+  /** P1-075: last YYYY-MM-DD the deterministic experience maintenance ran
+   * (own guard — a redteam agent failure must never block it). */
+  expMaintLast?: string;
+  /** P1-075: merges/rounds/tokens folded per cohort (builder got IER lessons
+   * injected, or not) — measures whether lesson injection helps. */
+  lessonImpact?: LessonImpact;
 }
 
 function normalizeAudit(a: unknown): AuditMode | null {
@@ -229,6 +248,18 @@ function normalizeContextPressure(
   return Object.keys(out).length ? out : undefined;
 }
 
+/** P1-075: tolerant parse of the lesson-impact cohorts — garbage → undefined. */
+function normalizeLessonImpact(v: unknown): LessonImpact | undefined {
+  if (!v || typeof v !== "object") return undefined;
+  const cohort = (c: unknown): LessonImpactCohort => {
+    const m = (c ?? {}) as Partial<LessonImpactCohort>;
+    const num = (n: unknown) => (typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : 0);
+    return { merges: num(m.merges), roundsTotal: num(m.roundsTotal), tokensTotal: num(m.tokensTotal) };
+  };
+  const raw = v as { with?: unknown; without?: unknown };
+  return { with: cohort(raw.with), without: cohort(raw.without) };
+}
+
 export function loadState(file = STATE_FILE): PilotState {
   try {
     const s = JSON.parse(readFileSync(file, "utf8")) as PilotState;
@@ -260,6 +291,9 @@ export function loadState(file = STATE_FILE): PilotState {
       nightlySkipped: normalizeNightlySkipped(s.nightlySkipped),
       // P1-079: tolerant backfill of the context-pressure samples
       contextPressure: normalizeContextPressure(s.contextPressure),
+      // P1-075: experience-maintenance guard + lesson-impact cohorts
+      expMaintLast: typeof s.expMaintLast === "string" ? s.expMaintLast : undefined,
+      lessonImpact: normalizeLessonImpact(s.lessonImpact),
     };
     if (s.date === today) return { ...s, ...shared, merges, infraFails };
     return { date: today, tasks: 0, deploys: 0, failures: 0, merges: 0, infraFails: 0, ...shared };

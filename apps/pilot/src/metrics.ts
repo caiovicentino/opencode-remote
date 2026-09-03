@@ -11,6 +11,38 @@
  */
 import { TZ } from "./log";
 import type { PilotEvent } from "./events";
+import type { LessonImpact, LessonImpactCohort } from "./state";
+
+/** P1-075: one pipeline outcome for the lesson-injection instrumentation. */
+export interface LessonImpactSample {
+  /** IER lessons injected into the builder prompt (0 = without cohort). */
+  lessons: number;
+  /** Builder rounds executed by the pipeline. */
+  rounds: number;
+  ok: boolean;
+  /** Total tokens reconciled for the task (best-effort, 0 when unavailable). */
+  tokens: number;
+}
+
+/**
+ * P1-075: fold one pipeline outcome into the with/without lesson-injection
+ * cohorts (mutates `state`, like recordContextPressure). Merges count only
+ * successful runs; rounds/tokens count every outcome — the cohorts answer
+ * "does lesson injection reduce rounds/cost per merge?".
+ */
+export function recordLessonImpact(
+  state: { lessonImpact?: LessonImpact },
+  sample: LessonImpactSample,
+): void {
+  const cohorts = (state.lessonImpact ??= {
+    with: { merges: 0, roundsTotal: 0, tokensTotal: 0 },
+    without: { merges: 0, roundsTotal: 0, tokensTotal: 0 },
+  });
+  const cohort: LessonImpactCohort = sample.lessons > 0 ? cohorts.with : cohorts.without;
+  if (sample.ok) cohort.merges++;
+  cohort.roundsTotal += Math.max(0, Math.round(sample.rounds));
+  cohort.tokensTotal += Math.max(0, Math.round(sample.tokens));
+}
 
 /** One P2-043 history.jsonl row: a task outcome with wall duration. */
 export interface HistoryEntry {

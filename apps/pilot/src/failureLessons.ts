@@ -67,17 +67,52 @@ export function formatFailureLesson(l: FailureLesson, maxPart = 200): string {
   return `- [${l.task}] (${l.attempts} attempt(s), step: ${l.step || "unknown"}) ${part(l.findings) || "(no findings recorded)"}${tail}`;
 }
 
+/** P1-075: entries with this `step` are archived EXPERIENCE lessons (harness
+ * lessons whose fonte task is done) — background context, never majority. */
+export const ARCHIVED_STEP = "archived";
+
+/** P1-075: archived entries fill at most 3 of the prompt block's slots. */
+export const ARCHIVED_BLOCK_CAP = 3;
+
 /**
  * Prompt block carrying the `max` most recent failure lessons (chronological,
  * newest last). Empty string when there is nothing to inject — the strategist
  * prompt must stay clean until the first block actually happens.
+ *
+ * P1-075: archived experience lessons ride the same jsonl but are background —
+ * they fill at most 3 of the `max` slots, real blocked-task failures keep the
+ * rest (≥ 7 of 10 whenever that many real failures exist).
  */
 export function failureLessonsBlock(lessons: FailureLesson[], max = 10): string {
-  const recent = lessons.slice(-max);
-  if (!recent.length) return "";
-  return `\nFAILURE LESSONS — the ${recent.length} most recent blocked tasks (draft/refine tasks so they do NOT repeat these failure patterns):\n${recent
+  const picked = capArchived(lessons.slice(-max), lessons, max);
+  if (!picked.length) return "";
+  return `\nFAILURE LESSONS — the ${picked.length} most recent blocked tasks (draft/refine tasks so they do NOT repeat these failure patterns):\n${picked
     .map((l) => formatFailureLesson(l))
     .join("\n")}\n`;
+}
+
+/** P1-075: enforce the archived-entries cap inside a picked window, backfilling
+ * with the most recent real failures from outside it (chronological order). */
+function capArchived(window: FailureLesson[], all: FailureLesson[], max: number): FailureLesson[] {
+  const archivedCount = window.filter((l) => l.step === ARCHIVED_STEP).length;
+  if (archivedCount <= ARCHIVED_BLOCK_CAP) return window;
+  let excess = archivedCount - ARCHIVED_BLOCK_CAP;
+  const dropped = new Set<FailureLesson>();
+  for (const l of window) {
+    // oldest archived first — newest archived wording survives
+    if (excess > 0 && l.step === ARCHIVED_STEP) {
+      dropped.add(l);
+      excess--;
+    }
+  }
+  const kept = window.filter((l) => !dropped.has(l));
+  const windowSet = new Set(window);
+  const backfill: FailureLesson[] = [];
+  for (let i = all.length - max - 1; i >= 0 && kept.length + backfill.length < max; i--) {
+    const l = all[i]!;
+    if (l.step !== ARCHIVED_STEP && !windowSet.has(l)) backfill.unshift(l);
+  }
+  return [...backfill, ...kept];
 }
 
 /** Append one lesson as a JSONL line (creating parent dirs). Best-effort. */

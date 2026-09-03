@@ -6,6 +6,9 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { doneTaskIds, mayPush } from "./backlog";
+import type { FailureLesson } from "./failureLessons";
+import { nowLocalISO } from "./log";
 
 export const EXPERIENCE_FILE = "docs/EXPERIENCE.md";
 /** Red-team nightly duty (P1-007): dedupe + prune once the file grows past this. */
@@ -65,6 +68,42 @@ export function tokenize(text: string): Set<string> {
   return out;
 }
 
+/** P1-075: semantic-duplicate threshold over tokenize() — pinned by the battery. */
+export const JACCARD_DUPE = 0.6;
+
+/** Jaccard similarity of two token sets (|A∩B| / |A∪B|); 0 when either is empty. */
+export function jaccard(a: Set<string>, b: Set<string>): number {
+  if (!a.size || !b.size) return 0;
+  let inter = 0;
+  for (const t of a) if (b.has(t)) inter++;
+  return inter / (a.size + b.size - inter);
+}
+
+/** Tokens of a lesson line with the provenance tag stripped (copies re-tagged). */
+function lessonTokens(lesson: string): Set<string> {
+  return tokenize(lesson.replace(/\(fonte:[^)]*\)/g, " "));
+}
+
+/** P1-075: a paraphrased re-landing of the same lesson. Jaccard over short
+ * lessons (< 5 tokens) is noisy, so only exact-key matches apply there. */
+function semanticDupe(a: Set<string>, b: Set<string>): boolean {
+  return a.size >= 5 && b.size >= 5 && jaccard(a, b) >= JACCARD_DUPE;
+}
+
+/** P1-075: process/harness vocabulary — the class of lessons the nightly pass
+ * may archive once their fonte task is done (product-code lessons never are). */
+const HARNESS_RE =
+  /\b(pilot|pipeline|builder|reviewer|scribe|gate|gatekeeper|backlog|planner|slot|refresh|checkpoint|worktree|eval battery)\b/i;
+
+export function isHarnessLesson(lesson: string): boolean {
+  return HARNESS_RE.test(lesson);
+}
+
+/** The `(fonte: ID)` provenance of a lesson line ("" when absent). */
+export function lessonFonte(lesson: string): string {
+  return /\(fonte:\s*([^)]+)\)/.exec(lesson)?.[1]?.trim() ?? "";
+}
+
 /** Title hits weigh 2, spec hits 1 — titles carry the intent of the task. */
 export function lessonScore(lesson: string, titleTokens: Set<string>, specTokens: Set<string>): number {
   // provenance tag excluded from matching + word-boundary tokens (no "app"-in-"happen")
@@ -115,8 +154,9 @@ function spliceLessonsSection(md: string, lessons: string[]): string {
 }
 
 /**
- * Append new lessons (deduped against the file and against each other, capped
- * at `max`). Returns the updated file content plus the lessons actually added.
+ * Append new lessons (deduped against the file and against each other — exact
+ * key OR semantic Jaccard match — capped at `max`). Returns the updated file
+ * content plus the lessons actually added.
  */
 export function appendLessons(
   md: string,
@@ -124,15 +164,16 @@ export function appendLessons(
   sourceId: string,
   max = 3,
 ): { md: string; added: string[] } {
-  const known = new Set(parseLessons(md).map(lessonKey));
+  const known = parseLessons(md).map((l) => ({ key: lessonKey(l), tokens: lessonTokens(l) }));
   const added: string[] = [];
   for (const raw of lessons) {
     if (added.length >= max) break;
     const line = normalizeLesson(raw, sourceId);
     if (!line) continue;
     const key = lessonKey(line);
-    if (known.has(key)) continue;
-    known.add(key);
+    const tokens = lessonTokens(line);
+    if (known.some((k) => k.key === key || semanticDupe(tokens, k.tokens))) continue;
+    known.push({ key, tokens });
     added.push(line);
   }
   if (!added.length) return { md, added };
@@ -143,27 +184,60 @@ export function appendLessons(
 }
 
 /**
- * Nightly red-team maintenance (P1-007): only when the file is above the cap,
- * dedupe (newest wording wins) and prune to the `cap` most recent lessons.
+ * Nightly red-team maintenance (P1-007 + P1-075): when the file is above the
+ * cap, dedupe (newest wording wins — exact key OR semantic Jaccard match) and
+ * prune to the `cap` most recent lessons with a score: harness lessons whose
+ * fonte task is in `done` are archived (returned in `archived`), product-code
+ * lessons have priority and are dropped last; within a class, oldest first.
  */
-export function dedupeAndPrune(md: string, cap = EXPERIENCE_CAP): { md: string; removed: number } {
+export function dedupeAndPrune(
+  md: string,
+  cap = EXPERIENCE_CAP,
+  done: Set<string> = new Set(),
+): { md: string; removed: number; archived: string[] } {
   const lessons = parseLessons(md);
-  if (lessons.length <= cap) return { md, removed: 0 };
-  const seen = new Set<string>();
+  if (lessons.length <= cap) return { md, removed: 0, archived: [] };
+  const seenKeys = new Set<string>();
+  const seenTokens: Set<string>[] = [];
   const deduped: string[] = [];
   for (let i = lessons.length - 1; i >= 0; i--) {
-    const key = lessonKey(lessons[i]!);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    deduped.unshift(lessons[i]!); // unshift newest-kept order back
+    const lesson = lessons[i]!;
+    const key = lessonKey(lesson);
+    const tokens = lessonTokens(lesson);
+    if (seenKeys.has(key) || seenTokens.some((t) => semanticDupe(tokens, t))) continue;
+    seenKeys.add(key);
+    seenTokens.push(tokens);
+    deduped.unshift(lesson); // unshift newest-kept order back
   }
-  const kept = deduped.slice(-cap);
+  // P1-075 scored prune: harness lessons whose bug already shipped (fonte in
+  // `done`) are archived; if still above cap, drop oldest-first within class —
+  // harness first, product lessons last (product has priority).
+  const archived: string[] = [];
+  const dropped = new Set<number>();
+  const pool = deduped.map((l, i) => ({ l, i }));
+  while (pool.length - dropped.size > cap) {
+    const idx = pool.findIndex(({ l, i }) => !dropped.has(i) && isHarnessLesson(l) && done.has(lessonFonte(l)));
+    if (idx < 0) break;
+    archived.push(pool[idx]!.l);
+    dropped.add(pool[idx]!.i);
+  }
+  if (pool.length - dropped.size > cap) {
+    const alive = pool.filter(({ i }) => !dropped.has(i));
+    const harness = alive.filter(({ l }) => isHarnessLesson(l));
+    const product = alive.filter(({ l }) => !isHarnessLesson(l));
+    let drop = alive.length - cap;
+    for (const { i } of [...harness, ...product]) {
+      if (drop <= 0) break;
+      dropped.add(i);
+      drop--;
+    }
+  }
+  const kept = pool.filter(({ i }) => !dropped.has(i)).map(({ l }) => l);
   const removed = lessons.length - kept.length;
-  return { md: spliceLessonsSection(md, kept), removed };
+  return { md: spliceLessonsSection(md, kept), removed, archived };
 }
 
 // ── fs wrappers (workspace-scoped) ───────────────────────────────────────────
-
 export function readExperienceFile(ws: string): string {
   try {
     return readFileSync(join(ws, EXPERIENCE_FILE), "utf8");
@@ -184,20 +258,107 @@ export function appendLessonsToWorkspace(ws: string, lessons: string[], sourceId
   return added.length;
 }
 
-/** Red-team nightly pass: dedupe + prune when above EXPERIENCE_CAP. */
-export function maintainExperienceFile(ws: string): { changed: boolean; removed: number; lessons: number } {
+/**
+ * Red-team nightly pass (P1-007 + P1-075): dedupe + prune when above
+ * EXPERIENCE_CAP. Harness lessons whose fonte task is already `## Done` in the
+ * workspace BACKLOG.md are archived (returned) instead of silently deleted.
+ */
+export function maintainExperienceFile(
+  ws: string,
+  done: Set<string> = new Set(),
+): { changed: boolean; removed: number; lessons: number; archived: string[] } {
   const file = join(ws, EXPERIENCE_FILE);
   let md = "";
   try {
     md = readFileSync(file, "utf8");
   } catch {
-    return { changed: false, removed: 0, lessons: 0 };
+    return { changed: false, removed: 0, lessons: 0, archived: [] };
   }
-  const { md: next, removed } = dedupeAndPrune(md);
+  const { md: next, removed, archived } = dedupeAndPrune(md, EXPERIENCE_CAP, done);
   const changed = next !== md;
   if (changed) {
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, next);
   }
-  return { changed, removed, lessons: parseLessons(next).length };
+  return { changed, removed, lessons: parseLessons(next).length, archived };
+}
+
+// ── nightly maintenance flow (P1-075; git/lessons IO injectable) ─────────────
+
+export interface ExpMaintResult {
+  changed: boolean;
+  removed: number;
+  lessons: number;
+  /** archived lessons that landed in the shared lessons.jsonl. */
+  archived: number;
+  committed: boolean;
+}
+
+/** IO the nightly maintenance needs — injected so the eval battery pins the
+ * failure semantics with fakes (commit/push failures never throw). */
+export interface ExpMaintIo {
+  exec: (cmd: string) => { ok: boolean; output: string };
+  appendLesson: (file: string, lesson: FailureLesson) => boolean;
+  lessonsFile: string;
+}
+
+/**
+ * P1-075: one deterministic experience-maintenance pass: dedupe + prune
+ * docs/EXPERIENCE.md against the workspace BACKLOG's Done set, land archived
+ * harness lessons in the shared lessons.jsonl (outside every worktree,
+ * P1-037) and stamp `st.expMaintLast` — own daily guard, independent of the
+ * redteam agent's fate. Best-effort by design: commit/push/fs failures are
+ * logged and reported, never thrown, so the loop is never blocked.
+ */
+export function maintainExperienceWorkspace(
+  ws: string,
+  st: { expMaintLast?: string },
+  today: string,
+  io: ExpMaintIo,
+  log: (level: string, msg: string, data?: unknown) => void = () => {},
+): ExpMaintResult {
+  if (st.expMaintLast === today) {
+    return { changed: false, removed: 0, lessons: 0, archived: 0, committed: false };
+  }
+  let done = new Set<string>();
+  try {
+    done = doneTaskIds(readFileSync(join(ws, "BACKLOG.md"), "utf8"));
+  } catch {}
+  const maint = maintainExperienceFile(ws, done);
+  let committed = false;
+  if (maint.changed) {
+    const commit = io.exec(
+      `git add ${EXPERIENCE_FILE} && git commit -qm "pilot(redteam): experience maintenance (-${maint.removed})"`,
+    );
+    committed = commit.ok;
+    // P1-057 push guard: the only file this flow may ever push
+    const names = io.exec("git diff --name-only origin/main...HEAD");
+    if (!mayPush(names.output, EXPERIENCE_FILE)) {
+      log("warn", "aux push refused — experience diff not limited to docs/EXPERIENCE.md");
+    } else {
+      io.exec("git push -q origin main");
+    }
+    log("info", "experience maintained", {
+      removed: maint.removed,
+      archived: maint.archived.length,
+      lessons: maint.lessons,
+      committed,
+    });
+  }
+  let archivedLanded = 0;
+  for (const lesson of maint.archived) {
+    const landed = io.appendLesson(io.lessonsFile, {
+      kind: "failure",
+      ts: nowLocalISO(),
+      task: lessonFonte(lesson) || "unknown",
+      attempts: 0,
+      step: "archived",
+      findings: lesson,
+      tail: "",
+    });
+    if (landed) archivedLanded++;
+    else log("warn", "archived lesson could not land in lessons.jsonl");
+  }
+  st.expMaintLast = today;
+  return { changed: maint.changed, removed: maint.removed, lessons: maint.lessons, archived: archivedLanded, committed };
 }
