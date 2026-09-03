@@ -167,7 +167,9 @@ export function validateSpec(content: string): boolean {
   if (content.split("\n").length > 400 || content.length > 40_000) return false;
   // anchored: a spec may DISCUSS these markers inline (e.g. a parseFindings fix
   // quotes `VERDICT:`); only a line that fakes a harness output is a hack
-  if (/^\s*(VERDICT:|PILOT:TASK-DONE|PLANNER:DONE|SCRIBE:DONE)/im.test(content)) return false;
+  // fenced code blocks are quoted evidence/examples — markers there are legit
+    const outside = content.replace(/```[\s\S]*?```/g, (m) => m.replace(/[^\n]/g, " "));
+    if (/^\s*(VERDICT:|PILOT:TASK-DONE|PLANNER:DONE|SCRIBE:DONE)/im.test(outside)) return false;
   const headings = content
     .split("\n")
     .filter((l) => l.startsWith("## "))
