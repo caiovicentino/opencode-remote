@@ -65,6 +65,12 @@ if (harnessUserData) {
   mkdirSync(harnessUserData, { recursive: true });
   app.setPath("userData", harnessUserData);
 }
+// P1-081: hermetic e2e marker (tools/desktop.mjs harness). The gate drives the
+// app exclusively through webContents (page.evaluate/screenshots via CDP), so
+// the window must never surface on the operator's screen: hidden on boot,
+// showMainWindow() is a no-op and the renderer keeps painting with
+// paintWhenInitiallyHidden. Same test-only OCR_* hatch policy.
+const HERMETIC_E2E = !!process.env.OCR_DESKTOP_SESSION;
 initDesktopLog(app.getPath("userData"));
 // P3-018: the daemon sidecar's stdout/stderr (JSONL lines) is teed to
 // userData/logs/daemon-sidecar.log (~1MB cap, one rotated file kept). Must be
@@ -724,6 +730,9 @@ function createWindow(): BrowserWindow {
     minHeight: WINDOW_MIN.height,
     title: "OpenCode Remote",
     show: false,
+    // P1-081: explicit so the hermetic hidden window keeps painting (real
+    // frames for the gate's CDP screenshots) instead of never rendering.
+    paintWhenInitiallyHidden: true,
     icon: appIcon(),
     webPreferences: {
       preload: join(__dirname, "preload.js"),
@@ -736,7 +745,12 @@ function createWindow(): BrowserWindow {
       webviewTag: true,
     },
   });
-  win.once("ready-to-show", () => win.show());
+  win.once("ready-to-show", () => {
+    // P1-081: under the hermetic e2e marker the window stays hidden — the
+    // gate interacts via webContents and the operator's screen is left alone.
+    if (HERMETIC_E2E) return;
+    win.show();
+  });
   // P3-053: focusing the window always clears the badge, even when the
   // renderer has not pushed its zero yet (busy frame, brief race) — matching
   // Claude Desktop, where activating the window means "seen". Windows stays a
@@ -819,6 +833,9 @@ function webDistIndex(): string | null {
 }
 
 function showMainWindow(): void {
+  // P1-081: no-op in hermetic e2e runs — gates the second-instance (:158) and
+  // activate (:430) paths plus the tray, so a test run never surfaces a window.
+  if (HERMETIC_E2E) return;
   if (!mainWindow || mainWindow.isDestroyed()) mainWindow = createWindow();
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();

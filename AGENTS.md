@@ -156,4 +156,10 @@ browse.mjs) — launch hermético, sem daemon de produção. Quando o diff toca
 de interação real, <90s — P1-070 adicionou o bloco "local boot" com daemon
 hermético real; P1-080 adicionou o repro de overflow do chat: bolha com diff
 longo em janela estreita, nada pode sair do viewport); use `OCR_DESKTOP_SESSION` próprio para não colidir
-com a sessão de outro processo.
+com a sessão de outro processo. P1-081: com `OCR_DESKTOP_SESSION` setado o app
+NÃO mostra janela (`showMainWindow` no-op + `paintWhenInitiallyHidden`, interação
+100% via webContents) — a tela do operador nunca vê janela de teste; e
+`test:e2e`/`test:desktop-flow` rodam `scripts/e2e-orphans.ts` antes (mata
+órfãos electron/daemon/relay de runs anteriores — só processos com marker
+argv E env `ocr-*`/`OCR_*` de teste; argv sozinho nunca mata) e todos os
+servers e2e sobem em portas efêmeras com diagnóstico `lsof` no timeout.

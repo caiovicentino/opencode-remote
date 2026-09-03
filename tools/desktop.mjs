@@ -91,7 +91,7 @@ async function clientMain() {
   if (!cmd || cmd === "help") {
     console.log(
       "usage: node tools/desktop.mjs open [shot.png [w h]] | see <texto> | click <sel> | " +
-        "type <sel> <texto> | shot <out.png> [w h] | ipc <expr> | menu <id> | menu-click <id> | close",
+        "type <sel> <texto> | shot <out.png> [w h] | ipc <expr> | menu <id> | menu-click <id> | wins | close",
     );
     process.exit(cmd ? 0 : 2);
   }
@@ -132,6 +132,8 @@ async function clientMain() {
     fail(await send({ cmd: "menu", id: args[0] }));
   } else if (cmd === "menu-click") {
     fail(await send({ cmd: "menu-click", id: args[0] }));
+  } else if (cmd === "wins") {
+    fail(await send({ cmd: "wins" }));
   } else if (cmd === "close") {
     fail(await send({ cmd: "close" }, CLOSE_DEADLINE_MS + 5_000));
   } else {
@@ -430,6 +432,14 @@ async function handle(electronApp, page, msg) {
       return { ok: true };
     case "shot":
       return shot(page, electronApp, msg);
+    case "wins": {
+      // P1-081: hermetic-window probe — the gate asserts no window ever
+      // surfaces on the operator's screen (isVisible false for all windows).
+      const windows = await electronApp.evaluate(({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows().map((w) => ({ visible: w.isVisible() })),
+      );
+      return { ok: true, result: windows };
+    }
     case "ipc": {
       const result = await page.evaluate(msg.expr);
       return { ok: true, result };

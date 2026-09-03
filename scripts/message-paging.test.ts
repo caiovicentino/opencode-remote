@@ -129,7 +129,7 @@ function reservePort(): Promise<number> {
   });
 }
 const RELAY_URL = `ws://127.0.0.1:${await reservePort()}`;
-bg("npx", ["tsx", "apps/relay/src/index.ts"], { RELAY_PORT: RELAY_URL.split(":").pop() });
+bg("npx", ["tsx", "apps/relay/src/index.ts"], { RELAY_PORT: RELAY_URL.split(":").pop(), OCR_E2E_MARKER: tmp });
 bg("npx", ["tsx", "apps/daemon/src/index.ts"], {
   HOME: tmp,
   RELAY_URL,

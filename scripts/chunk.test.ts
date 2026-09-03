@@ -11,10 +11,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import WebSocket from "ws";
 import { clientHello, openSealed, seal, seqAad, newIdentity, type OpResponse } from "@ocr/protocol";
+import { bootOnEphemeralPort } from "./e2e-orphans";
 
-const RELAY_PORT = 4561;
-const MOCK_PORT = 4562;
-const RELAY_URL = `ws://127.0.0.1:${RELAY_PORT}`;
 const REPO = join(import.meta.dirname, "..");
 
 setTimeout(() => {
@@ -52,7 +50,14 @@ const mock: Server = createServer((req, res) => {
   }
   res.writeHead(404).end();
 });
-mock.listen(MOCK_PORT, "127.0.0.1");
+// P1-081: the kernel picks the port (fixed 4562 died to zombies from a
+// previous run); bind-first kills the reserve→close→bind race for the mock.
+const MOCK_PORT = await new Promise<number>((resolve, reject) => {
+  mock.on("error", reject);
+  mock.listen(0, "127.0.0.1", () => {
+    resolve((mock.address() as { port: number }).port);
+  });
+});
 
 // --- ephemeral relay + daemon -----------------------------------------------
 const tmp = mkdtempSync(join(tmpdir(), "ocr-chunk-"));
@@ -72,7 +77,31 @@ function bg(args: string[], env: Record<string, string> = {}) {
   children.push(p);
   return p;
 }
-bg(["tsx", "apps/relay/src/index.ts"], { RELAY_PORT: String(RELAY_PORT) });
+
+// relay on a kernel-assigned port with the anti-thief boot guard (P1-081)
+let relayBoot: { port: number; child: ChildProcess };
+try {
+  relayBoot = await bootOnEphemeralPort({
+    label: "relay",
+    spawn: (port) => bg(["tsx", "apps/relay/src/index.ts"], { RELAY_PORT: String(port), OCR_E2E_MARKER: tmp }),
+    probe: (port) =>
+      new Promise<boolean>((resolve) => {
+        const w = new WebSocket(`ws://127.0.0.1:${port}`);
+        w.on("open", () => {
+          w.close();
+          resolve(true);
+        });
+        w.on("error", () => resolve(false));
+      }),
+    timeoutMs: 20_000,
+  });
+} catch (err) {
+  console.error("chunk test FAILED: relay never came up");
+  console.error(String((err as Error)?.message ?? err));
+  process.exit(1);
+}
+const RELAY_PORT = relayBoot.port;
+const RELAY_URL = `ws://127.0.0.1:${RELAY_PORT}`;
 bg(["tsx", "apps/daemon/src/index.ts"], {
   HOME: tmp,
   RELAY_URL,
@@ -91,21 +120,7 @@ function exists(f: string) {
 }
 for (let i = 0; i < 60 && !exists(stateFile); i++) await new Promise((r) => setTimeout(r, 250));
 const state = JSON.parse(readFileSync(stateFile, "utf8")) as { room: string; ecdhPub: string };
-for (let i = 0; i < 40; i++) {
-  try {
-    await new Promise<void>((res, rej) => {
-      const w = new WebSocket(RELAY_URL);
-      w.on("open", () => {
-        w.close();
-        res();
-      });
-      w.on("error", rej);
-    });
-    break;
-  } catch {
-    await new Promise((r) => setTimeout(r, 250));
-  }
-}
+// (the relay itself is already proven up by bootOnEphemeralPort's probe)
 
 // --- mini client ------------------------------------------------------------
 const identity = await newIdentity(false);
@@ -113,13 +128,6 @@ const { hello, sessionKey } = await clientHello(state.ecdhPub, identity);
 const myId = "chk" + Math.random().toString(36).slice(2, 8);
 const ws = new WebSocket(RELAY_URL);
 await new Promise<void>((r) => ws.on("open", r));
-ws.send(
-  JSON.stringify({
-    room: state.room,
-    from: myId,
-    payload: Buffer.from(JSON.stringify({ type: "hello", hello })).toString("base64"),
-  }),
-);
 let paired = false;
 const pending = new Map<string, (r: OpResponse) => void>();
 const chunkBuf = new Map<string, { status: number; parts: string[]; got: number; of: number }>();
@@ -156,12 +164,22 @@ ws.on("message", (data) => {
     }
   })();
 });
-for (let i = 0; i < 20 && !paired; i++) await new Promise((r) => setTimeout(r, 500));
+// P1-081: the relay is a blind router — a single hello sent before the daemon
+// joins the room is dropped forever (the daemon publishes its state file a
+// beat before connectRelay() runs). Retry until the confirm lands.
+const helloFrame = JSON.stringify({
+  room: state.room,
+  from: myId,
+  payload: Buffer.from(JSON.stringify({ type: "hello", hello })).toString("base64"),
+});
+for (let i = 0; i < 20 && !paired; i++) {
+  ws.send(helloFrame);
+  await new Promise((r) => setTimeout(r, 500));
+}
 if (!paired) {
   console.error("CHUNK TEST FAILED: no handshake");
   process.exit(1);
 }
-console.log("handshake: OK");
 
 let seq = 0;
 function op(method: string, path: string): Promise<OpResponse> {
