@@ -51,6 +51,13 @@ remoto, zero confiança**.
   ou negar, pra você sempre saber o que está liberando
 - **Perguntas interativas** — o modelo pergunta, você toca na opção
 - **Rewind** — volte a conversa *e o código* pra qualquer ponto, num toque
+- **Gauge de contexto** — quando a janela de contexto do modelo é conhecida, o
+  cabeçalho do chat mostra o quanto dela está ocupada na sessão (soma de
+  tokens do opencode, amarelo a partir de 70%, vermelho a partir de 85%),
+  atualizado sempre que o agente fica ocioso
+- **Recap fixado** — uma linha embaixo do composer mostra onde a conversa
+  parou: a primeira sentença da última resposta do agente (ou o summary da
+  sessão, quando existir)
 - **Voz** — segure e fale, transcrição local com whisper, sem nuvem
 - **Arquivos** — envie do celular, dê preview de tudo, exporte a conversa
   em markdown; todo card de arquivo tem um botão ⧉ que copia o caminho

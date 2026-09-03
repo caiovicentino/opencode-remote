@@ -184,6 +184,10 @@ export interface PilotState {
   /** P1-095: today's "nightly skipped" record (once per day; cleared when the
    * pass actually starts). Surfaced to Mission Control via /api/pilot-events. */
   nightlySkipped?: { date: string; reason: string } | null;
+  /** P1-079: context-pressure samples per task, one per builder round (pct =
+   * session tokens vs the model window). Bounded to the last 8 samples per
+   * task by recordContextPressure; diagnostic signal only. */
+  contextPressure?: Record<string, { round: number; pct: number; at: string }[]>;
 }
 
 function normalizeAudit(a: unknown): AuditMode | null {
@@ -203,6 +207,26 @@ function normalizeNightlySkipped(v: unknown): { date: string; reason: string } |
   const m = v as Partial<{ date: string; reason: string }>;
   if (typeof m.date !== "string" || !m.date || typeof m.reason !== "string" || !m.reason) return null;
   return { date: m.date, reason: m.reason };
+}
+
+/** P1-079: tolerant parse of the context-pressure samples — garbage dropped. */
+function normalizeContextPressure(
+  v: unknown,
+): Record<string, { round: number; pct: number; at: string }[]> | undefined {
+  if (!v || typeof v !== "object") return undefined;
+  const out: Record<string, { round: number; pct: number; at: string }[]> = {};
+  for (const [task, samples] of Object.entries(v as Record<string, unknown>)) {
+    if (!Array.isArray(samples)) continue;
+    const list = samples.filter(
+      (s): s is { round: number; pct: number; at: string } =>
+        !!s &&
+        typeof s === "object" &&
+        Number.isFinite((s as { round?: unknown }).round) &&
+        Number.isFinite((s as { pct?: unknown }).pct),
+    );
+    if (list.length) out[task] = list.slice(-8);
+  }
+  return Object.keys(out).length ? out : undefined;
 }
 
 export function loadState(file = STATE_FILE): PilotState {
@@ -234,6 +258,8 @@ export function loadState(file = STATE_FILE): PilotState {
       // timestamp stays a finite number or undefined — never NaN/garbage)
       lastCycleAt: typeof s.lastCycleAt === "number" && Number.isFinite(s.lastCycleAt) ? s.lastCycleAt : undefined,
       nightlySkipped: normalizeNightlySkipped(s.nightlySkipped),
+      // P1-079: tolerant backfill of the context-pressure samples
+      contextPressure: normalizeContextPressure(s.contextPressure),
     };
     if (s.date === today) return { ...s, ...shared, merges, infraFails };
     return { date: today, tasks: 0, deploys: 0, failures: 0, merges: 0, infraFails: 0, ...shared };

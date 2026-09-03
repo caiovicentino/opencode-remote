@@ -592,6 +592,70 @@ select {
 .composer:focus-within {
   border-color: var(--border-strong);
 }
+/* P1-079: context gauge in the chat header — a thin meter plus a mono label;
+   quiet while healthy, --warn from 70%, --danger from 85% */
+.ctx-gauge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  padding: 0 2px;
+}
+.ctx-gauge-bar {
+  display: inline-block;
+  width: 44px;
+  height: 4px;
+  border-radius: var(--radius-pill);
+  background: var(--gray-hover);
+  overflow: hidden;
+}
+.ctx-gauge-fill {
+  display: block;
+  height: 100%;
+  border-radius: var(--radius-pill);
+  background: var(--muted);
+  transition: width var(--motion-fast) var(--ease-out);
+}
+.ctx-gauge[data-level="warn"] .ctx-gauge-fill {
+  background: var(--warn);
+}
+.ctx-gauge[data-level="danger"] .ctx-gauge-fill {
+  background: var(--danger);
+}
+.ctx-gauge-label {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  color: var(--muted);
+  min-width: 24px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+/* P1-079: pinned recap strip below the composer — one line, always visible */
+.chat-recap {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  padding: 5px 12px 6px;
+  border-top: 1px solid var(--border);
+}
+.chat-recap-label {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.chat-recap-text {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--font-size-xs);
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 /* attached files preview: chips inside the card, above the input */
 .composer-atts {
   display: flex;
