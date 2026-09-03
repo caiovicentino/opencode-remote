@@ -36,11 +36,14 @@ export interface DeployResult {
 /**
  * P1-044 (b): the soak window for a deploy that changes the pilot's own code
  * doubles (min 20min) — the brain that monitors itself gets a longer watch.
+ * Operator override 2026-09-03: 20min of soak is more watch than wanted —
+ * 3 checks already cover the 3-consecutive-failure rollback; the rate and
+ * live-invariant lanes re-engage automatically if the window ever grows ≥5.
  * Pure so the eval battery can pin the lane budgets.
  */
 export function soakMinutesFor(monitorMin: number, pilotInfra: boolean): number {
   if (!pilotInfra) return monitorMin;
-  return Math.max(monitorMin * 2, 20);
+  return 3;
 }
 
 /** P1-044 (c): sliding health window compared against the pre-deploy baseline. */
