@@ -1,0 +1,1003 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Pilot — Mission Control · Orbital</title>
+<style>
+  /* ────────────────────────────────────────────────────────────────────────
+     MISSION CONTROL v3 — DESCIDA ORBITAL
+     Um único conceito: anéis concêntricos são as fases do pipeline; o núcleo
+     é a produção. Cada task é uma nave que desce anel por anel até pousar no
+     núcleo. Falha ejeta a nave para fora. Rastro = histórico. Velocidade =
+     atividade. Pulso = heartbeat. Tremor = problema. Texto só em rótulo curto;
+     conteúdo vive no drill-down (clique).
+     ──────────────────────────────────────────────────────────────────────── */
+  :root {
+    --bg:#04060a; --text:#e8edf2; --muted:#7d90a5; --dim:#3b4b5c;
+    --cyan:#22d3ee; --green:#4ade80; --red:#f87171; --gold:#fbbf24;
+    --violet:#c084fc; --indigo:#818cf8; --sky:#38bdf8; --pink:#f472b6;
+    --panel:rgba(8,13,20,.82); --hair:rgba(143,163,184,.16);
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { height:100%; overflow:hidden; background:var(--bg); color:var(--text);
+              font-family:-apple-system,'SF Pro Text',system-ui,sans-serif; font-variant-numeric:tabular-nums; }
+  #scene { position:fixed; inset:0; display:block; }
+  .hud { position:fixed; z-index:10; pointer-events:none; font-size:11px; letter-spacing:.12em; text-transform:uppercase; }
+  .hud b { font-weight:700; font-family:ui-monospace,Menlo,monospace; letter-spacing:0; font-size:13px; }
+  /* ── top-left: identity + heartbeat + mission ── */
+  #tl { top:18px; left:22px; display:flex; align-items:flex-start; gap:12px; max-width:min(44vw,560px); }
+  #live { width:10px; height:10px; border-radius:50%; background:var(--dim); margin-top:4px; flex-shrink:0; }
+  #live.on { background:var(--green); animation:beat 1.6s ease-out infinite; }
+  #live.stale { background:var(--gold); animation:none; }
+  #live.off { background:var(--red); animation:none; }
+  @keyframes beat { 0%{box-shadow:0 0 0 0 rgba(74,222,128,.7)} 70%{box-shadow:0 0 0 12px rgba(74,222,128,0)} 100%{box-shadow:0 0 0 0 rgba(74,222,128,0)} }
+  #tl h1 { font-size:13px; letter-spacing:.26em; font-weight:700; color:var(--text); }
+  #tl h1 span { color:var(--cyan); }
+  #mission { pointer-events:auto; margin-top:6px; font-size:11px; letter-spacing:.02em; text-transform:none; color:var(--muted);
+             white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%; cursor:help; }
+  #mission::before { content:"MISSÃO "; color:var(--green); letter-spacing:.14em; font-size:9px; font-weight:700; }
+  #mode { margin-top:6px; font-size:9px; color:var(--gold); letter-spacing:.2em; display:none; }
+  /* ── top-right: telemetry strip (labels + numbers only) ── */
+  #tr { top:18px; right:22px; display:grid; grid-template-columns:auto auto; column-gap:14px; row-gap:3px; text-align:right;
+        align-items:baseline; color:var(--muted); }
+  #tr b { color:var(--text); }
+  #tr b.ok { color:var(--green); } #tr b.bad { color:var(--red); } #tr b.warn { color:var(--gold); }
+  #tr .bars { grid-column:1 / -1; display:flex; gap:3px; justify-content:flex-end; align-items:flex-end; height:22px; margin-top:6px; }
+  #tr .bars i { display:block; width:9px; background:var(--green); opacity:.8; border-radius:1px 1px 0 0; min-height:1px; position:relative; }
+  #tr .bars i::after { content:""; position:absolute; left:0; right:0; bottom:0; height:var(--f,0); background:var(--red); border-radius:0; }
+  #tr .bars.hidden { display:none; }
+  /* ── bottom: last event caption (one short line) ── */
+  #cap { bottom:22px; left:50%; transform:translateX(-50%); font-family:ui-monospace,Menlo,monospace; letter-spacing:.06em;
+         text-transform:none; font-size:11px; color:var(--muted); white-space:nowrap; max-width:80vw; overflow:hidden; text-overflow:ellipsis;
+         transition:color .25s ease-out; }
+  #cap .t { color:var(--dim); margin-right:8px; }
+  #cap .id { color:var(--cyan); margin-right:8px; }
+  #cap.ok .ph { color:var(--green); } #cap.bad .ph { color:var(--red); } #cap.gold .ph { color:var(--gold); }
+  /* ── bottom-left: legend of motion (tiny) ── */
+  #legend { bottom:22px; left:22px; color:var(--dim); font-size:9px; letter-spacing:.16em; line-height:1.9; }
+  #legend i { display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:6px; vertical-align:middle; }
+  /* ── alerts (short chips, bottom-right) ── */
+  #alerts { bottom:22px; right:22px; display:flex; flex-direction:column; gap:6px; align-items:flex-end; }
+  .chip { display:none; padding:5px 10px; border:1px solid var(--red); color:var(--red); background:rgba(248,113,113,.10);
+          border-radius:6px; font-size:10px; font-weight:700; letter-spacing:.16em; animation:chip 2s ease-out infinite; pointer-events:auto; cursor:help; }
+  .chip.on { display:block; }
+  .chip.amber { border-color:var(--gold); color:var(--gold); background:rgba(251,191,36,.10); }
+  @keyframes chip { 0%{box-shadow:0 0 0 0 rgba(248,113,113,.45)} 70%{box-shadow:0 0 0 10px rgba(248,113,113,0)} 100%{box-shadow:0 0 0 0 rgba(248,113,113,0)} }
+  /* ── offline: red frame around the whole viewport + toast ── */
+  #frame { position:fixed; inset:0; z-index:9; pointer-events:none; opacity:0; transition:opacity .3s ease-out;
+           box-shadow:inset 0 0 0 3px var(--red), inset 0 0 60px rgba(248,113,113,.35); }
+  body.offline #frame { opacity:1; animation:frame 1.4s ease-in-out infinite; }
+  @keyframes frame { 50% { box-shadow:inset 0 0 0 3px var(--red), inset 0 0 120px rgba(248,113,113,.5); } }
+  #toast { position:fixed; z-index:40; top:18px; left:50%; transform:translate(-50%,-140%); background:var(--panel); border:1px solid var(--red);
+           color:var(--red); font-size:11px; font-weight:700; letter-spacing:.16em; text-transform:uppercase; padding:8px 16px; border-radius:8px;
+           transition:transform .25s ease-out; pointer-events:none; }
+  #toast.show { transform:translate(-50%,0); }
+  #toast.good { border-color:var(--green); color:var(--green); }
+  /* ── tooltip ── */
+  #tip { position:fixed; z-index:30; pointer-events:none; background:var(--panel); border:1px solid var(--hair); border-radius:6px;
+         padding:6px 10px; font-size:11px; font-family:ui-monospace,Menlo,monospace; color:#c9d6e3; white-space:nowrap; display:none;
+         backdrop-filter:blur(8px); max-width:60vw; overflow:hidden; text-overflow:ellipsis; }
+  #tip b { color:var(--cyan); }
+  /* ── drill-down modal (text allowed here) ── */
+  #modal { position:fixed; inset:0; z-index:50; display:none; align-items:center; justify-content:center; background:rgba(2,4,8,.66); backdrop-filter:blur(6px); }
+  #modal.open { display:flex; }
+  #card { width:min(720px,92vw); max-height:82vh; overflow:auto; background:var(--panel); border:1px solid rgba(34,211,238,.28); border-radius:14px;
+          padding:18px 22px; animation:rise .25s ease-out; }
+  @keyframes rise { from { transform:translateY(16px); opacity:0 } to { transform:none; opacity:1 } }
+  #card h2 { font-size:12px; letter-spacing:.22em; text-transform:uppercase; color:var(--cyan); display:flex; align-items:center; gap:10px; }
+  #card h2 i { width:10px; height:10px; border-radius:50%; display:inline-block; }
+  #card h2 small { color:var(--muted); letter-spacing:.04em; text-transform:none; font-weight:400; font-size:12px; margin-left:auto; }
+  #card .facts { display:flex; flex-wrap:wrap; gap:6px 18px; margin:12px 0 14px; font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); }
+  #card .facts b { color:var(--text); font-family:ui-monospace,Menlo,monospace; font-size:12px; letter-spacing:0; margin-left:6px; }
+  #card .tl { font:11.5px/1.7 ui-monospace,Menlo,monospace; border-top:1px solid var(--hair); padding-top:8px; }
+  #card .tl div { display:grid; grid-template-columns:70px 130px 1fr; gap:10px; padding:1px 0; }
+  #card .tl .ts { color:var(--dim); } #card .tl .ph { font-weight:700; color:var(--cyan); }
+  #card .tl .ph.ok { color:var(--green); } #card .tl .ph.bad { color:var(--red); } #card .tl .ph.agent { color:var(--dim); font-weight:400; }
+  #card .tl .dt { color:#b9c9da; word-break:break-word; }
+  #card .empty { color:var(--dim); font-size:12px; padding:10px 0; }
+  #close { position:absolute; top:14px; right:18px; background:none; border:none; color:var(--muted); font-size:22px; cursor:pointer; line-height:1; }
+  #close:hover { color:var(--red); }
+  /* ── token box (real mode only) ── */
+  #tokenbox { position:fixed; z-index:60; top:50%; left:50%; transform:translate(-50%,-50%); background:var(--panel);
+              border:1px solid rgba(34,211,238,.3); border-radius:14px; padding:22px; width:340px; display:none; }
+  #tokenbox h3 { font-size:12px; letter-spacing:.12em; margin-bottom:10px; text-transform:uppercase; color:var(--cyan); }
+  #tokenbox input { width:100%; padding:9px 12px; background:#0b111a; border:1px solid #2a3947; color:var(--text); border-radius:8px; font-size:12px; }
+  #tokenbox button { margin-top:10px; width:100%; padding:9px; background:var(--cyan); border:none; color:#04121a; font-weight:700; border-radius:8px; cursor:pointer; letter-spacing:.1em; }
+  @media (prefers-reduced-motion: reduce) {
+    #live.on, .chip, body.offline #frame { animation:none; }
+    #card { animation:none; } #toast, #frame, #cap { transition:none; }
+  }
+  @media (max-width: 720px) {
+    #legend { display:none; } #tl { max-width:60vw; } #tr { font-size:10px; }
+  }
+</style>
+</head>
+<body>
+<script>window.__OCR_TOKEN__ = "__APITOKEN__";</script>
+<canvas id="scene" aria-label="Mission Control orbital"></canvas>
+<div id="frame"></div>
+
+<div class="hud" id="tl">
+  <div id="live" title="heartbeat"></div>
+  <div style="min-width:0">
+    <h1>PILOT <span>·</span> MISSION CONTROL <span>·</span> ORBITAL</h1>
+    <div id="mission" title="">…</div>
+    <div id="mode"></div>
+  </div>
+</div>
+
+<div class="hud" id="tr">
+  <span>TASKS</span><b id="h-tasks">0/0</b>
+  <span>DEPLOYS</span><b id="h-dep">0/0</b>
+  <span>MERGES</span><b id="h-merges" class="ok">0</b>
+  <span>FALHAS</span><b id="h-fails" class="bad">0</b>
+  <span>FILA</span><b id="h-fila">0</b>
+  <span>HB</span><b id="h-hb">—</b>
+  <div class="bars hidden" id="h-bars" title="burn-down 7 dias"></div>
+</div>
+
+<div class="hud" id="cap"><span class="t"></span><span class="id"></span><span class="ph"></span><span class="dt"></span></div>
+
+<div class="hud" id="legend">
+  <div><i style="background:var(--cyan)"></i>VELOCIDADE = ATIVIDADE</div>
+  <div><i style="background:var(--green)"></i>PULSO = HEARTBEAT</div>
+  <div><i style="background:var(--muted)"></i>RASTRO = HISTÓRICO</div>
+  <div><i style="background:var(--red)"></i>EJEÇÃO = FALHA</div>
+</div>
+
+<div class="hud" id="alerts">
+  <div class="chip" id="c-audit" title="">AUDIT · FILA PAUSADA</div>
+  <div class="chip" id="c-rb" title="">PROD UNHEALTHY</div>
+  <div class="chip amber" id="c-pwa" title="">PWA ORIGIN DOWN</div>
+  <div class="chip amber" id="c-night" title="">NIGHTLY SKIPPED</div>
+</div>
+
+<div id="toast"></div>
+<div id="tip"></div>
+
+<div id="modal" onclick="if(event.target===this)closeModal()">
+  <div id="card" style="position:relative">
+    <button id="close" onclick="closeModal()" aria-label="fechar">×</button>
+    <h2 id="m-title"></h2>
+    <div class="facts" id="m-facts"></div>
+    <div class="tl" id="m-tl"></div>
+  </div>
+</div>
+
+<div id="tokenbox">
+  <h3>API token (daemon.json → apiToken)</h3>
+  <input id="token" placeholder="cole o apiToken" />
+  <button onclick="saveToken()">CONECTAR</button>
+</div>
+
+<script>
+"use strict";
+// ═══════════════════════════════════════════════════════════════════════════
+// 0. bootstrap: params, motion preference, helpers
+// ═══════════════════════════════════════════════════════════════════════════
+const PARAMS = new URLSearchParams(location.search);
+const MOCK = PARAMS.get("mock") === "1";
+const SPEED = Math.max(0.25, Math.min(32, parseFloat(PARAMS.get("speed")) || 1));
+const RM = !!(window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches);
+const TAU = Math.PI * 2;
+const $ = (id) => document.getElementById(id);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const easeOut = (u) => 1 - Math.pow(1 - clamp(u, 0, 1), 3);
+const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
+const COL = { cyan:"#22d3ee", green:"#4ade80", red:"#f87171", gold:"#fbbf24", violet:"#c084fc", indigo:"#818cf8",
+              sky:"#38bdf8", pink:"#f472b6", muted:"#7d90a5", dim:"#3b4b5c", white:"#e8edf2", gray:"#5b6f84" };
+const RGB = {};
+function hexA(hex, a) {
+  let c = RGB[hex];
+  if (!c) { const h = hex.replace("#", ""); c = RGB[hex] = [parseInt(h.slice(0,2),16), parseInt(h.slice(2,4),16), parseInt(h.slice(4,6),16)]; }
+  return `rgba(${c[0]},${c[1]},${c[2]},${clamp(a, 0, 1)})`;
+}
+function hhmmss(ts) { const d = ts ? new Date(ts) : null; return d && !isNaN(d) ? d.toLocaleTimeString("pt-BR", { hour12:false }) : ""; }
+function fmtTok(n) {
+  if (!Number.isFinite(n) || n <= 0) return "";
+  if (n >= 1e9) return `${(n/1e9).toFixed(1)}B tok`;
+  if (n >= 1e6) return `${(n/1e6).toFixed(1)}M tok`;
+  const k = Math.round(n/1e3); return k < 1000 ? `${k}k tok` : `${(n/1e6).toFixed(1)}M tok`;
+}
+function fmtAge(ms) { if (!Number.isFinite(ms)) return "—"; if (ms < 60_000) return `${Math.round(ms/1000)}s`; if (ms < 3_600_000) return `${Math.round(ms/60_000)}m`; return `${(ms/3_600_000).toFixed(1)}h`; }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 1. geometry: rings (outer → inner), stations, gate lamps
+// ═══════════════════════════════════════════════════════════════════════════
+// k = fraction of the outer radius R. The core sits at k=CORE_K.
+const RINGS = [
+  { id:"backlog", label:"BACKLOG", k:0.90, color:COL.muted  },
+  { id:"plan",    label:"PLANNER", k:0.78, color:COL.violet },
+  { id:"build",   label:"BUILDER", k:0.66, color:COL.cyan   },
+  { id:"review",  label:"REVIEW",  k:0.53, color:COL.indigo },
+  { id:"gate",    label:"GATE",    k:0.40, color:COL.gold   },
+  { id:"deploy",  label:"DEPLOY",  k:0.26, color:COL.green  },
+];
+const RING = Object.fromEntries(RINGS.map((r, i) => [r.id, i]));
+const CORE_K = 0.13, LAND_K = 0.155, EJECT_K = 0.96, STATION_K = 1.0;
+// cognition stations on the outermost orbit (fixed angles, away from the top label column)
+const STATIONS = [
+  { id:"research",   label:"RESEARCHER", a:-Math.PI*0.72, color:COL.violet },
+  { id:"strategist", label:"STRATEGIST", a:-Math.PI*0.28, color:COL.pink   },
+  { id:"explorer",   label:"EXPLORER",   a: Math.PI*0.28, color:COL.sky    },
+  { id:"forensic",   label:"FORENSIC",   a: Math.PI*0.72, color:COL.gold   },
+];
+const STATION = Object.fromEntries(STATIONS.map((s) => [s.id, s]));
+// gate battery, in the order pipeline.ts runs it (+ evidence/corpus verdicts)
+const LAMPS = ["typecheck","build","unit","lock-sync","reconnect","integration","desktop-sidecar","invariants","evidence","corpus"];
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 2. world state (pure data, mutated by the reducer; the painter only reads)
+// ═══════════════════════════════════════════════════════════════════════════
+const world = {
+  ships: new Map(),          // task id → ship
+  core: { state:"idle", tag:null, tremorUntil:0, since:0 },  // idle|deploying|ok|fail|unhealthy
+  lamps: LAMPS.map(() => ({ st:"idle", t:0 })),               // idle|scan|ok|fail|flaky
+  gateBusy: false,
+  stations: Object.fromEntries(STATIONS.map((s) => [s.id, { st:"idle", t:0, last:null, events:[] }])), // idle|working|ok|fail
+  deployEvents: [],          // last 60 deploy events (drill-down)
+  audit: null,               // { since, reason } | null
+  nightlySkipped: null,
+  merges: 0, failures: 0, tasks: 0, deploys: 0, maxTasks: 6, maxDeploys: 6,
+  ready: 0, blocked: 0, readyList: [], blockedList: [],
+  hbMs: null,                // heartbeat age (ms) — null = unknown
+  offline: false,
+  lastEvent: null,
+  taskCosts: {}, taskAttempts: {}, contextPressure: {},
+  rbDetail: "", pwaDown: false, pwaDetail: "",
+  history: null,
+};
+let now = performance.now() / 1000; // seconds, painter clock (never 0 — `gone` timestamps are truthy)
+const fx = { particles: [], bursts: [], pulses: [], rings: [] }; // transient visuals
+
+function newShip(id, slot) {
+  const hash = [...id].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7);
+  const a0 = -Math.PI/2 + ((slot || 1) - 1) * (TAU / 3) + (hash % 100) / 100 * 0.9 + 0.35;
+  const s = {
+    id, slot: slot || 1, title: "", ring: RING.backlog, kTarget: RINGS[RING.backlog].k, k: RINGS[RING.backlog].k + 0.06,
+    kFrom: RINGS[RING.backlog].k + 0.06, hopStart: now, a: a0, speed: 0.08, boost: 0, color: COL.muted, state: "idle",
+    round: 0, ctx: null, moons: null, tag: null, tremorUntil: 0, flash: 0, flashColor: COL.green, trail: [],
+    events: [], lastTs: 0, gone: 0, alpha: 0, x: 0, y: 0, lastTrailX: NaN, lastTrailY: NaN,
+  };
+  world.ships.set(id, s);
+  shipPos(s);
+  return s;
+}
+function hop(s, k) { if (s.kTarget === k) return; s.kFrom = s.k; s.kTarget = k; s.hopStart = now; }
+function setRing(s, ringId, state, color) {
+  s.ring = RING[ringId]; hop(s, RINGS[s.ring].k);
+  if (state) s.state = state; if (color) s.color = color;
+  s.speed = { backlog:0.08, plan:0.34, build:0.5, review:0.44, gate:0.62, deploy:0.95 }[ringId] || 0.3;
+}
+function flash(s, color) { s.flash = now; s.flashColor = color; }
+function tremor(s, secs = 1.0) { s.tremorUntil = now + (RM ? 0 : secs); }
+function eject(s, toK, color) { s.kFrom = s.k; s.kTarget = toK; s.hopStart = now; s.color = color; s.speed = 0.05; s.state = "fail"; tremor(s, 0.9); }
+function tag(s, text, color, secs = 2.6) { s.tag = { text, color: color || COL.muted, until: now + secs }; }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 3. reducer: one PilotEvent → world mutations (+ transient effects unless quiet)
+// ═══════════════════════════════════════════════════════════════════════════
+const AUX = { research:"research", strategist:"strategist", explorer:"explorer", forensic:"forensic", nightly:"explorer" };
+function shipFor(e) {
+  if (!e.task) return null;
+  let s = world.ships.get(e.task);
+  if (!s) s = newShip(e.task, e.slot);
+  if (e.slot) s.slot = e.slot;
+  s.lastTs = Date.parse(e.ts) || Date.now();
+  if (s.gone && now >= s.gone) { s.gone = 0; s.alpha = 0; } // a task that already faded comes back (retry)
+  s.events.push(e); if (s.events.length > 120) s.events.shift();
+  return s;
+}
+function apply(e, quiet) {
+  world.lastEvent = e;
+  const ok = e.ok !== false;
+  // ── audit (scheduler-wide) ──
+  if (e.type === "audit") {
+    const paused = /paused/.test(e.detail || "");
+    if (paused && !quiet) burstAt(cx(), cy(), COL.red, 60, 1.6);
+    // the event flips the tint immediately; in real mode every poll re-syncs it from state.auditMode
+    world.audit = paused ? { since: e.ts, reason: e.detail || "audit" } : null;
+    return;
+  }
+  // ── deploy (no task id — acts on the core and on whoever is landing) ──
+  if (e.type === "deploy") {
+    world.deployEvents.push(e); if (world.deployEvents.length > 60) world.deployEvents.shift();
+    const landing = [...world.ships.values()].filter((s) => s.state === "landing" || s.state === "deploying");
+    const c = world.core;
+    switch (e.phase) {
+      case "start": c.state = "deploying"; c.since = now; for (const s of landing) { s.state = "landing"; hop(s, LAND_K); s.speed = 1.3; } break;
+      case "install": c.tag = { text:"INSTALL", color:COL.gold, until: now + 3 }; break;
+      case "baseline": c.tag = { text:"BASELINE", color:COL.muted, until: now + 3 }; break;
+      case "done":
+        c.state = "ok"; c.since = now; c.tag = { text:(e.detail || "").replace(/^sha /, "").slice(0, 12).toUpperCase(), color:COL.green, until: now + 6 };
+        if (!quiet) burstAt(cx(), cy(), COL.green, 48, 1.2);
+        // landed ships dock at the core edge for a while so post-deploy tags (shot, scribe) still have a body
+        for (const s of landing) { s.state = "landed"; s.gone = now + (RM ? 8 : 20); s.speed = 0.12; hop(s, LAND_K * 0.8); }
+        if (MOCK) world.deploys++;
+        break;
+      case "rollback":
+        c.state = "fail"; c.since = now; c.tremorUntil = now + 1.2; c.tag = { text:"ROLLBACK", color:COL.red, until: now + 8 };
+        if (!quiet) { burstAt(cx(), cy(), COL.red, 64, 1.8); shockwave(COL.red); }
+        for (const s of landing) eject(s, RINGS[RING.backlog].k, COL.red);
+        break;
+      case "rollback-health":
+        c.state = ok ? "ok" : "unhealthy"; c.since = now; c.tag = { text: ok ? "RECOVERED" : "UNHEALTHY", color: ok ? COL.green : COL.red, until: now + 6 };
+        if (!quiet && ok) burstAt(cx(), cy(), COL.green, 30, 1);
+        break;
+      case "self-reload": c.tag = { text:"RELOAD", color:COL.cyan, until: now + 4 }; if (!quiet) shockwave(COL.cyan); break;
+      case "sha-guard": case "disk-guard":
+        if (!ok) { c.tag = { text: e.phase.toUpperCase(), color:COL.red, until: now + 6 }; c.tremorUntil = now + 1; } break;
+      case "pwa-kickstart": if (!ok) c.tag = { text:"PWA", color:COL.gold, until: now + 6 }; break;
+      default: c.tag = { text:(e.phase || "").toUpperCase().slice(0, 12), color: ok ? COL.muted : COL.red, until: now + 3 };
+    }
+    return;
+  }
+  // ── cognition stations (aux agents use pseudo task ids) ──
+  if (e.task && AUX[e.task]) {
+    const st = world.stations[AUX[e.task]];
+    st.events.push(e); if (st.events.length > 40) st.events.shift();
+    st.last = e.ts; st.t = now;
+    if (e.task === "nightly") { st.st = ok ? "ok" : "fail"; return; }
+    if (e.phase === "refill" || e.phase === "filed" || e.phase === "done" || e.phase === "forensic") {
+      st.st = ok ? "ok" : "fail";
+      if (ok && !quiet) streamIn(AUX[e.task], e.phase === "refill" ? COL.pink : STATION[AUX[e.task]].color);
+    } else if (e.phase === "failed") st.st = "fail";
+    else st.st = "working";
+    return;
+  }
+  // ── pipeline events (per task) ──
+  if (e.type === "loop") {
+    if (e.phase === "picked") {
+      const s = shipFor(e); s.title = e.detail || s.title; s.alpha = 0;
+      setRing(s, "backlog", "idle", COL.white); s.round = 0; s.ctx = null; s.moons = null; s.gone = 0;
+      if (MOCK) world.tasks++;
+    }
+    return;
+  }
+  if (e.type === "agent") {
+    const s = shipFor(e); if (!s) return;
+    s.boost = Math.min(1.5, s.boost + 0.35);
+    if (!quiet && !RM) spark(s);
+    return;
+  }
+  if (e.type === "result") {
+    const s = shipFor(e); if (!s) return;
+    if (ok) { if (s.state !== "landed" && s.state !== "landing" && s.state !== "deploying") { s.state = "done"; flash(s, COL.green); s.gone = now + 3; } }
+    else { if (s.state !== "blocked") eject(s, RINGS[RING.backlog].k + 0.03, COL.red); s.gone = Math.max(s.gone || 0, now + (RM ? 4 : 14)); if (MOCK) world.failures++; }
+    return;
+  }
+  if (e.type !== "phase") return;
+  const s = shipFor(e); if (!s) return;
+  const ph = e.phase || "";
+  switch (ph) {
+    case "staged": if (ok) { setRing(s, "backlog", "idle", COL.white); tag(s, "STAGED", COL.muted); } else { s.gone = now; } break;
+    case "planner": setRing(s, "plan", "working", COL.violet); break;
+    case "planner-done":
+      if (ok) { flash(s, COL.violet); s.state = "ok"; } else { eject(s, RINGS[RING.backlog].k + 0.03, COL.red); tag(s, "NO SPEC", COL.red, 5); } break;
+    case "builder": {
+      const m = /round (\d+)/.exec(e.detail || ""); if (m) s.round = +m[1];
+      if (e.ok === false) { tremor(s, 0.8); tag(s, "PREFLIGHT", COL.red, 3); s.round = Math.max(1, s.round) ; }
+      setRing(s, "build", "working", COL.cyan); s.moons = null; break;
+    }
+    case "builder-done": if (ok) { flash(s, COL.cyan); s.state = "ok"; } else { tremor(s, 1); s.color = COL.red; } break;
+    case "context-checkpoint": { const m = /(\d+)\s*%/.exec(e.detail || ""); if (m) s.ctx = +m[1] / 100; break; }
+    case "reviewers": setRing(s, "review", "working", COL.indigo); s.moons = { st:"working", t:now }; break;
+    case "reviewers-done":
+      if (ok) { flash(s, COL.indigo); s.state = "ok"; if (s.moons) { s.moons.st = "ok"; s.moons.t = now; } }
+      else { if (s.moons) { s.moons.st = "fail"; s.moons.t = now; } tremor(s, 0.9); setRing(s, "build", "working", COL.red); tag(s, "RETRY", COL.red, 3); }
+      break;
+    case "review-escalation": if (s.moons) { s.moons.st = "escalate"; s.moons.t = now; } tag(s, "TIER B", COL.violet, 3); break;
+    case "gatekeeper":
+      setRing(s, "gate", "working", COL.gold); s.moons = null;
+      for (const l of world.lamps) { l.st = "scan"; l.t = now; } world.gateBusy = true; break;
+    case "gate-step": { const i = LAMPS.indexOf(e.detail); if (i >= 0) { world.lamps[i].st = ok ? "ok" : "fail"; world.lamps[i].t = now; } break; }
+    case "gate-flaky": { const i = LAMPS.indexOf(e.detail); if (i >= 0) { world.lamps[i].st = "flaky"; world.lamps[i].t = now; } break; }
+    case "gate-fail": {
+      const i = LAMPS.indexOf(e.detail);
+      world.lamps.forEach((l, j) => { if (i >= 0 && j < i && l.st !== "flaky") { l.st = "ok"; l.t = now; } if (j === i) { l.st = "fail"; l.t = now; } if (j > i && i >= 0) { l.st = "idle"; } });
+      tremor(s, 1); s.color = COL.red; tag(s, (e.detail || "GATE").toUpperCase(), COL.red, 5);
+      if (!quiet) burstAt(s.x, s.y, COL.red, 18, 0.8);
+      break;
+    }
+    case "gatekeeper-done":
+      world.gateBusy = false;
+      if (ok) { for (const l of world.lamps) if (l.st !== "flaky") { l.st = "ok"; l.t = now; } flash(s, COL.gold); s.state = "ok"; }
+      else { if (world.lamps.every((l) => l.st === "scan")) { world.lamps[LAMPS.length - 1].st = "fail"; } setRing(s, "build", "working", COL.red); tremor(s, 0.8); }
+      break;
+    case "merge":
+      if (ok) { if (!quiet) burstAt(s.x, s.y, COL.gold, 36, 1); setRing(s, "deploy", "deploying", COL.green); tag(s, "MERGED", COL.gold, 4); if (MOCK) world.merges++; }
+      else { eject(s, RINGS[RING.backlog].k + 0.03, COL.red); tag(s, "MERGE FAIL", COL.red, 5); }
+      break;
+    case "already-merged": setRing(s, "deploy", "deploying", COL.green); tag(s, "MERGED", COL.muted); break;
+    case "blocked": eject(s, EJECT_K, COL.gray); s.state = "blocked"; s.speed = 0.02; tag(s, "BLOCKED", COL.red, 8); s.gone = now + (RM ? 6 : 30); break;
+    case "scribe": tag(s, "SCRIBE", COL.muted); break;
+    case "scribe-done": tag(s, ok ? "LESSONS" : "SCRIBE ×", ok ? COL.green : COL.red); break;
+    case "corpus": tag(s, "CORPUS", COL.green); break;
+    case "ui-shot": tag(s, ok ? "SHOT" : "SHOT ×", ok ? COL.sky : COL.red); break;
+    default: tag(s, ph.toUpperCase().slice(0, 14), ok ? COL.muted : COL.red);
+  }
+}
+
+// ── transient effects ──
+function cx() { return W / 2; } function cy() { return H / 2; }
+function burstAt(x, y, color, n, scale) {
+  if (RM) return;
+  const parts = []; for (let i = 0; i < n; i++) parts.push({ a: Math.random() * TAU, v: 1.2 + Math.random() * 2.6 });
+  fx.bursts.push({ x, y, color, t: 0, parts, scale: scale || 1 });
+}
+function shockwave(color) { if (!RM) fx.rings.push({ t: 0, color }); }
+function streamIn(stationId, color) {
+  if (RM) return;
+  const st = STATION[stationId]; const r1 = R * STATION_K, r0 = R * RINGS[RING.backlog].k;
+  for (let i = 0; i < 16; i++) fx.particles.push({ a: st.a, r0: r1, r1: r0, t: -i * 0.05, speed: 0.012 + Math.random() * 0.006, color, wob: (Math.random() - .5) * 0.12 });
+}
+function spark(s) { for (let i = 0; i < 3; i++) fx.particles.push({ x: s.x, y: s.y, vx: (Math.random() - .5) * 60, vy: (Math.random() - .5) * 60, t: 0, life: 0.5, color: s.color, free: true }); }
+function heartbeatPulse() { if (!RM) fx.pulses.push({ t: 0 }); }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 4. painter (canvas)
+// ═══════════════════════════════════════════════════════════════════════════
+const canvas = $("scene"), ctx = canvas.getContext("2d");
+let W = 0, H = 0, R = 300, DPR = Math.min(window.devicePixelRatio || 1, 2);
+let stars = null;
+function resize() {
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W * DPR; canvas.height = H * DPR; canvas.style.width = W + "px"; canvas.style.height = H + "px";
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  R = Math.max(120, Math.min(W, H) / 2 - 64);
+  // starfield pre-render
+  stars = document.createElement("canvas"); stars.width = W * DPR; stars.height = H * DPR;
+  const sc = stars.getContext("2d"); sc.setTransform(DPR, 0, 0, DPR, 0, 0);
+  const bg = sc.createRadialGradient(W/2, H/2, 0, W/2, H/2, Math.max(W, H) * 0.75);
+  bg.addColorStop(0, "#08131c"); bg.addColorStop(0.55, "#050a11"); bg.addColorStop(1, "#03050a");
+  sc.fillStyle = bg; sc.fillRect(0, 0, W, H);
+  let seed = 1337; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  for (let i = 0; i < 260; i++) { const x = rnd() * W, y = rnd() * H, s = rnd(); sc.fillStyle = `rgba(200,225,255,${0.08 + s * 0.35})`; sc.fillRect(x, y, s > .9 ? 2 : 1, s > .9 ? 2 : 1); }
+}
+window.addEventListener("resize", resize);
+
+function shipPos(s) { s.x = cx() + Math.cos(s.a) * s.k * R; s.y = cy() + Math.sin(s.a) * s.k * R; }
+
+function step(dt) {
+  // ships: radial hop (ease-out 300ms), orbital motion, trail sampling, lifetime
+  for (const [id, s] of world.ships) {
+    const u = RM ? 1 : (now - s.hopStart) / 0.3;
+    s.k = s.kFrom + (s.kTarget - s.kFrom) * easeOut(u);
+    s.boost = Math.max(0, s.boost - dt * 0.6);
+    const spd = RM ? 0 : (s.speed * (1 + 0.12 * Math.max(0, s.round - 1)) + s.boost);
+    s.a += spd * dt;
+    // fade in/out
+    const target = s.gone ? 0 : 1;
+    if (s.gone && now < s.gone) { /* linger before fading */ } else s.alpha += (target - s.alpha) * Math.min(1, dt * 4);
+    if (s.gone && s.alpha < 0.02 && now >= s.gone) { world.ships.delete(id); continue; }
+    if (!s.gone && s.alpha < 0.02) s.alpha = 0.02;
+    // a task silent for 3h is not flying anymore (feed trimmed, pilot restarted…)
+    if (!s.gone && s.lastTs && Date.now() - s.lastTs > 3 * 3_600_000) s.gone = now;
+    shipPos(s);
+    if (!RM) {
+      const d = Math.hypot(s.x - s.lastTrailX, s.y - s.lastTrailY);
+      if (!(d < 3)) { s.trail.push({ x: s.x, y: s.y, c: s.color, t: now }); s.lastTrailX = s.x; s.lastTrailY = s.y; if (s.trail.length > 90) s.trail.shift(); }
+    }
+  }
+  // stations cool down: ok/fail linger 40s, working stays until a verdict
+  for (const st of Object.values(world.stations)) if ((st.st === "ok" || st.st === "fail") && now - st.t > 40) st.st = "idle";
+  // gate lamps go dark 25s after the verdict when no ship is at the gate
+  if (!world.gateBusy && world.lamps.some((l) => l.st !== "idle") && now - Math.max(...world.lamps.map((l) => l.t)) > 25) for (const l of world.lamps) l.st = "idle";
+  // fx
+  for (let i = fx.particles.length - 1; i >= 0; i--) {
+    const p = fx.particles[i];
+    if (p.free) { p.t += dt; p.x += p.vx * dt; p.y += p.vy * dt; if (p.t > p.life) fx.particles.splice(i, 1); }
+    else { p.t += p.speed * (dt * 60); if (p.t > 1) fx.particles.splice(i, 1); }
+  }
+  for (let i = fx.bursts.length - 1; i >= 0; i--) { const b = fx.bursts[i]; b.t += dt * 1.1; if (b.t > 1) fx.bursts.splice(i, 1); }
+  for (let i = fx.pulses.length - 1; i >= 0; i--) { const p = fx.pulses[i]; p.t += dt * 0.55; if (p.t > 1) fx.pulses.splice(i, 1); }
+  for (let i = fx.rings.length - 1; i >= 0; i--) { const p = fx.rings[i]; p.t += dt * 0.7; if (p.t > 1) fx.rings.splice(i, 1); }
+}
+
+function label(text, x, y, color, size, weight, align) {
+  ctx.font = `${weight || 700} ${size || 10}px ui-monospace,Menlo,monospace`;
+  ctx.textAlign = align || "center"; ctx.textBaseline = "middle"; ctx.fillStyle = color;
+  try { ctx.letterSpacing = "0.14em"; } catch {}
+  ctx.fillText(text, x, y);
+  try { ctx.letterSpacing = "0px"; } catch {}
+}
+
+function draw() {
+  const X = cx(), Y = cy();
+  if (stars) ctx.drawImage(stars, 0, 0, W, H);
+  // audit tint: the whole system is on hold
+  if (world.audit) {
+    const g = ctx.createRadialGradient(X, Y, R * 0.2, X, Y, R * 1.3);
+    const a = RM ? 0.16 : 0.12 + Math.sin(now * 1.4) * 0.05;
+    g.addColorStop(0, hexA(COL.red, a)); g.addColorStop(1, hexA(COL.red, 0));
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  }
+  // ── rings ──
+  const occupied = new Set([...world.ships.values()].filter((s) => !s.gone).map((s) => s.ring));
+  ctx.lineWidth = 1;
+  // outer cognition orbit (dashed hairline)
+  ctx.setLineDash([2, 6]); ctx.strokeStyle = hexA(COL.muted, 0.16);
+  ctx.beginPath(); ctx.arc(X, Y, R * STATION_K, 0, TAU); ctx.stroke(); ctx.setLineDash([]);
+  for (let i = 0; i < RINGS.length; i++) {
+    const rg = RINGS[i], r = R * rg.k, on = occupied.has(i);
+    // the ring opens a gap at the top where its label sits
+    ctx.font = "700 10px ui-monospace,Menlo,monospace";
+    const gap = (ctx.measureText(rg.label).width * 1.25 + 22) / (2 * r);
+    const a0 = -Math.PI / 2 + gap, a1 = -Math.PI / 2 + TAU - gap;
+    ctx.beginPath(); ctx.arc(X, Y, r, a0, a1);
+    ctx.strokeStyle = hexA(rg.color, on ? 0.42 : 0.14); ctx.lineWidth = on ? 1.4 : 1; ctx.stroke();
+    if (on) { ctx.beginPath(); ctx.arc(X, Y, r, a0, a1); ctx.strokeStyle = hexA(rg.color, 0.10); ctx.lineWidth = 7; ctx.stroke(); }
+    label(rg.label, X, Y - r, hexA(rg.color, on ? 0.95 : 0.45), 10, 700);
+  }
+  // ── gate lamps (the battery, lit in order) ──
+  const gr = R * RINGS[RING.gate].k;
+  for (let i = 0; i < LAMPS.length; i++) {
+    const a = -Math.PI / 2 + 0.34 + i * (TAU - 0.68) / (LAMPS.length - 1);
+    const lx = X + Math.cos(a) * gr, ly = Y + Math.sin(a) * gr, l = world.lamps[i];
+    let c = COL.dim, al = 0.5, rr = 2.6;
+    if (l.st === "scan") { const hot = !RM && Math.floor(now * 5) % LAMPS.length === i; c = COL.gold; al = hot ? 1 : 0.28; rr = hot ? 4 : 2.6; }
+    else if (l.st === "ok") { c = COL.green; al = 0.95; rr = 3.2; }
+    else if (l.st === "fail") { c = COL.red; al = RM ? 1 : 0.7 + Math.sin(now * 8) * 0.3; rr = 4.5; }
+    else if (l.st === "flaky") { c = COL.gold; al = 0.9; rr = 3.2; }
+    const lit = !RM && l.st !== "idle" && l.st !== "scan" ? easeOut((now - l.t) / 0.25) : 1;
+    if (l.st !== "idle" && l.st !== "scan") { ctx.beginPath(); ctx.arc(lx, ly, rr * 2.4 * lit, 0, TAU); ctx.fillStyle = hexA(c, 0.18 * lit); ctx.fill(); }
+    ctx.beginPath(); ctx.arc(lx, ly, rr * (0.6 + 0.4 * lit), 0, TAU); ctx.fillStyle = hexA(c, al); ctx.fill();
+    world.lamps[i].x = lx; world.lamps[i].y = ly;
+  }
+  // ── backlog dots (queue) + blocked dots (outer) ──
+  const br = R * RINGS[RING.backlog].k;
+  const nq = Math.min(world.ready, 28);
+  for (let i = 0; i < nq; i++) {
+    const a = -Math.PI / 2 + 0.28 + (i + 0.5) * (TAU - 0.56) / Math.max(nq, 1);
+    ctx.beginPath(); ctx.arc(X + Math.cos(a) * br, Y + Math.sin(a) * br, 2.2, 0, TAU); ctx.fillStyle = hexA(COL.muted, 0.55); ctx.fill();
+  }
+  const nb = Math.min(world.blocked, 20);
+  for (let i = 0; i < nb; i++) {
+    const a = Math.PI / 2 + (i - (nb - 1) / 2) * 0.09;
+    ctx.beginPath(); ctx.arc(X + Math.cos(a) * R * EJECT_K, Y + Math.sin(a) * R * EJECT_K, 2.4, 0, TAU); ctx.fillStyle = hexA(COL.red, 0.6); ctx.fill();
+  }
+  // ── stations ──
+  for (const st of STATIONS) {
+    const ws = world.stations[st.id];
+    const sx = X + Math.cos(st.a) * R * STATION_K, sy = Y + Math.sin(st.a) * R * STATION_K;
+    const c = ws.st === "fail" ? COL.red : ws.st === "ok" ? COL.green : ws.st === "working" ? st.color : COL.dim;
+    const working = ws.st === "working";
+    const rr = 9 * (working && !RM ? 1 + Math.sin(now * 5) * 0.12 : 1);
+    ctx.beginPath(); ctx.arc(sx, sy, rr * 2.6, 0, TAU); ctx.fillStyle = hexA(c, working ? 0.22 : ws.st === "idle" ? 0.05 : 0.14); ctx.fill();
+    ctx.beginPath(); ctx.arc(sx, sy, rr, 0, TAU); ctx.fillStyle = "#0a1420"; ctx.fill();
+    ctx.lineWidth = 1.6; ctx.strokeStyle = hexA(c, ws.st === "idle" ? 0.5 : 1); ctx.stroke();
+    // orbiting arc = "working" indicator
+    if (!RM && working) { ctx.beginPath(); ctx.arc(sx, sy, rr + 5, now * 2.4, now * 2.4 + Math.PI * 1.3); ctx.strokeStyle = hexA(c, 0.8); ctx.lineWidth = 1.2; ctx.stroke(); }
+    const side = Math.cos(st.a) < 0 ? -1 : 1;
+    label(st.label, sx + side * 16, sy, hexA(c, ws.st === "idle" ? 0.55 : 0.95), 9, 700, side < 0 ? "right" : "left");
+    if (ws.last) label(fmtAge(Date.now() - Date.parse(ws.last)), sx + side * 16, sy + 12, hexA(COL.muted, 0.6), 9, 500, side < 0 ? "right" : "left");
+    st.x = sx; st.y = sy;
+  }
+  // ── particles (streams + sparks) ──
+  for (const p of fx.particles) {
+    if (p.t < 0) continue;
+    let px, py, al;
+    if (p.free) { px = p.x; py = p.y; al = 1 - p.t / p.life; }
+    else { const u = easeOut(p.t); const r = p.r0 + (p.r1 - p.r0) * u; const a = p.a + Math.sin(u * Math.PI) * p.wob; px = X + Math.cos(a) * r; py = Y + Math.sin(a) * r; al = Math.sin(u * Math.PI); }
+    ctx.beginPath(); ctx.arc(px, py, 2.2, 0, TAU); ctx.fillStyle = hexA(p.color, al * 0.95); ctx.fill();
+  }
+  // ── merges today: docked stars on the deploy ring ──
+  const dr = R * RINGS[RING.deploy].k, nm = Math.min(world.merges, 24);
+  for (let i = 0; i < nm; i++) {
+    const a = Math.PI / 2 + (i - (nm - 1) / 2) * 0.22;
+    ctx.beginPath(); ctx.arc(X + Math.cos(a) * dr, Y + Math.sin(a) * dr, 2.6, 0, TAU); ctx.fillStyle = hexA(COL.green, 0.9); ctx.fill();
+  }
+  // ── budget arcs hugging the core (tasks = cyan, deploys = green) ──
+  const cr = R * CORE_K;
+  const arc = (r, frac, color) => {
+    ctx.beginPath(); ctx.arc(X, Y, r, 0, TAU); ctx.strokeStyle = hexA(color, 0.12); ctx.lineWidth = 3; ctx.stroke();
+    if (frac > 0) { ctx.beginPath(); ctx.arc(X, Y, r, -Math.PI / 2, -Math.PI / 2 + TAU * clamp(frac, 0, 1)); ctx.strokeStyle = hexA(frac >= 1 ? COL.red : color, 0.9); ctx.lineWidth = 3; ctx.lineCap = "round"; ctx.stroke(); ctx.lineCap = "butt"; }
+  };
+  arc(cr + 9, world.maxTasks ? world.tasks / world.maxTasks : 0, COL.cyan);
+  arc(cr + 15, world.maxDeploys ? world.deploys / world.maxDeploys : 0, COL.green);
+  // ── heartbeat pulses (rings expanding from the core) ──
+  for (const p of fx.pulses) {
+    ctx.beginPath(); ctx.arc(X, Y, cr + (dr - cr) * p.t, 0, TAU); ctx.strokeStyle = hexA(COL.green, (1 - p.t) * 0.45); ctx.lineWidth = 1.5; ctx.stroke();
+  }
+  for (const p of fx.rings) {
+    ctx.beginPath(); ctx.arc(X, Y, cr + (R - cr) * easeOut(p.t), 0, TAU); ctx.strokeStyle = hexA(p.color, (1 - p.t) * 0.6); ctx.lineWidth = 2.5; ctx.stroke();
+  }
+  // ── the core (PROD) ──
+  const c = world.core;
+  const hbFresh = world.hbMs != null && world.hbMs < 90_000;
+  const coreColor = world.offline ? COL.dim : !hbFresh ? COL.gray : c.state === "fail" || c.state === "unhealthy" ? COL.red : c.state === "deploying" ? COL.gold : c.state === "ok" ? COL.green : COL.white;
+  const breath = RM || !hbFresh || world.offline ? 1 : 1 + Math.sin(now * (c.state === "deploying" ? 6 : c.state === "unhealthy" ? 4 : 2.2)) * 0.05;
+  let ox = 0, oy = 0; if (now < c.tremorUntil) { ox = (Math.random() - .5) * 5; oy = (Math.random() - .5) * 5; }
+  const g = ctx.createRadialGradient(X + ox, Y + oy, cr * 0.4, X + ox, Y + oy, cr * 3.2);
+  g.addColorStop(0, hexA(coreColor, c.state === "deploying" ? 0.42 : 0.28)); g.addColorStop(1, hexA(coreColor, 0));
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(X + ox, Y + oy, cr * 3.2, 0, TAU); ctx.fill();
+  const body = ctx.createRadialGradient(X + ox - cr * 0.3, Y + oy - cr * 0.35, cr * 0.1, X + ox, Y + oy, cr * breath);
+  body.addColorStop(0, "#16283a"); body.addColorStop(1, "#08111c");
+  ctx.beginPath(); ctx.arc(X + ox, Y + oy, cr * breath, 0, TAU); ctx.fillStyle = body; ctx.fill();
+  ctx.lineWidth = 2.4; ctx.strokeStyle = hexA(coreColor, 0.95); ctx.stroke();
+  if (!RM && (c.state === "deploying" || c.state === "unhealthy")) {
+    ctx.beginPath(); ctx.arc(X + ox, Y + oy, cr * breath + 5, now * 3, now * 3 + Math.PI * 1.2); ctx.strokeStyle = hexA(coreColor, 0.85); ctx.lineWidth = 1.5; ctx.stroke();
+  }
+  // PWA origin down: a broken dashed halo
+  if (world.pwaDown) { ctx.setLineDash([3, 5]); ctx.beginPath(); ctx.arc(X, Y, cr + 22, 0, TAU); ctx.strokeStyle = hexA(COL.gold, 0.8); ctx.lineWidth = 1.5; ctx.stroke(); ctx.setLineDash([]); }
+  label("PROD", X + ox, Y + oy - 5, hexA(coreColor, 0.95), 11, 800);
+  label(world.offline ? "OFF" : world.hbMs == null ? "—" : fmtAge(world.hbMs), X + ox, Y + oy + 9, hexA(hbFresh && !world.offline ? COL.muted : COL.red, 0.9), 10, 600);
+  if (c.tag && now < c.tag.until) label(c.tag.text, X, Y + cr + 30, hexA(c.tag.color, 0.95), 10, 700);
+  if (world.audit) label("AUDIT", X, Y - cr - 30, hexA(COL.red, RM ? 1 : 0.7 + Math.sin(now * 3) * 0.3), 11, 800);
+  // ── ships ──
+  for (const s of world.ships.values()) {
+    const al = s.alpha; if (al <= 0) continue;
+    // trail (history) — fades with age
+    if (s.trail.length > 1) {
+      ctx.lineWidth = 1.6; ctx.lineCap = "round";
+      for (let i = 1; i < s.trail.length; i++) {
+        const p0 = s.trail[i - 1], p1 = s.trail[i]; const age = now - p1.t; if (age > 14) continue;
+        ctx.beginPath(); ctx.moveTo(p0.x, p0.y); ctx.lineTo(p1.x, p1.y);
+        ctx.strokeStyle = hexA(p1.c, al * (1 - age / 14) * 0.55); ctx.stroke();
+      }
+      ctx.lineCap = "butt";
+    }
+    let jx = 0, jy = 0; if (now < s.tremorUntil) { jx = (Math.random() - .5) * 6; jy = (Math.random() - .5) * 6; }
+    const x = s.x + jx, y = s.y + jy;
+    const working = s.state === "working" || s.state === "landing" || s.state === "deploying";
+    const fl = s.flash ? clamp(1 - (now - s.flash) / 0.6, 0, 1) : 0;
+    const color = fl > 0 ? s.flashColor : s.color;
+    const rr = 6.5 * (working && !RM ? 1 + Math.sin(now * 6) * 0.1 : 1) + fl * 5;
+    // glow
+    const gg = ctx.createRadialGradient(x, y, 0, x, y, rr * 4);
+    gg.addColorStop(0, hexA(color, al * (working ? 0.45 : 0.22))); gg.addColorStop(1, hexA(color, 0));
+    ctx.fillStyle = gg; ctx.beginPath(); ctx.arc(x, y, rr * 4, 0, TAU); ctx.fill();
+    // context pressure arc (fuel gauge around the ship)
+    if (s.ctx != null) { ctx.beginPath(); ctx.arc(x, y, rr + 6, -Math.PI / 2, -Math.PI / 2 + TAU * clamp(s.ctx, 0, 1)); ctx.strokeStyle = hexA(s.ctx > 0.8 ? COL.red : s.ctx > 0.6 ? COL.gold : COL.cyan, al * 0.9); ctx.lineWidth = 2; ctx.stroke(); }
+    // body
+    ctx.beginPath(); ctx.arc(x, y, rr, 0, TAU); ctx.fillStyle = hexA("#0a1420", al); ctx.fill();
+    ctx.lineWidth = 2; ctx.strokeStyle = hexA(color, al); ctx.stroke();
+    ctx.beginPath(); ctx.arc(x, y, rr * 0.38, 0, TAU); ctx.fillStyle = hexA(color, al); ctx.fill();
+    // working ring
+    if (!RM && working) { ctx.beginPath(); ctx.arc(x, y, rr + 4, now * 4, now * 4 + Math.PI * 1.1); ctx.strokeStyle = hexA(color, al * 0.85); ctx.lineWidth = 1.2; ctx.stroke(); }
+    // review moons (SEC / QUAL) circling the ship
+    if (s.moons) {
+      const m = s.moons; const age = now - m.t; const mal = m.st === "working" || m.st === "escalate" ? 1 : clamp(1 - (age - 1.2) / 0.8, 0, 1);
+      if (mal > 0) {
+        const mc = m.st === "ok" ? COL.green : m.st === "fail" ? COL.red : m.st === "escalate" ? COL.violet : null;
+        const ma = RM ? 0 : now * 2.8;
+        [[COL.indigo, 0], [COL.sky, Math.PI]].forEach(([mcol, off]) => {
+          const mx = x + Math.cos(ma + off) * (rr + 13), my = y + Math.sin(ma + off) * (rr + 13);
+          ctx.beginPath(); ctx.arc(mx, my, 3.2, 0, TAU); ctx.fillStyle = hexA(mc || mcol, al * mal); ctx.fill();
+          ctx.beginPath(); ctx.arc(mx, my, 7, 0, TAU); ctx.fillStyle = hexA(mc || mcol, al * mal * 0.2); ctx.fill();
+        });
+      } else s.moons = null;
+    }
+    // label: id + round pips + transient tag
+    const side = Math.cos(s.a) < -0.2 ? -1 : 1;
+    label(s.id, x + side * 14, y - 1, hexA(color, al * 0.95), 11, 700, side < 0 ? "right" : "left");
+    for (let i = 0; i < Math.min(s.round, 6); i++) { ctx.beginPath(); ctx.arc(x + side * (14 + i * 7) + (side < 0 ? -2 : 2), y + 10, 1.8, 0, TAU); ctx.fillStyle = hexA(i >= 2 ? COL.gold : COL.muted, al * 0.9); ctx.fill(); }
+    if (s.tag && now < s.tag.until) label(s.tag.text, x + side * 14, y + (s.round ? 22 : 12), hexA(s.tag.color, al * clamp((s.tag.until - now) / 0.5, 0, 1)), 9, 700, side < 0 ? "right" : "left");
+  }
+  // ── bursts ──
+  for (const b of fx.bursts) {
+    for (const p of b.parts) { const d = b.t * p.v * 40 * b.scale; ctx.beginPath(); ctx.arc(b.x + Math.cos(p.a) * d, b.y + Math.sin(p.a) * d, 2.4 * (1 - b.t), 0, TAU); ctx.fillStyle = hexA(b.color, (1 - b.t) * 0.9); ctx.fill(); }
+    ctx.beginPath(); ctx.arc(b.x, b.y, b.t * 110 * b.scale, 0, TAU); ctx.strokeStyle = hexA(b.color, (1 - b.t) * 0.5); ctx.lineWidth = 2; ctx.stroke();
+  }
+  // ── hover highlight ──
+  if (hover) { ctx.beginPath(); ctx.arc(hover.x, hover.y, hover.r + 6, 0, TAU); ctx.strokeStyle = hexA(COL.white, 0.7); ctx.lineWidth = 1; ctx.stroke(); }
+}
+
+let lastT = 0, hover = null;
+function frame(t) {
+  const dt = Math.min((t - lastT) / 1000, 0.1); lastT = t; now = t / 1000;
+  if (MOCK) mockTick();
+  step(dt);
+  draw();
+  requestAnimationFrame(frame);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 5. HUD (labels + numbers only) and drill-down (text lives here)
+// ═══════════════════════════════════════════════════════════════════════════
+function renderHud() {
+  $("h-tasks").textContent = `${world.tasks}/${world.maxTasks}`; $("h-tasks").className = world.tasks >= world.maxTasks ? "warn" : "";
+  $("h-dep").textContent = `${world.deploys}/${world.maxDeploys}`; $("h-dep").className = world.deploys >= world.maxDeploys ? "warn" : "";
+  $("h-merges").textContent = world.merges; $("h-fails").textContent = world.failures;
+  $("h-fila").textContent = world.blocked ? `${world.ready} · ${world.blocked}×` : `${world.ready}`;
+  $("h-hb").textContent = world.offline ? "OFF" : world.hbMs == null ? "—" : fmtAge(world.hbMs);
+  $("h-hb").className = world.offline || world.hbMs == null ? "bad" : world.hbMs < 90_000 ? "ok" : "warn";
+  $("live").className = world.offline ? "off" : world.hbMs != null && world.hbMs < 90_000 ? "on" : "stale";
+  $("c-audit").classList.toggle("on", !!world.audit); $("c-audit").title = world.audit ? `${world.audit.reason} · desde ${hhmmss(world.audit.since)}` : "";
+  $("c-rb").classList.toggle("on", world.core.state === "unhealthy"); $("c-rb").title = world.rbDetail || "";
+  $("c-pwa").classList.toggle("on", !!world.pwaDown); $("c-pwa").title = world.pwaDetail || "";
+  $("c-night").classList.toggle("on", !!world.nightlySkipped); $("c-night").title = world.nightlySkipped ? `${world.nightlySkipped.date} · ${world.nightlySkipped.reason}` : "";
+  const e = world.lastEvent;
+  if (e) {
+    const cap = $("cap");
+    cap.querySelector(".t").textContent = hhmmss(e.ts);
+    cap.querySelector(".id").textContent = e.task || e.type;
+    cap.querySelector(".ph").textContent = (e.phase || e.type).toUpperCase();
+    cap.querySelector(".dt").textContent = e.detail ? ` · ${e.detail.slice(0, 70)}` : "";
+    cap.className = "hud " + (e.type === "result" ? (e.ok ? "ok" : "bad") : e.ok === false ? "bad" : e.type === "deploy" ? "gold" : "");
+  }
+  const bars = $("h-bars");
+  if (world.history && world.history.length) {
+    bars.classList.remove("hidden");
+    const max = Math.max(1, ...world.history.map((d) => d.ok + d.failed));
+    bars.innerHTML = world.history.map((d) => `<i title="${d.day}: ${d.ok} ok · ${d.failed} falhas" style="height:${Math.max(1, Math.round(((d.ok + d.failed) / max) * 22))}px;--f:${Math.round((d.failed / Math.max(1, d.ok + d.failed)) * 100)}%"></i>`).join("");
+  } else bars.classList.add("hidden");
+}
+
+function tlRow(e) {
+  const cls = e.type === "agent" ? "agent" : e.ok === true ? "ok" : e.ok === false ? "bad" : "";
+  return `<div><span class="ts">${hhmmss(e.ts)}</span><span class="ph ${cls}">${esc((e.phase || e.type).slice(0, 18))}</span><span class="dt">${esc(e.detail || "")}</span></div>`;
+}
+function openShip(s) {
+  const c = s.color;
+  $("m-title").innerHTML = `<i style="background:${c}"></i>${esc(s.id)}<small>${esc(s.title || (world.readyList.find((t) => t.id === s.id) || {}).title || "")}</small>`;
+  const ring = s.state === "blocked" ? "BLOCKED" : s.state === "landed" ? "LANDED" : RINGS[s.ring].label;
+  const cp = (world.contextPressure[s.id] || []).slice(-1)[0];
+  const facts = [
+    ["ANEL", ring], ["ESTADO", s.state.toUpperCase()], ["SLOT", s.slot], ["ROUND", s.round || "—"],
+    ["TENTATIVAS", world.taskAttempts[s.id] ?? "—"], ["TOKENS", fmtTok(world.taskCosts[s.id]) || "—"],
+    ["CONTEXTO", s.ctx != null ? `${Math.round(s.ctx * 100)}%` : cp ? `${Math.round(cp.pct)}%` : "—"],
+    ["ÚLTIMO", s.lastTs ? fmtAge(Date.now() - s.lastTs) + " atrás" : "—"],
+  ];
+  $("m-facts").innerHTML = facts.map(([k, v]) => `<span>${k}<b>${esc(v)}</b></span>`).join("");
+  $("m-tl").innerHTML = s.events.length ? s.events.slice(-80).map(tlRow).join("") : `<div class="empty">sem eventos</div>`;
+  $("modal").classList.add("open");
+}
+function openStation(st) {
+  const ws = world.stations[st.id];
+  $("m-title").innerHTML = `<i style="background:${st.color}"></i>${st.label}<small>${ws.last ? "último: " + hhmmss(ws.last) : "nunca rodou nesta janela"}</small>`;
+  $("m-facts").innerHTML = `<span>ESTADO<b>${ws.st.toUpperCase()}</b></span>`;
+  $("m-tl").innerHTML = ws.events.length ? ws.events.slice(-40).map(tlRow).join("") : `<div class="empty">sem eventos no feed</div>`;
+  $("modal").classList.add("open");
+}
+function openCore() {
+  const c = world.core;
+  $("m-title").innerHTML = `<i style="background:${c.state === "fail" || c.state === "unhealthy" ? COL.red : c.state === "deploying" ? COL.gold : COL.green}"></i>PROD · MAC<small>heartbeat ${world.hbMs == null ? "—" : fmtAge(world.hbMs)}</small>`;
+  const facts = [["ESTADO", c.state.toUpperCase()], ["DEPLOYS HOJE", `${world.deploys}/${world.maxDeploys}`], ["TASKS HOJE", `${world.tasks}/${world.maxTasks}`], ["MERGES", world.merges], ["FALHAS", world.failures]];
+  if (world.rbDetail) facts.push(["ROLLBACK", world.rbDetail]);
+  if (world.pwaDetail) facts.push(["PWA", world.pwaDetail]);
+  $("m-facts").innerHTML = facts.map(([k, v]) => `<span>${k}<b>${esc(v)}</b></span>`).join("");
+  $("m-tl").innerHTML = world.deployEvents.length ? world.deployEvents.slice(-40).map(tlRow).join("") : `<div class="empty">sem deploys no feed</div>`;
+  $("modal").classList.add("open");
+}
+function closeModal() { $("modal").classList.remove("open"); }
+window.closeModal = closeModal;
+
+// hit-testing: ships, stations, core
+function hit(mx, my) {
+  for (const s of world.ships.values()) if (s.alpha > 0.3 && Math.hypot(mx - s.x, my - s.y) <= 16) return { kind:"ship", ref:s, x:s.x, y:s.y, r:8 };
+  for (const st of STATIONS) if (st.x != null && Math.hypot(mx - st.x, my - st.y) <= 18) return { kind:"station", ref:st, x:st.x, y:st.y, r:10 };
+  if (Math.hypot(mx - cx(), my - cy()) <= R * CORE_K + 16) return { kind:"core", ref:null, x:cx(), y:cy(), r:R * CORE_K };
+  for (let i = 0; i < world.lamps.length; i++) { const l = world.lamps[i]; if (l.x != null && Math.hypot(mx - l.x, my - l.y) <= 9) return { kind:"lamp", ref:i, x:l.x, y:l.y, r:4 }; }
+  return null;
+}
+canvas.addEventListener("mousemove", (ev) => {
+  hover = hit(ev.clientX, ev.clientY);
+  canvas.style.cursor = hover ? "pointer" : "default";
+  const tip = $("tip");
+  if (!hover) { tip.style.display = "none"; return; }
+  let html = "";
+  if (hover.kind === "ship") { const s = hover.ref, last = s.events[s.events.length - 1]; html = `<b>${esc(s.id)}</b> ${esc(RINGS[s.ring].label)} · ${esc(s.state)}${last && last.detail ? " · " + esc(last.detail.slice(0, 60)) : ""}`; }
+  else if (hover.kind === "station") { const ws = world.stations[hover.ref.id]; html = `<b>${hover.ref.label}</b> ${ws.st}${ws.last ? " · " + hhmmss(ws.last) : ""}`; }
+  else if (hover.kind === "core") html = `<b>PROD</b> ${world.core.state} · heartbeat ${world.hbMs == null ? "—" : fmtAge(world.hbMs)}`;
+  else if (hover.kind === "lamp") html = `<b>GATE</b> ${LAMPS[hover.ref]} · ${world.lamps[hover.ref].st}`;
+  tip.innerHTML = html; tip.style.display = "block";
+  tip.style.left = Math.min(ev.clientX + 14, W - 320) + "px"; tip.style.top = (ev.clientY + 14) + "px";
+});
+canvas.addEventListener("mouseleave", () => { hover = null; $("tip").style.display = "none"; });
+canvas.addEventListener("click", (ev) => {
+  const h = hit(ev.clientX, ev.clientY); if (!h) return;
+  if (h.kind === "ship") openShip(h.ref); else if (h.kind === "station") openStation(h.ref); else if (h.kind === "core") openCore();
+});
+window.addEventListener("keydown", (ev) => { if (ev.key === "Escape") closeModal(); });
+
+let toastTimer = 0;
+function toast(text, good, ms = 3000) {
+  const t = $("toast"); t.textContent = text; t.className = "show" + (good ? " good" : "");
+  clearTimeout(toastTimer); if (ms > 0) toastTimer = setTimeout(() => (t.className = ""), ms);
+}
+function setOffline(on, retryS) {
+  const was = world.offline; world.offline = on;
+  document.body.classList.toggle("offline", on);
+  if (on) toast(`SEM SINAL · retry ${retryS}s`, false, 0);
+  else if (was) toast("SINAL RESTABELECIDO", true, 3000);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 6. real mode: /api/pilot-events poll (2s, exponential backoff up to 30s)
+// ═══════════════════════════════════════════════════════════════════════════
+let token = window.__OCR_TOKEN__ || localStorage.getItem("ocr_dash_token") || "";
+if (token === "__APITOKEN__") token = "";
+if (PARAMS.get("token")) { token = PARAMS.get("token"); localStorage.setItem("ocr_dash_token", token); history.replaceState(null, "", location.pathname); }
+const hdr = () => ({ authorization: `Bearer ${token}` });
+let lastKey = null, firstPoll = true, delay = 2000, pollTimer = 0, lastHb = null, tick = 0;
+const evKey = (e) => `${e.ts}|${e.type}|${e.task || ""}|${e.phase || ""}|${e.detail || ""}`;
+function ingest(events) {
+  let start = 0;
+  if (lastKey) { for (let i = events.length - 1; i >= 0; i--) if (evKey(events[i]) === lastKey) { start = i + 1; break; } }
+  const quiet = firstPoll;
+  for (let i = start; i < events.length; i++) apply(events[i], quiet);
+  if (events.length) lastKey = evKey(events[events.length - 1]);
+  if (quiet) {
+    // fast-forward: settle ships in place (no hop animation, no trails), drop long-finished tasks
+    const cutoff = Date.now() - 3 * 3_600_000;
+    for (const [id, s] of world.ships) {
+      s.k = s.kTarget; s.kFrom = s.kTarget; s.alpha = 1; s.trail.length = 0;
+      if (s.gone || s.lastTs < cutoff) world.ships.delete(id);
+    }
+  }
+  firstPoll = false;
+}
+async function poll() {
+  try {
+    const res = await fetch("/api/pilot-events", { headers: hdr() });
+    if (res.status === 401 || res.status === 403) { $("tokenbox").style.display = "block"; throw new Error("auth"); }
+    if (!res.ok) throw new Error(String(res.status));
+    const data = await res.json();
+    const st = data.state || {}, cfg = data.cfg || {};
+    world.hbMs = Number.isFinite(data.heartbeatMs) ? data.heartbeatMs : null;
+    if (world.hbMs != null && (lastHb == null || world.hbMs < lastHb)) heartbeatPulse();
+    lastHb = world.hbMs;
+    world.tasks = st.tasks ?? 0; world.deploys = st.deploys ?? 0; world.failures = st.failures ?? 0; world.merges = st.merges ?? 0;
+    world.maxTasks = cfg.maxTasksPerDay || 6; world.maxDeploys = cfg.maxDeploysPerDay || 6;
+    world.audit = st.auditMode && st.auditMode.reason ? st.auditMode : null;
+    world.nightlySkipped = st.nightlySkipped || null;
+    world.taskCosts = st.taskCosts || {}; world.taskAttempts = st.taskAttempts || {}; world.contextPressure = st.contextPressure || {};
+    world.rbDetail = data.rollbackDetail || ""; world.pwaDown = !!data.pwaDown; world.pwaDetail = data.pwaDetail || "";
+    ingest(data.events || []);
+    if (data.rollbackUnhealthy) world.core.state = "unhealthy";
+    if (world.core.state === "idle" && world.deployEvents.length === 0 && world.hbMs != null) world.core.state = "ok";
+    if (data.lastAux) for (const k of ["researcher", "strategist"]) { const id = k === "researcher" ? "research" : k; if (data.lastAux[k] && !world.stations[id].last) world.stations[id].last = data.lastAux[k]; }
+    setOffline(false); delay = 2000;
+    if (tick % 5 === 0) loadReady(); if (tick % 30 === 0) loadHistory(); tick++;
+  } catch (err) {
+    if (String(err.message) !== "auth") { delay = Math.min(delay * 2, 30_000); setOffline(true, Math.round(delay / 1000)); }
+  }
+  renderHud();
+  pollTimer = setTimeout(poll, delay);
+}
+async function loadReady() {
+  try { const r = await fetch("/api/pilot-ready", { headers: hdr() }); const { ready, blocked } = await r.json();
+    world.readyList = ready || []; world.blockedList = blocked || []; world.ready = world.readyList.length; world.blocked = world.blockedList.length; } catch {}
+}
+async function loadHistory() {
+  try { const r = await fetch("/api/pilot-history", { headers: hdr() }); const d = await r.json(); world.history = d.exists ? d.days || [] : null; } catch { world.history = null; }
+}
+async function loadMission() {
+  try { const r = await fetch("/api/pilot-mission", { headers: hdr() }); const { mission } = await r.json(); $("mission").textContent = mission || "sem missão definida"; $("mission").title = mission || ""; } catch { $("mission").textContent = "—"; }
+}
+function saveToken() { token = $("token").value.trim(); localStorage.setItem("ocr_dash_token", token); $("tokenbox").style.display = "none"; clearTimeout(pollTimer); delay = 2000; poll(); loadMission(); }
+window.saveToken = saveToken;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 7. mock mode: a looping synthetic day — two flights (one clean, one with a
+//    gate failure + rollback), a blocked task, cognition, audit, signal loss
+// ═══════════════════════════════════════════════════════════════════════════
+const SCRIPT = [];
+function at(t, type, f) { SCRIPT.push({ t, ev: { type, ...f } }); }
+function gateSteps(t0, task, failAt) {
+  for (let i = 0; i < LAMPS.length; i++) {
+    if (failAt && LAMPS[i] === failAt) { at(t0 + i * 0.9, "phase", { task, phase: "gate-fail", ok: false, detail: failAt }); return t0 + i * 0.9 + 0.6; }
+    at(t0 + i * 0.9, "phase", { task, phase: "gate-step", ok: true, detail: LAMPS[i] });
+  }
+  return t0 + LAMPS.length * 0.9;
+}
+(function buildScript() {
+  const A = "P1-201", B = "P2-202", C = "P3-303";
+  // ── flight A (slot 1): clean, one review round-trip ──
+  at(0, "loop", { task: A, phase: "picked", detail: "Mission Control v3 — descida orbital", slot: 1 });
+  at(1, "phase", { task: A, phase: "staged", ok: true, detail: "slot 1 starts in ~4s (cache-write stagger)" });
+  at(3, "phase", { task: A, phase: "planner" });
+  at(4, "phase", { task: "strategist", phase: "refill", ok: true, detail: "queue refill pushed (6 lines)" });
+  at(7, "phase", { task: A, phase: "planner-done", ok: true, detail: "docs/specs/P1-201.md" });
+  at(8, "phase", { task: A, phase: "builder", detail: "round 1" });
+  for (let i = 0; i < 8; i++) at(8.5 + i * 0.8, "agent", { task: A, detail: ["edit apps/pilot/dashboard/mission-v3.html", "read apps/pilot/src/events.ts", "bash npm run typecheck", "edit apps/daemon/src/index.ts", "grep emit(", "bash node --check", "read state.ts", "write test"][i] });
+  at(12, "phase", { task: A, phase: "context-checkpoint", detail: "38%" });
+  at(15, "phase", { task: A, phase: "builder-done", ok: true });
+  at(16, "phase", { task: A, phase: "reviewers" });
+  at(22, "phase", { task: A, phase: "reviewers-done", ok: false });
+  at(23, "phase", { task: A, phase: "builder", detail: "round 2" });
+  for (let i = 0; i < 5; i++) at(23.5 + i * 0.9, "agent", { task: A, detail: "fix review finding " + (i + 1) });
+  at(26, "phase", { task: A, phase: "context-checkpoint", detail: "61%" });
+  at(28, "phase", { task: A, phase: "builder-done", ok: true });
+  at(29, "phase", { task: A, phase: "reviewers" });
+  at(31, "phase", { task: A, phase: "review-escalation", detail: "round 2" });
+  at(35, "phase", { task: A, phase: "reviewers-done", ok: true });
+  at(36, "phase", { task: A, phase: "gatekeeper" });
+  const gA = gateSteps(37, A);
+  at(gA + 0.3, "phase", { task: A, phase: "gatekeeper-done", ok: true, detail: "green" });
+  at(gA + 1.2, "phase", { task: A, phase: "merge", ok: true });
+  at(gA + 2.2, "deploy", { phase: "start", detail: "sha a1b2c3d" });
+  at(gA + 4.0, "deploy", { phase: "install", ok: true, detail: "fast-install (lock unchanged) in 2s" });
+  at(gA + 7.5, "deploy", { phase: "done", ok: true, detail: "sha a1b2c3d live" });
+  at(gA + 8.5, "phase", { task: A, phase: "ui-shot", ok: true, detail: "shots/P1-201.png" });
+  at(gA + 9.2, "phase", { task: A, phase: "scribe" });
+  at(gA + 11, "phase", { task: A, phase: "scribe-done", ok: true, detail: "2 lesson(s)" });
+  at(gA + 11.5, "result", { task: A, ok: true, detail: "merged + deployed", slot: 1 });
+  // ── flight B (slot 2): gate failure, retry, merge, deploy, rollback ──
+  at(20, "loop", { task: B, phase: "picked", detail: "Reconnect banner único no shell", slot: 2 });
+  at(22, "phase", { task: B, phase: "planner" });
+  at(26, "phase", { task: B, phase: "planner-done", ok: true, detail: "docs/specs/P2-202.md" });
+  at(27, "phase", { task: B, phase: "builder", detail: "round 1" });
+  for (let i = 0; i < 6; i++) at(27.5 + i * 0.9, "agent", { task: B, detail: "edit apps/web/src/App.tsx" });
+  at(30, "phase", { task: "research", phase: "done", ok: true });
+  at(33, "phase", { task: B, phase: "context-checkpoint", detail: "84%" });
+  at(40, "phase", { task: B, phase: "builder-done", ok: true });
+  at(41, "phase", { task: B, phase: "reviewers" });
+  // the gate is a single battery: B queues at review until A clears it
+  at(gA + 10.5, "phase", { task: B, phase: "reviewers-done", ok: true });
+  at(gA + 11.2, "phase", { task: B, phase: "gatekeeper" });
+  const gB = gateSteps(gA + 12, B, "invariants");
+  at(gB + 0.2, "phase", { task: B, phase: "gatekeeper-done", ok: false, detail: "invariants" });
+  at(gB + 1.5, "phase", { task: B, phase: "builder", detail: "round 2" });
+  for (let i = 0; i < 4; i++) at(gB + 2 + i * 0.9, "agent", { task: B, detail: "fix invariant: single reconnect banner" });
+  at(gB + 6, "phase", { task: B, phase: "builder-done", ok: true });
+  at(gB + 7, "phase", { task: B, phase: "reviewers" });
+  at(gB + 11, "phase", { task: B, phase: "reviewers-done", ok: true });
+  at(gB + 12, "phase", { task: B, phase: "gatekeeper" });
+  const gB2 = gateSteps(gB + 13, B);
+  at(gB2 + 0.3, "phase", { task: B, phase: "gate-flaky", ok: true, detail: "reconnect" });
+  at(gB2 + 0.8, "phase", { task: B, phase: "gatekeeper-done", ok: true, detail: "green" });
+  at(gB2 + 1.6, "phase", { task: B, phase: "merge", ok: true });
+  at(gB2 + 2.6, "deploy", { phase: "start", detail: "sha e4f5a6b" });
+  at(gB2 + 4.2, "deploy", { phase: "install", ok: true, detail: "npm ci in 9s" });
+  at(gB2 + 7.5, "deploy", { phase: "rollback", ok: false, detail: "health check failed 3× after restart" });
+  at(gB2 + 10, "deploy", { phase: "rollback-health", ok: false, detail: "rolled back to a1b2c3d — still unhealthy (relay 502)" });
+  at(gB2 + 11, "result", { task: B, ok: false, detail: "deploy rolled back", slot: 2 });
+  at(gB2 + 13, "phase", { task: "explorer", phase: "done", ok: true });
+  at(gB2 + 16, "deploy", { phase: "rollback-health", ok: true, detail: "healthy after 40s" });
+  // ── audit trips, then resumes ──
+  at(gB2 + 18, "audit", { detail: "fever 3/5 — queue paused" });
+  at(gB2 + 26, "audit", { detail: "resumed after 2h without failure" });
+  // ── flight C: planner cannot produce a spec → blocked ──
+  at(gB2 + 27, "loop", { task: C, phase: "picked", detail: "Empty state do pareamento", slot: 1 });
+  at(gB2 + 28, "phase", { task: C, phase: "planner" });
+  at(gB2 + 32, "phase", { task: C, phase: "planner-done", ok: false, detail: "no valid spec" });
+  at(gB2 + 33, "phase", { task: C, phase: "blocked", ok: false, detail: "moved to ## Blocked after 4 attempts" });
+  at(gB2 + 33.5, "result", { task: C, ok: false, detail: "planner: no valid spec", slot: 1 });
+  at(gB2 + 34, "phase", { task: "forensic", phase: "forensic", ok: true, detail: "taxonomy: 2 infra, 1 spec" });
+  // ── signal loss demo ──
+  SCRIPT.push({ t: gB2 + 36, sys: "offline" });
+  SCRIPT.push({ t: gB2 + 42, sys: "online" });
+  SCRIPT.push({ t: gB2 + 48, sys: "loop" });
+  SCRIPT.sort((a, b) => a.t - b.t);
+})();
+let mockStart = 0, mockIdx = 0, mockHbAt = 0, mockLoops = 0;
+function mockInit() {
+  world.maxTasks = 6; world.maxDeploys = 6; world.hbMs = 0;
+  world.readyList = [{ id:"P2-106", title:"Jornada de pareamento nível benchmark" }, { id:"P2-107", title:"Cromo do chat nível benchmark" }, { id:"P2-108", title:"Sidebar + estado vazio" }, { id:"P2-109", title:"Torre PR1 — eventos" }, { id:"P2-110", title:"Torre PR2 — SSE" }];
+  world.blockedList = [{ id:"P2-099", title:"bloqueada" }]; world.ready = 5; world.blocked = 1;
+  world.history = [3,5,4,6,2,5,4].map((n, i) => ({ day:`09-${String(i+1).padStart(2,"0")}`, ok:n, failed: i % 3 === 1 ? 1 : 0 }));
+  world.core.state = "ok"; world.taskAttempts = { "P3-303": 4, "P2-202": 1 }; world.taskCosts = { "P1-201": 640_000, "P2-202": 1_240_000, "P3-303": 90_000 };
+  world.stations.research.last = new Date(Date.now() - 5 * 3_600_000).toISOString();
+  $("mission").textContent = "Pilot autônomo: backlog → prod sem mão humana, com evidência a cada passo"; $("mode").style.display = "block";
+  $("mode").textContent = `MOCK · ×${SPEED}${RM ? " · REDUCED MOTION" : ""}`;
+  mockStart = now; mockIdx = 0;
+}
+function mockTick() {
+  const t = (now - mockStart) * SPEED;
+  while (mockIdx < SCRIPT.length && SCRIPT[mockIdx].t <= t) {
+    const s = SCRIPT[mockIdx++];
+    if (s.sys === "offline") setOffline(true, 8);
+    else if (s.sys === "online") setOffline(false);
+    else if (s.sys === "loop") { mockStart = now; mockIdx = 0; mockLoops++; world.tasks = world.deploys = world.failures = world.merges = 0; } // a new day
+    else apply({ ts: new Date().toISOString(), ...s.ev }, false);
+    renderHud();
+  }
+  if (!world.offline) { world.hbMs = ((now - mockHbAt) * 1000) % 2500; if (now - mockHbAt > 2.5) { mockHbAt = now; heartbeatPulse(); } }
+  else world.hbMs = 120_000;
+  if (Math.floor(now * 2) !== Math.floor((now - 1 / 60) * 2)) renderHud();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 8. go
+// ═══════════════════════════════════════════════════════════════════════════
+resize();
+if (MOCK) { mockInit(); renderHud(); }
+else if (token) { poll(); loadMission(); loadReady(); loadHistory(); }
+else { $("tokenbox").style.display = "block"; renderHud(); }
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

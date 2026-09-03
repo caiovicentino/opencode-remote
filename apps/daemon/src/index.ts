@@ -1924,18 +1924,21 @@ function authorized(req: IncomingMessage): boolean {
 // bundler (apps/desktop/scripts/bundle-daemon.mjs) therefore ships
 // dashboard.html next to the bundle and the bundle resolves it via __dirname;
 // source checkouts (ESM, no __dirname) keep the repo-relative URL.
-function dashboardFile(): string | URL {
-  if (typeof __dirname !== "undefined") return join(__dirname, "dashboard.html");
-  return new URL("../../../apps/pilot/dashboard/index.html", import.meta.url);
+function dashboardFile(variant: "index" | "mission-v3" = "index"): string | URL {
+  if (typeof __dirname !== "undefined") return join(__dirname, variant === "index" ? "dashboard.html" : "dashboard-v3.html");
+  return new URL(`../../../apps/pilot/dashboard/${variant}.html`, import.meta.url);
 }
 
 async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
   // GET /dashboard — pilot three.js mission control (static file). P1-057: the
   // apiToken is NEVER embedded in the HTML anymore — the browser proves itself
   // via the token box / ?token= (saved to localStorage) or a session cookie.
-  if (req.method === "GET" && url.pathname === "/dashboard") {
+  // GET /dashboard/v3 — the orbital Mission Control candidate (mission-v3.html),
+  // served side by side with the current one so the operator can compare.
+  if (req.method === "GET" && (url.pathname === "/dashboard" || url.pathname === "/dashboard/v3")) {
     try {
-      const html = readFileSync(dashboardFile(), "utf8").replace("__APITOKEN__", "");
+      const variant = url.pathname === "/dashboard/v3" ? "mission-v3" : "index";
+      const html = readFileSync(dashboardFile(variant), "utf8").replace("__APITOKEN__", "");
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
       res.end(html);
     } catch {
