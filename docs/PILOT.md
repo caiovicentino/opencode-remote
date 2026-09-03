@@ -487,8 +487,11 @@ A linha da task no BACKLOG.md pode carregar a tag opcional `(size: S|M|L)` (defa
    e, se a instância anterior ainda estiver viva, a derruba (SIGTERM → 2s → SIGKILL, log
    `stale pilot instance killed`); o self-reload pós-deploy (P1-034) dispara sempre que o
    HEAD mudou no deploy (`prev !== HEAD` pós-reset, em vez do diff `apps/pilot` contra ele
-   mesmo, sempre vazio) — sai com `process.exit(0)` imediato (log já flushado, sem órfão) e
-   o KeepAlive reassume no código novo; heartbeat + watchdog — 30min sem sinal → exit → KeepAlive ressozinho
+   mesmo, sempre vazio) — e, com slots ocupados, **espera drenar** (P1-104): novos picks
+   são suspensos, o reload só sai com 0 slots rodando (pipeline sempre termina — task
+   timeout), nunca no meio de um builder round; sai com `process.exit(0)` (log já flushado,
+   sem órfão) e o KeepAlive reassume no código novo; heartbeat + watchdog — 30min sem
+   sinal → exit → KeepAlive ressozinho
 4. **Processo stale (P3-101)**: o loop guarda o HEAD do repo de produção capturado no boot
    (`bootHead`) e, num momento 100% ocioso (nenhum slot rodando, nenhum deploy em voo),
    reexecuta `git rev-parse HEAD`; se driftou (`headDrifted`), sai com `exit(0)` e o
@@ -501,7 +504,7 @@ A linha da task no BACKLOG.md pode carregar a tag opcional `(size: S|M|L)` (defa
 ## Stop-loss por task (circuit breaker, P1-014)
 
 Toda falha de pipeline de uma task (builder não terminou, diff vazio, reviewers
-reprovando até `maxReviewRounds`, gatekeeper vermelho, crash) incrementa
+reprovando até `maxReviewRounds`, gatekeeper vermelho) incrementa
 `taskAttempts[id]` em `state.json`. Ao atingir `maxAttemptsPerTask` (pilot.json,
 default 4; task size L tem cap próprio de 6, P1-060) o breaker dispara:
 
@@ -534,6 +537,14 @@ diagnóstico `infraFails` em `state.json` (reset diário), **sem** incrementar
 doctor roda um pass de diagnóstico no log (`audit diagnosis`, com `api=…`), sem
 entrar em modo auditoria — a fila continua rodando e a task é re-agendada pelo
 scheduler no ciclo seguinte.
+
+**Crash de pipeline é infra, não mérito (P1-104)**: uma exceção não tratada no
+meio do pipeline (o catch de `runSlot`) nunca produziu veredito de mérito — não
+queima attempt, não bloqueia a task e não entra no digest de falha. Segue o
+mesmo caminho da P1-074: contador diagnóstico `infraFails` + pass do doctor a
+cada 3 ocorrências. O breaker global de febre continua enxergando cada crash
+como amostra não atribuída (P2-063), então um crash loop sistêmico ainda pausa
+a fila em modo auditoria.
 
 **Checkpoint de pressão de contexto (P1-079)**: o builder resume a MESMA sessão
 opencode entre rounds (cache de contexto), então o total de tokens só cresce. Antes

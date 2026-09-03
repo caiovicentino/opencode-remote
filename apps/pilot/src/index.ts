@@ -27,6 +27,7 @@ import {
   recordBlockEvent,
   recordCycle,
   recordInfraFailure,
+  recordPipelineCrash,
   resultInfraKind,
 } from "./audit";
 import { apiHealthy } from "./runner";
@@ -48,6 +49,11 @@ import { recordLessonImpact } from "./metrics";
 import { runDoctor } from "./doctor";
 
 let deployBusy = false;
+/** P1-104: set while the deploy-time self-reload waits for the running slots
+ * to drain — no new pipeline picks until the process exits onto the new code
+ * (otherwise the eager-fill would instantly refill the slots and the reload
+ * would never fire). */
+let drainNewPicks = false;
 /** Shared runtime counters — mutated by the dispatcher and by slot workers.
  * The single-threaded event loop keeps mutations atomic; the dispatcher only
  * reloads from disk while no slot is running (so in-flight counters are never
@@ -102,6 +108,7 @@ async function main() {
     // --once (eval battery): exactly one pipeline total — only the loop call picks
     if (once && reason === "eager-fill") return;
     if (frozen() || state.auditMode) return;
+    if (drainNewPicks) return; // P1-104: self-reload draining — no new picks
     if (state.tasks + running.size >= cfg.maxTasksPerDay) return;
     try {
       const free = slotNumbers.filter((s) => !running.has(s));
@@ -480,13 +487,15 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
     saveState(state);
   } catch (err) {
     state.failures++;
-    // P2-032: a crashed pipeline is fever evidence too — un-attributed
-    // (P2-063: each crash counts as its own distinct entry, never as the task's)
-    recordCycle(state, false, undefined);
+    // P1-104: a crash never produced a merit verdict — record fever + infra
+    // evidence only. The per-task attempt counter is untouched: a crash loop
+    // burns no attempt and can never block the task; the global fever breaker
+    // still sees each crash as its own distinct entry (P2-063).
+    const wake = recordPipelineCrash(state);
     const detail = String(err).slice(0, 300);
-    await tripCircuitBreaker(taskCfg, state, task, `pipeline crashed: ${detail}`);
     saveState(state);
-    log("error", "pipeline crashed", { task: task.id, slot, err: detail });
+    log("error", "pipeline crashed", { task: task.id, slot, err: detail, infraFails: state.infraFails });
+    if (wake) await runDoctorPass(state);
     await sleep(30_000);
   } finally {
     running.delete(slot);
@@ -529,7 +538,14 @@ function launchDeploy(cfg: PilotConfig, task: Task, sha: string, touchedUi: bool
   // fire-and-forget: the deploy (npm ci/build/soak) runs in the prod repo
   // while builders work in their slot clones — independent file systems
   deployBusy = true;
-  void deploy(cfg, target, { task: task.id, ui: touchedUi })
+  void deploy(cfg, target, { task: task.id, ui: touchedUi }, {
+    // P1-104: the end-of-deploy self-reload waits for the running slots to
+    // drain (and holds new picks meanwhile) instead of exiting mid-pipeline
+    slotsRunning: () => running.size,
+    holdNewPicks: (hold) => {
+      drainNewPicks = hold;
+    },
+  })
     .then((dep) => {
       log("info", "deploy result", { task: task.id, ...dep });
       if (!dep.ok) state.failures++;
