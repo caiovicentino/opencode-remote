@@ -21,7 +21,7 @@ import { join } from "node:path";
 import { writeJsonAtomic } from "../apps/pilot/src/state";
 
 const RELEASES_URL = "https://api.github.com/repos/anomalyco/opencode/releases/latest";
-const FETCH_TIMEOUT_MS = 10_000;
+export const FETCH_TIMEOUT_MS = 10_000;
 const VERSION_TIMEOUT_MS = 5_000;
 const USER_AGENT = "opencode-remote-release-watch";
 const EVENTS_MAX_LINES = 400; // same bound as apps/pilot/src/events.ts
@@ -136,14 +136,10 @@ export async function checkRelease(deps: ReleaseWatchDeps = {}): Promise<Release
     return "state-corrupt";
   }
 
-  // Already recorded → the event was emitted when this release first diverged;
-  // re-emitting on every run would spam the dashboard feed.
-  const recorded = (state.lastOpencodeRelease ?? {}) as { tag?: unknown };
-  if (typeof recorded.tag === "string" && normalizeVersion(recorded.tag) === normalizeVersion(latest.tag)) {
-    return "unchanged";
-  }
-
-  // Fresh runtime → nothing to record; drop a stale divergence record if any.
+  // Fresh runtime → nothing to signal; drop a stale divergence record if any.
+  // This must run BEFORE the recorded-tag short-circuit below: when the local
+  // runtime catches up to the recorded latest tag, the "unchanged" branch would
+  // never be reached and the stale record would keep the chip lit forever.
   if (normalizeVersion(local) === normalizeVersion(latest.tag)) {
     if ("lastOpencodeRelease" in state) {
       delete state.lastOpencodeRelease;
@@ -152,17 +148,33 @@ export async function checkRelease(deps: ReleaseWatchDeps = {}): Promise<Release
     return "fresh";
   }
 
-  // Diverged: record the release + emit the dashboard event (read-only wrt the runtime).
+  // Already recorded → the event was emitted when this release first diverged;
+  // re-emitting on every run would spam the dashboard feed.
+  const recorded = (state.lastOpencodeRelease ?? {}) as { tag?: unknown };
+  if (typeof recorded.tag === "string" && normalizeVersion(recorded.tag) === normalizeVersion(latest.tag)) {
+    return "unchanged";
+  }
+
+  // Diverged: emit the dashboard event FIRST, then record. If the append fails,
+  // the state must NOT say "recorded" — every later run would no-op on the
+  // recorded tag and the signal would be lost permanently. Event-first means
+  // the next run retries the append; a duplicate event (state write failing
+  // after a successful append) is mild feed noise, a dead signal is not.
   const evt = {
     ts: new Date().toISOString(),
     type: "audit",
     detail: `runtime desatualizado: local ${local}, latest ${latest.tag} (published ${latest.publishedAt || "unknown"})`,
   };
-  writeJsonAtomic(stateFile, { ...state, lastOpencodeRelease: { tag: latest.tag, publishedAt: latest.publishedAt } });
   try {
     appendEvent(eventsFile, evt);
   } catch (err) {
-    log(`[release-watch] failed to append event: ${(err as Error).message}`);
+    log(`[release-watch] failed to append event — state left unrecorded, next run retries: ${(err as Error).message}`);
+    return "diverged";
+  }
+  try {
+    writeJsonAtomic(stateFile, { ...state, lastOpencodeRelease: { tag: latest.tag, publishedAt: latest.publishedAt } });
+  } catch (err) {
+    log(`[release-watch] failed to record state: ${(err as Error).message}`);
   }
   log(evt.detail);
   return "diverged";

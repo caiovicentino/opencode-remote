@@ -5,7 +5,7 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { appendEvent, checkRelease, normalizeVersion, readStateRaw } from "./opencode-release-watch";
+import { appendEvent, checkRelease, FETCH_TIMEOUT_MS, normalizeVersion, readStateRaw } from "./opencode-release-watch";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -31,13 +31,15 @@ function apiRelease(tag: string, publishedAt = "2026-09-02T12:00:00Z") {
 function deps(opts: {
   fetchImpl?: typeof fetch;
   runVersion?: () => string | null;
+  stateFile?: string;
+  eventsFile?: string;
   logs?: string[];
 }) {
   return {
     fetchImpl: opts.fetchImpl,
     runVersion: opts.runVersion ?? (() => "1.18.25"),
-    stateFile,
-    eventsFile,
+    stateFile: opts.stateFile ?? stateFile,
+    eventsFile: opts.eventsFile ?? eventsFile,
     log: (msg: string) => opts.logs?.push(msg),
   };
 }
@@ -110,6 +112,24 @@ check("normalizeVersion: garbage is null", normalizeVersion("n/a") === null);
   check("fresh with stale record: no event emitted", eventLines().length === 0);
 }
 
+// --- local caught up to the recorded latest tag ⇒ record cleared (chip unlit) ---
+
+{
+  // the exact regression the round-1 review caught: recorded.tag == latest.tag
+  // short-circuited to "unchanged" BEFORE the fresh-cleanup, so a runtime that
+  // upgraded to the recorded release kept the stale "desatualizado" record
+  reset({ date: "2026-09-03", lastOpencodeRelease: { tag: "v1.18.27", publishedAt: "2026-09-02T12:00:00Z" } });
+  const logs: string[] = [];
+  const outcome = await checkRelease(
+    deps({ fetchImpl: async () => apiRelease("v1.18.27"), runVersion: () => "1.18.27", logs }),
+  );
+  const state = JSON.parse(readFileSync(stateFile, "utf8")) as Record<string, unknown>;
+  check("caught up: outcome is fresh (not unchanged)", outcome === "fresh", outcome);
+  check("caught up: stale record removed", state.lastOpencodeRelease === undefined, JSON.stringify(state));
+  check("caught up: no event emitted", eventLines().length === 0);
+  check("caught up: no log noise", logs.length === 0, JSON.stringify(logs));
+}
+
 // --- rerun with the same diverged tag ⇒ no duplicate event --------------------
 
 {
@@ -125,6 +145,25 @@ check("normalizeVersion: garbage is null", normalizeVersion("n/a") === null);
   check("second run emits no duplicate event", eventLines().length === 1);
   check("second run keeps the recorded tag", state.lastOpencodeRelease?.tag === "v1.18.27");
   check("fetch hits the exact GitHub endpoint", fetchCalls.length === 2 && fetchCalls.every((u) => u === "https://api.github.com/repos/anomalyco/opencode/releases/latest"));
+}
+
+// --- event append fails ⇒ state NOT recorded (signal never dies) ----------------
+
+{
+  reset();
+  const logs: string[] = [];
+  const unwritable = join(root, "no-such-dir", "events.jsonl");
+  const outcome = await checkRelease(
+    deps({ fetchImpl: async () => apiRelease("v1.18.27"), runVersion: () => "1.18.25", eventsFile: unwritable, logs }),
+  );
+  const state = JSON.parse(readFileSync(stateFile, "utf8")) as Record<string, unknown>;
+  check("append failure: outcome is still diverged", outcome === "diverged", outcome);
+  check("append failure: state left unrecorded so the next run retries", state.lastOpencodeRelease === undefined, JSON.stringify(state));
+  check("append failure: warn logged", logs.some((l) => l.includes("failed to append event")), JSON.stringify(logs));
+  const retry = await checkRelease(
+    deps({ fetchImpl: async () => apiRelease("v1.18.27"), runVersion: () => "1.18.25" }),
+  );
+  check("append failure: a healthy rerun retries the full diverged path", retry === "diverged" && eventLines().length === 1);
 }
 
 // --- API down ⇒ warn without crash --------------------------------------------
@@ -202,7 +241,8 @@ check("normalizeVersion: garbage is null", normalizeVersion("n/a") === null);
   const headers = new Headers(capturedInit?.headers);
   check("fetch sets a User-Agent", (headers.get("User-Agent") ?? "").length > 0);
   check("fetch sends no auth (public endpoint, read-only)", headers.get("Authorization") === null);
-  check("fetch carries a 10s abort timeout", capturedInit?.signal instanceof AbortSignal);
+  check("fetch carries an abort timeout", capturedInit?.signal instanceof AbortSignal);
+  check("fetch timeout is the spec's 10s", FETCH_TIMEOUT_MS === 10_000, String(FETCH_TIMEOUT_MS));
 }
 
 // --- appendEvent keeps the feed bounded -------------------------------------------
