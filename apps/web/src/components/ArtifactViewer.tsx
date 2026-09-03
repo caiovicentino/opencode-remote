@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { b64ToBlob, fetchArtifact, fmtBytes, saveBlob, type ArtifactMeta } from "../lib/artifacts";
+import { ArtifactTooLarge, b64ToBlob, fetchArtifact, fmtBytes, saveBlob, type ArtifactMeta } from "../lib/artifacts";
 import { parseMarkdown, type Inline, type MdBlock } from "../lib/md";
 import { parseCsv } from "../lib/csv";
 import type { OcrRequest } from "../lib/files";
@@ -13,6 +13,8 @@ interface ViewState {
   mime?: string;
   size?: number;
   blob?: Blob;
+  /** P2-097: the read was refused by the daemon's size cap (no bytes to save) */
+  tooLarge?: boolean;
 }
 
 const TEXTISH = new Set(["html", "md", "csv", "text"]);
@@ -161,7 +163,12 @@ export default function ArtifactViewer({
         const text = truncated ? full!.slice(0, 500_000) : full;
         setState({ loading: false, url, text, truncated, mime: c.mime, size: c.size, blob });
       } catch (err) {
-        if (alive) setState({ loading: false, error: err instanceof Error ? err.message : String(err) });
+        if (alive)
+          setState({
+            loading: false,
+            error: err instanceof Error ? err.message : String(err),
+            tooLarge: err instanceof ArtifactTooLarge,
+          });
       }
     })();
     return () => {
@@ -224,9 +231,13 @@ export default function ArtifactViewer({
           {meta.name}
           {state.size ? <span className="muted"> · {fmtBytes(state.size)}</span> : null}
         </span>
-        <button className="primary" onClick={save}>
-          Save
-        </button>
+        {/* P2-097: with the content refused there are no bytes to save — an
+           honest header hides the action instead of writing an empty file */}
+        {!state.tooLarge && (
+          <button className="primary" onClick={save}>
+            Save
+          </button>
+        )}
       </div>
       <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: state.text ? 14 : 0 }}>
         {state.loading && <p className="muted">…</p>}
@@ -267,7 +278,15 @@ export default function ArtifactViewer({
               </pre>
             )}
             {meta.kind === "pdf" && (
-              <iframe title={meta.name} src={state.url} style={{ width: "100%", height: "100%", border: "none" }} />
+              <iframe
+                title={meta.name}
+                src={state.url}
+                // P2-097: blob is same-origin — allow-same-origin keeps the
+                // browser's PDF viewer working while scripts/forms/popups stay
+                // blocked (the blob is created here, never attacker-navigable)
+                sandbox="allow-same-origin"
+                style={{ width: "100%", height: "100%", border: "none" }}
+              />
             )}
             {meta.kind === "image" && (
               <img

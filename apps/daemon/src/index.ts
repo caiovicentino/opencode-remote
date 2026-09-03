@@ -378,11 +378,19 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
     return { id: req.id, status: 200, body: { artifacts, titles } };
   }
   // content of a single artifact (base64; the tunnel chunks oversized bodies)
+  // P2-097: reads are capped (MAX_ARTIFACT_BYTES) — too-large answers 413 so
+  // the client previews never OOM the daemon with a multi-MB base64 blob
   if (req.path === "/__ocr/artifact" && req.method === "GET") {
     const sessionId = req.query?.session ?? "";
     const name = req.query?.name ?? "";
-    const buf = readArtifact(sessionId, name);
-    if (!buf) return { id: req.id, status: 404, body: { error: "artifact not found" } };
+    const read = readArtifact(sessionId, name);
+    if (!read.ok) {
+      if (read.reason === "too-large") {
+        return { id: req.id, status: 413, body: { error: "artifact too large", name } };
+      }
+      return { id: req.id, status: 404, body: { error: "artifact not found" } };
+    }
+    const buf = read.data;
     metrics.inc("ocr_artifacts_read_total");
     return {
       id: req.id,
@@ -2291,11 +2299,14 @@ end tell`;
     if (seg[1] === "artifacts" && seg[2] === "file" && req.method === "GET") {
       const session = url.searchParams.get("session") ?? "";
       const name = url.searchParams.get("name") ?? "";
-      const buf = readArtifact(session, name);
-      if (!buf) {
-        send(404, { error: "artifact not found" });
+      const read = readArtifact(session, name);
+      if (!read.ok) {
+        send(read.reason === "too-large" ? 413 : 404, {
+          error: read.reason === "too-large" ? "artifact too large" : "artifact not found",
+        });
         return true;
       }
+      const buf = read.data;
       metrics.inc("ocr_artifacts_read_total");
       // html/svg artifacts are agent-authored active content: never render them
       // in the daemon's origin — sandbox CSP + force download
