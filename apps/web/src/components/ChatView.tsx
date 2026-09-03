@@ -26,6 +26,7 @@ import {
   type PermissionAsk,
 } from "../lib/permissionCards";
 import { getCachedSession, putCachedSession } from "../lib/sessionCache";
+import { appendDraft, getDraft, setDraft } from "../lib/drafts";
 import { initialUnreadState, reduceUnread, sendUnreadToShell } from "../lib/unread";
 import { ArtifactIcon, IconChat, IconDownload, IconLaptop, IconWrench } from "./icons";
 
@@ -222,7 +223,12 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
   const [winStart, setWinStart] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
   const prePagingHeight = useRef(0);
-  const [input, setInput] = useState("");
+  // P1-088 invariant: `input` is a per-session draft (lib/drafts). The ONLY
+  // allowed writers are the textarea onChange, send(), micUp(), processVideo()
+  // — via the updateInput/appendToInput wrappers below — and the [sessionId]
+  // restore effect. No stream/event effect may ever write the user's input
+  // (rg 'setInput\(' ChatView.tsx must show only those sites).
+  const [input, setInput] = useState(() => getDraft(sessionId));
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
   // text of the last failed send, so the error banner can offer one-tap retry
@@ -420,6 +426,24 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
       alive = false;
     };
   }, [sessionId]);
+
+  // P1-088: restore this session's draft on navigation. Declared AFTER the
+  // sessionIdRef sync effect above so it is the last writer on a switch.
+  useEffect(() => {
+    setInput(getDraft(sessionId));
+  }, [sessionId]);
+
+  // P1-088: every composer write goes through these wrappers so the text is
+  // always recorded as the ORIGIN session's draft; the visible input updates
+  // only while the origin session is still the one on screen.
+  function updateInput(value: string) {
+    setDraft(sessionIdRef.current, value);
+    setInput(value);
+  }
+  function appendToInput(text: string, sid: string) {
+    const next = appendDraft(sid, text);
+    if (sid === sessionIdRef.current) setInput(next);
+  }
 
   useEffect(() => {
     rolesRef.current = {};
@@ -1146,7 +1170,9 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
     setAtBottom(true);
     setSending(true);
     setError("");
-    setInput("");
+    // P1-088: clears ONLY the sending session's draft (it is the current one
+    // at click time) — a half-typed draft in another session is never wiped.
+    updateInput("");
     setBubbles((b) => [
       ...b,
       {
@@ -1365,13 +1391,16 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
   }
 
   async function processVideo(file: File, start: number, end: number) {
+    // P1-088: pin the origin session — the async result must land in the
+    // session's draft where the action started, never in another conversation
+    const sid = sessionId;
     setUploading(true);
     setError("");
     try {
       const audio = await extractAudio(file, start, end);
       if (audio) {
         const text = await transcribe(audio);
-        if (text) setInput((prev) => (prev ? `${prev} ${text}` : text));
+        if (text) appendToInput(text, sid);
       }
       const frames = await extractFrames(file, start, end);
       for (const f of frames) {
@@ -1388,7 +1417,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
       const note = trimmed
         ? `[trim ${start.toFixed(1)}-${end.toFixed(1)}s — full video saved at ${path}; use ffmpeg to cut or inspect]`
         : `[full video saved at ${path} — use ffmpeg to inspect frame by frame]`;
-      setInput((prev) => `${prev ? `${prev} ` : ""}${note}`);
+      appendToInput(note, sid);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -1461,6 +1490,8 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
   }
 
   async function micUp() {
+    // P1-088: pin the origin session for the async transcription append
+    const sid = sessionId;
     try {
       setRecState("busy");
       const blob = await recorder.current!.stop();
@@ -1468,7 +1499,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
       if (getVoiceSettings().autoSend && text.trim()) {
         await send(text);
       } else if (text) {
-        setInput((prev) => (prev ? `${prev} ${text}` : text));
+        appendToInput(text, sid);
       }
       setRecState("idle");
     } catch (err) {
@@ -2088,7 +2119,7 @@ export default function ChatView({ sessionId, events, connStatus, voice, request
             rows={1}
             placeholder={recState === "rec" ? t("recording") : t("messagePlaceholder")}
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => updateInput(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();

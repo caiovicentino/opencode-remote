@@ -69,6 +69,9 @@ private. That is the product: **local power, remote control, zero trust**.
   task id anywhere in the title (the heuristic cannot tell agent naming
   intent from yours), so one of your own conversations that mentions e.g.
   `P2-049` in its title is grouped as well — rename it to bring it back
+- **Per-conversation drafts (P1-088)** — the composer keeps one draft per
+  conversation: switch sessions mid-typing and each chat holds its own text;
+  sending clears only the conversation you sent from
 - **Routines** — real cron: daily, specific weekdays, or interval loop
 - **Secure by construction** — passkey (WebAuthn) gate, ECDH P-256 + AES-256-GCM,
   replay protection, device allowlist, audit log, biometric unlock
