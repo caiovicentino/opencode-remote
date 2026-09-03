@@ -110,9 +110,11 @@ const cliEnv = { ...process.env, OCR_DESKTOP_SESSION: session };
 // auto-open beat (real watcher + three idle round-trips), growing it to 120s;
 // P2-091 added the artifact-navigation beats (card→split, list→split, title
 // headers), growing it to 150s; P2-092 added the Browser-pane fill beat
-// (colored test page + maximize-toggle measurement), growing it to 165s.
+// (colored test page + maximize-toggle measurement), growing it to 165s;
+// P1-093 added the AutoMode-failure beat (real Settings toggle + permission
+// ask the fake rejects + retry verification), growing it to 180s.
 const startedAt = Date.now();
-const DEADLINE_MS = 165_000;
+const DEADLINE_MS = 180_000;
 const shotPath = join(tmpdir(), "ocr-desktop-flow", `flow-${process.pid}.png`);
 // P1-051 round 2: session state (socket, token, log) lives in a 0700 dir.
 const logFile = join(tmpdir(), `ocr-desktop-${session}`, "keeper.log");
@@ -1107,6 +1109,7 @@ try {
           "}));",
           "const hits = [];",
           "const sse = new Set();",
+          "let armPerm = false;",
           "const srv = http.createServer((req, res) => {",
           "  const u = new URL(req.url, 'http://127.0.0.1');",
           "  const json = (b) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(b)); };",
@@ -1130,10 +1133,13 @@ try {
           "    });",
           "    return;",
           "  }",
-          "  if (u.pathname === '/session') return json([{ id: 'ses-reentry-check', title: 'Reentry check' }, { id: 'ses-draft-a', title: 'Draft A' }, { id: 'ses-artifact-auto', title: 'Artifact auto' }]);",
-          "  if (u.pathname === '/session/ses-reentry-check' || u.pathname === '/session/ses-draft-a' || u.pathname === '/session/ses-artifact-auto') return json({ id: u.pathname.split('/')[2], title: 'P1-089' });",
+          "  if (u.pathname === '/session') return json([{ id: 'ses-reentry-check', title: 'Reentry check' }, { id: 'ses-draft-a', title: 'Draft A' }, { id: 'ses-artifact-auto', title: 'Artifact auto' }, { id: 'ses-autofail', title: 'Auto fail' }]);",
+          "  if (u.pathname === '/session/ses-reentry-check' || u.pathname === '/session/ses-draft-a' || u.pathname === '/session/ses-artifact-auto' || u.pathname === '/session/ses-autofail') return json({ id: u.pathname.split('/')[2], title: 'P1-089' });",
+          "  if (u.pathname === '/session/ses-autofail/permissions/perm-fail') { res.writeHead(500); res.end('auto-approve always rejected'); return; }",
           "  if (/^\\/session\\/[^/]+\\/message$/.test(u.pathname)) return req.method === 'POST' ? json({ id: 'msg-fake' }) : json(ROWS);",
-          "  if (u.pathname === '/permission' || u.pathname === '/question') return json([]);",
+          "  if (u.pathname === '/__arm-perm') { armPerm = req.method === 'POST'; return json({ armed: armPerm }); }",
+          "  if (u.pathname === '/permission') return json(armPerm ? [{ id: 'perm-fail', sessionID: 'ses-autofail', permission: 'bash' }] : []);",
+          "  if (u.pathname === '/question') return json([]);",
           "  if (u.pathname === '/provider') return json({ all: [] });",
           "  res.writeHead(404).end();",
           "});",
@@ -1513,9 +1519,91 @@ try {
                   );
                 }
               }
-              // narrow viewport keeps the list on the full-screen overlay path
-              run("P2-091: 390 evidence shot", ["shot", join(shotsDir, "P2-091-nav-390.png"), "390", "844"], 15_000, localEnv2);
+                // narrow viewport keeps the list on the full-screen overlay path
+                run("P2-091: 390 evidence shot", ["shot", join(shotsDir, "P2-091-nav-390.png"), "390", "844"], 15_000, localEnv2);
             }
+          }
+
+          // --- P1-093: AutoMode failure is never silent -------------------------
+          // With AutoMode on, the daemon answers permission asks on the user's
+          // behalf; when opencode rejects the answer the ask used to stall
+          // invisibly. The beat: enable AutoMode through the real Settings UI,
+          // ask for a permission the fake backend always rejects, and require
+          // (1) the red composer note, (2) an actionable card despite AutoMode,
+          // (3) exactly 2 POSTs (one retry, no loop) on the fake backend.
+          phase("P1-093: auto-approve failure surfaces an actionable card");
+          const FAIL_SES = "ses-autofail";
+          await fetch(`${fakeUrl}/__arm-perm`, { method: "POST" });
+          run("P1-093: resize to desktop width", ["shot", join(shotsDir, "P1-093-resize.png"), "1440", "900"], 15_000, localEnv2);
+          await waitProbe("P1-093: chat remounted at 1440px", "!!document.querySelector('.messages')", (v) => /true/.test(v), localEnv2);
+          run("P1-093: open Settings pane", ["menu-click", "go-pane-settings"], 15_000, localEnv2);
+          // the pane's mount-time settings GET must settle BEFORE the toggle —
+          // otherwise its resolve re-renders over the click (eaten onChange,
+          // reverted checkbox) and the PATCH never sticks
+          await waitProbe(
+            "P1-093: settings loaded (footer shows the daemon version)",
+            "document.body.innerText",
+            (v) => /daemon \d/.test(v.trim()),
+            localEnv2,
+          );
+          run("P1-093: toggle AutoMode on (real UI)", ["click", "input.automode-toggle"], 15_000, localEnv2);
+          // ipc results are JSON-encoded — booleans come back bare
+          await waitProbe("P1-093: AutoMode checkbox is checked", "document.querySelector('input.automode-toggle')?.checked", (v) => /true/.test(v), localEnv2);
+          // daemon-side proof: the settings PATCH must have been audited
+          let auditTail = "";
+          let patchAudited = false;
+          for (let i = 0; i < 10 && !patchAudited; i++) {
+            try {
+              auditTail = readFileSync(join(daemonHome2, ".opencode-remote", "audit.log"), "utf8").split("\n").filter(Boolean).slice(-6).join("\n");
+              patchAudited = auditTail.includes("settings.updated");
+            } catch {}
+            if (!patchAudited) await new Promise((r) => setTimeout(r, 500));
+          }
+          check("P1-093: settings PATCH reached the daemon (audited)", patchAudited, auditTail);
+          run("P1-093: open the failing session", ["ipc", `location.hash = '#/session/${FAIL_SES}'`], 15_000, localEnv2);
+          await waitProbe("P1-093: session chat rendered", "!!document.querySelector('.messages')", (v) => /true/.test(v), localEnv2);
+          // the passive badge renders only when the client's autoMode (read
+          // from the daemon) is true — proof the toggle stuck end-to-end
+          await waitProbe(
+            "P1-093: AutoMode badge visible (daemon echoed the toggle)",
+            "document.body.innerText",
+            (v) => v.includes("AutoMode —"),
+            localEnv2,
+          );
+          await fetch(`${fakeUrl}/__emit`, {
+            method: "POST",
+            body: JSON.stringify([
+              { type: "permission.updated", properties: { sessionID: FAIL_SES, permissionID: "perm-fail", type: "bash" } },
+            ]),
+          });
+          // the note text is i18n'd (the shell may boot in any language) —
+          // assert existence, the red color from --danger and the action label
+          const noteProbe = `(() => { const el = document.querySelector('.auto-fail-note'); if (!el) return 'none'; const [r, g, b] = (getComputedStyle(el).color.match(/\\d+/g) ?? []).map(Number); return r + '|' + g + '|' + b + '|' + (el.textContent ?? ''); })()`;
+          await waitProbe(
+            "P1-093: red auto-fail note visible in the composer",
+            noteProbe,
+            (v) => {
+              let s = v.trim();
+              try {
+                s = JSON.parse(s) as string; // ipc results are JSON-encoded
+              } catch {}
+              const [r, g, b, ...rest] = s.split("|");
+              return Number(r) > 100 && Number(g) < 160 && Number(b) < 160 && rest.join("|").includes("bash");
+            },
+            localEnv2,
+          );
+          const cardUp = await waitProbe(
+            "P1-093: actionable card rendered despite AutoMode",
+            "!!document.querySelector('.approval')",
+            (v) => /true/.test(v),
+            localEnv2,
+          );
+          if (cardUp) {
+            const denied = await fetch(`${fakeUrl}/__hits`).then((r) => r.json() as Promise<{ method: string; path: string }[]>).catch(() => [] as { method: string; path: string }[]);
+            const posts = denied.filter((h) => h.method === "POST" && h.path === `/session/${FAIL_SES}/permissions/perm-fail`).length;
+            check("P1-093: exactly 2 POSTs on the fake (retry 1x, no loop)", posts === 2, `posts=${posts}`);
+            run("P1-093: evidence shot", ["shot", join(shotsDir, "P1-093-autofail-1440.png"), "1440", "900"], 15_000, localEnv2);
+            run("P1-093: 390 evidence shot", ["shot", join(shotsDir, "P1-093-autofail-390.png"), "390", "844"], 15_000, localEnv2);
           }
         } finally {
           if (localBooted) spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: localEnv2 });

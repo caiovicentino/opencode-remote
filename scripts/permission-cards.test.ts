@@ -32,6 +32,14 @@ function autoEvent(id: string, permissionID: string) {
   };
 }
 
+function autoFailedEvent(id: string, permissionID: string, props: Record<string, unknown> = {}) {
+  return {
+    id,
+    type: "ocr.permission.autoFailed",
+    properties: { sessionID: "s1", permissionID, action: "bash", ...props },
+  };
+}
+
 // --- collectPermissionAsks: dedupe --------------------------------------------
 const tenDupes = Array.from({ length: 10 }, (_, i) => askEvent(`e${i}`, "perm-1"));
 check(
@@ -120,6 +128,37 @@ check(
 // --- 404 mapping ----------------------------------------------------------------
 check("404: mapped to already-resolved", isPermissionResolvedElsewhere(404) === true);
 check("404: other statuses keep the raw error path", !isPermissionResolvedElsewhere(500) && !isPermissionResolvedElsewhere(403));
+
+// --- P1-093: auto-approve failure surfaces a manual card ------------------------
+const failCollected = collectPermissionAsks([askEvent("e0", "p1"), autoFailedEvent("e1", "p1")], "s1");
+const failBoard = reconcilePermissionCards(failCollected, [ask], new Set(), true);
+check(
+  "autoFailed: autoMode + pending + recorded failure → 1 actionable flagged autoFailed",
+  failBoard.actionable.length === 1 && failBoard.actionable[0]?.autoFailed === true,
+);
+check(
+  "autoFailed: AutoMode suppression unchanged for asks without a recorded failure",
+  reconcilePermissionCards(collected, [ask], new Set(), true).actionable.length === 0,
+);
+const failThenAuto = collectPermissionAsks(
+  [askEvent("e0", "p1"), autoFailedEvent("e1", "p1"), autoEvent("e2", "p1")],
+  "s1",
+);
+const recoveredBoard = reconcilePermissionCards(failThenAuto, [], new Set(), true);
+check(
+  "autoFailed: later ocr.permission.auto wins → resolved 'auto', not actionable",
+  recoveredBoard.actionable.length === 0 &&
+    recoveredBoard.resolved.length === 1 &&
+    recoveredBoard.resolved[0]?.origin === "auto",
+);
+const otherSessionFail = collectPermissionAsks(
+  [askEvent("e0", "p1"), autoFailedEvent("e1", "p1", { sessionID: "s2" })],
+  "s1",
+);
+check(
+  "autoFailed: failure from another session is ignored (suppression intact)",
+  reconcilePermissionCards(otherSessionFail, [ask], new Set(), true).actionable.length === 0,
+);
 
 console.log(failures === 0 ? "ALL OK" : `${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);

@@ -153,7 +153,7 @@ Desktop app: para interagir com o app Electron real use o harness
 `tools/desktop.mjs` (`open/see/click/type/shot/ipc/close`, mesma DX do
 browse.mjs) — launch hermético, sem daemon de produção. Quando o diff toca
 `apps/desktop/` ou `apps/web/`, o gate roda `npm run test:desktop-flow` (fluxo
-de interação real, <165s — P1-070 adicionou o bloco "local boot" com daemon
+de interação real, <180s — P1-070 adicionou o bloco "local boot" com daemon
 hermético real; P1-080 adicionou o repro de overflow do chat: bolha com diff
 longo em janela estreita, nada pode sair do viewport; P1-089 adicionou o beat
 queue→flush→reentrada com segundo boot hermético contra um fake de opencode:

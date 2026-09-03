@@ -1261,50 +1261,67 @@ const autoApproved = new Map<string, number>();
 /**
  * AutoMode: answer an opencode permission ask with "once" on the user's behalf,
  * tell connected clients (synthetic event so the PWA clears its ask UI) and
- * optionally push a notification. Best-effort: failures just keep the ask
- * pending so the user can still approve manually.
+ * optionally push a notification. Two quick attempts ride out transient
+ * hiccups; a final failure is audited and broadcast as
+ * `ocr.permission.autoFailed` so clients surface the ask as a manual card —
+ * AutoMode must never fail in silence (P1-093).
  */
 async function autoApprove(sessionID: string, permissionID: string, action: string) {
   const now = Date.now();
   if (now - (autoApproved.get(permissionID) ?? 0) < 120_000) return;
   autoApproved.set(permissionID, now);
   for (const [k, v] of autoApproved) if (now - v > 600_000) autoApproved.delete(k);
-  try {
-    const res = await fetch(
-      new URL(`/session/${sessionID}/permissions/${permissionID}`, OPENCODE_URL),
-      {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          ...(authHeader ? { authorization: authHeader } : {}),
+  let lastError = "";
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    // P1-093: keep the gate fast — one retry after ~500ms, nothing longer
+    if (attempt > 1) await new Promise((r) => setTimeout(r, 500));
+    try {
+      const res = await fetch(
+        new URL(`/session/${sessionID}/permissions/${permissionID}`, OPENCODE_URL),
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            ...(authHeader ? { authorization: authHeader } : {}),
+          },
+          body: JSON.stringify({ response: "once" }),
         },
-        body: JSON.stringify({ response: "once" }),
-      },
-    );
-    if (!res.ok) {
-      autoApproved.delete(permissionID);
-      log("warn", "auto-approve rejected by opencode", { status: res.status, action });
-      return;
-    }
-    log("info", "permission auto-approved", { sessionID, permissionID, action });
-    audit("permission.auto", { sessionID, permissionID, action });
-    broadcast({
-      type: "event",
-      event: {
-        id: randomUUID(),
-        type: "ocr.permission.auto",
-        properties: { sessionID, permissionID, action },
-      },
-    });
-    if (appSettings.notify.permission) {
-      void pushToSubscribers("Auto-approved", `${action} on ${machineName} (AutoMode)`, {
-        url: `#/session/${sessionID}`,
+      );
+      if (!res.ok) {
+        lastError = `HTTP ${res.status}`;
+        continue;
+      }
+      log("info", "permission auto-approved", { sessionID, permissionID, action, attempt });
+      audit("permission.auto", { sessionID, permissionID, action });
+      broadcast({
+        type: "event",
+        event: {
+          id: randomUUID(),
+          type: "ocr.permission.auto",
+          properties: { sessionID, permissionID, action },
+        },
       });
+      if (appSettings.notify.permission) {
+        void pushToSubscribers("Auto-approved", `${action} on ${machineName} (AutoMode)`, {
+          url: `#/session/${sessionID}`,
+        });
+      }
+      return;
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
     }
-  } catch (err) {
-    autoApproved.delete(permissionID);
-    log("warn", "auto-approve error", { err: err instanceof Error ? err.message : String(err) });
   }
+  autoApproved.delete(permissionID);
+  log("warn", "auto-approve failed after retry", { sessionID, permissionID, action, error: lastError });
+  audit("permission.auto.failed", { sessionID, permissionID, action, error: lastError });
+  broadcast({
+    type: "event",
+    event: {
+      id: randomUUID(),
+      type: "ocr.permission.autoFailed",
+      properties: { sessionID, permissionID, action, error: lastError },
+    },
+  });
 }
 
 async function forwardEvents() {

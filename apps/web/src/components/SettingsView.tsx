@@ -391,6 +391,7 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
           <label style={{ display: "block" }}>
             <input
               type="checkbox"
+              className="automode-toggle"
               checked={autoMode}
               onChange={(e) => {
                 setAutoMode(e.target.checked);
