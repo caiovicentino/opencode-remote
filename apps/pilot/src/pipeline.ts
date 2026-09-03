@@ -690,19 +690,6 @@ function gateFailFile(taskId: string): string | null {
   return join(homedir(), ".opencode-remote/pilot/gate-fail", `${taskId}.json`);
 }
 
-/**
- * P1-006: the gate battery (reconnect/integration) binds fixed eval ports and
- * the merge pushes to main — run the whole gatekeeper exclusively across
- * concurrent slots. Builders/reviewers stay parallel; only the gate queues.
- */
-let gateLock: Promise<void> = Promise.resolve();
-function runGateExclusive<T>(fn: () => Promise<T>): Promise<T> {
-  const prev = gateLock;
-  let release!: () => void;
-  gateLock = new Promise<void>((r) => (release = r));
-  return prev.then(fn).finally(release);
-}
-
 /** Sandbox permissions: agents in the clone get full tool access. Must exist for
  * EVERY headless run (builder, reviewers, strategist) or opencode aborts on the
  * first permission-requiring action — `git clean` removes it after each sync. */
@@ -994,8 +981,7 @@ export interface EvidenceResult {
  * bounds their mtime, so a stale PNG from an earlier task/round cannot pass
  * as this round's UI evidence. `run` is injectable for the eval battery; the
  * gatekeeper injects a caching runner so re-executed commands double as the
- * gate battery's typecheck/build/unit results (no double execution while
- * holding the cross-slot gate lock).
+ * gate battery's typecheck/build/unit results (no double execution).
  */
 export function verifyEvidence(
   ws: string,
@@ -1435,8 +1421,11 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
     emit("phase", { task: t.id, phase: "reviewers-done", ok: gateSecOk && gateQualOk });
     if (gateSecOk && gateQualOk) {
       emit("phase", { task: t.id, phase: "gatekeeper" });
-      // serialized across slots: fixed battery ports + main push (P1-006)
-      merged = await runGateExclusive(() => gatekeeper(cfg, ws, t, state, build.output, startedAtMs, rerunResults));
+      // P1-099: gates run in parallel across slots — the battery is hermetic
+      // (ephemeral ports since P1-081, unique OCR_DESKTOP_SESSION per run) and
+      // concurrent main pushes are safe: the PR path is serialized server-side
+      // by GitHub, the local fallback re-fetches and retries on non-fast-forward.
+      merged = await gatekeeper(cfg, ws, t, state, build.output, startedAtMs, rerunResults);
       emit("phase", { task: t.id, phase: "merge", ok: merged });
       if (merged) {
         // gate passed — the per-task carryover file has no reason to linger
@@ -1447,8 +1436,8 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
           } catch {}
         }
         // P1-007 SCRIBE: distill lessons from the merged diff while the
-        // workspace still sits on updated main — outside the gate lock (LLM
-        // latency must not block other slots) and before the pipeline returns
+        // workspace still sits on updated main — a separate agent pass (LLM
+        // latency must not block other slots) before the pipeline returns
         // (the next pipeline resets this worktree, which would race the agent).
         try {
           await runScribe(ws, t, diff, findings, trackSession);
@@ -1724,10 +1713,9 @@ async function gatekeeper(
   // (needsUiEvidence) — a non-UI-tagged task whose diff touches apps/web or
   // apps/desktop is instructed to bring shots and the gate enforces it.
   // Round 2: re-run results are cached — the typecheck/build/unit steps below
-  // reuse them instead of re-executing the same commands while holding the
-  // cross-slot gate lock (P1-006). P2-040: the cache is the round's shared
-  // map, so a command the preflight already ran in this workspace is not
-  // re-executed here either.
+  // reuse them instead of re-executing the same commands (P1-006). P2-040: the
+  // cache is the round's shared map, so a command the preflight already ran in
+  // this workspace is not re-executed here either.
   const requireShots = needsUiEvidence(t.area, renderTouched);
   const evidence = verifyEvidence(ws, builderOutput, requireShots, startedAtMs, (cmd, cwd) =>
     cachedExec(rerunResults, cmd, cwd, { timeoutMin: 20 }),

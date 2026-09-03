@@ -1124,6 +1124,72 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
   }
 }
 
+// --- P1-099 eager-fill: every pipeline end backfills ALL free slots ------------
+{
+  const eagerQueue = parseBacklog(
+    [
+      "## Ready",
+      "",
+      "- [ ] (E-001) [P1] UI one — spec: x (area: ui)",
+      "- [ ] (E-002) [P1] Daemon one — spec: x (area: daemon)",
+      "- [ ] (E-003) [P1] UI two — spec: x (area: ui)",
+    ].join("\n"),
+  );
+  const maxTasks = 3; // budget equals the queue: only scheduling order matters
+  let tasksDone = 0;
+  let areaViolations = 0;
+  let eagerStarts = 0;
+  const running = new Map<number, { task: Task; done: Promise<void> }>();
+  const doneIds = new Set<string>();
+  // mirrors apps/pilot/src/index.ts fillFreeSlots: synchronous pick over the
+  // fresh queue, called from the main loop AND from every worker's finally.
+  const fillFreeSlots = (queue: Task[], reason: "loop" | "eager-fill") => {
+    const free = [1, 2].filter((s) => !running.has(s));
+    if (free.length === 0) return;
+    const busy = new Set([...running.values()].map((r) => areaKey(r.task)));
+    const remaining = maxTasks - tasksDone - running.size;
+    for (const t of pickBatch(queue, free.length, busy, remaining)) {
+      const slot = free.find((s) => !running.has(s))!;
+      if ([...running.values()].some((r) => areaKey(r.task) === areaKey(t))) areaViolations++;
+      if (reason === "eager-fill") eagerStarts++;
+      const done = (async () => {
+        // workers finish out of order, like real pipelines (slot 1 first)
+        await new Promise((resolve) => setTimeout(resolve, 5 + ((slot * 4) % 11)));
+        tasksDone++;
+        doneIds.add(t.id);
+        running.delete(slot);
+        // P1-099 finally hook: refill ALL free slots the moment a slot frees
+        fillFreeSlots(queue.filter((x) => !doneIds.has(x.id)), "eager-fill");
+      })();
+      running.set(slot, { task: t, done });
+    }
+  };
+  fillFreeSlots(eagerQueue, "loop"); // main-loop fill
+  check("P1-099 eager-fill: both slots fill when the 3 tasks span >= 2 area keys", running.size === 2);
+  while (running.size > 0) {
+    await Promise.all([...running.values()].map((r) => r.done));
+  }
+  check("P1-099 eager-fill: a pipeline end immediately starts the next schedulable task", eagerStarts >= 1);
+  check("P1-099 eager-fill: every queued task scheduled exactly once", doneIds.size === 3);
+  check("P1-099 eager-fill: same-area tasks never run concurrently", areaViolations === 0);
+
+  // 1 slot busy on ui: the freed slot picks the next DISTINCT-key task and the
+  // same-key task stays queued (P1-006 area rule preserved under eager-fill)
+  check(
+    "P1-099 eager-fill: freed slot picks a distinct-key task, same-key stays queued",
+    pickBatch([eagerQueue[1]!, eagerQueue[2]!], 1, new Set([areaKey(eagerQueue[0]!)]), 3)
+      .map((t) => t.id)
+      .join(",") === "E-002",
+  );
+  // all-same-area queue → nothing extra picked on the eager fill
+  check(
+    "P1-099 eager-fill: all-same-area queue picks nothing extra",
+    pickBatch([eagerQueue[0]!, eagerQueue[2]!], 1, new Set([areaKey(eagerQueue[0]!)]), 3).length === 0,
+  );
+  // budget exhausted → nothing picked, even with both slots free
+  check("P1-099 eager-fill: budget 0 picks nothing", pickBatch(eagerQueue, 2, new Set(), 0).length === 0);
+}
+
 // --- artifacts (P1-010) -------------------------------------------------------
 check("validSegment accepts ids/names", validSegment("ses_abc123") && validSegment("report-1.html"));
 check("validSegment rejects traversal", !validSegment("..") && !validSegment("../etc") && !validSegment("a/b"));

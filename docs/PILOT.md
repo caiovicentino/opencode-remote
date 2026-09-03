@@ -142,7 +142,7 @@ mergeadas pelo workflow sem intervenção humana.
 0. **Guard de SHA verificado (P2-058)**: o `deploy()` só aceita SHA que o
    gatekeeper gravou em `~/.opencode-remote/pilot/verified-merges.jsonl` no
    momento do merge (squash de PR ou merge local `--no-ff`, ambos pós-gate
-   verde, gravados por código determinístico sob a gate lock). Commit direto em
+   verde, gravados por código determinístico — nunca por um agente). Commit direto em
    main — bookkeeping (mark-done, scribe, refill do strategist) ou hostil — é
    pulado pela caminhada first-parent em `origin/main` e **nunca dispara
    deploy** (caminho da fábula de segurança #2/#3). Sem nenhum SHA verificado
@@ -301,9 +301,20 @@ A linha da task no BACKLOG.md pode carregar a tag opcional `(size: S|M|L)` (defa
   `(area: ui|daemon|desktop|infra|relay)`. A ui = apps/web, daemon = apps/daemon,
   desktop = apps/desktop, infra = build/scripts/deploy/pilot, relay = apps/relay.
   Tag fora desse vocabulário vira serial (sem área).
-- **Gate serializado entre slots**: a bateria de eval usa portas fixas
-  (reconnect/integration) e o merge empurra pra main — o gatekeeper roda em
-  exclusão mútua; builders/reviewers continuam paralelos.
+- **Eager-fill dos slots (P1-099)**: o fim de cada pipeline (hook `finally` do
+  slot) preenche **imediatamente todos** os slots livres — o recém-liberado
+  **e** qualquer outro ocioso — lendo a fila fresca de `origin/main`; o loop
+  principal segue agendando no ciclo de 5s. O log diferencia a origem:
+  `pipeline start` com `reason:"loop"` (ciclo do dispatcher) ou
+  `reason:"eager-fill"` (fim de pipeline). Assim, com Ready ≥ 2 tasks de áreas
+  distintas, os dois slots ficam quentes em vez de alternar no slot 1.
+- **Gate paralelo entre slots (P1-099)**: desde a P1-081 a bateria de eval é
+  hermética — portas efêmeras pedidas ao kernel, `OCR_DESKTOP_SESSION` único
+  por run — então o gatekeeper roda **concorrente** nos slots (sem lock
+  global). Merge concorrente em main é seguro: o caminho de PR é serializado
+  pelo servidor GitHub e o fallback local refaz `fetch` + retry em
+  non-fast-forward. `recordVerifiedMerge` é síncrono, portanto atômico no
+  event loop.
 - **Arquivos de diagnóstico por task**: `pilot/gate-fail/<ID>.json` (carryover
   de falha do gate) e `pilot/builder-<ID>.log` (output do builder) — sem
   last-writer-wins entre slots.
@@ -973,8 +984,8 @@ main (bookkeeping do pipeline ou, pior, um commit hostil) virava deploy. Agora:
 
 - **Merge verificado**: o gatekeeper grava o SHA do merge (squash de PR ou
   merge local `--no-ff`, sempre pós-gate verde) em
-  `~/.opencode-remote/pilot/verified-merges.jsonl` — código determinístico sob
-  a gate lock, nunca um agente. Round 2: a gravação só acontece quando o HEAD
+  `~/.opencode-remote/pilot/verified-merges.jsonl` — código determinístico
+  (nunca um agente). Round 2: a gravação só acontece quando o HEAD
   de main **andou** desde a ponta pré-merge **e** carrega a identidade de
   merge da task (subject `pilot(<id>): ...` no squash, ou o commit de merge
   `--no-ff` do branch no fallback) — merge enfileirado pelo `--auto` não

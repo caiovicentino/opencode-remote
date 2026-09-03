@@ -11,8 +11,8 @@
  * good verified sha until a newer merge supersedes it.
  *
  * The state list (instead of a gh api lookup) keeps the guard deterministic,
- * offline and eval-testable; it is written by deterministic code under the
- * cross-slot gate lock, never by an agent.
+ * offline and eval-testable; it is written by deterministic code (the
+ * gatekeeper), never by an agent.
  *
  * Pure module (fs only, no exec) so the eval battery can pin every rule.
  */
@@ -120,8 +120,8 @@ function writeAll(file: string, content: string): boolean {
 /**
  * Record one gate-verified merge sha. Idempotent per sha; the rewrite keeps
  * only the newest MAX_VERIFIED_ENTRIES so the file never grows unbounded.
- * The caller (gatekeeper) runs under the cross-slot gate lock, so appends
- * never interleave.
+ * Called by the gatekeeper (one call per task merge; P1-099 lets two slots'
+ * gatekeepers overlap, but each task records its own distinct sha).
  */
 export function recordVerifiedMerge(file: string, sha: string, task: string, at: string): boolean {
   if (!SHA_RE.test(sha)) return false;
