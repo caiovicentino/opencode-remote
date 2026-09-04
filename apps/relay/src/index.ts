@@ -6,7 +6,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 // (deploy/relay/Dockerfile + tsconfig.build.json) — tsx resolves them too
 import { healthzHandler } from "./healthz.js";
 import { TokenBucket } from "./ratelimit.js";
-import { IpCap, normalizeIp } from "./ipcap.js";
+import { IpCap, clientIp } from "./ipcap.js";
 import { isValidRoomId, MAX_ROOMS_PER_SOCKET } from "./roomid.js";
 import { createShutdown, stopAccepting } from "./shutdown.js";
 import { decideStale } from "./liveness.js";
@@ -40,6 +40,12 @@ const RATE_LIMIT_CLOSE = 4029; // custom 4xxx: "too many frames"
 // other peer admission
 const MAX_PER_IP = envNum("RELAY_MAX_PER_IP", 20);
 const ipCap = new IpCap(MAX_PER_IP);
+// x-forwarded-for is client-forgeable, so it is only honored when the
+// operator declares how many trusted proxy layers sit in front of the relay
+// (0 = direct exposure, header ignored). Behind provider TLS without this,
+// every connection would share the LB's IP and RELAY_MAX_PER_IP would
+// collapse into a global admission cap (P2-128).
+const TRUST_PROXY_HOPS = envNum("RELAY_TRUST_PROXY_HOPS", 0);
 // ws-level liveness sweep (P2-067): every interval the relay pings all
 // sockets and terminates the ones silent for more than interval+grace
 // (grace == interval), so a peer that vanished without a close frame
@@ -200,6 +206,7 @@ server.listen(PORT, () => {
     maxFrame: MAX_FRAME,
     maxPerRoom: MAX_PER_ROOM,
     maxPerIp: MAX_PER_IP,
+    trustProxyHops: TRUST_PROXY_HOPS,
     ratePerMin: RATE_PER_MIN,
     rateBurst: RATE_BURST,
     pingIntervalS: PING_INTERVAL_S,
@@ -222,10 +229,16 @@ wss.on("connection", (socket: Socket, req) => {
     return;
   }
   // admission control: the per-IP cap applies before any room join.
-  // Normalize once here (P2-026) — mapped IPv4 unmasks, IPv6 aggregates by
-  // /64 — and stash the key on the socket so admit() and release() always
-  // act on the same bucket.
-  const ip = normalizeIp(req.socket.remoteAddress ?? "unknown");
+  // The key is proxy-aware (P2-128): remoteAddress normalized once (P2-026),
+  // or the trusted x-forwarded-for hop when RELAY_TRUST_PROXY_HOPS says the
+  // chain in front is known — and the same key is stashed on the socket so
+  // admit() and release() always act on the same bucket.
+  const fwd = req.headers["x-forwarded-for"];
+  const ip = clientIp(
+    req.socket.remoteAddress ?? "unknown",
+    typeof fwd === "string" ? fwd : undefined,
+    TRUST_PROXY_HOPS,
+  );
   if (!ipCap.admit(ip)) {
     m.rejects++;
     ev("warn", "connection rejected: per-IP cap exceeded", { ip });
