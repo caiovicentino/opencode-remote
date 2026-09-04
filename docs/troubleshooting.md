@@ -65,6 +65,20 @@ curl '127.0.0.1:8792/metrics?format=prom'
 curl 127.0.0.1:8790/metrics            # relay, localhost only, same contract
 ```
 
+## Local daemon port fallback (P2-143)
+
+The desktop shell's local daemon prefers port 8792. If another program already
+owns it, the shell deterministically tries 8793 → 8796 (once per app start,
+logged as `[desktop] daemon port <p> (<reason>)`) and adopts or spawns the
+daemon on the first port that is free or already running our own daemon. The
+chosen port rides in Settings → **Diagnostics → Copy diagnostic** (the
+`daemon:` line, e.g. `— porta 8793 (fallback)`) and in the local pairing link.
+Setting `OCR_DAEMON_METRICS_PORT` (or `OCR_METRICS_PORT`) disables the
+fallback entirely: the shell uses exactly that port — even when it points
+elsewhere inside the 8792–8796 span — like before the fallback existed. If
+that port is busy, the child dies with the familiar "address in use" error
+and the P2-140 diagnosis explains it; no other port is ever picked.
+
 ## Service control (macOS launchd)
 
 ```

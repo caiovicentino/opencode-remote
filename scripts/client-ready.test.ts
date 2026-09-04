@@ -87,7 +87,7 @@ const report = buildDiagnosticReport({
   locale: "pt-BR",
   packaged: true,
   userData: "/users/u/Library/Application Support/OpenCode Remote",
-  daemon: { healthy: false, down: false, reconnecting: true, attempts: 3 },
+  daemon: { healthy: false, down: false, reconnecting: true, attempts: 3, port: 8792, portReason: null },
   logTail: ["[1] line", "[2] line"],
   crashFiles: ["crash-2026-09-02T09-34-12-345-renderer.txt"],
   updateStatus: "update-available",
@@ -107,12 +107,37 @@ check(
     locale: "en",
     packaged: false,
     userData: "/u",
-    daemon: { healthy: true, down: false, reconnecting: false, attempts: 0 },
+    daemon: { healthy: true, down: false, reconnecting: false, attempts: 0, port: 8792, portReason: null },
     logTail: [],
     crashFiles: [],
     updateStatus: null,
   }).includes("daemon: healthy"),
 );
+
+// --- P2-143: resolved daemon port + reason surfaced in the bundle --------------
+const daemonLine = (daemon: { port: number; portReason: string | null }): string =>
+  buildDiagnosticReport({
+    appVersion: "0.2.0",
+    electronVersion: "44.1.1",
+    platform: "darwin arm64",
+    locale: "en",
+    packaged: false,
+    userData: "/u",
+    daemon: { healthy: true, down: false, reconnecting: false, attempts: 0, ...daemon },
+    logTail: [],
+    crashFiles: [],
+    updateStatus: null,
+  })
+    .split("\n")
+    .find((l) => l.startsWith("daemon:")) ?? "";
+check("diagnostics: fallback port + reason surfaced (P2-143)", (() => {
+  const line = daemonLine({ port: 8793, portReason: "fallback" });
+  return line.includes("8793") && line.includes("fallback") && line.endsWith("porta 8793 (fallback)");
+})());
+check("diagnostics: null portReason omits the reason (no junk in the bundle)", (() => {
+  const line = daemonLine({ port: 8792, portReason: null });
+  return line.includes("8792") && !line.includes("(null)") && !line.includes("undefined");
+})());
 
 // --- daemon updates resolver (apps/daemon/src/updates.ts) ----------------------
 import { resolveUpdatePath, UPDATE_CONTENT_TYPES, updatesDir } from "../apps/daemon/src/updates";
