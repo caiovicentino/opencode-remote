@@ -242,6 +242,13 @@ get the same code via the `Formula/opencode-remote.rb` formula
 (AGPL-3.0-only, checksum pinned automatically by the release pipeline at tag
 time).
 
+**Releasing**: a tag `vX.Y.Z` must carry the same version in **both**
+`package.json` files (repo root and `apps/desktop`). The release workflow runs
+`scripts/release-preflight.ts` as its first step and blocks the release on any
+mismatch, and runs `npm run dist:smoke --workspace @ocr/desktop` on the
+packaged bundle before uploading the DMG — so bump the two files together with
+the tag.
+
 ## Hosted relay (Docker)
 
 Prefer not to host the relay on your own Mac? `deploy/relay/Dockerfile` builds

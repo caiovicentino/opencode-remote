@@ -214,6 +214,13 @@ ad-hoc e basta right-click → **Open** uma vez para passar pelo Gatekeeper.
 Quem prefere Homebrew usa o `Formula/opencode-remote.rb` (AGPL-3.0-only,
 checksum fixado automaticamente pelo pipeline de release a cada tag).
 
+**Release**: a tag `vX.Y.Z` precisa ter a mesma versão nos **dois**
+`package.json` (raiz e `apps/desktop`). O workflow de release roda
+`scripts/release-preflight.ts` como primeiro passo e bloqueia o release em
+caso de divergência, além de rodar `npm run dist:smoke --workspace
+@ocr/desktop` no bundle empacotado antes do upload do DMG — suba a versão dos
+dois arquivos junto com a tag.
+
 ## Relay hospedado (Docker)
 
 Não quer hospedar o relay no seu Mac? `deploy/relay/Dockerfile` gera uma imagem
