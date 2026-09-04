@@ -181,6 +181,30 @@ jobs:
             apps/desktop/dist/*.exe apps/desktop/dist/latest.yml \
             --clobber
 
+  # P2-153: a release is only "complete" when every platform's artifacts are
+  # actually attached — until now nothing looked at the final result, so a
+  # Windows job dying mid-upload left the release public with only a DMG and
+  # the P2-131 per-platform update feed answering 404. This final job reads the
+  # published asset names from the release and fails (exit 1, all missing
+  # labels at once) unless the full expected set is there. Deliberately NOT
+  # needing relay-image: its publication is opt-in fail-closed and produces no
+  # download asset. P2-126 lesson: shell: bash on every run step.
+  release-verify:
+    runs-on: ubuntu-latest
+    needs: [desktop-dmg, desktop-win]
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify the published release carries every platform asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' \
+            | npx --yes tsx@4.23.12 scripts/release-assets.ts "$GITHUB_REF_NAME"
+
   # P2-151: the relay image is built in CI on every release tag instead of by
   # hand on the operator's host — a broken deploy/relay/Dockerfile fails here,
   # before anyone stakes a stage-4 deploy on it. Publishing is opt-in

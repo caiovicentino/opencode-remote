@@ -288,6 +288,18 @@ additionally run a scoped packaging job (`desktop-package`, mac `dir` target
 only, no DMG/signing) smoke-checked with `dist:smoke --no-installer`; the full
 signed installers still ship only at tag time.
 
+**What each release must carry** (P2-153): the source tarball
+(`opencode-remote-<tag>.tar.gz`) from the `release` job; the macOS side from
+`desktop-dmg` — the DMG, the Squirrel.Mac zip (`<name>-<version>-mac.zip`),
+`latest-mac.yml` and `update-mac.json`; and the Windows side from
+`desktop-win` — the NSIS setup exe and `latest.yml` (the relay image is
+published to GHCR and is not a download asset). A final `release-verify` job
+lists the published assets with `gh release view --json assets` and runs
+`scripts/release-assets.ts` against that list: the release is only considered
+complete when that job passes — a missing installer or update feed fails the
+workflow (every missing artifact listed at once) instead of surfacing later as
+a 404 on the in-app update check.
+
 ## Hosted relay (Docker)
 
 Prefer not to host the relay on your own Mac? `deploy/relay/Dockerfile` builds
