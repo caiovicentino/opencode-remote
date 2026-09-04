@@ -7,6 +7,7 @@
 import { createServer, get, type Server } from "node:http";
 import { healthzHandler, healthzPayload } from "../apps/relay/src/healthz";
 import { metricsAuthOk, metricsBinding } from "../apps/relay/src/metricsbind";
+import { MAX_FRAME_CEILING, relayLimits } from "../apps/relay/src/limits";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -133,6 +134,73 @@ check("metrics auth: wrong token rejected", metricsAuthOk("Bearer nope", TOKEN) 
 check("metrics auth: token sharing a prefix with the real one rejected", metricsAuthOk("Bearer s3cret-", TOKEN) === false);
 check("metrics auth: correct bearer accepted", metricsAuthOk("Bearer s3cret", TOKEN) === true);
 check("metrics auth: empty expected token never authenticates", metricsAuthOk("Bearer s3cret", "") === false);
+
+// --- 5. admission limits (P2-141, pure function) ------------------------------
+// The relay boot opens its listener only when `problems.length === 0`;
+// these checks exercise that exact expression on the pure result. Empty env
+// must reproduce the pre-P2-141 hardcoded behavior exactly.
+
+check("limits: empty env keeps current behavior (1000/10/1MB, no problems)", (() => {
+  const l = relayLimits({});
+  return (
+    l.maxSockets === 1000 &&
+    l.maxPerRoom === 10 &&
+    l.maxFrame === 1_000_000 &&
+    l.problems.length === 0
+  );
+})());
+check("limits: blank values keep the defaults too", (() => {
+  const l = relayLimits({ RELAY_MAX_SOCKETS: "  ", RELAY_MAX_PER_ROOM: "", RELAY_MAX_FRAME_BYTES: "" });
+  return l.maxSockets === 1000 && l.maxPerRoom === 10 && l.maxFrame === 1_000_000 && l.problems.length === 0;
+})());
+
+check("limits: RELAY_MAX_SOCKETS override in isolation", (() => {
+  const l = relayLimits({ RELAY_MAX_SOCKETS: "2000" });
+  return l.maxSockets === 2000 && l.maxPerRoom === 10 && l.maxFrame === 1_000_000 && l.problems.length === 0;
+})());
+check("limits: RELAY_MAX_PER_ROOM override in isolation", (() => {
+  const l = relayLimits({ RELAY_MAX_PER_ROOM: "25" });
+  return l.maxSockets === 1000 && l.maxPerRoom === 25 && l.maxFrame === 1_000_000 && l.problems.length === 0;
+})());
+check("limits: RELAY_MAX_FRAME_BYTES override in isolation", (() => {
+  const l = relayLimits({ RELAY_MAX_FRAME_BYTES: "2000000" });
+  return l.maxSockets === 1000 && l.maxPerRoom === 10 && l.maxFrame === 2_000_000 && l.problems.length === 0;
+})());
+
+check("limits: non-numeric RELAY_MAX_SOCKETS is a problem", relayLimits({ RELAY_MAX_SOCKETS: "abc" }).problems.length > 0);
+check("limits: non-numeric RELAY_MAX_PER_ROOM is a problem", relayLimits({ RELAY_MAX_PER_ROOM: "ten" }).problems.length > 0);
+check("limits: non-numeric RELAY_MAX_FRAME_BYTES is a problem", relayLimits({ RELAY_MAX_FRAME_BYTES: "abc" }).problems.length > 0);
+check("limits: Infinity is non-numeric (fail-closed)", relayLimits({ RELAY_MAX_SOCKETS: "Infinity" }).problems.length > 0);
+check("limits: problems name the offending variable", (() => {
+  const l = relayLimits({ RELAY_MAX_FRAME_BYTES: "abc" });
+  return l.problems.length === 1 && l.problems[0].includes("RELAY_MAX_FRAME_BYTES");
+})());
+
+check("limits: zero RELAY_MAX_SOCKETS is a problem", relayLimits({ RELAY_MAX_SOCKETS: "0" }).problems.length > 0);
+check("limits: zero RELAY_MAX_PER_ROOM is a problem", relayLimits({ RELAY_MAX_PER_ROOM: "0" }).problems.length > 0);
+check("limits: zero RELAY_MAX_FRAME_BYTES is a problem", relayLimits({ RELAY_MAX_FRAME_BYTES: "0" }).problems.length > 0);
+check("limits: negative RELAY_MAX_SOCKETS is a problem", relayLimits({ RELAY_MAX_SOCKETS: "-1" }).problems.length > 0);
+check("limits: negative RELAY_MAX_PER_ROOM is a problem", relayLimits({ RELAY_MAX_PER_ROOM: "-3" }).problems.length > 0);
+check("limits: negative RELAY_MAX_FRAME_BYTES is a problem", relayLimits({ RELAY_MAX_FRAME_BYTES: "-1" }).problems.length > 0);
+
+check("limits: maxPerRoom above maxSockets is a problem", (() => {
+  const l = relayLimits({ RELAY_MAX_SOCKETS: "5", RELAY_MAX_PER_ROOM: "6" });
+  return l.problems.length === 1 && l.problems[0].includes("RELAY_MAX_PER_ROOM");
+})());
+check("limits: maxPerRoom equal to maxSockets is fine", (() => {
+  const l = relayLimits({ RELAY_MAX_SOCKETS: "10", RELAY_MAX_PER_ROOM: "10" });
+  return l.problems.length === 0 && l.maxSockets === 10 && l.maxPerRoom === 10;
+})());
+
+check("limits: frame one byte above the ceiling is a problem", (() => {
+  const l = relayLimits({ RELAY_MAX_FRAME_BYTES: String(MAX_FRAME_CEILING + 1) });
+  return l.problems.length === 1 && l.problems[0].includes("RELAY_MAX_FRAME_BYTES");
+})());
+check("limits: frame exactly at the ceiling is fine", (() => {
+  const l = relayLimits({ RELAY_MAX_FRAME_BYTES: String(MAX_FRAME_CEILING) });
+  return l.problems.length === 0 && l.maxFrame === MAX_FRAME_CEILING;
+})());
+check("limits: ceiling is the int32 ws maxPayload bound (16 MiB)", MAX_FRAME_CEILING === 16_777_216);
 
 if (failures) process.exit(1);
 console.log("relay-healthz: ALL OK");

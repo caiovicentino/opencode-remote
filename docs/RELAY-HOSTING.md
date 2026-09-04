@@ -31,6 +31,9 @@ builds this same image (the `caddy` profile adds TLS termination on top).
 | Variable | Default | Recommended in production (provider TLS in front) |
 |---|---|---|
 | `RELAY_PORT` | `8787` | Keep `8787` on the container's private network and publish it only to the TLS terminator. Set it if you map a different host port. |
+| `RELAY_MAX_SOCKETS` | `1000` | Total concurrent websocket ceiling. Raise it only on an instance sized for the load (a stage-4 scale-out can grow this without recompiling). |
+| `RELAY_MAX_PER_ROOM` | `10` | Peer ceiling per room. Must not exceed `RELAY_MAX_SOCKETS`. |
+| `RELAY_MAX_FRAME_BYTES` | `1000000` | Largest accepted frame in bytes (ws `maxPayload`). Hard ceiling is `16777216` (16 MiB, the int32 `maxPayload` bound); sealed op payloads are far smaller. |
 | `RELAY_METRICS_PORT` | unset (off) | Leave unset in containers unless a scraper needs it. When set, the endpoint serves counters on `/metrics` (JSON, or Prometheus text with `?format=prom`). |
 | `RELAY_METRICS_BIND` | `127.0.0.1` | Keep the loopback default unless your scraper sits outside the container (k8s sidecars share the network namespace and don't need it). Any non-loopback address **requires** `RELAY_METRICS_TOKEN` — the relay refuses to boot the metrics endpoint on a network-exposed interface without one (fail-closed) and logs the reason instead. |
 | `RELAY_METRICS_TOKEN` | unset (no auth) | Required whenever `RELAY_METRICS_BIND` leaves loopback. Scrapers must send `Authorization: Bearer <token>`; every other request gets an empty `401`. The endpoint exposes envelope counters only — no plaintext, no key material, no room ids. |
@@ -43,6 +46,19 @@ The relay also accepts `RELAY_RATE_PER_MIN`, `RELAY_RATE_BURST` (per-connection
 token bucket) and `RELAY_PING_INTERVAL_S` (stale-socket sweep). The defaults
 are already sized to pass the daemon's worst-case chunked transfer — leave them
 alone unless you have a specific abuse pattern.
+
+### Limit validation is fail-closed
+
+The three ceilings above (`RELAY_MAX_SOCKETS`, `RELAY_MAX_PER_ROOM`,
+`RELAY_MAX_FRAME_BYTES`) are validated at boot: a non-numeric, zero or
+negative value, a per-room cap larger than the socket cap, or a frame cap
+above the 16 MiB ceiling are all boot **problems**. If any problem exists the
+relay never opens its listener — every reason is logged once at boot (JSONL,
+`invalid relay limit, refusing to start`) and the process exits with code `1`.
+An absent or blank variable keeps the documented default, so an empty env
+reproduces the historical limits exactly. Nothing about the blind-router
+property changes with the configured values: the relay still never reads
+plaintext or key material.
 
 ## Behind a proxy: `x-forwarded-for` and the per-IP cap
 
