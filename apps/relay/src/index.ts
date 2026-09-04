@@ -11,6 +11,7 @@ import { isValidRoomId, MAX_ROOMS_PER_SOCKET } from "./roomid.js";
 import { createShutdown, stopAccepting } from "./shutdown.js";
 import { decideStale } from "./liveness.js";
 import { metricsAuthOk, metricsBinding } from "./metricsbind.js";
+import { relayLimits } from "./limits.js";
 
 /**
  * Relay: a blind router.
@@ -24,9 +25,20 @@ import { metricsAuthOk, metricsBinding } from "./metricsbind.js";
  */
 
 const PORT = Number(process.env.RELAY_PORT ?? 8787);
-const MAX_FRAME = 1_000_000; // bytes; sealed op payloads are far smaller
-const MAX_SOCKETS = 1000;
-const MAX_PER_ROOM = 10;
+// P2-141: admission ceilings are env-configurable and validated fail-closed
+// (P2-114 spirit). Any bad value — non-numeric, zero, negative, per-room cap
+// above the socket cap, frame cap above the protocol ceiling — refuses to
+// boot: every reason is logged once here, no listener opens, exit 1. An
+// empty env keeps the exact pre-P2-141 limits (1000 sockets / 10 per room /
+// 1MB frames).
+const LIMITS = relayLimits(process.env);
+if (LIMITS.problems.length > 0) {
+  for (const reason of LIMITS.problems) {
+    ev("warn", "invalid relay limit, refusing to start (fail-closed)", { reason });
+  }
+  process.exit(1);
+}
+const { maxSockets, maxPerRoom, maxFrame } = LIMITS;
 // per-connection rate limit on forwarded message frames (0 disables).
 // Defaults are sized to pass the daemon's worst-case chunked transfer
 // (MAX_CHUNKS = 512 frames, concurrent sessions interleaved on one socket)
@@ -36,8 +48,8 @@ const MAX_PER_ROOM = 10;
 const RATE_PER_MIN = envNum("RELAY_RATE_PER_MIN", 600);
 const RATE_BURST = envNum("RELAY_RATE_BURST", 1000);
 const RATE_LIMIT_CLOSE = 4029; // custom 4xxx: "too many frames"
-// live-connection cap per source IP (0 disables): MAX_SOCKETS bounds the
-// pool, but one host could otherwise hold all 1000 slots and deny every
+// live-connection cap per source IP (0 disables): the socket cap bounds the
+// pool, but one host could otherwise hold all of its slots and deny every
 // other peer admission
 const MAX_PER_IP = envNum("RELAY_MAX_PER_IP", 20);
 const ipCap = new IpCap(MAX_PER_IP);
@@ -50,7 +62,7 @@ const TRUST_PROXY_HOPS = envNum("RELAY_TRUST_PROXY_HOPS", 0);
 // ws-level liveness sweep (P2-067): every interval the relay pings all
 // sockets and terminates the ones silent for more than interval+grace
 // (grace == interval), so a peer that vanished without a close frame
-// (phone lost wifi, laptop slept) stops holding a MAX_SOCKETS slot and its
+// (phone lost wifi, laptop slept) stops holding a socket-cap slot and its
 // per-IP budget until restart. 0 disables the sweep entirely.
 const PING_INTERVAL_S = envNum("RELAY_PING_INTERVAL_S", 30);
 
@@ -202,7 +214,7 @@ const tlsKey = process.env.RELAY_TLS_KEY;
 const server = tlsCert && tlsKey
   ? createHttpsServer({ cert: readFileSync(tlsCert), key: readFileSync(tlsKey) })
   : createHttpServer();
-const wss = new WebSocketServer({ server, maxPayload: MAX_FRAME });
+const wss = new WebSocketServer({ server, maxPayload: maxFrame });
 let counter = 0;
 
 // public liveness probe for the hosted stage (no auth, counters only).
@@ -221,8 +233,8 @@ server.listen(PORT, () => {
   ev("info", "relay listening", {
     port: PORT,
     tls: Boolean(tlsCert),
-    maxFrame: MAX_FRAME,
-    maxPerRoom: MAX_PER_ROOM,
+    maxFrame,
+    maxPerRoom,
     maxPerIp: MAX_PER_IP,
     trustProxyHops: TRUST_PROXY_HOPS,
     ratePerMin: RATE_PER_MIN,
@@ -241,7 +253,7 @@ function releaseIp(socket: Socket) {
 
 wss.on("connection", (socket: Socket, req) => {
   m.connectionsTotal++;
-  if (wss.clients.size > MAX_SOCKETS) {
+  if (wss.clients.size > maxSockets) {
     m.rejects++;
     socket.close(1013, "server busy");
     return;
@@ -334,7 +346,7 @@ wss.on("connection", (socket: Socket, req) => {
     // every frame's room is joined by its sender: both ends of a
     // conversation converge on the same room naturally
     join(socket, frame.room);
-    if ((rooms.get(frame.room)?.size ?? 0) > MAX_PER_ROOM) {
+    if ((rooms.get(frame.room)?.size ?? 0) > maxPerRoom) {
       ev("warn", "room capacity exceeded", { room: frame.room.slice(0, 8) });
       m.rejects++;
       socket.close(1013, "room full");

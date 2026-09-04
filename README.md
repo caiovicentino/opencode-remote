@@ -271,7 +271,12 @@ router: it never sees plaintext or keys. The optional metrics endpoint
 (`RELAY_METRICS_PORT`) binds loopback by default; setting
 `RELAY_METRICS_BIND` to a network address requires `RELAY_METRICS_TOKEN`
 (`Authorization: Bearer <token>`) — the relay refuses to boot an
-unauthenticated metrics endpoint exposed to the network. The daemon validates
+unauthenticated metrics endpoint exposed to the network. The admission
+ceilings (`RELAY_MAX_SOCKETS`, `RELAY_MAX_PER_ROOM`, `RELAY_MAX_FRAME_BYTES`,
+defaults 1000 / 10 / 1000000) are env-configurable without recompiling and
+validated fail-closed: a non-numeric, zero/negative, per-room-above-sockets
+or above-16 MiB frame value makes the relay refuse to boot — reasons logged
+once, exit 1, no listener. The daemon validates
 `RELAY_URL` at boot and fails closed: only `ws://`/`wss://` URLs dial, and
 plain `ws://` at a non-loopback host is refused — an invalid URL disables the
 relay connection (reason logged once at boot and surfaced in `/api/health` as
