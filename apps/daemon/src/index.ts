@@ -59,6 +59,7 @@ import { ArtifactWatcher } from "./artifactwatch.js";
 import { createShutdown, stopAccepting } from "./shutdown.js";
 import { localUpgradeAllowed } from "./localws.js";
 import { createRelayRetry } from "./relayretry.js";
+import { classifyRelayClose, effectiveRetryDelayMs, type RelayCloseKind } from "./relayclose.js";
 import { parseRelayUrl, redactRelayUrl } from "./relayurl.js";
 import {
   classifyUpstream,
@@ -1825,6 +1826,10 @@ let relaySocket: WebSocket | null = null;
 // of daemons must not hammer a downed relay twice per second, nor reconnect
 // all in lockstep the moment it comes back.
 const relayRetry = createRelayRetry();
+// P2-156: verdict of the most recent relay close, surfaced additively inside
+// /api/health's relayRetry object as lastClose — code + kind only; the raw
+// close reason never reaches the API surface.
+let relayLastClose: { code: number | null; kind: RelayCloseKind } | null = null;
 // handle to the loopback API/metrics server (shutdown calls .close())
 let apiServer: HttpServer | null = null;
 
@@ -1863,13 +1868,21 @@ function connectRelay() {
 
   ws.on("message", (data) => void handleMessage(data, ws));
 
-  ws.on("close", () => {
+  ws.on("close", (code, reason) => {
     if (isShuttingDown()) return; // drain in progress: do not reconnect
-    const retryInMs = relayRetry.schedule();
+    // P2-156: the close code says WHY the relay let go — a saturated relay
+    // (1013 capacity / 4029 rate limit) must not be hammered on the same 2s
+    // curve as an abrupt network drop. The kind's floor only ever lengthens
+    // the wait; transient keeps the P2-129 jittered schedule untouched.
+    const verdict = classifyRelayClose(code, Buffer.isBuffer(reason) ? reason.toString("utf-8") : "");
+    const retryInMs = effectiveRetryDelayMs(relayRetry.schedule(), verdict);
+    relayLastClose = { code: typeof code === "number" ? code : null, kind: verdict.kind };
     metrics.inc("ocr_relay_retries_total");
     log("warn", "relay connection lost; retrying", {
       attempt: relayRetry.attempt,
       retryInMs,
+      closeCode: relayLastClose.code,
+      closeKind: verdict.kind,
     });
     metrics.gauge("ocr_relay_connected", 0);
     // P1-061: only sessions that actually ride this relay socket go away —
@@ -2195,7 +2208,12 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
           binarySource: binaryPick.source,
         },
         relayConnected,
-        relayRetry: relayConnected ? null : relayRetry.snapshot(),
+        // P2-156: additive lastClose inside relayRetry — the close code and
+        // triage kind of the most recent relay close (null until the first
+        // close happens). No raw reason, URL or room id is ever exposed.
+        relayRetry: relayConnected
+          ? null
+          : { ...relayRetry.snapshot(), lastClose: relayLastClose },
         // P2-139: additive boot-validation verdict of RELAY_URL; relayConnected
         // and relayRetry above keep their exact shape. Userinfo (if any) is
         // redacted before the URL reaches the API surface.

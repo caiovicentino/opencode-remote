@@ -348,6 +348,17 @@ the phone can never use; the desktop app's local mode doesn't depend on the
 relay and keeps working. Runbook:
 [docs/RELAY-HOSTING.md](docs/RELAY-HOSTING.md).
 
+**Close-code-aware relay retries (P2-156)**: when the relay socket closes, the
+daemon classifies the close code instead of treating every drop as a network
+outage. `1013` (server busy / too many connections / room full) means the
+relay is at capacity and floors the reconnect wait at 30s; `4029` (rate
+limited) floors it at 60s; `1001` (draining) and `1000` reconnect on the
+regular schedule; anything else (including an abrupt 1006-style drop) keeps
+the P2-129 jittered backoff unchanged. The verdict shows up as additive
+`closeCode`/`closeKind` fields on the `relay connection lost` log line and as
+`lastClose: { code, kind }` inside `/api/health`'s `relayRetry` object — the
+raw close reason is never exposed.
+
 ## CLI
 
 ```bash
