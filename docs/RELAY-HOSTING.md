@@ -12,6 +12,30 @@ room semantics, so hosting it on infrastructure you do not fully trust does
 not weaken the E2E guarantees. (`apps/relay` is AGPL-3.0-only: hosting it for
 others means shipping its source.)
 
+## Pull the published image
+
+Every release tag builds `deploy/relay/Dockerfile` in CI (the `relay-image`
+job in `.github/workflows/release.yml`) and pushes two references to GHCR —
+the bare semver and `latest`:
+
+```bash
+docker pull ghcr.io/caiovicentino/opencode-remote:0.2.0
+docker run -d --name relay \
+  -p 8787:8787 \
+  --restart unless-stopped \
+  ghcr.io/caiovicentino/opencode-remote:0.2.0
+```
+
+Pin the version tag instead of `latest`: `latest` moves with every release
+and a casual `pull` can land you on a version you never tested. Publishing
+is opt-in fail-closed — the workflow only pushes when the repository variable
+`PUBLISH_RELAY_IMAGE` is `true`; without it the job still builds the image on
+every tag (a broken Dockerfile fails the release) but publishes nothing.
+The image carries no secrets — every setting enters through `docker run -e`
+or `--env-file` at start time — and the constitutional property is untouched:
+the relay is a blind router that never sees plaintext or key material, so the
+published image adds no crypto surface of its own.
+
 ## Build and run
 
 ```bash

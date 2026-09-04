@@ -180,3 +180,45 @@ jobs:
           gh release upload "$GITHUB_REF_NAME" \
             apps/desktop/dist/*.exe apps/desktop/dist/latest.yml \
             --clobber
+
+  # P2-151: the relay image is built in CI on every release tag instead of by
+  # hand on the operator's host — a broken deploy/relay/Dockerfile fails here,
+  # before anyone stakes a stage-4 deploy on it. Publishing is opt-in
+  # fail-closed: the push step only runs when the repository variable
+  # PUBLISH_RELAY_IMAGE is exactly "true"; otherwise the job just proves the
+  # image builds, so tagging never publishes anything by surprise. The image
+  # carries no secrets and the relay stays a blind router — this job adds no
+  # crypto surface.
+  relay-image:
+    runs-on: ubuntu-latest
+    needs: release
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute image references
+        id: refs
+        run: npx --yes tsx@4.23.12 scripts/relay-image.ts "$GITHUB_REF_NAME"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build image (both references)
+        shell: bash
+        run: |
+          docker build -f deploy/relay/Dockerfile \
+            -t "${{ steps.refs.outputs.version-ref }}" \
+            -t "${{ steps.refs.outputs.latest-ref }}" .
+
+      - name: Push both references (opt-in: PUBLISH_RELAY_IMAGE=true)
+        if: vars.PUBLISH_RELAY_IMAGE == 'true'
+        shell: bash
+        run: |
+          docker push "${{ steps.refs.outputs.version-ref }}"
+          docker push "${{ steps.refs.outputs.latest-ref }}"
