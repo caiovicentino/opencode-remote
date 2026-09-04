@@ -27,8 +27,14 @@
  * carries a win-unpacked bundle — NSIS setup exe + latest.yml (pure fs
  * checks; runs on any OS, no Windows required).
  *
- * Usage: npm run dist:smoke --workspace @ocr/desktop [-- --dir <path>]
- * Run:   node scripts/dist-smoke.mjs [--dir <bundle>]
+ * P2-147: `--no-installer` marks a bundle-only run for PRs (the ci.yml
+ * desktop-package job builds the mac `dir` target, so no DMG exists yet):
+ * automatic bundle resolution stays on, only the installer checks above are
+ * skipped. The flagless invocation used by the release workflow keeps the
+ * full installer validation, byte for byte.
+ *
+ * Usage: npm run dist:smoke --workspace @ocr/desktop [-- --dir <path>] [-- --no-installer]
+ * Run:   node scripts/dist-smoke.mjs [--dir <bundle>] [--no-installer]
  */
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
@@ -166,8 +172,14 @@ export function windowsInstallerProblems(distRoot) {
   return problems;
 }
 
-function main() {
-  const argv = process.argv.slice(2);
+/**
+ * P2-147: pure argv parsing, extracted so the unit tests can pin the CLI
+ * contract. `--dir <path>` / `--dir=<path>` keep their meaning (absolute,
+ * resolved against cwd exactly as before); `--no-installer` marks a
+ * bundle-only run without touching resolution. Absent --dir keeps the
+ * automatic bundle resolution.
+ */
+export function smokeFlags(argv) {
   let dir = null;
   const dirIndex = argv.indexOf("--dir");
   if (dirIndex !== -1 && argv[dirIndex + 1]) dir = resolve(argv[dirIndex + 1]);
@@ -175,13 +187,21 @@ function main() {
     const explicit = argv.find((a) => a.startsWith("--dir="));
     if (explicit) dir = resolve(explicit.slice("--dir=".length));
   }
+  return { dir, noInstaller: argv.includes("--no-installer") };
+}
+
+function main() {
+  const { dir: flagDir, noInstaller } = smokeFlags(process.argv.slice(2));
+  let dir = flagDir; // re-assigned when the bundle is auto-resolved below
 
   // --dir-less runs target the default dist root ("default run"): they must
   // carry the platform-specific release artifacts — the mac DMG (P2-098)
   // always, and the Windows pair (P2-126) whenever a win-unpacked bundle
   // exists next to it. Named after the invocation, not the artifact: on a
-  // Windows/Linux dist root only the Windows side can apply.
-  const defaultRun = dir === null;
+  // Windows/Linux dist root only the Windows side can apply. P2-147:
+  // --no-installer opts out of both installer checks (PR packaging builds
+  // the dir target only) without losing the automatic bundle resolution.
+  const defaultRun = dir === null && !noInstaller;
   if (!dir) {
     dir = resolveBundleDir(join(desktopDir, "dist"));
     if (!dir) {

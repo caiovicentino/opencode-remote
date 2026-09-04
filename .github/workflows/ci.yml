@@ -51,3 +51,56 @@ jobs:
           npx tsx scripts/integration.ts
         env:
           OPENCODE_BIN: opencode
+
+  # P2-147: scope gate for the desktop packaging job. A pure repo script
+  # (no third-party action) classifies the changed paths so desktop-package
+  # below only runs when the diff can actually change the bundle.
+  scope:
+    runs-on: ubuntu-latest
+    outputs:
+      desktop: ${{ steps.scope.outputs.desktop }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Classify changed paths (writes GITHUB_OUTPUT)
+        id: scope
+        run: |
+          BASE="${{ github.event.pull_request.base.sha }}"
+          if [ -z "$BASE" ]; then
+            BASE="$(git rev-parse "${{ github.sha }}"^ 2>/dev/null || echo "${{ github.sha }}")"
+          fi
+          CHANGED="$(git diff --name-only "$BASE" "${{ github.sha }}" || true)"
+          npx --yes tsx@4.23.12 scripts/ci-scope.ts $CHANGED
+
+  # P2-147: catch a broken bundle in the PR itself — a missing extraResources
+  # entry or a broken electron-builder target otherwise only surfaces in the
+  # release job of an already-created tag (P2-130, packaging side). dir target
+  # only: no DMG, no signing — the smoke check validates the real packaged
+  # bundle with the installer checks skipped (--no-installer).
+  desktop-package:
+    runs-on: macos-14
+    needs: scope
+    if: needs.scope.outputs.desktop == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Package mac bundle (dir target only — no DMG, no signing)
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+        run: npm run dist --workspace @ocr/desktop -- --mac --dir
+
+      - name: Smoke-check the packaged bundle (installer checks skipped)
+        run: npm run dist:smoke --workspace @ocr/desktop -- --no-installer
