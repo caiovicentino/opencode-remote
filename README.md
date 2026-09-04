@@ -563,7 +563,12 @@ device)** or an `opencode-remote://` deep link. When a phone still needs to
 pair on first run, the QR opens with a proper **welcome splash** (pt/en): the
 product value up front and a three-step onboarding promising the first real
 value in under a minute. The manual QR/paste screen remains as a fallback
-(machines switcher → add machine).
+(machines switcher → add machine). On the desktop, **paste/deep-link is the
+primary path** — pointing a camera at another screen is a circular flow — and
+the in-app scanner is a visible state machine (looking → live preview →
+unavailable) that always offers the paste fallback; an empty camera feed
+(capture device with no signal) resolves to the unavailable state instead of
+rendering the device's own OSD placeholder.
 
 **Direct local connection (P1-061)**: on the host machine the desktop app
 skips the relay entirely — it dials the daemon's loopback WebSocket
