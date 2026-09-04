@@ -5488,11 +5488,14 @@ check(
     g("git push -q origin main");
 
     // clean rebase: preserved branch commits b.txt while another slot's merge
-    // (non-conflicting) advanced origin/main with a.txt
+    // (non-conflicting) advanced origin/main with a.txt. The previous attempt
+    // already PUSHED the branch (mergeTask), so origin sits at the pre-rebase
+    // tip — the exact scenario where a plain retry push is rejected.
     g("git checkout -qb pilot/P2-134T");
     writeFileSync(join(wsRepo, "b.txt"), "branch work\n");
     g("git add . && git commit -qm 'branch work'");
     const preservedSha = g("git rev-parse HEAD").toString().trim();
+    g("git push -q origin pilot/P2-134T");
     g("git checkout -q main");
     writeFileSync(join(wsRepo, "a.txt"), "main moved\n");
     g("git add . && git commit -qm 'main moved'");
@@ -5509,6 +5512,23 @@ check(
     check("P2-134: branch work survived the rebase", existsSync(join(wsRepo, "b.txt")));
     check("P2-134: main's new file is present after the rebase", existsSync(join(wsRepo, "a.txt")));
     check("P2-134: clean rebase rewrote the branch tip (gate re-runs on the new sha)", g("git rev-parse HEAD").toString().trim() !== preservedSha);
+
+    // the rewritten branch must still be able to update the PR head: a plain
+    // push is rejected non-fast-forward (origin at the pre-rebase tip), the
+    // production retry push (--force-with-lease, same as metapush) succeeds
+    const okCmd = (c: string) => {
+      try {
+        g(c);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    check("P2-134: plain retry push after rebase is rejected (the blocking shape)", !okCmd("git push -q origin pilot/P2-134T"));
+    check("P2-134: force-with-lease retry push lands the rewritten branch", okCmd("git push -q --force-with-lease origin pilot/P2-134T"));
+    check("P2-134: origin PR head now matches the rebased HEAD", g("git rev-parse origin/pilot/P2-134T").toString().trim() === g("git rev-parse HEAD").toString().trim());
+    const pipelineSrc = readFileSync(join(import.meta.dirname, "..", "apps", "pilot", "src", "pipeline.ts"), "utf8");
+    check("P2-134: retry push is pinned to --force-with-lease in the source", pipelineSrc.includes("git push -q --force-with-lease origin pilot/${t.id}"));
 
     // conflicting rebase: both sides edit the same file ⇒ abort, branch intact
     g("git checkout -qb pilot/P2-134C origin/main");

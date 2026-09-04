@@ -653,7 +653,10 @@ cada ciclo, como morreram P2-117/P2-123/P2-126. No caminho de resume,
 branch fica intacta no tip preservado (nunca `reset --hard` sobre histórico
 preservado, P1-060) e o builder resolve o conflito no round seguinte. Como o
 rebase limpo reescreve os commits, o sha muda e o gate determinístico re-executa
-sobre o novo HEAD — nenhum merge acontece sobre certificação velha.
+sobre o novo HEAD — nenhum merge acontece sobre certificação velha. O push de
+retry que atualiza o head do PR usa `--force-with-lease` (mesmo precedente do
+`metapush`): a origin ainda está no tip do attempt anterior, e um push plain
+seria rejeitado non-fast-forward deixando o PR apontando pro sha velho.
 
 **Checkpoint de pressão de contexto (P1-079)**: o builder resume a MESMA sessão
 opencode entre rounds (cache de contexto), então o total de tokens só cresce. Antes

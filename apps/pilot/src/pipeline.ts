@@ -287,7 +287,7 @@ export function setupTaskBranch(ws: string, id: string, attempts: number | undef
         JSON.stringify({
           ts: nowLocalISO(),
           level: "warn",
-          msg: "resume rebase hit a conflict — branch left intact at the preserved tip",
+          msg: "resume rebase failed — branch left intact at the preserved tip",
           data: { task: id, attempt: (attempts ?? 0) + 1, detail: rebase.output.trim().slice(-300) },
         }),
       );
@@ -2498,7 +2498,14 @@ async function mergeTask(
   // must prove HEAD actually moved past this tip. Also the sha the PR merge
   // must confirm (headRefOid === pushedSha) before reporting success.
   const preMergeHead = headSha(ws);
-  exec(`git push -q origin pilot/${t.id}`, { cwd: ws, allowFail: true });
+  // P2-134: the resume rebase (setupTaskBranch) may have rewritten the branch,
+  // so this push must carry --force-with-lease: origin still sits at the
+  // previous attempt's tip (--delete-branch only fires on a successful merge),
+  // a plain push is rejected non-fast-forward — silently (allowFail) — the PR
+  // head stays at the old sha and the poll's head-mismatch check burns the
+  // very attempt this repair exists to spare. The lease keeps the anti-clobber
+  // property of a peer push landing after our last fetch (metapush precedent).
+  exec(`git push -q --force-with-lease origin pilot/${t.id}`, { cwd: ws, allowFail: true });
   // P2-125: the PR create/merge runs through the injectable PrMergeIo with
   // fail-closed confirmation — see mergePrForTask. P1-076: no local-merge
   // fallback — a merge without a PR has no audit trail, and a direct push to
