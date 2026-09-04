@@ -149,8 +149,20 @@ interface PendingImage {
   id: string;
   mime: string;
   filename: string;
+  /** data URL preview for images; "" for non-image files (ext badge instead) */
   thumb: string;
   raw?: Uint8Array;
+}
+
+/** Chat text for a user message that carries attachments but no typing. */
+function attachmentLabel(items: PendingImage[]): string {
+  const labels: string[] = [];
+  const imgCount = items.filter((i) => i.mime.startsWith("image/")).length;
+  if (imgCount) labels.push(`[image${imgCount > 1 ? `s x${imgCount}` : ""}]`);
+  for (const i of items.filter((i) => !i.mime.startsWith("image/"))) {
+    labels.push(`[file ${i.filename}]`);
+  }
+  return labels.join(" ");
 }
 
 /** P3-085: collapsible reasoning block ("Pensou por Xs", Claude Desktop
@@ -1451,9 +1463,7 @@ export default function ChatView({
       ...b,
       {
         role: "user",
-        text:
-          text ||
-          (images.length ? `[image${images.length > 1 ? `s x${images.length}` : ""}]` : ""),
+        text: text || attachmentLabel(images),
         pending: true,
       },
     ]);
@@ -1545,7 +1555,28 @@ export default function ChatView({
 
   async function attachFile(file: File) {
     if (file.type.startsWith("video/")) return void stageVideo(file);
-    return void attachImage(file);
+    if (file.type.startsWith("image/")) return void attachImage(file);
+    return void attachGenericFile(file);
+  }
+
+  // Arbitrary files (PDF, zip, doc…) ride the same ocr-upload:// flow — the
+  // daemon inlines them as data: file parts; only images go through downscale.
+  async function attachGenericFile(file: File) {
+    setUploading(true);
+    setError("");
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const mime = file.type || "application/octet-stream";
+      const id = await uploadBytes(bytes, mime, file.name);
+      setImages((prev) => [
+        ...prev.slice(-3),
+        { id, mime, filename: file.name, thumb: "", raw: bytes },
+      ]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setUploading(false);
+    }
   }
 
   async function stageVideo(file: File) {
@@ -1846,6 +1877,41 @@ export default function ChatView({
     }, 1200);
     return () => clearTimeout(timer);
   }, [bubbles, ttsOn, ttsReady]);
+
+  // Drag & drop anywhere in the chat window: OS file drops attach to the
+  // composer. Listeners live on window (not the root div) so a drop on the
+  // message list, the sidebar or the composer behaves the same, and the
+  // Electron window never navigates to the dropped file.
+  const attachRef = useRef(attachFile);
+  attachRef.current = attachFile;
+  useEffect(() => {
+    const hasFiles = (e: DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes("Files");
+    const onOver = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      document.body.classList.add("dragging-files");
+    };
+    const onLeave = (e: DragEvent) => {
+      if (e.relatedTarget === null) document.body.classList.remove("dragging-files");
+    };
+    const onDrop = (e: DragEvent) => {
+      document.body.classList.remove("dragging-files");
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      for (const f of Array.from(e.dataTransfer?.files ?? [])) {
+        void attachRef.current(f);
+      }
+    };
+    window.addEventListener("dragover", onOver);
+    window.addEventListener("dragleave", onLeave);
+    window.addEventListener("drop", onDrop);
+    return () => {
+      window.removeEventListener("dragover", onOver);
+      window.removeEventListener("dragleave", onLeave);
+      window.removeEventListener("drop", onDrop);
+      document.body.classList.remove("dragging-files");
+    };
+  }, []);
 
   function toggleTts() {
     if (speaking) {
@@ -2347,7 +2413,6 @@ export default function ChatView({
           ref={fileRef}
           className="composer-file"
           type="file"
-          accept="image/*,video/*"
           multiple
           hidden
           onChange={(e) => {
@@ -2435,7 +2500,13 @@ export default function ChatView({
             <div className="composer-atts">
               {images.map((img) => (
                 <span key={img.id} className="composer-att">
-                  <img src={img.thumb} alt="" className="composer-att-thumb" />
+                  {img.thumb ? (
+                    <img src={img.thumb} alt="" className="composer-att-thumb" />
+                  ) : (
+                    <span className="composer-att-file">
+                      {img.filename.split(".").pop()?.slice(0, 4) || "file"}
+                    </span>
+                  )}
                   <span className="composer-att-name">{img.filename}</span>
                   <button
                     className="composer-att-x"

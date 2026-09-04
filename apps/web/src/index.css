@@ -685,6 +685,33 @@ select {
   border-radius: 7px;
   flex-shrink: 0;
 }
+.composer-att-file {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent, #2f7d32);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+/* OS file drop in progress anywhere over the chat window */
+body.dragging-files::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--accent, #2f7d32) 10%, transparent);
+  outline: 2px dashed var(--accent, #2f7d32);
+  outline-offset: -10px;
+  border-radius: 12px;
+}
 .composer-att-name {
   font-size: var(--font-size-xs);
   color: var(--muted);

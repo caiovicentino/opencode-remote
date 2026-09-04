@@ -1043,6 +1043,12 @@ function createWindow(): BrowserWindow {
     }
     onRendererGone(win, details, rendererReloadGuard, log, logError);
   });
+  // A stray OS file-drop or rogue link must never navigate the window away
+  // from the app shell (the renderer's own drag&drop handler is the supported
+  // path; this is the last line of defense). In-app reloads stay allowed.
+  win.webContents.on("will-navigate", (event, url) => {
+    if (url !== win.webContents.getURL()) event.preventDefault();
+  });
   loadUi(win);
   return win;
 }
