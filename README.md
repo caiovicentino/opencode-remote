@@ -276,7 +276,14 @@ ceilings (`RELAY_MAX_SOCKETS`, `RELAY_MAX_PER_ROOM`, `RELAY_MAX_FRAME_BYTES`,
 defaults 1000 / 10 / 1000000) are env-configurable without recompiling and
 validated fail-closed: a non-numeric, zero/negative, per-room-above-sockets
 or above-16 MiB frame value makes the relay refuse to boot — reasons logged
-once, exit 1, no listener. The daemon validates
+once, exit 1, no listener. On `SIGTERM` the drain is visible to the load
+balancer (P2-145): `/healthz` answers `503` with `ok:false,draining:true`
+and WebSocket upgrades are refused while the drain runs, so the balancer
+stops routing new peers to the closing instance — the container
+`HEALTHCHECK` therefore reports unhealthy during the drain on purpose.
+`RELAY_DRAIN_GRACE_MS` (default `0`, max `2000`) delays the socket close
+after the 503 so coarse-polling balancers have time to notice. The daemon
+validates
 `RELAY_URL` at boot and fails closed: only `ws://`/`wss://` URLs dial, and
 plain `ws://` at a non-loopback host is refused — an invalid URL disables the
 relay connection (reason logged once at boot and surfaced in `/api/health` as

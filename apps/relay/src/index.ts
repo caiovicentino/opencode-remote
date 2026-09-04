@@ -8,7 +8,7 @@ import { healthzHandler } from "./healthz.js";
 import { TokenBucket } from "./ratelimit.js";
 import { IpCap, clientIp } from "./ipcap.js";
 import { isValidRoomId, MAX_ROOMS_PER_SOCKET } from "./roomid.js";
-import { createShutdown, stopAccepting } from "./shutdown.js";
+import { createShutdown, refuseUpgrade, stopAccepting } from "./shutdown.js";
 import { decideStale } from "./liveness.js";
 import { metricsAuthOk, metricsBinding } from "./metricsbind.js";
 import { relayLimits } from "./limits.js";
@@ -38,7 +38,7 @@ if (LIMITS.problems.length > 0) {
   }
   process.exit(1);
 }
-const { maxSockets, maxPerRoom, maxFrame } = LIMITS;
+const { maxSockets, maxPerRoom, maxFrame, drainGraceMs } = LIMITS;
 // per-connection rate limit on forwarded message frames (0 disables).
 // Defaults are sized to pass the daemon's worst-case chunked transfer
 // (MAX_CHUNKS = 512 frames, concurrent sessions interleaved on one socket)
@@ -214,20 +214,54 @@ const tlsKey = process.env.RELAY_TLS_KEY;
 const server = tlsCert && tlsKey
   ? createHttpsServer({ cert: readFileSync(tlsCert), key: readFileSync(tlsKey) })
   : createHttpServer();
-const wss = new WebSocketServer({ server, maxPayload: maxFrame });
+const wss = new WebSocketServer({ noServer: true, maxPayload: maxFrame });
 let counter = 0;
 
+// P2-023: SIGTERM/SIGINT graceful shutdown — drain ≤3s, then exit 0.
+// `launchctl kickstart -k` (deploy step 2) relies on this: clients get a
+// close 1001 frame and a final JSONL line instead of a dead socket.
+// P2-145: the controller's isShuttingDown flag is now consumed below —
+// /healthz answers 503 while it runs and ws upgrades are refused, so the
+// stage-4 load balancer stops routing NEW peers to a closing instance.
+const { shutdown, isShuttingDown } = createShutdown({
+  activeConnections: () => wss.clients.size,
+  uptimeMs: () => Date.now() - m.startedAt,
+  stopListeners: () => stopAccepting(server, wss.clients, ev),
+  graceMs: drainGraceMs,
+  log: ev,
+  exit: (code) => process.exit(code),
+  setTimeout,
+  clearTimeout,
+});
+
 // public liveness probe for the hosted stage (no auth, counters only).
-// Sits on the plain-HTTP request path; the ws upgrade path is untouched.
+// Sits on the plain-HTTP request path; the ws upgrade path is handled below.
+// P2-145: while draining it answers 503 {ok:false,draining:true} so the LB
+// pulls this instance out of rotation before the sockets close.
 server.on(
   "request",
-  healthzHandler({
-    version: VERSION,
-    startedAt: m.startedAt,
-    rooms: () => rooms.size,
-    roomsRejected: () => m.roomsRejected,
-  }),
+  healthzHandler(
+    {
+      version: VERSION,
+      startedAt: m.startedAt,
+      rooms: () => rooms.size,
+      roomsRejected: () => m.roomsRejected,
+    },
+    isShuttingDown,
+  ),
 );
+
+// P2-145: upgrades are gated explicitly so the drain state can refuse them.
+// A room admitted during the drain would receive a close 1001 milliseconds
+// later; a plain 503 makes the LB/daemon retry the next instance instead.
+server.on("upgrade", (req, socket, head) => {
+  if (isShuttingDown()) {
+    ev("warn", "upgrade refused: relay is draining", { path: req.url?.split("?")[0] });
+    refuseUpgrade(socket);
+    return;
+  }
+  wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+});
 
 server.listen(PORT, () => {
   ev("info", "relay listening", {
@@ -396,17 +430,5 @@ if (PING_INTERVAL_S > 0) {
   }, PING_INTERVAL_S * 1000);
 }
 
-// P2-023: SIGTERM/SIGINT graceful shutdown — drain ≤3s, then exit 0.
-// `launchctl kickstart -k` (deploy step 2) relies on this: clients get a
-// close 1001 frame and a final JSONL line instead of a dead socket.
-const { shutdown } = createShutdown({
-  activeConnections: () => wss.clients.size,
-  uptimeMs: () => Date.now() - m.startedAt,
-  stopListeners: () => stopAccepting(server, wss.clients, ev),
-  log: ev,
-  exit: (code) => process.exit(code),
-  setTimeout,
-  clearTimeout,
-});
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
 process.on("SIGINT", () => void shutdown("SIGINT"));
