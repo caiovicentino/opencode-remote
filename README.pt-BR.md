@@ -214,6 +214,15 @@ ad-hoc e basta right-click → **Open** uma vez para passar pelo Gatekeeper.
 Quem prefere Homebrew usa o `Formula/opencode-remote.rb` (AGPL-3.0-only,
 checksum fixado automaticamente pelo pipeline de release a cada tag).
 
+## Relay hospedado (Docker)
+
+Não quer hospedar o relay no seu Mac? `deploy/relay/Dockerfile` gera uma imagem
+multi-stage enxuta (node 22 slim, compilada com tsc, usuário não-root,
+`HEALTHCHECK` no `/healthz`) para qualquer plataforma de containers — aponte o
+TLS do provedor pra ela, defina `RELAY_URL` no daemon e pareie o celular de
+novo. O relay continua cego: nunca vê plaintext nem chaves. Runbook:
+[docs/RELAY-HOSTING.md](docs/RELAY-HOSTING.md).
+
 ## CLI
 
 ```bash
@@ -414,8 +423,7 @@ descobre que perdeu o controle.
 
 ## Roadmap
 
-Próximos: relay hospedado
-opcional, wizard de onboarding, compartilhamento de skills, push nativo iOS.
+Próximos: wizard de onboarding, compartilhamento de skills, push nativo iOS.
 
 ## Licença
 

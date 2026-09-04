@@ -242,6 +242,15 @@ get the same code via the `Formula/opencode-remote.rb` formula
 (AGPL-3.0-only, checksum pinned automatically by the release pipeline at tag
 time).
 
+## Hosted relay (Docker)
+
+Prefer not to host the relay on your own Mac? `deploy/relay/Dockerfile` builds
+a small multi-stage image (node 22 slim, tsc-compiled, non-root, `HEALTHCHECK`
+on `/healthz`) for any container platform — point your provider's TLS at it,
+set `RELAY_URL` on the daemon and re-pair the phone. The relay stays a blind
+router: it never sees plaintext or keys. Runbook:
+[docs/RELAY-HOSTING.md](docs/RELAY-HOSTING.md).
+
 ## CLI
 
 ```bash
@@ -636,8 +645,7 @@ download finishes — a deferred version is not re-offered in the same session.
 
 ## Roadmap
 
-Next up: hosted relay option,
-onboarding wizard, skills sharing, native iOS push.
+Next up: onboarding wizard, skills sharing, native iOS push.
 
 ## License
 

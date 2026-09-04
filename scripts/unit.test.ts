@@ -161,9 +161,9 @@ import { landMetaCommit, mayPushUnderDir, metaIo, META_BRANCH, type MetaPushIo }
 import { EXPLORER_MAX_FINDINGS, EXPLORER_MAX_STEPS, EXPLORER_TIMEOUT_MIN, EXPLORER_PUSH_RETRIES, EXPLORER_PUSH_WAIT_MS, FABLE_MARKER, FABLE_MAX_FINDINGS, JOURNEY_STEPS, claimExplorerRun, commitAndPushFindings, commitAndPushFableFindings, explorerPrompt, explorerSessionName, explorerSpec, fablePrompt, fableSpec, journeyShotName, parseExplorerFindings, parseFableFindings, type ExplorerFinding, type FableFinding } from "../apps/pilot/src/explorer";
 import { noteTierBOutcome, resetTierBSpawnStreak, runAgent, API_PREFLIGHT, apiHealthy, TIERB_SPAWN_ALERT_EVERY, shouldAlertTierBSpawn, claudeArgs, idScanner, mergeAgentIds, OPENCODE_URL_DEFAULT, scanIds, shouldFallbackTierB, waitForApi } from "../apps/pilot/src/runner";
 import { GUARD_ALERT_THRESHOLD, clearGuardRejections, guardAlertDetail, noteGuardRejection, raiseGuardAlert, resetGuardAlerts } from "../apps/pilot/src/guardalert";
-import { mkdtempSync, mkdirSync, readdirSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync, utimesSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync, utimesSync, copyFileSync } from "node:fs";
 import { execSync, spawn } from "node:child_process";
-import { createServer } from "node:http";
+import { createServer, get } from "node:http";
 import { AddressInfo } from "node:net";
 import { connect as netConnect } from "node:net";
 import WebSocket, { WebSocketServer } from "ws";
@@ -6732,6 +6732,142 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       keys.every((k) => typeof d[k] === "string" && d[k].trim() !== ""),
     );
     check(`p2-124 i18n ${lang}: planLocal reads as local`, /local/i.test(translate(lang, "planLocal")));
+  }
+}
+
+// --- P2-127: hosted-relay smoke — the tsc-compiled dist the image runs -------
+// No docker dependency: compile apps/relay to a tmp dist with the same
+// tsconfig.build.json the image uses, run it on a kernel-assigned port,
+// probe /healthz, round-trip a sealed frame between two sockets in one room
+// and shut the process down cleanly.
+{
+  const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+  const smokeDir = mkdtempSync(join(tmpdir(), "ocr-relay-smoke-"));
+  const distDir = join(smokeDir, "apps", "relay", "dist");
+  let relayProc: ReturnType<typeof spawn> | null = null;
+  const smokeGuard = setTimeout(() => {
+    console.error("P2-127 relay smoke timed out");
+    relayProc?.kill("SIGKILL");
+    process.exit(1);
+  }, 60_000);
+  smokeGuard.unref();
+  try {
+    // mirror the image layout: /package.json + /apps/relay/dist/index.js —
+    // the dist reads ../../../package.json to report the version on /healthz
+    copyFileSync(join(repoRoot, "package.json"), join(smokeDir, "package.json"));
+    symlinkSync(join(repoRoot, "node_modules"), join(smokeDir, "node_modules"));
+    execSync(
+      `${JSON.stringify(process.execPath)} ${JSON.stringify(join(repoRoot, "node_modules", "typescript", "bin", "tsc"))} -p ${JSON.stringify(join(repoRoot, "apps", "relay", "tsconfig.build.json"))} --outDir ${JSON.stringify(distDir)}`,
+      { cwd: repoRoot, stdio: "pipe" },
+    );
+    check("P2-127: tsc emits a runnable relay dist", existsSync(join(distDir, "index.js")));
+
+    // ephemeral port asked to the kernel: bind 0, read the assignment, release
+    const probe = createServer();
+    await new Promise<void>((r) => probe.listen(0, "127.0.0.1", r));
+    const smokePort = (probe.address() as AddressInfo).port;
+    await new Promise<void>((r) => probe.close(() => r()));
+
+    relayProc = spawn(process.execPath, [join(distDir, "index.js")], {
+      cwd: smokeDir,
+      env: { ...process.env, RELAY_PORT: String(smokePort), OCR_E2E_MARKER: "1" },
+      stdio: ["ignore", "ignore", "inherit"],
+    });
+    process.on("exit", () => relayProc?.kill("SIGTERM"));
+
+    // GET /healthz: 200 + {"ok":true,...} — the first successful fetch both
+    // proves the boot and is the probe (poll until the server listens)
+    const fetchHealthz = () =>
+      new Promise<{ status: number; body: string }>((resolve, reject) => {
+        const req = get(`http://127.0.0.1:${smokePort}/healthz`, (res) => {
+          let body = "";
+          res.on("data", (c) => (body += c));
+          res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
+        });
+        req.on("error", reject);
+        req.end();
+      });
+    let healthz: { status: number; body: string } | null = null;
+    for (let attempt = 0; attempt < 50 && !healthz; attempt++) {
+      try {
+        healthz = await fetchHealthz();
+      } catch {
+        await new Promise((r) => setTimeout(r, 200));
+      }
+    }
+    if (!healthz) throw new Error("P2-127: relay never came up");
+    const health = JSON.parse(healthz.body) as { ok: boolean; version: string };
+    check(
+      "P2-127: GET /healthz answers 200 with ok json",
+      healthz.status === 200 && health.ok === true && typeof health.version === "string",
+    );
+
+    // sealed frame round-trip: the room grammar needs 8..128 id chars
+    const smokeRoom = `smokeroom${Date.now().toString(36)}`;
+    const fromA = "smoke-client";
+    const fromB = "smoke-daemon";
+    const smokeKey = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, [
+      "encrypt",
+      "decrypt",
+    ]);
+    const dial = (from: string) =>
+      new Promise<WebSocket>((resolve, reject) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${smokePort}`);
+        ws.on("open", () => {
+          ws.send(JSON.stringify({ room: smokeRoom, from, payload: "" })); // join
+          resolve(ws);
+        });
+        ws.on("error", reject);
+      });
+    const nextFrame = (ws: WebSocket, ms = 5000) =>
+      new Promise<{ from?: string; seq?: number; payload?: string }>((resolve) => {
+        const t = setTimeout(() => resolve({}), ms).unref();
+        ws.once("message", (d) => {
+          clearTimeout(t);
+          resolve(JSON.parse(d.toString()));
+        });
+      });
+
+    const wsA = await dial(fromA);
+    const wsB = await dial(fromB);
+    // A gets B's join echoed back — both sockets sit in the same room
+    const joinEcho = await nextFrame(wsA);
+    check("P2-127: both sockets joined the same room", joinEcho.from === fromB && joinEcho.payload === "");
+
+    const smokeSeq = 1;
+    const sealedPayload = await seal({ type: "op", text: "secret" }, smokeKey, seqAad(fromA, smokeSeq));
+    wsA.send(JSON.stringify({ room: smokeRoom, from: fromA, seq: smokeSeq, payload: sealedPayload }));
+    const got = await nextFrame(wsB);
+    const opened =
+      typeof got.payload === "string"
+        ? await openSealed<{ type: string; text: string }>(got.payload, smokeKey, seqAad(fromA, smokeSeq))
+        : null;
+    check(
+      "P2-127: sealed frame round-trips and opens with the right AAD",
+      got.from === fromA && opened?.type === "op" && opened?.text === "secret",
+    );
+    // replay protection stays with the endpoints: wrong seq or sender opens nothing
+    check(
+      "P2-127: wrong seq or sender cannot open the payload",
+      typeof got.payload === "string" &&
+        (await openSealed(got.payload!, smokeKey, seqAad(fromA, 2))) === null &&
+        (await openSealed(got.payload!, smokeKey, seqAad("evil", smokeSeq))) === null,
+    );
+
+    wsA.close();
+    wsB.close();
+    // clean shutdown: SIGTERM drains (≤3s) and exits 0
+    const exited = new Promise<number>((resolve) => relayProc!.once("exit", (code) => resolve(code ?? -1)));
+    relayProc!.kill("SIGTERM");
+    const exitCode = await Promise.race([
+      exited,
+      new Promise<number>((r) => setTimeout(() => r(-1), 6000).unref()),
+    ]);
+    check("P2-127: SIGTERM ends the relay cleanly (exit 0)", exitCode === 0);
+  } finally {
+    clearTimeout(smokeGuard);
+    relayProc?.kill("SIGKILL");
+    rmSync(smokeDir, { recursive: true, force: true });
   }
 }
 
