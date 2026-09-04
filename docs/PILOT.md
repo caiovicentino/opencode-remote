@@ -595,7 +595,12 @@ default 4; task size L tem cap próprio de 6, P1-060) o breaker dispara:
 
 1. a linha da task sai de `## Ready` e vai para a seção `## Blocked` do
    BACKLOG.md (landing via PR `pilot/meta`, com resumo do último findings) — o painel FILA do
-   dashboard já mostra as duas filas;
+   dashboard já mostra as duas filas; a edição é idempotente (P2-142): reusa o
+   primeiro cabeçalho `## Blocked` existente (a linha entra logo abaixo dele,
+   antes de `## Done` ou no fim do arquivo), considera task já bloqueada em
+   **qualquer** seção `## Blocked` e, na mesma escrita, colapsa cabeçalhos
+   `## Blocked` duplicados num único sem descartar nenhuma linha — arquivos
+   legados com várias seções se normalizam sozinhos na próxima escrita real;
 2. um **único** `notifySupervisor` "task blocked after N attempts" é enviado;
 3. a task não é re-agendada: cooldown infinito até um humano (ou o red team)
    mover de volta para `## Ready` — o contador é zerado quando a task passa no
@@ -740,6 +745,8 @@ e logados em `apps/pilot/src/doctor.ts`:
 - **`backlog`** — valida seções (`## Ready`/`## Done` obrigatórias, `## Blocked`
   opcional) + ids de task únicos em todas as seções, via `loadBacklog`; somente
   leitura — backlog inválido é reportado (log warn + exit 1), nunca auto-editado;
+  mais de um cabeçalho `## Blocked` gera **aviso** sem invalidar o arquivo
+  (P2-142: a próxima escrita do stop-loss colapsa tudo num único cabeçalho);
 - **`branches`** — deleta branches locais `pilot/*` **sem PR aberto**; fail-safe:
   só deleta com `gh` respondendo (PR aberto, gh indisponível, branch checked-out
   ou de task com tentativa viva no breaker — preservada para retry, P1-060 —

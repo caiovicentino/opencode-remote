@@ -159,6 +159,7 @@ import {
   appendReadyLines,
   auxPushIo,
   blockTask,
+  blockTaskEdit,
   doneTaskIds,
   loadBacklog,
   mayPush,
@@ -756,6 +757,83 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
     check("breaker: gate pass resets the counter", recordTaskFailure(st, "T-001", 4) === false && st.taskAttempts["T-001"] === 1);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// --- P2-142 blockTaskEdit: idempotent stop-loss + Blocked-header normalization ---
+{
+  const t1 = "- [ ] (T-001) [P1] Task A — spec: fails 4x";
+  const withDone = `# BACKLOG\n\n## Ready\n\n${t1}\n\n## Done\n- [x] (T-000) [P1] Old — done\n`;
+  const dupes = [
+    "# BACKLOG",
+    "",
+    "## Ready",
+    "",
+    t1,
+    "",
+    "## Blocked",
+    "- [ ] (T-010) [P1] First — spec: x",
+    "",
+    "## Blocked",
+    "- [ ] (T-011) [P2] Second — spec: y",
+    "",
+    "## Blocked",
+    "- [ ] (T-012) [P3] Third — spec: z",
+    "",
+    "## Done",
+    "- [x] (T-000) [P1] Old — done",
+  ].join("\n");
+  const everyTaskOnce = (md: string) =>
+    ["(T-001)", "(T-010)", "(T-011)", "(T-012)"].every((id) => (md.match(new RegExp(id.replace(/[()]/g, "\\$&"), "g")) ?? []).length === 1);
+
+  // single existing header is reused — never a second section
+  const oneHeader = `# BACKLOG\n\n## Ready\n\n${t1}\n\n## Blocked\n- [ ] (T-099) [P2] Old — spec: x\n\n## Done\n- [x] (T-000) [P1] Old — done\n`;
+  const reused = blockTaskEdit(oneHeader, "T-001", "max review rounds — findings:\n- a\n- b");
+  check("blockTaskEdit: reuses the existing Blocked header", reused.result === "applied" && (reused.text.match(/^## Blocked$/gm) ?? []).length === 1);
+  check("blockTaskEdit: new line sits right below the reused header", /^## Blocked\n- \[ \] \(T-001\)/m.test(reused.text));
+  check("blockTaskEdit: existing blocked lines stay", reused.text.includes("- [ ] (T-099) [P2] Old — spec: x"));
+  check("blockTaskEdit: line leaves the Ready queue", !/## Ready\n\n- \[ \] \(T-001\)/.test(reused.text));
+  check("blockTaskEdit: findings summary collapsed + attached", reused.text.includes("(T-001) [P1] Task A — spec: fails 4x — max review rounds — findings: - a - b"));
+
+  // no header at all → created before ## Done
+  const created = blockTaskEdit(withDone, "T-001", "boom");
+  check(
+    "blockTaskEdit: without a header one is created before ## Done",
+    created.result === "applied" && created.text.includes("## Blocked\n- [ ] (T-001) [P1] Task A — spec: fails 4x — boom\n\n## Done"),
+  );
+
+  // no header, no ## Done → appended at the end of the file
+  const noDone = blockTaskEdit(`# BACKLOG\n\n## Ready\n\n${t1}\n`, "T-001", "boom");
+  check(
+    "blockTaskEdit: without Done the header lands at the end of the file",
+    noDone.result === "applied" && noDone.text.trimEnd().endsWith("## Blocked\n- [ ] (T-001) [P1] Task A — spec: fails 4x — boom"),
+  );
+
+  // duplicate headers collapse into one, preserving every task line in order
+  const collapsedEdit = blockTaskEdit(dupes, "T-001", "circuit broken");
+  check("blockTaskEdit: duplicate Blocked headers collapse into one", collapsedEdit.result === "applied" && (collapsedEdit.text.match(/^## Blocked$/gm) ?? []).length === 1);
+  check("blockTaskEdit: collapse discards no task line", everyTaskOnce(collapsedEdit.text));
+  check("blockTaskEdit: collapse preserves the existing task order", collapsedEdit.text.indexOf("(T-010)") < collapsedEdit.text.indexOf("(T-011)") && collapsedEdit.text.indexOf("(T-011)") < collapsedEdit.text.indexOf("(T-012)"));
+  check("blockTaskEdit: entry lands under the surviving header", collapsedEdit.text.includes("## Blocked\n- [ ] (T-001) [P1] Task A — spec: fails 4x — circuit broken\n- [ ] (T-010)"));
+  check("blockTaskEdit: Done section survives the collapse", collapsedEdit.text.includes("## Done\n- [x] (T-000) [P1] Old — done"));
+
+  // already-blocked detection considers ANY Blocked section
+  const noop = blockTaskEdit(dupes, "T-011", "x");
+  check("blockTaskEdit: task under a later Blocked section is noop with untouched text", noop.result === "noop" && noop.text === dupes);
+  check("blockTaskEdit: unknown id is missing", blockTaskEdit(dupes, "T-999", "x").result === "missing");
+  check("blockTaskEdit: regex metacharacters in the id stay literal", blockTaskEdit(dupes, "T-001) [P1] x.*", "y").result === "missing");
+
+  // disk wrapper keeps read → edit → write and normalizes legacy files
+  const dir2 = mkdtempSync(join(tmpdir(), "pilot-blocknorm-"));
+  try {
+    writeFileSync(join(dir2, "BACKLOG.md"), dupes);
+    check("blockTask: legacy multi-section file normalizes on a real write", blockTask(dir2, "T-001", "circuit broken") === "applied");
+    const md2 = readFileSync(join(dir2, "BACKLOG.md"), "utf8");
+    check("blockTask: normalized file carries exactly one Blocked section", (md2.match(/^## Blocked$/gm) ?? []).length === 1);
+    check("blockTask: normalized file keeps every task line", everyTaskOnce(md2));
+    check("blockTask: second block of an already-blocked task stays noop", blockTask(dir2, "T-012", "again") === "noop" && readFileSync(join(dir2, "BACKLOG.md"), "utf8") === md2);
+  } finally {
+    rmSync(dir2, { recursive: true, force: true });
   }
 }
 
@@ -6801,6 +6879,15 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   {
     const d = validateBacklog("## Ready\n- [ ] (P9-001) [P1] mentions (P9-002) mid-spec — spec: x\n## Done\n");
     check("doctor backlog: ids quoted inside a spec are not duplicates", d.ok && d.duplicateIds.length === 0);
+  }
+  {
+    // P2-142: legacy multi-section files warn but stay valid — the stop-loss self-normalizes
+    const dupDiag = validateBacklog("## Ready\n\n## Blocked\n\n## Blocked\n\n## Blocked\n\n## Done\n");
+    check(
+      "doctor backlog: duplicate Blocked headers warn (self-normalizing)",
+      dupDiag.ok && dupDiag.warnings.length === 1 && dupDiag.warnings[0]!.includes("3 duplicate ## Blocked sections") && dupDiag.warnings[0]!.includes("next stop-loss write"),
+    );
+    check("doctor backlog: single Blocked header warns nothing", validateBacklog("## Ready\n\n## Blocked\n\n## Done\n").warnings.length === 0);
   }
   {
     const dir = mkdtempSync(join(tmpdir(), "pilot-doctor-"));
