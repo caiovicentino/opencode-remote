@@ -57,6 +57,7 @@ import { WindowCache, contextPct, sessionTokenTotal } from "./contextgauge.js";
 import { ArtifactWatcher } from "./artifactwatch.js";
 import { createShutdown, stopAccepting } from "./shutdown.js";
 import { localUpgradeAllowed } from "./localws.js";
+import { createRelayRetry } from "./relayretry.js";
 import {
   injectArtifactsPathPart,
   injectArtifactsSystem,
@@ -1740,6 +1741,10 @@ async function handleMessage(data: WebSocket.RawData, ws: WebSocket) {
 
 // handle to the live relay websocket (shutdown closes it with code 1001)
 let relaySocket: WebSocket | null = null;
+// P2-129: exponential backoff with full jitter for relay reconnects — a fleet
+// of daemons must not hammer a downed relay twice per second, nor reconnect
+// all in lockstep the moment it comes back.
+const relayRetry = createRelayRetry();
 // handle to the loopback API/metrics server (shutdown calls .close())
 let apiServer: HttpServer | null = null;
 
@@ -1765,6 +1770,7 @@ function connectRelay() {
   relaySocket = ws;
 
   ws.on("open", () => {
+    relayRetry.reset();
     log("info", "connected to relay", { relay: RELAY_URL, room: daemon.room });
     metrics.gauge("ocr_relay_connected", 1);
     metrics.inc("ocr_relay_connects_total");
@@ -1775,7 +1781,12 @@ function connectRelay() {
 
   ws.on("close", () => {
     if (isShuttingDown()) return; // drain in progress: do not reconnect
-    log("warn", "relay connection lost; retrying in 2s");
+    const retryInMs = relayRetry.schedule();
+    metrics.inc("ocr_relay_retries_total");
+    log("warn", "relay connection lost; retrying", {
+      attempt: relayRetry.attempt,
+      retryInMs,
+    });
     metrics.gauge("ocr_relay_connected", 0);
     // P1-061: only sessions that actually ride this relay socket go away —
     // a relay kickstart must never disturb direct local WS sessions.
@@ -1783,7 +1794,7 @@ function connectRelay() {
       if (s.socket === ws) sessions.delete(from);
     }
     metrics.gauge("ocr_sessions_active", sessions.size);
-    setTimeout(connectRelay, 2000);
+    setTimeout(connectRelay, retryInMs);
   });
 
   ws.on("error", (err) => log("error", "relay error", { error: err.message }));
@@ -2081,12 +2092,16 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
   };  try {
     // GET /api/health
     if (req.method === "GET" && seg[1] === "health") {
+      // P2-129: additive relayRetry — attempt number + pending delay while the
+      // daemon is scheduling its next relay dial, null when connected.
+      const relayConnected = metrics.get("ocr_relay_connected") === 1;
       send(200, {
         healthy: true,
         version: VERSION,
         machine: machineName,
         opencodeHealthy: metrics.get("ocr_opencode_healthy") === 1,
-        relayConnected: metrics.get("ocr_relay_connected") === 1,
+        relayConnected,
+        relayRetry: relayConnected ? null : relayRetry.snapshot(),
       });
       return true;
     }
