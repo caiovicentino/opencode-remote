@@ -412,6 +412,17 @@ clipboard — app/electron versions, platform, daemon state, the last desktop.lo
 lines and the crash-file names. No secrets: the apiToken, allowlist and
 pairing URI are never included.
 
+**One shell per userData (P2-069)**: launching the app while an instance is
+already running simply focuses the existing window — a second copy never
+paints its own (possibly white) window. Every boot writes an instance record
+into its `userData`; if an older instance of the *same* userData is still
+alive with an earlier start, the new boot logs a `possible zombie instance`
+warning to `desktop.log` so a leaked shell (e.g. one whose keeper/parent died)
+is diagnosable from the **Open logs folder** item. Hermetic harness launches
+(`tools/desktop.mjs`) additionally watch the keeper's pid and quit by
+themselves when it disappears, so killed test runs can no longer leak
+Electron instances.
+
 The desktop shell boots the daemon as a **sidecar**: on launch it spawns the
 daemon — in packaged apps a single-file CJS bundle shipped at
 `resources/daemon/index.js` (built with esbuild during `npm run build`; the

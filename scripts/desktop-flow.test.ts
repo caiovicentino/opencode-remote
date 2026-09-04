@@ -19,6 +19,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createServer, type AddressInfo } from "node:net";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import {
   ARTIFACTS_MARKER,
@@ -131,9 +132,11 @@ const cliEnv = { ...process.env, OCR_DESKTOP_SESSION: session };
 // added the composer beat (attach preview chip, mic-disabled state, inline
 // agent/model selector, auto-grow clamp + Enter/Shift+Enter semantics);
 // P3-087 added the motion-pass beat (reduced-motion on/off screenshots +
-// the animation-name flip probe) inside the same budget.
+// the animation-name flip probe) inside the same budget; P2-069 added the
+// single-instance beat (a real second Electron on the same userData quits
+// cleanly), growing it to 195s.
 const startedAt = Date.now();
-const DEADLINE_MS = 180_000;
+const DEADLINE_MS = 195_000;
 const shotPath = join(tmpdir(), "ocr-desktop-flow", `flow-${process.pid}.png`);
 // Evidence shots live in the builder dir (never used as review evidence).
 // Declared up front: the P2-112 degraded-journey beats record there too.
@@ -305,6 +308,61 @@ try {
   if (!opened.ok) process.exit(1);
 
   run("boot rendered the app (#root mounted)", ["see", "OpenCode Remote"], 15_000);
+  // --- P2-069: single instance per userData -----------------------------------
+  // The incident: a second launch on the same userData raced the first one and
+  // could end as a white, unpaired window. Now the second instance quits
+  // cleanly (single-instance lock), explains why in the shared desktop.log and
+  // the first instance keeps exactly one window. Hermetic repro: spawn the real
+  // Electron binary against the SAME userData the keeper minted (`open`
+  // reports it since P2-069) — the lock must reject it before any window.
+  phase("P2-069: single instance per userData");
+  let bootInfo: { userData?: string } | null = null;
+  try {
+    bootInfo = JSON.parse(opened.stdout.trim()) as { userData?: string };
+  } catch {}
+  const electronBin = (() => {
+    try {
+      return createRequire(join(repoRoot, "apps", "desktop", "package.json"))("electron") as string;
+    } catch {
+      return "";
+    }
+  })();
+  if (bootInfo?.userData && electronBin) {
+    const second = spawnSync(
+      electronBin,
+      [join(repoRoot, "apps", "desktop")],
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+        timeout: 45_000,
+        env: { ...cliEnv, OCR_USER_DATA_DIR: bootInfo.userData },
+      },
+    );
+    check(
+      "P2-069: second instance on the same userData quits cleanly (lock held)",
+      second.status === 0,
+      `${second.stdout ?? ""}\n${second.stderr ?? ""}`,
+    );
+    const sharedLog = (() => {
+      try {
+        return readFileSync(join(bootInfo!.userData!, "logs", "desktop.log"), "utf8");
+      } catch {
+        return "";
+      }
+    })();
+    check("P2-069: lock-fail explained in the shared desktop.log", /already owns this userData/.test(sharedLog));
+    const winsAfter = run("P2-069: first instance still answers after the double open", ["wins"], 15_000);
+    if (winsAfter.ok) {
+      let count = -1;
+      try {
+        const arr = JSON.parse(winsAfter.stdout) as unknown;
+        count = Array.isArray(arr) ? arr.length : -1;
+      } catch {}
+      check("P2-069: exactly one window after the double open", count === 1, winsAfter.stdout);
+    }
+  } else {
+    check("P2-069: open reported the minted userData dir", false, opened.stdout);
+  }
   // P1-081: the hermetic shell never calls win.show() — the gate drives the
   // app through webContents while the operator's screen stays clean. The
   // screen-level guarantee is BrowserWindow.isVisible()=false for every

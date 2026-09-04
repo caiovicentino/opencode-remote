@@ -176,13 +176,20 @@ Desktop app: para interagir com o app Electron real use o harness
 `tools/desktop.mjs` (`open/see/click/type/shot/ipc/close`, mesma DX do
 browse.mjs) — launch hermético, sem daemon de produção. Quando o diff toca
 `apps/desktop/` ou `apps/web/`, o gate roda `npm run test:desktop-flow` (fluxo
-de interação real, <180s — P1-070 adicionou o bloco "local boot" com daemon
+de interação real, <195s — P1-070 adicionou o bloco "local boot" com daemon
 hermético real; P1-080 adicionou o repro de overflow do chat: bolha com diff
 longo em janela estreita, nada pode sair do viewport; P1-089 adicionou o beat
 queue→flush→reentrada com segundo boot hermético contra um fake de opencode:
 fila offline drena no reboot, o burst de >500 eventos re-dispara idle antigo e
 o count de bolhas fica estável em 3 re-entradas; ids de sessão do gate são
 curtos de propósito — path de unix socket no macOS trunca em 104 chars;
+P2-069 adicionou o beat de instância única: um segundo Electron real é
+spawnado no MESMO userData do keeper e deve sair limpo (lock de instância
+única, linha explicando no desktop.log compartilhado) enquanto a primeira
+instância mantém exatamente 1 janela; o `open` do harness reporta o userData
+minted no JSON de resposta e injeta `OCR_KEEPER_PID` — o app observa o pid do
+keeper e sai sozinho (com `app.exit` de graça após 4s) quando o keeper morre,
+então keeper SIGKILLado nunca mais vira zumbi de horas;
 P2-090 adicionou o beat de auto-abertura de artifact: o daemon emite
 `session.artifact` ao detectar escrita em artifacts, o pane abre no idle e
 não sobrepõe escolha manual nem o browser pane; P2-091 adicionou a navegação
