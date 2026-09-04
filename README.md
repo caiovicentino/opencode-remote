@@ -283,7 +283,10 @@ warning goes away.
 `scripts/release-preflight.ts` as its first step and blocks the release on any
 mismatch, and runs `npm run dist:smoke --workspace @ocr/desktop` on the
 packaged bundle before uploading the DMG — so bump the two files together with
-the tag.
+the tag. PRs that touch the desktop shell, the web UI or `package-lock.json`
+additionally run a scoped packaging job (`desktop-package`, mac `dir` target
+only, no DMG/signing) smoke-checked with `dist:smoke --no-installer`; the full
+signed installers still ship only at tag time.
 
 ## Hosted relay (Docker)
 

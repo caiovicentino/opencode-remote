@@ -242,7 +242,11 @@ checksum fixado automaticamente pelo pipeline de release a cada tag).
 `scripts/release-preflight.ts` como primeiro passo e bloqueia o release em
 caso de divergência, além de rodar `npm run dist:smoke --workspace
 @ocr/desktop` no bundle empacotado antes do upload do DMG — suba a versão dos
-dois arquivos junto com a tag.
+dois arquivos junto com a tag. PRs que tocam o shell desktop, a web UI ou
+`package-lock.json` rodam ainda um job de empacotamento escopado
+(`desktop-package`, alvo mac `dir` apenas, sem DMG/assinatura) validado com
+`dist:smoke --no-installer`; os instaladores assinados completos seguem
+saindo só na tag.
 
 ## Relay hospedado (Docker)
 

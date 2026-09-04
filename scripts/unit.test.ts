@@ -290,7 +290,8 @@ import {
   validateTakeoverDirectory,
   validateTakeoverSessionId,
 } from "../apps/daemon/src/pilotforensic";
-import { findWindowsInstaller, listProblems, windowsInstallerProblems } from "../apps/desktop/scripts/dist-smoke.mjs";
+import { findWindowsInstaller, listProblems, smokeFlags, windowsInstallerProblems } from "../apps/desktop/scripts/dist-smoke.mjs";
+import { touchesDesktop } from "./ci-scope";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -7987,6 +7988,73 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   const block = mergeConflictBlock("CONFLICTING", "P2-123");
   check("conflict block fires on CONFLICTING", block.includes("pilot/P2-123") && block.includes("git merge origin/main") && block.includes("BOTH sides"));
   check("clean mergeable yields no block", mergeConflictBlock("MERGEABLE", "P2-123") === "" && mergeConflictBlock(null, "P2-123") === "" && mergeConflictBlock(undefined, "P2-123") === "");
+}
+
+// --- P2-147: ci-scope — PR packaging scope classifier -------------------------
+{
+  check("P2-147: touchesDesktop — path under apps/desktop", touchesDesktop(["README.md", "apps/desktop/src/main.ts"]));
+  check("P2-147: touchesDesktop — electron-builder.yml itself", touchesDesktop(["apps/desktop/electron-builder.yml"]));
+  check("P2-147: touchesDesktop — path under apps/web", touchesDesktop(["apps/web/src/lib/viewState.ts"]));
+  check("P2-147: touchesDesktop — root package-lock.json", touchesDesktop(["package-lock.json"]));
+  check("P2-147: touchesDesktop — bare desktop dir entry counts", touchesDesktop(["apps/desktop"]));
+  check("P2-147: touchesDesktop — irrelevant repo path", !touchesDesktop(["apps/relay/src/index.ts", "docs/PILOT.md", "scripts/other.ts"]));
+  check("P2-147: touchesDesktop — empty diff", !touchesDesktop([]));
+  check("P2-147: touchesDesktop — windows-style separators normalize", touchesDesktop(["apps\\desktop\\src\\main.ts"]));
+  check("P2-147: touchesDesktop — ./ prefix and whitespace normalize", touchesDesktop([" ./apps/web/src/main.tsx"]));
+  check("P2-147: touchesDesktop — app-sounding paths outside the surface don't count", !touchesDesktop(["apps/desktop-runner/x.ts", "src/apps/web-preview.ts"]));
+}
+
+// --- P2-147: dist-smoke --no-installer — pure argv contract -------------------
+{
+  check(
+    "P2-147: smokeFlags — empty argv keeps the installer checks (release behavior)",
+    smokeFlags([]).noInstaller === false && smokeFlags([]).dir === null,
+  );
+  check(
+    "P2-147: smokeFlags — --no-installer opts out while keeping auto resolution",
+    smokeFlags(["--no-installer"]).noInstaller === true && smokeFlags(["--no-installer"]).dir === null,
+  );
+  check(
+    "P2-147: smokeFlags — --dir preserves the current behavior (no flag)",
+    smokeFlags(["--dir", "/tmp/bundle"]).dir === "/tmp/bundle" &&
+      smokeFlags(["--dir", "/tmp/bundle"]).noInstaller === false,
+  );
+  check(
+    "P2-147: smokeFlags — --dir= form resolves too",
+    smokeFlags(["--dir=/tmp/bundle"]).dir === "/tmp/bundle",
+  );
+  check(
+    "P2-147: smokeFlags — --dir and --no-installer compose",
+    smokeFlags(["--dir", "/tmp/b", "--no-installer"]).noInstaller === true &&
+      smokeFlags(["--dir", "/tmp/b", "--no-installer"]).dir === "/tmp/b",
+  );
+}
+
+// --- P2-147: real-repo assertion — ci.yml wires desktop-package to the scope --
+{
+  const root = join(import.meta.dirname, "..");
+  const ci = readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8");
+  const release = readFileSync(join(root, ".github", "workflows", "release.yml"), "utf8");
+  check(
+    "P2-147: ci.yml scope job exposes the desktop flag from scripts/ci-scope.ts",
+    ci.includes("scripts/ci-scope.ts") && ci.includes("desktop: ${{ steps.scope.outputs.desktop }}"),
+  );
+  check(
+    "P2-147: desktop-package needs scope and is conditioned on its output",
+    ci.includes("desktop-package:") && ci.includes("needs: scope") && ci.includes("if: needs.scope.outputs.desktop == 'true'"),
+  );
+  check(
+    "P2-147: desktop-package packages mac dir target only (no dmg, no signing)",
+    ci.includes("-- --mac --dir") && ci.includes("CSC_IDENTITY_AUTO_DISCOVERY: false"),
+  );
+  check(
+    "P2-147: desktop-package smoke-checks the real bundle with installer checks skipped",
+    ci.includes("dist:smoke --workspace @ocr/desktop -- --no-installer"),
+  );
+  check(
+    "P2-147: release workflow keeps the flagless dist:smoke invocation byte for byte",
+    release.includes("run: npm run dist:smoke --workspace @ocr/desktop\n") && !release.includes("--no-installer"),
+  );
 }
 
 if (failures > 0) {
