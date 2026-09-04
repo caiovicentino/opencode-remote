@@ -314,6 +314,10 @@ intacto). Bloco opcional:
   fail-closed (P1-073): o veredito de rejeição permanece e o builder recebe a
   instrução de reformular a concern citando evidência verificável
   `path:line` do diff; findings unverificados nunca mais aprovam por padrão.
+- **Alerta de guard repetido (P2-115)**: o caminho fail-closed de cima, quando
+  se repete (2ª vez seguida na mesma task), emite o evento `alert`
+  (`phase: verifyFindings`, detail com até 2 razões de drop por reviewer
+  all-dropped) + notify — o fail-closed em si fica inalterado.
 - **Forensic semanal**: na passada noturna (primeira janela >= 2h ocioso do
   dia — P1-095), um agente analisa as últimas
   100 failure lessons (`lessons.jsonl`), os carryovers de gate-fail e o
@@ -679,9 +683,9 @@ Desde o P2-114 o pass também roda a sonda `tierb`: binário vermelho loga
 `doctor: tierB` em warn, emite o evento `tierB-binary` (`ok:false`) no feed e
 notifica o supervisor — sem nunca bloquear o boot. Em runtime, falhas de spawn
 do `claude` contínuas também alertam sozinhas: a cada **3 falhas consecutivas**
-(`tierB-spawn-broken` no log + evento `tierB-spawn` no feed + notify) — a
-sequência zera em qualquer resultado não-spawn, e o contador é de memória (o
-boot é coberto pela sonda do doctor). Uso manual:
+  (`tierB-spawn-broken` no log + evento `tierB-spawn` no feed + notify) — a
+  sequência zera em qualquer resultado não-spawn, e o contador é de memória (o
+  boot é coberto pela sonda do doctor). Uso manual:
 
 ```sh
 npx tsx apps/pilot/src/doctor.ts all                # pass completo
@@ -698,6 +702,17 @@ comandos do refs, idempotência, fail-safe do branches, refnames fora do padrão
 `pilot/<ID>` pulados antes de tocar shell, deleção que falha → `ok: false`,
 reparo de state corrompido e tabela de dispatch do CLI `attempts` contra
 state.json descartável).
+
+**Alerta de guard repetido (P2-115)**: o mesmo modelo de streak do P2-114 se
+aplica aos guards fail-closed sobre saída de LLM — `validateSpec` (planner) e
+`verifyFindings` (reviewers). A **2ª rejeição consecutiva** do mesmo guard para
+a mesma task (`GUARD_ALERT_THRESHOLD = 2`, contador em memória por task+guard,
+zerado no primeiro sucesso do guard e no restart; attempts diferentes da mesma
+task no mesmo processo contam) emite um evento `type:"alert"` no feed (`phase`
+= nome do guard, `detail` = `<guard> rejected Nx in a row: <motivo>`), loga
+`guard-repeat` em `level:"error"` no pilot.log e notifica o supervisor — sem
+nunca derrubar o pipeline. A razão do planner também entra no detail terminal
+(`no valid spec … — last: <motivo>`) e, portanto, nas failure lessons.
 
 ## Rodar manualmente
 
@@ -758,6 +773,11 @@ sem spec.
 - **Spec é dado, não instrução**: `validateSpec` rejeita spec > 400 linhas /
   40k chars e qualquer corpo contendo markers de controle do pipeline
   (`VERDICT:`, `PILOT:TASK-DONE`, `PLANNER:DONE`, `SCRIBE:DONE`).
+- **Guard com razão visível (P2-115)**: `specRejectReason`/`commitSpecWithReason`
+  devolvem POR QUE o spec foi rejeitado (seção faltando, marker de controle,
+  tamanho) — o warn `planner attempt produced no valid spec` carrega `reason`, o
+  detail terminal traz `— last: <motivo>` e a 2ª rejeição consecutiva dispara o
+  **alerta de guard repetido** (evento `alert` + notify; ver seção do doctor).
 - O dashboard (`apps/pilot/dashboard`) conhece as fases `planner`/`planner-done`:
   só o node backlog acende e o builder aparece como "working" durante o spec.
 - Se a task já está mergeada em `origin/main`, o planner é pulado (senão o
