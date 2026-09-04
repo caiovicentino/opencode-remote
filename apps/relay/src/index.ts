@@ -2,12 +2,16 @@ import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import { readFileSync } from "node:fs";
 import { WebSocketServer, type WebSocket } from "ws";
-import { healthzHandler } from "./healthz";
-import { TokenBucket } from "./ratelimit";
-import { IpCap, normalizeIp } from "./ipcap";
-import { isValidRoomId, MAX_ROOMS_PER_SOCKET } from "./roomid";
-import { createShutdown, stopAccepting } from "./shutdown";
-import { decideStale } from "./liveness";
+// relative imports carry .js specifiers so plain `node` can run the tsc emit
+// (deploy/relay/Dockerfile + tsconfig.build.json) — tsx resolves them too
+import { healthzHandler } from "./healthz.js";
+import { TokenBucket } from "./ratelimit.js";
+import { IpCap, clientIp } from "./ipcap.js";
+import { isValidRoomId, MAX_ROOMS_PER_SOCKET } from "./roomid.js";
+import { createShutdown, refuseUpgrade, stopAccepting } from "./shutdown.js";
+import { decideStale } from "./liveness.js";
+import { metricsAuthOk, metricsBinding } from "./metricsbind.js";
+import { relayLimits } from "./limits.js";
 
 /**
  * Relay: a blind router.
@@ -21,9 +25,20 @@ import { decideStale } from "./liveness";
  */
 
 const PORT = Number(process.env.RELAY_PORT ?? 8787);
-const MAX_FRAME = 1_000_000; // bytes; sealed op payloads are far smaller
-const MAX_SOCKETS = 1000;
-const MAX_PER_ROOM = 10;
+// P2-141: admission ceilings are env-configurable and validated fail-closed
+// (P2-114 spirit). Any bad value — non-numeric, zero, negative, per-room cap
+// above the socket cap, frame cap above the protocol ceiling — refuses to
+// boot: every reason is logged once here, no listener opens, exit 1. An
+// empty env keeps the exact pre-P2-141 limits (1000 sockets / 10 per room /
+// 1MB frames).
+const LIMITS = relayLimits(process.env);
+if (LIMITS.problems.length > 0) {
+  for (const reason of LIMITS.problems) {
+    ev("warn", "invalid relay limit, refusing to start (fail-closed)", { reason });
+  }
+  process.exit(1);
+}
+const { maxSockets, maxPerRoom, maxFrame, drainGraceMs } = LIMITS;
 // per-connection rate limit on forwarded message frames (0 disables).
 // Defaults are sized to pass the daemon's worst-case chunked transfer
 // (MAX_CHUNKS = 512 frames, concurrent sessions interleaved on one socket)
@@ -33,15 +48,21 @@ const MAX_PER_ROOM = 10;
 const RATE_PER_MIN = envNum("RELAY_RATE_PER_MIN", 600);
 const RATE_BURST = envNum("RELAY_RATE_BURST", 1000);
 const RATE_LIMIT_CLOSE = 4029; // custom 4xxx: "too many frames"
-// live-connection cap per source IP (0 disables): MAX_SOCKETS bounds the
-// pool, but one host could otherwise hold all 1000 slots and deny every
+// live-connection cap per source IP (0 disables): the socket cap bounds the
+// pool, but one host could otherwise hold all of its slots and deny every
 // other peer admission
 const MAX_PER_IP = envNum("RELAY_MAX_PER_IP", 20);
 const ipCap = new IpCap(MAX_PER_IP);
+// x-forwarded-for is client-forgeable, so it is only honored when the
+// operator declares how many trusted proxy layers sit in front of the relay
+// (0 = direct exposure, header ignored). Behind provider TLS without this,
+// every connection would share the LB's IP and RELAY_MAX_PER_IP would
+// collapse into a global admission cap (P2-128).
+const TRUST_PROXY_HOPS = envNum("RELAY_TRUST_PROXY_HOPS", 0);
 // ws-level liveness sweep (P2-067): every interval the relay pings all
 // sockets and terminates the ones silent for more than interval+grace
 // (grace == interval), so a peer that vanished without a close frame
-// (phone lost wifi, laptop slept) stops holding a MAX_SOCKETS slot and its
+// (phone lost wifi, laptop slept) stops holding a socket-cap slot and its
 // per-IP budget until restart. 0 disables the sweep entirely.
 const PING_INTERVAL_S = envNum("RELAY_PING_INTERVAL_S", 30);
 
@@ -79,8 +100,13 @@ interface Socket extends WebSocket {
 
 const rooms = new Map<string, Set<Socket>>();
 
-// --- optional metrics endpoint (localhost-only) -----------------------------
-const METRICS_PORT = Number(process.env.RELAY_METRICS_PORT ?? 0);
+// --- optional metrics endpoint (bind configurable, token-optional) -----------
+// P2-132: the bind address is configurable (RELAY_METRICS_BIND) so a scraper
+// outside the container can reach it, and an optional bearer token
+// (RELAY_METRICS_TOKEN) guards it. Fail-closed: a non-loopback bind without
+// a token is logged once here instead of starting an unauthenticated
+// network-exposed endpoint.
+const METRICS = metricsBinding(process.env);
 const m = {
   connectionsTotal: 0,
   framesRouted: 0,
@@ -91,8 +117,12 @@ const m = {
   staleTerminated: 0,
   startedAt: Date.now(),
 };
-if (METRICS_PORT) {
+if (METRICS.port && METRICS.problems.length === 0) {
   createHttpServer((req, res) => {
+    if (METRICS.token && !metricsAuthOk(req.headers.authorization, METRICS.token)) {
+      res.writeHead(401).end();
+      return;
+    }
     if (req.url?.startsWith("/metrics")) {
       if (req.url.includes("format=prom")) {
         const lines = [
@@ -142,9 +172,17 @@ if (METRICS_PORT) {
     }
     res.writeHead(404).end();
   })
-    .listen(METRICS_PORT, "127.0.0.1", () =>
-      ev("info", "metrics listening", { port: METRICS_PORT, bind: "127.0.0.1" }),
+    .listen(METRICS.port, METRICS.host, () =>
+      ev("info", "metrics listening", {
+        port: METRICS.port,
+        bind: METRICS.host,
+        auth: Boolean(METRICS.token),
+      }),
     );
+} else {
+  for (const reason of METRICS.problems) {
+    ev("warn", "metrics endpoint disabled (fail-closed)", { reason });
+  }
 }
 
 function join(socket: Socket, room: string) {
@@ -176,28 +214,63 @@ const tlsKey = process.env.RELAY_TLS_KEY;
 const server = tlsCert && tlsKey
   ? createHttpsServer({ cert: readFileSync(tlsCert), key: readFileSync(tlsKey) })
   : createHttpServer();
-const wss = new WebSocketServer({ server, maxPayload: MAX_FRAME });
+const wss = new WebSocketServer({ noServer: true, maxPayload: maxFrame });
 let counter = 0;
 
+// P2-023: SIGTERM/SIGINT graceful shutdown — drain ≤3s, then exit 0.
+// `launchctl kickstart -k` (deploy step 2) relies on this: clients get a
+// close 1001 frame and a final JSONL line instead of a dead socket.
+// P2-145: the controller's isShuttingDown flag is now consumed below —
+// /healthz answers 503 while it runs and ws upgrades are refused, so the
+// stage-4 load balancer stops routing NEW peers to a closing instance.
+const { shutdown, isShuttingDown } = createShutdown({
+  activeConnections: () => wss.clients.size,
+  uptimeMs: () => Date.now() - m.startedAt,
+  stopListeners: () => stopAccepting(server, wss.clients, ev),
+  graceMs: drainGraceMs,
+  log: ev,
+  exit: (code) => process.exit(code),
+  setTimeout,
+  clearTimeout,
+});
+
 // public liveness probe for the hosted stage (no auth, counters only).
-// Sits on the plain-HTTP request path; the ws upgrade path is untouched.
+// Sits on the plain-HTTP request path; the ws upgrade path is handled below.
+// P2-145: while draining it answers 503 {ok:false,draining:true} so the LB
+// pulls this instance out of rotation before the sockets close.
 server.on(
   "request",
-  healthzHandler({
-    version: VERSION,
-    startedAt: m.startedAt,
-    rooms: () => rooms.size,
-    roomsRejected: () => m.roomsRejected,
-  }),
+  healthzHandler(
+    {
+      version: VERSION,
+      startedAt: m.startedAt,
+      rooms: () => rooms.size,
+      roomsRejected: () => m.roomsRejected,
+    },
+    isShuttingDown,
+  ),
 );
+
+// P2-145: upgrades are gated explicitly so the drain state can refuse them.
+// A room admitted during the drain would receive a close 1001 milliseconds
+// later; a plain 503 makes the LB/daemon retry the next instance instead.
+server.on("upgrade", (req, socket, head) => {
+  if (isShuttingDown()) {
+    ev("warn", "upgrade refused: relay is draining", { path: req.url?.split("?")[0] });
+    refuseUpgrade(socket);
+    return;
+  }
+  wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+});
 
 server.listen(PORT, () => {
   ev("info", "relay listening", {
     port: PORT,
     tls: Boolean(tlsCert),
-    maxFrame: MAX_FRAME,
-    maxPerRoom: MAX_PER_ROOM,
+    maxFrame,
+    maxPerRoom,
     maxPerIp: MAX_PER_IP,
+    trustProxyHops: TRUST_PROXY_HOPS,
     ratePerMin: RATE_PER_MIN,
     rateBurst: RATE_BURST,
     pingIntervalS: PING_INTERVAL_S,
@@ -214,16 +287,22 @@ function releaseIp(socket: Socket) {
 
 wss.on("connection", (socket: Socket, req) => {
   m.connectionsTotal++;
-  if (wss.clients.size > MAX_SOCKETS) {
+  if (wss.clients.size > maxSockets) {
     m.rejects++;
     socket.close(1013, "server busy");
     return;
   }
   // admission control: the per-IP cap applies before any room join.
-  // Normalize once here (P2-026) — mapped IPv4 unmasks, IPv6 aggregates by
-  // /64 — and stash the key on the socket so admit() and release() always
-  // act on the same bucket.
-  const ip = normalizeIp(req.socket.remoteAddress ?? "unknown");
+  // The key is proxy-aware (P2-128): remoteAddress normalized once (P2-026),
+  // or the trusted x-forwarded-for hop when RELAY_TRUST_PROXY_HOPS says the
+  // chain in front is known — and the same key is stashed on the socket so
+  // admit() and release() always act on the same bucket.
+  const fwd = req.headers["x-forwarded-for"];
+  const ip = clientIp(
+    req.socket.remoteAddress ?? "unknown",
+    typeof fwd === "string" ? fwd : undefined,
+    TRUST_PROXY_HOPS,
+  );
   if (!ipCap.admit(ip)) {
     m.rejects++;
     ev("warn", "connection rejected: per-IP cap exceeded", { ip });
@@ -301,7 +380,7 @@ wss.on("connection", (socket: Socket, req) => {
     // every frame's room is joined by its sender: both ends of a
     // conversation converge on the same room naturally
     join(socket, frame.room);
-    if ((rooms.get(frame.room)?.size ?? 0) > MAX_PER_ROOM) {
+    if ((rooms.get(frame.room)?.size ?? 0) > maxPerRoom) {
       ev("warn", "room capacity exceeded", { room: frame.room.slice(0, 8) });
       m.rejects++;
       socket.close(1013, "room full");
@@ -351,17 +430,5 @@ if (PING_INTERVAL_S > 0) {
   }, PING_INTERVAL_S * 1000);
 }
 
-// P2-023: SIGTERM/SIGINT graceful shutdown — drain ≤3s, then exit 0.
-// `launchctl kickstart -k` (deploy step 2) relies on this: clients get a
-// close 1001 frame and a final JSONL line instead of a dead socket.
-const { shutdown } = createShutdown({
-  activeConnections: () => wss.clients.size,
-  uptimeMs: () => Date.now() - m.startedAt,
-  stopListeners: () => stopAccepting(server, wss.clients, ev),
-  log: ev,
-  exit: (code) => process.exit(code),
-  setTimeout,
-  clearTimeout,
-});
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
 process.on("SIGINT", () => void shutdown("SIGINT"));

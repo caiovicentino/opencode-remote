@@ -27,6 +27,7 @@ import {
 import PairingView from "./components/PairingView";
 import PairingOverlay from "./components/PairingOverlay";
 import SessionsView from "./components/SessionsView";
+import SidebarAccount from "./components/SidebarAccount";
 import ChatView from "./components/ChatView";
 import HomeView from "./components/HomeView";
 import { agentForMode } from "./lib/home";
@@ -42,13 +43,15 @@ import MissionControlView, { type DaemonApiFn } from "./components/MissionContro
 import CommandPalette from "./components/CommandPalette";
 import DegradedView from "./components/DegradedView";
 import ReconnectButton from "./components/ReconnectButton";
-import { degradedKind, sawHealthyDaemon } from "./lib/degraded";
+import { degradedKind, sawHealthyDaemon, sidecarExitNotice, upstreamNotice, type SidecarExitHealth, type UpstreamHealth } from "./lib/degraded";
 import {
+  IconAlert,
   IconChat,
   IconFolder,
   IconGlobe,
   IconLayers,
   IconRadar,
+  IconRefresh,
   IconSettings,
 } from "./components/icons";
 
@@ -79,6 +82,10 @@ interface PairingState {
   appVersion?: string | null;
   daemonVersion?: string | null;
   versionMismatch?: boolean;
+  /** P2-138: upstream (opencode) health detail from the daemon's /api/health. */
+  opencode?: UpstreamHealth;
+  /** P2-140: why the local daemon died (desktop shell only). */
+  sidecarExit?: SidecarExitHealth;
 }
 
 /** Electron bridge from apps/desktop/src/preload.ts (absent in the browser). */
@@ -699,6 +706,19 @@ export default function App() {
   // same sentence. Only the info-only mismatch banner still floats above it.
   const kind = degradedKind(pairingState, everSeen);
   const versionMismatch = !!pairingState?.versionMismatch && !!pairingState?.daemonVersion;
+  // P2-138: upstream (opencode) verdict — null for ok/unknown/legacy payloads.
+  // Rendered ONLY inside existing calm surfaces (degraded card, Settings help
+  // section), never as a second banner (P2-108 single-surface rule).
+  const upstream = upstreamNotice(pairingState?.opencode);
+  // P2-140: why the local daemon died — null unless the shell attached an
+  // exit verdict. Rendered ONLY inside the degraded calm card (P2-108 rule).
+  const sidecarExit = sidecarExitNotice(pairingState?.sidecarExit);
+  // P1-071: the Settings help section is reachable from the first-boot calm
+  // card too — the stub request no-ops every fetch while no client exists.
+  const [helpOpen, setHelpOpen] = useState(false);
+  useEffect(() => {
+    if (phase === "paired") setHelpOpen(false);
+  }, [phase]);
   const reconnectBtn = desktopBridge()?.reconnectDaemon
     ? () => desktopBridge()!.reconnectDaemon!()
     : undefined;
@@ -714,11 +734,12 @@ export default function App() {
   const banner =
     kind === "reconnecting" ? (
       <div className="daemon-reconnecting" role="status">
-        ⟳ {t("reconnecting", { n: pairingState?.reconnectAttempts ?? 0 })}
+        <IconRefresh size={14} className="conn-banner-spin" aria-hidden />{" "}
+        {t("reconnecting", { n: pairingState?.reconnectAttempts ?? 0 })}
       </div>
     ) : kind === "down" ? (
       <div className="daemon-down" role="alert">
-        ⚠︎ {t("daemonDown")}{" "}
+        <IconAlert size={14} aria-hidden /> {t("daemonDown")}{" "}
         {reconnectBtn && <ReconnectButton reconnect={reconnectBtn} />}
       </div>
     ) : (
@@ -751,6 +772,25 @@ export default function App() {
     );
   }
 
+  if (phase !== "paired" && helpOpen) {
+    // P2-138: the calm card's secondary button lands here — the Settings help
+    // section, reachable on first boot (P1-071) even with no daemon client.
+    // The stub request makes every settings fetch a quiet no-op.
+    return (
+      <div className="pair-wrap" data-phase={phase}>
+        <SettingsView
+          request={() => Promise.resolve({ status: 0, body: {} })}
+          onBack={() => setHelpOpen(false)}
+          getDiagnostics={desktopBridge()?.getDiagnostics}
+          onPairRemote={
+            desktopBridge()?.setRemotePairing ? () => void desktopBridge()?.setRemotePairing?.(true) : undefined
+          }
+          upstream={upstream}
+        />
+      </div>
+    );
+  }
+
   if (phase !== "paired") {
     // P2-112: in the desktop shell the unpaired screen is the degraded journey
     // (calm status + visible auto-retry + minimal local data) — never a
@@ -774,6 +814,9 @@ export default function App() {
             reconnectAttempts={pairingState?.reconnectAttempts}
             reconnect={reconnectBtn}
             onPairManually={() => setPairManual(true)}
+            upstream={upstream}
+            onOpenHelp={upstream ? () => setHelpOpen(true) : undefined}
+            sidecarExit={sidecarExit}
           />
         ) : (
           <PairingView
@@ -813,6 +856,9 @@ export default function App() {
       onBack={goBack}
       paneArtifact={paneArtifact}
       onPaneArtifactConsumed={() => setPaneArtifact(null)}
+      // P2-108: the shell strip (.daemon-reconnecting/.daemon-down) and the
+      // in-chat .conn-banner say the same sentence — never show both.
+      shellBannerVisible={kind === "reconnecting" || kind === "down"}
     />
   );
   const settingsNode = (
@@ -822,6 +868,7 @@ export default function App() {
       transport={clientRef.current?.transport}
       getDiagnostics={desktopBridge()?.getDiagnostics}
       onPairRemote={desktopBridge()?.setRemotePairing ? () => void desktopBridge()?.setRemotePairing?.(true) : undefined}
+      upstream={upstream}
     />
   );
   const filesNode = <FilesView request={request} onBack={goBack} />;
@@ -894,12 +941,12 @@ export default function App() {
                 : null;
 
   const railButtons: { slot: Slot; label: string; icon: ReactNode }[] = [
-    { slot: "chat", label: "Conversas", icon: <IconChat /> },
-    { slot: "artifacts", label: "Artifacts", icon: <IconLayers /> },
-    { slot: "browser", label: "Browser", icon: <IconGlobe /> },
-    { slot: "files", label: "Arquivos", icon: <IconFolder /> },
-    { slot: "mission", label: "Mission Control", icon: <IconRadar /> },
-    { slot: "settings", label: "Configurações", icon: <IconSettings /> },
+    { slot: "chat", label: t("navConversations"), icon: <IconChat /> },
+    { slot: "artifacts", label: t("navArtifacts"), icon: <IconLayers /> },
+    { slot: "browser", label: t("navBrowser"), icon: <IconGlobe /> },
+    { slot: "files", label: t("navFiles"), icon: <IconFolder /> },
+    { slot: "mission", label: t("navMission"), icon: <IconRadar /> },
+    { slot: "settings", label: t("navSettings"), icon: <IconSettings /> },
   ];
 
   return (
@@ -917,21 +964,38 @@ export default function App() {
       {isDesktop ? (
         <div className="desk">
           <aside className="desk-side">
+            {/* P2-124: Claude-style shell — primary action + section nav up
+                top, conversations in the middle, account footer pinned down. */}
+            <div className="desk-side-top">
+              <button className="primary desk-new" disabled={creating} onClick={() => void createSession()}>
+                {creating ? t("creating") : t("newShort")}
+              </button>
+              <nav className="desk-nav">
+                {railButtons.map((b) => (
+                  <button
+                    key={b.slot}
+                    className={slots.has(b.slot) ? "active" : ""}
+                    onClick={() => (b.slot === "chat" ? goChat() : openPane(b.slot))}
+                    data-pane={b.slot}
+                    title={b.label}
+                  >
+                    {b.icon}
+                    <span>{b.label}</span>
+                  </button>
+                ))}
+              </nav>
+            </div>
             <div className="desk-side-scroll">{sessionsNode}</div>
-            <nav className="desk-nav">
-              {railButtons.map((b) => (
-                <button
-                  key={b.slot}
-                  className={slots.has(b.slot) ? "active" : ""}
-                  onClick={() => (b.slot === "chat" ? goChat() : openPane(b.slot))}
-                  data-pane={b.slot}
-                  title={b.label}
-                >
-                  {b.icon}
-                  <span>{b.label}</span>
-                </button>
-              ))}
-            </nav>
+            <SidebarAccount
+              localMode={pairingState?.mode === "local"}
+              machineName={machineName}
+              connStatus={connStatus}
+              machines={machines}
+              activeRoom={getActiveRoom()}
+              onSwitch={(p) => void switchMachine(p)}
+              onForget={(p) => forgetMachine(p)}
+              onAddMachine={() => setAddingMachine(true)}
+            />
           </aside>
           <main className="desk-chat">
             {/* P1-046: the chat is persistent — opening Artifacts/Browser/

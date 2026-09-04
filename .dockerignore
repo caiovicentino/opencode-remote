@@ -1,0 +1,14 @@
+# Keeps the Docker build context (root of the monorepo) small and free of
+# secrets. The relay/daemon images only COPY package manifests, tsconfigs and
+# src trees — everything else stays out.
+node_modules/
+dist/
+dist-daemon/
+.git/
+.github/
+.certs/
+.env
+.env.*
+*.log
+memory.md
+.DS_Store

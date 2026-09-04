@@ -44,7 +44,7 @@ import {
   type ThinkingState,
 } from "../lib/thinking";
 import { initialUnreadState, reduceUnread, sendUnreadToShell } from "../lib/unread";
-import { ArtifactIcon, IconArrowUp, IconChat, IconChevronDown, IconDownload, IconLaptop, IconMic, IconPlus, IconSpeaker, IconWrench } from "./icons";
+import { ArtifactIcon, IconArrowLeft, IconArrowUp, IconChat, IconCheck, IconChevronDown, IconChevronUp, IconClock, IconDownload, IconLaptop, IconMic, IconPlus, IconRefresh, IconSpeaker, IconWrench, IconX } from "./icons";
 
 interface Props {
   sessionId: string;
@@ -69,6 +69,10 @@ interface Props {
   paneArtifact?: ArtifactMeta | null;
   /** Called after paneArtifact is adopted so the source can clear its pending state. */
   onPaneArtifactConsumed?: () => void;
+  /** P2-108: the shell already shows .daemon-reconnecting/.daemon-down — the
+   * in-chat .conn-banner must not duplicate the same sentence (one banner
+   * only). The mobile PWA has no shell banner and keeps it. */
+  shellBannerVisible?: boolean;
 }
 
 interface QuestionInfo {
@@ -266,6 +270,7 @@ export default function ChatView({
   onBack,
   paneArtifact,
   onPaneArtifactConsumed,
+  shellBannerVisible = false,
 }: Props) {
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
@@ -1842,14 +1847,25 @@ export default function ChatView({
     }
   }
 
-  // Host capability probe (edge-tts installed?) — one shot on first mount.
+  // Host capability probe (edge-tts installed?) — retry while pairing settles:
+  // a one-shot probe on mount always races the first WS connect.
   useEffect(() => {
     let alive = true;
-    void request("GET", "/__ocr/voice/tts-status")
-      .then((res) => {
-        if (alive) setTtsReady(res.status === 200 && (res.body as { available?: boolean }).available === true);
-      })
-      .catch(() => alive && setTtsReady(false));
+    let attempts = 0;
+    const probe = () => {
+      if (!alive) return;
+      attempts++;
+      void request("GET", "/__ocr/voice/tts-status")
+        .then((res) => {
+          if (!alive) return;
+          if (res.status === 200) setTtsReady((res.body as { available?: boolean }).available === true);
+          else if (attempts < 10) window.setTimeout(probe, 1500);
+        })
+        .catch(() => {
+          if (alive && attempts < 10) window.setTimeout(probe, 1500);
+        });
+    };
+    probe();
     return () => {
       alive = false;
     };
@@ -1909,7 +1925,9 @@ export default function ChatView({
   return (
     <div className={`screen${splitOpen ? " artifact-split" : ""}`}>
       <header>
-        <button className="chat-back" onClick={onBack}>←</button>
+        <button className="chat-btn chat-back" onClick={onBack} aria-label={t("back")}>
+          <IconArrowLeft />
+        </button>
         <h1
           title={sessionTitle}
           style={{
@@ -1944,7 +1962,7 @@ export default function ChatView({
           </div>
         )}
         <button
-          className="chat-handoff"
+          className="chat-btn chat-handoff"
           onClick={() => void handoffToDesktop()}
           aria-label={t("handoffBtn")}
           title={t("handoffBtn")}
@@ -1952,28 +1970,32 @@ export default function ChatView({
           <IconLaptop />
         </button>
         <button
+          className="chat-btn"
           onClick={() => void exportChat()}
           disabled={exporting}
           aria-label={t("exportBtn")}
           title={t("exportBtn")}
         >
-          {exporting ? "…" : <IconDownload />}
+          <IconDownload />
         </button>
         <button
+          className="chat-btn"
           onClick={() => {
             setShowActivity((v) => !v);
             ensureToolHistory();
           }}
           aria-label={t("toolActivity")}
-          style={showActivity ? { borderColor: "var(--accent)" } : undefined}
+          data-active={showActivity || undefined}
         >
           <IconWrench />
         </button>
       </header>
 
-      {connStatus !== "paired" && (
+      {/* P2-108: one reconnect banner only — when the shell strip is already
+          showing, this in-chat banner stays silent. */}
+      {connStatus !== "paired" && !shellBannerVisible && (
         <div className="conn-banner" role="status" title={t("connTitle", { status: connStatus })}>
-          <span className="conn-banner-spin" aria-hidden>⟳</span>{" "}
+          <IconRefresh size={14} className="conn-banner-spin" aria-hidden />{" "}
           {t("reconnecting", { n: Math.max(connAttempts, 1) })}
         </div>
       )}
@@ -2026,8 +2048,8 @@ export default function ChatView({
             </div>
           )}
           {winStart > 0 && (
-            <div className="muted" style={{ textAlign: "center", fontSize: "0.75rem" }}>
-              ↑ {t("olderMessages", { n: winStart })}
+            <div className="muted msg-older" style={{ textAlign: "center", fontSize: "0.75rem" }}>
+              <IconChevronUp size={12} aria-hidden /> {t("olderMessages", { n: winStart })}
             </div>
           )}
           {winStart === 0 && hasMore && !loadingHistory && (
@@ -2171,7 +2193,7 @@ export default function ChatView({
             aria-label={t("jumpToEnd")}
             title={t("jumpToEnd")}
           >
-            ↓
+            <IconChevronDown size={16} aria-hidden />
           </button>
         )}
         </div>
@@ -2353,7 +2375,9 @@ export default function ChatView({
           </div>
         )}
         {autoNote && (
-          <p style={{ color: "var(--muted)", margin: 0 }}>✔ {autoNote}</p>
+          <p style={{ color: "var(--muted)", margin: 0, display: "inline-flex", alignItems: "center", gap: 4 }}>
+            <IconCheck size={13} aria-hidden /> {autoNote}
+          </p>
         )}
         {canUnrevert && (
           <button style={{ margin: "2px 0" }} onClick={() => void unrevert()}>
@@ -2660,11 +2684,11 @@ export default function ChatView({
         <Modal label={t("toolActivity")} z={55} onClose={() => setShowActivity(false)}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <button onClick={() => setShowActivity(false)} aria-label={t("close")}>
-              ✕
+              <IconX size={16} />
             </button>
             <div style={{ flex: 1, fontWeight: 600, fontSize: "0.9rem" }}>{t("toolActivity")}</div>
             <button onClick={() => void loadToolHistory()} aria-label={t("refreshTools")}>
-              ↻
+              <IconRefresh size={16} />
             </button>
           </div>
           <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
@@ -2674,6 +2698,9 @@ export default function ChatView({
                 <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                   <span
                     style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 4,
                       fontSize: "0.72rem",
                       color:
                         a.status === "error"
@@ -2683,7 +2710,14 @@ export default function ChatView({
                             : "inherit",
                     }}
                   >
-                    {a.status === "completed" ? "✓" : a.status === "error" ? "✗" : "⏳"} {a.tool}
+                    {a.status === "completed" ? (
+                      <IconCheck size={12} aria-hidden />
+                    ) : a.status === "error" ? (
+                      <IconX size={12} aria-hidden />
+                    ) : (
+                      <IconClock size={12} aria-hidden />
+                    )}{" "}
+                    {a.tool}
                   </span>
                   <span
                     className="muted"
@@ -2729,7 +2763,7 @@ export default function ChatView({
         >
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <button onClick={() => setDiff(null)} aria-label={t("close")}>
-              ✕
+              <IconX size={16} />
             </button>
             <div style={{ flex: 1, fontWeight: 600, fontSize: "0.9rem" }}>
               {diff.loading ? t("loadingDiff") : t("changesFor", { action: diff.ask?.label ?? "…" })}

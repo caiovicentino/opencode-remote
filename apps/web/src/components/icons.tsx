@@ -196,6 +196,15 @@ export function IconPlus(p: IconProps) {
   );
 }
 
+/** P2-108: sessions filter menu trigger (funnel). */
+export function IconFilter(p: IconProps) {
+  return (
+    <Icon {...p}>
+      <path d="M3 5h18l-7 8.5V19l-4 2v-7.5L3 5Z" />
+    </Icon>
+  );
+}
+
 /** P3-086: composer mic (functional placeholder — disabled without perms). */
 export function IconMic(p: IconProps) {
   return (
@@ -236,12 +245,92 @@ export function IconArrowUp(p: IconProps) {
   );
 }
 
+/** P2-107: mobile chat header back button (replaces the "←" glyph). */
+export function IconArrowLeft(p: IconProps) {
+  return (
+    <Icon {...p}>
+      <path d="M19 12H5" />
+      <path d="m12 19-7-7 7-7" />
+    </Icon>
+  );
+}
+
+/** P2-107: "load older messages" affordance (replaces the "↑" glyph). */
+export function IconChevronUp(p: IconProps) {
+  return (
+    <Icon {...p}>
+      <path d="m18 15-6-6-6 6" />
+    </Icon>
+  );
+}
+
+/** P2-107: reconnecting / refresh affordance (replaces the "↻"/"⟳" glyphs). */
+export function IconRefresh(p: IconProps) {
+  return (
+    <Icon {...p}>
+      <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+      <path d="M21 3v6h-6" />
+    </Icon>
+  );
+}
+
+/** P2-107: daemon-down banner severity mark (replaces the "⚠︎" glyph). */
+export function IconAlert(p: IconProps) {
+  return (
+    <Icon {...p}>
+      <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3" />
+      <path d="M12 9v4" />
+      <path d="M12 17h.01" />
+    </Icon>
+  );
+}
+
+/** P2-107: success / completed state (replaces the "✓"/"✗"-adjacent check). */
+export function IconCheck(p: IconProps) {
+  return (
+    <Icon {...p}>
+      <path d="M20 6 9 17l-5-5" />
+    </Icon>
+  );
+}
+
+/** P2-107: tool-call still running (replaces the "⏳" glyph). */
+export function IconClock(p: IconProps) {
+  return (
+    <Icon {...p}>
+      <circle cx="12" cy="12" r="10" />
+      <polyline points="12 6 12 12 16 14" />
+    </Icon>
+  );
+}
+
+/** P2-107: desktop empty-state mark (replaces the "✻" glyph). */
+export function IconSpark(p: IconProps) {
+  return (
+    <Icon {...p}>
+      <path d="M12 2v20" />
+      <path d="m4.2 6.5 15.6 11" />
+      <path d="M19.8 6.5 4.2 17.5" />
+    </Icon>
+  );
+}
+
 /** P3-084: restore an archived conversation. */
 export function IconUndo(p: IconProps) {
   return (
     <Icon {...p}>
       <path d="M3 7v6h6" />
       <path d="M21 17a9 9 0 0 0-15-6.7L3 13" />
+    </Icon>
+  );
+}
+
+/** P2-124: close/dismiss glyph (machine picker, mobile card actions). */
+export function IconX(p: IconProps) {
+  return (
+    <Icon {...p}>
+      <path d="M18 6 6 18" />
+      <path d="m6 6 12 12" />
     </Icon>
   );
 }

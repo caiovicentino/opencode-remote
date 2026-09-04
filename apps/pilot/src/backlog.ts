@@ -111,23 +111,84 @@ export function doneTaskIds(md: string): Set<string> {
  */
 export type BacklogEditResult = "applied" | "noop" | "missing";
 
-export function blockTask(repoDir: string, id: string, findings: string): BacklogEditResult {
-  const p = join(repoDir, BACKLOG);
-  const md = readFileSync(p, "utf8");
+/** P2-142: outcome of the pure stop-loss edit — new markdown + result. */
+export interface BlockTaskEditResult {
+  /** Markdown after the edit; identical to the input for noop/missing. */
+  text: string;
+  result: BacklogEditResult;
+}
+
+/** A `## Name` header line and the span of its body inside the markdown. */
+interface MdSection {
+  name: string;
+  start: number;
+  bodyStart: number;
+  end: number;
+}
+
+function sectionsOf(md: string): MdSection[] {
+  const out: MdSection[] = [];
+  const headers = [...md.matchAll(/^## (.+)$/gm)];
+  for (let i = 0; i < headers.length; i++) {
+    const m = headers[i]!;
+    const start = m.index ?? 0;
+    const afterHeader = start + m[0].length;
+    const bodyStart = md[afterHeader] === "\n" ? afterHeader + 1 : afterHeader;
+    const end = i + 1 < headers.length ? headers[i + 1]!.index ?? md.length : md.length;
+    out.push({ name: (m[1] ?? "").trim(), start, bodyStart, end });
+  }
+  return out;
+}
+
+/**
+ * P2-142: pure core of the stop-loss edit — markdown in, markdown out, no
+ * disk access (blockTask only wires read/write around it). The task line
+ * moves right below the FIRST existing `## Blocked` header; a header is
+ * created only when none exists, before `## Done` or at the end of the file
+ * (P1-014 behavior). In the same applied write, duplicate `## Blocked`
+ * headers collapse into the first one — bodies stay in place, so task-line
+ * order is preserved and no line is discarded — letting legacy multi-section
+ * files self-normalize on the next real stop-loss write. "noop" now means
+ * the line already lives under ANY `## Blocked` section, not just the first.
+ */
+export function blockTaskEdit(md: string, id: string, findings: string): BlockTaskEditResult {
   const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const re = new RegExp(`^(- \\[ \\] \\(${escaped}\\).*)$`, "m");
   const match = re.exec(md);
-  if (!match) return "missing";
-  const blockedAt = md.search(/^## Blocked$/m);
-  if (blockedAt >= 0 && match.index > blockedAt) return "noop"; // already blocked
+  if (!match) return { text: md, result: "missing" };
+  const owner = sectionsOf(md).find((s) => s.start < match.index && match.index < s.end);
+  if (owner?.name === "Blocked") return { text: md, result: "noop" }; // already blocked
   const summary = findings.replace(/\s+/g, " ").trim().slice(0, 200);
   const entry = `${match[1]} — ${summary}`;
   const removed = md.replace(re, "").replace(/\n{3,}/g, "\n\n");
-  const updated = /^## Done$/m.test(removed)
-    ? removed.replace(/^## Done$/m, `## Blocked\n${entry}\n\n## Done`)
-    : `${removed.replace(/\s*$/, "")}\n\n## Blocked\n${entry}\n`;
-  writeFileSync(p, updated);
-  return "applied";
+  if (!/^## Blocked$/m.test(removed)) {
+    // no section yet: create one before ## Done, or at the end of the file
+    const updated = /^## Done$/m.test(removed)
+      ? removed.replace(/^## Done$/m, () => `## Blocked\n${entry}\n\n## Done`)
+      : `${removed.replace(/\s*$/, "")}\n\n## Blocked\n${entry}\n`;
+    return { text: updated, result: "applied" };
+  }
+  // fold duplicate headers into the first: drop the extra `## Blocked` lines
+  // while every body line stays in place (order preserved, nothing discarded)
+  let seen = false;
+  const collapsed = removed
+    .split("\n")
+    .filter((line) => {
+      if (line !== "## Blocked") return true;
+      if (seen) return false;
+      seen = true;
+      return true;
+    })
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n");
+  return { text: collapsed.replace(/^## Blocked$/m, () => `## Blocked\n${entry}`), result: "applied" };
+}
+
+export function blockTask(repoDir: string, id: string, findings: string): BacklogEditResult {
+  const p = join(repoDir, BACKLOG);
+  const out = blockTaskEdit(readFileSync(p, "utf8"), id, findings);
+  if (out.result === "applied") writeFileSync(p, out.text);
+  return out.result;
 }
 
 /** Add a task at the top of ## Ready (used by redteam findings). */

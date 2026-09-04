@@ -7,12 +7,15 @@
  * P2-026: normalizeIp rotation immunity — mapped IPv4 unmasks to the plain
  * IPv4, IPv6 aggregates by /64, and the handler keys admit/release on the
  * normalized value.
+ * P2-128: clientIp proxy awareness — with zero trusted hops the forgeable
+ * x-forwarded-for header is ignored; with N hops the Nth-from-the-right
+ * entry wins, degrading to remoteAddress on short/malformed chains.
  * Run: npx tsx scripts/relay-ipcap.test.ts
  */
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import WebSocket from "ws";
-import { IpCap, normalizeIp } from "../apps/relay/src/ipcap";
+import { IpCap, clientIp, normalizeIp } from "../apps/relay/src/ipcap";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -74,6 +77,55 @@ check("ipcap: same /64 shares budget", lan.admit(normalizeIp("2001:db8:1:2::1"))
 check("ipcap: same /64 cap+1 is refused", !lan.admit(normalizeIp("2001:db8:1:2::3")));
 check("ipcap: neighbor /64 unaffected", lan.admit(normalizeIp("2001:db8:1:3::1")));
 check("ipcap: counts keys are normalized", JSON.stringify(Object.keys(lan.counts()).sort()) === '["2001:db8:1:2","2001:db8:1:3"]');
+
+// --- 2b. clientIp (P2-128): proxy-aware cap key --------------------------------
+// hops 0 (default): x-forwarded-for is forgeable by any client, so the
+// header must be ignored entirely and the key come from remoteAddress alone
+check("clientIp: hops 0 ignores a forged header", clientIp("1.2.3.4", "9.9.9.9", 0) === "1.2.3.4");
+check("clientIp: absent header with hops 0 uses remoteAddress", clientIp("1.2.3.4", undefined, 0) === "1.2.3.4");
+check("clientIp: fractional hops floor to the integer part", clientIp("1.2.3.4", "9.9.9.9", 0.5) === "1.2.3.4");
+
+// hops N: Nth entry from the right is the address the Nth-from-last proxy saw
+check(
+  "clientIp: hops 1 in a two-entry chain picks the rightmost entry",
+  clientIp("10.0.0.1", "203.0.113.7, 198.51.100.9", 1) === "198.51.100.9",
+);
+check(
+  "clientIp: hops 2 in the same chain picks the leftmost entry",
+  clientIp("10.0.0.1", "203.0.113.7, 198.51.100.9", 2) === "203.0.113.7",
+);
+
+// degraded chains fall back to the real socket address, never a bogus key
+check("clientIp: chain shorter than hops falls back", clientIp("10.0.0.1", "203.0.113.7", 2) === "10.0.0.1");
+check("clientIp: absent header with hops > 0 falls back", clientIp("10.0.0.1", undefined, 1) === "10.0.0.1");
+check("clientIp: malformed chosen entry falls back", clientIp("10.0.0.1", "not-an-ip", 1) === "10.0.0.1");
+check(
+  "clientIp: malformed entry at hop position falls back",
+  clientIp("10.0.0.1", "junk, 198.51.100.9", 2) === "10.0.0.1",
+);
+check(
+  "clientIp: out-of-range octet is not a valid address",
+  clientIp("10.0.0.1", "1.2.3.999", 1) === "10.0.0.1",
+);
+
+// P2-026 normalization is preserved on every clientIp path
+check(
+  "clientIp: mapped remoteAddress normalizes with hops 0",
+  clientIp("::ffff:11.22.33.44", "9.9.9.9", 0) === "11.22.33.44",
+);
+check(
+  "clientIp: mapped IPv4 in the trusted hop unmasks too",
+  clientIp("10.0.0.1", "::ffff:11.22.33.44", 1) === "11.22.33.44",
+);
+check(
+  "clientIp: trusted IPv6 hop aggregates by /64",
+  clientIp("10.0.0.1", "2001:db8:1:2:dead:beef::9", 1) === "2001:db8:1:2",
+);
+
+// the chosen hop key and the remoteAddress fallback key must admit/release
+// on the same bucket shape as the handler's IpCap
+const proxyCap = new IpCap(1);
+check("ipcap: trusted hop key shares the plain-IPv4 budget", proxyCap.admit(clientIp("10.0.0.1", "::ffff:11.22.33.44", 1)) && !proxyCap.admit(clientIp("10.0.0.2", "11.22.33.44", 1)));
 
 // --- 3. integration helpers ---------------------------------------------------
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

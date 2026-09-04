@@ -57,6 +57,14 @@ import { WindowCache, contextPct, sessionTokenTotal } from "./contextgauge.js";
 import { ArtifactWatcher } from "./artifactwatch.js";
 import { createShutdown, stopAccepting } from "./shutdown.js";
 import { localUpgradeAllowed } from "./localws.js";
+import { createRelayRetry } from "./relayretry.js";
+import { parseRelayUrl, redactRelayUrl } from "./relayurl.js";
+import {
+  classifyUpstream,
+  UPSTREAM_PROBE_TIMEOUT_MS,
+  type UpstreamDetail,
+  type UpstreamVerdict,
+} from "./upstream.js";
 import {
   injectArtifactsPathPart,
   injectArtifactsSystem,
@@ -78,6 +86,13 @@ import { emit } from "../../pilot/src/events";
 import type { PilotEvent } from "../../pilot/src/events";
 
 const RELAY_URL = process.env.RELAY_URL ?? "ws://127.0.0.1:8787";
+// P2-139: validate RELAY_URL once at boot — a typo, a wrong scheme or plain
+// ws:// on a public host must not become a silent reconnect loop (now with
+// backoff) that still serves the phone a QR it can never use. Fail-closed:
+// with any problem the daemon never opens the relay socket; local mode is
+// unaffected because it does not ride the relay.
+const relayUrl = parseRelayUrl(RELAY_URL);
+const relayDisabled = relayUrl.problems.length > 0;
 const OPENCODE_URL = process.env.OPENCODE_URL ?? "http://127.0.0.1:4096";
 const OPENCODE_USER = process.env.OPENCODE_SERVER_USERNAME ?? "opencode";
 const OPENCODE_PASS = process.env.OPENCODE_SERVER_PASSWORD ?? "";
@@ -1252,31 +1267,66 @@ if (pwaWatchEnabled(process.env.PWA_HEALTHZ_URL, defaultPwaPlistPath())) {
 }
 
 // watchdog: tell the phone when the agent server goes down (and back up)
+// P2-135: probes feed classifyUpstream so /api/health and the down-push carry
+// the real failure mode (not installed, wrong port, bad token, slow server).
 let opencodeHealthy = true;
+let opencodeDetail: UpstreamDetail = {
+  state: "unknown",
+  reason: "aguardando a primeira sonda",
+  hint: "",
+  checkedAt: null,
+};
 metrics.gauge("ocr_opencode_healthy", 1);
+
+/** Record a finished probe: refreshes the /api/health detail and the legacy
+ * boolean gauge. Returns whether the upstream counts as healthy. */
+function recordUpstream(verdict: UpstreamVerdict): boolean {
+  opencodeDetail = {
+    state: verdict.state,
+    reason: verdict.reason,
+    hint: verdict.hint,
+    checkedAt: new Date().toISOString(),
+  };
+  const healthy = verdict.state === "ok";
+  metrics.gauge("ocr_opencode_healthy", healthy ? 1 : 0);
+  return healthy;
+}
+
+/** One probe against the upstream /global/health, classified by upstream.ts. */
+async function probeUpstream(): Promise<UpstreamVerdict> {
+  const signal = AbortSignal.timeout(UPSTREAM_PROBE_TIMEOUT_MS);
+  try {
+    const res = await fetch(new URL("/global/health", OPENCODE_URL), {
+      headers: authHeader ? { authorization: authHeader } : {},
+      signal,
+    });
+    let body: unknown;
+    let bodyOk = true;
+    try {
+      body = await res.json();
+    } catch {
+      bodyOk = false;
+    }
+    return classifyUpstream({ status: res.status, body, bodyOk });
+  } catch (err) {
+    return classifyUpstream({ error: err, timedOut: signal.aborted });
+  }
+}
+
 setInterval(() => {
   void (async () => {
-    let healthy: boolean;
-    try {
-      const res = await fetch(new URL("/global/health", OPENCODE_URL), {
-        headers: authHeader ? { authorization: authHeader } : {},
-      });
-      const body = (await res.json().catch(() => ({}))) as { healthy?: boolean };
-      healthy = res.ok && body.healthy !== false;
-    } catch {
-      healthy = false;
-    }
-    metrics.gauge("ocr_opencode_healthy", healthy ? 1 : 0);
+    const verdict = await probeUpstream();
+    const healthy = recordUpstream(verdict);
     if (healthy !== opencodeHealthy) {
       opencodeHealthy = healthy;
       void pushToSubscribers(
         healthy ? "opencode is back ✅" : "opencode is DOWN ⛔",
         healthy
           ? `Agent server reachable again on ${machineName}`
-          : `Agent server unreachable on ${machineName} — chats will fail until it's back`,
+          : `${machineName}: ${verdict.hint}`,
         { url: "#/" },
       );
-      log("warn", "opencode health flipped", { healthy });
+      log("warn", "opencode health flipped", { healthy, state: verdict.state });
     }
   })();
 }, 60_000);
@@ -1740,6 +1790,10 @@ async function handleMessage(data: WebSocket.RawData, ws: WebSocket) {
 
 // handle to the live relay websocket (shutdown closes it with code 1001)
 let relaySocket: WebSocket | null = null;
+// P2-129: exponential backoff with full jitter for relay reconnects — a fleet
+// of daemons must not hammer a downed relay twice per second, nor reconnect
+// all in lockstep the moment it comes back.
+const relayRetry = createRelayRetry();
 // handle to the loopback API/metrics server (shutdown calls .close())
 let apiServer: HttpServer | null = null;
 
@@ -1761,11 +1815,16 @@ process.on("SIGTERM", () => void shutdown("SIGTERM"));
 process.on("SIGINT", () => void shutdown("SIGINT"));
 
 function connectRelay() {
+  // P2-139: an invalid RELAY_URL never opens a socket. The reason is logged
+  // once at boot instead of repeating on every retry; nothing here schedules
+  // a reconnect, so the backoff loop never starts.
+  if (relayDisabled) return;
   const ws = new WebSocket(RELAY_URL);
   relaySocket = ws;
 
-  ws.on("open", () => {
-    log("info", "connected to relay", { relay: RELAY_URL, room: daemon.room });
+    ws.on("open", () => {
+      relayRetry.reset();
+      log("info", "connected to relay", { relay: redactRelayUrl(RELAY_URL), room: daemon.room });
     metrics.gauge("ocr_relay_connected", 1);
     metrics.inc("ocr_relay_connects_total");
     ws.send(JSON.stringify({ room: daemon.room, from: daemon.room, payload: "" }));
@@ -1775,7 +1834,12 @@ function connectRelay() {
 
   ws.on("close", () => {
     if (isShuttingDown()) return; // drain in progress: do not reconnect
-    log("warn", "relay connection lost; retrying in 2s");
+    const retryInMs = relayRetry.schedule();
+    metrics.inc("ocr_relay_retries_total");
+    log("warn", "relay connection lost; retrying", {
+      attempt: relayRetry.attempt,
+      retryInMs,
+    });
     metrics.gauge("ocr_relay_connected", 0);
     // P1-061: only sessions that actually ride this relay socket go away —
     // a relay kickstart must never disturb direct local WS sessions.
@@ -1783,7 +1847,7 @@ function connectRelay() {
       if (s.socket === ws) sessions.delete(from);
     }
     metrics.gauge("ocr_sessions_active", sessions.size);
-    setTimeout(connectRelay, 2000);
+    setTimeout(connectRelay, retryInMs);
   });
 
   ws.on("error", (err) => log("error", "relay error", { error: err.message }));
@@ -2081,12 +2145,27 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
   };  try {
     // GET /api/health
     if (req.method === "GET" && seg[1] === "health") {
+      // P2-129: additive relayRetry — attempt number + pending delay while the
+      // daemon is scheduling its next relay dial, null when connected.
+      const relayConnected = metrics.get("ocr_relay_connected") === 1;
       send(200, {
         healthy: true,
         version: VERSION,
         machine: machineName,
         opencodeHealthy: metrics.get("ocr_opencode_healthy") === 1,
-        relayConnected: metrics.get("ocr_relay_connected") === 1,
+        // P2-135: additive detail of the last upstream probe; opencodeHealthy
+        // above keeps its legacy boolean shape for existing clients.
+        opencode: opencodeDetail,
+        relayConnected,
+        relayRetry: relayConnected ? null : relayRetry.snapshot(),
+        // P2-139: additive boot-validation verdict of RELAY_URL; relayConnected
+        // and relayRetry above keep their exact shape. Userinfo (if any) is
+        // redacted before the URL reaches the API surface.
+        relay: {
+          url: redactRelayUrl(RELAY_URL),
+          ok: !relayDisabled,
+          reason: relayDisabled ? relayUrl.problems.join(" ") : null,
+        },
       });
       return true;
     }
@@ -2549,9 +2628,18 @@ async function main() {
   log("info", "daemon starting (protocol v2)", {
     machine: machineName,
     opencode: OPENCODE_URL,
-    relay: RELAY_URL,
+    relay: redactRelayUrl(RELAY_URL),
     pairedClients: readAllowlist().length,
   });
+
+  // P2-139: log the fail-closed verdict exactly once at boot — retry-time
+  // logging would just repeat the same static config error forever.
+  if (relayDisabled) {
+    log("error", "RELAY_URL is invalid — relay connection disabled (fail-closed)", {
+      relay: redactRelayUrl(RELAY_URL),
+      problems: relayUrl.problems,
+    });
+  }
 
   const metricsPort = Number(process.env.OCR_METRICS_PORT);
   if (metricsPort) {
@@ -2561,35 +2649,64 @@ async function main() {
   }
 
   // boot healthcheck: fail loudly early if opencode is unreachable
+  // P2-135: the probe now feeds the same classifier as the watchdog, so the
+  // very first /api/health answer already carries the real failure mode.
+  const signal = AbortSignal.timeout(UPSTREAM_PROBE_TIMEOUT_MS);
   try {
     const res = await fetch(new URL("/global/health", OPENCODE_URL), {
       headers: authHeader ? { authorization: authHeader } : {},
+      signal,
     });
-    const body = (await res.json()) as { healthy?: boolean; version?: string };
-    log("info", "opencode healthcheck", { status: res.status, ...body });
+    let body: unknown;
+    let bodyOk = true;
+    try {
+      body = await res.json();
+    } catch {
+      bodyOk = false;
+    }
+    const verdict = classifyUpstream({ status: res.status, body, bodyOk });
+    recordUpstream(verdict);
+    log("info", "opencode healthcheck", { status: res.status, state: verdict.state, reason: verdict.reason });
   } catch (err) {
+    const verdict = classifyUpstream({ error: err, timedOut: signal.aborted });
+    recordUpstream(verdict);
     log("warn", "opencode unreachable at boot (will keep retrying events)", {
       opencode: OPENCODE_URL,
+      state: verdict.state,
+      reason: verdict.reason,
       error: err instanceof Error ? err.message : String(err),
     });
   }
 
-  pairingUri =
-    `opencode-remote://pair?v=2` +
-    `&relay=${encodeURIComponent(RELAY_URL)}` +
-    `&room=${daemon.room}` +
-    `&k=${encodeURIComponent(daemon.identity.publicKey)}` +
-    `&vapid=${encodeURIComponent(daemon.vapid.publicKey)}` +
-    `&name=${encodeURIComponent(machineName)}`;
+  if (relayDisabled) {
+    // P2-139: a QR embedding an unusable relay URL is worse than no QR —
+    // withhold the pairing URI entirely (not printed here, and
+    // /__ocr/pairing-uri keeps serving null). The desktop app's local mode
+    // (P1-070) never rides the relay and keeps working.
+    console.log(`\n  opencode remote daemon (protocol v2)`);
+    console.log(`  machine:  ${machineName}`);
+    console.log(`  opencode: ${OPENCODE_URL}`);
+    console.log(`  relay:    ${redactRelayUrl(RELAY_URL)} (invalid — relay disabled, see log)`);
+    console.log(`  clients:  ${readAllowlist().length} paired`);
+    console.log(`\n  Pairing QR withheld: fix RELAY_URL and restart the daemon.\n`);
+  } else {
+    pairingUri =
+      `opencode-remote://pair?v=2` +
+      `&relay=${encodeURIComponent(RELAY_URL)}` +
+      `&room=${daemon.room}` +
+      `&k=${encodeURIComponent(daemon.identity.publicKey)}` +
+      `&vapid=${encodeURIComponent(daemon.vapid.publicKey)}` +
+      `&name=${encodeURIComponent(machineName)}`;
 
-  console.log(`\n  opencode remote daemon (protocol v2)`);
-  console.log(`  machine:  ${machineName}`);
-  console.log(`  opencode: ${OPENCODE_URL}`);
-  console.log(`  relay:    ${RELAY_URL}`);
-  console.log(`  clients:  ${readAllowlist().length} paired`);
-  console.log(`\n  Pair with the PWA by scanning this QR code:\n`);
-  console.log(await QRCode.toString(pairingUri, { type: "terminal", small: true }));
-  console.log(`  or paste: ${pairingUri}\n`);
+    console.log(`\n  opencode remote daemon (protocol v2)`);
+    console.log(`  machine:  ${machineName}`);
+    console.log(`  opencode: ${OPENCODE_URL}`);
+    console.log(`  relay:    ${redactRelayUrl(RELAY_URL)}`);
+    console.log(`  clients:  ${readAllowlist().length} paired`);
+    console.log(`\n  Pair with the PWA by scanning this QR code:\n`);
+    console.log(await QRCode.toString(pairingUri, { type: "terminal", small: true }));
+    console.log(`  or paste: ${pairingUri}\n`);
+  }
 
   connectRelay();
   void forwardEvents();

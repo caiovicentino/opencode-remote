@@ -56,8 +56,11 @@ export function recordCycle(st: PilotState, ok: boolean, task?: string, now = Da
 
 // ── P1-074: infra-signature failures — never merit evidence ─────────────────
 
-/** P1-074: kind of infrastructure failure behind a pipeline outcome. */
-export type InfraFailureKind = "api-down" | "spawn" | "timeout" | "network";
+/** P1-074: kind of infrastructure failure behind a pipeline outcome. P2-134:
+ * "conflict" = the task PR is blocked by a merge conflict with main (caused by
+ * another slot's merge) — infra, not merit: the next cycle rebases the
+ * preserved branch and retries at zero attempt cost. */
+export type InfraFailureKind = "api-down" | "spawn" | "timeout" | "network" | "conflict" | "spec-format";
 
 /** Every INFRA_DOCTOR_EVERY-th infra failure wakes the doctor (a diagnostic
  * pass without entering audit mode). */
@@ -72,6 +75,16 @@ export const INFRA_DOCTOR_EVERY = 3;
  */
 export function resultInfraKind(result: { ok: boolean; infra?: InfraFailureKind }): InfraFailureKind | null {
   return result.ok ? null : result.infra ?? null;
+}
+
+/**
+ * P2-137: the FIRST spec-format failure of a task is infra (free retry — the
+ * planner's repair prompt + conditional 3rd attempt fix a markdown typo at zero
+ * attempt cost); from the 2nd on it counts as merit exactly like today, so a
+ * genuinely broken task still burns attempts (P1-074 bias: the retry is free).
+ */
+export function specFailureIsInfra(priorSpecFails: number): boolean {
+  return priorSpecFails === 0;
 }
 
 /**

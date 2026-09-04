@@ -176,13 +176,20 @@ Desktop app: para interagir com o app Electron real use o harness
 `tools/desktop.mjs` (`open/see/click/type/shot/ipc/close`, mesma DX do
 browse.mjs) — launch hermético, sem daemon de produção. Quando o diff toca
 `apps/desktop/` ou `apps/web/`, o gate roda `npm run test:desktop-flow` (fluxo
-de interação real, <180s — P1-070 adicionou o bloco "local boot" com daemon
+de interação real, <240s — P1-070 adicionou o bloco "local boot" com daemon
 hermético real; P1-080 adicionou o repro de overflow do chat: bolha com diff
 longo em janela estreita, nada pode sair do viewport; P1-089 adicionou o beat
 queue→flush→reentrada com segundo boot hermético contra um fake de opencode:
 fila offline drena no reboot, o burst de >500 eventos re-dispara idle antigo e
 o count de bolhas fica estável em 3 re-entradas; ids de sessão do gate são
 curtos de propósito — path de unix socket no macOS trunca em 104 chars;
+P2-069 adicionou o beat de instância única: um segundo Electron real é
+spawnado no MESMO userData do keeper e deve sair limpo (lock de instância
+única, linha explicando no desktop.log compartilhado) enquanto a primeira
+instância mantém exatamente 1 janela; o `open` do harness reporta o userData
+minted no JSON de resposta e injeta `OCR_KEEPER_PID` — o app observa o pid do
+keeper e sai sozinho (com `app.exit` de graça após 4s) quando o keeper morre,
+então keeper SIGKILLado nunca mais vira zumbi de horas;
 P2-090 adicionou o beat de auto-abertura de artifact: o daemon emite
 `session.artifact` ao detectar escrita em artifacts, o pane abre no idle e
 não sobrepõe escolha manual nem o browser pane; P2-091 adicionou a navegação
@@ -203,11 +210,20 @@ evidências — duas 1440x900 com `prefers-reduced-motion` off/on e uma 390x844
 global zera toda animação (`animation-name` computado vira `none`); a UI
 usa animações 150–300ms ease-out (slide-in/out do painel de artifact com
 backdrop, entrada de mensagens, hover da sidebar, transições de pane) e
-NADA anima em dados tabulares/auditoria (Mission Control/CSV); P2-112
+NADA anima em dados tabulares/auditoria (Mission Control/CSV); P2-124
+adicionou o beat do shell de sidebar nível Claude ("+ Novo" e nav de seções
+no topo da coluna de 280px, zero emoji na sidebar, footer de conta abrindo o
+seletor de máquina); P2-112
 adicionou a jornada degradada do primeiro boot sem daemon (card de status
 calmo "conectando pela primeira vez…" no lugar do alerta vermelho, retry
 automático visível, feedback real do "Reconectar agora" com spinner+toast e
-o hatch de pareamento manual); use
+o hatch de pareamento manual); P2-140 adicionou ao mesmo card calmo o
+porquê da morte do daemon local (classificador puro `sidecarexit.ts`
+recebe code/signal/cauda de stderr, veredito port-busy/entry-missing/
+runtime-error/killed/unknown via `sidecarExit` no `ocr:pairing-state`,
+copy acionável sem caminhos nem segredos; o harness honra um
+`OCR_DAEMON_ENTRY` real apontado pro script fake que morre com EADDRINUSE);
+use
 `OCR_DESKTOP_SESSION` próprio para não colidir
 com a sessão de outro processo. P1-081: com `OCR_DESKTOP_SESSION` setado o app
 NÃO mostra janela (`showMainWindow` no-op + `paintWhenInitiallyHidden`, interação

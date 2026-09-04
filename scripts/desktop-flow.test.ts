@@ -19,6 +19,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createServer, type AddressInfo } from "node:net";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import {
   ARTIFACTS_MARKER,
@@ -131,9 +132,15 @@ const cliEnv = { ...process.env, OCR_DESKTOP_SESSION: session };
 // added the composer beat (attach preview chip, mic-disabled state, inline
 // agent/model selector, auto-grow clamp + Enter/Shift+Enter semantics);
 // P3-087 added the motion-pass beat (reduced-motion on/off screenshots +
-// the animation-name flip probe) inside the same budget.
+// the animation-name flip probe) inside the same budget; P2-069 added the
+// single-instance beat (a real second Electron on the same userData quits
+// cleanly), growing it to 195s; P2-138 added the upstream-notice beat
+// (fake opencode answering 401 + a third hermetic daemon + Settings help
+// card), growing it to 225s; P2-140 added the sidecar-exit beat (a real
+// OCR_DAEMON_ENTRY fake dying with EADDRINUSE + the calm-card verdict),
+// growing it to 240s.
 const startedAt = Date.now();
-const DEADLINE_MS = 180_000;
+const DEADLINE_MS = 240_000;
 const shotPath = join(tmpdir(), "ocr-desktop-flow", `flow-${process.pid}.png`);
 // Evidence shots live in the builder dir (never used as review evidence).
 // Declared up front: the P2-112 degraded-journey beats record there too.
@@ -208,6 +215,14 @@ async function waitProbe(
 function pngSize(path: string): [number, number] {
   const buf = readFileSync(path);
   return [buf.readUInt32BE(16), buf.readUInt32BE(20)];
+}
+
+/** P2-140: the displayed verdict copy must never carry a file path, machine
+ * detail or secret — path separators, home/tmp markers and credential words
+ * are all leaks for a stage-3 user. */
+function reasonOrHintLeaksPaths(v: { reason?: string; hint?: string }): boolean {
+  const texts = [v.reason ?? "", v.hint ?? ""];
+  return texts.some((s) => s.includes("/") || s.includes("\\") || /home|users|tmp|token|secret/i.test(s));
 }
 
 /** P1-089: phase banner with elapsed time — the <90s budget of this gate
@@ -305,6 +320,61 @@ try {
   if (!opened.ok) process.exit(1);
 
   run("boot rendered the app (#root mounted)", ["see", "OpenCode Remote"], 15_000);
+  // --- P2-069: single instance per userData -----------------------------------
+  // The incident: a second launch on the same userData raced the first one and
+  // could end as a white, unpaired window. Now the second instance quits
+  // cleanly (single-instance lock), explains why in the shared desktop.log and
+  // the first instance keeps exactly one window. Hermetic repro: spawn the real
+  // Electron binary against the SAME userData the keeper minted (`open`
+  // reports it since P2-069) — the lock must reject it before any window.
+  phase("P2-069: single instance per userData");
+  let bootInfo: { userData?: string } | null = null;
+  try {
+    bootInfo = JSON.parse(opened.stdout.trim()) as { userData?: string };
+  } catch {}
+  const electronBin = (() => {
+    try {
+      return createRequire(join(repoRoot, "apps", "desktop", "package.json"))("electron") as string;
+    } catch {
+      return "";
+    }
+  })();
+  if (bootInfo?.userData && electronBin) {
+    const second = spawnSync(
+      electronBin,
+      [join(repoRoot, "apps", "desktop")],
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+        timeout: 45_000,
+        env: { ...cliEnv, OCR_USER_DATA_DIR: bootInfo.userData },
+      },
+    );
+    check(
+      "P2-069: second instance on the same userData quits cleanly (lock held)",
+      second.status === 0,
+      `${second.stdout ?? ""}\n${second.stderr ?? ""}`,
+    );
+    const sharedLog = (() => {
+      try {
+        return readFileSync(join(bootInfo!.userData!, "logs", "desktop.log"), "utf8");
+      } catch {
+        return "";
+      }
+    })();
+    check("P2-069: lock-fail explained in the shared desktop.log", /already owns this userData/.test(sharedLog));
+    const winsAfter = run("P2-069: first instance still answers after the double open", ["wins"], 15_000);
+    if (winsAfter.ok) {
+      let count = -1;
+      try {
+        const arr = JSON.parse(winsAfter.stdout) as unknown;
+        count = Array.isArray(arr) ? arr.length : -1;
+      } catch {}
+      check("P2-069: exactly one window after the double open", count === 1, winsAfter.stdout);
+    }
+  } else {
+    check("P2-069: open reported the minted userData dir", false, opened.stdout);
+  }
   // P1-081: the hermetic shell never calls win.show() — the gate drives the
   // app through webContents while the operator's screen stays clean. The
   // screen-level guarantee is BrowserWindow.isVisible()=false for every
@@ -388,6 +458,67 @@ try {
   );
   run("P2-112: manual pairing escape hatch", ["click", ".degraded-manual"], 15_000);
 
+  // --- P2-106: benchmark pairing journey — 4 evidence states ------------------
+  // (1) two titled sections on the ceremony screen, (2) scanner route,
+  // (3) styled invalid-code error with the inline format helper, and (4) the
+  // QR overlay with the demoted "pair later" link (local-boot beat below).
+  const connectTitle = run("P2-106: client section title", ["ipc", "document.querySelector('.pair-section-title')?.textContent ?? ''"], 15_000);
+  if (connectTitle.ok) {
+    check(
+      "P2-106: 'connect to another machine' section title (en|pt)",
+      /Connect to another machine|Conectar a outra máquina/.test(connectTitle.stdout),
+      connectTitle.stdout,
+    );
+  }
+  const sectionCount = run("P2-106: titled section count", ["ipc", "String(document.querySelectorAll('.pair-section').length)"], 15_000);
+  if (sectionCount.ok) check("P2-106: connect + host sections both render", sectionCount.stdout.replace(/"/g, "").trim() === "2", sectionCount.stdout);
+  const shotSections1440 = join(shotsDir, "P2-106-pairing-sections.png");
+  const shotSections390 = join(shotsDir, "P2-106-pairing-sections-390.png");
+  const sec1 = run("P2-106: 1440x900 sections shot", ["shot", shotSections1440, "1440", "900"], 15_000);
+  if (sec1.ok) check("P2-106: sections 1440x900 shot is a real PNG", pngSize(shotSections1440).join("x") === "1440x900");
+  // Geometry is read at 1440x900 (the shot command just set it): the column is
+  // capped at ~420px wide and vertically centered in the window.
+  const centerCol = run(
+    "P2-106: narrow centered column (~420px)",
+    ["ipc", "(() => { const el = document.querySelector('.pair-screen'); if (!el) return ''; const r = el.getBoundingClientRect(); return String(Math.round(r.width)) + 'x' + String(Math.round((r.top + r.bottom) / 2)); })()"],
+    15_000,
+  );
+  if (centerCol.ok) {
+    const m = centerCol.stdout.replace(/"/g, "").match(/(\d+)x(\d+)/);
+    check(
+      "P2-106: pair column reads ~420px wide, vertically centered",
+      !!m && Number(m[1]) >= 380 && Number(m[1]) <= 420 && Number(m[2]) >= 375 && Number(m[2]) <= 525,
+      centerCol.stdout,
+    );
+  }
+  const sec2 = run("P2-106: 390 sections shot", ["shot", shotSections390, "390", "844"], 15_000);
+  if (sec2.ok) check("P2-106: sections 390 shot is a real PNG", pngSize(shotSections390)[0] === 390);
+
+  // (2) scanner route: open it, prove the screen swapped, come back. The
+  // hermetic shell has no camera — the scanner's own error fallback is a
+  // valid render of this state.
+  run("P2-106: open the QR scanner", ["click", ".pair-section button.primary"], 15_000);
+  await waitProbe(
+    "P2-106: scanner screen rendered",
+    "document.querySelector('.screen header h1')?.textContent ?? ''",
+    (v) => /Scan pairing code|Escanear código de pareamento/.test(v),
+    cliEnv,
+    10,
+    500,
+  );
+  const shotScanner = join(shotsDir, "P2-106-pairing-scanner.png");
+  const sc1 = run("P2-106: 1440x900 scanner shot", ["shot", shotScanner, "1440", "900"], 15_000);
+  if (sc1.ok) check("P2-106: scanner 1440x900 shot is a real PNG", pngSize(shotScanner).join("x") === "1440x900");
+  run("P2-106: back from the scanner", ["click", ".screen header button"], 15_000);
+  await waitProbe(
+    "P2-106: back on the ceremony screen",
+    "!!document.querySelector('.pair-submit')",
+    (v) => /true/.test(v),
+    cliEnv,
+    10,
+    500,
+  );
+
   run("type invalid pairing code", ["type", "textarea", "opencode-remote://not-a-valid-code"], 15_000);
   // P2-049: the pairing screen copy moved into the i18n dictionary — on a
   // pt-BR host the button reads "Parear", so the old text="Pair" click broke
@@ -402,6 +533,21 @@ try {
       /Invalid pairing code|Código de pareamento inválido/.test(errText.stdout),
     );
   }
+  // P2-106: the styled error block also carries the inline expected-format
+  // helper and a live region so screen readers announce the failure.
+  const errHint = run("P2-106: invalid-code format helper", ["ipc", "document.querySelector('.pair-error-hint')?.textContent ?? ''"], 15_000);
+  if (errHint.ok) {
+    check(
+      "P2-106: helper names the expected pairing-URI format (en|pt)",
+      /Expected format: opencode-remote:\/\/pair|Formato esperado: opencode-remote:\/\/pair/.test(errHint.stdout),
+      errHint.stdout,
+    );
+  }
+  const errLive = run("P2-106: error live-region semantics", ["ipc", "(() => { const el = document.querySelector('.pair-error'); return el ? el.getAttribute('role') + '|' + el.getAttribute('aria-live') : ''; })()"], 15_000);
+  if (errLive.ok) check("P2-106: .pair-error is role=alert + aria-live=assertive", /alert\|assertive/.test(errLive.stdout), errLive.stdout);
+  const shotError = join(shotsDir, "P2-106-pairing-error.png");
+  const er1 = run("P2-106: 1440x900 error shot", ["shot", shotError, "1440", "900"], 15_000);
+  if (er1.ok) check("P2-106: error 1440x900 shot is a real PNG", pngSize(shotError).join("x") === "1440x900");
   const shot = run("screenshot captured", ["shot", shotPath], 15_000);
   if (shot.ok) {
     try {
@@ -736,8 +882,66 @@ try {
         }
         const s1 = run("local: 1440x900 evidence shot", ["shot", localShot, "1440", "900"], 15_000, localEnv);
         if (s1.ok) check("local: 1440x900 shot is a real PNG", pngSize(localShot).join("x") === "1440x900");
+
+        // --- P2-106: QR overlay state (4th evidence state) -----------------------
+        // Request remote pairing from Settings: the next poll fetches the
+        // hermetic daemon's pairing URI, renders the QR overlay, and the
+        // demoted "pair later" quiet link dismisses it back to local quiet.
+        const overlayClicked = run("P2-106: request remote pairing (Settings entry)", ["click", ".pair-remote-entry"], 15_000, localEnv);
+        if (overlayClicked.ok) {
+          await waitProbe(
+            "P2-106: QR overlay renders",
+            "!!document.querySelector('.pair-overlay')",
+            (v) => /true/.test(v),
+            localEnv,
+            24,
+            500,
+          );
+          const shotOverlay = join(shotsDir, "P2-106-pairing-overlay.png");
+          const o1 = run("P2-106: 1440x900 overlay shot", ["shot", shotOverlay, "1440", "900"], 15_000, localEnv);
+          if (o1.ok) check("P2-106: overlay 1440x900 shot is a real PNG", pngSize(shotOverlay).join("x") === "1440x900");
+          const laterClass = run("P2-106: 'pair later' classes", ["ipc", "document.querySelector('.pair-overlay-later')?.className ?? ''"], 15_000, localEnv);
+          if (laterClass.ok) {
+            check(
+              "P2-106: 'pair later' is the quiet link, not .primary",
+              /pair-overlay-later/.test(laterClass.stdout) && !/primary/.test(laterClass.stdout),
+              laterClass.stdout,
+            );
+          }
+          run("P2-106: dismiss via the quiet link", ["click", ".pair-overlay-later"], 15_000, localEnv);
+          await waitProbe(
+            "P2-106: overlay dismissed",
+            "!!document.querySelector('.pair-overlay')",
+            (v) => /false/.test(v),
+            localEnv,
+            10,
+            500,
+          );
+        }
+
+        // --- P2-108: empty state ends in an action -------------------------------
+        // Superseded by P2-123's living home: the desk-empty CTA grew into the
+        // full home screen (greeting + composer + ideas), enforced by the
+        // P2-123 beat below.
+
         const s2 = run("local: 390 evidence shot", ["shot", localShot390, "390", "844"], 15_000, localEnv);
         if (s2.ok) check("local: 390 shot is a real PNG", pngSize(localShot390)[0] === 390);
+
+        // --- P2-108: mobile chrome demoted to an overline -----------------------
+        // The 390 shot above left the shell on Settings — go back to Chats so
+        // the sessions board (and its demoted header) is the visible surface,
+        // then probe the 0.72rem overline (≤ 12px at the default root).
+        const chatsTab = run("P2-108: back to the Chats tab", ["click", '.tabbar button[aria-label="Chats"]'], 15_000, localEnv);
+        if (chatsTab.ok) {
+          const overlineProbe = run(
+            "P2-108: mobile overline chrome probe",
+            ["ipc", "(() => { const h = document.querySelector('.sess-mobile-head .sess-overline'); return !!h && parseFloat(getComputedStyle(h).fontSize) <= 12; })()"],
+            15_000,
+            localEnv,
+          );
+          if (overlineProbe.ok) check("P2-108: mobile machine name renders as a 0.72rem overline", /true/.test(overlineProbe.stdout), overlineProbe.stdout);
+          run("P2-108: mobile overline evidence shot", ["shot", join(shotsDir, "P2-108-overline-390.png"), "390", "844"], 15_000, localEnv);
+        }
 
         // --- P2-123: the living home (greeting + composer + ideas) -----------
         // The window is still 390px wide from the previous shot; the home only
@@ -1511,6 +1715,10 @@ try {
         if (degraded) {
           const banner = run("local: degradation banner rendered", ["ipc", "!!(document.querySelector('.daemon-reconnecting') || document.querySelector('.daemon-down'))"], 15_000, localEnv);
           if (banner.ok) check("local: reconnecting/down banner present", /true/.test(banner.stdout));
+          // P2-108: exactly ONE degradation banner — the shell strip must not
+          // be doubled by the in-chat .conn-banner.
+          const bannerCount = run("local: banner count probe", ["ipc", "String(document.querySelectorAll('.daemon-reconnecting, .daemon-down, .conn-banner').length)"], 15_000, localEnv);
+          if (bannerCount.ok) check("P2-108: daemon falling renders a single banner", bannerCount.stdout.replace(/"/g, "").trim() === "1", bannerCount.stdout);
         }
 
         // --- P1-089: queue→flush→reentrada across a SECOND hermetic boot ----
@@ -2049,6 +2257,103 @@ try {
             await waitProbe("P3-084: artifact session chat rendered again", "!!document.querySelector('.messages')", (v) => /true/.test(v), localEnv2);
           }
 
+          // --- P2-124: Claude-level sidebar shell --------------------------------
+          // "+ New" pinned to the top of a 280px column, section nav above the
+          // list (SVG icons only — zero emoji/glyphs), temporal groups intact
+          // and a fixed account footer that opens the machine picker. Runs at
+          // 1440x900 right after the P3-084 beat, then drops to 390 for the
+          // narrow evidence shot.
+          phase("P2-124: sidebar shell (new + nav + account footer)");
+          // the beat opens right after P3-084's narrow shot — resize back up
+          const p124Wide = run("P2-124: resize to desktop width", ["shot", join(shotsDir, "P2-124-resize.png"), "1440", "900"], 15_000, localEnv2);
+          if (p124Wide.ok) {
+            await waitProbe("P2-124: desktop shell mounted", "!!document.querySelector('.desk-side')", (v) => /true/.test(v), localEnv2);
+            const sideW = run("P2-124: sidebar column width", ["ipc", "document.querySelector('.desk-side')?.getBoundingClientRect().width ?? 0"], 15_000, localEnv2);
+            if (sideW.ok) check("P2-124: sidebar is 280px wide", Math.round(parseFloat(sideW.stdout)) === 280, sideW.stdout);
+            const navProbe = run(
+              "P2-124: section nav shape",
+              ["ipc", "(() => { const btns = [...document.querySelectorAll('.desk-nav button[data-pane]')]; return btns.length === 6 && btns.every((b) => b.querySelector(':scope > svg')); })()"],
+              15_000,
+              localEnv2,
+            );
+            if (navProbe.ok) check("P2-124: 6 nav buttons, each with an SVG icon", /true/.test(navProbe.stdout), navProbe.stdout);
+            const emojiProbe = run(
+              "P2-124: zero emoji/glyphs in the sidebar",
+              ["ipc", "!(/\\p{Extended_Pictographic}|[▾⌄✎↩✕]/u.test(document.querySelector('.desk-side').textContent))"],
+              15_000,
+              localEnv2,
+            );
+            if (emojiProbe.ok) check("P2-124: sidebar copy is glyph-free", /true/.test(emojiProbe.stdout), emojiProbe.stdout);
+            const orderProbe = run(
+              "P2-124: new button → nav → list order",
+              ["ipc", "(() => { const a = document.querySelector('.desk-new'), b = document.querySelector('.desk-nav'), c = document.querySelector('.sess-rows'); if (!a || !b || !c) return 'missing'; const after = (x, y) => (x.compareDocumentPosition(y) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0; return after(a, b) && after(b, c); })()"],
+              15_000,
+              localEnv2,
+            );
+            if (orderProbe.ok) check("P2-124: .desk-new precedes .desk-nav precedes .sess-rows", /true/.test(orderProbe.stdout), orderProbe.stdout);
+            const fillProbe = run(
+              "P2-124: + New spans the column",
+              ["ipc", "(() => { const top = document.querySelector('.desk-side-top'); const nw = document.querySelector('.desk-new').getBoundingClientRect().width; const cs = getComputedStyle(top); const inner = top.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight); return nw >= inner - 2; })()"],
+              15_000,
+              localEnv2,
+            );
+            if (fillProbe.ok) check("P2-124: .desk-new fills the column (±2px)", /true/.test(fillProbe.stdout), fillProbe.stdout);
+            const accountProbe = run(
+              "P2-124: account footer contents",
+              ["ipc", "(() => { const f = document.querySelector('.desk-account'); if (!f) return null; const name = f.querySelector('.desk-account-name')?.textContent ?? ''; const plan = f.querySelector('.desk-account-plan')?.textContent ?? ''; return { name, plan }; })()"],
+              15_000,
+              localEnv2,
+            );
+            if (accountProbe.ok) {
+              let acct: { name?: string; plan?: string } | null = null;
+              try {
+                acct = JSON.parse(accountProbe.stdout) as { name?: string; plan?: string };
+              } catch {}
+              check("P2-124: footer name matches the machine name", acct?.name === "local", accountProbe.stdout);
+              check("P2-124: footer plan names the connection mode", /Local|Remoto|Remote/.test(acct?.plan ?? ""), accountProbe.stdout);
+            }
+            run("P2-124: open the machine picker from the footer", ["click", ".desk-account-btn"], 15_000, localEnv2);
+            const pickerUp = await waitProbe("P2-124: machine picker rendered", "!!document.querySelector('.machine-picker')", (v) => /true/.test(v), localEnv2);
+            if (pickerUp) {
+              run("P2-124: close the machine picker", ["click", '.machine-picker button[aria-label="Close machine picker"]'], 15_000, localEnv2);
+              await waitProbe("P2-124: machine picker closed", "!!document.querySelector('.machine-picker')", (v) => /false/.test(v), localEnv2);
+            }
+            const groupsSurvive = run(
+              "P2-124: list + temporal groups intact after the picker",
+              ["ipc", "[...document.querySelectorAll('.sess-group-head[data-group]')].map((el) => el.getAttribute('data-group')).join(',')"],
+              15_000,
+              localEnv2,
+            );
+            if (groupsSurvive.ok) {
+              let g = groupsSurvive.stdout.trim();
+              try {
+                g = JSON.parse(g) as string;
+              } catch {}
+              check("P2-124: today,yesterday,earlier heads survive", g === "today,yesterday,earlier", groupsSurvive.stdout);
+            }
+            run("P2-124: sidebar shell evidence shot", ["shot", join(shotsDir, "P2-124-sidebar-1440.png")], 15_000, localEnv2);
+            run("P2-124: narrow evidence shot", ["shot", join(shotsDir, "P2-124-sidebar-390.png"), "390", "844"], 15_000, localEnv2);
+
+            // --- P2-108: quiet chrome — filter menu at desktop width ------------
+            // The narrow shot above dropped the window to 390 (sidebar unmounted);
+            // resize back up so the sidebar search row is mounted again.
+            const p108Wide = run("P2-108: sidebar with search row evidence shot", ["shot", join(shotsDir, "P2-108-sidebar-1440.png"), "1440", "900"], 15_000, localEnv2);
+            if (p108Wide.ok) {
+              const filterOpen = run("P2-108: open the search filter menu", ["click", ".sess-filter-btn"], 15_000, localEnv2);
+              if (filterOpen.ok) {
+                const menuProbe = run(
+                  "P2-108: filter menu shape",
+                  ["ipc", "(() => { const items = [...document.querySelectorAll('.sess-filter-menu [data-filter]')]; return items.length === 3 && items.every((b) => b.textContent.trim().length > 0); })()"],
+                  15_000,
+                  localEnv2,
+                );
+                if (menuProbe.ok) check("P2-108: filter menu carries 3 options", /true/.test(menuProbe.stdout), menuProbe.stdout);
+                run("P2-108: filter menu evidence shot", ["shot", join(shotsDir, "P2-108-filter-1440.png")], 15_000, localEnv2);
+                run("P2-108: close the filter menu", ["click", ".sess-menu-scrim"], 15_000, localEnv2);
+              }
+            }
+          }
+
           // --- P3-085: collapsible thinking block + streaming polish -----------
           // Simulated long response over the fake backend: reasoning parts
           // stream into the "Pensou por Xs" block (expanded while thinking,
@@ -2360,6 +2665,257 @@ try {
     if (localBooted) spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: localEnv });
     killDaemon("SIGKILL");
     rmSync(daemonHome, { recursive: true, force: true });
+  }
+
+  // --- P2-138: upstream notice — fake opencode answering 401 -----------------
+  // Reuses the P1-089 fake-opencode pattern, configured for HTTP 401 on
+  // /global/health: the daemon itself stays healthy (its /api/health attaches
+  // the P2-135 classifier verdict) while the agent server refuses the token.
+  // The shell propagates the opencode object over ocr:pairing-state (same
+  // channel as the P3-054 version fields) and the renderer shows the hint in
+  // exactly ONE card — the Settings help section — never a second banner
+  // (P2-108 single-surface rule).
+  phase("P2-138: upstream notice (fake opencode 401)");
+  const fake401Script = [
+    "const http = require('node:http');",
+    "const srv = http.createServer((req, res) => {",
+    "  const u = new URL(req.url, 'http://127.0.0.1');",
+    "  if (u.pathname === '/global/health') { res.writeHead(401, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: 'unauthorized' })); return; }",
+    "  res.writeHead(404).end();",
+    "});",
+    "srv.listen(0, '127.0.0.1', () => console.log('PORT=' + srv.address().port));",
+  ].join("\n");
+  const fake401Child = spawn(process.execPath, ["-e", fake401Script], {
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  const fake401Port = await new Promise<number>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("fake opencode 401 never printed PORT")), 10_000);
+    fake401Child.stdout?.on("data", (d: Buffer) => {
+      const m = d.toString().match(/PORT=(\d+)/);
+      if (m) {
+        clearTimeout(timer);
+        resolve(Number(m[1]));
+      }
+    });
+    fake401Child.on("exit", () => reject(new Error("fake opencode 401 exited early")));
+  }).catch((err) => {
+    check("P2-138: fake opencode (401) booted", false, String(err));
+    return NaN;
+  });
+  const killFake401 = () => fake401Child.kill();
+  process.on("exit", killFake401);
+  const daemonHome3 = mkdtempSync(join(tmpdir(), "ocr-flow-daemon3-"));
+  const localStateFile3 = join(daemonHome3, ".opencode-remote", "daemon.json");
+  const port3 = await new Promise<number>((resolve, reject) => {
+    const srv = createServer();
+    srv.listen(0, "127.0.0.1", () => {
+      const { port } = srv.address() as AddressInfo;
+      srv.close(() => resolve(port));
+    });
+    srv.on("error", reject);
+  });
+  const localDaemon3 = spawn("npx", ["tsx", "apps/daemon/src/index.ts"], {
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      HOME: daemonHome3,
+      OCR_METRICS_PORT: String(port3),
+      RELAY_URL: "ws://127.0.0.1:1", // dead: relay must stay irrelevant in local mode
+      OPENCODE_URL: `http://127.0.0.1:${fake401Port}`,
+      OCR_LOG_LEVEL: "error",
+    },
+    stdio: ["ignore", "ignore", "ignore"],
+    detached: true,
+  });
+  const killDaemon3 = (signal: NodeJS.Signals = "SIGTERM"): void => {
+    if (!localDaemon3.pid) return;
+    try {
+      process.kill(-localDaemon3.pid, signal);
+    } catch {
+      /* already gone */
+    }
+  };
+  process.on("exit", () => killDaemon3("SIGKILL"));
+  const upstreamEnv = {
+    ...process.env,
+    OCR_DESKTOP_SESSION: `${session}-upstream`,
+    OCR_DESKTOP_LOCAL_STATE: localStateFile3,
+    OCR_DAEMON_METRICS_PORT: String(port3),
+  };
+  let upstreamBooted = false;
+  try {
+    let token3 = "";
+    for (let i = 0; i < 25; i++) {
+      try {
+        token3 = (JSON.parse(readFileSync(localStateFile3, "utf8")) as { apiToken?: string }).apiToken ?? "";
+      } catch {}
+      if (token3) break;
+      await fetch(`http://127.0.0.1:${port3}/api/health`, { headers: { authorization: "Bearer warmup" } }).catch(() => {});
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    check("P2-138: hermetic daemon (401 upstream) published the 0600 state file", !!token3);
+    // daemon-side proof first: the classifier verdict rides on /api/health
+    const upstreamHealth = token3
+      ? await fetch(`http://127.0.0.1:${port3}/api/health`, { headers: { authorization: `Bearer ${token3}` } })
+          .then((r) => r.json() as Promise<{ opencode?: { state?: string } }>)
+          .catch(() => null)
+      : null;
+    check(
+      "P2-138: /api/health carries opencode.state=unauthorized",
+      upstreamHealth?.opencode?.state === "unauthorized",
+      JSON.stringify(upstreamHealth?.opencode ?? null),
+    );
+    if (token3 && upstreamHealth?.opencode?.state === "unauthorized") {
+      const open = run("P2-138: open (hermetic launch)", ["open"], 45_000, upstreamEnv);
+      upstreamBooted = open.ok;
+      if (open.ok) {
+        await waitProbe(
+          "P2-138: app paired with the hermetic daemon",
+          "document.querySelector('[data-phase]')?.getAttribute('data-phase') ?? ''",
+          (v) => v.includes("paired"),
+          upstreamEnv,
+        );
+        // channel proof: the renderer receives the opencode verdict through
+        // ocr:pairing-state (additive field next to the P3-054 versions)
+        const st = run("P2-138: IPC app:pairingState", ["ipc", "window.ocrDesktop.getPairingState()"], 15_000, upstreamEnv);
+        if (st.ok) {
+          let parsed: { opencode?: { state?: string } } | null = null;
+          try {
+            parsed = JSON.parse(st.stdout) as typeof parsed;
+          } catch {
+            parsed = null;
+          }
+          check("P2-138: pairingState carries opencode.state=unauthorized", parsed?.opencode?.state === "unauthorized", st.stdout);
+        }
+        run("P2-138: open Settings pane", ["menu-click", "go-pane-settings"], 15_000, upstreamEnv);
+        const helpUp = await waitProbe(
+          "P2-138: Settings help card rendered",
+          "!!document.querySelector('.settings-help')",
+          (v) => /true/.test(v),
+          upstreamEnv,
+          12,
+          500,
+        );
+        if (helpUp) {
+          // ONE visible card carries the hint; no daemon banner doubles it.
+          const one = run("P2-138: single help card probe", ["ipc", "String(document.querySelectorAll('.settings-help').length)"], 15_000, upstreamEnv);
+          if (one.ok) check("P2-138: exactly one visible card carries the hint", one.stdout.replace(/"/g, "").trim() === "1", one.stdout);
+          const noBanner = run("P2-138: banner count probe", ["ipc", "String(document.querySelectorAll('.daemon-reconnecting, .daemon-down, .conn-banner').length)"], 15_000, upstreamEnv);
+          if (noBanner.ok) check("P2-138: upstream notice never becomes a second banner (P2-108)", noBanner.stdout.replace(/"/g, "").trim() === "0", noBanner.stdout);
+          // P2-106 lesson: locale-independent class hook + en/pt regex copy.
+          const hint = run("P2-138: hint copy probe", ["ipc", "document.querySelector('.settings-help')?.textContent ?? ''"], 15_000, upstreamEnv);
+          if (hint.ok) {
+            check(
+              "P2-138: help card names the refusal and the action",
+              /Agent password changed|A senha do agente mudou/.test(hint.stdout) &&
+                /credential|credencial/.test(hint.stdout),
+              hint.stdout,
+            );
+          }
+          const shot1440 = join(shotsDir, "P2-138-upstream-1440.png");
+          const shot390 = join(shotsDir, "P2-138-upstream-390.png");
+          const s1 = run("P2-138: 1440x900 evidence shot", ["shot", shot1440, "1440", "900"], 15_000, upstreamEnv);
+          if (s1.ok) check("P2-138: 1440x900 shot is a real PNG", pngSize(shot1440).join("x") === "1440x900");
+          const s2 = run("P2-138: 390 evidence shot", ["shot", shot390, "390", "844"], 15_000, upstreamEnv);
+          if (s2.ok) check("P2-138: 390 shot is a real PNG", pngSize(shot390)[0] === 390);
+        }
+      }
+    }
+  } finally {
+    if (upstreamBooted) spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: upstreamEnv });
+    killDaemon3("SIGKILL");
+    killFake401();
+    rmSync(daemonHome3, { recursive: true, force: true });
+  }
+
+  // --- P2-140: daemon-down card explains WHY the daemon died ------------------
+  // The harness honors a caller-set OCR_DAEMON_ENTRY: the shell really spawns
+  // this fake daemon entry, which prints EADDRINUSE on stderr and exits 1.
+  // The exit classifier verdict (port-busy) rides ocr:pairing-state and the
+  // ONE calm degraded card shows the actionable hint — never a second banner
+  // (P2-108). Respawn delays are shortened so the real gaveUp state (which
+  // freezes the last verdict) arrives in ~2s instead of 65s.
+  phase("P2-140: sidecar exit verdict (fake entry exits 1 with EADDRINUSE)");
+  const exitDir = mkdtempSync(join(tmpdir(), "ocr-flow-exit-"));
+  const fakeEntry = join(exitDir, "fake-daemon-entry.cjs");
+  writeFileSync(
+    fakeEntry,
+    [
+      "// P2-140 beat: a daemon entry that cannot boot — the port is taken.",
+      "process.stderr.write('Error: listen EADDRINUSE: address already in use 127.0.0.1:8792\\n');",
+      "process.exit(1);",
+    ].join("\n"),
+  );
+  const exitEnv = {
+    ...process.env,
+    OCR_DESKTOP_SESSION: `${session}-exitinfo`,
+    OCR_DAEMON_ENTRY: fakeEntry,
+    OCR_DAEMON_RESPAWN_DELAYS: "300,300,300",
+  };
+  let exitBooted = false;
+  try {
+    const open = run("P2-140: open (hermetic launch with a dying fake daemon)", ["open"], 45_000, exitEnv);
+    exitBooted = open.ok;
+    if (open.ok) {
+      const hintShown = await waitProbe(
+        "P2-140: exit hint rendered inside the calm card",
+        "!!document.querySelector('.degraded-exit')",
+        (v) => /true/.test(v),
+        exitEnv,
+      );
+      if (hintShown) {
+        // ONE calm card, ONE exit block, zero extra banners (P2-108).
+        const oneCard = run("P2-140: single degraded card probe", ["ipc", "String(document.querySelectorAll('.degraded').length)"], 15_000, exitEnv);
+        if (oneCard.ok) check("P2-140: exactly one calm card", oneCard.stdout.replace(/"/g, "").trim() === "1", oneCard.stdout);
+        const oneExit = run("P2-140: single exit block probe", ["ipc", "String(document.querySelectorAll('.degraded-exit').length)"], 15_000, exitEnv);
+        if (oneExit.ok) check("P2-140: exactly one exit-verdict block", oneExit.stdout.replace(/"/g, "").trim() === "1", oneExit.stdout);
+        const noBanner = run("P2-140: banner count probe", ["ipc", "String(document.querySelectorAll('.daemon-down, .daemon-reconnecting, .conn-banner').length)"], 15_000, exitEnv);
+        if (noBanner.ok) check("P2-140: verdict never becomes a second banner (P2-108)", noBanner.stdout.replace(/"/g, "").trim() === "0", noBanner.stdout);
+        // P2-106 lesson: locale-independent class hook + en/pt regex copy.
+        const copy = run("P2-140: exit copy probe", ["ipc", "document.querySelector('.degraded-exit')?.textContent ?? ''"], 15_000, exitEnv);
+        if (copy.ok) {
+          check(
+            "P2-140: port-busy title + actionable hint (en|pt)",
+            /took the daemon's port|ocupou a porta do daemon/.test(copy.stdout) &&
+              /Close the program|Feche o programa/.test(copy.stdout),
+            copy.stdout,
+          );
+        }
+        // Channel proof: the verdict object itself, sanitized for the UI —
+        // no file paths, tokens or secrets may leak into the displayed copy.
+        const st = run("P2-140: IPC app:pairingState", ["ipc", "window.ocrDesktop.getPairingState()"], 15_000, exitEnv);
+        if (st.ok) {
+          let parsed: { daemonDown?: boolean; sidecarExit?: { kind?: string; reason?: string; hint?: string } } | null = null;
+          try {
+            parsed = JSON.parse(st.stdout) as typeof parsed;
+          } catch {
+            parsed = null;
+          }
+          const verdict = parsed?.sidecarExit;
+          check(
+            "P2-140: pairingState carries daemonDown + kind=port-busy over ocr:pairing-state",
+            parsed?.daemonDown === true && verdict?.kind === "port-busy",
+            st.stdout,
+          );
+          check(
+            "P2-140: verdict copy is path-free and non-empty",
+            !!verdict?.reason && !!verdict?.hint && !reasonOrHintLeaksPaths(verdict),
+            JSON.stringify(verdict ?? null),
+          );
+        }
+        const shot1440 = join(shotsDir, "P2-140-exit-1440.png");
+        const shot390 = join(shotsDir, "P2-140-exit-390.png");
+        const s1 = run("P2-140: 1440x900 evidence shot", ["shot", shot1440, "1440", "900"], 15_000, exitEnv);
+        if (s1.ok) check("P2-140: 1440x900 shot is a real PNG", pngSize(shot1440).join("x") === "1440x900");
+        const s2 = run("P2-140: 390 evidence shot", ["shot", shot390, "390", "844"], 15_000, exitEnv);
+        if (s2.ok) check("P2-140: 390 shot is a real PNG", pngSize(shot390)[0] === 390);
+      } else {
+        check("P2-140: exit hint never rendered", false, "waitProbe exhausted");
+      }
+    }
+  } finally {
+    if (exitBooted) spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: exitEnv });
+    rmSync(exitDir, { recursive: true, force: true });
   }
 } finally {
   if (keeperBooted) spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: cliEnv });

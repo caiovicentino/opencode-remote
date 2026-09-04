@@ -55,6 +55,27 @@ export function desktopLogFile(userDataDir: string): string {
 }
 
 /**
+ * P2-069: when the reader of our stdout/stderr dies (a SIGKILLed harness
+ * keeper, a closed terminal), the async EPIPE from the next console write
+ * surfaces as uncaughtException — and since the crash handler logs through the
+ * same console, that used to loop: EPIPE → crash report → console → EPIPE,
+ * spamming client-logs/ forever on a shell that can no longer write anywhere
+ * but the file. Swallowing stream errors here is safe: this file log keeps the
+ * truth, and installFatalErrorHandlers keeps handling real exceptions.
+ * Attach once per stream; failures are ignored (best-effort by design).
+ */
+export function installPipeGuards(streams: { on: (event: string, cb: () => void) => unknown }[]): void {
+  for (const stream of streams) {
+    if (!stream) continue;
+    try {
+      stream.on("error", () => {});
+    } catch {
+      /* not attachable — nothing to guard */
+    }
+  }
+}
+
+/**
  * Local-time timestamp (user rule: UI/log timestamps are local, GMT-3) with an
  * explicit offset so entries stay unambiguous and sortable:
  * 2026-09-01T09:34:12.345-03:00.
@@ -208,6 +229,11 @@ let active: DesktopLogger | null = null;
 
 /** Install the process-wide file logger; call once at the top of main.ts. */
 export function initDesktopLog(userDataDir: string, opts: DesktopLoggerOptions = {}): DesktopLogger {
+  // P2-069: the mirror writes to process.stdout/stderr — guard both pipes so
+  // a dead reader (SIGKILLed keeper/terminal) cannot turn the next console
+  // write into an uncaughtException crash-report loop. Idempotent: an extra
+  // 'error' listener is a no-op and a second init is not a supported path.
+  installPipeGuards([process.stdout, process.stderr]);
   active = createDesktopLogger(userDataDir, opts);
   return active;
 }

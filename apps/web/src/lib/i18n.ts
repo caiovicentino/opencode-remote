@@ -60,6 +60,8 @@ export const dict = {
     filterAll: "All",
     filterWithBadge: "With badge",
     filterNoBadge: "No badge",
+    // P2-108: search-attached filter menu trigger
+    filterTitle: "Filter",
     loadingSessions: "Loading conversations…",
     noSessions: "No conversations yet.",
     ready: "ready",
@@ -69,8 +71,19 @@ export const dict = {
     errored: "errored",
     newConversation: "+ New conversation",
     creating: "Creating…",
+    // P2-124: Claude-level sidebar shell
+    newShort: "+ New",
+    navConversations: "Conversations",
+    navArtifacts: "Artifacts",
+    navBrowser: "Browser",
+    navFiles: "Files",
+    navMission: "Mission Control",
+    navSettings: "Settings",
+    planLocal: "Local · this machine",
+    planRemote: "Remote · paired",
+    accountSwitch: "Switch machine",
     unpair: "Unpair",
-    pushOn: "Push ✓",
+    pushOn: "Push enabled",
     pushEnable: "Enable push",
     renamePrompt: "New name:",
     deleteConfirm: "Delete this conversation?",
@@ -79,11 +92,11 @@ export const dict = {
     activity: "Activity",
     // chat
     stop: "Stop",
-    emptyTitle: "Start the conversation 👋",
+    emptyTitle: "Start the conversation",
     emptyHint: "Send an audio, photo or text — your agent is ready.",
     agentWorking: "agent is working…",
     queued: "{n} message(s) queued — will send when reconnected",
-    exported: "Conversation exported ✔",
+    exported: "Conversation exported",
     openedOnMac: "Opened on your Mac — the conversation continues there",
     rewindBtn: "back to here",
     rewindConfirm:
@@ -100,7 +113,7 @@ export const dict = {
     exportBtn: "Export conversation",
     handoffBtn: "Continue on the Mac",
     copyPath: "Copy path",
-    copied: "Copied ✓",
+    copied: "Copied",
     copyFailed: "Could not copy the path",
     answer: "Answer",
     skip: "Skip",
@@ -193,6 +206,33 @@ export const dict = {
     degradedLocalTitle: "Available offline",
     degradedLocalHint: "Language and theme live on this machine — they work right now.",
     degradedPairManually: "Pair another device manually",
+    // P2-138: upstream (opencode) notice inside the calm card + the Settings
+    // help section it links to. Four classifier states, honest and calm — the
+    // daemon's own reason/hint render below as secondary text detail.
+    upstreamUnreachableTitle: "Agent server not found",
+    upstreamUnreachableAction: "Check that opencode is installed and running on this machine (opencode serve).",
+    upstreamUnauthorizedTitle: "Agent password changed",
+    upstreamUnauthorizedAction: "Update the agent credential — the app reconnects by itself afterwards.",
+    upstreamTimeoutTitle: "Agent server is slow to answer",
+    upstreamTimeoutAction: "Restart opencode on this machine if this persists.",
+    upstreamUnhealthyTitle: "Agent server answered unwell",
+    upstreamUnhealthyAction: "Restart opencode on this machine and check the server version.",
+    upstreamHelpAction: "Open setup help",
+    upstreamHelpTitle: "Agent server help",
+    // P2-140: why the local daemon died — inside the same calm degraded card.
+    // Honest, actionable, one surface; no paths, tokens or secrets in copy.
+    sidecarPortBusyTitle: "Another app took the daemon's port",
+    sidecarPortBusyAction:
+      "Close the program using the daemon's local port (or restart the machine) and reopen the app.",
+    sidecarEntryMissingTitle: "Daemon files are missing",
+    sidecarEntryMissingAction: "Reinstall the app to restore the installation, then reopen it.",
+    sidecarRuntimeErrorTitle: "The daemon failed to start",
+    sidecarRuntimeErrorAction: "Reopen the app; if it persists, send the diagnostic from Settings → Help.",
+    sidecarKilledTitle: "The system shut the daemon down",
+    sidecarKilledAction:
+      "Reopen the app — it reconnects by itself; if this keeps happening, close other heavy programs.",
+    sidecarUnknownTitle: "The daemon exited unexpectedly",
+    sidecarUnknownAction: "Reopen the app; if it persists, send the diagnostic from Settings → Help.",
     reconnectTrying: "Trying…",
     reconnectStarted: "Daemon restart started — the app reconnects on its own.",
     reconnectFailed: "Could not restart the daemon — try again in a moment.",
@@ -233,13 +273,21 @@ export const dict = {
     unitMin: "min",
     // pairing screen (P2-049). P1-070: local-first wording — the desktop
     // auto-connects to the daemon on the same machine, no code needed there.
+    // P2-106: one sentence — the ceremony sections below carry the detail.
     pairIntro:
-      "OpenCode Remote pairs with the daemon on this machine automatically — no code needed here. To connect from another device, scan the daemon's QR or paste a pairing code. Traffic is end-to-end encrypted; the relay cannot read it.",
+      "OpenCode Remote pairs with the daemon on this machine automatically — to connect from another device, scan the daemon's QR or paste a pairing code.",
+    // P2-106: the two pairing directions get titled sections (client / host).
+    pairConnectTitle: "Connect to another machine",
+    pairHostTitle: "Pair a phone with this machine",
     scanQr: "Scan QR code",
     orPaste: "— or paste manually —",
     pairBtn: "Pair",
     connecting: "Connecting…",
     invalidCode: "Invalid pairing code",
+    // P2-106: inline recovery helper under the invalid-code error — shows the
+    // shape of a well-formed pairing URI so the fix is obvious.
+    invalidCodeHint:
+      "Expected format: opencode-remote://pair?v=2&relay=… — copy the whole code, exactly as the other machine shows it.",
     // chat composer + header (P2-049)
     send: "Send",
     messagePlaceholder: "Message the agent…",
@@ -275,6 +323,7 @@ export const dict = {
     changesFor: "changes for {action}",
     noChanges: "no file changes yet for this request",
     close: "Close",
+    back: "Back",
     queuedTitle: "queued — will send when back online",
     connTitle: "connection: {status}",
     sessionFallback: "session",
@@ -332,6 +381,7 @@ export const dict = {
     filterAll: "Todas",
     filterWithBadge: "Com badge",
     filterNoBadge: "Sem badge",
+    filterTitle: "Filtrar",
     loadingSessions: "Carregando conversas…",
     noSessions: "Nenhuma conversa ainda.",
     ready: "pronto",
@@ -341,8 +391,19 @@ export const dict = {
     errored: "deu erro",
     newConversation: "+ Nova conversa",
     creating: "Criando…",
+    // P2-124: shell de sidebar nível Claude
+    newShort: "+ Novo",
+    navConversations: "Conversas",
+    navArtifacts: "Artifacts",
+    navBrowser: "Browser",
+    navFiles: "Arquivos",
+    navMission: "Mission Control",
+    navSettings: "Configurações",
+    planLocal: "Local · esta máquina",
+    planRemote: "Remoto · pareado",
+    accountSwitch: "Trocar de máquina",
     unpair: "Desconectar",
-    pushOn: "Notificações ✓",
+    pushOn: "Notificações ativadas",
     pushEnable: "Ativar notificações",
     renamePrompt: "Novo nome:",
     deleteConfirm: "Apagar esta conversa?",
@@ -350,13 +411,13 @@ export const dict = {
     forget: "Esquecer",
     activity: "Atividade",
     stop: "Parar",
-    emptyTitle: "Comece a conversa 👋",
+    emptyTitle: "Comece a conversa",
     emptyHint: "Mande um áudio, foto ou texto — seu agente tá pronto.",
     agentWorking: "agente trabalhando…",
     queued: "{n} mensagem(s) na fila — enviam ao reconectar",
-    exported: "Conversa exportada ✔",
+    exported: "Conversa exportada",
     openedOnMac: "Aberto no Mac — a conversa continua lá",
-    rewindBtn: "⏪ voltar pra cá",
+    rewindBtn: "Voltar pra cá",
     rewindConfirm:
       "Voltar a conversa pra este ponto? Tudo o que veio depois é desfeito — inclusive as mudanças no código. Dá pra refazer depois.",
     rewound: "Conversa voltou pra trás",
@@ -371,7 +432,7 @@ export const dict = {
     exportBtn: "Exportar conversa",
     handoffBtn: "Continuar no Mac",
     copyPath: "Copiar caminho",
-    copied: "Copiado ✓",
+    copied: "Copiado",
     copyFailed: "Não deu pra copiar o caminho",
     answer: "Responder",
     skip: "Pular",
@@ -462,6 +523,32 @@ export const dict = {
     degradedLocalTitle: "Disponível offline",
     degradedLocalHint: "Idioma e tema ficam nesta máquina — funcionam agora.",
     degradedPairManually: "Parear outro dispositivo manualmente",
+    // P2-138: aviso do upstream (opencode) dentro do card calmo + seção de
+    // ajuda das Configurações. Quatro states do classificador, tom honesto e
+    // calmo — reason/hint do daemon entram só como detalhe secundário em texto.
+    upstreamUnreachableTitle: "Servidor do agente não encontrado",
+    upstreamUnreachableAction: "Confira se o opencode está instalado e rodando nesta máquina (opencode serve).",
+    upstreamUnauthorizedTitle: "A senha do agente mudou",
+    upstreamUnauthorizedAction: "Atualize a credencial do agente — o app reconecta sozinho depois.",
+    upstreamTimeoutTitle: "Servidor do agente demora a responder",
+    upstreamTimeoutAction: "Se persistir, reinicie o opencode nesta máquina.",
+    upstreamUnhealthyTitle: "Servidor do agente respondeu mal",
+    upstreamUnhealthyAction: "Reinicie o opencode nesta máquina e confira a versão do servidor.",
+    upstreamHelpAction: "Abrir ajuda da configuração",
+    upstreamHelpTitle: "Ajuda do servidor de agente",
+    // P2-140: por que o daemon local morreu — dentro do mesmo card calmo.
+    // Tom honesto e acionável, uma superfície só; sem caminhos nem segredos.
+    sidecarPortBusyTitle: "Outro programa ocupou a porta do daemon",
+    sidecarPortBusyAction:
+      "Feche o programa que usa a porta do daemon (ou reinicie a máquina) e reabra o app.",
+    sidecarEntryMissingTitle: "Arquivos do daemon não encontrados",
+    sidecarEntryMissingAction: "Reinstale o aplicativo para restaurar a instalação e reabra.",
+    sidecarRuntimeErrorTitle: "O daemon falhou ao iniciar",
+    sidecarRuntimeErrorAction: "Reabra o app; se persistir, envie o diagnóstico em Configurações → Ajuda.",
+    sidecarKilledTitle: "O sistema encerrou o daemon",
+    sidecarKilledAction: "Reabra o app — ele reconecta sozinho; se repetir, feche outros programas pesados.",
+    sidecarUnknownTitle: "O daemon saiu de forma inesperada",
+    sidecarUnknownAction: "Reabra o app; se persistir, envie o diagnóstico em Configurações → Ajuda.",
     reconnectTrying: "Tentando…",
     reconnectStarted: "Reinício do daemon iniciado — o app reconecta sozinho.",
     reconnectFailed: "Não deu pra reiniciar o daemon agora — tente de novo em instantes.",
@@ -502,13 +589,21 @@ export const dict = {
     unitMin: "min",
     // pairing screen (P2-049). P1-070: copy local-first — o desktop se conecta
     // sozinho ao daemon da mesma máquina, sem código aqui.
+    // P2-106: uma frase — as seções abaixo carregam o detalhe.
     pairIntro:
-      "O OpenCode Remote se conecta sozinho ao daemon desta máquina — nenhum código é necessário aqui. Para conectar de outro dispositivo, escaneie o QR do daemon ou cole um código de pareamento. O tráfego é criptografado ponta a ponta; o relay não consegue lê-lo.",
+      "O OpenCode Remote se conecta sozinho ao daemon desta máquina — para conectar outro dispositivo, escaneie o QR do daemon ou cole um código de pareamento.",
+    // P2-106: as duas direções do pareamento viram seções tituladas (cliente/host).
+    pairConnectTitle: "Conectar a outra máquina",
+    pairHostTitle: "Parear um celular com esta máquina",
     scanQr: "Escanear QR code",
     orPaste: "— ou cole manualmente —",
     pairBtn: "Parear",
     connecting: "Conectando…",
     invalidCode: "Código de pareamento inválido",
+    // P2-106: helper inline sob o erro de código inválido — mostra o formato
+    // esperado pra correção ser óbvia.
+    invalidCodeHint:
+      "Formato esperado: opencode-remote://pair?v=2&relay=… — copie o código inteiro, exatamente como a outra máquina mostra.",
     // chat composer + header (P2-049)
     send: "Enviar",
     messagePlaceholder: "Mensagem pro agente…",
@@ -544,6 +639,7 @@ export const dict = {
     changesFor: "mudanças de {action}",
     noChanges: "sem mudanças de arquivos neste pedido",
     close: "Fechar",
+    back: "Voltar",
     queuedTitle: "na fila — envia quando voltar a conexão",
     connTitle: "conexão: {status}",
     sessionFallback: "sessão",

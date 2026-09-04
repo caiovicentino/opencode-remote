@@ -8,7 +8,8 @@ import type { EventEnvelope } from "@ocr/protocol";
 import type { Pairing } from "../lib/client";
 import { applySessionFilters, splitPilotSessions, type BadgeFilter } from "../lib/sessionFilter";
 import { dropCachedSession } from "../lib/sessionCache";
-import { IconArchive, IconPencil, IconUndo } from "./icons";
+import { IconArchive, IconCheck, IconChevronDown, IconFilter, IconPencil, IconUndo, IconX } from "./icons";
+import MachinePicker from "./MachinePicker";
 
 interface Session {
   id: string;
@@ -73,9 +74,16 @@ function PilotGroup({
         width: "fit-content",
       }}
     >
-      <span aria-hidden style={{ fontSize: "0.7rem", transform: open ? "rotate(180deg)" : undefined, display: "inline-block" }}>
-        ▾
-      </span>
+      {/* P2-124: SVG chevron instead of the "▾" glyph (no emoji-as-icons) */}
+      <IconChevronDown
+        size={12}
+        aria-hidden
+        style={{
+          transform: open ? "rotate(180deg)" : undefined,
+          display: "inline-block",
+          flexShrink: 0,
+        }}
+      />
       {label}
     </button>
   );
@@ -120,6 +128,9 @@ export default function SessionsView({
   const [pushState, setPushState] = useState<"idle" | "enabling" | "enabled">("idle");
   const [query, setQuery] = useState("");
   const [badgeFilter, setBadgeFilter] = useState<BadgeFilter>("all");
+  // P2-108: badge filters live in a menu attached to the search instead of a
+  // chip row — less chrome above the list, one affordance to filter.
+  const [filterOpen, setFilterOpen] = useState(false);
   const [switching, setSwitching] = useState(false);
   const [pilotOpen, setPilotOpen] = useState(false);
   // P3-084: client-side archive (this device's localStorage, reversible)
@@ -355,15 +366,15 @@ export default function SessionsView({
         )}
         <div className="session-actions" onClick={(e) => e.stopPropagation()}>
           <button aria-label={t("rename")} title={t("rename")} style={{ padding: "2px 8px" }} onClick={() => void renameSession(s.id, s.title)}>
-            ✎
+            <IconPencil size={14} />
           </button>
           {archived ? (
             <button aria-label={t("restore")} title={t("restore")} style={{ padding: "2px 8px" }} onClick={() => restoreConversation(s.id)}>
-              ↩
+              <IconUndo size={14} />
             </button>
           ) : (
             <button className="danger" aria-label={t("delete")} title={t("delete")} style={{ padding: "2px 8px" }} onClick={() => void deleteSession(s.id)}>
-              ✕
+              <IconX size={14} />
             </button>
           )}
         </div>
@@ -373,21 +384,29 @@ export default function SessionsView({
 
   return (
     <div className="screen">
-      <header>
-        <span
-          title={`connection: ${connStatus}`}
-          className={`status-dot${
-            connStatus === "paired" ? " ok" : connStatus === "connecting" ? " wait" : " err"
-          }`}
-        />
-        <h1
+      {/* P2-124: the desktop sidebar carries its own chrome (App-level "+ New"
+          + section nav above, account footer below) — no mobile header here. */}
+      {/* P2-108: the mobile chrome is demoted to a quiet overline — machine
+          name reads as a 0.72rem label, actions stay reachable as ghost
+          icons. */}
+      {variant !== "rows" && (
+      <header className="sess-mobile-head">
+        <button
+          className="sess-machine-overline"
           onClick={() => setSwitching(true)}
-          style={{ fontSize: "1rem", margin: 0, cursor: "pointer" }}
-          title="Switch machine"
+          title={t("accountSwitch")}
+          aria-label={t("accountSwitch")}
         >
-          {machineName} ⌄
-        </h1>
-        <div style={{ display: variant === "rows" ? "none" : "flex", gap: 8 }}>
+          <span
+            title={`connection: ${connStatus}`}
+            className={`status-dot${
+              connStatus === "paired" ? " ok" : connStatus === "connecting" ? " wait" : " err"
+            }`}
+          />
+          <span className="sess-overline">{machineName}</span>
+          <IconChevronDown size={10} aria-hidden style={{ display: "inline-block" }} />
+        </button>
+        <div className="sess-head-actions">
           <button onClick={onOpenFiles} aria-label="Files">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
               <path d="M4 5a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-8.6L9.6 5.2A2 2 0 0 0 8.2 4.6H4Z" />
@@ -430,31 +449,54 @@ export default function SessionsView({
           </button>
         </div>
       </header>
+      )}
 
       <div className="list">
-        {variant === "rows" && (
-          <button className="primary sess-new" disabled={creating} onClick={createSession}>
-            {creating ? t("creating") : t("newConversation")}
+        {/* P2-108: badge filters folded into a search-attached menu (was a
+            chip row); locale-independent hooks for the gate: data-filter. */}
+        <div className="sess-search-row">
+          <input
+            placeholder={t("search")}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+          <button
+            className="sess-filter-btn"
+            aria-haspopup="menu"
+            aria-expanded={filterOpen}
+            aria-label={t("filterTitle")}
+            title={t("filterTitle")}
+            onClick={() => setFilterOpen((v) => !v)}
+          >
+            <IconFilter size={14} />
+            {badgeFilter !== "all" && <span className="sess-filter-dot" aria-hidden />}
           </button>
-        )}
-        <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
-          {(["all", "with", "without"] as BadgeFilter[]).map((f) => (
-            <button
-              key={f}
-              className="chip"
-              aria-pressed={badgeFilter === f}
-              onClick={() => setBadgeFilter(f)}
-            >
-              {f === "all" ? t("filterAll") : f === "with" ? t("filterWithBadge") : t("filterNoBadge")}
-            </button>
-          ))}
+          {filterOpen && (
+            <>
+              <div className="sess-menu-scrim" onClick={() => setFilterOpen(false)} aria-hidden />
+              <div className="sess-filter-menu" role="menu">
+                {(["all", "with", "without"] as BadgeFilter[]).map((f) => (
+                  <button
+                    key={f}
+                    role="menuitemradio"
+                    aria-checked={badgeFilter === f}
+                    data-filter={f}
+                    className="sess-filter-item"
+                    onClick={() => {
+                      setBadgeFilter(f);
+                      setFilterOpen(false);
+                    }}
+                  >
+                    <span className="sess-filter-check" aria-hidden>
+                      {badgeFilter === f && <IconCheck size={12} />}
+                    </span>
+                    {f === "all" ? t("filterAll") : f === "with" ? t("filterWithBadge") : t("filterNoBadge")}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
         </div>
-        <input
-          style={{ width: "100%", marginBottom: 8 }}
-          placeholder={t("search")}
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-        />
         {loading && (
           <div className="session-grid">
             {[0, 1, 2, 3, 4, 5].map((i) => (
@@ -501,9 +543,15 @@ export default function SessionsView({
                   width: "fit-content",
                 }}
               >
-                <span aria-hidden style={{ fontSize: "0.7rem", transform: archivedOpen ? "rotate(180deg)" : undefined, display: "inline-block" }}>
-                  ▾
-                </span>
+                <IconChevronDown
+                  size={12}
+                  aria-hidden
+                  style={{
+                    transform: archivedOpen ? "rotate(180deg)" : undefined,
+                    display: "inline-block",
+                    flexShrink: 0,
+                  }}
+                />
                 {t("groupArchived", { n: archivedSessions.length })}
               </button>
             )}
@@ -528,8 +576,11 @@ export default function SessionsView({
                 onClick={() => setArchivedOpen((v) => !v)}
                 style={{ gridColumn: "1 / -1", width: "fit-content" }}
               >
-                <span aria-hidden style={{ fontSize: "0.7rem", transform: archivedOpen ? "rotate(180deg)" : undefined, display: "inline-block" }}>
-                  ▾
+                <span aria-hidden style={{ fontSize: "0.7rem", display: "inline-flex" }}>
+                  <IconChevronDown
+                    size={12}
+                    style={{ transform: archivedOpen ? "rotate(180deg)" : undefined }}
+                  />
                 </span>
                 {t("groupArchived", { n: archivedSessions.length })}
               </button>
@@ -555,52 +606,14 @@ export default function SessionsView({
       </details>
 
       {switching && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "var(--scrim)",
-            zIndex: 70,
-            display: "flex",
-            flexDirection: "column",
-            padding: 12,
-            gap: 8,
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <button onClick={() => setSwitching(false)} aria-label="Close machine picker">
-              ✕
-            </button>
-            <div style={{ flex: 1, fontWeight: 600, fontSize: "0.9rem" }}>{t("machines")}</div>
-          </div>
-          <div className="list" style={{ overflow: "auto" }}>
-            {machines.map((m) => (
-              <div key={m.room} className="card" style={{ display: "flex", gap: 8, alignItems: "center", padding: "10px 12px" }}>
-                <div
-                  style={{ flex: 1, minWidth: 0, cursor: "pointer" }}
-                  onClick={() => {
-                    setSwitching(false);
-                    if (m.room !== activeRoom) onSwitch(m);
-                  }}
-                >
-                  <div>
-                    {m.name ?? m.room.slice(0, 8)}
-                    {m.room === activeRoom && <b> · active</b>}
-                  </div>
-                  <div className="muted" style={{ fontSize: "0.72rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {m.relay}
-                  </div>
-                </div>
-                <button className="danger" onClick={() => onForget(m)}>
-                  {t("forget")}
-                </button>
-              </div>
-            ))}
-            <button className="primary" onClick={() => { setSwitching(false); onAddMachine(); }}>
-              + Pair new machine
-            </button>
-          </div>
-        </div>
+        <MachinePicker
+          machines={machines}
+          activeRoom={activeRoom}
+          onSwitch={onSwitch}
+          onForget={onForget}
+          onAddMachine={onAddMachine}
+          onClose={() => setSwitching(false)}
+        />
       )}
     </div>
   );

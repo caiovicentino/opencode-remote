@@ -39,7 +39,9 @@ export default function PairingOverlay({ qrDataUrl, onDismiss }: Props) {
           <li>{t("splashStep3")}</li>
         </ol>
         <p className="splash-under">{t("splashUnder")}</p>
-        <button className="primary" onClick={onDismiss}>
+        {/* P2-106: the QR is the hero — "pair later" demotes to a quiet text
+            link so the only primary action on this screen is scanning it. */}
+        <button className="pair-overlay-later" onClick={onDismiss}>
           {t("pairOverlayLater")}
         </button>
       </div>
