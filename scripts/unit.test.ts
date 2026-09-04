@@ -80,6 +80,7 @@ import {
   parseEvidenceBlock,
   plannerPrompt,
   pngSize,
+  rebaseOutcome,
   reviewerPrompt,
   crashRoundDecision,
   resumeBlock,
@@ -94,6 +95,7 @@ import {
   validateSpec,
   verifyEvidence,
   writeAuxSandboxConfig,
+  mergeBlockReason,
   mergePrForTask,
   PR_MERGE_CONFIRM_DELAY_MS,
   PR_MERGE_CONFIRM_POLLS,
@@ -5379,6 +5381,159 @@ check(
     "P2-125: P2-058 verified-merge guard untouched (recordVerifiedMerge + isTaskMergeSha still wired)",
     pipelineSrc.includes("isTaskMergeSha(ws, postMergeHead, t.id)") && pipelineSrc.includes("recordVerifiedMerge(defaultVerifiedMergesFile(), postMergeHead, t.id"),
   );
+}
+
+// --- P2-134: conflict-blocked PR is infra, resume rebase refreshes the branch -----
+{
+  // pure classifier: only CONFLICTING/DIRTY block; anything else (missing
+  // fields, MERGEABLE, UNKNOWN, BLOCKED, BEHIND, non-string values) keeps the
+  // poll running exactly as before
+  check("P2-134: mergeable=CONFLICTING ⇒ blocked", (mergeBlockReason({ mergeable: "CONFLICTING" }) ?? "").includes("CONFLICTING"));
+  check("P2-134: mergeStateStatus=DIRTY ⇒ blocked", (mergeBlockReason({ mergeStateStatus: "DIRTY" }) ?? "").includes("DIRTY"));
+  const both = mergeBlockReason({ mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" }) ?? "";
+  check("P2-134: both fields ⇒ reason cites both", both.includes("CONFLICTING") && both.includes("DIRTY"));
+  check(
+    "P2-134: clean/blocked/behind/unknown snapshots never block",
+    mergeBlockReason({}) === null &&
+      mergeBlockReason({ mergeable: "MERGEABLE" }) === null &&
+      mergeBlockReason({ mergeable: "UNKNOWN", mergeStateStatus: "UNKNOWN" }) === null &&
+      mergeBlockReason({ mergeable: "BLOCKED" }) === null &&
+      mergeBlockReason({ mergeStateStatus: "BEHIND" }) === null,
+  );
+  check(
+    "P2-134: non-string fields behave as absent (external JSON)",
+    mergeBlockReason({ mergeable: 1, mergeStateStatus: null }) === null && mergeBlockReason({ mergeable: undefined, mergeStateStatus: undefined }) === null,
+  );
+
+  // fake gh surface (zero network), same mold as P2-125: create fails (PR
+  // already open), list resolves the number, merge exec fails, the poll loop
+  // decides what the view reports — now with the P2-134 conflict fields.
+  const sha = "c".repeat(40);
+  const mkIo134 = (view: () => { state: string; headRefOid: string; mergeable?: string; mergeStateStatus?: string } | null) => {
+    const calls: string[] = [];
+    let sleeps = 0;
+    const io: PrMergeIo = {
+      exec: (cmd) => {
+        calls.push(cmd);
+        if (cmd.startsWith("gh pr create")) return { ok: false, output: "a pull request for head pilot/P2-134 already exists" };
+        if (cmd.startsWith("gh pr list")) return { ok: true, output: "42\n" };
+        if (cmd.startsWith("gh pr merge")) return { ok: false, output: "gh: failed to arm auto-merge" };
+        if (cmd.startsWith("gh pr view")) {
+          const snap = view();
+          return snap ? { ok: true, output: JSON.stringify(snap) } : { ok: false, output: "no pull requests" };
+        }
+        return { ok: false, output: `unexpected exec: ${cmd}` };
+      },
+      sleep: () => {
+        sleeps++;
+        return Promise.resolve();
+      },
+    };
+    return { io, calls, getSleeps: () => sleeps };
+  };
+
+  // THE P2-117/P2-123/P2-126 shape: gate green, PR parked on a merge conflict
+  // with main ⇒ bail out on the CURRENT poll with infra "conflict"
+  const conflicting = mkIo134(() => ({ state: "OPEN", headRefOid: sha, mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" }));
+  const conflictOut = await mergePrForTask(conflicting.io, { branch: "pilot/P2-134", title: "t", body: "b", pushedSha: sha });
+  check("P2-134: CONFLICTING PR ⇒ ok=false with infra=conflict", conflictOut.ok === false && conflictOut.infra === "conflict");
+  check("P2-134: conflict detail cites the real GitHub reason", conflictOut.detail.includes("PR #42 blocked:") && conflictOut.detail.includes("CONFLICTING") && conflictOut.detail.includes("DIRTY"));
+  check("P2-134: conflict bails on the current poll (exactly 1 view, 0 sleeps)", conflicting.calls.filter((c) => c.startsWith("gh pr view")).length === 1 && conflicting.getSleeps() === 0);
+  check("P2-134: poll query pinned to state,headRefOid,mergeable,mergeStateStatus", conflicting.calls.some((c) => c === "gh pr view 42 --json state,headRefOid,mergeable,mergeStateStatus"));
+
+  // MERGED wins over the conflict check — residual mergeable fields are noise
+  const mergeable = mkIo134(() => ({ state: "MERGED", headRefOid: sha, mergeable: "UNKNOWN" }));
+  const mergeableOut = await mergePrForTask(mergeable.io, { branch: "pilot/P2-134", title: "t", body: "b", pushedSha: sha });
+  check("P2-134: MERGED with residual mergeable=UNKNOWN ⇒ success", mergeableOut.ok === true);
+  const residual = mkIo134(() => ({ state: "MERGED", headRefOid: sha, mergeable: "CONFLICTING" }));
+  const residualOut = await mergePrForTask(residual.io, { branch: "pilot/P2-134", title: "t", body: "b", pushedSha: sha });
+  check("P2-134: MERGED wins over a residual CONFLICTING (order pinned)", residualOut.ok === true);
+
+  // snapshot without mergeable/mergeStateStatus (old gh): today's behavior —
+  // poll the whole budget, then honest infra timeout
+  const noField = mkIo134(() => ({ state: "OPEN", headRefOid: sha }));
+  const noFieldOut = await mergePrForTask(noField.io, { branch: "pilot/P2-134", title: "t", body: "b", pushedSha: sha });
+  check("P2-134: snapshot without mergeable keeps polling ⇒ infra=timeout", noFieldOut.ok === false && noFieldOut.infra === "timeout");
+  check("P2-134: legacy snapshot runs the full poll budget", noField.calls.filter((c) => c.startsWith("gh pr view")).length === PR_MERGE_CONFIRM_POLLS);
+
+  // the runSlot infra branch: structured "conflict" → recordInfraFailure only —
+  // no taskAttempts entry, no fever sample (mirrors apps/pilot/src/index.ts)
+  const st = { date: "2026-09-04", tasks: 0, deploys: 0, failures: 0, taskAttempts: {} } as PilotState;
+  const kind = resultInfraKind({ ok: conflictOut.ok, infra: conflictOut.infra });
+  check("P2-134: conflict is a structured infra kind", kind === "conflict");
+  if (kind) recordInfraFailure(st);
+  else {
+    recordCycle(st, false, "P2-134");
+    recordTaskFailure(st, "P2-134", 4);
+  }
+  check("P2-134: conflict burns no per-task attempt", Object.keys(st.taskAttempts).length === 0);
+  check("P2-134: conflict never feeds the fever window", feverReason(st) === null);
+
+  // pure outcome interpretation of the resume rebase
+  check("P2-134: rebaseOutcome ok ⇒ clean", rebaseOutcome({ ok: true, output: "" }) === "clean");
+  check("P2-134: rebaseOutcome !ok ⇒ conflict (never throws)", rebaseOutcome({ ok: false, output: "CONFLICT (content): Merge conflict in shared.txt" }) === "conflict");
+
+  // Real-git acceptance (P1-036 lesson: never mock git)
+  const originDir = mkdtempSync(join(tmpdir(), "ocr-rebaseorigin-"));
+  const wsRepo = mkdtempSync(join(tmpdir(), "ocr-rebasews-"));
+  try {
+    execSync(`git init -q --bare ${JSON.stringify(originDir)}`, { stdio: ["ignore", "pipe", "pipe"] });
+    const g = (c: string) => execSync(c, { cwd: wsRepo, stdio: ["ignore", "pipe", "pipe"] });
+    g("git init -q -b main .");
+    g("git config user.email t@t.local");
+    g("git config user.name t");
+    writeFileSync(join(wsRepo, "README.md"), "base\n");
+    g("git add . && git commit -qm base");
+    g(`git remote add origin ${JSON.stringify(originDir)}`);
+    g("git push -q origin main");
+
+    // clean rebase: preserved branch commits b.txt while another slot's merge
+    // (non-conflicting) advanced origin/main with a.txt
+    g("git checkout -qb pilot/P2-134T");
+    writeFileSync(join(wsRepo, "b.txt"), "branch work\n");
+    g("git add . && git commit -qm 'branch work'");
+    const preservedSha = g("git rev-parse HEAD").toString().trim();
+    g("git checkout -q main");
+    writeFileSync(join(wsRepo, "a.txt"), "main moved\n");
+    g("git add . && git commit -qm 'main moved'");
+    g("git push -q origin main");
+
+    check("P2-134: clean resume rebase reports resumed", setupTaskBranch(wsRepo, "P2-134T", 1) === true);
+    check("P2-134: HEAD is the task branch", g("git rev-parse --abbrev-ref HEAD").toString().trim() === "pilot/P2-134T");
+    let ancestor = false;
+    try {
+      g("git merge-base --is-ancestor origin/main HEAD");
+      ancestor = true;
+    } catch {}
+    check("P2-134: rebased branch contains origin/main", ancestor);
+    check("P2-134: branch work survived the rebase", existsSync(join(wsRepo, "b.txt")));
+    check("P2-134: main's new file is present after the rebase", existsSync(join(wsRepo, "a.txt")));
+    check("P2-134: clean rebase rewrote the branch tip (gate re-runs on the new sha)", g("git rev-parse HEAD").toString().trim() !== preservedSha);
+
+    // conflicting rebase: both sides edit the same file ⇒ abort, branch intact
+    g("git checkout -qb pilot/P2-134C origin/main");
+    writeFileSync(join(wsRepo, "shared.txt"), "branch version\n");
+    g("git add . && git commit -qm 'branch edits shared'");
+    const conflictSha = g("git rev-parse HEAD").toString().trim();
+    g("git checkout -q main");
+    writeFileSync(join(wsRepo, "shared.txt"), "main version\n");
+    g("git add . && git commit -qm 'main edits shared'");
+    g("git push -q origin main");
+    g("git checkout -q main"); // workspace sits anywhere; the branch is the carrier
+
+    check("P2-134: conflicting resume rebase still reports resumed", setupTaskBranch(wsRepo, "P2-134C", 1) === true);
+    check("P2-134: abort leaves the branch at the preserved tip", g("git rev-parse refs/heads/pilot/P2-134C").toString().trim() === conflictSha);
+    check("P2-134: abort leaves a clean worktree", g("git status --porcelain").toString() === "");
+    check("P2-134: no rebase state left behind", !existsSync(join(wsRepo, ".git", "rebase-merge")) && !existsSync(join(wsRepo, ".git", "rebase-apply")));
+    check("P2-134: worktree shows the branch content, not main's", readFileSync(join(wsRepo, "shared.txt"), "utf8") === "branch version\n");
+
+    // first attempt: fresh path, branch born at origin/main, no rebase runs
+    check("P2-134: first attempt takes the fresh path (no rebase)", setupTaskBranch(wsRepo, "P2-134U", 0) === false);
+    check("P2-134: fresh branch sits at origin/main", g("git rev-parse refs/heads/pilot/P2-134U").toString().trim() === g("git rev-parse origin/main").toString().trim());
+  } finally {
+    rmSync(originDir, { recursive: true, force: true });
+    rmSync(wsRepo, { recursive: true, force: true });
+  }
 }
 
 // --- P2-045 dashboard v2: honest counters + diagnostics aggregations --------------

@@ -642,6 +642,19 @@ real de mérito (PR mergeado com outro sha) **não** recebe `infra` e continua
 queimando attempt. Ver "merge por PR" acima para o formato do detail com a
 razão real do `gh`.
 
+**PR bloqueado por conflito com main é infra `conflict` + rebase no resume
+(P2-134)**: o poll de confirmação também lê `mergeable`/`mergeStateStatus` —
+se o GitHub já marca o PR como `CONFLICTING`/`DIRTY`, o loop sai no poll
+corrente com `infra: "conflict"` (novo kind, mesmo caminho da P1-074: zero
+attempts, zero febre) em vez de queimar os ~5 min de orçamento e um attempt a
+cada ciclo, como morreram P2-117/P2-123/P2-126. No caminho de resume,
+`setupTaskBranch` rebasa a branch preservada em `origin/main` antes de devolver
+`resumed`; rebase conflitante é fail-closed (P2-114): `git rebase --abort`, a
+branch fica intacta no tip preservado (nunca `reset --hard` sobre histórico
+preservado, P1-060) e o builder resolve o conflito no round seguinte. Como o
+rebase limpo reescreve os commits, o sha muda e o gate determinístico re-executa
+sobre o novo HEAD — nenhum merge acontece sobre certificação velha.
+
 **Checkpoint de pressão de contexto (P1-079)**: o builder resume a MESMA sessão
 opencode entre rounds (cache de contexto), então o total de tokens só cresce. Antes
 de cada round o pipeline mede a pressão — tokens da sessão (API do opencode, os

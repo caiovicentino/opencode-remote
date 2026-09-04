@@ -243,11 +243,23 @@ export function preserveBranch(attempts: number | undefined, branchExists: boole
 }
 
 /**
+ * P2-134: pure interpretation of the resume-rebase result. `ok` ⇒ the branch
+ * now sits on top of origin/main ("clean"); anything else is a conflict the
+ * builder must resolve in the next round ("conflict") — never an exception.
+ */
+export function rebaseOutcome(r: { ok: boolean; output: string }): "clean" | "conflict" {
+  return r.ok ? "clean" : "conflict";
+}
+
+/**
  * P1-036: branch setup at the start of EVERY attempt, extracted verbatim from
  * `runPipeline` for testability. Fetches origin, clears worktree dirt, then
  * keeps the `pilot/<ID>` branch when this is a retry (P1-060: attempts > 0 and
  * the branch exists) and recreates it at origin/main otherwise — deleting the
  * branch ONLY on the fresh path so preserved attempt work survives retries.
+ * P2-134: a resumed branch is rebased onto origin/main (conflicts abort the
+ * rebase and leave the branch intact — resolved by the builder next round);
+ * the fresh path skips the rebase since it is born at origin/main.
  * Precondition: `id` was already TASK_ID_RE-checked by the caller (it is
  * interpolated into shell commands here). Returns true when the workspace
  * resumed an existing preserved branch.
@@ -262,6 +274,24 @@ export function setupTaskBranch(ws: string, id: string, attempts: number | undef
     resumed = exec(`git checkout -q ${branch}`, { cwd: ws, allowFail: true }).ok;
   }
   if (resumed) {
+    // P2-134: the preserved branch may predate a main that moved (another slot's
+    // merge) — the exact shape that killed P2-117/P2-123/P2-126 with a green
+    // gate. Rebase it onto origin/main so the retry merges cleanly. Fail-closed
+    // (P2-114 spirit): a conflicting rebase is aborted, the branch stays intact
+    // at its preserved tip (P1-060: NEVER reset --hard over preserved history)
+    // and the builder resolves the conflict next round.
+    const rebase = exec("git rebase origin/main", { cwd: ws, allowFail: true });
+    if (rebaseOutcome(rebase) === "conflict") {
+      exec("git rebase --abort", { cwd: ws, allowFail: true });
+      console.log(
+        JSON.stringify({
+          ts: nowLocalISO(),
+          level: "warn",
+          msg: "resume rebase hit a conflict — branch left intact at the preserved tip",
+          data: { task: id, attempt: (attempts ?? 0) + 1, detail: rebase.output.trim().slice(-300) },
+        }),
+      );
+    }
     console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "branch preserved from previous attempt", data: { task: id, attempt: (attempts ?? 0) + 1 } }));
   } else {
     exec(`git branch -qD ${branch} 2>/dev/null || true`, { cwd: ws, allowFail: true });
@@ -2360,6 +2390,20 @@ function ghTail(output: string): string {
 }
 
 /**
+ * P2-134: classify a `gh pr view` snapshot as blocked by a merge conflict with
+ * main. Pure — the poll loop stays exactly as before unless the snapshot says
+ * CONFLICTING/DIRTY. Fields are untrusted external JSON: non-string values and
+ * missing fields (old gh, partial responses) behave as absent, and UNKNOWN
+ * (GitHub still computing) is NOT a block — the loop keeps polling.
+ */
+export function mergeBlockReason(snap: { mergeable?: unknown; mergeStateStatus?: unknown }): string | null {
+  const reasons: string[] = [];
+  if (snap.mergeable === "CONFLICTING") reasons.push("mergeable=CONFLICTING");
+  if (snap.mergeStateStatus === "DIRTY") reasons.push("mergeStateStatus=DIRTY");
+  return reasons.length > 0 ? reasons.join(" + ") : null;
+}
+
+/**
  * P2-125: create + merge the task PR and CONFIRM it landed with OUR sha as
  * the merged head — the same fail-closed confirmation `armMetaPr` applies to
  * the meta PR. Every gh step's output is captured and its last 300 chars ride
@@ -2367,9 +2411,12 @@ function ghTail(output: string): string {
  * log and the failure lessons (a green gate with a "generic merge failed" was
  * how P2-117/P2-123 burned 8 attempts). Under branch protection
  * `gh pr merge --auto` only QUEUES the squash: success is polled from
- * `gh pr view --json state,headRefOid` (state MERGED + headRefOid === the
- * pushed sha) — even when the merge exec itself returned an error. If nothing
- * confirms within the budget the outcome is honest infra ("timeout"): the
+ * `gh pr view --json state,headRefOid,mergeable,mergeStateStatus` (state MERGED
+ * + headRefOid === the pushed sha) — even when the merge exec itself returned
+ * an error. P2-134: the poll also reads `mergeable`/`mergeStateStatus` and bails
+ * out immediately with infra "conflict" when GitHub already marks the PR
+ * CONFLICTING/DIRTY — rebase happens on the next cycle's setupTaskBranch. If
+ * nothing confirms within the budget the outcome is honest infra ("timeout"): the
  * next cycle re-schedules instead of burning an attempt. The PR is always
  * addressed by NUMBER (`--delete-branch` removes the ref, the poll must stay
  * valid) and there is deliberately NO local-merge/push-to-main fallback
@@ -2404,9 +2451,9 @@ export async function mergePrForTask(
   const mergeTail = ghTail(merge.output);
   for (let poll = 0; poll < PR_MERGE_CONFIRM_POLLS; poll++) {
     if (poll > 0) await io.sleep(PR_MERGE_CONFIRM_DELAY_MS);
-    const view = io.exec(`gh pr view ${prNumber} --json state,headRefOid`);
+    const view = io.exec(`gh pr view ${prNumber} --json state,headRefOid,mergeable,mergeStateStatus`);
     if (!view.ok) continue; // gh unavailable — undeterminable, keep polling
-    let snap: { state?: unknown; headRefOid?: unknown };
+    let snap: { state?: unknown; headRefOid?: unknown; mergeable?: unknown; mergeStateStatus?: unknown };
     try {
       snap = JSON.parse(view.output);
     } catch {
@@ -2422,6 +2469,12 @@ export async function mergePrForTask(
       if (head === args.pushedSha) return { ok: true, detail: `PR #${prNumber} squash-merged, head confirmed` };
       return { ok: false, detail: `PR #${prNumber} MERGED with another head — merge exec: ${mergeTail}` };
     }
+    // P2-134: GitHub already computed the merge cannot land — bail out on the
+    // CURRENT poll instead of burning the whole 5min budget; classified infra
+    // ("conflict") so the next cycle rebases the preserved branch (setupTaskBranch)
+    // and retries, never costing an attempt (the P2-117/P2-123/P2-126 death shape).
+    const blocked = mergeBlockReason(snap);
+    if (blocked) return { ok: false, infra: "conflict", detail: `PR #${prNumber} blocked: ${blocked} — merge exec: ${mergeTail}` };
   }
   return { ok: false, infra: "timeout", detail: `merge unconfirmed after ~5min: ${mergeTail}` };
 }
