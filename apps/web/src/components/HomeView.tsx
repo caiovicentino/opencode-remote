@@ -3,6 +3,10 @@ import type { OpResponse } from "@ocr/protocol";
 import { useT, getLang } from "../lib/i18n";
 import { agentForMode, greetingKey, homeIdeas, HOME_MODES, type HomeIdeaIcon, type HomeMode } from "../lib/home";
 import { composerSelectorLabel } from "../lib/composer";
+import { useModelSelector } from "../lib/models";
+import { transcribeBlob } from "../lib/transcribe";
+import { WavRecorder } from "../lib/recorder";
+import ModelMenuItems from "./ModelMenuItems";
 import {
   IconArrowUp,
   IconBookOpen,
@@ -30,6 +34,8 @@ type Props = {
   onStart: (prompt: string, mode: HomeMode) => Promise<string | null>;
 };
 
+type RecState = "idle" | "rec" | "busy";
+
 /** P2-123: the living home (desktop empty state) — Claude-Desktop-style
  * serif greeting, a central composer with the Chat/Cowork toggle + model
  * selector, and three clickable ideas. Every string comes from the dict. */
@@ -39,33 +45,15 @@ export default function HomeView({ machineName, request, voice, creating, onStar
   const [mode, setMode] = useState<HomeMode>(() =>
     localStorage.getItem("ocr_agent") === "build" ? "cowork" : "chat",
   );
-  const [startError, setStartError] = useState("");
-  const [models, setModels] = useState<{ providerID: string; modelID: string; name: string }[]>([]);
-  const [model, setModel] = useState(localStorage.getItem("ocr_model") ?? "");
+  const [error, setError] = useState(""); // dict copy only — never raw bodies
+  const { models, model, pickModel } = useModelSelector(request);
   const [modelMenu, setModelMenu] = useState(false);
   const modelMenuRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
 
-  // model list, same endpoint ChatView's selector uses (best effort)
-  useEffect(() => {
-    void (async () => {
-      try {
-        const res = await request("GET", "/provider");
-        const all = (res.body as { all?: { id: string; models?: Record<string, { id: string; name?: string }> }[] })
-          .all ?? [];
-        const flat = all.flatMap((p) =>
-          Object.values(p.models ?? {}).map((m) => ({
-            providerID: p.id,
-            modelID: m.id,
-            name: `${p.id} · ${m.name ?? m.id}`,
-          })),
-        );
-        setModels(flat);
-      } catch {
-        // model list is optional
-      }
-    })();
-  }, []);
+  // mic: real press-and-hold recording, same flow as the ChatView mic
+  const [recState, setRecState] = useState<RecState>("idle");
+  const recorder = useRef<WavRecorder | null>(null);
 
   // close the model menu on outside clicks, like the ChatView dropdown
   useEffect(() => {
@@ -88,18 +76,42 @@ export default function HomeView({ machineName, request, voice, creating, onStar
     localStorage.setItem("ocr_agent", agentForMode(next));
   }
 
-  function pickModel(value: string) {
-    setModel(value);
-    localStorage.setItem("ocr_model", value);
-    setModelMenu(false);
-  }
-
   async function start(prompt: string) {
     const text = prompt.trim();
     if (!text || creating) return;
-    setStartError("");
+    setError("");
     const err = await onStart(text, mode);
-    if (err) setStartError(err); // input stays — never lose the user's text
+    if (err) setError(t("homeStartError")); // input stays — never lose the text
+  }
+
+  async function micDown() {
+    if (!voice || recState !== "idle") return;
+    setError("");
+    try {
+      recorder.current = new WavRecorder();
+      await recorder.current.start();
+      setRecState("rec");
+    } catch (err) {
+      setRecState("idle");
+      const e = err as Error & { name?: string };
+      if (e.name === "NotAllowedError" || e.name === "NotFoundError") {
+        setError(t("micNeedsPermission"));
+      }
+    }
+  }
+
+  async function micUp() {
+    if (recState !== "rec") return;
+    setRecState("busy");
+    try {
+      const blob = await recorder.current!.stop();
+      const text = await transcribeBlob(request, blob);
+      if (text.trim()) setInput((prev) => (prev.trim() ? `${prev.trim()} ${text.trim()}` : text.trim()));
+      taRef.current?.focus();
+    } catch {
+      // transcription is best effort — the draft text stays untouched
+    }
+    setRecState("idle");
   }
 
   const ideas = homeIdeas(getLang());
@@ -122,7 +134,7 @@ export default function HomeView({ machineName, request, voice, creating, onStar
               ref={taRef}
               className="composer-text"
               rows={1}
-              placeholder={t("homePlaceholder")}
+              placeholder={recState === "rec" ? t("recording") : t("homePlaceholder")}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => {
@@ -167,38 +179,35 @@ export default function HomeView({ machineName, request, voice, creating, onStar
                 </button>
                 {modelMenu && (
                   <div className="composer-menu" role="listbox" aria-label={t("modelSelector")}>
-                    <button
-                      role="option"
-                      aria-selected={!model}
-                      data-model=""
-                      className={`composer-menu-item${!model ? " selected" : ""}`}
-                      onClick={() => pickModel("")}
-                    >
-                      {t("defaultModel")}
-                    </button>
-                    {models.map((m) => (
-                      <button
-                        key={`${m.providerID}/${m.modelID}`}
-                        role="option"
-                        aria-selected={model === `${m.providerID}/${m.modelID}`}
-                        data-model={`${m.providerID}/${m.modelID}`}
-                        className={`composer-menu-item${model === `${m.providerID}/${m.modelID}` ? " selected" : ""}`}
-                        onClick={() => pickModel(`${m.providerID}/${m.modelID}`)}
-                      >
-                        {m.name}
-                      </button>
-                    ))}
+                    <ModelMenuItems
+                      models={models}
+                      model={model}
+                      onPick={(v) => {
+                        pickModel(v);
+                        setModelMenu(false);
+                      }}
+                    />
                   </div>
                 )}
               </div>
               <button
                 className="composer-btn composer-mic"
-                disabled={!voice}
-                aria-label={t("recordVoice")}
-                title={voice ? t("recordVoice") : t("micNeedsPermission")}
-                onClick={() => taRef.current?.focus()}
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  void micDown();
+                }}
+                onPointerUp={() => void micUp()}
+                disabled={!voice || recState === "busy"}
+                aria-label={recState === "rec" ? t("stopRecording") : t("recordVoice")}
+                title={!voice ? t("micNeedsPermission") : recState === "rec" ? t("stopRecording") : t("recordVoice")}
               >
-                <IconMic />
+                {recState === "busy" ? (
+                  "…"
+                ) : recState === "rec" ? (
+                  <span className="composer-mic-rec" aria-hidden />
+                ) : (
+                  <IconMic />
+                )}
               </button>
               <button
                 className="primary composer-send"
@@ -211,9 +220,9 @@ export default function HomeView({ machineName, request, voice, creating, onStar
               </button>
             </div>
           </div>
-          {startError && (
-            <div className="home-error" role="alert" title={startError}>
-              {t("homeStartError")}
+          {error && (
+            <div className="home-error" role="alert">
+              {error}
             </div>
           )}
         </div>

@@ -354,9 +354,10 @@ Browser / Files / Settings / Mission Control.
 real home instead of a dead end — a serif greeting ("Back in action, &lt;machine&gt;",
 from the same EN/pt-BR dictionary), a central composer with placeholder, a
 Chat/Cowork mode toggle (Cowork pre-selects the `build` agent for the next
-session), the model selector and mic on the composer's bottom row, and three
-clickable "Ideas for you" that open a new session with the prompt pre-filled
-(failure surfaces an inline error, never a frozen screen).
+session), the model selector and a working press-and-hold mic (dictates into
+the composer via the same transcription flow as the chat mic) on the bottom
+row, and three clickable "Ideas for you" that open a new session with the
+prompt pre-filled (failure surfaces an inline error, never a frozen screen).
 
 **Design tokens & reading typography (P3-083)**: the conversation column is
 capped at ~46rem and centered like the Claude Desktop benchmark, with a

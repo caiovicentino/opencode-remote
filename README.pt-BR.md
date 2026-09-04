@@ -310,9 +310,10 @@ Browser / Arquivos / Configurações / Mission Control.
 verdade no lugar do beco antigo — greeting serifado ("De volta à ação, &lt;máquina&gt;",
 do mesmo dicionário EN/pt-BR), composer central com placeholder, toggle de modo
 Chat/Cowork (Cowork pré-seleciona o agent `build` para a próxima sessão), seletor
-de modelo e mic na linha de baixo, e três "Ideias para você" clicáveis que abrem
-uma sessão nova com o prompt pré-preenchido (falha vira erro inline, nunca tela
-congelada).
+de modelo e mic funcional (segurar pra gravar — dita no composer pelo mesmo
+fluxo de transcrição do mic do chat) na linha de baixo, e três "Ideias para você"
+clicáveis que abrem uma sessão nova com o prompt pré-preenchido (falha vira erro
+inline, nunca tela congelada).
 
 **Sidebar nível Claude (P2-124)**: a sidebar desktop é um shell de navegação
 de 280px — botão primário **"+ Novo"** e a nav de seções (Conversas,
