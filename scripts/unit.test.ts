@@ -5,30 +5,53 @@
 // P2-120: isolate the event sink BEFORE any pilot module evaluates — synthetic
 // sha-guard/deploy events from tests must never land in the production feed.
 process.env.PILOT_EVENTS_FILE = "/tmp/pilot-unit-events.jsonl";
+
 import { b64, fromB64, seal, openSealed, seqAad } from "@ocr/protocol";
+
 import { mergeConflictBlock } from "../apps/pilot/src/pipeline";
+
 import { parsePairingUri, localWsUrl, shouldFailoverToRelay } from "../apps/web/src/lib/client";
+
 import { isLoopbackAddr, localOriginAllowed, localUpgradeAllowed } from "../apps/daemon/src/localws";
+
 import { classifyRelayClose, effectiveRetryDelayMs } from "../apps/daemon/src/relayclose";
 import { rewriteFeedPort } from "../apps/daemon/src/feedport";
 import { createRelayRetry } from "../apps/daemon/src/relayretry";
+
 import { parseRelayUrl, redactRelayUrl } from "../apps/daemon/src/relayurl";
+
 import { classifyUpstream, UPSTREAM_PROBE_TIMEOUT_MS } from "../apps/daemon/src/upstream";
+
 import { opencodeCandidates, pickOpencodeBinary } from "../apps/daemon/src/opencodebin";
+
 import { copyText, hasClipboardApi, legacyCopy } from "../apps/web/src/lib/clipboard";
+
 import { mimeFor } from "../apps/web/src/lib/files";
+
 import { timeAgo, sessionUpdatedTs } from "../apps/web/src/lib/time";
+
 import { sessionTitleOf } from "../apps/web/src/lib/title";
+
 import { dict, translate } from "../apps/web/src/lib/i18n";
+
 import { degradedKind, sawHealthyDaemon, sidecarExitNotice, upstreamNotice, type SidecarExitHealth, type UpstreamHealth } from "../apps/web/src/lib/degraded";
+
 import { WELCOME_DONE, shouldShowWelcome } from "../apps/web/src/lib/welcome";
+
 import { permissionPreview } from "../apps/web/src/lib/permission";
+
 import { applySessionFilters, isPilotTitle, splitPilotSessions } from "../apps/web/src/lib/sessionFilter";
+
 import { initialUnreadState, reduceUnread } from "../apps/web/src/lib/unread";
+
 import { recencyGroup, groupByRecency, startOfLocalDay } from "../apps/web/src/lib/recency";
+
 import { accountInitial, accountPlanKey } from "../apps/web/src/lib/account";
+
 import { toggleArchived, ARCHIVED_MAX } from "../apps/web/src/lib/archive";
+
 import { previewFromEvents, clipPreview } from "../apps/web/src/lib/sessionPreview";
+
 import {
   capMessagePage,
   parsePageLimit,
@@ -36,15 +59,20 @@ import {
   sliceMessagePage,
   PAGE_LIMIT_MAX,
 } from "../apps/daemon/src/paginate";
+
 import {
   dropCachedSession,
   getCachedSession,
   putCachedSession,
   SESSION_CACHE_MAX,
 } from "../apps/web/src/lib/sessionCache";
+
 import { appendDraft, clearDraft, getDraft, setDraft, DRAFTS_MAX } from "../apps/web/src/lib/drafts";
+
 import { taskMergedIn } from "../apps/pilot/src/pipeline";
+
 import { cachedExec, exec, rerunKey, runStepWithRetry, type RerunResults } from "../apps/pilot/src/runner";
+
 import {
   applySessionCosts,
   cacheHitRatio,
@@ -59,57 +87,13 @@ import {
   TASK_COST_CAP,
   tokensSql,
 } from "../apps/pilot/src/costs";
+
 import { normalizeSessionModel, PRICE_SOURCES, PRICE_TABLE, taskCostUSD } from "../apps/pilot/src/pricing";
-import { PILOT_GATE_STEPS } from "../apps/pilot/src/gateprofile";
+
 import { unreachableTests } from "./testreachability";
+
 import { CORPUS_COMMANDS, CORPUS_SAMPLE_RE, appendCorpusSample, captureGateCorpus, corpusSlug, loadGateCorpus, sanitizeForCorpus } from "../apps/pilot/src/gate-corpus";
-import {
-  builderPrompt,
-  codeChanges,
-  budgetsFor,
-  corpusGateDetail,
-  deterministicGate,
-  isOverCap,
-  MIN_CORPUS_SAMPLES,
-  preserveBranch,
-  recoverSpecFromBranch,
-  branchHasCommits,
-  commitSpec,
-  commitSpecWithReason,
-  specRejectReason,
-  evidenceMatches,
-  evidenceShotDimsOk,
-  gateFindingBlock,
-  CONSTITUTION,
-  lessonsBlock,
-  needsPlanner,
-  needsUiEvidence,
-  normalizeEvidenceLine,
-  parseEvidenceBlock,
-  plannerPrompt,
-  plannerRetryPolicy,
-  pngSize,
-  rebaseOutcome,
-  reviewerPrompt,
-  crashRoundDecision,
-  resumeBlock,
-  RESUME_MAX_TASK_IDS,
-  setupTaskBranch,
-  specPathFor,
-  touchedPilotInfraFromDiff,
-  updateResumeState,
-  parseScribeLessons,
-  scribePrompt,
-  strategistPrompt,
-  validateSpec,
-  verifyEvidence,
-  writeAuxSandboxConfig,
-  mergeBlockReason,
-  mergePrForTask,
-  PR_MERGE_CONFIRM_DELAY_MS,
-  PR_MERGE_CONFIRM_POLLS,
-  type PrMergeIo,
-} from "../apps/pilot/src/pipeline";
+
 import {
   appendLessons,
   dedupeAndPrune,
@@ -124,6 +108,7 @@ import {
   parseLessons,
   pickRelevantLessons,
 } from "../apps/pilot/src/experience";
+
 import {
   appendFailureLesson,
   failureLessonsBlock,
@@ -134,13 +119,21 @@ import {
   readRecentFailureLessons,
   type FailureLesson,
 } from "../apps/pilot/src/failureLessons";
+
 import { AtomicWriteIo, clampSlots, ensureSingleton, loadState, normalizeModels, recordTaskFailure, saveState, startHeartbeat, tierBModelFor, writeJsonAtomic } from "../apps/pilot/src/state";
+
 import type { PilotState } from "../apps/pilot/src/state";
+
 import { clearTaskAttempts, doctorBacklog, doctorBranches, doctorRefs, doctorState, doctorTierB, normalizePilotState, parseAttemptsArgs, runAttemptsCommand, runDoctor, validateBacklog, type AttemptsRequest, type RunFn } from "../apps/pilot/src/doctor";
+
 import { avgPhaseDurations, burnDown, countFailSteps, recordLessonImpact, rollbackHealthAlert } from "../apps/pilot/src/metrics";
+
 import type { PilotEvent } from "../apps/pilot/src/events";
+
 import { areaKey, NIGHTLY_IDLE_MS, nightlyIdleDue, nightlySkipDue, pickBatch, pickTasks, AFFINITY_TTL_MS, assignSlots, SLOT_START_STAGGER_MS, startDelayMs, type SlotAffinity } from "../apps/pilot/src/scheduler";
+
 import { researcherPrompt } from "../apps/pilot/src/researcher";
+
 import {
   AUDIT_BLOCK_TRIGGER,
   AUDIT_BLOCK_WINDOW_MS,
@@ -160,6 +153,7 @@ import {
   resultInfraKind,
   specFailureIsInfra,
 } from "../apps/pilot/src/audit";
+
 import {
   appendCommitAndPush,
   appendReadyLines,
@@ -175,22 +169,39 @@ import {
   type AuxPushIo,
   type Task,
 } from "../apps/pilot/src/backlog";
+
 import { clearPendingRefill, readPendingRefill, relandDetail, relandPendingRefill, savePendingRefill } from "../apps/pilot/src/refill";
+
 import { landMetaCommit, mayPushUnderDir, metaIo, META_BRANCH, type MetaPushIo } from "../apps/pilot/src/metapush";
+
 import { EXPLORER_MAX_FINDINGS, EXPLORER_MAX_STEPS, EXPLORER_TIMEOUT_MIN, EXPLORER_PUSH_RETRIES, EXPLORER_PUSH_WAIT_MS, FABLE_MARKER, FABLE_MAX_FINDINGS, JOURNEY_STEPS, claimExplorerRun, commitAndPushFindings, commitAndPushFableFindings, explorerPrompt, explorerSessionName, explorerSpec, fablePrompt, fableSpec, journeyShotName, parseExplorerFindings, parseFableFindings, type ExplorerFinding, type FableFinding } from "../apps/pilot/src/explorer";
+
 import { noteTierBOutcome, resetTierBSpawnStreak, runAgent, API_PREFLIGHT, apiHealthy, TIERB_SPAWN_ALERT_EVERY, shouldAlertTierBSpawn, claudeArgs, idScanner, mergeAgentIds, OPENCODE_URL_DEFAULT, scanIds, shouldFallbackTierB, waitForApi } from "../apps/pilot/src/runner";
+
 import { GUARD_ALERT_THRESHOLD, clearGuardRejections, guardAlertDetail, noteGuardRejection, raiseGuardAlert, resetGuardAlerts } from "../apps/pilot/src/guardalert";
+
 import { mkdtempSync, mkdirSync, readdirSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync, utimesSync, copyFileSync } from "node:fs";
+
 import { execSync, execFileSync, spawn } from "node:child_process";
+
 import { createServer, get } from "node:http";
+
 import { AddressInfo } from "node:net";
+
 import { connect as netConnect } from "node:net";
+
 import WebSocket, { WebSocketServer } from "ws";
+
 import { tmpdir, homedir } from "node:os";
+
 import { createRequire } from "node:module";
+
 import { fileURLToPath } from "node:url";
+
 import { dirname, join } from "node:path";
+
 import { MAX_ARTIFACT_BYTES, artifactMime, kindFor, listArtifacts, readArtifact, validSegment } from "../apps/daemon/src/artifacts";
+
 import {
   ARTIFACTS_MARKER,
   buildArtifactsPathLine,
@@ -199,23 +210,35 @@ import {
   injectArtifactsSystem,
   workspaceCoversArtifacts,
 } from "../apps/daemon/src/sessionctx";
+
 import { browseTarget, clickPoint, validSession, viewportFromParams } from "../apps/daemon/src/browse";
+
 import { createShutdown, DRAIN_MS, stopAccepting } from "../apps/daemon/src/shutdown";
+
 import {
   createShutdown as relayCreateShutdown,
   stopAccepting as relayStopAccepting,
   DRAIN_MS as RELAY_DRAIN_MS,
   type RelayLog,
 } from "../apps/relay/src/shutdown";
+
 import { tlsPlan } from "../apps/relay/src/tlsconfig";
-import { touchedUiFromDiff, needsEscalation, parseFindings, verifyFindings, isTaskMergeSha, parseVerdict, reviewerOk, tagUnverified, isBlockingFinding, findingsRepeat } from "../apps/pilot/src/pipeline";
-import { stdlibShadowHits } from "./stdlib-shadow";
+
+import { touchedUiFromDiff, needsEscalation, parseFindings, verifyFindings, isTaskMergeSha, parseVerdict, reviewerOk, tagUnverified, isBlockingFinding, findingsRepeat, writeAuxSandboxConfig , CONSTITUTION, PR_MERGE_CONFIRM_DELAY_MS, PR_MERGE_CONFIRM_POLLS, PrMergeIo, RESUME_MAX_TASK_IDS, TASK_ID_RE, builderPrompt, codeChanges, commitSpec, commitSpecWithReason, crashRoundDecision, lessonsBlock, mergeBlockReason, mergePrForTask, needsPlanner, parseScribeLessons, plannerPrompt, plannerRetryPolicy, rebaseOutcome, resumeBlock, reviewerPrompt, setupTaskBranch, specPathFor, specRejectReason, updateResumeState, validateSpec } from "../apps/pilot/src/pipeline";
+
+
 import { latestUiShot, pruneShots } from "../apps/pilot/src/shot";
+
 import { parseMarkdown, parseInline } from "../apps/web/src/lib/md";
+
 import { parseCsv } from "../apps/web/src/lib/csv";
+
 import { ARTIFACT_MAX_BYTES, ArtifactTooLarge, artifactMentions, fetchArtifact, fmtBytes } from "../apps/web/src/lib/artifacts";
+
 import { clampSplitPct, isSplitViewport, SPLIT_MIN_PX } from "../apps/web/src/lib/split";
+
 import { DISK_MIN_FREE_BYTES, diskGuardDetail, freeDiskBytes } from "../apps/pilot/src/disk";
+
 import {
   BASELINE_SAMPLES,
   baselineFailureRate,
@@ -237,6 +260,7 @@ import {
   SOAK_WINDOW,
   verifyRollbackHealth,
 } from "../apps/pilot/src/deploy";
+
 import {
   dirtyGuardDetail,
   installModeFor,
@@ -255,13 +279,21 @@ import {
   shaGuardDetail,
   writeLastInstall,
 } from "../apps/pilot/src/deployguard";
+
 import type { PilotConfig } from "../apps/pilot/src/state";
+
 import { overlayVisible, phonePaired, localPairing } from "../apps/desktop/src/pairing";
+
 import { classifySidecarExit } from "../apps/desktop/src/sidecarexit";
+
 import { candidatePorts, pickDaemonPort } from "../apps/desktop/src/daemonport";
+
 import { versionMismatch } from "../apps/desktop/src/versions";
+
 import { daemonTooltip, loginItemSupported, logsDirPath, openLogsFolder, trayIconSource } from "../apps/desktop/src/tray";
+
 import { badgePlan } from "../apps/desktop/src/badge";
+
 import {
   CLOSE_HINT_BODY_MENUBAR,
   CLOSE_HINT_BODY_TRAY,
@@ -273,7 +305,9 @@ import {
   readHintFlag,
   writeHintFlag,
 } from "../apps/desktop/src/closehint";
+
 import { updateMenuLabel } from "../apps/desktop/src/update";
+
 import {
   nextCheckDelayMs,
   UPDATE_RECHECK_BACKOFF_START_MS,
@@ -281,8 +315,11 @@ import {
   UPDATE_RECHECK_JITTER,
   UPDATE_RECHECK_MIN_MS,
 } from "../apps/desktop/src/updateschedule";
+
 import { appIdForPlatform, applyAppUserModelId, daemonNotify, NOTIFY_BACK_BODY, NOTIFY_DOWN_BODY, WINDOWS_APP_ID } from "../apps/desktop/src/notify";
+
 import { DEEP_LINK_QUERY_MAX, deepLinkFromArgv, parseDeepLink } from "../apps/desktop/src/deeplink";
+
 import {
   DEFAULT_WINDOW_BOUNDS,
   loadWindowBounds,
@@ -292,7 +329,9 @@ import {
   windowStateFile,
   type WindowBounds,
 } from "../apps/desktop/src/window-state";
+
 import { extractReport, FORENSIC_MARKER, FORENSIC_WINDOW_MS, forensicDue, forensicPrompt, listGateFails } from "../apps/pilot/src/forensic";
+
 import {
   activeSlots,
   initialViewState,
@@ -301,9 +340,13 @@ import {
   viewReducer,
   type ViewState,
 } from "../apps/web/src/lib/viewState";
+
 import { ALLOWED_EXTS, extOf, pickConverter, validateExt } from "../tools/doc2pdf.mjs";
+
 import { checkPng } from "../tools/pngcheck.mjs";
+
 import { signingProfile } from "../apps/desktop/scripts/signing-profile.mjs";
+
 import {
   avgDoneDuration,
   buildCards,
@@ -315,140 +358,223 @@ import {
   validateTakeoverDirectory,
   validateTakeoverSessionId,
 } from "../apps/daemon/src/pilotforensic";
+
 import { findWindowsInstaller, listProblems, smokeFlags, windowsInstallerProblems } from "../apps/desktop/scripts/dist-smoke.mjs";
+
 import { touchesDesktop } from "./ci-scope";
+
 import { imageTags } from "./relay-image";
+
 import { expectedAssets, missingAssets, tagProblems } from "./release-assets";
+
 import { feedProblems } from "./feed-consistency";
 
+
 let failures = 0;
+
 function check(name: string, ok: boolean) {
   console.log(`${ok ? "OK  " : "FAIL"} ${name}`);
   if (!ok) failures++;
 }
 
+
 // --- b64 roundtrip ----------------------------------------------------------
 const bytes = new Uint8Array(256).map((_, i) => i);
+
 check("b64/fromB64 roundtrip", Buffer.from(fromB64(b64(bytes))).equals(Buffer.from(bytes)));
+
 
 // --- sealed payload + AAD binding ------------------------------------------
 const key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, [
   "encrypt",
   "decrypt",
 ]);
+
 const sealed = await seal({ hello: "world" }, key, seqAad("client", 1));
+
 check("seal/openSealed roundtrip", (await openSealed<{ hello: string }>(sealed, key, seqAad("client", 1)))?.hello === "world");
+
 check("wrong seq rejected", (await openSealed(sealed, key, seqAad("client", 2))) === null);
+
 check("wrong sender rejected", (await openSealed(sealed, key, seqAad("other", 1))) === null);
+
 
 // --- pairing URI ------------------------------------------------------------
 // base64 keys contain + / = which URLSearchParams would mangle
 const spki = b64(bytes).replace(/\+/g, "+");
+
 const uri =
   `opencode-remote://pair?v=2&relay=wss%3A%2F%2Frelay.example.com&room=abc123` +
   `&k=${encodeURIComponent(spki)}&name=mac`;
+
 const parsed = parsePairingUri(uri);
+
 check("parsePairingUri valid", parsed?.room === "abc123" && parsed?.relay === "wss://relay.example.com");
+
 check("parsePairingUri preserves base64 key", parsed?.k === spki);
+
 check("parsePairingUri wrong scheme", parsePairingUri("https://evil.example/pair") === null);
+
 check("parsePairingUri missing fields", parsePairingUri("opencode-remote://pair?v=2") === null);
+
 let threw = false;
+
 try {
   parsePairingUri("opencode-remote://pair?v=1&relay=x&room=y&k=z");
 } catch {
   threw = true;
 }
+
 check("parsePairingUri rejects v1", threw);
+
 
 // --- opencode-remote:// deep link (P3-014) -----------------------------------
 const deepUri =
   `opencode-remote://pair?v=2&relay=wss%3A%2F%2Frelay.example.com&room=abc123` +
   `&k=${encodeURIComponent(spki)}&name=mac`;
+
 check("parseDeepLink valid (echoes uri)", parseDeepLink(deepUri) === deepUri);
+
 check("parseDeepLink trims whitespace", parseDeepLink(`  ${deepUri}  `) === deepUri);
+
 check("parseDeepLink rejects wrong scheme", parseDeepLink("https://evil.example/pair?v=2&room=x") === null);
+
 check("parseDeepLink rejects unknown action", parseDeepLink("opencode-remote://evil?v=2&room=x") === null);
+
 check("parseDeepLink rejects missing v", parseDeepLink("opencode-remote://pair?room=x") === null);
+
 check("parseDeepLink rejects v1", parseDeepLink("opencode-remote://pair?v=1&room=x") === null);
+
 check("parseDeepLink rejects path suffix", parseDeepLink("opencode-remote://pair/x?v=2") === null);
+
 check("parseDeepLink rejects fragment", parseDeepLink("opencode-remote://pair?v=2#x") === null);
+
 check("parseDeepLink rejects space (unsafe charset)", parseDeepLink("opencode-remote://pair?v=2&room=a b") === null);
+
 check("parseDeepLink rejects control char", parseDeepLink("opencode-remote://pair?v=2&room=a\x00b") === null);
+
 check(
   "parseDeepLink rejects oversize query",
   parseDeepLink(`opencode-remote://pair?v=2&room=${"a".repeat(DEEP_LINK_QUERY_MAX)}`) === null,
 );
+
 check("parseDeepLink accepts 4KB-boundary query", parseDeepLink(`opencode-remote://pair?v=2&room=${"a".repeat(DEEP_LINK_QUERY_MAX - 1 - "v=2&room=".length)}`) !== null);
+
 check("parseDeepLink rejects garbage", parseDeepLink("not a uri") === null);
+
 check("parseDeepLink rejects empty", parseDeepLink("") === null);
+
 check("parseDeepLink rejects non-string", parseDeepLink(undefined) === null);
+
 check("deepLinkFromArgv finds link in argv", deepLinkFromArgv(["C:\\app.exe", "--flag", deepUri]) === deepUri);
+
 check("deepLinkFromArgv rejects invalid link in argv", deepLinkFromArgv(["C:\\app.exe", "opencode-remote://evil?v=2"]) === null);
+
 check("deepLinkFromArgv no link", deepLinkFromArgv(["C:\\app.exe", "--flag"]) === null);
+
 check("deepLinkFromArgv rejects non-array", deepLinkFromArgv("opencode-remote://pair?v=2") === null);
+
 
 
 // --- mime map ---------------------------------------------------------------
 check("mimeFor pdf", mimeFor("report.pdf") === "application/pdf");
+
 check("mimeFor unknown", mimeFor("blob.bin") === "application/octet-stream");
+
 
 // --- relative time ----------------------------------------------------------
 const now = Date.parse("2026-08-31T12:00:00Z");
+
 check("timeAgo just now", timeAgo(now - 30_000, "now", now) === "now");
+
 check("timeAgo minutes", timeAgo(now - 5 * 60_000, "now", now) === "5m");
+
 check("timeAgo hours", timeAgo(now - 2 * 3_600_000, "now", now) === "2h");
+
 check("timeAgo days", timeAgo(now - 3 * 86_400_000, "now", now) === "3d");
+
 check("timeAgo ISO string", timeAgo("2026-08-31T11:00:00Z", "now", now) === "1h");
+
 check("timeAgo invalid", timeAgo("garbage", "now", now) === "");
+
 check("timeAgo missing", timeAgo(undefined, "now", now) === "");
+
 
 // --- session list ordering (P2-003) ----------------------------------------
 type S = { id: string; updatedAt?: string | number; time?: { updated?: string } };
-const s1: S = { id: "a", updatedAt: "2026-08-31T12:00:00Z" }; // newest (now)
+
+const s1: S = { id: "a", updatedAt: "2026-08-31T12:00:00Z" };
+ // newest (now)
 const s2: S = { id: "b", updatedAt: now - 60_000 };
+
 const s3: S = { id: "c", time: { updated: "2026-08-31T10:00:00Z" } };
-const s4: S = { id: "d" }; // unknown -> last
-const s5: S = { id: "e", updatedAt: "garbage" }; // invalid -> last
+
+const s4: S = { id: "d" };
+ // unknown -> last
+const s5: S = { id: "e", updatedAt: "garbage" };
+ // invalid -> last
 const desc = [s1, s2, s3, s4, s5].sort((a, b) => sessionUpdatedTs(b) - sessionUpdatedTs(a));
+
 check("sessionUpdatedTs sorts desc by recent activity", desc.slice(0, 3).map((s) => s.id).join("") === "abc");
+
 check("sessionUpdatedTs unknown last", desc[3].id === "d" && desc[4].id === "e");
+
 check("sessionUpdatedTs epoch millis", sessionUpdatedTs({ updatedAt: now }) === now);
+
 check("sessionUpdatedTs time.updated fallback", sessionUpdatedTs(s3) === Date.parse("2026-08-31T10:00:00Z"));
+
 check("sessionUpdatedTs missing/invalid -> 0", sessionUpdatedTs(s4) === 0 && sessionUpdatedTs(s5) === 0 && sessionUpdatedTs(undefined) === 0);
+
 
 // --- chat header title (P3-001) ---------------------------------------------
 check("sessionTitleOf trimmed title", sessionTitleOf({ title: "  fix login bug  " }) === "fix login bug");
+
 check("sessionTitleOf empty title", sessionTitleOf({ title: "" }) === "" && sessionTitleOf({ title: "   " }) === "");
+
 check("sessionTitleOf missing body", sessionTitleOf(null) === "" && sessionTitleOf(undefined) === "");
+
 check("sessionTitleOf non-string title", sessionTitleOf({ title: 42 }) === "" && sessionTitleOf({}) === "");
+
 
 // --- approval card preview (P2-004) ------------------------------------------
 check("preview from metadata.command", permissionPreview({ metadata: { command: "git status\nnpm test\nls\nrm -rf /" } }) === "git status\nnpm test\nls");
+
 check("preview from metadata.diff", permissionPreview({ metadata: { diff: "--- a\n+++ b\n@@ -1\nmore" } }) === "--- a\n+++ b\n@@ -1");
+
 check("preview from pattern string", permissionPreview({ pattern: "src/*.ts" }) === "src/*.ts");
+
 check("preview from patterns array", permissionPreview({ patterns: ["a.ts", "b.ts", "c.ts", "d.ts"] }) === "a.ts\nb.ts\nc.ts");
+
 check("preview command wins over pattern", permissionPreview({ metadata: { command: "ls" }, pattern: "x" }) === "ls");
+
 check("preview caps long lines", (permissionPreview({ metadata: { command: "x".repeat(200) } }) ?? "").length <= 120);
+
 check("preview empty payload", permissionPreview({ metadata: {} }) === undefined);
+
 check("preview null/undefined payload", permissionPreview(null) === undefined && permissionPreview(undefined) === undefined);
+
 
 // --- dock unread badge reducer (P3-053) ---------------------------------------
 check("unread starts at zero, focused at the tail", initialUnreadState(true, true).count === 0);
+
 check("unread: arrival while blurred increments", (() => {
   let s = initialUnreadState(false, true);
   s = reduceUnread(s, { kind: "message" });
   return s.count === 1;
 })());
+
 check("unread: arrival scrolled away from the tail increments", (() => {
   let s = initialUnreadState(true, false);
   s = reduceUnread(s, { kind: "message" });
   return s.count === 1;
 })());
+
 check("unread: arrival focused at the tail does not count", (() => {
   let s = initialUnreadState(true, true);
   s = reduceUnread(s, { kind: "message" });
   return s.count === 0;
 })());
+
 check("unread: focusing zeroes", (() => {
   let s = initialUnreadState(false, true);
   s = reduceUnread(s, { kind: "message" });
@@ -456,6 +582,7 @@ check("unread: focusing zeroes", (() => {
   s = reduceUnread(s, { kind: "focus" });
   return s.count === 0 && s.focused;
 })());
+
 check("unread: reaching the tail zeroes", (() => {
   let s = initialUnreadState(true, false);
   s = reduceUnread(s, { kind: "message" });
@@ -463,6 +590,7 @@ check("unread: reaching the tail zeroes", (() => {
   s = reduceUnread(s, { kind: "atEnd", atEnd: true });
   return s.count === 0 && s.atEnd;
 })());
+
 check("unread: count never regresses on non-zeroing transitions", (() => {
   let s = initialUnreadState(false, false);
   for (let i = 0; i < 5; i++) s = reduceUnread(s, { kind: "message" });
@@ -470,12 +598,14 @@ check("unread: count never regresses on non-zeroing transitions", (() => {
   s = reduceUnread(s, { kind: "blur" });
   return s.count === 5;
 })());
+
 check("unread: reset (session switch) zeroes and keeps the flags", (() => {
   let s = initialUnreadState(false, false);
   s = reduceUnread(s, { kind: "message" });
   s = reduceUnread(s, { kind: "reset" });
   return s.count === 0 && !s.focused && !s.atEnd;
 })());
+
 check("unread: scrolling away never fabricates or clears", (() => {
   let s = initialUnreadState(true, true);
   s = reduceUnread(s, { kind: "message" });
@@ -483,24 +613,42 @@ check("unread: scrolling away never fabricates or clears", (() => {
   return s.count === 0 && !s.atEnd;
 })());
 
+
 // --- session badge filter chips (P2-005) -------------------------------------
 type FS = { id: string; title?: string };
+
 const fs1: FS = { id: "a", title: "Fix login" };
+
 const fs2: FS = { id: "b", title: "Ship api" };
+
 const fs3: FS = { id: "c" };
+
 const funread = { a: 3, b: 0 };
+
 const all = [fs1, fs2, fs3];
+
 const fAll = applySessionFilters(all, funread, "", "all");
+
 check("badge filter all keeps everything", fAll.length === 3);
+
 const fWith = applySessionFilters(all, funread, "", "with");
+
 check("badge filter with keeps only unread", fWith.length === 1 && fWith[0].id === "a");
+
 const fWithout = applySessionFilters(all, funread, "", "without");
+
 check("badge filter without keeps zero/missing badge", fWithout.length === 2 && fWithout[0].id === "b" && fWithout[1].id === "c");
+
 const fQuery = applySessionFilters(all, funread, "SHIP", "all");
+
 check("search query still matches title case-insensitive", fQuery.length === 1 && fQuery[0].id === "b");
+
 const fBoth = applySessionFilters(all, funread, "fix", "without");
+
 check("badge filter and query compose", fBoth.length === 0);
+
 check("empty query string passes all", applySessionFilters(all, funread, "   ", "all").length === 3);
+
 
 // --- P1-064: server-side message paging --------------------------------------
 {
@@ -568,6 +716,7 @@ check("empty query string passes all", applySessionFilters(all, funread, "   ", 
   check(`P1-064: tail page of 500 rows <100KB (${perfBytes}B) and sliced <500ms (${perfMs}ms)`, perfBytes < 100_000 && perfMs < 500);
 }
 
+
 // --- P1-064: warm session cache (last 3 conversations) -----------------------
 {
   const entry = { bubbles: [] as unknown[], tools: new Map(), hasMore: false, oldest: null };
@@ -587,6 +736,7 @@ check("empty query string passes all", applySessionFilters(all, funread, "   ", 
   check("P1-064: unknown session id is a cache miss", getCachedSession("cache-zzz") === null);
   check("P1-064: cache cap is 3", SESSION_CACHE_MAX === 3);
 }
+
 
 // --- P1-088: per-session composer drafts --------------------------------------
 {
@@ -609,26 +759,38 @@ check("empty query string passes all", applySessionFilters(all, funread, "   ", 
   for (let i = 0; i <= DRAFTS_MAX; i++) clearDraft(`draft-cap-${i}`);
 }
 
+
 // --- P1-064: pilot session grouping heuristic --------------------------------
 check("P1-064: canonical pilot task titles are detected", isPilotTitle("P1-064: fast session switch") && isPilotTitle("P2-049: pairing copy fixed"));
+
 // spec heuristic matches the task id anywhere in the title — so a USER session
 // mentioning a task id is grouped too; documented in the READMEs, rename escapes
 check("P1-064: ordinary titles are not grouped", !isPilotTitle("Planilha de vendas") && !isPilotTitle("P1-64 nope") && !isPilotTitle("") && !isPilotTitle(undefined));
+
 const mixed = [
   { id: "1", title: "P1-064: fast switch" },
   { id: "2", title: "Groceries" },
   { id: "3", title: "P2-063: breaker" },
 ];
+
 const split = splitPilotSessions(mixed);
+
 check("P1-064: list splits into user and pilot groups", split.user.length === 1 && split.user[0]!.id === "2" && split.pilot.length === 2);
+
 
 // --- file card copy path (P3-002) --------------------------------------------
 check("hasClipboardApi present", hasClipboardApi({ clipboard: { writeText: () => {} } }));
+
 check("hasClipboardApi absent", !hasClipboardApi({}) && !hasClipboardApi(undefined));
+
 let captured = "";
+
 const fakeNav = { clipboard: { writeText: async (t: string) => { captured = t; } } };
+
 check("copyText via clipboard api", (await copyText("/a/b.txt", fakeNav)) === true && captured === "/a/b.txt");
+
 const deniedNav = { clipboard: { writeText: async () => { throw new Error("denied"); } } };
+
 function makeFakeDoc(execOk: boolean) {
   const appended: unknown[] = [];
   const removed: unknown[] = [];
@@ -645,15 +807,23 @@ function makeFakeDoc(execOk: boolean) {
   };
   return { doc, created, appended, removed };
 }
+
 const okDoc = makeFakeDoc(true);
+
 const denyDoc = makeFakeDoc(false);
+
 check("copyText denied + no document -> false (Node has no document; legacyCopy covered above)", (await copyText("x", deniedNav)) === false);
+
 check("legacyCopy writes and cleans up the textarea", legacyCopy("/a/b.txt", okDoc.doc) === true && okDoc.created[0] === "textarea" && okDoc.removed.length === 1 && (okDoc.appended[0] as { value: string }).value === "/a/b.txt");
+
 check("legacyCopy reports execCommand failure", legacyCopy("x", denyDoc.doc) === false);
+
 check("legacyCopy without document fails", legacyCopy("x", undefined) === false);
+
 
 // --- empty-diff self-heal: task merge detection (P0-001) ----------------------
 let pilotRepo = "";
+
 try {
   pilotRepo = mkdtempSync(join(tmpdir(), "pilot-unit-"));
   const g = (cmd: string) => execSync(cmd, { cwd: pilotRepo, encoding: "utf8" });
@@ -679,8 +849,10 @@ try {
   if (pilotRepo) rmSync(pilotRepo, { recursive: true, force: true });
 }
 
+
 // --- desktop render smoke: driver helpers required as a CJS library ----------
 const requireCjs = createRequire(import.meta.url);
+
 const { readConsoleMessage } = requireCjs("../scripts/desktop-render-driver.cjs") as {
   readConsoleMessage: (...args: unknown[]) => {
     level: string;
@@ -690,21 +862,28 @@ const { readConsoleMessage } = requireCjs("../scripts/desktop-render-driver.cjs"
   };
 };
 
+
 // --- desktop render smoke: console-message arg normalization (P0-002) --------
 // Shapes verified at runtime on Electron 38.8.6: (details, 3, msg, line, src)
 // with details = { message, level: "error", lineNumber, sourceId }.
 const details38 = { level: "error", message: "boom", lineNumber: 12, sourceId: "file:///x/y.js" };
+
 const m38 = readConsoleMessage(details38, 3, "boom", 12, "file:///x/y.js");
+
 check(
   "console-message: Electron 38 details-object shape",
   m38.level === "error" && m38.message === "boom" && m38.sourceUrl === "file:///x/y.js" && m38.lineNumber === 12,
 );
+
 const mTailless = readConsoleMessage(details38);
+
 check(
   "console-message: details shape survives when the deprecated positional tail is dropped",
   mTailless.message === "boom" && mTailless.sourceUrl === "file:///x/y.js" && mTailless.level === "error",
 );
+
 const mLegacy = readConsoleMessage({}, 3, "legacy-boom", 7, "file:///a.js");
+
 check(
   "console-message: legacy numeric shape",
   mLegacy.level === "error" &&
@@ -712,11 +891,14 @@ check(
     mLegacy.sourceUrl === "file:///a.js" &&
     mLegacy.lineNumber === 7,
 );
+
 check(
   "console-message: legacy event object (no payload) is not mistaken for details",
   readConsoleMessage({}, 2, "w", 1, "") .level === "warning" && readConsoleMessage({}, 0, "v", 1, "").level === "verbose",
 );
+
 check("console-message: undefined first arg falls back to legacy", readConsoleMessage(undefined, 3, "u", 1, "").message === "u");
+
 
 // --- pilot singleton via pidfile (P0-004) --------------------------------------
 {
@@ -748,6 +930,7 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
     rmSync(pidDir, { recursive: true, force: true });
   }
 }
+
 
 // --- P1-014 stop-loss circuit breaker ------------------------------------------
 {
@@ -793,6 +976,7 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
     rmSync(dir, { recursive: true, force: true });
   }
 }
+
 
 // --- P2-142 blockTaskEdit: idempotent stop-loss + Blocked-header normalization ---
 {
@@ -870,6 +1054,7 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
     rmSync(dir2, { recursive: true, force: true });
   }
 }
+
 
 // --- P1-057 aux agents are read-only: text-in, guarded commit+push out ----------
 {
@@ -1043,6 +1228,7 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
   }
 }
 
+
 /**
  * Fake GitHub for landing smokes (R4/R6 merge confirmation): the PR only
  * exists after `pr create`, and `pr view` reports OPEN until a `pr merge`
@@ -1075,6 +1261,7 @@ function ghMergingIo(realIo: { exec: (cmd: string) => { ok: boolean; output: str
     sleep: () => Promise.resolve(),
   };
 }
+
 
 // --- P1-076: meta commits land via pilot/meta + PR, never via direct main pushes --
 {
@@ -1498,6 +1685,7 @@ function ghMergingIo(realIo: { exec: (cmd: string) => { ok: boolean; output: str
   check("metapush: no site pushes origin main or locally merges into main", offenders.length === 0 && offenders.join(",") === "");
 }
 
+
 // --- P1-037 pending refill: drafted tasks survive a failed push ------------------
 {
   const line1 = "- [ ] (P3-951) [P3] Refill survivor — spec: x (area: infra)";
@@ -1575,6 +1763,7 @@ function ghMergingIo(realIo: { exec: (cmd: string) => { ok: boolean; output: str
   }
 }
 
+
 // --- P1-014 state.json: attempts survive the daily reset ------------------------
 {
   const dir = mkdtempSync(join(tmpdir(), "pilot-state-"));
@@ -1596,6 +1785,7 @@ function ghMergingIo(realIo: { exec: (cmd: string) => { ok: boolean; output: str
   }
 }
 
+
 // --- P2-137 specFails: the spec-format free-retry survives the midnight rollover --
 {
   const dir = mkdtempSync(join(tmpdir(), "pilot-state-"));
@@ -1612,6 +1802,7 @@ function ghMergingIo(realIo: { exec: (cmd: string) => { ok: boolean; output: str
     rmSync(dir, { recursive: true, force: true });
   }
 }
+
 
 // --- P2-024 writeJsonAtomic: state.json survives a crash mid-write --------------
 {
@@ -1677,6 +1868,7 @@ function ghMergingIo(realIo: { exec: (cmd: string) => { ok: boolean; output: str
   }
   check("writeJsonAtomic: failed write rethrows and cleans the .tmp", threw && badWrite.files.has(tmp) === false && badWrite.renames.length === 0);
 }
+
 {
   const dir = mkdtempSync(join(tmpdir(), "pilot-state-atomic-"));
   try {
@@ -1688,6 +1880,7 @@ function ghMergingIo(realIo: { exec: (cmd: string) => { ok: boolean; output: str
     rmSync(dir, { recursive: true, force: true });
   }
 }
+
 
 // --- P1-006 parallel slots: area tags, scheduler picking, slot clamp -----------
 {
@@ -1783,6 +1976,7 @@ function ghMergingIo(realIo: { exec: (cmd: string) => { ok: boolean; output: str
   }
 }
 
+
 // --- P1-099 eager-fill: every pipeline end backfills ALL free slots ------------
 {
   const eagerQueue = parseBacklog(
@@ -1849,6 +2043,7 @@ function ghMergingIo(realIo: { exec: (cmd: string) => { ok: boolean; output: str
   check("P1-099 eager-fill: budget 0 picks nothing", pickBatch(eagerQueue, 2, new Set(), 0).length === 0);
 }
 
+
 // --- P1-078 cache affinity: slot assignment + staggered starts -------------------
 {
   const AFFINITY_QUEUE = parseBacklog(
@@ -1889,11 +2084,16 @@ function ghMergingIo(realIo: { exec: (cmd: string) => { ok: boolean; output: str
   check("stagger: 20s between simultaneous slot starts", startDelayMs(1) === 20_000 && startDelayMs(2) === 40_000 && SLOT_START_STAGGER_MS === 20_000);
 }
 
+
 // --- artifacts (P1-010) -------------------------------------------------------
 check("validSegment accepts ids/names", validSegment("ses_abc123") && validSegment("report-1.html"));
+
 check("validSegment rejects traversal", !validSegment("..") && !validSegment("../etc") && !validSegment("a/b"));
+
 check("kindFor kinds", kindFor("a.pdf") === "pdf" && kindFor("a.html") === "html" && kindFor("a.md") === "md" && kindFor("a.csv") === "csv" && kindFor("a.exe") === "binary");
+
 check("artifactMime csv", artifactMime("a.csv") === "text/csv; charset=utf-8");
+
 // P2-097: preview MIME is derived from the file name — pin the shape the
 // viewer blobs carry (case-insensitive ext, safe default for unknowns)
 check(
@@ -1903,7 +2103,9 @@ check(
     artifactMime("noext") === "application/octet-stream" &&
     artifactMime("a.svg") === "image/svg+xml",
 );
+
 const aroot = mkdtempSync(join(tmpdir(), "ocr-artifacts-"));
+
 try {
   mkdirSync(join(aroot, "ses_test"));
   writeFileSync(join(aroot, "ses_test", "index.html"), "<h1>oi</h1>");
@@ -1953,6 +2155,7 @@ try {
 } finally {
   rmSync(aroot, { recursive: true, force: true });
 }
+
 
 // --- artifacts protocol injection into daemon sessions (P1-068, P1-096) ----------
 {
@@ -2038,6 +2241,7 @@ try {
   }
 }
 
+
 // --- artifacts web lib (P1-010) -----------------------------------------------
 check(
   "fmtBytes: zero/sub-KB/KB/MB/GB/negative",
@@ -2048,10 +2252,12 @@ check(
     fmtBytes(1.5e9) === "1.5 GB" &&
     fmtBytes(-5) === "0 B",
 );
+
 const mentionsList = [
   { sessionId: "s1", name: "report.html", size: 10, mtime: 1, kind: "html" as const },
   { sessionId: "s1", name: "data.csv", size: 20, mtime: 2, kind: "csv" as const },
 ];
+
 check(
   "artifactMentions matches filenames mentioned in text",
   JSON.stringify(artifactMentions("veja o report.html anexo", mentionsList)) ===
@@ -2059,6 +2265,7 @@ check(
     artifactMentions("nada aqui", mentionsList).length === 0 &&
     artifactMentions("", mentionsList).length === 0,
 );
+
 
 // --- P2-097: client maps the daemon's 413 to the friendly too-large error -----
 {
@@ -2080,6 +2287,7 @@ check(
   );
 }
 
+
 // --- side-by-side artifact preview thresholds (P2-062) ------------------------
 check(
   "split preview: viewport threshold + divider drag clamp",
@@ -2094,10 +2302,12 @@ check(
     clampSplitPct(Number.NaN) === 0.5,
 );
 
+
 // --- markdown model for the artifacts pane (P1-010) ---------------------------
 const md = parseMarkdown(
   "# Title\n\nintro **bold** and `code`\n\n- item one\n- item two\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n```js\nx()\n```",
 );
+
 check(
   "parseMarkdown block types",
   md[0]?.type === "heading" &&
@@ -2107,53 +2317,80 @@ check(
     md[4]?.type === "table" &&
     md[5]?.type === "code",
 );
+
 const mdTable = md.find((b) => b.type === "table") as { header: string[]; rows: string[][] } | undefined;
+
 check("parseMarkdown table cells", mdTable?.header.join(",") === "a,b" && mdTable?.rows[0]?.join(",") === "1,2");
+
 const inl = parseInline("**b** `c` [x](https://a.b)");
+
 check(
   "parseInline bold/code/link",
   inl.filter((s) => typeof s === "object").map((s) => (s as { kind: string }).kind).join(",") ===
     "bold,code,link",
 );
+
 const jsInl = parseInline("[x](javascript:alert(1)) next");
+
 check(
   "parseInline rejects javascript: hrefs (plain text, no link)",
   typeof jsInl[0] === "string" &&
     jsInl[0] === "[x](javascript:alert(1)" &&
     jsInl.every((s) => typeof s === "string" || (s as { kind: string }).kind !== "link"),
 );
+
 const mailInl = parseInline("[mail me](mailto:a@b.c)");
+
 check(
   "parseInline keeps mailto links",
   typeof mailInl[0] === "object" && (mailInl[0] as { kind: string }).kind === "link",
 );
 
+
 // --- csv parsing (P1-010) -----------------------------------------------------
 check("parseCsv basic", JSON.stringify(parseCsv("a,b\n1,2")) === JSON.stringify([["a", "b"], ["1", "2"]]));
+
 check("parseCsv quoted comma", JSON.stringify(parseCsv('a,b\n"x, y",2')) === JSON.stringify([["a", "b"], ["x, y", "2"]]));
+
 check("parseCsv escaped quotes", parseCsv('"he said ""hi"""')[0]?.[0] === 'he said "hi"');
+
 
 // --- browser self-driving guards (P2-011) ------------------------------------
 check("browseTarget accepts http", browseTarget("http://127.0.0.1:8792/dashboard")?.protocol === "http:");
+
 check("browseTarget accepts https", browseTarget("https://example.com/x")?.hostname === "example.com");
+
 check("browseTarget rejects file:", browseTarget("file:///etc/passwd") === null);
+
 check("browseTarget rejects javascript:", browseTarget("javascript:alert(1)") === null);
+
 check("browseTarget rejects garbage", browseTarget("not a url") === null);
+
 check("browseTarget rejects oversize", browseTarget(`http://a.com/${"x".repeat(3000)}`) === null);
+
 check("validSession accepts simple", validSession("main_2-x"));
+
 check("validSession rejects empty/long/path", !validSession("") && !validSession("a".repeat(40)) && !validSession("../etc"));
+
 
 // --- UI-cycle screenshot detection (P2-011, round-2 regression) --------------
 // input is `git diff --name-only` output: bare paths, one per line
 check("touchedUi: web file", touchedUiFromDiff("apps/daemon/src/browse.ts\napps/web/src/App.tsx"));
+
 check("touchedUi: desktop file", touchedUiFromDiff("apps/desktop/src/main.ts"));
+
 check("touchedUi: daemon-only diff", !touchedUiFromDiff("apps/daemon/src/browse.ts\ndocs/api.md"));
+
 check("touchedUi: empty diff", !touchedUiFromDiff(""));
+
 // prefixed unified-diff lines must never fool the check (bare-path contract)
 check("touchedUi: prefixed lines rejected", !touchedUiFromDiff("+++ b/apps/web/src/App.tsx"));
+
 // lookalike prefixes must not match ("apps/web/" is a directory boundary)
 check("touchedUi: lookalike apps/webui rejected", !touchedUiFromDiff("apps/webui/src/x.ts"));
+
 check("touchedUi: lookalike apps/webs rejected", !touchedUiFromDiff("apps/webs/src/x.ts"));
+
 
 // --- spec-before-build planner phase (P2-008) --------------------------------
 {
@@ -2323,161 +2560,6 @@ check("touchedUi: lookalike apps/webs rejected", !touchedUiFromDiff("apps/webs/s
   check("constitution: item 7 pins the first-boot product invariant", CONSTITUTION.includes("7. Product premise") && CONSTITUTION.includes("first boot") && CONSTITUTION.includes("local = no auth ceremony"));
 }
 
-// --- P1-060 long-horizon tasks: size tag, budgets, checkpoint review ----------
-{
-  const md = [
-    "## Ready",
-    "",
-    "- [ ] (L-001) [P1] Epic — spec: whole shell v2 (size: L) (area: desktop)",
-    "- [ ] (L-002) [P2] Plain — spec: x (area: ui)",
-    "- [ ] (L-003) [P2] Reversed tags — spec: x (area: daemon) (size: L)",
-    "- [ ] (L-004) [P2] Bogus size — spec: x (size: XL)",
-  ].join("\n");
-  const tasks = parseBacklog(md);
-  const byId = (id: string) => tasks.find((t) => t.id === id)!;
-  check("size: (size: L) parsed and stripped before (area:)", byId("L-001")!.size === "L" && byId("L-001")!.area === "desktop" && byId("L-001")!.spec === "whole shell v2");
-  check("size: absent tag defaults to S", byId("L-002")!.size === "S");
-  check("size: tag after the area tag also parses", byId("L-003")!.size === "L" && byId("L-003")!.area === "daemon");
-  check("size: unknown value falls back to S and stays in spec", byId("L-004")!.size === "S" && byId("L-004")!.spec.includes("(size: XL)"));
-
-  check("budgetsFor: S keeps the classic budgets", JSON.stringify(budgetsFor("S")) === '{"rounds":3,"timeoutMin":45,"attempts":4}');
-  check("budgetsFor: M behaves like S", JSON.stringify(budgetsFor("M")) === JSON.stringify(budgetsFor("S")));
-  check("budgetsFor: L scales to 6 rounds / 90min / 6 attempts", JSON.stringify(budgetsFor("L")) === '{"rounds":6,"timeoutMin":90,"attempts":6}');
-  check("budgetsFor: undefined size falls back to S", JSON.stringify(budgetsFor(undefined)) === JSON.stringify(budgetsFor("S")));
-
-  check("isOverCap: L with 5 attempts keeps going (cap 6)", isOverCap(5, "L") === false && isOverCap(6, "L") === true);
-  check("isOverCap: S with 4 attempts is capped", isOverCap(4, "S") === true && isOverCap(3, "S") === false);
-  check("isOverCap: undefined attempts is below every cap", isOverCap(undefined, "S") === false && isOverCap(undefined, "L") === false);
-
-  check("preserveBranch: first attempt (0/undefined) recreates the branch", preserveBranch(0, true) === false && preserveBranch(undefined, true) === false);
-  check("preserveBranch: later attempt keeps an existing branch", preserveBranch(2, true) === true);
-  check("preserveBranch: missing branch falls back to fresh", preserveBranch(2, false) === false);
-
-  // P1-044 autocatalysis lane: pilot-infra detection from a name-only diff
-  check(
-    "pilotInfra: any diff line under apps/pilot/ marks the lane",
-    touchedPilotInfraFromDiff("apps/pilot/src/deploy.ts\napps/web/src/x.ts") === true &&
-      touchedPilotInfraFromDiff("apps/pilot/") === true,
-  );
-  check(
-    "pilotInfra: lookalike paths and UI-only diffs are not the lane",
-    touchedPilotInfraFromDiff("apps/web/src/pilot-helper.ts\napps/desktop/x.ts") === false &&
-      touchedPilotInfraFromDiff("") === false,
-  );
-  check("pilotInfra: corpus gate demands >=3 samples per command", MIN_CORPUS_SAMPLES === 3);
-
-  const L_TASK: Task = { id: "P1-060", priority: "P1", title: "Long horizon", spec: "", area: "infra", line: "", size: "L" };
-  const S_TASK: Task = { ...L_TASK, size: "S" };
-  check("planner: L task demands numbered milestones in the spec", plannerPrompt(L_TASK, 1).includes("milestones M1..Mn"));
-  check("planner: S task gets no milestone demand", !plannerPrompt(S_TASK, 1).includes("milestones M1..Mn"));
-  check("builder: L task gets the milestone-per-round instruction", builderPrompt(L_TASK, 1).includes("M1..Mn") && builderPrompt(L_TASK, 1).includes("IN ORDER"));
-  check("builder: attempt>1 orders continuation from the preserved branch", builderPrompt(S_TASK, 1, "", [], null, null, 2).includes("was PRESERVED"));
-  check("builder: attempt 1 has no continuation block", !builderPrompt(S_TASK, 1).includes("was PRESERVED"));
-  const inc = reviewerPrompt("SECURITY", "crypto", L_TASK, "", null, null, "abc1234");
-  check("reviewer: incremental scope note cites the range", inc.includes("INCREMENTAL REVIEW") && inc.includes("commits since abc1234"));
-  check("reviewer: no incremental note for total diffs", !reviewerPrompt("SECURITY", "crypto", L_TASK, "", null).includes("INCREMENTAL REVIEW"));
-
-  // --- P1-077 cache-aware prompt assembly ---------------------------------------
-  // Provider prefix caching only engages on a byte-identical prefix, so the
-  // four prompt templates must open with their STABLE blocks (role, rules,
-  // CONSTITUTION, output contract) and keep every VARIABLE byte (task text,
-  // round, findings, lessons) after the last stable line.
-  {
-    const TASK_A: Task = { id: "P1-771", priority: "P1", title: "Cache probe alpha", spec: "alpha spec", area: "", line: "" };
-    const TASK_B: Task = { id: "P1-772", priority: "P2", title: "Cache probe beta", spec: "beta spec", area: "", line: "" };
-    const CACHE_LESSONS = ["- When reordering prompts, pin the stable prefix with tests (fonte: P1-077)"];
-    const commonPrefix = (a: string, b: string): number => {
-      let i = 0;
-      const n = Math.min(a.length, b.length);
-      while (i < n && a[i] === b[i]) i++;
-      return i;
-    };
-    // builder: two DIFFERENT tasks/rounds/attempts/findings/lessons — the
-    // shared prefix must run strictly past the EVIDENCE heading
-    const bA = builderPrompt(TASK_A, 1, "", CACHE_LESSONS, "specs/P1-771.md");
-    const bB = builderPrompt(TASK_B, 3, "fix findings", [], null, { sessionId: "ses_abc123456", taskIds: ["task_1"] }, 2);
-    check("cache: builder prefix byte-identical past the EVIDENCE heading across tasks/rounds", commonPrefix(bA, bB) > bA.indexOf("EVIDENCE:"));
-    check("cache: builder constitution precedes the task text and the IER lessons", bA.indexOf(CONSTITUTION) < bA.indexOf(TASK_A.title) && bA.indexOf(CONSTITUTION) < bA.indexOf("EXPERIENCE —"));
-    check("cache: builder round moved out of the stable role line", !bA.split("TASK (P1-771)")[0]!.includes("round 1") && bA.includes("builder round 1"));
-
-    const pA = plannerPrompt(TASK_A, 1, CACHE_LESSONS, "FAILURE LESSONS block");
-    const pB = plannerPrompt(TASK_B, 2);
-    const plannerTail = pA.indexOf("TASK (P1-771)");
-    check("cache: planner prefix stable across tasks/attempts", plannerTail > 0 && pA.slice(0, plannerTail) === pB.slice(0, plannerTail));
-    check("cache: planner constitution precedes the task text and the IER lessons", pA.indexOf(CONSTITUTION) < pA.indexOf(TASK_A.title) && pA.indexOf(CONSTITUTION) < pA.indexOf("EXPERIENCE —"));
-
-    const rA = reviewerPrompt("QUALITY", "focus A", TASK_A, "", null, "specs/P1-771.md", "abc1234");
-    const rB = reviewerPrompt("QUALITY", "focus B", TASK_B, "diff", "shot.png");
-    check("cache: reviewer prefix byte-identical through the verdict contract", commonPrefix(rA, rB) > rA.indexOf("VERDICT: APPROVE"));
-    check("cache: reviewer constitution precedes the task text", rA.indexOf(CONSTITUTION) < rA.indexOf(TASK_A.title));
-
-    const sA = scribePrompt(TASK_A, "diff A");
-    const sB = scribePrompt(TASK_B, "diff B");
-    check("cache: scribe prefix byte-identical through the LESSONS contract", commonPrefix(sA, sB) > sA.indexOf("SCRIBE:DONE"));
-    check("cache: scribe constitution precedes the task text", sA.indexOf(CONSTITUTION) < sA.indexOf(TASK_A.title));
-    // P1-075: the scribe sees only the diff — findings never re-enter the prompt
-    check("cache: scribe prompt carries no findings block", !sA.includes("REVIEWER FINDINGS") && !sA.includes("finding") && sA.includes("diff A"));
-
-    // --- P1-078: aux templates — no slot/repo path anywhere, variable blocks last ---
-    const strategist = strategistPrompt("MISSION TEXT", CACHE_LESSONS, "FAILURE LESSONS block");
-    const researcher = researcherPrompt();
-    const explorer = explorerPrompt("/abs/shots", "explorer-fresh-20260903");
-    const forensic = forensicPrompt("lesson one", [{ task: "P1-771", step: "gate" }], "abc1234 x");
-    const auxPrompts: Record<string, string> = { builder: bA, planner: pA, reviewer: rA, scribe: sA, strategist, researcher, explorer, forensic };
-    const repoEnv = process.env.OCR_PILOT_REPO ?? "";
-    for (const [name, p] of Object.entries(auxPrompts)) {
-      check(`cache: ${name} prompt carries no slot path`, !/repo-\d/.test(p));
-      if (repoEnv) check(`cache: ${name} prompt carries no repo path`, !p.includes(repoEnv));
-    }
-    check(
-      "cache: strategist variable blocks come after the stable rules",
-      strategist.indexOf("SECURITY RULE") < strategist.indexOf("EXPERIENCE —") &&
-        strategist.indexOf("EXPERIENCE —") < strategist.indexOf("FAILURE LESSONS") &&
-        strategist.indexOf("FAILURE LESSONS") < strategist.indexOf("STRATEGIST:DONE"),
-    );
-    check("cache: strategist lessons land after the AUX-TASKS contract", strategist.indexOf("AUX-TASKS:") < strategist.indexOf("EXPERIENCE —"));
-    check(
-      "cache: forensic data blocks come after the section contract",
-      forensic.indexOf("## Recommendations") < forensic.indexOf("FAILURE LESSONS") && forensic.indexOf("RECENT MERGES") < forensic.indexOf("FORENSIC:DONE"),
-    );
-    check(
-      "cache: explorer per-run session/shotsDir land after the stable contract",
-      explorer.indexOf("explorer-fresh-20260903") > explorer.indexOf("Output format") &&
-        explorer.indexOf("/abs/shots") > explorer.indexOf("Output format") &&
-        explorer.lastIndexOf("explorer-fresh-20260903") < explorer.indexOf("EXPLORER: DONE"),
-    );
-  }
-
-  // scratch git repo: spec recovery from a preserved branch's history
-  const recRepo = mkdtempSync(join(tmpdir(), "ocr-specrecover-"));
-  try {
-    const g = (c: string) => execSync(c, { cwd: recRepo, stdio: ["ignore", "pipe", "pipe"] });
-    g("git init -q -b main .");
-    g("git config user.email t@t.local");
-    g("git config user.name t");
-    writeFileSync(join(recRepo, "README.md"), "base\n");
-    g("git add . && git commit -qm base");
-    g("git update-ref refs/remotes/origin/main HEAD");
-    g("git checkout -qb pilot/P1-060");
-    mkdirSync(join(recRepo, "specs"));
-    const validSpec = ["## Problem", "## Approach", "## Touched files", "## Edge cases", "## Acceptance criteria", "## Out of scope"].join("\n") + "\n";
-    writeFileSync(join(recRepo, "specs", "P1-060.md"), validSpec);
-    g("git add specs/P1-060.md && git commit -qm 'pilot(P1-060): planner spec'");
-    g("git commit -qm work --allow-empty"); // preserved attempt work
-    check("branchHasCommits: preserved branch has commits beyond origin/main", branchHasCommits(recRepo, "pilot/P1-060") === true);
-    check("branchHasCommits: branch at origin/main has none", branchHasCommits(recRepo, "main") === false);
-    // tampered tip: the recovery must walk back to the committed planner spec
-    writeFileSync(join(recRepo, "specs", "P1-060.md"), "tampered\n");
-    g("git add specs/P1-060.md && git commit -qm 'tamper the spec'");
-    check("spec recovery: tampered tip falls back to the committed planner spec", recoverSpecFromBranch(recRepo, "P1-060", "specs/P1-060.md") === validSpec);
-    // missing tip: the recovery still finds the ancestor blob
-    g("git rm -q specs/P1-060.md && git commit -qm 'delete the spec'");
-    check("spec recovery: deleted tip still recovers from history", recoverSpecFromBranch(recRepo, "P1-060", "specs/P1-060.md") === validSpec);
-    check("spec recovery: no history at all returns null", recoverSpecFromBranch(recRepo, "P1-061", "specs/P1-061.md") === null);
-  } finally {
-    rmSync(recRepo, { recursive: true, force: true });
-  }
-}
 
 // --- P1-036: setupTaskBranch preserves the task branch across attempts ----------
 {
@@ -2546,17 +2628,18 @@ check("touchedUi: lookalike apps/webs rejected", !touchedUiFromDiff("apps/webs/s
   }
 }
 
+
 // --- module-shadowing invariant (P2-014) --------------------------------------
 // input is `git diff --name-status` output; only introduced (A/R/C) root files count
-check("stdlibShadow: clean diff passes", stdlibShadowHits("M\tapps/daemon/src/index.ts\nA\ttools/lib.py\nA\tREADME.md\n").length === 0);
-check("stdlibShadow: root struct.py fails", JSON.stringify(stdlibShadowHits("A\tstruct.py\n")) === JSON.stringify(["struct.py"]));
-check("stdlibShadow: subdir struct.py ok", stdlibShadowHits("A\tdir/struct.py\n").length === 0);
-check("stdlibShadow: rename into os.py fails", JSON.stringify(stdlibShadowHits("R100\tdocs/notes.txt\tos.py\n")) === JSON.stringify(["os.py"]));
-check("stdlibShadow: deleted json.py no hit", stdlibShadowHits("D\tjson.py\n").length === 0);
-check("stdlibShadow: modified types.py not an introduction", stdlibShadowHits("M\ttypes.py\n").length === 0);
-check("stdlibShadow: every hardcoded name is caught", stdlibShadowHits(["struct.py", "os.py", "base64.py", "json.py", "types.py", "random.py"].map((n) => `A\t${n}`).join("\n")).length === 6);
-check("stdlibShadow: case-insensitive on root file", stdlibShadowHits("A\tRANDOM.PY\n").length === 1);
-check("stdlibShadow: non-stdlib root file passes", stdlibShadowHits("A\tmain.py\nA\tstruct.ts\n").length === 0);
+
+
+
+
+
+
+
+
+
 
 // --- verifiable findings / anti-hallucination filter (P2-015) ----------------
 {
@@ -2589,6 +2672,7 @@ check("stdlibShadow: non-stdlib root file passes", stdlibShadowHits("A\tmain.py\
   check("verifyFindings: URL not mistaken for a file citation", verifyFindings(["- see https://example.com/a/real.ts:2, plus `beta touched` here"], ws, diff).kept.length === 1);
   rmSync(ws, { recursive: true, force: true });
 }
+
 
 // --- verdict = last marker wins + code-observation findings (P2-038) -----------
 {
@@ -2651,6 +2735,7 @@ check("stdlibShadow: non-stdlib root file passes", stdlibShadowHits("A\tmain.py\
   rmSync(ws2, { recursive: true, force: true });
 }
 
+
 // --- union symbol semantics + two-tier rule (P1-065) ---------------------------
 {
   const ws = mkdtempSync(join(tmpdir(), "p1-065-"));
@@ -2690,6 +2775,7 @@ check("stdlibShadow: non-stdlib root file passes", stdlibShadowHits("A\tmain.py\
   );
   rmSync(ws, { recursive: true, force: true });
 }
+
 
 // --- P1-102: findings only under REQUEST_CHANGES + verbatim-quote-first --------
 {
@@ -2733,464 +2819,38 @@ check("stdlibShadow: non-stdlib root file passes", stdlibShadowHits("A\tmain.py\
   rmSync(ws, { recursive: true, force: true });
 }
 
-// --- mandatory builder evidence (P2-009) --------------------------------------
-{
-  const UI_TASK: Task = { id: "P2-009", priority: "P2", title: "Evidence", spec: "", area: "ui", line: "" };
-  const INFRA_TASK: Task = { id: "P2-009", priority: "P2", title: "Evidence", spec: "", area: "infra", line: "" };
-  const bp = builderPrompt(INFRA_TASK, 1, "", []);
-  const bpUi = builderPrompt(UI_TASK, 1, "", []);
-  check("evidence: builder prompt mandates the EVIDENCE block", bp.includes("MANDATORY EVIDENCE") && bp.includes("EVIDENCE:"));
-  check("evidence: builder prompt requires typecheck + test:unit", bp.includes("$ npm run typecheck --silent") && bp.includes("$ npm run test:unit --silent"));
-  check("evidence: non-UI prompt shows the shot keys as conditional lines", bp.includes("if this round's diff touches apps/web/") && bp.includes("shot-1440x900:") && bp.includes("shot-390:"));
-  check("evidence: UI prompt asks both sized screenshots", bpUi.includes("shot-1440x900:") && bpUi.includes("shot-390:"));
-  check("evidence: task-done marker stays the last line", bp.trimEnd().endsWith("PILOT:TASK-DONE"));
-
-  const block = `working...\nEVIDENCE:\n$ npm run typecheck --silent\nTS-OK\n$ npm run test:unit --silent\nOK   one\nOK   two\nUNIT TESTS PASSED\nshot-1440x900: /tmp/desktop.png\nshot-390: /tmp/phone.png\nPILOT:TASK-DONE`;
-  const parsed = parseEvidenceBlock(block);
-  check("evidence: parses commands after the marker", parsed !== null && parsed.commands.length === 2 && parsed.commands[0]!.cmd === "npm run typecheck --silent" && parsed.commands[0]!.output === "TS-OK");
-  check("evidence: multi-line pasted output preserved", parsed?.commands[1]?.output === "OK   one\nOK   two\nUNIT TESTS PASSED");
-  check("evidence: shot paths parsed", parsed?.shots["shot-1440x900"] === "/tmp/desktop.png" && parsed?.shots["shot-390"] === "/tmp/phone.png");
-  check("evidence: block stops at the task-done marker", !JSON.stringify(parsed).includes("PILOT:TASK-DONE"));
-  check("evidence: no marker → null", parseEvidenceBlock("no evidence here\nPILOT:TASK-DONE") === null);
-  check("evidence: prose quoting the marker is ignored", parseEvidenceBlock("EVIDENCE: is required\n\nEVIDENCE:\n$ npm run build --silent\nx\n")?.commands.length === 1);
-  check("evidence: works without a trailing task-done marker", parseEvidenceBlock("EVIDENCE:\n$ npm run build --silent\nx\n")?.commands.length === 1);
-  check("evidence: padded block rejected", parseEvidenceBlock(`EVIDENCE:\n${"x\n".repeat(700)}`) === null);
-  const longHonest = parseEvidenceBlock(`EVIDENCE:\n$ npm run test:unit --silent\n${"OK  check\n".repeat(550)}`);
-  check("evidence: block cap leaves headroom for honest full pastes", (longHonest?.commands[0]?.output.split("\n").length ?? 0) === 550);
-  check("evidence: prompt teaches the positional browse CLI the tool implements", bpUi.includes("browse.mjs shot <path>.png 1440 900") && bpUi.includes("browse.mjs shot <path>.png 390 844") && !bpUi.includes("--w"));
-  check("evidence: prompt drops the unpredictable screencapture fallback", !bpUi.includes("screencapture"));
-
-  check("evidence: containment accepts a truncated real paste", evidenceMatches("UNIT TESTS PASSED", "OK a\nOK b\nUNIT TESTS PASSED") === true);
-  check("evidence: empty paste honest only for a silent re-run", evidenceMatches("", "") === true && evidenceMatches("", "OK a") === false);
-  check("evidence: fabricated line diverges", evidenceMatches("OK a\nFABRICATED 999", "OK a\nOK b") === false);
-  check("evidence: whitespace/ANSI normalized", evidenceMatches("OK   \x1b[32ma\x1b[0m", "OK a") === true);
-  check("evidence: line normalization is order/spacing insensitive", normalizeEvidenceLine("  OK   a  b  ") === "OK a b");
-
-  // P3-033 golden corpus: the matcher must keep accepting REAL gate outputs.
-  // Samples live in apps/pilot/src/__fixtures__/gate-corpus/<cmd>/<seq>-<label>.txt
-  // (label = commit-ish of the capture; cross-sample pairs are only compared
-  // within the same label, since different commits legitimately diverge).
-  {
-    const corpus = loadGateCorpus();
-    const byCmd = new Map<string, typeof corpus>();
-    for (const s of corpus) {
-      const list = byCmd.get(s.cmd) ?? [];
-      list.push(s);
-      byCmd.set(s.cmd, list);
-    }
-    check(
-      "corpus: >= 3 samples for every evidence command",
-      CORPUS_COMMANDS.every((c) => (byCmd.get(c)?.length ?? 0) >= 3),
-    );
-    let selfFail = 0,
-      noiseFail = 0,
-      truncFail = 0,
-      fabFail = 0,
-      crossFail = 0;
-    for (const s of corpus) {
-      if (!evidenceMatches(s.output, s.output)) selfFail++;
-      // real terminal noise: ANSI coloring, extra spacing, blank lines
-      const noisy = s.output
-        .split("\n")
-        .map((l, i) => (i % 3 === 0 ? `\x1b[2m${l}\x1b[0m   ` : i % 3 === 1 ? `  ${l} ` : l))
-        .join("\n");
-      if (!evidenceMatches(noisy, s.output)) noiseFail++;
-      // subset semantics: an honest truncated paste must match the full re-run
-      const half = s.output.split("\n").slice(0, Math.max(1, Math.floor(s.output.split("\n").length / 2))).join("\n");
-      if (!evidenceMatches(half, s.output)) truncFail++;
-      // anti-fabrication direction: a line with no source in the re-run fails.
-      // Prepended so the assertion stays independent of the 600-line paste cap
-      // (appended lines beyond the cap are legitimately sliced away).
-      if (evidenceMatches(`FABRICATED-CORPUS-LINE-31337\n${s.output}`, s.output)) fabFail++;
-      // normalization is idempotent — a line survives repeated normalization
-      for (const l of s.output.split("\n")) {
-        if (normalizeEvidenceLine(normalizeEvidenceLine(l)) !== normalizeEvidenceLine(l)) {
-          selfFail++;
-          break;
-        }
-      }
-      // same-commit cross-pairs: an honest paste from run A must match the
-      // re-run output of run B — this is where false positives live
-      const peers = (byCmd.get(s.cmd) ?? []).filter((p) => p.label === s.label && p.file !== s.file);
-      for (const p of peers) {
-        if (!evidenceMatches(s.output, p.output)) {
-          crossFail++;
-          console.error(`corpus cross-pair fails: ${s.file} vs ${p.file}`);
-        }
-      }
-    }
-    if (selfFail + noiseFail + truncFail + fabFail + crossFail > 0) {
-      console.error(`corpus failures: self=${selfFail} noise=${noiseFail} trunc=${truncFail} fab=${fabFail} cross=${crossFail}`);
-    }
-    check("corpus: every real sample matches itself (and stays idempotent)", selfFail === 0);
-    check("corpus: ANSI/spacing noise on real outputs still matches", noiseFail === 0);
-    check("corpus: truncated real paste still matches", truncFail === 0);
-    check("corpus: fabricated line over real output still rejected", fabFail === 0);
-    check("corpus: same-commit cross-pairs match both ways (no false positives)", crossFail === 0);
-  }
-  // the exact false-positive shapes the corpus was seeded from (P1-030 class)
-  const ts1 = '{"ts":"2026-09-01T16:28:19.322Z","level":"info","msg":"daemon shutting down","data":{"signal":"SIGTERM","activeConnections":2,"uptimeS":65}}';
-  const ts2 = '{"ts":"2026-09-02T16:28:34.484Z","level":"info","msg":"daemon shutting down","data":{"signal":"SIGTERM","activeConnections":2,"uptimeS":65}}';
-  const tmpA = "[desktop] window-state unreadable (/var/folders/T/ocr-winstate-w9xFX1/window-state.json)";
-  const tmpB = "[desktop] window-state unreadable (/var/folders/T/ocr-winstate-OR30AT/window-state.json)";
-  check(
-    "evidence: ISO stamps, pids and random tempdirs never diverge two green runs",
-    evidenceMatches(ts1, ts2) && evidenceMatches(tmpA, tmpB),
-  );
-
-  // --- P3-033 gate-corpus module: sanitize, dedupe, capture ------------------
-  {
-    check("corpus: slug mirrors the command string", corpusSlug("npm run test:unit --silent") === "npm-run-test-unit-silent");
-    const home = process.env.HOME ?? "/home/x";
-    const dirty = `path ${home}/logs\n/Users/caio/x\n/home/joao/y\n aa1f0c2d3e4b5a6f7c8d9e0a1b2c3d4f tail`;
-    const clean = sanitizeForCorpus(dirty, home);
-    check("corpus: sanitizer masks home paths, user dirs and long hex", clean === "path ~/logs\n/Users/USER/x\n/home/USER/y\n HEX tail");
-    check("corpus: sanitizer no-ops with an empty home", sanitizeForCorpus("a/b", "").includes("a/b"));
-    const dir = mkdtempSync(join(tmpdir(), "p3-033-"));
-    try {
-      const first = appendCorpusSample(dir, "npm run typecheck --silent", "\n", "abc1234");
-      const dedup = appendCorpusSample(dir, "npm run typecheck --silent", "\n", "abc1234");
-      const second = appendCorpusSample(dir, "npm run typecheck --silent", "new output\n", "abc1234");
-      check("corpus: append writes, dedupes identical, seqs new files", first === "npm-run-typecheck-silent/1-abc1234.txt" && dedup === null && second === "npm-run-typecheck-silent/2-abc1234.txt");
-
-      // capture e2e: temp workspace + bare origin, same git flow as production
-      execSync(`git init -q --bare "${join(dir, "origin.git")}"`);
-      const ws = join(dir, "ws");
-      execSync(`git init -q -b main "${ws}"`);
-      writeFileSync(join(ws, "README.md"), "x\n");
-      execSync(`git -C "${ws}" add README.md && git -C "${ws}" commit -qm init`);
-      execSync(`git -C "${ws}" remote add origin "${join(dir, "origin.git")}" && git -C "${ws}" push -q -u origin main`);
-      const reruns = new Map([
-        [rerunKey("npm run typecheck --silent", ws), { ok: true, output: "" }],
-        [rerunKey("npm run test:unit --silent", ws), { ok: true, output: "OK   a\n" }],
-        [rerunKey("npm run build --silent", ws), { ok: true, output: "built in 1.2s\n" }],
-      ]);
-      // P1-076: gh faked via the injectable io — landings go to origin/pilot/meta
-      const ghFakedIo = (wsDir: string): MetaPushIo => ghMergingIo(metaIo(wsDir));
-      const written = await captureGateCorpus(ws, "P3-033", reruns, ghFakedIo(ws));
-      check("corpus: capture records the gate re-runs and lands via pilot/meta", written.length === 3);
-      const mainSha = execSync(`git -C "${ws}" ls-remote origin main`).toString().split("\t")[0];
-      const metaSha = execSync(`git -C "${ws}" ls-remote origin pilot/meta`).toString().split("\t")[0];
-      check("corpus: capture commit is on origin/pilot/meta, not on origin/main", !!metaSha && metaSha !== mainSha);
-      // (the dedupe compares against the committed corpus — simulate the meta
-      // PR's squash-merge completing so origin/main carries the samples)
-      execSync(`git -C "${ws}" push -q origin ${META_BRANCH}:main`);
-      const again = await captureGateCorpus(ws, "P3-033", reruns, ghFakedIo(ws));
-      check("corpus: identical re-capture dedupes away", again.length === 0);
-      const hostileReruns = new Map([[rerunKey("npm run build --silent", ws), { ok: true, output: "hostile-id output\n" }]]);
-      const hFiles = await captureGateCorpus(ws, 'x" ; rm -rf /; echo "', hostileReruns, ghFakedIo(ws));
-      const subjects = execSync(`git -C "${ws}" log --format=%s -5 origin/pilot/meta`).toString();
-      check(
-        "corpus: hostile task id neutralized in the commit message",
-        hFiles.length === 1 && subjects.includes("pilot(corpus): 1 gate sample(s) from unknown-task") && !subjects.includes("rm -rf"),
-      );
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  }
-
-  // --- P1-044 (a): golden-corpus gate for pilot-infra tasks -------------------
-  {
-    check("corpus gate: the shipped corpus is green", corpusGateDetail() === null);
-    const dir = mkdtempSync(join(tmpdir(), "p1-044-corpus-"));
-    try {
-      check("corpus gate: empty corpus fails closed", corpusGateDetail(dir)?.startsWith("golden corpus too thin") === true);
-      appendCorpusSample(dir, "npm run typecheck --silent", "sample one\n", "abc1234");
-      appendCorpusSample(dir, "npm run typecheck --silent", "sample two\n", "abc1234");
-      appendCorpusSample(dir, "npm run typecheck --silent", "sample three\n", "abc1234");
-      const thin = corpusGateDetail(dir);
-      check(
-        "corpus gate: <3 samples for ANY command rejects the gate",
-        thin !== null && thin.includes("npm run test:unit --silent"),
-      );
-      // a tampered sample must be caught: the matcher must still reject a
-      // fabricated line placed over the real output
-      appendCorpusSample(dir, "npm run test:unit --silent", "OK 1\n", "abc1234");
-      appendCorpusSample(dir, "npm run test:unit --silent", "OK 2\n", "abc1234");
-      appendCorpusSample(dir, "npm run test:unit --silent", "OK 3\n", "abc1234");
-      appendCorpusSample(dir, "npm run build --silent", "built\n", "abc1234");
-      appendCorpusSample(dir, "npm run build --silent", "built 2\n", "abc1234");
-      appendCorpusSample(dir, "npm run build --silent", "built 3\n", "abc1234");
-      check("corpus gate: 3 samples per command is green", corpusGateDetail(dir) === null);
-      // the matcher itself must still reject a fabricated line over a real
-      // sample — the gate's fabrication probe composes exactly this predicate
-      // (prepended: lines beyond the 600-line paste cap are sliced away)
-      const real = "OK   scripts/a.test.ts\nOK   scripts/b.test.ts\n";
-      check(
-        "corpus gate: fabrication probe matches the matcher's rejection rule",
-        evidenceMatches(`FABRICATED-CORPUS-PROBE-LINE\n${real}`, real) === false && evidenceMatches(real, real) === true,
-      );
-      // the tamper branches themselves, driven via the injectable matcher
-      check(
-        "corpus gate: a permissive matcher regression is caught (fabricated line accepted)",
-        corpusGateDetail(dir, () => true)?.includes("accepts a fabricated line") === true,
-      );
-      check(
-        "corpus gate: a rejecting matcher regression is caught (self-match fails)",
-        corpusGateDetail(dir, () => false)?.includes("no longer matches itself") === true,
-      );
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  }
-
-  // PNG header parsing: hand-built IHDR for 1440x900 and 390x844
-  const png = (w: number, h: number) => {
-    const b = Buffer.alloc(24);
-    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(b, 0);
-    b.writeUInt32BE(w, 16);
-    b.writeUInt32BE(h, 20);
-    return b;
-  };
-  check("evidence: pngSize null on missing file / bad magic", pngSize("nope-missing.png") === null && pngSize(join(tmpdir(), "p2-009-missing.png")) === null);
-  check("evidence: shot dims accept 1440x900 (and 2x Retina)", evidenceShotDimsOk("shot-1440x900", { w: 1440, h: 900 }) && evidenceShotDimsOk("shot-1440x900", { w: 2880, h: 1800 }));
-  check("evidence: shot dims accept 390-wide (and 2x)", evidenceShotDimsOk("shot-390", { w: 390, h: 844 }) && evidenceShotDimsOk("shot-390", { w: 780, h: 1688 }));
-  check("evidence: shot dims reject wrong sizes", !evidenceShotDimsOk("shot-1440x900", { w: 1280, h: 800 }) && !evidenceShotDimsOk("shot-390", { w: 391, h: 844 }));
-
-  // end-to-end verifyEvidence against a real re-execution (echo scripts)
-  const ws = mkdtempSync(join(tmpdir(), "p2-009-"));
-  writeFileSync(ws + "/package.json", JSON.stringify({ name: "p2-009", scripts: { typecheck: "echo TS-OK", "test:unit": "echo UNIT-OK" } }));
-  const good = `EVIDENCE:\n$ npm run typecheck --silent\nTS-OK\n$ npm run test:unit --silent\nUNIT-OK\nPILOT:TASK-DONE`;
-  check("evidence: honest paste survives re-execution", verifyEvidence(ws, good, false).ok === true);
-  const fabricated = `EVIDENCE:\n$ npm run typecheck --silent\nTS-OK\n$ npm run test:unit --silent\nall 999 checks passed\nPILOT:TASK-DONE`;
-  const fab = verifyEvidence(ws, fabricated, false);
-  check("evidence: fabricated output rejected by re-execution", fab.ok === false && fab.detail.includes("diverges"));
-  const emptyPaste = `EVIDENCE:\n$ npm run typecheck --silent\nTS-OK\n$ npm run test:unit --silent\n`;
-  const ep = verifyEvidence(ws, emptyPaste, false);
-  check("evidence: empty paste for a verbose command rejected", ep.ok === false && ep.detail.includes("no output pasted"));
-  check("evidence: missing block rejected", verifyEvidence(ws, "all done", false).detail.includes("no EVIDENCE block"));
-  const wsSilent = mkdtempSync(join(tmpdir(), "p2-009-silent-"));
-  writeFileSync(wsSilent + "/package.json", JSON.stringify({ name: "p2-009s", scripts: { typecheck: "node -e ''", "test:unit": "node -e ''" } }));
-  const pasteVerbose = `EVIDENCE:\n$ npm run typecheck --silent\n0 errors\n$ npm run test:unit --silent\nUNIT TESTS PASSED\nPILOT:TASK-DONE`;
-  check("evidence: verbose paste over silent successful re-run accepted", verifyEvidence(wsSilent, pasteVerbose, false).ok === true);
-  check("evidence: non-allowlisted command dropped, never executed", verifyEvidence(ws, "EVIDENCE:\n$ rm -rf /\n", false).detail.includes("missing required command"));
-  const transcript = `EVIDENCE:\n$ npm run typecheck --silent\nTS-OK\n$ npm run test:unit --silent\n$ npm run typecheck\nUNIT-OK\n`;
-  check("evidence: prompt-looking lines in real output don't reject an honest block", verifyEvidence(ws, transcript, false).ok === true && !parseEvidenceBlock(transcript)?.commands.some((c) => c.cmd === "npm run typecheck"));
-  // round 2: one predicate drives prompt AND gate (reviewer finding #1/#5)
-  check("evidence: needsUiEvidence is the union of area tag and diff", needsUiEvidence("ui", false) && needsUiEvidence("desktop", false) && needsUiEvidence("infra", true) && !needsUiEvidence("infra", false));
-  check("evidence: prompt warns that UI diffs need shots even untagged", builderPrompt(INFRA_TASK, 1, "", []).includes("even when this task is not tagged ui/desktop"));
-  // round 2: screenshot freshness — a stale PNG from an earlier task must not pass
-  const stale = join(ws, "stale.png");
-  writeFileSync(stale, png(1440, 900));
-  const past = Date.now() / 1000 - 60;
-  utimesSync(stale, past, past);
-  const fresh = join(ws, "fresh.png");
-  writeFileSync(fresh, png(1440, 900));
-  writeFileSync(join(ws, "phone-still-fresh.png"), png(390, 844));
-  const uiStale = `EVIDENCE:\n$ npm run typecheck --silent\nTS-OK\n$ npm run test:unit --silent\nUNIT-OK\nshot-1440x900: ${stale}\nshot-390: ${ws}/phone-still-fresh.png\n`;
-  const uiFresh = uiStale.replace(stale, fresh);
-  const startedAt = Date.now() - 10_000;
-  check("evidence: stale screenshot rejected by mtime bound", verifyEvidence(ws, uiStale, true, startedAt).detail.includes("stale screenshot"));
-  check("evidence: fresh screenshot passes the mtime bound", verifyEvidence(ws, uiFresh, true, startedAt).ok === true);
-  check("evidence: freshness off when not requested", verifyEvidence(ws, uiStale, true).ok === true);
-  check("evidence: missing required command rejected", verifyEvidence(ws, "EVIDENCE:\n$ npm run build --silent\nx\n", false).detail.includes("missing required command"));
-  const realPng = join(ws, "shot-desktop.png");
-  writeFileSync(realPng, png(1440, 900));
-  writeFileSync(join(ws, "shot-phone.png"), png(390, 844));
-  check("evidence: pngSize reads IHDR dimensions", JSON.stringify(pngSize(realPng)) === JSON.stringify({ w: 1440, h: 900 }));
-  const uiOk = `EVIDENCE:\n$ npm run typecheck --silent\nTS-OK\n$ npm run test:unit --silent\nUNIT-OK\nshot-1440x900: ${realPng}\nshot-390: ${ws}/shot-phone.png\nPILOT:TASK-DONE`;
-  check("evidence: UI shots verified by dimension", verifyEvidence(ws, uiOk, true).ok === true);
-  writeFileSync(join(ws, "tiny.png"), "not a png");
-  const uiBad = uiOk.replace(realPng, join(ws, "tiny.png"));
-  check("evidence: unreadable shot rejected", verifyEvidence(ws, uiBad, true).detail.includes("not a readable PNG"));
-  rmSync(ws, { recursive: true, force: true });
-}
-
-// --- P2-040: shared preflight ⇄ gate re-run cache ----------------------------
-{
-  // pure cache semantics: same (command, workspace) executes once
-  const calls: string[] = [];
-  const run = (cmd: string, cwd: string) => {
-    calls.push(`${cmd}@${cwd}`);
-    return { ok: true, output: `out-of-${cmd}` };
-  };
-  const cache: RerunResults = new Map();
-  const wsA = "/ws/slot-1";
-  const pre = cachedExec(cache, "npm run typecheck --silent", wsA, { timeoutMin: 10 }, run);
-  const viaEvidence = cachedExec(cache, "npm run typecheck --silent", wsA, { timeoutMin: 20 }, run);
-  const viaStep = cachedExec(cache, "npm run typecheck --silent", wsA, { timeoutMin: 20 }, run);
-  check("rerun cache: preflight + evidence re-run + gate step share ONE execution", calls.length === 1 && pre === viaEvidence && viaEvidence === viaStep);
-  cachedExec(cache, "npm run typecheck --silent", "/ws/slot-2", {}, run);
-  check("rerun cache: same command in another slot workspace runs again", calls.length === 2 && calls[1] === `npm run typecheck --silent@/ws/slot-2`);
-  cachedExec(cache, "npm run build --silent", wsA, {}, run);
-  check("rerun cache: other command in the same workspace runs again", calls.length === 3 && calls[2]!.startsWith("npm run build"));
-  check("rerun key: workspace and command are not aliased into one key", rerunKey("a", "b") !== rerunKey("a", "c") && rerunKey("a", "b") !== rerunKey("b", "b"));
-  // a failed result caches too — same code, deterministic failure, no re-roll
-  const failCache: RerunResults = new Map();
-  let failRuns = 0;
-  const failRun = () => {
-    failRuns++;
-    return { ok: false, output: "error TS9999" };
-  };
-  const f1 = cachedExec(failCache, "npm run typecheck --silent", wsA, {}, failRun);
-  const f2 = cachedExec(failCache, "npm run typecheck --silent", wsA, {}, failRun);
-  check("rerun cache: failure is cached — no second execution either", failRuns === 1 && !f1.ok && f2 === f1);
-
-  // full round simulation: preflight populates the round's shared map, the
-  // gate (verifyEvidence re-run + step battery) reuses it — each command runs
-  // exactly 1x per round, not 3x.
-  const ws = mkdtempSync(join(tmpdir(), "p2-040-"));
-  writeFileSync(ws + "/package.json", JSON.stringify({ name: "p2-040", scripts: { typecheck: "echo TS-OK", "test:unit": "echo UNIT-OK" } }));
-  const counts = new Map<string, number>();
-  const roundCache: RerunResults = new Map();
-  const roundRun = (cmd: string, cwd: string) =>
-    cachedExec(roundCache, cmd, cwd, {}, (c) => {
-      counts.set(c, (counts.get(c) ?? 0) + 1);
-      return { ok: true, output: c.includes("typecheck") ? "TS-OK" : "UNIT-OK" };
-    });
-  // preflight (round loop) runs first and populates the shared map
-  roundRun("npm run typecheck --silent", ws);
-  // gate: verifyEvidence re-runs the cited commands through the same cache
-  const block = `EVIDENCE:\n$ npm run typecheck --silent\nTS-OK\n$ npm run test:unit --silent\nUNIT-OK\nPILOT:TASK-DONE`;
-  const ev = verifyEvidence(ws, block, false, 0, roundRun);
-  // gate step battery reads the same canonical command strings from the cache
-  roundRun("npm run typecheck --silent", ws);
-  roundRun("npm run test:unit --silent", ws);
-  check(
-    "rerun cache: full round — typecheck executes 1x per round, not 3x (P2-040)",
-    ev.ok === true && counts.get("npm run typecheck --silent") === 1 && counts.get("npm run test:unit --silent") === 1,
-  );
-  rmSync(ws, { recursive: true, force: true });
-}
-
-// --- P1-101: deterministic gate before reviewers + retry-once flaky -----------
-{
-  const ws = mkdtempSync(join(tmpdir(), "p1-101-"));
-  // P2-116: the gate resolves a per-repo profile from the workspace. These
-  // checks pin the PILOT battery (build step, integration flake), so the
-  // fixture must detect as the pilot repo — name marker only, no scripts run
-  // (the harness injects `run`).
-  writeFileSync(ws + "/package.json", JSON.stringify({ name: "opencode-remote", private: true }));
-
-  // exec() now captures stderr alongside stdout (vite warnings live on stderr;
-  // losing them faked "pasted output diverges" rejections)
-  const echo = exec("echo out; echo err 1>&2", { cwd: ws, allowFail: true });
-  check("P1-101: exec captures stdout AND stderr on success", echo.ok && echo.output.includes("out") && echo.output.includes("err"));
-  const boom = exec("echo boom 1>&2; exit 3", { cwd: ws, allowFail: true });
-  check("P1-101: exec keeps the stderr tail on failure", !boom.ok && boom.output.includes("boom"));
-
-  // runStepWithRetry: deterministic failure — exactly 2 executions, not flaky
-  {
-    const cache: RerunResults = new Map();
-    let n = 0;
-    const r = runStepWithRetry(cache, "step", "ws", {}, () => {
-      n++;
-      return { ok: false, output: `red ${n}` };
-    });
-    check("P1-101: runStepWithRetry deterministic failure — 2 executions, flaky=false", !r.ok && !r.flaky && n === 2 && r.output === "red 2");
-    check("P1-101: runStepWithRetry keeps the second (red) result cached", cache.get(rerunKey("step", "ws"))?.output === "red 2");
-  }
-  // runStepWithRetry: flaky — first red, second green
-  {
-    const cache: RerunResults = new Map();
-    let n = 0;
-    const r = runStepWithRetry(cache, "step", "ws", {}, () => {
-      n++;
-      return n === 1 ? { ok: false, output: "transient" } : { ok: true, output: "green" };
-    });
-    check("P1-101: runStepWithRetry flaky — fail 1st, pass 2nd", r.ok && r.flaky && n === 2 && r.output === "green");
-    // P2-040 preserved: a green step executes once per round — the next
-    // cachedExec call for the same (cmd, cwd) reads the cache
-    cachedExec(cache, "step", "ws", {}, () => {
-      n++;
-      return { ok: true, output: "green" };
-    });
-    check("P1-101: runStepWithRetry leaves a green cache entry (no re-execution)", n === 2);
-  }
-
-  // deterministicGate: hermetic harness — every battery command green unless
-  // failFirst says otherwise; cited evidence pastes match the real outputs.
-  const OK_OUT: Record<string, string> = {
-    "npm run typecheck --silent": "TS-OK",
-    "npm run test:unit --silent": "UNIT-OK",
-  };
-  const gateHarness = (failFirst: Record<string, number> = {}) => {
-    const calls = new Map<string, number>();
-    const run = (cmd: string) => {
-      const n = (calls.get(cmd) ?? 0) + 1;
-      calls.set(cmd, n);
-      if (n <= (failFirst[cmd] ?? 0)) return { ok: false, output: `${cmd} EXPLODED` };
-      return { ok: true, output: OK_OUT[cmd] ?? `${cmd} OK` };
-    };
-    return { calls, run };
-  };
-  const gateTask: Task = { id: "P1-101", priority: "P1", title: "gate", spec: "", area: "", line: "" };
-  const evidenceBlock = (unitPaste = "UNIT-OK", tsPaste = "TS-OK") =>
-    `EVIDENCE:\n$ npm run typecheck --silent\n${tsPaste}\n$ npm run test:unit --silent\n${unitPaste}\nPILOT:TASK-DONE`;
-  // nameOnly with no pilot-infra and no UI paths: no desktop steps, no corpus
-  const nameOnly = "README.md";
-
-  // build fails twice in the battery (it is NOT a cited evidence command) —
-  // the gate stops at "build" and later steps never execute
-  {
-    const { calls, run } = gateHarness({ "npm run build --silent": 999 });
-    const gate = deterministicGate(ws, gateTask, evidenceBlock(), 0, new Map(), nameOnly, run);
-    check(
-      "P1-101: gate — build failing 2x rejects at step build, later steps never run",
-      !gate.ok && gate.step === "build" && gate.tail.includes("EXPLODED") && calls.get("npm run build --silent") === 2,
-    );
-    check(
-      "P1-101: gate — battery stops at the red step (unit only ran at evidence, later steps skipped)",
-      calls.get("npm run test:unit --silent") === 1 && !calls.has("npx tsx scripts/reconnect.test.ts") && !calls.has("npx tsx scripts/invariants.ts"),
-    );
-  }
-  // unit flakes once (at the evidence re-run — it is a cited command): the
-  // evidence retry-once recovers and the gate is green with the flaky step
-  // reported; the battery then reads the green cache entry (P2-040)
-  {
-    const { calls, run } = gateHarness({ "npm run test:unit --silent": 1 });
-    const gate = deterministicGate(ws, gateTask, evidenceBlock(), 0, new Map(), nameOnly, run);
-    check(
-      "P1-101: gate — cited command failing once recovers via the evidence retry (flaky)",
-      gate.ok && gate.flaky.length === 1 && gate.flaky[0] === "evidence" && calls.get("npm run test:unit --silent") === 2,
-    );
-  }
-  // an UNCITED battery step flaking once is classified by runStepWithRetry
-  {
-    const { calls, run } = gateHarness({ "npx tsx scripts/integration.ts": 1 });
-    const gate = deterministicGate(ws, gateTask, evidenceBlock(), 0, new Map(), nameOnly, run);
-    check(
-      "P1-101: gate — battery step failing once is flaky, not a rejection",
-      gate.ok && gate.flaky.length === 1 && gate.flaky[0] === "integration" && calls.get("npx tsx scripts/integration.ts") === 2,
-    );
-  }
-  // a divergent paste is fabrication territory — never retried
-  {
-    const { calls, run } = gateHarness();
-    const gate = deterministicGate(ws, gateTask, evidenceBlock("FABRICATED-UNIT-OUTPUT"), 0, new Map(), nameOnly, run);
-    check(
-      "P1-101: gate — divergent paste fails at evidence with NO retry (P2-009 intact)",
-      !gate.ok && gate.step === "evidence" && gate.tail.includes("diverges") && calls.get("npm run typecheck --silent") === 1,
-    );
-  }
-  check("P1-101: gateFindingBlock — first line names the step, tail capped at 1500", (() => {
-    const block = gateFindingBlock("build", "x".repeat(2000));
-    const [head, ...rest] = block.split("\n");
-    return (
-      head === `[deterministic gate failed at step "build" — fix this FIRST and re-run the EVIDENCE commands]` &&
-      rest.join("\n").length === 1500
-    );
-  })());
-  rmSync(ws, { recursive: true, force: true });
-}
 
 // --- click coordinate bounds (P2-011, round-3) -------------------------------
 const vp = { width: 1280, height: 800 };
+
 check("clickPoint: in-range passes", clickPoint(100, 200, vp)?.x === 100 && clickPoint(100, 200, vp)?.y === 200);
+
 check("clickPoint: edge inclusive", clickPoint(1280, 800, vp) !== null);
+
 check("clickPoint: beyond width rejected", clickPoint(1281, 400, vp) === null);
+
 check("clickPoint: beyond height rejected", clickPoint(100, 801, vp) === null);
+
 check("clickPoint: negative rejected", clickPoint(-1, 100, vp) === null);
+
 check("clickPoint: NaN rejected", clickPoint("x", 100, vp) === null);
+
 check("clickPoint: no silent clamp to edge (round-3)", clickPoint(9999, 9999, vp) === null);
+
 
 // --- screenshot viewport params (P2-011, round-2 regression) -----------------
 check("viewport: absent params keep live viewport", viewportFromParams(null, null) === null);
+
 check("viewport: absent w only", viewportFromParams(null, "800") === null);
+
 check("viewport: valid", viewportFromParams("1280", "800")?.width === 1280);
+
 check("viewport: clamped to max", viewportFromParams("99999", "800")?.width === 1920);
+
 check("viewport: zero rejected (round-1 bug shrank shots to 200)", viewportFromParams("0", "0") === null);
+
 check("viewport: garbage rejected", viewportFromParams("x", "800") === null);
+
 
 // --- newest shot by mtime + per-task evidence scope (P2-011, round-3) --------
 {
@@ -3231,6 +2891,7 @@ check("viewport: garbage rejected", viewportFromParams("x", "800") === null);
     rmSync(dir2, { recursive: true, force: true });
   }
 }
+
 
 // --- P2-016 API preflight: wait for opencode instead of burning an attempt ------
 {
@@ -3280,6 +2941,7 @@ check("viewport: garbage rejected", viewportFromParams("x", "800") === null);
     (await apiHealthy("http://x", 50, fetchOf(async () => ({ ok: true, json: async () => { throw new Error("not json"); } } as unknown as Response)))) === true,
   );
 }
+
 
 // --- P2-013 cheap resumption: id capture + resume prompt ----------------------
 {
@@ -3431,14 +3093,22 @@ check("viewport: garbage rejected", viewportFromParams("x", "800") === null);
   );
 }
 
+
 // --- P3-006 disk guard -------------------------------------------------------
 const GB = 1024 ** 3;
+
 check("disk guard: default threshold is 5GB", DISK_MIN_FREE_BYTES === 5 * GB);
+
 check("disk guard: below threshold aborts with clear detail", diskGuardDetail(4.2 * GB, 5 * GB)?.startsWith("disk low: 4.2gb free") === true);
+
 check("disk guard: at/above threshold proceeds", diskGuardDetail(5 * GB, 5 * GB) === null && diskGuardDetail(9.9 * GB, 5 * GB) === null);
+
 check("disk guard: unavailable probe fails open", diskGuardDetail(null, 5 * GB) === null);
+
 const realFree = await freeDiskBytes(tmpdir());
+
 check("disk guard: statfs probe returns bytes on a real dir", realFree !== null && realFree > 0);
+
 
 // deploy() with a mocked probe + threshold must abort BEFORE any git/npm step:
 // the bare tmp-dir repo would make `git rev-parse HEAD` throw if it were reached.
@@ -3499,6 +3169,7 @@ check("disk guard: statfs probe returns bytes on a real dir", realFree !== null 
   rmSync(tmpDisk, { recursive: true, force: true });
 }
 
+
 // --- P1-044 autocatalysis lane: reinforced soak for apps/pilot/** deploys ----
 {
   check("soak lane: regular deploy keeps the configured window", soakMinutesFor(10, false) === 10 && soakMinutesFor(3, false) === 3);
@@ -3521,6 +3192,7 @@ check("disk guard: statfs probe returns bytes on a real dir", realFree !== null 
   check("soak rate: tolerance constant pins the 20% margin", SOAK_RATE_TOLERANCE === 0.2 && SOAK_WINDOW === 5);
   check("soak lane: baseline is 3 probes; extra live invariants every 5 checks", BASELINE_SAMPLES === 3 && LIVE_INVARIANT_EVERY === 5);
 }
+
 
 // --- P1-044 round 2: soak-loop wiring (baseline, window, scheduling, rollback) ---
 {
@@ -3620,6 +3292,7 @@ check("disk guard: statfs probe returns bytes on a real dir", realFree !== null 
     plainRun.outcome === "ok" && laneLiveCalls === 0,
   );
 }
+
 
 // --- P2-058 deploy sha guard: only gate-verified merges deploy ----------------
 {
@@ -3729,6 +3402,7 @@ check("disk guard: statfs probe returns bytes on a real dir", realFree !== null 
     banned.ok === false && banned.rolledBack === false && banned.detail.startsWith("sha quarantined"),
   );
 }
+
 
 // --- P2-114 ops fail-closed: dirty prod checkout + tier-B binary probe --------
 {
@@ -3868,6 +3542,7 @@ check("disk guard: statfs probe returns bytes on a real dir", realFree !== null 
   resetTierBSpawnStreak();
 }
 
+
 // --- P2-115 repeated-guard-rejection alerts --------------------------------------
 {
   check("guardalert: threshold pinned at 2", GUARD_ALERT_THRESHOLD === 2);
@@ -3922,6 +3597,7 @@ check("disk guard: statfs probe returns bytes on a real dir", realFree !== null 
   );
 }
 
+
 // --- P1-021 fast install: skip npm ci when the lockfile is unchanged ----------
 {
   const h = "a".repeat(64);
@@ -3970,6 +3646,7 @@ check("disk guard: statfs probe returns bytes on a real dir", realFree !== null 
     deploySrc.includes('phase: "install"') && deploySrc.includes("fast-install (lock unchanged) in") && deploySrc.includes("npm ci in"),
   );
 }
+
 
 // --- P2-041: post-rollback health verification --------------------------------
 {
@@ -4067,6 +3744,7 @@ check("disk guard: statfs probe returns bytes on a real dir", realFree !== null 
   );
 }
 
+
 // --- P1-034: self-reload whenever HEAD moved (stale-brain incident) ----------
 {
   const A = "a".padEnd(40, "1");
@@ -4084,6 +3762,7 @@ check("disk guard: statfs probe returns bytes on a real dir", realFree !== null 
   const deploySrc = readFileSync(join(import.meta.dirname, "..", "apps", "pilot", "src", "deploy.ts"), "utf8");
   check("P1-034: sha-vs-HEAD self-reload diff removed", !deploySrc.includes("git diff --name-only ${sha} HEAD"));
 }
+
 
 // --- P3-101: stale-process detection (boot-HEAD drift) -----------------------
 {
@@ -4111,6 +3790,7 @@ check("disk guard: statfs probe returns bytes on a real dir", realFree !== null 
     pilotIndexSrc.includes("shouldSelfHealReload(running.size, deployBusy, bootHead, headNow)") && !pilotIndexSrc.includes("headDrifted(bootHead"),
   );
 }
+
 
 // --- P1-104: deploy self-reload waits for the slots to drain ------------------
 {
@@ -4165,6 +3845,7 @@ check("disk guard: statfs probe returns bytes on a real dir", realFree !== null 
   );
 }
 
+
 // --- P2-058 round 2: quarantine-write escalation + merge-identity validation --
 {
   const dir = mkdtempSync(join(tmpdir(), "ocr-qesc-"));
@@ -4203,6 +3884,7 @@ check("disk guard: statfs probe returns bytes on a real dir", realFree !== null 
   rmSync(dir, { recursive: true, force: true });
 }
 
+
 {
   const repo = mkdtempSync(join(tmpdir(), "ocr-mergeid-"));
   const g = (c: string) => execSync(c, { cwd: repo, stdio: "pipe" });
@@ -4239,19 +3921,24 @@ check("disk guard: statfs probe returns bytes on a real dir", realFree !== null 
   rmSync(repo, { recursive: true, force: true });
 }
 
+
 // --- P1-007 experience memory (IER) ------------------------------------------
 check("experience: cap pinned at 60", EXPERIENCE_CAP === 60);
 
+
 const EXP_TASK: Task = { id: "P1-007", priority: "P1", title: "Memory of experience", spec: "scribe lessons", area: "infra", line: "" };
+
 // P1-075: each lesson carries a DISTINCT pair of tokens (topicN/fixN) — with
 // semantic dedupe on, same-token synthetic lessons would collapse to one.
 const lessonOf = (n: number) => `- When topic${n} spikes, do fix${n} inside the relay frames (fonte: P0-001)`;
+
 
 {
   const md = `# Experience memory (IER)\n\nintro text\n\n## Lessons\n${lessonOf(1)}\n${lessonOf(2)}\n\n## Done\n- not a lesson\n`;
   check("experience: parseLessons reads only the Lessons section", JSON.stringify(parseLessons(md)) === JSON.stringify([lessonOf(1), lessonOf(2)]));
   check("experience: parseLessons empty when section missing", parseLessons("# file\n\n- nope\n").length === 0);
 }
+
 
 {
   const md = [
@@ -4278,6 +3965,7 @@ const lessonOf = (n: number) => `- When topic${n} spikes, do fix${n} inside the 
   check("experience: capped at 5 lessons", pickRelevantLessons(`${md}\n${many}`, "relay", "relay").length === 5);
 }
 
+
 {
   check("experience: normalizeLesson rewrites the fonte tag", normalizeLesson("- When X happens, do Y (fonte: WRONG-ID)", "P1-007") === "- When X happens, do Y (fonte: P1-007)");
   check("experience: normalizeLesson drops junk", normalizeLesson("too short", "P1-007") === "");
@@ -4297,6 +3985,7 @@ const lessonOf = (n: number) => `- When topic${n} spikes, do fix${n} inside the 
   check("experience: append caps at 3 and creates the section", fresh.added.length === 3 && parseLessons(fresh.md).length === 3);
 }
 
+
 {
   const capMd = "# Experience memory (IER)\n\n## Lessons\n" + Array.from({ length: 65 }, (_, i) => lessonOf(i)).join("\n") + "\n" + lessonOf(0) + "\n";
   const pruned = dedupeAndPrune(capMd);
@@ -4308,10 +3997,14 @@ const lessonOf = (n: number) => `- When topic${n} spikes, do fix${n} inside the 
   check("experience: at/under cap is a no-op", dedupeAndPrune(underCap).md === underCap && dedupeAndPrune(underCap).removed === 0);
 }
 
+
 // --- P1-075 semantic dedupe + scored prune/archive ----------------------------
 check("experience: JACCARD_DUPE pinned at 0.6", JACCARD_DUPE === 0.6);
+
 check("experience: jaccard of identical sets is 1, disjoint is 0", jaccard(new Set(["relay", "frames", "seq"]), new Set(["relay", "frames", "seq"])) === 1 && jaccard(new Set(["relay"]), new Set(["frames"])) === 0);
+
 check("experience: isHarnessLesson matches process vocabulary", isHarnessLesson("when the pilot slot refresh breaks the gate") && !isHarnessLesson("when the relay frames duplicate, check the seq watermark"));
+
 
 {
   // paraphrased re-landing of the same lesson (same token set, different fonte)
@@ -4332,6 +4025,7 @@ check("experience: isHarnessLesson matches process vocabulary", isHarnessLesson(
   const shorts = appendLessons(`# Experience memory (IER)\n\n## Lessons\n${shortA}\n`, [shortB], "P9-009");
   check("experience: short lessons skip the semantic dedupe", shorts.added.length === 1);
 }
+
 
 {
   const backlogMd = [
@@ -4374,6 +4068,7 @@ check("experience: isHarnessLesson matches process vocabulary", isHarnessLesson(
     pruned3.archived.length === 0 && pruned3.removed === 1 && parseLessons(pruned3.md).includes(productOld),
   );
 }
+
 
 // --- P1-075 nightly maintenance flow (own guard, archive sink, guarded push) ---
 {
@@ -4524,17 +4219,21 @@ check("experience: isHarnessLesson matches process vocabulary", isHarnessLesson(
   }
 }
 
+
 check("experience: lessonsBlock injects nothing when empty", lessonsBlock([]) === "" && !builderPrompt(EXP_TASK, 1, "", []).includes("EXPERIENCE"));
+
 check(
   "experience: builder prompt carries the injected lessons",
   builderPrompt(EXP_TASK, 1, "", ["- When X, do Y (fonte: P0-001)"]).includes("EXPERIENCE — relevant lessons from past merges") &&
     builderPrompt(EXP_TASK, 1, "", ["- When X, do Y (fonte: P0-001)"]).includes("(fonte: P0-001)"),
 );
+
 check(
   "experience: template + landed doc name the planner audience (P2-042, no stale claim)",
   experienceTemplate().includes("de planner, builder e strategist") &&
     readFileSync(join(import.meta.dirname, "..", "docs", "EXPERIENCE.md"), "utf8").includes("de planner, builder e strategist"),
 );
+
 
 {
   const out = `thinking...\nLESSONS:\n- When a relay frame drops, check the seq watermark (fonte: P1-007)\n- When a test fails only in CI, pin the clock first (fonte: P1-007)\n- junk one-word\n- When three, do 3 (fonte: P1-007)\n- When four, do 4 (fonte: P1-007)\nSCRIBE:DONE\n`;
@@ -4542,6 +4241,7 @@ check(
   check("experience: parseScribeLessons requires SCRIBE:DONE", parseScribeLessons(out.replace("SCRIBE:DONE", "")).length === 0);
   check("experience: parseScribeLessons empty without marker", parseScribeLessons("- When a, do b (fonte: P1-007)").length === 0);
 }
+
 
 {
   const expDir = mkdtempSync(join(tmpdir(), "ocr-experience-"));
@@ -4555,6 +4255,7 @@ check(
   check("experience: maintain on a missing file does nothing", maintainExperienceFile(join(expDir, "nope")).changed === false);
   rmSync(expDir, { recursive: true, force: true });
 }
+
 
 // --- P2-031 failure lessons (blocked-task scribe) -----------------------------
 {
@@ -4615,6 +4316,7 @@ check(
   rmSync(dir, { recursive: true, force: true });
 }
 
+
 // --- P1-075 archived experience lessons ride the failure block, capped --------
 {
   const realOf = (n: number): FailureLesson => ({ kind: "failure", ts: `2026-09-01T10:${String(n).padStart(2, "0")}:00-03:00`, task: `P2-${String(n).padStart(3, "0")}`, attempts: 4, step: "typecheck", findings: `finding ${n}`, tail: "" });
@@ -4629,6 +4331,7 @@ check(
   check("failure lessons: all-real window is untouched", (failureLessonsBlock(mixed.slice(0, 8)).match(/step: typecheck/g) ?? []).length === 8);
 }
 
+
 // --- P1-075 lesson-injection impact instrumentation ---------------------------
 {
   const st: { lessonImpact?: import("../apps/pilot/src/state").LessonImpact } = {};
@@ -4642,6 +4345,7 @@ check(
       st.lessonImpact!.without.merges === 1 && st.lessonImpact!.without.roundsTotal === 4 && st.lessonImpact!.without.tokensTotal === 7,
   );
 }
+
 
 // --- desktop first-run pairing overlay (P2-007) ------------------------------
 {
@@ -4659,6 +4363,7 @@ check(
   check("pairing: overlay hidden without a QR", overlayVisible({ ...state, qrDataUrl: null }) === false);
   check("pairing: overlay hidden with no state (daemon down)", overlayVisible(null) === false);
 }
+
 
 // --- P1-070: local pairing derivation + new pairing copy ----------------------
 {
@@ -4693,6 +4398,7 @@ check(
   }
 }
 
+
 // --- desktop daemon/app version mismatch (P3-054) -----------------------------
 {
   // spec matrix: equal ok, daemon minor ahead ok, older daemon and any major
@@ -4715,6 +4421,7 @@ check(
   check("versions: non-semver daemon is compatible", versionMismatch("1.2.3", "dev-main") === false);
 }
 
+
 // --- desktop tray: tooltip + login autostart (P3-007) -------------------------
 {
   check("tray: healthy tooltip text", daemonTooltip(true) === "OpenCode Remote — daemon ok");
@@ -4732,58 +4439,6 @@ check(
   );
 }
 
-// --- desktop tray: template-image source decision (P3-015) ---------------------
-{
-  const asset = "/abs/path/build/trayTemplate.png";
-  const src = (platform: string, usable: boolean) => trayIconSource(platform, asset, usable);
-  check("tray: usable asset wins over the data-URL fallback", src("darwin", true).kind === "asset" && src("darwin", true).path === asset);
-  check("tray: missing/empty asset falls back to the data-URL glyph", src("darwin", false).kind === "fallback" && src("darwin", false).path === "");
-  check("tray: fallback is never a template image", src("darwin", false).template === false);
-  check("tray: template set on darwin only", src("darwin", true).template === true && src("win32", true).template === false && src("linux", true).template === false);
-  // The committed asset is what createFromPath loads in buildTray(); guard its
-  // format (16x16 + 32x32 @2x) and the electron-builder `files` entry so a
-  // packaged build keeps the auto-Retina pairing.
-  const desktopRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "apps", "desktop");
-  const tray16 = join(desktopRoot, "build", "trayTemplate.png");
-  const tray32 = join(desktopRoot, "build", "trayTemplate@2x.png");
-  check("tray: template asset committed at 16px with 2x variant", pngSize(tray16)?.w === 16 && pngSize(tray16)?.h === 16 && pngSize(tray32)?.w === 32 && pngSize(tray32)?.h === 32);
-  const builderYml = readFileSync(join(desktopRoot, "electron-builder.yml"), "utf8");
-  check("tray: template assets packaged via electron-builder files", builderYml.includes("build/trayTemplate.png") && builderYml.includes("build/trayTemplate@2x.png"));
-}
-
-// --- desktop badge: unread badge plan (P2-150) ----------------------------------
-{
-  const plan = (platform: string, n: unknown) => badgePlan(platform, n);
-  // Surface selection: darwin/linux keep the P3-053 dock count, win32 uses the
-  // taskbar overlay (setBadgeCount is a no-op there), anything else has none.
-  check("badge: darwin maps to the dock surface", plan("darwin", 12).kind === "dock");
-  check("badge: linux maps to the dock surface", plan("linux", 12).kind === "dock");
-  check("badge: win32 maps to the taskbar overlay surface", plan("win32", 12).kind === "overlay");
-  check("badge: unknown platform has no badge surface", plan("sunos", 12).kind === "none");
-  // Zero: empty description/label everywhere — a cleared badge never announces.
-  const zero = plan("darwin", 0);
-  check("badge: zero count stays silent (darwin)", zero.count === 0 && zero.description === "" && zero.label === "");
-  const zeroWin = plan("win32", 0);
-  check("badge: win32 zero is an overlay clear (null icon path)", zeroWin.kind === "overlay" && zeroWin.count === 0 && zeroWin.description === "");
-  // Counts the OS surfaces actually receive.
-  const one = plan("darwin", 1);
-  check("badge: one is singular in pt-BR", one.count === 1 && one.description === "1 mensagem não lida" && one.label === "1");
-  const twelve = plan("win32", 12);
-  check("badge: twelve carries the real count for the screen reader", twelve.count === 12 && twelve.description === "12 mensagens não lidas");
-  check("badge: above nine caps the display label at 9+", twelve.label === "9+" && plan("darwin", 9).label === "9" && plan("darwin", 10).label === "9+");
-  // P3-053 rule: a malformed push never writes garbage.
-  const neg = plan("win32", -3);
-  check("badge: negative sanitizes to zero", neg.count === 0 && neg.description === "" && neg.label === "");
-  check("badge: fractional floors to the integer count", plan("darwin", 2.7).count === 2 && plan("darwin", 0.5).count === 0);
-  check("badge: non-numeric sanitizes to zero", plan("darwin", "5").count === 0 && plan("win32", Number.NaN).count === 0 && plan("linux", Number.POSITIVE_INFINITY).count === 0);
-  // Packaging: the overlay disk ships next to the tray templates — committed
-  // asset (32px PNG the overlay loads through the asar) + builder files entry.
-  const desktopRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "apps", "desktop");
-  const overlay = join(desktopRoot, "build", "overlayBadge.png");
-  check("badge: overlay disk committed as a 32px PNG", pngSize(overlay)?.w === 32 && pngSize(overlay)?.h === 32);
-  const builderYml = readFileSync(join(desktopRoot, "electron-builder.yml"), "utf8");
-  check("badge: overlay packaged via electron-builder files", builderYml.includes("build/overlayBadge.png"));
-}
 
 // --- desktop closehint: one-time close-to-tray hint plan (P2-152) ----------------
 {
@@ -4828,6 +4483,7 @@ check(
   check("hint: log marker is unique and names the feature", CLOSE_HINT_LOG.includes("close-to-tray") && CLOSE_HINT_LOG.startsWith("[desktop]"));
 }
 
+
 // --- desktop tray: update status item label (P3-019) ----------------------------
 {
   // The disabled status item mirrors the latest check decision in the tray;
@@ -4856,6 +4512,7 @@ check(
       updateMenuLabel("update-available")?.includes("check for updates") === true,
   );
 }
+
 
 // --- desktop tray: open logs folder (P3-016) ------------------------------------
 {
@@ -4918,6 +4575,7 @@ check(
   }
 }
 
+
 // --- desktop native daemon notifications (P3-013) -------------------------------
 {
   // The 4 transitions: each real transition notifies exactly once, a stable
@@ -4936,6 +4594,7 @@ check(
     NOTIFY_DOWN_BODY.length > 0 && NOTIFY_BACK_BODY.length > 0 && NOTIFY_DOWN_BODY !== NOTIFY_BACK_BODY,
   );
 }
+
 
 // --- desktop Windows AppUserModelID (P3-020) -------------------------------------
 {
@@ -4961,6 +4620,7 @@ check(
     applyAppUserModelId(fakeApp(macCalls), "darwin") === false && macCalls.length === 0,
   );
 }
+
 
 // --- desktop window-state persistence (P3-008) ---------------------------------
 {
@@ -5027,6 +4687,7 @@ check(
     saveWindowBounds(join(wsd, "gone", "window-state.json"), DEFAULT_WINDOW_BOUNDS) === false,
   );
 }
+
 
 // --- P2-020 daemon graceful shutdown (SIGTERM/SIGINT) ---------------------------
 {
@@ -5151,6 +4812,7 @@ check(
     wss.close();
   }
 }
+
 
 // --- P2-023 relay graceful shutdown (SIGTERM/SIGINT) -----------------------------
 {
@@ -5290,6 +4952,7 @@ check(
   }
 }
 
+
 // --- P2-032 fever circuit breaker (audit mode): fault injection ------------------
 {
   const st = () =>
@@ -5374,6 +5037,7 @@ check(
   }
 }
 
+
 // --- P2-032 audit diagnosis: doctor summary aggregation ---------------------------
 {
   const dir = mkdtempSync(join(tmpdir(), "pilot-audit-"));
@@ -5415,6 +5079,7 @@ check(
   }
 }
 
+
 // --- P2-032 state.json: fever breaker survives the daily rollover -----------------
 {
   const dir = mkdtempSync(join(tmpdir(), "pilot-audit-state-"));
@@ -5445,6 +5110,7 @@ check(
     rmSync(dir, { recursive: true, force: true });
   }
 }
+
 
 // --- P1-074 infra failures must not burn attempts or fever samples ----------------
 // P1-094: classification rides the structured `infra` flag, never the detail text
@@ -5501,6 +5167,7 @@ check(
   }
 }
 
+
 // --- P1-104: a thrown pipeline crash is infra — never a merit attempt ----------
 {
   // THE task criterion: 12 crash loops (the runSlot catch path) burn no
@@ -5526,6 +5193,7 @@ check(
       !pilotIndexSrc.includes("pipeline crashed: ${detail}"),
   );
 }
+
 
 // --- P2-125: the task-PR merge confirms MERGED fail-closed, gh noise is infra ----
 {
@@ -5630,6 +5298,7 @@ check(
     pipelineSrc.includes("isTaskMergeSha(ws, postMergeHead, t.id)") && pipelineSrc.includes("recordVerifiedMerge(defaultVerifiedMergesFile(), postMergeHead, t.id"),
   );
 }
+
 
 // --- P2-134: conflict-blocked PR is infra, resume rebase refreshes the branch -----
 {
@@ -5804,6 +5473,7 @@ check(
   }
 }
 
+
 // --- P2-045 dashboard v2: honest counters + diagnostics aggregations --------------
 {
   const dir = mkdtempSync(join(tmpdir(), "pilot-metrics-"));
@@ -5890,6 +5560,7 @@ check(
     rmSync(dir, { recursive: true, force: true });
   }
 }
+
 
 // --- P3-052 nightly explorer: finding parser + backlog insertion format -----------
 {
@@ -5983,6 +5654,7 @@ check(
     rmSync(dir, { recursive: true, force: true });
   }
 }
+
 
 // --- P3-052 round 2 + P1-076: explorer findings land via pilot/meta -------------
 {
@@ -6118,6 +5790,7 @@ check(
   }
 }
 
+
 // --- P2-105 fable product review: visual findings parser + journey shot set --------
 {
   const dir = mkdtempSync(join(tmpdir(), "pilot-fable-"));
@@ -6230,6 +5903,7 @@ check(
   check("fable: tier-B budget keeps the review bounded", FABLE_MAX_FINDINGS === 10 && FABLE_MARKER === "FABLE: DONE");
 }
 
+
 // --- P2-105: tier-B dispatch mounts the journey shots dir --------------------------
 check(
   "p2-105 claudeArgs mounts extra evidence dirs after the workspace",
@@ -6237,6 +5911,7 @@ check(
     JSON.stringify(["-p", "--model", "opus", "--add-dir", "/w", "--add-dir", "/shots", "--permission-mode", "acceptEdits"]) &&
     JSON.stringify(claudeArgs("opus", "/w")) === JSON.stringify(["-p", "--model", "opus", "--add-dir", "/w", "--permission-mode", "acceptEdits"]),
 );
+
 
 // --- P1-095 nightly pass: idle-window trigger + skipped event ---------------------
 {
@@ -6330,51 +6005,76 @@ check(
   check("idle day: slots idle → no skip record", nightlySkipDue(idleState, today, 4, false) === null);
 }
 
+
 // --- P1-059: tiered cognition — claude CLI dispatch + escalation predicate ---
 
 check("p1-059 claudeArgs pins the tier-B argv contract", JSON.stringify(claudeArgs("opus", "/w")) === JSON.stringify(["-p", "--model", "opus", "--add-dir", "/w", "--permission-mode", "acceptEdits"]));
 
+
 check("p1-059 shouldFallbackTierB: not ok", shouldFallbackTierB({ ok: false, timedOut: false, output: "x" }));
+
 check("p1-059 shouldFallbackTierB: timed out", shouldFallbackTierB({ ok: true, timedOut: true, output: "x" }));
+
 check("p1-059 shouldFallbackTierB: empty output", shouldFallbackTierB({ ok: true, timedOut: false, output: "   \n " }));
+
 check("p1-059 shouldFallbackTierB: marker missing", shouldFallbackTierB({ ok: true, timedOut: false, output: "some output" }, "PLANNER:DONE"));
+
 check("p1-059 shouldFallbackTierB: ok with marker", !shouldFallbackTierB({ ok: true, timedOut: false, output: "done\nPLANNER:DONE" }, "PLANNER:DONE"));
+
 check("p1-059 shouldFallbackTierB: no marker required", !shouldFallbackTierB({ ok: true, timedOut: false, output: "any output" }));
+
 
 // config resolution: absent models block → every role stays tier A
 for (const role of ["strategist", "planner", "forensic", "reviewerEscalation"] as const) {
   check(`p1-059 no models block → tier A for ${role}`, tierBModelFor(undefined, role) === undefined);
 }
+
 check(
   "p1-059 tierB block resolves per-role models",
   tierBModelFor({ tierB: { planner: "fable-5.1", reviewerEscalation: "opus" } }, "planner") === "fable-5.1" &&
     tierBModelFor({ tierB: { planner: "fable-5.1" } }, "reviewerEscalation") === undefined,
 );
+
 check(
   "p1-059 normalizeModels keeps string values, drops garbage",
   JSON.stringify(normalizeModels({ tierA: { builder: "glm-5.3-flash", scribe: 3 }, tierB: { planner: " opus " } })) ===
     JSON.stringify({ tierA: { builder: "glm-5.3-flash" }, tierB: { planner: "opus" } }),
 );
+
 check("p1-059 normalizeModels: non-object → undefined", normalizeModels("nope") === undefined && normalizeModels(null) === undefined);
+
 check("p1-059 normalizeModels: empty tiers → undefined", normalizeModels({ tierA: {}, tierB: { planner: "" } }) === undefined);
+
 
 // escalation table (P1-059, trigger replaced by P1-103): repeated findings
 // between rounds with a rejection ⇒ true; all-dropped (P1-073) ⇒ true in any
 // round; plain divergence or repetition with both approvals ⇒ false
 check("p1-073 needsEscalation: all-dropped escalates in any round", needsEscalation(false, false, true, false, false) && needsEscalation(true, true, false, true, false));
+
 check("p1-103 needsEscalation: repeated findings with a rejection escalate", needsEscalation(true, false, false, false, true) && needsEscalation(false, true, false, false, true));
+
 check("p1-103 needsEscalation: repetition with both approvals does not escalate", !needsEscalation(true, true, false, false, true));
+
 check("p1-103 needsEscalation: no repetition, no escalation", !needsEscalation(true, false, false, false, false) && !needsEscalation(false, true, false, false, false));
+
 
 // forensic guards + report extraction
 check("p1-059 forensicDue: never ran", forensicDue(undefined) === true);
+
 check("p1-059 forensicDue: unparsable date", forensicDue("not-a-date") === true);
+
 check("p1-059 forensicDue: within 7 days", !forensicDue(new Date(Date.now() - 3 * 24 * 3600 * 1000).toISOString()));
+
 check("p1-059 forensicDue: older than 7 days", forensicDue(new Date(Date.now() - (FORENSIC_WINDOW_MS + 60_000)).toISOString()));
+
 check("p1-059 extractReport: body before marker, echo-safe", extractReport("REPORT\nFORENSIC:DONE is the marker\nmore\nFORENSIC:DONE") === "REPORT\nFORENSIC:DONE is the marker\nmore");
+
 check("p1-059 extractReport: missing marker keeps everything", extractReport("just a report") === "just a report");
+
 check("p1-059 forensicPrompt carries the sections + marker", forensicPrompt("l1", [{ task: "P9-001", step: "unit" }], "abc1234 x").includes("## Patterns") && forensicPrompt("l1", [{ task: "P9-001", step: "unit" }], "abc1234 x").includes(FORENSIC_MARKER));
+
 check("p1-059 listGateFails: missing dir → []", listGateFails(join(tmpdir(), `no-such-dir-${Date.now()}`)).length === 0);
+
 {
   const dir = mkdtempSync(join(tmpdir(), "gatefail-sort-"));
   try {
@@ -6394,6 +6094,7 @@ check("p1-059 listGateFails: missing dir → []", listGateFails(join(tmpdir(), `
   }
 }
 
+
 // --- P1-035: aux agents feed the self-watchdog (silent strategist must not kill the pilot) ---
 
 {
@@ -6408,6 +6109,7 @@ check("p1-059 listGateFails: missing dir → []", listGateFails(join(tmpdir(), `
   check("p1-035 startHeartbeat: touches >=2x while armed", armedBeats >= 2);
   check("p1-035 startHeartbeat: stop() halts all touches", beats === armedBeats);
 }
+
 
 {
   // Backlog criterion: a 6min-silent strategist must not starve the watchdog.
@@ -6427,6 +6129,7 @@ check("p1-059 listGateFails: missing dir → []", listGateFails(join(tmpdir(), `
   check("p1-035 runAgent: silent agent fed the watchdog (>=2 beats in 300ms)", beats >= 2);
 }
 
+
 {
   // Edge case: preflight failure must not leak a heartbeat interval (nothing armed, no touches).
   let beats = 0;
@@ -6443,18 +6146,29 @@ check("p1-059 listGateFails: missing dir → []", listGateFails(join(tmpdir(), `
   check("p1-035 runAgent: no heartbeat armed on preflight failure", beats === 0);
 }
 
+
 // --- P1-061: local direct-mode transport ------------------------------------
 
 check("p1-061 localWsUrl builds ws://127.0.0.1:<port>/ws?token=…", localWsUrl(8792, "tok") === "ws://127.0.0.1:8792/ws?token=tok");
+
 check("p1-061 localWsUrl encodes the token", localWsUrl(8792, "a/b c") === "ws://127.0.0.1:8792/ws?token=a%2Fb%20c");
+
 check("p1-061 failover predicate: 0 and 1 failures stay sticky local", !shouldFailoverToRelay(0) && !shouldFailoverToRelay(1));
+
 check("p1-061 failover predicate: 2 consecutive failures hand over to relay", shouldFailoverToRelay(2) && shouldFailoverToRelay(3));
+
 check("p1-061 isLoopbackAddr: v4, v6 and v4-mapped", isLoopbackAddr("127.0.0.1") && isLoopbackAddr("::1") && isLoopbackAddr("::ffff:127.0.0.1"));
+
 check("p1-061 isLoopbackAddr: foreign addr rejected", !isLoopbackAddr("192.168.1.10") && !isLoopbackAddr(undefined));
+
 check("p1-061 origin: absent (non-browser) allowed", localOriginAllowed(undefined));
+
 check("p1-061 origin: Electron loadFile allowed", localOriginAllowed("null") && localOriginAllowed("file://"));
+
 check("p1-061 origin: loopback pages allowed", localOriginAllowed("http://127.0.0.1:5173") && localOriginAllowed("http://localhost:5173"));
+
 check("p1-061 origin: arbitrary web pages rejected", !localOriginAllowed("https://evil.example") && !localOriginAllowed("not-a-url"));
+
 check(
   "p1-061 upgrade predicate: exact path + loopback + origin + token",
   localUpgradeAllowed("/ws", "tok", "127.0.0.1", undefined, "tok") &&
@@ -6464,6 +6178,7 @@ check(
     !localUpgradeAllowed("/ws", null, "127.0.0.1", undefined, "tok") &&
     !localUpgradeAllowed("/ws", "tok", "127.0.0.1", "https://evil.example", "tok"),
 );
+
 // log hygiene: the token rides in the upgrade query — no log call may ever
 // include it (acceptance criterion "nenhum log contém token=")
 {
@@ -6471,6 +6186,7 @@ check(
   const leaky = daemonSrc.split("\n").filter((l) => l.includes("log(") && l.includes("token="));
   check("p1-061 no daemon log call contains token=", leaky.length === 0);
 }
+
 
 // --- P1-046: desktop shell v2 view-state reducer -----------------------------
 {
@@ -6542,31 +6258,49 @@ check(
   );
 }
 
+
 // --- doc2pdf: extension allowlist + converter pick (P2-065) -----------------
 const SOFFICE_CONV = { kind: "soffice", bin: "/app/LibreOffice.app/soffice", exts: [...ALLOWED_EXTS] };
+
 const NATIVE_CONV = {
   kind: "native",
   textutil: "/usr/bin/textutil",
   cupsfilter: "/usr/sbin/cupsfilter",
   exts: ["doc", "docx", "rtf", "html", "csv"],
 };
+
 check("doc2pdf allowlist is exactly the office formats", ALLOWED_EXTS.join(" ") === "docx doc rtf html csv xlsx pptx");
+
 for (const ext of ALLOWED_EXTS) {
   check(`doc2pdf accepts .${ext}`, validateExt(`relatorio.${ext}`).ok && validateExt(`relatorio.${ext}`).ext === ext);
 }
+
 check("doc2pdf rejects disallowed extension", !validateExt("payload.exe").ok);
+
 check("doc2pdf rejects file without extension", !validateExt("README").ok);
+
 check("doc2pdf rejects dotfile as extension-less", !validateExt(".hidden").ok);
+
 check("doc2pdf rejects trailing-dot name", !validateExt("file.").ok);
+
 check("doc2pdf accepts uppercase extensions", validateExt("Doc.REPORT.DOCX").ok);
+
 check("doc2pdf empty ext is empty string", extOf("file.") === "");
+
 check("doc2pdf soffice wins wherever it appears", pickConverter("darwin", [NATIVE_CONV, SOFFICE_CONV]) === SOFFICE_CONV);
+
 check("doc2pdf falls back to native on darwin", pickConverter("darwin", [NATIVE_CONV]) === NATIVE_CONV);
+
 check("doc2pdf native unusable on linux", pickConverter("linux", [NATIVE_CONV]) === null);
+
 check("doc2pdf soffice usable on linux", pickConverter("linux", [SOFFICE_CONV]) === SOFFICE_CONV);
+
 check("doc2pdf no candidates means no converter", pickConverter("darwin", []) === null);
+
 check("doc2pdf malformed candidates are ignored", pickConverter("darwin", [undefined, {}, { kind: "soffice" }] as never) === null);
+
 check("doc2pdf non-array candidates fail graceful", pickConverter("darwin", "soffice" as never) === null);
+
 
 // --- P2-048: forensic index from real pilot.log shapes -----------------------
 // Fixture mirrors the two real timestamp formats: pilot.log uses local -03:00,
@@ -6593,36 +6327,62 @@ const FORENSIC_LOG = [
   // unattributed narration AFTER a task line without task field → P9-003
   '{"ts":"2026-09-01T11:21:00-03:00","level":"info","msg":"agent","data":"Planejando."}',
 ];
+
 const FORENSIC_EVENTS = [
   '{"ts":"2026-09-01T13:05:00.000Z","type":"agent","task":"P9-001","detail":"Decisão estruturada vinda do events.jsonl."}',
 ];
+
 const idx = buildForensicIndex(FORENSIC_LOG, FORENSIC_EVENTS);
+
 const t1 = idx.timelines.get("P9-001")!;
+
 check("forensic: task with pipeline start builds timeline", !!t1 && t1.length > 5);
+
 check("forensic: title captured from pipeline start", idx.titles.get("P9-001") === "Fix the thing");
+
 check(
   "forensic: timeline sorted by parsed instant across sources",
   t1.map((e) => e.ts).every((ts, i, a) => i === 0 || Date.parse(a[i - 1]) <= Date.parse(ts)),
 );
+
 const card1 = buildCards(idx.timelines, idx.titles).find((c) => c.id === "P9-001")!;
+
 check("forensic: merged card status", card1.status === "merged");
+
 check("forensic: rounds counted from phase entries", card1.rounds === 2);
+
 check("forensic: gate fails counted", card1.gateFails === 1);
+
 check("forensic: effort in minutes from wall clock", card1.effortMin === 21);
+
 check("forensic: merge sha parsed from deploy detail", card1.mergeSha === "1a2b3c4");
+
 check("forensic: decisions include events.jsonl narration", card1.decisions === 2);
+
 check("forensic: gate tail kept for navigation", t1.some((e) => e.kind === "gate" && e.step === "evidence" && e.tail.includes("ERR!")));
+
 const card2 = buildCards(idx.timelines, idx.titles, { avgDoneMs: 30 * 60_000, nowMs: Date.parse("2026-09-01T11:10:00-03:00") }).find((c) => c.id === "P9-002")!;
+
 check("forensic: running card without result", card2.status === "running" && card2.effortMin === null);
+
 check("forensic: ETA projects avg minus elapsed", card2.etaMs === 20 * 60_000);
+
 check("forensic: narration attributed to latest task context", idx.timelines.get("P9-003")?.some((e) => e.text === "Planejando.") === true);
+
 const avg = avgDoneDuration(idx.timelines);
+
 check("forensic: avg duration from ok results only", avg !== undefined && Math.abs(avg! - 21 * 60_000) < 60_000);
+
 check("forensic: progress full for merged task", progressOf(idx.timelines.get("P9-001")!) === 1);
+
 check("forensic: partial progress for running", progressOf(idx.timelines.get("P9-002")!) === 1 / 6);
+
 check("forensic: shots filtered by task prefix", shotsForTask("P9-001", ["P9-001-1a2b3c4-123.png", "P9-010-9x-1.png", "notes.png"]).join(",") === "P9-001-1a2b3c4-123.png");
+
 check("forensic: shot path validation rejects traversal", shotPath("../daemon.json") === null && shotPath("a/b.png") === null);
+
 check("forensic: shot path accepts real shape", shotPath("P9-001-1a2b3c4-1788325050913.png")?.endsWith("pilot/shots/P9-001-1a2b3c4-1788325050913.png") === true);
+
 check(
   "forensic: takeover extraction from real builder log lines",
   (() => {
@@ -6633,34 +6393,55 @@ check(
     return directory === "/ws/repo-2" && sessionId === "ses_abc123def456";
   })(),
 );
+
 // P2-048 round 2: takeover target validation (hostile log values must die here)
 const HOME = homedir();
+
 check(
   "takeover: real workspace clone accepted",
   validateTakeoverDirectory(`${HOME}/.opencode-remote/pilot/repo-2`, HOME) === `${HOME}/.opencode-remote/pilot/repo-2`,
 );
+
 check("takeover: shell breakout rejected", validateTakeoverDirectory('foo"; touch /tmp/pwn; echo "', HOME) === null);
+
 check("takeover: $() command substitution rejected", validateTakeoverDirectory(`${HOME}/.opencode-remote/pilot/repo-2$(id)`, HOME) === null);
+
 check("takeover: backtick substitution rejected", validateTakeoverDirectory("repo-`id`", HOME) === null);
+
 check("takeover: AppleScript trailing-backslash breakout rejected", validateTakeoverDirectory(`${HOME}/.opencode-remote/pilot/repo-2\\`, HOME) === null);
+
 check("takeover: single quote rejected (shell quote escape)", validateTakeoverDirectory(`${HOME}/.opencode-remote/pilot/repo-2'`, HOME) === null);
+
 check("takeover: path escaping the pilot root rejected", validateTakeoverDirectory(`${HOME}/.opencode-remote/pilot/../evil/repo-1`, HOME) === null);
+
 check("takeover: path outside pilot root rejected", validateTakeoverDirectory("/tmp/repo-2", HOME) === null);
+
 check("takeover: non-repo child of pilot root rejected", validateTakeoverDirectory(`${HOME}/.opencode-remote/pilot/checkpoints`, HOME) === null);
+
 check("takeover: relative path rejected", validateTakeoverDirectory("repo-2", HOME) === null);
+
 check("takeover: missing value rejected", validateTakeoverDirectory(undefined, HOME) === null);
+
 check("takeover: session id only ses_<alnum>", validateTakeoverSessionId("ses_abc123def456") === "ses_abc123def456");
+
 check("takeover: hostile session id rejected", validateTakeoverSessionId('ses_x; rm -rf ~; echo "') === null);
+
 check("takeover: missing session id rejected", validateTakeoverSessionId(undefined) === null);
+
 
 // --- i18n dictionary parity (P2-049) -------------------------------------------
 // The web UI ships two locales from one dict; a key that exists only in one
 // language silently falls back to English (or the raw key) at runtime.
 const enKeys = Object.keys(dict.en).sort();
+
 const ptKeys = Object.keys(dict.pt).sort();
+
 check("i18n: en and pt share the exact same key set", JSON.stringify(enKeys) === JSON.stringify(ptKeys));
+
 check("i18n: no empty strings in either locale", enKeys.every((k) => String((dict.en as Record<string, string>)[k]).trim() !== "") && ptKeys.every((k) => String((dict.pt as Record<string, string>)[k]).trim() !== ""));
+
 check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "olderMessages", "changesFor", "connTitle"].every((k) => String((dict.en as Record<string, string>)[k]).includes("{") && String((dict.pt as Record<string, string>)[k]).includes("{")));
+
 
 // --- P2-118: connection screens resolve to ONE locale ---------------------------
 // The daemon-down banner, its recovery button and the neighboring pairing /
@@ -6722,6 +6503,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+
 // --- P2-112: first-boot degraded journey decision (pure logic) ------------------
 {
   check(
@@ -6766,6 +6548,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+
 // --- P2-148: first-run welcome flag (pure decision) -----------------------------
 {
   // Corrupted/partial writes must never count as "done" — a wiped-looking
@@ -6801,6 +6584,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     })),
   );
 }
+
 
 // --- P2-028 per-task token costs from opencode.db -----------------------------
 {
@@ -6855,6 +6639,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check("costs: rolling window prunes oldest tasks", Object.keys(big.taskCosts).length === TASK_COST_CAP && !("P9-0" in big.taskCosts) && "P9-209" in big.taskCostSessions);
 }
 
+
 // --- P2-113 dollar telemetry: BYOK list-price table -----------------------------
 {
   // the table itself is pinned: tier + every price constant + cited source
@@ -6904,6 +6689,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   const refolded = (store as unknown as { taskUSD?: Record<string, { total: number; unpricedTokens: number }> }).taskUSD?.["P2-113"];
   check("pricing: re-fold replaces instead of double counting", store.taskCosts["P2-113"] === 1125 && !!refolded && refolded.total === 0 && refolded.unpricedTokens === 1125);
 }
+
 
 // --- P1-077 cache-aware prompt assembly: per-task cache metrics -----------------
 {
@@ -6974,6 +6760,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     ) === "{}",
   );
 }
+
 
 // --- P1-030 pilot doctor: deterministic, idempotent repair pass -----------------
 {
@@ -7192,6 +6979,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   }
 }
 
+
 // --- P3-084: recency grouping, archive set + palette preview ------------------
 {
   // fixed "now" = local noon today, so no wall-clock run-up can flip a group
@@ -7264,6 +7052,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check("preview: clipPreview trims the edges", clipPreview("  a   b  ") === "a b");
 }
 
+
 // ── hotfix: spec guard anchored (inline marker mentions are legit discussion) ─
 {
   const inline = [
@@ -7281,6 +7070,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check("hotfix: inline VERDICT mention passes spec guard", validateSpec(inline) === true);
   check("hotfix: line-leading fake output still rejected", validateSpec(faked) === false);
 }
+
 
 // ── P2-124: sidebar account footer (accountInitial/accountPlanKey + i18n) ────
 {
@@ -7312,6 +7102,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     check(`p2-124 i18n ${lang}: planLocal reads as local`, /local/i.test(translate(lang, "planLocal")));
   }
 }
+
 
 // --- P2-126: dist-smoke Windows installer checks (pure fs, no Windows) ------
 {
@@ -7370,6 +7161,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     rmSync(winRoot, { recursive: true, force: true });
   }
 }
+
 // --- P2-127: hosted-relay smoke — the tsc-compiled dist the image runs -------
 // No docker dependency: compile apps/relay to a tmp dist with the same
 // tsconfig.build.json the image uses, run it on a kernel-assigned port,
@@ -7506,6 +7298,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   }
 }
 
+
 // --- P2-135: upstream agent-server classifier (pure, no fetch/net imports) ---
 
 {
@@ -7570,6 +7363,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   })());
   check("P2-135: probe timeout cap is exported and sane", UPSTREAM_PROBE_TIMEOUT_MS === 5_000);
 }
+
 
 // --- P2-149: opencode binary resolution (pure) + refused-branch split ---------
 
@@ -7689,6 +7483,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   })());
 }
 
+
 // --- P2-138: upstream notice mapping (pure, same contract as /api/health) -----
 
 {
@@ -7756,6 +7551,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     }),
   ));
 }
+
 
 // --- P2-140: sidecar exit classifier (pure, no electron/child_process) --------
 
@@ -7852,6 +7648,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   ));
 }
 
+
 // --- P2-133: orphan-test reachability (pure fixtures) ------------------------
 
 {
@@ -7910,25 +7707,6 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
-// --- P2-133: real-repo assertion — a future orphan test fails the gate -------
-
-{
-  const root = join(import.meta.dirname, "..");
-  const testFiles = readdirSync(join(root, "scripts"))
-    .filter((f) => f.endsWith(".test.ts"))
-    .sort()
-    .map((f) => `scripts/${f}`);
-  const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { scripts?: Record<string, string> };
-  const gateCommands = PILOT_GATE_STEPS.map(([, cmd]) => cmd);
-  const ciText = readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8");
-  const registry = JSON.parse(readFileSync(join(root, "scripts", "test-registry.json"), "utf8"));
-  const orphans = unreachableTests(testFiles, pkg.scripts ?? {}, gateCommands, ciText, registry);
-  if (orphans.length > 0) {
-    console.error(`  orphan test files (add to test:unit/CI or scripts/test-registry.json): ${orphans.join(", ")}`);
-  }
-  check("P2-133: real repo — every test file is executed by a runner or declared in test-registry.json", orphans.length === 0);
-  check("P2-133: registry covers the known live/daemon and Electron tests", (Array.isArray(registry) ? registry : registry.entries ?? []).length >= 9);
-}
 
 // --- P2-136: signing profile — mac notarization preflight ----------------------
 
@@ -7981,6 +7759,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+
 // --- P2-136: real-repo assertion — builder config stays wired to the plist -----
 
 {
@@ -8008,6 +7787,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     releaseYml.includes("signing-profile.mjs") && releaseYml.includes("steps.signing.outputs.notarize"),
   );
 }
+
 
 // --- P2-139: RELAY_URL boot validation (pure, fail-closed) -------------------
 
@@ -8059,6 +7839,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check("P2-139: redactRelayUrl tolerates unparseable strings", redactRelayUrl("not a url") === "not a url");
   check("P2-139: redactRelayUrl handles no-authority strings", redactRelayUrl("nonsense") === "nonsense");
 }
+
 
 // --- P2-143: daemon port fallback (pure picker, no electron/net) --------------
 
@@ -8170,76 +7951,6 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check("P2-143: empty candidate list → {none, DEFAULT_DAEMON_PORT}", pick9.reason === "none" && pick9.port === 8792);
 }
 
-// --- P2-144: tools/pngcheck.mjs — evidence PNG sanity at capture time --------
-{
-  const CRC_TABLE = Array.from({ length: 256 }, (_, n) => {
-    let c = n;
-    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    return c;
-  });
-  const crc32 = (data: Buffer) => {
-    let c = 0xffffffff;
-    for (const b of data) c = CRC_TABLE[(c ^ b) & 0xff]! ^ (c >>> 8);
-    return (c ^ 0xffffffff) >>> 0;
-  };
-  const chunk = (type: string, data: Buffer) => {
-    const head = Buffer.alloc(4);
-    head.writeUInt32BE(data.length);
-    const body = Buffer.concat([Buffer.from(type, "latin1"), data]);
-    const crc = Buffer.alloc(4);
-    crc.writeUInt32BE(crc32(body));
-    return Buffer.concat([head, body, crc]);
-  };
-  const ihdr = (w: number, h: number) => {
-    const d = Buffer.alloc(13);
-    d.writeUInt32BE(w, 0);
-    d.writeUInt32BE(h, 4);
-    return chunk("IHDR", d);
-  };
-  const SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-  const iend = chunk("IEND", Buffer.alloc(0));
-  const valid = Buffer.concat([SIG, ihdr(1440, 900), iend]);
-
-  const ok = checkPng(valid);
-  check(
-    "P2-144: valid minimal PNG passes with real dimensions",
-    ok.ok === true && ok.width === 1440 && ok.height === 900 && ok.reason === null,
-  );
-  const badSig = Buffer.from([...valid]);
-  badSig[1] = 0x00;
-  const badSigCheck = checkPng(badSig);
-  check(
-    "P2-144: wrong signature rejected with reason",
-    badSigCheck.ok === false && /signature/.test(badSigCheck.reason),
-  );
-  const shortBuf = Buffer.concat([SIG, Buffer.alloc(8)]);
-  check(
-    "P2-144: buffer shorter than the header rejected",
-    checkPng(shortBuf).ok === false && checkPng(Buffer.alloc(0)).ok === false,
-  );
-  const zero = checkPng(Buffer.concat([SIG, ihdr(0, 900), iend]));
-  check("P2-144: IHDR zero dimension rejected with reason", zero.ok === false && /zero/.test(zero.reason));
-  const noIend = checkPng(Buffer.concat([SIG, ihdr(1440, 900)]));
-  check("P2-144: file without IEND rejected", noIend.ok === false && /IEND/.test(noIend.reason));
-  const noIhdr = checkPng(Buffer.concat([SIG, iend]));
-  check("P2-144: missing IHDR rejected", noIhdr.ok === false && /IHDR/.test(noIhdr.reason));
-  const truncated = checkPng(Buffer.concat([SIG, ihdr(1440, 900).subarray(0, 8)]));
-  check(
-    "P2-144: chunk running past end of file rejected",
-    truncated.ok === false && /truncated/.test(truncated.reason),
-  );
-
-  // cross-check: the gate's own PNG reader agrees on the validated dimensions
-  const dir = mkdtempSync(join(tmpdir(), "pilot-pngcheck-"));
-  try {
-    const p = join(dir, "shot.png");
-    writeFileSync(p, valid);
-    const gate = pngSize(p);
-    check("P2-144: pngcheck agrees with the gate's pngSize", gate?.w === ok.width && gate?.h === ok.height);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
 
 // P2-126-class: mergeConflictBlock only fires on CONFLICTING and carries the
 // task id + both-sides instruction.
@@ -8248,6 +7959,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check("conflict block fires on CONFLICTING", block.includes("pilot/P2-123") && block.includes("git merge origin/main") && block.includes("BOTH sides"));
   check("clean mergeable yields no block", mergeConflictBlock("MERGEABLE", "P2-123") === "" && mergeConflictBlock(null, "P2-123") === "" && mergeConflictBlock(undefined, "P2-123") === "");
 }
+
 
 // --- P2-147: ci-scope — PR packaging scope classifier -------------------------
 {
@@ -8262,6 +7974,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check("P2-147: touchesDesktop — ./ prefix and whitespace normalize", touchesDesktop([" ./apps/web/src/main.tsx"]));
   check("P2-147: touchesDesktop — app-sounding paths outside the surface don't count", !touchesDesktop(["apps/desktop-runner/x.ts", "src/apps/web-preview.ts"]));
 }
+
 
 // --- P2-147: dist-smoke --no-installer — pure argv contract -------------------
 {
@@ -8289,6 +8002,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+
 // --- P2-147: real-repo assertion — ci.yml wires desktop-package to the scope --
 {
   const root = join(import.meta.dirname, "..");
@@ -8315,6 +8029,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     release.includes("run: npm run dist:smoke --workspace @ocr/desktop\n") && !release.includes("--no-installer"),
   );
 }
+
 
 // --- P2-151: relay-image — GHCR references for the release workflow ----------
 {
@@ -8359,6 +8074,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check("P2-151: every problem is reported at once (tag + slug)", both.problems.length === 2);
 }
 
+
 // --- P2-151: real-repo assertion — release.yml wires the relay-image job -----
 {
   const root = join(import.meta.dirname, "..");
@@ -8382,6 +8098,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     block.includes("ghcr.io") && block.includes("${{ github.token }}") && block.includes("shell: bash"),
   );
 }
+
 
 // --- P2-153: release-assets — expected/missing download assets ---------------
 {
@@ -8436,6 +8153,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+
 // --- P2-153: release-assets CLI — stdin names, exit codes, fail-closed -------
 {
   const repoRoot = join(import.meta.dirname, "..");
@@ -8470,6 +8188,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check("P2-153: cli rejects a non-semver tag with exit 1", badTag.code === 1 && badTag.out.includes("semver"), badTag.out);
 }
 
+
 // --- P2-153: real-repo assertion — release.yml wires the release-verify job ---
 {
   const root = join(import.meta.dirname, "..");
@@ -8494,6 +8213,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     block.includes("shell: bash"),
   );
 }
+
 
 // --- P2-154: relay TLS pair preflight is fail-closed -------------------------
 {
@@ -8560,6 +8280,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     halfUnreadable.problems.length === 1 && halfUnreadable.problems[0]!.includes("RELAY_TLS_CERT"),
   );
 }
+
 
 // --- desktop update recheck schedule (P2-155) --------------------------------
 {
@@ -8659,6 +8380,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+
 // --- P2-156: relay close-code triage (pure classifier + floor/max rule) ------
 
 {
@@ -8729,6 +8451,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   }
   check("P2-156: 10 retries under transient match the bare P2-129 curve", identical);
 }
+
 
 // --- P2-157: feed-consistency — update feeds point at this release's artifacts
 {
@@ -8828,6 +8551,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+
 // --- P2-157: feed-consistency CLI — feed files by path, names via stdin ------
 {
   const repoRoot = join(import.meta.dirname, "..");
@@ -8882,6 +8606,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   rmSync(dir, { recursive: true, force: true });
 }
 
+
 // --- P2-157: real-repo assertion — release.yml wires the release-feeds job ---
 {
   const root = join(import.meta.dirname, "..");
@@ -8906,6 +8631,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+<<<<<<< HEAD
 // --- P2-161: staged feed.json port resolved at serve time ---------------------
 {
   const feed = (port: number) =>
@@ -8963,10 +8689,14 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     zero.rewritten === false && negative.rewritten === false && nan.rewritten === false && huge.rewritten === false && zero.reason === "invalid-port" && zero.body === feed(8792),
   );
 }
+=======
+>>>>>>> b9213e7 (pilot(P1-056): gate fora do repo — juiz separado com veredito assinado (ed25519))
 
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);
   process.exit(1);
 }
+
 console.log("UNIT TESTS PASSED");
+
 process.exit(0);

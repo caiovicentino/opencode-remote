@@ -13,7 +13,19 @@ import { touchHeartbeat, type PilotConfig, type PilotState } from "./state";
 import { appendLessonsToWorkspace, pickRelevantLessons, readExperienceFile } from "./experience";
 import { defaultLessonsFile, failureLessonsBlock, readRecentFailureLessons } from "./failureLessons";
 import { captureGateCorpus, CORPUS_COMMANDS, CORPUS_DIR, loadGateCorpus } from "./gate-corpus";
-import { detectGateProfile, type GateProfile } from "./gateprofile";
+/**
+ * P2-009 (round 2): single predicate for "UI evidence required", shared by the
+ * builder prompt and the gatekeeper so the builder is always asked for exactly
+ * what the gate will demand.
+ */
+export function needsUiEvidence(area: string | undefined, renderTouched: boolean): boolean {
+  return renderTouched || area === "ui" || area === "desktop";
+}
+
+export const EVIDENCE_MARKER = "EVIDENCE:";
+export const TASK_DONE_MARKER = "PILOT:TASK-DONE";
+import { detectGateProfile } from "./gateprofile";
+import { judgeGate } from "./judge";
 import { specFailureIsInfra, type InfraFailureKind } from "./audit";
 import {
   clearRecapCarry,
@@ -235,16 +247,6 @@ export function plannerRetryPolicy(reason: string, attempt: number): boolean {
   if (attempt === 1) return true;
   const kind = specRejectKind(reason);
   return kind === "missing-section" || kind === "control-marker";
-}
-
-/**
- * P2-009 (round 2): single predicate for "UI evidence required", shared by the
- * builder prompt and the gatekeeper so the builder is always asked for exactly
- * what the gate will demand. The diff half (renderTouched) is only known at
- * gate time — at prompt time the conditional wording covers it.
- */
-export function needsUiEvidence(area: string | undefined, renderTouched: boolean): boolean {
-  return renderTouched || area === "ui" || area === "desktop";
 }
 
 // ── P1-060 long-horizon tasks: size budgets, branch preservation, checkpoints ─
@@ -1007,55 +1009,9 @@ export function touchedUiFromDiff(nameOnly: string): boolean {
     .some((l) => l.trim().startsWith("apps/web/") || l.trim().startsWith("apps/desktop/"));
 }
 
-/**
- * P1-044 autocatalysis lane: does this diff touch the pilot's own code?
- * Tasks that edit the brain that edits the code (apps/pilot/**) get the
- * reinforced gate (golden corpus) and the reinforced deploy (doubled soak,
- * extra live invariants, failure-rate rollback). Pure like touchedUiFromDiff.
- */
-export function touchedPilotInfraFromDiff(nameOnly: string): boolean {
-  return nameOnly
-    .split("\n")
-    .some((l) => l.trim().startsWith("apps/pilot/"));
-}
-
 /** P1-044 (a): the corpus must hold at least this many samples per command to
  * count as green — mirrors the P3-033 acceptance criterion (>=3 per command). */
 export const MIN_CORPUS_SAMPLES = 3;
-
-/**
- * P1-044 (a): deterministic golden-corpus gate for self-modifying changes.
- * The pilot editing itself is exactly when the gate's own calibration
- * (evidence matcher + corpus, P3-033) could silently regress, so the gate
- * re- verifies the corpus is present and still green: >= MIN_CORPUS_SAMPLES
- * samples per evidence command, every real sample matches itself and its
- * truncated form, and a fabricated line over a real sample is still rejected.
- * `matches` is injectable so the eval battery can drive the tamper branches
- * (permissive/rejecting matcher regressions) without fixtures that could never
- * occur naturally. Returns null when green, else the reason.
- */
-export function corpusGateDetail(
-  dir = CORPUS_DIR,
-  matches: (pasted: string, actual: string) => boolean = evidenceMatches,
-): string | null {
-  const corpus = loadGateCorpus(dir);
-  for (const cmd of CORPUS_COMMANDS) {
-    const samples = corpus.filter((s) => s.cmd === cmd);
-    if (samples.length < MIN_CORPUS_SAMPLES) {
-      return `golden corpus too thin for ${cmd}: ${samples.length}/${MIN_CORPUS_SAMPLES} samples`;
-    }
-    for (const s of samples) {
-      if (!matches(s.output, s.output)) return `corpus sample no longer matches itself: ${s.file}`;
-      const truncated = s.output.split("\n").slice(0, Math.ceil(s.output.split("\n").length / 2)).join("\n");
-      if (!matches(truncated, s.output)) return `corpus sample no longer matches truncated: ${s.file}`;
-      // prepended: appended lines beyond the 600-line paste cap are sliced away
-      if (matches(`FABRICATED-CORPUS-PROBE-LINE\n${s.output}`, s.output)) {
-        return `corpus sample accepts a fabricated line: ${s.file}`;
-      }
-    }
-  }
-  return null;
-}
 
 /**
  * P2-008: non-empty `git diff --name-only` lines minus the planner spec path.
@@ -1206,243 +1162,14 @@ export function branchHasCommits(ws: string, branch: string): boolean {
   return r.ok && r.output.trim().length > 0;
 }
 
-// ── P2-009 mandatory builder evidence ────────────────────────────────────────
-
-export const EVIDENCE_MARKER = "EVIDENCE:";
-export const TASK_DONE_MARKER = "PILOT:TASK-DONE";
-
-/** The only commands a builder may cite as evidence — the gatekeeper re-executes
- * them verbatim in the workspace, so this allowlist doubles as the injection
- * guard between LLM output and the pipeline's shell. */
-export const EVIDENCE_COMMANDS: readonly string[] = [
-  "npm run typecheck --silent",
-  "npm run test:unit --silent",
-  "npm run build --silent",
-];
-
-/** Every task must prove typecheck + unit; build is covered by the gate battery. */
-export const EVIDENCE_REQUIRED: readonly string[] = [
-  "npm run typecheck --silent",
-  "npm run test:unit --silent",
-];
-
 export interface EvidenceCommand {
   cmd: string;
   output: string;
 }
 
-export interface EvidenceBlock {
-  commands: EvidenceCommand[];
-  shots: Record<string, string>;
-}
-
-/**
- * Parse the builder's final EVIDENCE block: `$ <cmd>` lines introduce a command,
- * following lines are its pasted output, and `shot-<label>: <path>` lines cite
- * screenshot files. Only the LAST marker counts (prose earlier in the output
- * may quote it); the block ends at the task-done marker when present. Returns
- * null when the block is missing or pathologically padded.
- *
- * Round 2: only ALLOWLISTED `$ ` lines open a command entry — a prompt-looking
- * line inside a real command's pasted output (or a transcript echo like
- * `$ npm run typecheck` without --silent) must not become a spurious command
- * and reject an honest block. Non-allowlisted `$ ` lines are dropped entirely:
- * never executed, never counted as output (the allowlist in verifyEvidence
- * stays as a defensive second layer).
- */
-export function parseEvidenceBlock(output: string): EvidenceBlock | null {
-  const lines = output.split("\n");
-  let start = -1;
-  for (let i = lines.length - 1; i >= 0; i--) {
-    if (lines[i]?.trim() === EVIDENCE_MARKER) {
-      start = i;
-      break;
-    }
-  }
-  if (start < 0) return null;
-  let end = lines.length;
-  for (let i = start + 1; i < lines.length; i++) {
-    if (lines[i]?.trim() === TASK_DONE_MARKER) {
-      end = i;
-      break;
-    }
-  }
-  const body = lines.slice(start + 1, end);
-  // headroom pinned by the eval battery: the unit battery alone prints ~300
-  // lines today and keeps growing — 600 keeps honest full pastes parseable
-  if (body.length > 600) return null;
-  const block: EvidenceBlock = { commands: [], shots: {} };
-  let current: EvidenceCommand | null = null;
-  for (const line of body) {
-    const t = line.trim();
-    if (t.startsWith("$ ")) {
-      const cmd = t.slice(2).trim();
-      if (!EVIDENCE_COMMANDS.includes(cmd)) continue;
-      current = { cmd, output: "" };
-      block.commands.push(current);
-      continue;
-    }
-    const shot = t.match(/^(shot-[0-9a-z]+):\s*(\S+)\s*$/i);
-    if (shot) {
-      block.shots[shot[1]!.toLowerCase()] = shot[2]!;
-      continue;
-    }
-    if (current && t) current.output += (current.output ? "\n" : "") + t;
-  }
-  return block;
-}
-
-/** Whitespace/ANSI-insensitive line normalization for evidence comparison.
- * Also neutralizes tokens that legitimately differ between two SUCCESSFUL runs:
- * content-hashed asset names (index-BUzAmikJ.css), durations (694ms, duration_ms 12),
- * file sizes (0.65 kB), clock stamps, ISO-8601 timestamps (with or without
- * date/millis/offset — two green runs never share them), run-variant process
- * counters (pid, uptimeS, activeConnections) and mkdtemp-style random directory
- * suffixes (ocr-winstate-w9xFX1/). The golden corpus
- * (apps/pilot/src/__fixtures__/gate-corpus/, P3-033) pins all of this against
- * real captured gate outputs; a fabricated line has no source in the re-run
- * either way, so the anti-fabrication property is preserved. */
-export function normalizeEvidenceLine(s: string): string {
-  return s
-    .replace(/\x1b\[[0-9;]*[A-Za-z]/g, "")
-    .replace(/\b\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?\b/g, "STAMP")
-    .replace(/-[A-Za-z0-9_-]{8,}\.(css|js|mjs|cjs|map)\b/g, ".HASH")
-    .replace(/-[A-Za-z0-9_.-]{6,}\//g, "-HASH/")
-    .replace(/("(?:pid|uptimeS|activeConnections)"\s*:\s*)\d+/g, "$1N")
-    .replace(/\b\d+(\.\d+)?\s?(kB|MB|GB)\b/g, "SIZE")
-    .replace(/\b\d+(\.\d+)?(ms|min|h|s)\b/g, "TIME")
-    .replace(/\b\d{2}:\d{2}(:\d{2})?\b/g, "TIME")
-    .replace(/(duration_ms|duration_total_ms)\s+\d+/g, "$1 T")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-/**
- * Containment check: every non-empty pasted line must appear (normalized) in
- * the real re-run output. Subset semantics tolerate truncated pastes; a single
- * fabricated line — the thing this gate exists to catch — has no source in the
- * re-run and fails the merge.
- * Round 3: an empty paste is only honest when the re-run itself printed nothing
- * (e.g. silent tsc success) — citing a verbose command and pasting nothing must
- * not pass on re-execution alone ("outputs reais colados").
- */
-export function evidenceMatches(pasted: string, actual: string): boolean {
-  // Truncation markers and exit-code annotations are builder summaries, not
-  // output — skipping them keeps an honest-but-lazy paste from failing while
-  // real fabrication (any line with a source-free claim) still rejects.
-  const skip = (l: string) => l === "..." || l === "…" || /^\(exit \d+\)$/.test(l);
-  const actualLines = new Set(actual.split("\n").map(normalizeEvidenceLine).filter(Boolean));
-  const pastedLines = pasted
-    .split("\n")
-    .map(normalizeEvidenceLine)
-    .filter(Boolean)
-    .filter((l) => !skip(l))
-    .slice(0, 600);
-  if (pastedLines.length === 0) return actualLines.size === 0;
-  return pastedLines.every((l) => actualLines.has(l));
-}
-
-/** PNG IHDR dimensions (first 24 bytes) or null when not a readable PNG. */
-export function pngSize(path: string): { w: number; h: number } | null {
-  try {
-    const buf = readFileSync(path);
-    if (buf.length < 24) return null;
-    const magic = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-    if (!buf.subarray(0, 8).equals(magic)) return null;
-    const w = buf.readUInt32BE(16);
-    const h = buf.readUInt32BE(20);
-    return w > 0 && h > 0 ? { w, h } : null;
-  } catch {
-    return null;
-  }
-}
-
-/** Accepted dimensions per shot key: 1x and 2x (Retina `screencapture`). */
-export function evidenceShotDimsOk(key: string, size: { w: number; h: number }): boolean {
-  if (key === "shot-1440x900") return (size.w === 1440 && size.h === 900) || (size.w === 2880 && size.h === 1800);
-  if (key === "shot-390") return size.w === 390 || size.w === 780;
-  return false;
-}
-
 export interface EvidenceResult {
   ok: boolean;
   detail: string;
-}
-
-/**
- * P2-009 deterministic gate step: parse the builder's EVIDENCE block, then
- * re-execute every cited command in the workspace and require the pasted
- * output to be reproducible. Static checks (block present, commands allowlisted,
- * required commands cited, screenshot paths/dimensions/freshness) run BEFORE
- * any re-execution so hostile or malformed blocks fail fast without touching
- * npm.
- *
- * Round 2: screenshots must be fresh — `minShotMtimeMs` (the pipeline start)
- * bounds their mtime, so a stale PNG from an earlier task/round cannot pass
- * as this round's UI evidence. `run` is injectable for the eval battery; the
- * gatekeeper injects a caching runner so re-executed commands double as the
- * gate battery's typecheck/build/unit results (no double execution).
- */
-export function verifyEvidence(
-  ws: string,
-  builderOutput: string,
-  requireShots: boolean,
-  minShotMtimeMs = 0,
-  run?: (cmd: string, cwd: string) => { ok: boolean; output: string },
-): EvidenceResult {
-  const runCmd =
-    run ?? ((cmd: string, cwd: string) => exec(cmd, { cwd, timeoutMin: 20, allowFail: true }));
-  const block = parseEvidenceBlock(builderOutput);
-  if (!block) return { ok: false, detail: "no EVIDENCE block in builder output" };
-  for (const c of block.commands) {
-    if (!EVIDENCE_COMMANDS.includes(c.cmd)) {
-      return { ok: false, detail: `evidence cites non-allowlisted command: ${c.cmd}` };
-    }
-  }
-  const cited = new Set(block.commands.map((c) => c.cmd));
-  for (const req of EVIDENCE_REQUIRED) {
-    if (!cited.has(req)) return { ok: false, detail: `evidence missing required command: ${req}` };
-  }
-  if (requireShots) {
-    for (const key of ["shot-1440x900", "shot-390"]) {
-      const p = block.shots[key];
-      if (!p) return { ok: false, detail: `UI task without ${key} path in the EVIDENCE block` };
-      const abs = p.startsWith("~") ? join(homedir(), p.slice(1)) : p;
-      const size = pngSize(abs);
-      if (!size) return { ok: false, detail: `${key}: not a readable PNG: ${p}` };
-      if (!evidenceShotDimsOk(key, size)) {
-        return { ok: false, detail: `${key}: wrong PNG dimensions ${size.w}x${size.h}: ${p}` };
-      }
-      if (minShotMtimeMs > 0) {
-        let mtime = 0;
-        try {
-          mtime = statSync(abs).mtimeMs;
-        } catch {}
-        if (mtime < minShotMtimeMs) {
-          return { ok: false, detail: `${key}: stale screenshot (predates this round): ${p}` };
-        }
-      }
-    }
-  }
-  for (const c of block.commands) {
-    const rerun = runCmd(c.cmd, ws);
-    if (!rerun.ok) return { ok: false, detail: `cited command failed on re-run: ${c.cmd}` };
-    // A silent successful re-run (e.g. `tsc --silent`) prints nothing, so there
-    // is no text to contain the paste — the re-execution itself is the proof.
-    // Fabrication is still caught: a failing command exits non-zero above.
-    const rerunEmpty = !rerun.output.split("\n").some((l) => normalizeEvidenceLine(l));
-    if (rerunEmpty) continue;
-    if (!evidenceMatches(c.output, rerun.output)) {
-      const emptyPaste = !c.output.split("\n").some((l) => normalizeEvidenceLine(l));
-      return {
-        ok: false,
-        detail: emptyPaste
-          ? `no output pasted for: ${c.cmd} (the re-run produced output)`
-          : `pasted output diverges from re-run of: ${c.cmd}\nre-run tail:\n${rerun.output.slice(-400)}`,
-      };
-    }
-  }
-  return { ok: true, detail: `${block.commands.length} command(s) re-executed` };
 }
 
 export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, sessions?: Set<string>): Promise<PipelineResult> {
@@ -1841,7 +1568,13 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
     // spent reviewer tokens and then killed the attempt at the gate).
     const gateSha = headSha(ws);
     emit("phase", { task: t.id, phase: "gatekeeper" });
-    const gate = deterministicGate(ws, t, build.output, startedAtMs, rerunResults, nameOnly, undefined, profile);
+    let gate;
+    try {
+      gate = judgeGate({ ws, sha: headSha(ws), task: t, builderOutput: build.output, startedAtMs, nameOnly });
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      return { ok: false, detail: `judge bridge failed (fail-closed): ${detail}`, ...roundMeta() };
+    }
     for (const step of gate.flaky) {
       emit("phase", { task: t.id, phase: "gate-flaky", ok: true, detail: step });
       console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "gate-flaky", data: { task: t.id, round, step } }));
@@ -2315,130 +2048,6 @@ function writeGateFailCarry(taskId: string, step: string, tail: string) {
  */
 export function gateFindingBlock(step: string, tail: string): string {
   return `[deterministic gate failed at step "${step}" — fix this FIRST and re-run the EVIDENCE commands]\n${tail.slice(-1500)}`;
-}
-
-/** P1-101: result of the deterministic gate (no judgement, no side effects). */
-export type GateResult =
-  | { ok: true; flaky: string[] }
-  | { ok: false; step: string; tail: string; flaky: string[] };
-
-/**
- * Deterministic gate: evidence, typecheck, build, test battery, invariants. No
- * judgement. P1-101: extracted from the old gatekeeper() so runPipeline runs it
- * BEFORE the LLM reviewers — a red gate returns to the builder as a finding in
- * the same attempt instead of burning reviewer tokens and killing the attempt.
- * Pure: no state mutation, no events, no carryover writes — the caller decides
- * what a red step means.
- *
- * Every step gets one flaky retry (runStepWithRetry): a single red execution of
- * an otherwise green step no longer rejects the merge — it is classified as
- * `flaky` and reported to the caller via the `gate-flaky` event. The evidence
- * re-run retries once ONLY when a cited command itself failed (transient red);
- * a pasted-output divergence is fabrication territory and never retries.
- *
- * P2-116: the battery itself is per-repo (gateprofile.ts). A pilot checkout
- * runs the full battery (invariants included); a foreign Node/TS repo runs
- * only the allowlisted conventional scripts it actually defines; an
- * undetectable repo fails closed at the "profile" step.
- */
-export function deterministicGate(
-  ws: string,
-  t: Task,
-  builderOutput: string,
-  startedAtMs: number,
-  // P2-040: the round's shared re-run cache — the preflight typecheck already
-  // executed in this workspace, so the evidence re-run and the step battery
-  // below reuse it (1 execution per round, not 3) while holding no lock.
-  rerunResults: RerunResults,
-  nameOnly: string,
-  run?: (cmd: string, cwd: string) => { ok: boolean; output: string },
-  // P2-116: per-repo profile — pilot battery vs the foreign-repo allowlist.
-  // Resolved from the workspace when omitted (the production path).
-  profile: GateProfile = detectGateProfile(ws),
-): GateResult {
-  const flaky: string[] = [];
-  // P2-116 fail closed: no detectable battery (no/undetectable package.json) →
-  // nothing in this workspace may be certified. Evidence never even runs.
-  if (profile.kind === "unknown") {
-    return {
-      ok: false,
-      step: "profile",
-      tail: `no gate profile for ${ws} — target repo has no package.json battery (expected npm scripts: typecheck, build, test:unit)`,
-      flaky,
-    };
-  }
-  // P2-116: the battery comes from the per-repo profile (pilot: full battery
-  // incl. invariants; foreign: only the allowlisted conventional scripts it
-  // actually defines). The pilot-only steps below (desktop smokes, corpus)
-  // must never leak into a foreign repo — those script files do not exist there.
-  const steps: Array<[string, string]> = [...profile.steps];
-  // Desktop render smoke (P0-002): when the diff touches the desktop shell or
-  // the web UI it renders, go beyond process boot — did-finish-load + renderer
-  // console capture + #root mounted content — so a white window (e.g. asset
-  // 404 on file://) is rejected. Most white-window regressions come from
-  // apps/web/-only changes, hence the second trigger. Fail closed: when the
-  // diff cannot be computed (empty/invalid nameOnly), run the smoke anyway.
-  const renderTouched =
-    !nameOnly.trim() ||
-    nameOnly.split("\n").some((l) => {
-      const p = l.trim();
-      return p.startsWith("apps/desktop/") || p.startsWith("apps/web/");
-    });
-  // P2-116: pilot-only steps — the desktop smokes spawn this repo's Electron
-  // harness; a foreign repo has no scripts/desktop-*.ts to run.
-  if (profile.kind === "pilot" && renderTouched) {
-    steps.push(["desktop-render", "npx tsx scripts/desktop-render.test.ts"]);
-    // P1-051: real interaction flow against the packaged shell (Playwright
-    // _electron via tools/desktop.mjs) — open → interact → shot → assert IPC.
-    steps.push(["desktop-flow", "npx tsx scripts/desktop-flow.test.ts"]);
-  }
-  // P2-009 mandatory evidence: static checks first (missing block, fabricated
-  // command, missing screenshot) then re-execution of every cited command —
-  // pasted output that diverges from the real one rejects the merge here,
-  // before the expensive battery burns time on fabricated work.
-  // Round 2: shots are demanded under the SAME predicate the prompt used
-  // (needsUiEvidence) — a non-UI-tagged task whose diff touches apps/web or
-  // apps/desktop is instructed to bring shots and the gate enforces it.
-  const requireShots = needsUiEvidence(t.area, renderTouched);
-  const evidence = verifyEvidence(ws, builderOutput, requireShots, startedAtMs, (cmd, cwd) =>
-    cachedExec(rerunResults, cmd, cwd, { timeoutMin: 20 }, run),
-  );
-  if (!evidence.ok) {
-    // P1-101 retry-once: a cited command that failed on re-run gets exactly one
-    // second chance (flaky npm/vite/Electron). Divergence and fabrication
-    // details never retry — the anti-fabrication gate (P2-009) stays intact.
-    if (evidence.detail.startsWith("cited command failed on re-run:")) {
-      for (const c of parseEvidenceBlock(builderOutput)?.commands ?? []) {
-        const key = rerunKey(c.cmd, ws);
-        const cached = rerunResults.get(key);
-        if (cached && !cached.ok) rerunResults.delete(key);
-      }
-      const retried = verifyEvidence(ws, builderOutput, requireShots, startedAtMs, (cmd, cwd) =>
-        cachedExec(rerunResults, cmd, cwd, { timeoutMin: 20 }, run),
-      );
-      if (retried.ok) flaky.push("evidence");
-      else return { ok: false, step: "evidence", tail: retried.detail, flaky };
-    } else {
-      return { ok: false, step: "evidence", tail: evidence.detail, flaky };
-    }
-  }
-  for (const [name, cmd] of steps) {
-    // evidence already re-executed this exact command in this workspace — keep
-    // its result; the step list uses the same canonical command strings
-    const r = runStepWithRetry(rerunResults, cmd, ws, { timeoutMin: 20 }, run);
-    if (!r.ok) return { ok: false, step: name, tail: r.output, flaky };
-    if (r.flaky) flaky.push(name);
-  }
-  // P1-044 (a): a task that edits the pipeline's own code must leave the golden
-  // corpus green — the gate's own calibration cannot regress through a merge.
-  // Unknown diff → fail-closed (the corpus check is cheap and deterministic).
-  // P2-116: corpus fixtures are pilot gate outputs — a pilot-only concern.
-  const pilotInfraTouched = !nameOnly.trim() || touchedPilotInfraFromDiff(nameOnly);
-  if (profile.kind === "pilot" && pilotInfraTouched) {
-    const corpus = corpusGateDetail();
-    if (corpus) return { ok: false, step: "corpus", tail: corpus, flaky };
-  }
-  return { ok: true, flaky };
 }
 
 /** Injectable sinks for mergePrForTask (unit battery pins the semantics). */
