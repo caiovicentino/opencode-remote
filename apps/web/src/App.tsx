@@ -28,6 +28,9 @@ import PairingView from "./components/PairingView";
 import PairingOverlay from "./components/PairingOverlay";
 import SessionsView from "./components/SessionsView";
 import ChatView from "./components/ChatView";
+import HomeView from "./components/HomeView";
+import { agentForMode } from "./lib/home";
+import { setDraft } from "./lib/drafts";
 import SettingsView, { applyTheme } from "./components/SettingsView";
 import FilesView from "./components/FilesView";
 import ArtifactsView from "./components/ArtifactsView";
@@ -532,13 +535,17 @@ export default function App() {
   // P1-046: session creation lifted out of SessionsView so Cmd+T and the
   // command palette reuse the exact same path as the "+ Nova conversa" button.
   const [creating, setCreating] = useState(false);
-  async function createSession(): Promise<string | null> {
+  async function createSession(prefill?: string): Promise<string | null> {
     if (creating) return null;
     setCreating(true);
     try {
       const res = await request("POST", "/session", {});
       const created = res.body as { id?: string };
       if (res.status === 200 && created.id) {
+        // P2-123: a home idea/scratch prompt rides along as the new session's
+        // first draft — set BEFORE the chat mounts so it opens pre-filled and
+        // editable (never auto-sent).
+        if (prefill) setDraft(created.id, prefill);
         dispatchView({ type: "openChat", sessionId: created.id });
         setTick((t) => t + 1); // refresh the sidebar list
         return null;
@@ -930,15 +937,18 @@ export default function App() {
             {/* P1-046: the chat is persistent — opening Artifacts/Browser/
                 Files/Settings never unmounts it. */}
             {session ? chatNode : (
-              <div className="desk-empty">
-                <div>
-                  <div className="desk-greet-mark">✻</div>
-                  {/* P2-118: copy via the dict — this shell also renders the
-                      daemon banners, so hardcoded text mixes locales. */}
-                  <h2>{t("deskGreeting", { machine: machineName ? `, ${machineName.toLowerCase()}` : "" })}</h2>
-                  <p>{t("deskEmptyHint")}</p>
-                </div>
-              </div>
+              <HomeView
+                machineName={machineName}
+                request={request}
+                voice={clientRef.current?.caps?.transcribe === true}
+                creating={creating}
+                onStart={async (prompt, mode) => {
+                  // the toggle wrote the same key; restate it so a start
+                  // always matches the mode it was fired from
+                  localStorage.setItem("ocr_agent", agentForMode(mode));
+                  return createSession(prompt);
+                }}
+              />
             )}
           </main>
           <section

@@ -152,7 +152,7 @@ private. That is the product: **local power, remote control, zero trust**.
   activity and diff dialogs) reads from one EN/pt-BR dictionary, dialogs close
   with Esc and trap focus, and the session board is fully reachable by keyboard.
   Connection screens follow one locale end-to-end: daemon-down/reconnecting
-  banners, the QR scanner and the desktop empty state resolve their copy from
+  banners, the QR scanner and the desktop home screen resolve their copy from
   the same dictionary as the actions next to them — no pt-BR/English mix on a
   single screen
 
@@ -287,6 +287,14 @@ the whole navigation lives behind a single view stack. Keyboard shortcuts
 (also in the **Go** menu): `Cmd+T` new conversation, `Cmd+K` command palette
 (search conversations and actions), `Cmd+1..6` switch to chat / Artifacts /
 Browser / Files / Settings / Mission Control.
+
+**Living home (P2-123)**: with no conversation selected the cockpit shows a
+real home instead of a dead end — a serif greeting ("Back in action, &lt;machine&gt;",
+from the same EN/pt-BR dictionary), a central composer with placeholder, a
+Chat/Cowork mode toggle (Cowork pre-selects the `build` agent for the next
+session), the model selector and mic on the composer's bottom row, and three
+clickable "Ideas for you" that open a new session with the prompt pre-filled
+(failure surfaces an inline error, never a frozen screen).
 
 **Design tokens & reading typography (P3-083)**: the conversation column is
 capped at ~46rem and centered like the Claude Desktop benchmark, with a

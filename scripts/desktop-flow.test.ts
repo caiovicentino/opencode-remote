@@ -739,6 +739,122 @@ try {
         const s2 = run("local: 390 evidence shot", ["shot", localShot390, "390", "844"], 15_000, localEnv);
         if (s2.ok) check("local: 390 shot is a real PNG", pngSize(localShot390)[0] === 390);
 
+        // --- P2-123: the living home (greeting + composer + ideas) -----------
+        // The window is still 390px wide from the previous shot; the home only
+        // mounts ≥1024px, so the first wide shot doubles as the resize-back.
+        // The settings pane opened for the P2-112 beat is closed via the real
+        // Go-menu path first, so .desk-chat shows the home again. Whatever
+        // happens inside, the finally re-shrinks the window — P1-080's narrow
+        // repro below depends on that width.
+        const homeShot1440 = join(shotsDir, "P2-123-home-1440.png");
+        const homeShot390 = join(shotsDir, "P2-123-home-390.png");
+        run("P2-123: rail Conversas closes the settings pane", ["menu-click", "go-pane-chat"], 15_000, localEnv);
+        // resize vehicle only — the settled evidence shot is retaken below
+        const resizeShot = join(tmpdir(), `p2-123-resize-${process.pid}.png`);
+        run("P2-123: resize back to desktop width", ["shot", resizeShot, "1440", "900"], 15_000, localEnv);
+        const homeGreet = await waitProbe(
+          "P2-123: serif greeting rendered at desktop width",
+          "document.querySelector('.home-greeting')?.textContent ?? ''",
+          (v) => /De volta à ação|Back in action/.test(v),
+          localEnv,
+        );
+        try {
+          if (homeGreet) {
+            // one probe for the whole structure: toggle radios, model selector,
+            // mic, placeholder copy and the 3 ideas (the harness prints the
+            // evaluate result JSON-encoded — parse the object directly)
+            const structure = run(
+              "P2-123: composer, toggle, selector, mic and ideas mounted",
+              ["ipc", `(() => {
+                const q = (s) => !!document.querySelector(s);
+                const els = Array.from(document.querySelectorAll('.home-idea'));
+                return {
+                  chat: q('.home-mode [data-mode=chat]'),
+                  cowork: q('.home-mode [data-mode=cowork]'),
+                  model: q('.home-composer .composer-model-btn'),
+                  mic: q('.home-composer .composer-mic'),
+                  placeholder: document.querySelector('.home-composer .composer-text')?.placeholder ?? '',
+                  n: els.length,
+                  prompts: els.map((e) => e.getAttribute('data-prompt') ?? ''),
+                  disabled: els.map((e) => e.disabled),
+                };
+              })()`],
+              15_000,
+              localEnv,
+            );
+            let st: {
+              chat?: boolean;
+              cowork?: boolean;
+              model?: boolean;
+              mic?: boolean;
+              placeholder?: string;
+              n?: number;
+              prompts?: string[];
+              disabled?: boolean[];
+            } | null = null;
+            if (structure.ok) {
+              try {
+                st = JSON.parse(structure.stdout) as typeof st;
+              } catch {}
+            }
+            check(
+              "P2-123: Chat/Cowork toggle + model selector + mic present",
+              st?.chat === true && st?.cowork === true && st?.model === true && st?.mic === true,
+              structure.stdout,
+            );
+            check(
+              "P2-123: central composer placeholder copy (en|pt)",
+              /Como posso ajudar você hoje\?|How can I help you today\?/.test(st?.placeholder ?? ""),
+              structure.stdout,
+            );
+            check("P2-123: 3 ideas rendered", st?.n === 3, structure.stdout);
+            check(
+              "P2-123: every idea carries a non-empty prompt and is enabled",
+              (st?.prompts ?? []).every((p) => p.length > 0) && (st?.disabled ?? []).every((d) => d === false),
+              structure.stdout,
+            );
+            if (st?.chat && st?.cowork && st?.n === 3) {
+              // the toggle is the ChatView-composer bridge: cowork must land
+              // "build" in the same localStorage key the session composer reads
+              run("P2-123: pick the Cowork mode", ["click", ".home-mode [data-mode=cowork]"], 15_000, localEnv);
+              const cowork = run(
+                "P2-123: Cowork writes the build agent + checks its radio",
+                ["ipc", "(() => ({ agent: localStorage.getItem('ocr_agent') ?? '', checked: document.querySelector('.home-mode [data-mode=cowork]')?.getAttribute('aria-checked') ?? '' }))()"],
+                15_000,
+                localEnv,
+              );
+              check(
+                "P2-123: ocr_agent=build and cowork aria-checked",
+                /"agent":\s*"build"/.test(cowork.stdout) && /"checked":\s*"true"/.test(cowork.stdout),
+                cowork.stdout,
+              );
+              // evidence shot with the settled home (1440x900)
+              const hs1 = run("P2-123: 1440x900 home evidence shot", ["shot", homeShot1440, "1440", "900"], 15_000, localEnv);
+              if (hs1.ok) check("P2-123: 1440x900 home shot is a real PNG", pngSize(homeShot1440).join("x") === "1440x900");
+              // criterion: an idea click always gives feedback within 10s —
+              // the chat opens OR an inline error explains the failure (the
+              // hermetic daemon has no opencode backend, so error is the norm)
+              run("P2-123: click idea 1", ["click", '.home-idea[data-idea="1"]'], 15_000, localEnv);
+              await waitProbe(
+                "P2-123: idea click yields chat or inline error (never frozen)",
+                "document.querySelector('.messages') ? 'chat' : (document.querySelector('.home-error') ? 'error' : 'pending')",
+                (v) => {
+                  const s = v.replace(/"/g, "").trim();
+                  return s === "chat" || s === "error";
+                },
+                localEnv,
+                10,
+                1_000,
+              );
+            }
+          }
+        } finally {
+          // home never mounts < 1024px — the 390 evidence shows the mobile
+          // board unregressed; also restores the width P1-080 expects
+          const hs2 = run("P2-123: 390 evidence shot (mobile board)", ["shot", homeShot390, "390", "844"], 15_000, localEnv);
+          if (hs2.ok) check("P2-123: 390 home shot is a real PNG", pngSize(homeShot390)[0] === 390);
+        }
+
         // --- P1-080: the operator's overflow repro (narrow window, long diff) ---
         // The hermetic daemon has no opencode backend, so no real message can
         // stream in; the long-diff bubble is injected at the DOM level into the

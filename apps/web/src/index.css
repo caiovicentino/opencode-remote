@@ -1061,20 +1061,143 @@ select {
   from { transform: translateX(-100%); }
   to { transform: translateX(100%); }
 }
-.desk-empty {
+/* P2-123: the living home — serif greeting + central composer + ideas.
+   Desktop-only (isDesktop gate in App.tsx); the mobile board never unmounts
+   this because the home only mounts ≥1024px. */
+.home {
   height: 100%;
+  overflow-y: auto;
+  display: flex;
+  justify-content: center;
+}
+.home-col {
+  width: 100%;
+  max-width: 640px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--space-5);
+  padding: var(--space-6) var(--space-5);
+  animation: home-in var(--motion-slow) var(--ease-out);
+}
+@keyframes home-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.home-head {
+  text-align: center;
+}
+.home-greeting {
+  font-family: ui-serif, Georgia, "Times New Roman", serif;
+  font-size: 2.4rem;
+  font-weight: var(--font-weight-medium);
+  letter-spacing: -0.01em;
+  color: var(--fg);
+  margin: 0;
+}
+.home-composer .composer {
+  box-shadow: var(--shadow-overlay);
+}
+.home-mode {
   display: flex;
   align-items: center;
-  justify-content: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+}
+.home-mode [role="radio"] {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--font-size-sm);
+  padding: 3px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition:
+    color var(--motion-fast) var(--ease-out),
+    background var(--motion-fast) var(--ease-out);
+}
+.home-mode [role="radio"]:hover {
+  color: var(--fg);
+}
+.home-mode [role="radio"][aria-checked="true"] {
+  color: var(--fg);
+  background: var(--bg2);
+}
+.home-mode [role="radio"]:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.home-error {
+  margin-top: var(--space-2);
   text-align: center;
+  font-size: var(--font-size-sm);
+  color: var(--danger);
+}
+.home-ideas {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.home-ideas-title {
+  margin: 0 0 var(--space-1);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   color: var(--muted);
 }
-.desk-empty h2 {
-  color: var(--fg);
-  margin: 0 0 6px;
+.home-idea {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  text-align: left;
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  color: var(--text);
+  font-size: var(--font-size-md);
+  cursor: pointer;
+  transition:
+    border-color var(--motion-fast) var(--ease-out),
+    background var(--motion-fast) var(--ease-out);
 }
-.desk-empty p {
-  margin: 0;
+.home-idea:hover {
+  background: var(--bg2);
+  border-color: var(--border-strong);
+}
+.home-idea:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.home-idea-icon {
+  display: inline-flex;
+  color: var(--muted);
+  transition: color var(--motion-fast) var(--ease-out);
+}
+.home-idea:hover .home-idea-icon {
+  color: var(--fg);
+}
+/* P2-123: home motion is decorative only — zero it out under reduced motion
+   (the global block already covers it; this keeps the guarantee explicit for
+   the .home-* classes and survives future global-block edits). */
+@media (prefers-reduced-motion: reduce) {
+  .home-col,
+  .home-idea,
+  .home-idea-icon,
+  .home-mode [role="radio"] {
+    animation: none;
+    transition: none;
+  }
 }
 /* mobile chrome never shows inside the desktop shell */
 .desk .tabbar,
@@ -1178,21 +1301,11 @@ select {
   color: var(--fg);
   background: var(--bg2);
 }
-/* greeting like the reference: serif, centered, warm mark */
-.desk-empty h2 {
-  font-family: ui-serif, Georgia, "Times New Roman", serif;
-  font-size: 2.4rem;
-  font-weight: var(--font-weight-medium);
-  letter-spacing: -0.01em;
-}
+/* greeting mark shared by the home screen: serif, centered, warm mark */
 .desk-greet-mark {
   font-size: 2.6rem;
   color: var(--accent);
   margin-bottom: 10px;
-}
-.desk-empty p {
-  margin-top: 8px;
-  font-size: 0.95rem;
 }
 
 /* desktop flat session rows (variant="rows") */

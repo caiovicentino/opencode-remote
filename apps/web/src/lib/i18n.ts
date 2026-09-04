@@ -306,10 +306,22 @@ export const dict = {
     camInterrupted:
       "Camera was interrupted. Tap Scan again — iOS sometimes aborts the first attempt.",
     camUnavailable: "camera unavailable",
-    // desktop empty state (P2-118): same shell as the daemon banners — copy
-    // must not mix locales. {machine} is ", <name>" or "".
-    deskGreeting: "hello{machine}!",
-    deskEmptyHint: "Select a conversation in the sidebar",
+    // desktop home screen (P2-123): greeting, central composer and the ideas
+    // section. {name} is the lowercased machine name.
+    homeGreeting: "Back in action, {name}",
+    homeGreetingAnon: "Back in action",
+    homePlaceholder: "How can I help you today?",
+    homeIdeasTitle: "Ideas for you",
+    homeModeChat: "Chat",
+    homeModeCowork: "Cowork",
+    homeIdea1Label: "Pick up where we left off",
+    homeIdea1Prompt:
+      "Pick up the work on my latest project: list what is still pending and suggest the next step.",
+    homeIdea2Label: "Explain a piece of code",
+    homeIdea2Prompt: "Explain in plain words what this code snippet does and where it might break:\n",
+    homeIdea3Label: "Recap my recent sessions",
+    homeIdea3Prompt: "Summarize my recent conversations, with the next step for each one.",
+    homeStartError: "Couldn't start the conversation. Check the connection and try again.",
   },
   pt: {
     search: "Buscar conversas…",
@@ -558,8 +570,20 @@ export const dict = {
     camInterrupted:
       "A câmera foi interrompida. Toque em Escanear de novo — o iOS às vezes aborta a primeira tentativa.",
     camUnavailable: "câmera indisponível",
-    // estado vazio do desktop (P2-118): mesma tela dos banners de daemon.
-    deskGreeting: "olá{machine}!",
-    deskEmptyHint: "Selecione uma conversa na barra lateral",
+    // home do desktop (P2-123): greeting, composer central e seção de ideias.
+    homeGreeting: "De volta à ação, {name}",
+    homeGreetingAnon: "De volta à ação",
+    homePlaceholder: "Como posso ajudar você hoje?",
+    homeIdeasTitle: "Ideias para você",
+    homeModeChat: "Chat",
+    homeModeCowork: "Cowork",
+    homeIdea1Label: "Continuar de onde parei",
+    homeIdea1Prompt:
+      "Retome o trabalho no meu último projeto: liste o que ficou pendente e sugira o próximo passo.",
+    homeIdea2Label: "Explicar um trecho de código",
+    homeIdea2Prompt: "Explique de forma simples o que este trecho de código faz e onde ele pode quebrar:\n",
+    homeIdea3Label: "Resumo das conversas recentes",
+    homeIdea3Prompt: "Resuma minhas conversas recentes, com o próximo passo de cada uma.",
+    homeStartError: "Não deu pra iniciar a conversa. Verifique a conexão e tente de novo.",
   },
 } satisfies Record<Lang, Record<string, string>>;

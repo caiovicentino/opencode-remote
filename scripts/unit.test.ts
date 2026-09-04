@@ -6140,7 +6140,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "pairRemoteTitle", "pairRemoteHint", "pairRemoteAction",
     "scanPairingTitle", "scanPointCamera", "scanBackManual",
     "camDenied", "camNotFound", "camBusy", "camInterrupted", "camUnavailable",
-    "deskGreeting", "deskEmptyHint",
+    "homeGreeting", "homeGreetingAnon", "homePlaceholder", "homeIdeasTitle", "homeStartError",
   ];
   const resolved = (lang: "en" | "pt") => connKeys.map((k) => translate(lang, k));
   check(
@@ -6154,7 +6154,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       translate("pt", "reconnectNow") === "Reconectar agora" &&
       translate("pt", "scanPairingTitle").includes("Escanear") &&
       translate("pt", "scanPointCamera").includes("câmera") &&
-      translate("pt", "deskEmptyHint").includes("barra lateral"),
+      translate("pt", "homePlaceholder").includes("Como posso ajudar"),
   );
   // en: same screen, English copy — no pt leakage.
   check(
@@ -6162,13 +6162,13 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     translate("en", "daemonDown").includes("Local daemon is down") &&
       translate("en", "reconnectNow") === "Reconnect now" &&
       translate("en", "scanPairingTitle") === "Scan pairing code" &&
-      translate("en", "deskGreeting").startsWith("hello"),
+      translate("en", "homePlaceholder") === "How can I help you today?",
   );
-  // deskGreeting interpolates the machine name the same way in both locales.
+  // homeGreeting interpolates the machine name the same way in both locales.
   check(
-    "i18n conn: deskGreeting interpolates {machine} in both locales",
-    translate("en", "deskGreeting", { machine: ", foo" }) === "hello, foo!" &&
-      translate("pt", "deskGreeting", { machine: ", foo" }) === "olá, foo!",
+    "i18n conn: homeGreeting interpolates {name} in both locales",
+    translate("en", "homeGreeting", { name: "foo" }) === "Back in action, foo" &&
+      translate("pt", "homeGreeting", { name: "foo" }) === "De volta à ação, foo",
   );
   // The old hardcoded strings must be gone from the sources that render the
   // banner-adjacent screens (regression guard against reintroducing the mix).
