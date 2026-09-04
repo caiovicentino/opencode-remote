@@ -401,7 +401,10 @@ configurados (veja *Instalador do app desktop*).
 **Auto-update com consentimento (P1-050)**: o shell empacotado checa a pasta
 versionada de updates do daemon (`http://127.0.0.1:8792/__ocr/updates/`
 — servida pelo próprio daemon local, sem nova superfície de rede) no boot e
-sob demanda pelo tray (**Check for updates**). Achando um `feed.json` mais
+sob demanda pelo tray (**Check for updates**). P2-155: com o app aberto (mesmo
+com a janela fechada no tray) ele também reconfere sozinho a cada ~6 h
+(jitter de ±10%), recuando de 15 min até o teto de 6 h enquanto o feed estiver
+inacessível. Achando um `feed.json` mais
 novo, o release baixa em segundo plano e um diálogo de consentimento oferece
 **Reiniciar agora / Depois** — nada instala sem clique explícito, versão
 adiada não é re-oferecida na sessão, e checagens repetidas nunca empilham

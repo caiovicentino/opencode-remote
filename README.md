@@ -537,7 +537,10 @@ the metadata on any OS, no Windows required.
 **Auto-updates with consent (P1-050)**: the packaged shell checks the daemon's
 loopback updates folder (`http://127.0.0.1:8792/__ocr/updates/` — a versioned
 folder served by the same local daemon, no new network surface) at boot and on
-demand from the tray (**Check for updates**). P2-098: when that staged feed is
+demand from the tray (**Check for updates**). P2-155: while the app stays open
+(even with the window closed to the tray) it also rechecks on its own roughly
+every 6 h — ±10% jitter — and backs off from 15 min up to the 6 h cap while
+the feed is unreachable. P2-098: when that staged feed is
 absent — the normal case on a plain DMG install — the shell falls back to the
 public yml feed attached to the latest GitHub release, so the tray still
 reports "update available" on third-party machines. P2-131: that fallback is
