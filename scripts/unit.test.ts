@@ -272,6 +272,7 @@ import {
   validateTakeoverDirectory,
   validateTakeoverSessionId,
 } from "../apps/daemon/src/pilotforensic";
+import { findWindowsInstaller, listProblems, windowsInstallerProblems } from "../apps/desktop/scripts/dist-smoke.mjs";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -6732,6 +6733,64 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       keys.every((k) => typeof d[k] === "string" && d[k].trim() !== ""),
     );
     check(`p2-124 i18n ${lang}: planLocal reads as local`, /local/i.test(translate(lang, "planLocal")));
+  }
+}
+
+// --- P2-126: dist-smoke Windows installer checks (pure fs, no Windows) ------
+{
+  const winRoot = mkdtempSync(join(tmpdir(), "ocr-win-installer-"));
+  try {
+    // win-unpacked fixture: same layout electron-builder emits on Windows.
+    const unpacked = join(winRoot, "win-unpacked");
+    mkdirSync(join(unpacked, "resources", "web-dist"), { recursive: true });
+    mkdirSync(join(unpacked, "resources", "daemon"), { recursive: true });
+    writeFileSync(join(unpacked, "OpenCode Remote.exe"), "exe");
+    writeFileSync(join(unpacked, "resources", "web-dist", "index.html"), "<html>");
+    writeFileSync(join(unpacked, "resources", "daemon", "index.js"), "// daemon");
+    check("p2-126 win-unpacked: complete bundle passes listProblems", listProblems(unpacked).length === 0);
+    rmSync(join(unpacked, "OpenCode Remote.exe"));
+    check(
+      "p2-126 win-unpacked: missing .exe is reported",
+      listProblems(unpacked).some((p) => p.includes("no app binary")),
+    );
+
+    // dist root fixture: setup exe + latest.yml are the Windows release pair.
+    const distRoot = join(winRoot, "dist");
+    mkdirSync(distRoot, { recursive: true });
+    check("p2-126 setup: no installer in a fresh dist root", findWindowsInstaller(distRoot) === null);
+    const fresh = windowsInstallerProblems(distRoot);
+    check(
+      "p2-126 problems: fresh root reports setup exe and latest.yml",
+      fresh.length === 2 && fresh.some((p) => p.includes("*.exe")) && fresh.some((p) => p.includes("latest.yml")),
+    );
+    check(
+      "p2-126 problems: absent root reported clearly",
+      windowsInstallerProblems(join(winRoot, "ghost")).length === 1 &&
+        windowsInstallerProblems(join(winRoot, "ghost"))[0].includes("does not exist"),
+    );
+
+    writeFileSync(join(distRoot, "OpenCode Remote Setup 1.0.0.exe"), "exe");
+    check(
+      "p2-126 setup: finds the deterministic setup exe",
+      findWindowsInstaller(distRoot) === join(distRoot, "OpenCode Remote Setup 1.0.0.exe"),
+    );
+    check(
+      "p2-126 problems: only latest.yml missing after setup lands",
+      JSON.stringify(windowsInstallerProblems(distRoot)) === JSON.stringify(["missing file: latest.yml"]),
+    );
+    writeFileSync(join(distRoot, "latest.yml"), "version: 1.0.0\npath: OpenCode Remote Setup 1.0.0.exe\n");
+    check("p2-126 problems: empty when setup exe + latest.yml present", windowsInstallerProblems(distRoot).length === 0);
+
+    // Sorted determinism + isFile guard, mirroring findDmg's contract.
+    writeFileSync(join(distRoot, "AAA Setup 0.9.0.exe"), "exe");
+    check("p2-126 setup: lexicographically first exe wins", findWindowsInstaller(distRoot)!.endsWith("AAA Setup 0.9.0.exe"));
+    mkdirSync(join(distRoot, "ZZZ dir.exe"));
+    rmSync(join(distRoot, "AAA Setup 0.9.0.exe"));
+    rmSync(join(distRoot, "OpenCode Remote Setup 1.0.0.exe"));
+    check("p2-126 setup: directory named *.exe is not an artifact", findWindowsInstaller(distRoot) === null);
+    check("p2-126 absent dist root: findWindowsInstaller null", findWindowsInstaller(join(winRoot, "ghost")) === null);
+  } finally {
+    rmSync(winRoot, { recursive: true, force: true });
   }
 }
 
