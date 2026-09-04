@@ -136,9 +136,11 @@ const cliEnv = { ...process.env, OCR_DESKTOP_SESSION: session };
 // single-instance beat (a real second Electron on the same userData quits
 // cleanly), growing it to 195s; P2-138 added the upstream-notice beat
 // (fake opencode answering 401 + a third hermetic daemon + Settings help
-// card), growing it to 225s.
+// card), growing it to 225s; P2-140 added the sidecar-exit beat (a real
+// OCR_DAEMON_ENTRY fake dying with EADDRINUSE + the calm-card verdict),
+// growing it to 240s.
 const startedAt = Date.now();
-const DEADLINE_MS = 225_000;
+const DEADLINE_MS = 240_000;
 const shotPath = join(tmpdir(), "ocr-desktop-flow", `flow-${process.pid}.png`);
 // Evidence shots live in the builder dir (never used as review evidence).
 // Declared up front: the P2-112 degraded-journey beats record there too.
@@ -213,6 +215,14 @@ async function waitProbe(
 function pngSize(path: string): [number, number] {
   const buf = readFileSync(path);
   return [buf.readUInt32BE(16), buf.readUInt32BE(20)];
+}
+
+/** P2-140: the displayed verdict copy must never carry a file path, machine
+ * detail or secret — path separators, home/tmp markers and credential words
+ * are all leaks for a stage-3 user. */
+function reasonOrHintLeaksPaths(v: { reason?: string; hint?: string }): boolean {
+  const texts = [v.reason ?? "", v.hint ?? ""];
+  return texts.some((s) => s.includes("/") || s.includes("\\") || /home|users|tmp|token|secret/i.test(s));
 }
 
 /** P1-089: phase banner with elapsed time — the <90s budget of this gate
@@ -2708,6 +2718,96 @@ try {
     killDaemon3("SIGKILL");
     killFake401();
     rmSync(daemonHome3, { recursive: true, force: true });
+  }
+
+  // --- P2-140: daemon-down card explains WHY the daemon died ------------------
+  // The harness honors a caller-set OCR_DAEMON_ENTRY: the shell really spawns
+  // this fake daemon entry, which prints EADDRINUSE on stderr and exits 1.
+  // The exit classifier verdict (port-busy) rides ocr:pairing-state and the
+  // ONE calm degraded card shows the actionable hint — never a second banner
+  // (P2-108). Respawn delays are shortened so the real gaveUp state (which
+  // freezes the last verdict) arrives in ~2s instead of 65s.
+  phase("P2-140: sidecar exit verdict (fake entry exits 1 with EADDRINUSE)");
+  const exitDir = mkdtempSync(join(tmpdir(), "ocr-flow-exit-"));
+  const fakeEntry = join(exitDir, "fake-daemon-entry.cjs");
+  writeFileSync(
+    fakeEntry,
+    [
+      "// P2-140 beat: a daemon entry that cannot boot — the port is taken.",
+      "process.stderr.write('Error: listen EADDRINUSE: address already in use 127.0.0.1:8792\\n');",
+      "process.exit(1);",
+    ].join("\n"),
+  );
+  const exitEnv = {
+    ...process.env,
+    OCR_DESKTOP_SESSION: `${session}-exitinfo`,
+    OCR_DAEMON_ENTRY: fakeEntry,
+    OCR_DAEMON_RESPAWN_DELAYS: "300,300,300",
+  };
+  let exitBooted = false;
+  try {
+    const open = run("P2-140: open (hermetic launch with a dying fake daemon)", ["open"], 45_000, exitEnv);
+    exitBooted = open.ok;
+    if (open.ok) {
+      const hintShown = await waitProbe(
+        "P2-140: exit hint rendered inside the calm card",
+        "!!document.querySelector('.degraded-exit')",
+        (v) => /true/.test(v),
+        exitEnv,
+      );
+      if (hintShown) {
+        // ONE calm card, ONE exit block, zero extra banners (P2-108).
+        const oneCard = run("P2-140: single degraded card probe", ["ipc", "String(document.querySelectorAll('.degraded').length)"], 15_000, exitEnv);
+        if (oneCard.ok) check("P2-140: exactly one calm card", oneCard.stdout.replace(/"/g, "").trim() === "1", oneCard.stdout);
+        const oneExit = run("P2-140: single exit block probe", ["ipc", "String(document.querySelectorAll('.degraded-exit').length)"], 15_000, exitEnv);
+        if (oneExit.ok) check("P2-140: exactly one exit-verdict block", oneExit.stdout.replace(/"/g, "").trim() === "1", oneExit.stdout);
+        const noBanner = run("P2-140: banner count probe", ["ipc", "String(document.querySelectorAll('.daemon-down, .daemon-reconnecting, .conn-banner').length)"], 15_000, exitEnv);
+        if (noBanner.ok) check("P2-140: verdict never becomes a second banner (P2-108)", noBanner.stdout.replace(/"/g, "").trim() === "0", noBanner.stdout);
+        // P2-106 lesson: locale-independent class hook + en/pt regex copy.
+        const copy = run("P2-140: exit copy probe", ["ipc", "document.querySelector('.degraded-exit')?.textContent ?? ''"], 15_000, exitEnv);
+        if (copy.ok) {
+          check(
+            "P2-140: port-busy title + actionable hint (en|pt)",
+            /took the daemon's port|ocupou a porta do daemon/.test(copy.stdout) &&
+              /Close the program|Feche o programa/.test(copy.stdout),
+            copy.stdout,
+          );
+        }
+        // Channel proof: the verdict object itself, sanitized for the UI —
+        // no file paths, tokens or secrets may leak into the displayed copy.
+        const st = run("P2-140: IPC app:pairingState", ["ipc", "window.ocrDesktop.getPairingState()"], 15_000, exitEnv);
+        if (st.ok) {
+          let parsed: { daemonDown?: boolean; sidecarExit?: { kind?: string; reason?: string; hint?: string } } | null = null;
+          try {
+            parsed = JSON.parse(st.stdout) as typeof parsed;
+          } catch {
+            parsed = null;
+          }
+          const verdict = parsed?.sidecarExit;
+          check(
+            "P2-140: pairingState carries daemonDown + kind=port-busy over ocr:pairing-state",
+            parsed?.daemonDown === true && verdict?.kind === "port-busy",
+            st.stdout,
+          );
+          check(
+            "P2-140: verdict copy is path-free and non-empty",
+            !!verdict?.reason && !!verdict?.hint && !reasonOrHintLeaksPaths(verdict),
+            JSON.stringify(verdict ?? null),
+          );
+        }
+        const shot1440 = join(shotsDir, "P2-140-exit-1440.png");
+        const shot390 = join(shotsDir, "P2-140-exit-390.png");
+        const s1 = run("P2-140: 1440x900 evidence shot", ["shot", shot1440, "1440", "900"], 15_000, exitEnv);
+        if (s1.ok) check("P2-140: 1440x900 shot is a real PNG", pngSize(shot1440).join("x") === "1440x900");
+        const s2 = run("P2-140: 390 evidence shot", ["shot", shot390, "390", "844"], 15_000, exitEnv);
+        if (s2.ok) check("P2-140: 390 shot is a real PNG", pngSize(shot390)[0] === 390);
+      } else {
+        check("P2-140: exit hint never rendered", false, "waitProbe exhausted");
+      }
+    }
+  } finally {
+    if (exitBooted) spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: exitEnv });
+    rmSync(exitDir, { recursive: true, force: true });
   }
 } finally {
   if (keeperBooted) spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: cliEnv });

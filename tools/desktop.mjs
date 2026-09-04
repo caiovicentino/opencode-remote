@@ -265,7 +265,10 @@ function hermeticEnv() {
     ELECTRON_DISABLE_SECURITY_WARNINGS: "1",
     OCR_USER_DATA_DIR: dir,
     OCR_DAEMON_STATE_FILE: stateFile,
-    OCR_DAEMON_ENTRY: join(dir, "no-daemon-entry.js"),
+    // P2-140: the caller may point OCR_DAEMON_ENTRY at a real fake entry
+    // script (sidecar-exit beat) — honor it; the nonexistent default keeps
+    // every other hermetic launch spawn-free.
+    OCR_DAEMON_ENTRY: process.env.OCR_DAEMON_ENTRY ?? join(dir, "no-daemon-entry.js"),
     OCR_DAEMON_FORCE_DOWN: "1",
     // P2-069 leash: the app watches this pid and quits when it disappears, so
     // a keeper killed hard (SIGKILL from a pre-flight reaper, OOM, reboot)

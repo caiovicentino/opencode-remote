@@ -40,7 +40,7 @@ import MissionControlView, { type DaemonApiFn } from "./components/MissionContro
 import CommandPalette from "./components/CommandPalette";
 import DegradedView from "./components/DegradedView";
 import ReconnectButton from "./components/ReconnectButton";
-import { degradedKind, sawHealthyDaemon, upstreamNotice, type UpstreamHealth } from "./lib/degraded";
+import { degradedKind, sawHealthyDaemon, sidecarExitNotice, upstreamNotice, type SidecarExitHealth, type UpstreamHealth } from "./lib/degraded";
 import {
   IconAlert,
   IconChat,
@@ -83,6 +83,8 @@ interface PairingState {
   versionMismatch?: boolean;
   /** P2-138: upstream (opencode) health detail from the daemon's /api/health. */
   opencode?: UpstreamHealth;
+  /** P2-140: why the local daemon died (desktop shell only). */
+  sidecarExit?: SidecarExitHealth;
 }
 
 /** Electron bridge from apps/desktop/src/preload.ts (absent in the browser). */
@@ -703,6 +705,9 @@ export default function App() {
   // Rendered ONLY inside existing calm surfaces (degraded card, Settings help
   // section), never as a second banner (P2-108 single-surface rule).
   const upstream = upstreamNotice(pairingState?.opencode);
+  // P2-140: why the local daemon died — null unless the shell attached an
+  // exit verdict. Rendered ONLY inside the degraded calm card (P2-108 rule).
+  const sidecarExit = sidecarExitNotice(pairingState?.sidecarExit);
   // P1-071: the Settings help section is reachable from the first-boot calm
   // card too — the stub request no-ops every fetch while no client exists.
   const [helpOpen, setHelpOpen] = useState(false);
@@ -806,6 +811,7 @@ export default function App() {
             onPairManually={() => setPairManual(true)}
             upstream={upstream}
             onOpenHelp={upstream ? () => setHelpOpen(true) : undefined}
+            sidecarExit={sidecarExit}
           />
         ) : (
           <PairingView
