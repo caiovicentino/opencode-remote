@@ -116,7 +116,9 @@ async function clientMain() {
       console.log(JSON.stringify({ ...shot, reused, session: SESSION }));
       return;
     }
-    console.log(JSON.stringify({ ok: true, reused, session: SESSION }));
+    // P2-069: expose the minted userData dir so callers (desktop-flow gate,
+    // explorer) can address THIS instance's userData directly.
+    console.log(JSON.stringify({ ok: true, reused, session: SESSION, userData: res?.userData }));
     return;
   }
   if (cmd === "see") {
@@ -265,6 +267,10 @@ function hermeticEnv() {
     OCR_DAEMON_STATE_FILE: stateFile,
     OCR_DAEMON_ENTRY: join(dir, "no-daemon-entry.js"),
     OCR_DAEMON_FORCE_DOWN: "1",
+    // P2-069 leash: the app watches this pid and quits when it disappears, so
+    // a keeper killed hard (SIGKILL from a pre-flight reaper, OOM, reboot)
+    // can no longer leak an Electron instance for hours — the P2-069 incident.
+    OCR_KEEPER_PID: String(process.pid),
   };
   // P1-070: local-boot mode — the caller booted a REAL hermetic daemon on a
   // free port and hands over its 0600 state file via OCR_DESKTOP_LOCAL_STATE.
@@ -367,7 +373,7 @@ async function keeperMain() {
           return;
         }
         resetIdle();
-        handle(electronApp, page, msg)
+        handle(electronApp, page, msg, env)
           .then(reply)
           .catch((err) => reply({ ok: false, error: String(err?.message ?? err).split("\n")[0] }));
       }
@@ -393,9 +399,20 @@ async function keeperMain() {
   const stop = () => void shutdown(electronApp, 0);
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);
+  // P2-069: last-resort leash — whatever exit path the keeper takes (including
+  // the uncaughtException above and shutdown's own hard-exit timer), the
+  // Electron instance must not outlive it. Synchronous on purpose: an "exit"
+  // handler cannot await the graceful quit() — SIGKILL the instance and let
+  // the OS reap it. Killing an already-dead pid is a harmless ESRCH.
+  const killInstance = () => {
+    try {
+      electronApp.process().kill("SIGKILL");
+    } catch {}
+  };
+  process.on("exit", killInstance);
 }
 
-async function handle(electronApp, page, msg) {
+async function handle(electronApp, page, msg, env) {
   switch (msg.cmd) {
     case "ping": {
       // Liveness probe, not a stub: the renderer target can die while the
@@ -408,7 +425,7 @@ async function handle(electronApp, page, msg) {
         void shutdown(electronApp, 1);
         return { ok: false, error: "app target is dead; keeper restarting" };
       }
-      return { ok: true, session: SESSION };
+      return { ok: true, session: SESSION, userData: env.OCR_USER_DATA_DIR };
     }
     case "see": {
       try {
