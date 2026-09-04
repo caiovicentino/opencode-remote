@@ -12,9 +12,13 @@ interface Props {
   onPairRemote?: () => void;
   /** P1-070: the shell is auto-connecting to the daemon on this machine. */
   localMode?: boolean;
+  /** P2-117: desktop shells lead with the paste form — pointing a camera at
+   * another desktop's QR is a circular flow. Camera stays available as an
+   * option; on the phone the scan button remains primary. */
+  preferPaste?: boolean;
 }
 
-export default function PairingView({ phase, error, onPair, onRetry, onPairRemote, localMode }: Props) {
+export default function PairingView({ phase, error, onPair, onRetry, onPairRemote, localMode, preferPaste }: Props) {
   const t = useT();
   const [code, setCode] = useState("");
   const [scanning, setScanning] = useState(false);
@@ -28,10 +32,15 @@ export default function PairingView({ phase, error, onPair, onRetry, onPairRemot
     [onPair],
   );
 
+  // P2-117: the scanner's paste CTA returns to the primary form, focused —
+  // the camera being unavailable must never dead-end the pairing flow.
+  const backToPaste = useCallback(() => {
+    setScanning(false);
+    requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>(".pair-code")?.focus());
+  }, []);
+
   if (scanning) {
-    return (
-      <QrScanner onScan={handleScan} onCancel={() => setScanning(false)} />
-    );
+    return <QrScanner onScan={handleScan} onCancel={() => setScanning(false)} onPaste={backToPaste} />;
   }
 
   // P2-112: in local mode the intro promises automatic pairing — showing the
@@ -44,6 +53,39 @@ export default function PairingView({ phase, error, onPair, onRetry, onPairRemot
   // another machine" (this device as client: scan/paste) vs "pair a phone
   // with this machine" (this device as host). The error keeps the
   // locale-independent .pair-error hook the desktop-flow gate asserts on.
+
+  // P2-117: paste-first on the desktop (the camera path is the option);
+  // scan-first on the phone.
+  const pasteForm = (
+    <>
+      <textarea
+        className="pair-code"
+        rows={4}
+        placeholder="opencode-remote://pair?v=2&relay=…"
+        value={code}
+        onChange={(e) => setCode(e.target.value)}
+        disabled={busy}
+      />
+      <button
+        className={preferPaste ? "pair-submit primary" : "pair-submit"}
+        disabled={busy || !code.trim()}
+        onClick={() => onPair(code)}
+      >
+        {busy ? (localMode ? t("localConnecting") : t("connecting")) : t("pairBtn")}
+      </button>
+    </>
+  );
+
+  const scanButton = (
+    <button
+      className={preferPaste ? "pair-scan-entry" : "primary pair-scan-entry"}
+      disabled={busy}
+      onClick={() => setScanning(true)}
+    >
+      {t("scanQr")}
+    </button>
+  );
+
   return (
     <div className="screen pair-screen">
       <header>
@@ -53,28 +95,19 @@ export default function PairingView({ phase, error, onPair, onRetry, onPairRemot
       {ceremony && (
         <section className="pair-section">
           <h2 className="pair-section-title">{t("pairConnectTitle")}</h2>
-          <button
-            className="primary"
-            disabled={busy}
-            onClick={() => setScanning(true)}
-          >
-            {t("scanQr")}
-          </button>
-          <p className="muted pair-or">{t("orPaste")}</p>
-          <textarea
-            rows={4}
-            placeholder="opencode-remote://pair?v=2&relay=…"
-            value={code}
-            onChange={(e) => setCode(e.target.value)}
-            disabled={busy}
-          />
-          <button
-            className="pair-submit"
-            disabled={busy || !code.trim()}
-            onClick={() => onPair(code)}
-          >
-            {busy ? (localMode ? t("localConnecting") : t("connecting")) : t("pairBtn")}
-          </button>
+          {preferPaste ? (
+            <>
+              {pasteForm}
+              <p className="muted pair-or">{t("orScan")}</p>
+              {scanButton}
+            </>
+          ) : (
+            <>
+              {scanButton}
+              <p className="muted pair-or">{t("orPaste")}</p>
+              {pasteForm}
+            </>
+          )}
         </section>
       )}
       {phase === "error" && (

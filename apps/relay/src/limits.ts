@@ -25,6 +25,8 @@ export interface RelayLimits {
   maxPerRoom: number;
   /** Largest accepted frame in bytes (RELAY_MAX_FRAME_BYTES, ws maxPayload). */
   maxFrame: number;
+  /** Drain grace before sockets close on shutdown (RELAY_DRAIN_GRACE_MS, P2-145). */
+  drainGraceMs: number;
   /** Non-empty means the boot must NOT open the listener (fail-closed). */
   problems: string[];
 }
@@ -35,7 +37,14 @@ export const MAX_FRAME = 1_000_000;
 /** ws maxPayload is an int32; 16777216 == 0x00FFFFFF is the protocol ceiling. */
 export const MAX_FRAME_CEILING = 16_777_216;
 
-const DEFAULTS = { maxSockets: 1000, maxPerRoom: 10, maxFrame: MAX_FRAME } as const;
+/**
+ * P2-145: RELAY_DRAIN_GRACE_MS ceiling. The hard DRAIN_MS window (3000ms)
+ * must keep covering grace + stopListeners + the 250ms settle, so the grace
+ * alone may never reach the full drain budget.
+ */
+export const DRAIN_GRACE_MS_CEILING = 2000;
+
+const DEFAULTS = { maxSockets: 1000, maxPerRoom: 10, maxFrame: MAX_FRAME, drainGraceMs: 0 } as const;
 
 /**
  * Resolve the admission ceilings from the process env.
@@ -43,6 +52,7 @@ const DEFAULTS = { maxSockets: 1000, maxPerRoom: 10, maxFrame: MAX_FRAME } as co
  * - RELAY_MAX_SOCKETS: total concurrent websockets, default 1000.
  * - RELAY_MAX_PER_ROOM: peers per room, default 10.
  * - RELAY_MAX_FRAME_BYTES: frame cap in bytes, default 1000000.
+ * - RELAY_DRAIN_GRACE_MS: LB-drain grace before sockets close, default 0 (P2-145).
  *
  * An absent or blank variable keeps the default — an empty env reproduces
  * the pre-P2-141 limits exactly. A present-but-invalid value never falls
@@ -54,6 +64,7 @@ export function relayLimits(env: Record<string, string | undefined>): RelayLimit
   const maxSockets = resolveLimit(env.RELAY_MAX_SOCKETS, DEFAULTS.maxSockets, "RELAY_MAX_SOCKETS", problems);
   const maxPerRoom = resolveLimit(env.RELAY_MAX_PER_ROOM, DEFAULTS.maxPerRoom, "RELAY_MAX_PER_ROOM", problems);
   const maxFrame = resolveLimit(env.RELAY_MAX_FRAME_BYTES, DEFAULTS.maxFrame, "RELAY_MAX_FRAME_BYTES", problems);
+  const drainGraceMs = resolveDrainGrace(env.RELAY_DRAIN_GRACE_MS, problems);
 
   if (maxPerRoom > maxSockets) {
     problems.push(
@@ -67,7 +78,7 @@ export function relayLimits(env: Record<string, string | undefined>): RelayLimit
         "ws maxPayload is an int32 and oversized frames only serve memory abuse (fail-closed)",
     );
   }
-  return { maxSockets, maxPerRoom, maxFrame, problems };
+  return { maxSockets, maxPerRoom, maxFrame, drainGraceMs, problems };
 }
 
 /**
@@ -90,6 +101,43 @@ function resolveLimit(raw: string | undefined, dflt: number, name: string, probl
         "zero or negative would disable admission control outright (fail-closed)",
     );
     return dflt;
+  }
+  return v;
+}
+
+/**
+ * P2-145: resolve the drain grace. Unlike the admission ceilings, zero is the
+ * valid default here (it disables the grace and keeps the pre-P2-145
+ * shutdown sequence); a negative value or anything above
+ * DRAIN_GRACE_MS_CEILING is a problem — grace + settle must stay inside the
+ * 3000ms DRAIN_MS hard window.
+ */
+function resolveDrainGrace(raw: string | undefined, problems: string[]): number {
+  if (raw === undefined || raw.trim() === "") return DEFAULTS.drainGraceMs;
+  const v = Number(raw);
+  if (!Number.isFinite(v)) {
+    problems.push(
+      "RELAY_DRAIN_GRACE_MS=" +
+        JSON.stringify(raw) +
+        " is not a numeric value: refusing to start with an unvalidated limit (fail-closed)",
+    );
+    return DEFAULTS.drainGraceMs;
+  }
+  if (v < 0) {
+    problems.push(
+      "RELAY_DRAIN_GRACE_MS=" +
+        JSON.stringify(raw) +
+        " must be a non-negative number: a negative grace would close sockets before the LB sees /healthz 503 (fail-closed)",
+    );
+    return DEFAULTS.drainGraceMs;
+  }
+  if (v > DRAIN_GRACE_MS_CEILING) {
+    problems.push(
+      "RELAY_DRAIN_GRACE_MS=" +
+        JSON.stringify(raw) +
+        ` is above the ${DRAIN_GRACE_MS_CEILING} ceiling: grace + settle must stay inside the 3000ms hard drain window (fail-closed)`,
+    );
+    return DEFAULTS.drainGraceMs;
   }
   return v;
 }

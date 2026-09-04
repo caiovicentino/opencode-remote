@@ -1125,20 +1125,143 @@ select {
   from { transform: translateX(-100%); }
   to { transform: translateX(100%); }
 }
-.desk-empty {
+/* P2-123: the living home — serif greeting + central composer + ideas.
+   Desktop-only (isDesktop gate in App.tsx); the mobile board never unmounts
+   this because the home only mounts ≥1024px. */
+.home {
   height: 100%;
+  overflow-y: auto;
+  display: flex;
+  justify-content: center;
+}
+.home-col {
+  width: 100%;
+  max-width: 640px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--space-5);
+  padding: var(--space-6) var(--space-5);
+  animation: home-in var(--motion-slow) var(--ease-out);
+}
+@keyframes home-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.home-head {
+  text-align: center;
+}
+.home-greeting {
+  font-family: ui-serif, Georgia, "Times New Roman", serif;
+  font-size: 2.4rem;
+  font-weight: var(--font-weight-medium);
+  letter-spacing: -0.01em;
+  color: var(--fg);
+  margin: 0;
+}
+.home-composer .composer {
+  box-shadow: var(--shadow-overlay);
+}
+.home-mode {
   display: flex;
   align-items: center;
-  justify-content: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+}
+.home-mode [role="radio"] {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--font-size-sm);
+  padding: 3px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition:
+    color var(--motion-fast) var(--ease-out),
+    background var(--motion-fast) var(--ease-out);
+}
+.home-mode [role="radio"]:hover {
+  color: var(--fg);
+}
+.home-mode [role="radio"][aria-checked="true"] {
+  color: var(--fg);
+  background: var(--bg2);
+}
+.home-mode [role="radio"]:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.home-error {
+  margin-top: var(--space-2);
   text-align: center;
+  font-size: var(--font-size-sm);
+  color: var(--danger);
+}
+.home-ideas {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.home-ideas-title {
+  margin: 0 0 var(--space-1);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   color: var(--muted);
 }
-.desk-empty h2 {
-  color: var(--fg);
-  margin: 0 0 6px;
+.home-idea {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  text-align: left;
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  color: var(--text);
+  font-size: var(--font-size-md);
+  cursor: pointer;
+  transition:
+    border-color var(--motion-fast) var(--ease-out),
+    background var(--motion-fast) var(--ease-out);
 }
-.desk-empty p {
-  margin: 0;
+.home-idea:hover {
+  background: var(--bg2);
+  border-color: var(--border-strong);
+}
+.home-idea:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.home-idea-icon {
+  display: inline-flex;
+  color: var(--muted);
+  transition: color var(--motion-fast) var(--ease-out);
+}
+.home-idea:hover .home-idea-icon {
+  color: var(--fg);
+}
+/* P2-123: home motion is decorative only — zero it out under reduced motion
+   (the global block already covers it; this keeps the guarantee explicit for
+   the .home-* classes and survives future global-block edits). */
+@media (prefers-reduced-motion: reduce) {
+  .home-col,
+  .home-idea,
+  .home-idea-icon,
+  .home-mode [role="radio"] {
+    animation: none;
+    transition: none;
+  }
 }
 /* mobile chrome never shows inside the desktop shell */
 .desk .tabbar,
@@ -1296,44 +1419,12 @@ select {
 .desk-account-btn .status-dot {
   margin-left: auto;
 }
-/* greeting like the reference: serif, centered, warm mark */
-.desk-empty h2 {
-  font-family: ui-serif, Georgia, "Times New Roman", serif;
-  font-size: 2.4rem;
-  font-weight: var(--font-weight-medium);
-  letter-spacing: -0.01em;
-}
+/* greeting mark shared by the home screen: serif, centered, warm mark */
 .desk-greet-mark {
   display: inline-flex;
   color: var(--accent);
   margin-bottom: 10px;
 }
-.desk-empty p {
-  margin-top: 8px;
-  font-size: 0.95rem;
-}
-/* P2-108: the empty state ends in an action — a composer-styled CTA that
-   starts a conversation, same surface language as the search input. */
-.desk-empty-compose {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 20px;
-  padding: 9px 18px;
-  font-size: 0.9rem;
-  color: var(--muted);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-pill);
-}
-.desk-empty-compose:hover:not(:disabled) {
-  color: var(--fg);
-  border-color: var(--accent);
-}
-.desk-empty-compose:disabled {
-  opacity: 0.6;
-}
-
 /* desktop flat session rows (variant="rows") */
 .sess-rows {
   display: flex;
@@ -1552,6 +1643,26 @@ select {
   }
 }
 
+/* P2-117: the desktop's secondary path into the scanner — a quiet bordered
+   button in the same language as .pair-remote-entry, so the paste form reads
+   as primary and the camera as the option. */
+.pair-scan-entry {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+.pair-scan-entry:hover {
+  background: var(--surface);
+}
+.pair-scan-entry:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 /* explicit remote-pairing entry (desktop shell, P1-070): a quiet bordered row
    that turns the QR ceremony back on — from the unpaired screen or Settings.
    Same visual language as .card, no decoration. */
@@ -1633,6 +1744,79 @@ select {
 }
 .pair-overlay-later:hover {
   color: var(--text);
+}
+
+/* QR scanner state machine (P2-117): looking → preview → unavailable.
+   The stage keeps a 4:3 box at every width so a 390px phone never collapses
+   to just the caption, and the unavailable state replaces the black void
+   with a bordered panel + paste-code CTA. */
+.qr-stage {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  max-width: 100%;
+  aspect-ratio: 4 / 3;
+  max-height: 60vh;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: #000;
+}
+.qr-video {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  max-width: 100%;
+  max-height: 60vh;
+  object-fit: cover;
+  display: block;
+}
+.qr-looking {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.qr-spinner {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  border-top-color: var(--text);
+  animation: qr-spin 0.9s linear infinite;
+}
+@keyframes qr-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.qr-unavailable {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  align-items: flex-start;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+.qr-unavailable-title {
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+.qr-unavailable .qr-paste-cta {
+  align-self: stretch;
+}
+.qr-hint {
+  margin: 0;
+  font-size: 0.8rem;
 }
 
 /* first-run splash (P1-050): wordmark, value line, 3-step onboarding */

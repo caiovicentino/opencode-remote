@@ -1,46 +1,80 @@
 import { useEffect, useRef, useState } from "react";
 import jsQR from "jsqr";
+import { feedVerdict } from "../lib/qrFeed";
 import { useT } from "../lib/i18n";
 
 interface Props {
   onScan: (text: string) => void;
   onCancel: () => void;
+  /** P2-117: paste-the-code CTA for the unavailable state — on desktop, pasting
+   * the pairing URI is the primary path (a camera pointed at another screen is
+   * a circular flow); the scanner must always offer the way back. */
+  onPaste: () => void;
 }
 
-/** iOS getUserMedia wraps permission dismissal and camera races in
- * AbortError — map to the dict key the user should actually read.
- * P2-118: copy lives in the i18n dictionary so the scanner screen follows
- * the app locale like the rest of the connection flow. Returns null for
- * unknown errors (the raw browser message is shown instead). */
-function cameraErrorKey(err: unknown): string | null {
+export type ScanPhase = "looking" | "preview" | "unavailable";
+export type ScanReason = "permission" | "no-device" | "busy" | "interrupted" | "no-signal" | "generic";
+
+/** getUserMedia failure names → the reason the state machine reports.
+ * P2-118: every reason renders dictionary copy at render time (scanErr_*),
+ * so a language switch mid-error still re-renders in the new locale. */
+function errorReason(err: unknown): ScanReason {
   const name = (err as { name?: string })?.name ?? "";
-  if (name === "NotAllowedError") return "camDenied";
-  if (name === "NotFoundError") return "camNotFound";
-  if (name === "NotReadableError") return "camBusy";
-  if (name === "AbortError") return "camInterrupted";
-  return null;
+  if (name === "NotAllowedError") return "permission";
+  if (name === "NotFoundError" || name === "OverconstrainedError") return "no-device";
+  if (name === "NotReadableError") return "busy";
+  if (name === "AbortError") return "interrupted";
+  return "generic";
 }
 
-/** Resolve at render time (not catch time) so a language switch mid-error
- * still re-renders in the new locale. Unknown errors keep the raw browser
- * message; the fallback line is localized. */
-function cameraError(err: unknown, t: (key: string) => string): string {
-  const key = cameraErrorKey(err);
-  if (key) return t(key);
-  return err instanceof Error ? err.message : t("camUnavailable");
-}
-
-/** In-app QR scanner built on getUserMedia + jsQR. Works on iOS Safari. */
-export default function QrScanner({ onScan, onCancel }: Props) {
+/** In-app QR scanner built on getUserMedia + jsQR. Works on iOS Safari.
+ * Renders a visible state machine — looking → preview → unavailable — so the
+ * screen never degrades to an empty black box with a single gray caption. */
+export default function QrScanner({ onScan, onCancel, onPaste }: Props) {
   const t = useT();
   const videoRef = useRef<HTMLVideoElement>(null);
-  const [error, setError] = useState<unknown>(null);
+  const [phase, setPhase] = useState<ScanPhase>("looking");
+  const [reason, setReason] = useState<ScanReason>("generic");
   const doneRef = useRef(false);
 
   useEffect(() => {
     let stream: MediaStream | null = null;
     let raf = 0;
+    let watchdog: ReturnType<typeof setInterval> | null = null;
     let cancelled = false;
+    let frames = 0;
+    let startedAt = performance.now();
+
+    function fail(r: ScanReason) {
+      if (cancelled || doneRef.current) return;
+      setReason(r);
+      setPhase("unavailable");
+      cancelAnimationFrame(raf);
+      stream?.getTracks().forEach((tr) => tr.stop());
+      stream = null;
+      if (watchdog) clearInterval(watchdog);
+    }
+
+    /** Empty-feed detector (P2-117): a capture device with no input shows its
+     * own "NO SIGNAL" OSD in the video element — never render that. A feed
+     * with no decodable frames past the grace period is unavailable. The
+     * grace clock starts here, when the stream actually plays — a slow
+     * permission prompt must not eat the window (round-3 review). */
+    function startWatchdog() {
+      startedAt = performance.now();
+      watchdog = setInterval(() => {
+        const video = videoRef.current;
+        if (!video) return;
+        const ended = stream?.getVideoTracks()[0]?.readyState === "ended";
+        const verdict = feedVerdict({
+          frames,
+          videoWidth: video.videoWidth,
+          trackEnded: ended,
+          elapsedMs: performance.now() - startedAt,
+        });
+        if (verdict === "empty") fail("no-signal");
+      }, 500);
+    }
 
     async function start(retry: boolean) {
       try {
@@ -49,9 +83,10 @@ export default function QrScanner({ onScan, onCancel }: Props) {
           audio: false,
         });
         if (cancelled) {
-          stream.getTracks().forEach((t) => t.stop());
+          stream.getTracks().forEach((tr) => tr.stop());
           return;
         }
+        stream.getVideoTracks()[0]?.addEventListener("ended", () => fail("no-signal"));
         const video = videoRef.current;
         if (!video) return;
         // iOS: attributes must be set before srcObject
@@ -59,6 +94,7 @@ export default function QrScanner({ onScan, onCancel }: Props) {
         video.muted = true;
         video.srcObject = stream;
         await video.play();
+        startWatchdog();
 
         const tick = () => {
           if (doneRef.current) return;
@@ -76,6 +112,10 @@ export default function QrScanner({ onScan, onCancel }: Props) {
                 onScan(code.data);
                 return;
               }
+              frames++;
+              if (frames === 1) {
+                if (!cancelled) setPhase("preview");
+              }
             }
           }
           raf = requestAnimationFrame(tick);
@@ -89,7 +129,7 @@ export default function QrScanner({ onScan, onCancel }: Props) {
           if (!cancelled) return start(false);
           return;
         }
-        setError(err);
+        fail(errorReason(err));
       }
     }
 
@@ -98,28 +138,40 @@ export default function QrScanner({ onScan, onCancel }: Props) {
       cancelled = true;
       doneRef.current = false;
       cancelAnimationFrame(raf);
-      stream?.getTracks().forEach((t) => t.stop());
+      if (watchdog) clearInterval(watchdog);
+      stream?.getTracks().forEach((tr) => tr.stop());
     };
   }, [onScan]);
 
   return (
-    <div className="screen">
+    <div
+      className="screen qr-scanner"
+      data-state={phase}
+      data-reason={phase === "unavailable" ? reason : undefined}
+    >
       <header>
         <button onClick={onCancel} aria-label={t("scanBackManual")}>←</button>
         <h1 style={{ fontSize: "0.9rem", margin: 0, flex: 1 }}>{t("scanPairingTitle")}</h1>
       </header>
-      {error ? (
-        <>
-          <p style={{ color: "var(--danger)" }}>{cameraError(error, t)}</p>
-          <button onClick={onCancel}>{t("scanBackManual")}</button>
-        </>
+      {phase === "unavailable" ? (
+        <div className="qr-unavailable" role="alert">
+          <p className="qr-unavailable-title">{t(`scanErr_${reason}`)}</p>
+          <button className="primary qr-paste-cta" onClick={onPaste}>
+            {t("scanPasteCta")}
+          </button>
+        </div>
       ) : (
-        <video
-          ref={videoRef}
-          style={{ width: "100%", maxHeight: "60vh", objectFit: "cover", borderRadius: 12 }}
-        />
+        <div className="qr-stage">
+          <video ref={videoRef} className="qr-video" />
+          {phase === "looking" && (
+            <div className="qr-looking" role="status">
+              <span className="qr-spinner" aria-hidden="true" />
+              <span>{t("scanLooking")}</span>
+            </div>
+          )}
+        </div>
       )}
-      <p className="muted">{t("scanPointCamera")}</p>
+      <p className="muted qr-hint">{t("scanPointCamera")}</p>
     </div>
   );
 }

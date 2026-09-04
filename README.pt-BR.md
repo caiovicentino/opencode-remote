@@ -154,7 +154,7 @@ remoto, zero confiança**.
   atividade e diff) saem de um dicionário único EN/pt-BR; diálogos fecham com Esc e prendem
   o focus, e o painel de sessões é totalmente navegável por teclado. As telas de conexão
   seguem um único idioma de ponta a ponta: banners de daemon caído/reconectando, o scanner
-  de QR e o estado vazio do desktop resolvem o copy do mesmo dicionário das ações vizinhas —
+  de QR e a home do desktop resolvem o copy do mesmo dicionário das ações vizinhas —
   sem mistura pt-BR/inglês numa mesma tela
 
 ## Quick Start (Mac → iPhone, ~5 min)
@@ -305,6 +305,15 @@ destrói o chat), e toda a navegação vive numa única view stack. Atalhos de
 teclado (também no menu **Go**): `Cmd+T` nova conversa, `Cmd+K` command
 palette (busca conversas e ações), `Cmd+1..6` troca para chat / Artifacts /
 Browser / Arquivos / Configurações / Mission Control.
+
+**Home viva (P2-123)**: sem conversa selecionada, o cockpit mostra uma home de
+verdade no lugar do beco antigo — greeting serifado ("De volta à ação, &lt;máquina&gt;",
+do mesmo dicionário EN/pt-BR), composer central com placeholder, toggle de modo
+Chat/Cowork (Cowork pré-seleciona o agent `build` para a próxima sessão), seletor
+de modelo e mic funcional (segurar pra gravar — dita no composer pelo mesmo
+fluxo de transcrição do mic do chat) na linha de baixo, e três "Ideias para você"
+clicáveis que abrem uma sessão nova com o prompt pré-preenchido (falha vira erro
+inline, nunca tela congelada).
 
 **Sidebar nível Claude (P2-124)**: a sidebar desktop é um shell de navegação
 de 280px — botão primário **"+ Novo"** e a nav de seções (Conversas,

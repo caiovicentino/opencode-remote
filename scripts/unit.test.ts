@@ -6,6 +6,7 @@
 // sha-guard/deploy events from tests must never land in the production feed.
 process.env.PILOT_EVENTS_FILE = "/tmp/pilot-unit-events.jsonl";
 import { b64, fromB64, seal, openSealed, seqAad } from "@ocr/protocol";
+import { mergeConflictBlock } from "../apps/pilot/src/pipeline";
 import { parsePairingUri, localWsUrl, shouldFailoverToRelay } from "../apps/web/src/lib/client";
 import { isLoopbackAddr, localOriginAllowed, localUpgradeAllowed } from "../apps/daemon/src/localws";
 import { parseRelayUrl, redactRelayUrl } from "../apps/daemon/src/relayurl";
@@ -276,6 +277,7 @@ import {
   type ViewState,
 } from "../apps/web/src/lib/viewState";
 import { ALLOWED_EXTS, extOf, pickConverter, validateExt } from "../tools/doc2pdf.mjs";
+import { checkPng } from "../tools/pngcheck.mjs";
 import { signingProfile } from "../apps/desktop/scripts/signing-profile.mjs";
 import {
   avgDoneDuration,
@@ -288,6 +290,7 @@ import {
   validateTakeoverDirectory,
   validateTakeoverSessionId,
 } from "../apps/daemon/src/pilotforensic";
+import { findWindowsInstaller, listProblems, windowsInstallerProblems } from "../apps/desktop/scripts/dist-smoke.mjs";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -6565,7 +6568,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "pairRemoteTitle", "pairRemoteHint", "pairRemoteAction",
     "scanPairingTitle", "scanPointCamera", "scanBackManual",
     "camDenied", "camNotFound", "camBusy", "camInterrupted", "camUnavailable",
-    "deskGreeting", "deskEmptyHint",
+    "homeGreeting", "homeGreetingAnon", "homePlaceholder", "homeIdeasTitle", "homeStartError",
   ];
   const resolved = (lang: "en" | "pt") => connKeys.map((k) => translate(lang, k));
   check(
@@ -6579,7 +6582,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       translate("pt", "reconnectNow") === "Reconectar agora" &&
       translate("pt", "scanPairingTitle").includes("Escanear") &&
       translate("pt", "scanPointCamera").includes("câmera") &&
-      translate("pt", "deskEmptyHint").includes("barra lateral"),
+      translate("pt", "homePlaceholder").includes("Como posso ajudar"),
   );
   // en: same screen, English copy — no pt leakage.
   check(
@@ -6587,13 +6590,13 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     translate("en", "daemonDown").includes("Local daemon is down") &&
       translate("en", "reconnectNow") === "Reconnect now" &&
       translate("en", "scanPairingTitle") === "Scan pairing code" &&
-      translate("en", "deskGreeting").startsWith("hello"),
+      translate("en", "homePlaceholder") === "How can I help you today?",
   );
-  // deskGreeting interpolates the machine name the same way in both locales.
+  // homeGreeting interpolates the machine name the same way in both locales.
   check(
-    "i18n conn: deskGreeting interpolates {machine} in both locales",
-    translate("en", "deskGreeting", { machine: ", foo" }) === "hello, foo!" &&
-      translate("pt", "deskGreeting", { machine: ", foo" }) === "olá, foo!",
+    "i18n conn: homeGreeting interpolates {name} in both locales",
+    translate("en", "homeGreeting", { name: "foo" }) === "Back in action, foo" &&
+      translate("pt", "homeGreeting", { name: "foo" }) === "De volta à ação, foo",
   );
   // The old hardcoded strings must be gone from the sources that render the
   // banner-adjacent screens (regression guard against reintroducing the mix).
@@ -7168,6 +7171,63 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   }
 }
 
+// --- P2-126: dist-smoke Windows installer checks (pure fs, no Windows) ------
+{
+  const winRoot = mkdtempSync(join(tmpdir(), "ocr-win-installer-"));
+  try {
+    // win-unpacked fixture: same layout electron-builder emits on Windows.
+    const unpacked = join(winRoot, "win-unpacked");
+    mkdirSync(join(unpacked, "resources", "web-dist"), { recursive: true });
+    mkdirSync(join(unpacked, "resources", "daemon"), { recursive: true });
+    writeFileSync(join(unpacked, "OpenCode Remote.exe"), "exe");
+    writeFileSync(join(unpacked, "resources", "web-dist", "index.html"), "<html>");
+    writeFileSync(join(unpacked, "resources", "daemon", "index.js"), "// daemon");
+    check("p2-126 win-unpacked: complete bundle passes listProblems", listProblems(unpacked).length === 0);
+    rmSync(join(unpacked, "OpenCode Remote.exe"));
+    check(
+      "p2-126 win-unpacked: missing .exe is reported",
+      listProblems(unpacked).some((p) => p.includes("no app binary")),
+    );
+
+    // dist root fixture: setup exe + latest.yml are the Windows release pair.
+    const distRoot = join(winRoot, "dist");
+    mkdirSync(distRoot, { recursive: true });
+    check("p2-126 setup: no installer in a fresh dist root", findWindowsInstaller(distRoot) === null);
+    const fresh = windowsInstallerProblems(distRoot);
+    check(
+      "p2-126 problems: fresh root reports setup exe and latest.yml",
+      fresh.length === 2 && fresh.some((p) => p.includes("*.exe")) && fresh.some((p) => p.includes("latest.yml")),
+    );
+    check(
+      "p2-126 problems: absent root reported clearly",
+      windowsInstallerProblems(join(winRoot, "ghost")).length === 1 &&
+        windowsInstallerProblems(join(winRoot, "ghost"))[0].includes("does not exist"),
+    );
+
+    writeFileSync(join(distRoot, "OpenCode Remote Setup 1.0.0.exe"), "exe");
+    check(
+      "p2-126 setup: finds the deterministic setup exe",
+      findWindowsInstaller(distRoot) === join(distRoot, "OpenCode Remote Setup 1.0.0.exe"),
+    );
+    check(
+      "p2-126 problems: only latest.yml missing after setup lands",
+      JSON.stringify(windowsInstallerProblems(distRoot)) === JSON.stringify(["missing file: latest.yml"]),
+    );
+    writeFileSync(join(distRoot, "latest.yml"), "version: 1.0.0\npath: OpenCode Remote Setup 1.0.0.exe\n");
+    check("p2-126 problems: empty when setup exe + latest.yml present", windowsInstallerProblems(distRoot).length === 0);
+
+    // Sorted determinism + isFile guard, mirroring findDmg's contract.
+    writeFileSync(join(distRoot, "AAA Setup 0.9.0.exe"), "exe");
+    check("p2-126 setup: lexicographically first exe wins", findWindowsInstaller(distRoot)!.endsWith("AAA Setup 0.9.0.exe"));
+    mkdirSync(join(distRoot, "ZZZ dir.exe"));
+    rmSync(join(distRoot, "AAA Setup 0.9.0.exe"));
+    rmSync(join(distRoot, "OpenCode Remote Setup 1.0.0.exe"));
+    check("p2-126 setup: directory named *.exe is not an artifact", findWindowsInstaller(distRoot) === null);
+    check("p2-126 absent dist root: findWindowsInstaller null", findWindowsInstaller(join(winRoot, "ghost")) === null);
+  } finally {
+    rmSync(winRoot, { recursive: true, force: true });
+  }
+}
 // --- P2-127: hosted-relay smoke — the tsc-compiled dist the image runs -------
 // No docker dependency: compile apps/relay to a tmp dist with the same
 // tsconfig.build.json the image uses, run it on a kernel-assigned port,
@@ -7848,6 +7908,85 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   // 9. Edge: empty candidate list → the module default with reason "none".
   const pick9 = await pickDaemonPort([], async () => true, async () => false);
   check("P2-143: empty candidate list → {none, DEFAULT_DAEMON_PORT}", pick9.reason === "none" && pick9.port === 8792);
+}
+
+// --- P2-144: tools/pngcheck.mjs — evidence PNG sanity at capture time --------
+{
+  const CRC_TABLE = Array.from({ length: 256 }, (_, n) => {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    return c;
+  });
+  const crc32 = (data: Buffer) => {
+    let c = 0xffffffff;
+    for (const b of data) c = CRC_TABLE[(c ^ b) & 0xff]! ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type: string, data: Buffer) => {
+    const head = Buffer.alloc(4);
+    head.writeUInt32BE(data.length);
+    const body = Buffer.concat([Buffer.from(type, "latin1"), data]);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(body));
+    return Buffer.concat([head, body, crc]);
+  };
+  const ihdr = (w: number, h: number) => {
+    const d = Buffer.alloc(13);
+    d.writeUInt32BE(w, 0);
+    d.writeUInt32BE(h, 4);
+    return chunk("IHDR", d);
+  };
+  const SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const iend = chunk("IEND", Buffer.alloc(0));
+  const valid = Buffer.concat([SIG, ihdr(1440, 900), iend]);
+
+  const ok = checkPng(valid);
+  check(
+    "P2-144: valid minimal PNG passes with real dimensions",
+    ok.ok === true && ok.width === 1440 && ok.height === 900 && ok.reason === null,
+  );
+  const badSig = Buffer.from([...valid]);
+  badSig[1] = 0x00;
+  const badSigCheck = checkPng(badSig);
+  check(
+    "P2-144: wrong signature rejected with reason",
+    badSigCheck.ok === false && /signature/.test(badSigCheck.reason),
+  );
+  const shortBuf = Buffer.concat([SIG, Buffer.alloc(8)]);
+  check(
+    "P2-144: buffer shorter than the header rejected",
+    checkPng(shortBuf).ok === false && checkPng(Buffer.alloc(0)).ok === false,
+  );
+  const zero = checkPng(Buffer.concat([SIG, ihdr(0, 900), iend]));
+  check("P2-144: IHDR zero dimension rejected with reason", zero.ok === false && /zero/.test(zero.reason));
+  const noIend = checkPng(Buffer.concat([SIG, ihdr(1440, 900)]));
+  check("P2-144: file without IEND rejected", noIend.ok === false && /IEND/.test(noIend.reason));
+  const noIhdr = checkPng(Buffer.concat([SIG, iend]));
+  check("P2-144: missing IHDR rejected", noIhdr.ok === false && /IHDR/.test(noIhdr.reason));
+  const truncated = checkPng(Buffer.concat([SIG, ihdr(1440, 900).subarray(0, 8)]));
+  check(
+    "P2-144: chunk running past end of file rejected",
+    truncated.ok === false && /truncated/.test(truncated.reason),
+  );
+
+  // cross-check: the gate's own PNG reader agrees on the validated dimensions
+  const dir = mkdtempSync(join(tmpdir(), "pilot-pngcheck-"));
+  try {
+    const p = join(dir, "shot.png");
+    writeFileSync(p, valid);
+    const gate = pngSize(p);
+    check("P2-144: pngcheck agrees with the gate's pngSize", gate?.w === ok.width && gate?.h === ok.height);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// P2-126-class: mergeConflictBlock only fires on CONFLICTING and carries the
+// task id + both-sides instruction.
+{
+  const block = mergeConflictBlock("CONFLICTING", "P2-123");
+  check("conflict block fires on CONFLICTING", block.includes("pilot/P2-123") && block.includes("git merge origin/main") && block.includes("BOTH sides"));
+  check("clean mergeable yields no block", mergeConflictBlock("MERGEABLE", "P2-123") === "" && mergeConflictBlock(null, "P2-123") === "" && mergeConflictBlock(undefined, "P2-123") === "");
 }
 
 if (failures > 0) {

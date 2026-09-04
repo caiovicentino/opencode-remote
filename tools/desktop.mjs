@@ -36,6 +36,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { checkPng } from "./pngcheck.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(HERE, "..");
@@ -111,6 +112,8 @@ async function clientMain() {
       }
     }
     if (shotOut) {
+      // P2-144: the keeper's shot() validates the freshly written PNG before
+      // answering, so this optional evidence shot uses the same checked path.
       const shot = await send({ cmd: "shot", out: shotOut, w, h });
       fail(shot);
       console.log(JSON.stringify({ ...shot, reused, session: SESSION }));
@@ -311,8 +314,16 @@ async function keeperMain() {
     env.OCR_DAEMON_FORCE_RECONNECTING = "1";
   }
   keeperLog("launching electron (session", SESSION + ")");
+  // P2-117: test-only hatch (scripts/desktop-flow.test.ts) — Chromium's fake
+  // camera gives the scanner a deterministic live feed so the preview state
+  // and the 390px layout are provable hermetically. Never set in production —
+  // same policy as OCR_DAEMON_FORCE_*.
+  const launchArgs = [join(repoRoot, "apps", "desktop")];
+  if (process.env.OCR_DESKTOP_MEDIA_FAKE === "1") {
+    launchArgs.unshift("--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream");
+  }
   const electronApp = await _electron.launch({
-    args: [join(repoRoot, "apps", "desktop")],
+    args: launchArgs,
     cwd: repoRoot,
     executablePath: req("electron"),
     env,
@@ -523,9 +534,22 @@ async function shot(page, electronApp, msg) {
     await page.waitForTimeout(300);
   }
   mkdirSync(dirname(out), { recursive: true });
-  await page.screenshot({ path: out, scale: "css", timeout: 10_000 });
-  const buf = readFileSync(out);
-  return { ok: true, path: out, width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+  // P2-144: validate the freshly written file instead of trusting unchecked
+  // readUInt32BE bytes — a truncated PNG must never pose as evidence with
+  // garbage dimensions (P2-117 burned four attempts that way). On an invalid
+  // file: delete the partial, retry the screenshot exactly once, then fail
+  // with the exact reason so no partial file is left on disk.
+  let reason = "unreachable";
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await page.screenshot({ path: out, scale: "css", timeout: 10_000 });
+    const check = checkPng(readFileSync(out));
+    if (check.ok) return { ok: true, path: out, width: check.width, height: check.height };
+    reason = check.reason;
+    try {
+      unlinkSync(out);
+    } catch {}
+  }
+  return { ok: false, error: `invalid screenshot PNG after 2 attempts: ${reason}` };
 }
 
 async function quit(electronApp) {

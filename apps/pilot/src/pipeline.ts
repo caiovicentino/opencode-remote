@@ -459,6 +459,18 @@ export function resumeBlock(resume: AgentIds | null | undefined, failedRound?: n
   return `\n${lines.join("\n")}\n`;
 }
 
+/**
+ * P2-126-class fix: a gate-green branch whose open PR is CONFLICTING with
+ * main can loop forever (gate re-certifies the branch, gh refuses the merge,
+ * next cycle repeats). When the probe reports CONFLICTING, the builder gets
+ * a mandatory reconciliation block — it owns both sides' semantics; the gate
+ * re-runs the whole battery after the merge commit.
+ */
+export function mergeConflictBlock(mergeable: string | null | undefined, taskId: string): string {
+  if (mergeable !== "CONFLICTING") return "";
+  return `\nMERGE CONFLICT — RESOLVE FIRST: the open PR for branch pilot/${taskId} is CONFLICTING with main (main moved — newer tasks merged while this branch was in review). Before any new work this round: run \`git fetch origin && git merge origin/main\` on this branch and resolve EVERY conflict keeping BOTH sides — your branch's feature AND main's newer changes (different features on the same files; never delete main's side to silence a conflict). After resolving, run the local battery (typecheck + build + unit) and commit the merge.\n`;
+}
+
 export function builderPrompt(
   t: Task,
   round: number,
@@ -468,8 +480,7 @@ export function builderPrompt(
   resume: AgentIds | null = null,
   attempt = 1,
   recap = "",
-): string {
-  const uiTask = needsUiEvidence(t.area, false);
+): string {  const uiTask = needsUiEvidence(t.area, false);
   // P2-008: when a planner spec exists on the branch, the builder must follow it
   const specBlock = specFile
     ? `\nPLANNER SPEC: ${specFile} exists on this branch — read it FIRST. It holds the agreed problem analysis, approach, touched files, edge cases, acceptance criteria and out-of-scope. Follow it; if you must deviate, justify the deviation in the commit message. Do not delete or rewrite the spec.\n`
@@ -1678,7 +1689,14 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
         }),
       );
     }
-    const build = await runAgent(builderPrompt(t, round, findings, lessons, specFile, resume, attemptNo + 1, recap), {
+    // P2-126-class: a conflicted PR must be reconciled by the builder — probe
+    // the open PR once per round and inject the mandatory block when needed.
+    const prMergeable = exec(
+      `gh pr list --head pilot/${t.id} --state open --json mergeable --jq '.[0].mergeable'`,
+      { cwd: ws, allowFail: true },
+    );
+    const conflictBlock = mergeConflictBlock(prMergeable.output?.trim(), t.id);
+    const build = await runAgent(builderPrompt(t, round, findings, lessons, specFile, resume, attemptNo + 1, recap) + conflictBlock, {
       cwd: ws,
       timeoutMin: cfg.taskTimeoutMin,
       label: `builder-${t.id}-r${round}`,

@@ -128,3 +128,44 @@ jobs:
           gh release upload "$GITHUB_REF_NAME" \
             apps/desktop/dist/*.dmg apps/desktop/dist/latest-mac.yml \
             --clobber
+
+  # P2-126: stage 5 is half Windows — the release also ships the NSIS setup
+  # exe plus the latest.yml metadata the in-app update check falls back to.
+  # Signing is optional: without the CSC_LINK / CSC_KEY_PASSWORD secrets the
+  # build ships unsigned (one-time SmartScreen warning, README) instead of
+  # failing the job. shell: bash so the dist/*.exe glob expands (pwsh won't).
+  desktop-win:
+    runs-on: windows-latest
+    needs: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build + package NSIS installer (signed when CSC secrets exist)
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          if [ -z "$CSC_LINK" ]; then
+            echo "CSC_LINK not configured — shipping unsigned installer (SmartScreen warning, README)"
+          fi
+          npm run dist --workspace @ocr/desktop
+
+      - name: Attach setup exe + update metadata to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release upload "$GITHUB_REF_NAME" \
+            apps/desktop/dist/*.exe apps/desktop/dist/latest.yml \
+            --clobber

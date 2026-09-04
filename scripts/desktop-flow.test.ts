@@ -138,7 +138,9 @@ const cliEnv = { ...process.env, OCR_DESKTOP_SESSION: session };
 // (fake opencode answering 401 + a third hermetic daemon + Settings help
 // card), growing it to 225s; P2-140 added the sidecar-exit beat (a real
 // OCR_DAEMON_ENTRY fake dying with EADDRINUSE + the calm-card verdict),
-// growing it to 240s.
+// growing it to 240s; P2-117 added the Scan-QR state-machine beats
+// (camera-blocked boot + fake-camera boot: unavailable/preview states,
+// 390px preview, NO SIGNAL fallback, paste CTA) inside the same budget.
 const startedAt = Date.now();
 const DEADLINE_MS = 240_000;
 const shotPath = join(tmpdir(), "ocr-desktop-flow", `flow-${process.pid}.png`);
@@ -496,8 +498,10 @@ try {
 
   // (2) scanner route: open it, prove the screen swapped, come back. The
   // hermetic shell has no camera — the scanner's own error fallback is a
-  // valid render of this state.
-  run("P2-106: open the QR scanner", ["click", ".pair-section button.primary"], 15_000);
+  // valid render of this state. P2-117: paste-first on the desktop made the
+  // section's primary button the paste form, so target the scan entry
+  // explicitly (same class on both orderings).
+  run("P2-106: open the QR scanner", ["click", ".pair-scan-entry"], 15_000);
   await waitProbe(
     "P2-106: scanner screen rendered",
     "document.querySelector('.screen header h1')?.textContent ?? ''",
@@ -762,6 +766,114 @@ try {
     if (mismatchBooted) spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: mismatchEnv });
   }
 
+  // --- P2-117: Scan-QR screen — the four camera states -------------------------
+  // The scanner used to open a dead black box (no preview, no spinner, no
+  // unavailable state) and could leak a capture device's own "NO SIGNAL" OSD.
+  // Two hermetic boots cover the four spec states:
+  //   boot 1 (OCR_DESKTOP_CAMERA_BLOCK=1): "sem camera" → unavailable panel
+  //     with the paste CTA → "colar codigo" (back on the primary form);
+  //   boot 2 (OCR_DESKTOP_MEDIA_FAKE=1): live "preview" (incl. the 390px
+  //     layout beat) → feed killed → "NO SIGNAL" unavailable state.
+  const scanShot1440 = join(shotsDir, "P2-117-scan-1440.png");
+  const scanShot390 = join(shotsDir, "P2-117-scan-390.png");
+  const scannerState = "document.querySelector('.qr-scanner')?.dataset.state ?? ''";
+  {
+    const scanBlockEnv = {
+      ...process.env,
+      OCR_DESKTOP_SESSION: `${session}-scan`,
+      OCR_DESKTOP_CAMERA_BLOCK: "1",
+    };
+    let scanBooted = false;
+    try {
+      const open = run("scan: open (camera-blocked launch)", ["open"], 45_000, scanBlockEnv);
+      scanBooted = open.ok;
+      if (open.ok) {
+        // P2-112 integration: a hermetic fresh boot lands on the DegradedView
+        // first-contact card — the pairing form (and with it the scanner
+        // option) lives one deliberate click away.
+        run("scan: manual pairing escape hatch", ["click", ".degraded-manual"], 15_000, scanBlockEnv);
+        // Desktop-first ordering: the paste form leads (P2-117 item 4), the
+        // scanner is the option — a locale-independent class hooks the gate.
+        run("scan: open the scanner (desktop option)", ["click", ".pair-scan-entry"], 15_000, scanBlockEnv);
+        await waitProbe("scan: unavailable state rendered", scannerState, (v) => v.includes("unavailable"), scanBlockEnv);
+        const cta = run("scan: paste CTA present", ["ipc", "!!document.querySelector('.qr-paste-cta')"], 15_000, scanBlockEnv);
+        if (cta.ok) check("scan: paste CTA visible in the unavailable state", /true/.test(cta.stdout));
+        // "colar codigo": the CTA returns to the primary paste form.
+        run("scan: click paste CTA", ["click", ".qr-paste-cta"], 15_000, scanBlockEnv);
+        const back = run("scan: primary paste form restored", ["ipc", "!!document.querySelector('.pair-submit')"], 15_000, scanBlockEnv);
+        if (back.ok) check("scan: CTA returns to the paste form (colar codigo)", /true/.test(back.stdout));
+      }
+    } finally {
+      if (scanBooted) spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: scanBlockEnv });
+    }
+
+    const scanFakeEnv = {
+      ...process.env,
+      // P1-089 lesson: the keeper's unix socket lives at
+      // $TMPDIR/ocr-desktop-<session>/keeper.sock and macOS truncates AF_UNIX
+      // bind() paths at 104 chars — keep the session suffix SHORT.
+      OCR_DESKTOP_SESSION: `${session}-scan2`,
+      OCR_DESKTOP_MEDIA_FAKE: "1",
+    };
+    let scanFakeBooted = false;
+    try {
+      const open = run("scan-live: open (fake-camera launch)", ["open"], 45_000, scanFakeEnv);
+      scanFakeBooted = open.ok;
+      if (open.ok) {
+        // P2-112 integration (same as the camera-blocked boot): the fresh
+        // hermetic instance shows the first-contact card first.
+        run("scan-live: manual pairing escape hatch", ["click", ".degraded-manual"], 15_000, scanFakeEnv);
+        run("scan-live: open the scanner", ["click", ".pair-scan-entry"], 15_000, scanFakeEnv);
+        await waitProbe("scan-live: preview state reached", scannerState, (v) => v.includes("preview"), scanFakeEnv);
+        const s1 = run("scan-live: 1440x900 evidence shot", ["shot", scanShot1440, "1440", "900"], 15_000, scanFakeEnv);
+        if (s1.ok) check("scan-live: 1440x900 shot is a real PNG", pngSize(scanShot1440).join("x") === "1440x900");
+        // 390px beat: the preview must keep breathing at phone width — the
+        // video element keeps a real box instead of vanishing under the
+        // caption. `shot` resizes first, so the probe reads the 390px layout.
+        const s2 = run("scan-live: 390 evidence shot", ["shot", scanShot390, "390", "844"], 15_000, scanFakeEnv);
+        if (s2.ok) check("scan-live: 390 shot is a real PNG", pngSize(scanShot390)[0] === 390);
+        const rect = run(
+          "scan-live: video box at 390px",
+          ["ipc", "(() => { const r = document.querySelector('.qr-video')?.getBoundingClientRect(); return r ? { w: Math.round(r.width), h: Math.round(r.height) } : null; })()"],
+          15_000,
+          scanFakeEnv,
+        );
+        if (rect.ok) {
+          let box: { w?: number; h?: number } | null = null;
+          try {
+            box = JSON.parse(rect.stdout) as typeof box;
+          } catch {}
+          check(
+            "scan-live: preview survives 390px (video keeps a visible box)",
+            !!box && box.w >= 200 && box.h >= 100,
+            rect.stdout,
+          );
+        }
+        // NO SIGNAL beat: kill the feed the way an unplugged capture device
+        // would (track ended) — the scanner must fall back to the unavailable
+        // state with the paste CTA, never render a device OSD placeholder.
+        run(
+          "scan-live: kill the feed (NO SIGNAL repro)",
+          ["ipc", "(() => { const v = document.querySelector('.qr-video'); const tr = v?.srcObject?.getVideoTracks?.()[0]; if (!tr) return false; tr.stop(); return true; })()"],
+          15_000,
+          scanFakeEnv,
+        );
+        await waitProbe("scan-live: NO SIGNAL falls back to unavailable", scannerState, (v) => v.includes("unavailable"), scanFakeEnv);
+        const reason = run(
+          "scan-live: unavailable reason is the empty feed",
+          ["ipc", "document.querySelector('.qr-scanner')?.dataset.reason ?? ''"],
+          15_000,
+          scanFakeEnv,
+        );
+        if (reason.ok) check("scan-live: empty feed reports no-signal", reason.stdout.includes("no-signal"), reason.stdout);
+        const cta2 = run("scan-live: paste CTA present after NO SIGNAL", ["ipc", "!!document.querySelector('.qr-paste-cta')"], 15_000, scanFakeEnv);
+        if (cta2.ok) check("scan-live: paste CTA offered after the feed dies", /true/.test(cta2.stdout));
+      }
+    } finally {
+      if (scanFakeBooted) spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: scanFakeEnv });
+    }
+  }
+
   // --- P1-070: local boot — real hermetic daemon + fresh instance ⇒ chat ------
   // The exact repro this task fixes: empty pairing storage + a healthy daemon
   // on the same disk used to open the QR overlay. Now the shell proves the
@@ -919,18 +1031,10 @@ try {
           );
         }
 
-        // --- P2-108: the desktop empty state ends in an action ------------------
-        // Paired shell, no conversation open: the greeting carries a
-        // composer-styled "New conversation" CTA (dict copy, plus glyph from
-        // the shared icon set) so first boot never dead-ends in a greeting.
-        const composeProbe = run(
-          "P2-108: empty-state composer CTA probe",
-          ["ipc", "(() => { const b = document.querySelector('.desk-empty-compose'); return !!b && b.textContent.trim().length > 0 && !!b.querySelector('svg'); })()"],
-          15_000,
-          localEnv,
-        );
-        if (composeProbe.ok) check("P2-108: desk-empty gains a composer CTA", /true/.test(composeProbe.stdout), composeProbe.stdout);
-        run("P2-108: empty-state evidence shot", ["shot", join(shotsDir, "P2-108-empty-1440.png"), "1440", "900"], 15_000, localEnv);
+        // --- P2-108: empty state ends in an action -------------------------------
+        // Superseded by P2-123's living home: the desk-empty CTA grew into the
+        // full home screen (greeting + composer + ideas), enforced by the
+        // P2-123 beat below.
 
         const s2 = run("local: 390 evidence shot", ["shot", localShot390, "390", "844"], 15_000, localEnv);
         if (s2.ok) check("local: 390 shot is a real PNG", pngSize(localShot390)[0] === 390);
@@ -949,6 +1053,122 @@ try {
           );
           if (overlineProbe.ok) check("P2-108: mobile machine name renders as a 0.72rem overline", /true/.test(overlineProbe.stdout), overlineProbe.stdout);
           run("P2-108: mobile overline evidence shot", ["shot", join(shotsDir, "P2-108-overline-390.png"), "390", "844"], 15_000, localEnv);
+        }
+
+        // --- P2-123: the living home (greeting + composer + ideas) -----------
+        // The window is still 390px wide from the previous shot; the home only
+        // mounts ≥1024px, so the first wide shot doubles as the resize-back.
+        // The settings pane opened for the P2-112 beat is closed via the real
+        // Go-menu path first, so .desk-chat shows the home again. Whatever
+        // happens inside, the finally re-shrinks the window — P1-080's narrow
+        // repro below depends on that width.
+        const homeShot1440 = join(shotsDir, "P2-123-home-1440.png");
+        const homeShot390 = join(shotsDir, "P2-123-home-390.png");
+        run("P2-123: rail Conversas closes the settings pane", ["menu-click", "go-pane-chat"], 15_000, localEnv);
+        // resize vehicle only — the settled evidence shot is retaken below
+        const resizeShot = join(tmpdir(), `p2-123-resize-${process.pid}.png`);
+        run("P2-123: resize back to desktop width", ["shot", resizeShot, "1440", "900"], 15_000, localEnv);
+        const homeGreet = await waitProbe(
+          "P2-123: serif greeting rendered at desktop width",
+          "document.querySelector('.home-greeting')?.textContent ?? ''",
+          (v) => /De volta à ação|Back in action/.test(v),
+          localEnv,
+        );
+        try {
+          if (homeGreet) {
+            // one probe for the whole structure: toggle radios, model selector,
+            // mic, placeholder copy and the 3 ideas (the harness prints the
+            // evaluate result JSON-encoded — parse the object directly)
+            const structure = run(
+              "P2-123: composer, toggle, selector, mic and ideas mounted",
+              ["ipc", `(() => {
+                const q = (s) => !!document.querySelector(s);
+                const els = Array.from(document.querySelectorAll('.home-idea'));
+                return {
+                  chat: q('.home-mode [data-mode=chat]'),
+                  cowork: q('.home-mode [data-mode=cowork]'),
+                  model: q('.home-composer .composer-model-btn'),
+                  mic: q('.home-composer .composer-mic'),
+                  placeholder: document.querySelector('.home-composer .composer-text')?.placeholder ?? '',
+                  n: els.length,
+                  prompts: els.map((e) => e.getAttribute('data-prompt') ?? ''),
+                  disabled: els.map((e) => e.disabled),
+                };
+              })()`],
+              15_000,
+              localEnv,
+            );
+            let st: {
+              chat?: boolean;
+              cowork?: boolean;
+              model?: boolean;
+              mic?: boolean;
+              placeholder?: string;
+              n?: number;
+              prompts?: string[];
+              disabled?: boolean[];
+            } | null = null;
+            if (structure.ok) {
+              try {
+                st = JSON.parse(structure.stdout) as typeof st;
+              } catch {}
+            }
+            check(
+              "P2-123: Chat/Cowork toggle + model selector + mic present",
+              st?.chat === true && st?.cowork === true && st?.model === true && st?.mic === true,
+              structure.stdout,
+            );
+            check(
+              "P2-123: central composer placeholder copy (en|pt)",
+              /Como posso ajudar você hoje\?|How can I help you today\?/.test(st?.placeholder ?? ""),
+              structure.stdout,
+            );
+            check("P2-123: 3 ideas rendered", st?.n === 3, structure.stdout);
+            check(
+              "P2-123: every idea carries a non-empty prompt and is enabled",
+              (st?.prompts ?? []).every((p) => p.length > 0) && (st?.disabled ?? []).every((d) => d === false),
+              structure.stdout,
+            );
+            if (st?.chat && st?.cowork && st?.n === 3) {
+              // the toggle is the ChatView-composer bridge: cowork must land
+              // "build" in the same localStorage key the session composer reads
+              run("P2-123: pick the Cowork mode", ["click", ".home-mode [data-mode=cowork]"], 15_000, localEnv);
+              const cowork = run(
+                "P2-123: Cowork writes the build agent + checks its radio",
+                ["ipc", "(() => ({ agent: localStorage.getItem('ocr_agent') ?? '', checked: document.querySelector('.home-mode [data-mode=cowork]')?.getAttribute('aria-checked') ?? '' }))()"],
+                15_000,
+                localEnv,
+              );
+              check(
+                "P2-123: ocr_agent=build and cowork aria-checked",
+                /"agent":\s*"build"/.test(cowork.stdout) && /"checked":\s*"true"/.test(cowork.stdout),
+                cowork.stdout,
+              );
+              // evidence shot with the settled home (1440x900)
+              const hs1 = run("P2-123: 1440x900 home evidence shot", ["shot", homeShot1440, "1440", "900"], 15_000, localEnv);
+              if (hs1.ok) check("P2-123: 1440x900 home shot is a real PNG", pngSize(homeShot1440).join("x") === "1440x900");
+              // criterion: an idea click always gives feedback within 10s —
+              // the chat opens OR an inline error explains the failure (the
+              // hermetic daemon has no opencode backend, so error is the norm)
+              run("P2-123: click idea 1", ["click", '.home-idea[data-idea="1"]'], 15_000, localEnv);
+              await waitProbe(
+                "P2-123: idea click yields chat or inline error (never frozen)",
+                "document.querySelector('.messages') ? 'chat' : (document.querySelector('.home-error') ? 'error' : 'pending')",
+                (v) => {
+                  const s = v.replace(/"/g, "").trim();
+                  return s === "chat" || s === "error";
+                },
+                localEnv,
+                10,
+                1_000,
+              );
+            }
+          }
+        } finally {
+          // home never mounts < 1024px — the 390 evidence shows the mobile
+          // board unregressed; also restores the width P1-080 expects
+          const hs2 = run("P2-123: 390 evidence shot (mobile board)", ["shot", homeShot390, "390", "844"], 15_000, localEnv);
+          if (hs2.ok) check("P2-123: 390 home shot is a real PNG", pngSize(homeShot390)[0] === 390);
         }
 
         // --- P1-080: the operator's overflow repro (narrow window, long diff) ---

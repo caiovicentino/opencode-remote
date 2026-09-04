@@ -891,6 +891,13 @@ o que fez e o gate **re-executa** a prova:
   reprova). As linhas `shot-*:` aparecem no template de todo builder — para task
   sem tag de UI, como bloco condicional ("if this round's diff touches
   apps/web/ or apps/desktop/, also cite").
+  P2-144: a validação do PNG acontece na captura, não só no gate —
+  `tools/pngcheck.mjs` (`checkPng`) exige assinatura, IHDR com dimensões > 0 e
+  chunk final IEND; o `shot` do harness desktop (`tools/desktop.mjs`, incluindo
+  o shot opcional do `open`) apaga o arquivo parcial, repete o screenshot uma
+  única vez e então falha com o motivo exato, e o `tools/browse.mjs shot` recusa
+  bytes inválidos antes de gravar — nunca mais PNG truncado fingindo ser
+  evidência até queimar attempts no gate (caso P2-117).
   Um único predicado (`needsUiEvidence`) comanda **prompt e gate**: task taggada
   `ui`/`desktop` recebe o bloco de shots explicitamente, e todo builder é avisado
   de que diff que toque `apps/web/`/`apps/desktop/` exige os dois shots mesmo

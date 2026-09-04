@@ -9,6 +9,9 @@ import {
 } from "react";
 import type { EventEnvelope } from "@ocr/protocol";
 import { WavRecorder, encodeWav } from "../lib/recorder";
+import { transcribeBlob } from "../lib/transcribe";
+import { useModelSelector } from "../lib/models";
+import ModelMenuItems from "./ModelMenuItems";
 import { saveFile } from "../lib/files";
 import { useT } from "../lib/i18n";
 import { humanizeError } from "../lib/errors";
@@ -307,8 +310,7 @@ export default function ChatView({
   const spokenRef = useRef<string | null>(null);
   const [images, setImages] = useState<PendingImage[]>([]);
   const [uploading, setUploading] = useState(false);
-  const [models, setModels] = useState<{ providerID: string; modelID: string; name: string }[]>([]);
-  const [model, setModel] = useState(localStorage.getItem("ocr_model") ?? "");
+  const { models, model, pickModel } = useModelSelector(request);
   const [agent, setAgent] = useState(localStorage.getItem("ocr_agent") ?? "");
   // P3-086: inline agent/model dropdown in the composer (Claude Desktop parity)
   const [modelMenu, setModelMenu] = useState(false);
@@ -451,26 +453,6 @@ export default function ChatView({
   const fileRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const sessionIdRef = useRef(sessionId);
-
-  useEffect(() => {
-    void (async () => {
-      try {
-        const res = await request("GET", "/provider");
-        const all = (res.body as { all?: { id: string; models?: Record<string, { id: string; name?: string }> }[] })
-          .all ?? [];
-        const flat = all.flatMap((p) =>
-          Object.values(p.models ?? {}).map((m) => ({
-            providerID: p.id,
-            modelID: m.id,
-            name: `${p.id} · ${m.name ?? m.id}`,
-          })),
-        );
-        setModels(flat);
-      } catch {
-        // model list is optional
-      }
-    })();
-  }, []);
 
   useEffect(() => {
     void (async () => {
@@ -629,10 +611,6 @@ export default function ChatView({
   function pickAgent(value: string) {
     setAgent(value);
     localStorage.setItem("ocr_agent", value);
-  }
-  function pickModel(value: string) {
-    setModel(value);
-    localStorage.setItem("ocr_model", value);
   }
 
   // streaming tail state lives ABOVE the [sessionId] switch effect so that
@@ -1552,8 +1530,6 @@ export default function ChatView({
     }
   }
 
-  const CHUNK = 500_000;
-
   async function downscaleImage(file: File): Promise<{ bytes: Uint8Array; mime: string }> {
     const img = await createImageBitmap(file);
     const max = 1568;
@@ -1601,6 +1577,17 @@ export default function ChatView({
     const start = useTrim ? Math.max(0, Number(trimStart) || 0) : 0;
     const end = useTrim ? Math.min(dur, Number(trimEnd) || dur) : dur;
     void processVideo(file, start, end);
+  }
+
+  // chunked binary upload primitives — shared shape with lib/transcribe.ts
+  const CHUNK = 500_000;
+  function b64Of(bytes: Uint8Array): string {
+    let s = "";
+    const step = 0x8000;
+    for (let i = 0; i < bytes.length; i += step) {
+      s += String.fromCharCode(...bytes.subarray(i, i + step));
+    }
+    return btoa(s);
   }
 
   async function uploadBytes(
@@ -1695,7 +1682,7 @@ export default function ChatView({
     try {
       const audio = await extractAudio(file, start, end);
       if (audio) {
-        const text = await transcribe(audio);
+        const text = await transcribeBlob(request, audio);
         if (text) appendToInput(text, sid);
       }
       const frames = await extractFrames(file, start, end);
@@ -1739,40 +1726,6 @@ export default function ChatView({
     }
   }
 
-  function b64Of(bytes: Uint8Array): string {
-    let s = "";
-    const step = 0x8000;
-    for (let i = 0; i < bytes.length; i += step) {
-      s += String.fromCharCode(...bytes.subarray(i, i + step));
-    }
-    return btoa(s);
-  }
-
-  async function transcribe(blob: Blob): Promise<string> {
-    const bytes = new Uint8Array(await blob.arrayBuffer());
-    const id = crypto.randomUUID();
-    for (let i = 0; i * CHUNK < bytes.length || i === 0; i++) {
-      const slice = bytes.subarray(i * CHUNK, (i + 1) * CHUNK);
-      const res = await request("POST", "/__ocr/transcribe/chunk", {
-        id,
-        idx: i,
-        data: b64Of(slice),
-      });
-      if (res.status !== 200) throw new Error("audio upload failed");
-    }
-    const res = await request(
-      "POST",
-      "/__ocr/transcribe",
-      { id, lang: getVoiceSettings().lang },
-      undefined,
-      180_000,
-    );
-    if (res.status !== 200) {
-      throw new Error(String((res.body as { error?: string }).error ?? "transcription failed"));
-    }
-    return String((res.body as { text?: string }).text ?? "");
-  }
-
   async function micDown() {
     setError("");
     try {
@@ -1791,7 +1744,7 @@ export default function ChatView({
     try {
       setRecState("busy");
       const blob = await recorder.current!.stop();
-      const text = await transcribe(blob);
+      const text = await transcribeBlob(request, blob);
       if (getVoiceSettings().autoSend && text.trim()) {
         await send(text);
       } else if (text) {
@@ -2591,34 +2544,14 @@ export default function ChatView({
                       {a}
                     </button>
                   ))}
-                  <div className="composer-menu-head">{t("model")}</div>
-                  <button
-                    role="option"
-                    aria-selected={!model}
-                    data-model=""
-                    className={`composer-menu-item${!model ? " selected" : ""}`}
-                    onClick={() => {
-                      pickModel("");
+                  <ModelMenuItems
+                    models={models}
+                    model={model}
+                    onPick={(v) => {
+                      pickModel(v);
                       setModelMenu(false);
                     }}
-                  >
-                    {t("defaultModel")}
-                  </button>
-                  {models.map((m) => (
-                    <button
-                      key={`${m.providerID}/${m.modelID}`}
-                      role="option"
-                      aria-selected={model === `${m.providerID}/${m.modelID}`}
-                      data-model={`${m.providerID}/${m.modelID}`}
-                      className={`composer-menu-item${model === `${m.providerID}/${m.modelID}` ? " selected" : ""}`}
-                      onClick={() => {
-                        pickModel(`${m.providerID}/${m.modelID}`);
-                        setModelMenu(false);
-                      }}
-                    >
-                      {m.name}
-                    </button>
-                  ))}
+                  />
                 </div>
               )}
             </div>

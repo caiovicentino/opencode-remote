@@ -232,3 +232,8 @@ NÃO mostra janela (`showMainWindow` no-op + `paintWhenInitiallyHidden`, intera�
 órfãos electron/daemon/relay de runs anteriores — só processos com marker
 argv E env `ocr-*`/`OCR_*` de teste; argv sozinho nunca mata) e todos os
 servers e2e sobem em portas efêmeras com diagnóstico `lsof` no timeout.
+P2-117 adicionou os beats da tela Scan-QR: boot camera-blocked
+(`OCR_DESKTOP_CAMERA_BLOCK=1`) prova o estado indisponível com CTA de colar
+código e boot com câmera fake (`OCR_DESKTOP_MEDIA_FAKE=1`, switches
+`--use-fake-device-for-media-stream` no harness) prova preview ativo em 390px
+e feed morto → "NO SIGNAL" → indisponível.

@@ -23,6 +23,10 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   ação, estados ativos nítidos
 - Bloco "Pensou por Xs" colapsável (thinking) com transição suave
 - Composer: attach (+), mic, seletor de modelo/esforço inline, textarea auto-grow
+- Home viva no shell desktop (P2-123): greeting serifado com glifo, composer
+  central (~640px) com toggle Chat/Cowork + seletor de modelo + mic, e 3 ideias
+  clicáveis que pré-preenchem a primeira mensagem — o estado vazio deixa de ser
+  um beco (P1-071: todo fluxo alcançável no primeiro boot)
 - Painel de artifact com animação de entrada/saída e backdrop
 - Gauge de contexto e recap (P1-079) no rodapé do chat, discretos
 - Rotinas agendadas visíveis ("Programado"), histórico de execução por rotina

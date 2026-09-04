@@ -39,6 +39,7 @@ builds this same image (the `caddy` profile adds TLS termination on top).
 | `RELAY_METRICS_TOKEN` | unset (no auth) | Required whenever `RELAY_METRICS_BIND` leaves loopback. Scrapers must send `Authorization: Bearer <token>`; every other request gets an empty `401`. The endpoint exposes envelope counters only — no plaintext, no key material, no room ids. |
 | `RELAY_MAX_PER_IP` | `20` | Keep the default. Raise it only when many devices legitimately share one egress IP (office NAT, corporate VPN). `0` disables the cap. |
 | `RELAY_TRUST_PROXY_HOPS` | `0` | Leave `0` on direct exposure. Set it **only** to the exact number of trusted proxy layers in front of the relay (e.g. `1` for a single provider load balancer doing TLS termination) — see the section below. |
+| `RELAY_DRAIN_GRACE_MS` | `0` | Extra window between the moment a `SIGTERM` marks the instance as draining (`/healthz` flips to `503`) and the moment the live sockets are closed. Default `0` keeps the historical behavior; raise it (max `2000`) when your load balancer polls `/healthz` too rarely to notice the 503 before `docker stop` proceeds. See the sections below. |
 | `RELAY_TLS_CERT` | unset | Leave unset — TLS belongs to the provider's load balancer; the relay then serves plain `ws://` internally and the outside world dials `wss://`. |
 | `RELAY_TLS_KEY` | unset | Leave unset. Set `RELAY_TLS_CERT` + `RELAY_TLS_KEY` **together** only when the relay terminates TLS itself (no LB in front): both files must be readable by the `node` user, and the relay serves `wss://` directly. |
 
@@ -94,6 +95,28 @@ expose publicly (no room ids, no per-peer metadata):
 The image's `HEALTHCHECK` polls it locally every 30s; load balancers should
 use the same path as the HTTP health check.
 
+### During the drain: 503 on purpose (P2-145)
+
+When the relay receives `SIGTERM` it enters a drain window (≤3s) and
+`/healthz` deliberately answers **`503`** with `ok:false` and the additive
+`draining:true` field — every pre-existing field keeps its name and meaning:
+
+```json
+{"ok":false,"version":"0.2.0","uptimeS":42,"rooms":1,"roomsRejected":0,"draining":true}
+```
+
+The 503 tells the load balancer to stop routing NEW daemons and phones to
+this instance; WebSocket upgrades are refused the same way (plain-HTTP 503,
+socket destroyed) instead of admitting a room that would die milliseconds
+later with close `1001`. By design the container `HEALTHCHECK` therefore
+sees the instance as **unhealthy during the drain** — that is the signal
+that stops the balancer, not a defect. `RELAY_DRAIN_GRACE_MS` (default `0`,
+ceiling `2000`) widens this window: after the signal the relay marks itself
+draining, waits that many milliseconds *before* closing the live sockets, so
+a balancer with a coarse polling interval has time to notice the 503 and
+pull the instance out of rotation. An empty env reproduces the historical
+shutdown sequence exactly.
+
 ## Metrics endpoint
 
 `GET /metrics` (counters as JSON; add `?format=prom` for Prometheus text
@@ -141,7 +164,9 @@ any public URL — browsers refuse `ws://` from `https://` pages.
 
 ## Upgrades and shutdown
 
-`SIGTERM` triggers a graceful drain: the relay stops accepting, closes every
-websocket with code `1001` (clients reconnect with backoff), and exits `0`
-within ~3s — so `docker stop` / redeploy loops are safe. Deploy order does
-not matter: daemons and PWAs reconnect to the new relay automatically.
+`SIGTERM` triggers a graceful drain: the relay immediately marks itself as
+draining (`/healthz` → 503, upgrades refused — see above), optionally waits
+`RELAY_DRAIN_GRACE_MS`, closes every websocket with code `1001` (clients
+reconnect with backoff), and exits `0` within ~3s — so `docker stop` /
+redeploy loops are safe. Deploy order does not matter: daemons and PWAs
+reconnect to the new relay automatically.

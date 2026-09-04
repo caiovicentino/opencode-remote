@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, screen, Tray, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, screen, session, Tray, shell } from "electron";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -530,6 +530,17 @@ async function onReady(): Promise<void> {
     !isDaemonDown() &&
     !reconnectState().reconnecting;
   if (localMode) log("[desktop] local daemon proved healthy — pairing ceremony skipped (P1-070)");
+
+  // P2-117: test-only hatch (scripts/desktop-flow.test.ts) — deny camera access
+  // deterministically so the scanner's unavailable state is provable on hosts
+  // that do have a camera (no macOS TCC prompt in gate runs). Same test-only
+  // policy as OCR_DAEMON_FORCE_* — never set in production.
+  if (process.env.OCR_DESKTOP_CAMERA_BLOCK === "1") {
+    session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
+      callback(permission !== "media");
+    });
+    session.defaultSession.setPermissionCheckHandler((_wc, permission) => permission !== "media");
+  }
 
   createWindow();
   startPairingWatcher();
