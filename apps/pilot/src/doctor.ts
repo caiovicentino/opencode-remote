@@ -136,6 +136,8 @@ export function runAttemptsCommand(argv: string[], file: string, log: typeof doc
 export interface BacklogDiagnosis {
   ok: boolean;
   problems: string[];
+  /** P2-142: non-fatal findings that self-normalize on the next stop-loss write. */
+  warnings: string[];
   /** Tasks parseable in ## Ready (the scheduler's queue). */
   taskCount: number;
   /** Ids appearing on more than one task line (any checkbox state). */
@@ -163,7 +165,14 @@ export function validateBacklog(md: string): BacklogDiagnosis {
   }
   const duplicateIds = [...seen.entries()].filter(([, n]) => n > 1).map(([id]) => id);
   if (duplicateIds.length) problems.push(`duplicate task ids: ${duplicateIds.join(", ")}`);
-  return { ok: problems.length === 0, problems, taskCount: parseBacklog(md).length, duplicateIds };
+  // P2-142: legacy stop-loss writes could stack several ## Blocked sections;
+  // blockTaskEdit now reuses the first one and collapses the rest on its next
+  // real write, so this is a warning — never an invalid-backlog problem.
+  const blockedSections = (md.match(/^## Blocked$/gm) ?? []).length;
+  const warnings: string[] = [];
+  if (blockedSections > 1)
+    warnings.push(`${blockedSections} duplicate ## Blocked sections — the next stop-loss write collapses them into one`);
+  return { ok: problems.length === 0, problems, warnings, taskCount: parseBacklog(md).length, duplicateIds };
 }
 
 /**
@@ -175,7 +184,7 @@ export function doctorBacklog(repoDir: string): BacklogDiagnosis {
   try {
     taskCount = loadBacklog(repoDir).length;
   } catch (err) {
-    return { ok: false, problems: [`loadBacklog failed: ${String(err).slice(0, 120)}`], taskCount: 0, duplicateIds: [] };
+    return { ok: false, problems: [`loadBacklog failed: ${String(err).slice(0, 120)}`], warnings: [], taskCount: 0, duplicateIds: [] };
   }
   const diag = validateBacklog(readFileSync(join(repoDir, "BACKLOG.md"), "utf8"));
   return { ...diag, taskCount };
@@ -360,7 +369,7 @@ export function runDoctor(
   try {
     backlog = doctorBacklog(cfg.repo);
   } catch (err) {
-    backlog = { ok: false, problems: [String(err).slice(0, 120)], taskCount: 0, duplicateIds: [] };
+    backlog = { ok: false, problems: [String(err).slice(0, 120)], warnings: [], taskCount: 0, duplicateIds: [] };
   }
   log(backlog.ok ? "info" : "warn", "doctor: backlog", { repo: cfg.repo, ...backlog });
 

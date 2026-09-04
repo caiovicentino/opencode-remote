@@ -42,6 +42,37 @@ opencode-remote token
 Prompts are asynchronous: the endpoint returns `202 { accepted }` while the
 agent works. Poll `messages` for the reply, or use the SDK's `sendAndWait`.
 
+### `/api/health` — relay retry state (P2-129)
+
+`GET /api/health` keeps `relayConnected` and adds an additive `relayRetry`
+field: `null` while the relay is connected, otherwise
+`{ attempt, nextDelayMs }` — which retry is scheduled and the wait in ms until
+the daemon dials again. Reconnects use exponential backoff with full jitter
+(2s base, doubling per attempt, 30s cap) instead of a fixed 2s, so a fleet of
+daemons no longer hammers a downed relay twice per second nor reconnects all
+in lockstep; each reschedule also bumps the `ocr_relay_retries_total` counter
+on the metrics endpoint.
+
+### `/api/health` — upstream agent state (P2-135)
+
+`GET /api/health` keeps the legacy `opencodeHealthy` boolean untouched and
+adds an additive `opencode` object describing the last probe of the agent
+server (opencode) in detail:
+
+| Field | Shape | Meaning |
+|---|---|---|
+| `state` | `unknown` \| `ok` \| `unauthorized` \| `unreachable` \| `timeout` \| `unhealthy` | `unknown` until the first probe finishes, then the classified outcome |
+| `reason` | string | short pt-BR description of what was observed |
+| `hint` | string | actionable pt-BR next step ("" when nothing needs doing) — becomes the down-push body, prefixed with the machine name |
+| `checkedAt` | string \| null | ISO timestamp of that probe; `null` before the first one |
+
+The probes (boot healthcheck + 60s watchdog) classify HTTP status, parsed
+body and fetch errors: a 401/403 becomes `unauthorized`, connection-refused
+`unreachable`, an aborted 5s probe `timeout`, and a 2xx with
+`healthy: false` or a malformed body `unhealthy`. `reason`/`hint` are static
+strings — the 401 case says the token was refused without ever quoting it, so
+no secrets, tokens or passwords ever appear in the health payload.
+
 ### Pairing state (P2-007)
 
 Two read-only routes serve the desktop shell's first-run QR overlay; they are

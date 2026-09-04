@@ -1,0 +1,2100 @@
+OK   b64/fromB64 roundtrip
+OK   seal/openSealed roundtrip
+OK   wrong seq rejected
+OK   wrong sender rejected
+OK   parsePairingUri valid
+OK   parsePairingUri preserves base64 key
+OK   parsePairingUri wrong scheme
+OK   parsePairingUri missing fields
+OK   parsePairingUri rejects v1
+OK   parseDeepLink valid (echoes uri)
+OK   parseDeepLink trims whitespace
+OK   parseDeepLink rejects wrong scheme
+OK   parseDeepLink rejects unknown action
+OK   parseDeepLink rejects missing v
+OK   parseDeepLink rejects v1
+OK   parseDeepLink rejects path suffix
+OK   parseDeepLink rejects fragment
+OK   parseDeepLink rejects space (unsafe charset)
+OK   parseDeepLink rejects control char
+OK   parseDeepLink rejects oversize query
+OK   parseDeepLink accepts 4KB-boundary query
+OK   parseDeepLink rejects garbage
+OK   parseDeepLink rejects empty
+OK   parseDeepLink rejects non-string
+OK   deepLinkFromArgv finds link in argv
+OK   deepLinkFromArgv rejects invalid link in argv
+OK   deepLinkFromArgv no link
+OK   deepLinkFromArgv rejects non-array
+OK   mimeFor pdf
+OK   mimeFor unknown
+OK   timeAgo just now
+OK   timeAgo minutes
+OK   timeAgo hours
+OK   timeAgo days
+OK   timeAgo ISO string
+OK   timeAgo invalid
+OK   timeAgo missing
+OK   sessionUpdatedTs sorts desc by recent activity
+OK   sessionUpdatedTs unknown last
+OK   sessionUpdatedTs epoch millis
+OK   sessionUpdatedTs time.updated fallback
+OK   sessionUpdatedTs missing/invalid -> 0
+OK   sessionTitleOf trimmed title
+OK   sessionTitleOf empty title
+OK   sessionTitleOf missing body
+OK   sessionTitleOf non-string title
+OK   preview from metadata.command
+OK   preview from metadata.diff
+OK   preview from pattern string
+OK   preview from patterns array
+OK   preview command wins over pattern
+OK   preview caps long lines
+OK   preview empty payload
+OK   preview null/undefined payload
+OK   unread starts at zero, focused at the tail
+OK   unread: arrival while blurred increments
+OK   unread: arrival scrolled away from the tail increments
+OK   unread: arrival focused at the tail does not count
+OK   unread: focusing zeroes
+OK   unread: reaching the tail zeroes
+OK   unread: count never regresses on non-zeroing transitions
+OK   unread: reset (session switch) zeroes and keeps the flags
+OK   unread: scrolling away never fabricates or clears
+OK   badge filter all keeps everything
+OK   badge filter with keeps only unread
+OK   badge filter without keeps zero/missing badge
+OK   search query still matches title case-insensitive
+OK   badge filter and query compose
+OK   empty query string passes all
+OK   P1-064: tail page of 500x50 has exactly the last 50 rows
+OK   P1-064: tail page hasMore + oldest cursor
+OK   P1-064: before cursor returns the 100 previous rows
+OK   P1-064: before page still has more behind it
+OK   P1-064: page at the head of history has no more behind
+OK   P1-064: vanished before id serves the available tail
+OK   P1-064: empty session yields empty page without more
+OK   P1-064: oversize page shrinks until under the frame budget
+OK   P1-064: capped page always keeps at least one row
+OK   P1-064: small pages pass through the guard untouched
+OK   P1-064: no query params keeps the passthrough
+OK   P1-064: limit or before opts into paging
+OK   P1-064: paging only applies to GET of the message route
+OK   P1-064: limit clamps to 1..200
+OK   P1-064: size guard measures UTF-8 bytes, not UTF-16 chars
+OK   P1-064: single oversize row is trimmed to fit, not dropped
+OK   P1-064: giant text row is clipped so the frame guarantee holds
+OK   P1-064: unserializable row is dropped instead of killing the frame
+OK   P1-064: tail page of 500 rows <100KB (6376B) and sliced <500ms (0ms)
+OK   P1-064: cache keeps at most 3 sessions, evicting the oldest
+OK   P1-064: unknown session id is a cache miss
+OK   P1-064: cache cap is 3
+OK   P1-088: drafts are independent per session
+OK   P1-088: emptying the composer deletes the draft key
+OK   P1-088: append joins with a single space
+OK   P1-088: append onto an empty draft has no leading space
+OK   P1-088: clearDraft empties the entry
+OK   P1-088: oldest draft is evicted past the cap
+OK   P1-064: canonical pilot task titles are detected
+OK   P1-064: ordinary titles are not grouped
+OK   P1-064: list splits into user and pilot groups
+OK   hasClipboardApi present
+OK   hasClipboardApi absent
+OK   copyText via clipboard api
+OK   copyText denied + no document -> false (Node has no document; legacyCopy covered above)
+OK   legacyCopy writes and cleans up the textarea
+OK   legacyCopy reports execCommand failure
+OK   legacyCopy without document fails
+OK   taskMergedIn finds merged task id
+OK   taskMergedIn rejects unknown task id
+OK   taskMergedIn is escaped (no regex leak)
+OK   taskMergedIn ignores body references
+OK   taskMergedIn rejects injection-style ids without exec
+OK   taskMergedIn rejects ids with shell metacharacters
+OK   console-message: Electron 38 details-object shape
+OK   console-message: details shape survives when the deprecated positional tail is dropped
+OK   console-message: legacy numeric shape
+OK   console-message: legacy event object (no payload) is not mistaken for details
+OK   console-message: undefined first arg falls back to legacy
+OK   singleton overwrites stale pidfile
+OK   singleton survives garbage pidfile
+{"ts":"2026-09-04T04:38:15-03:00","level":"warn","msg":"stale pilot instance killed","data":{"pid":64479}}
+OK   singleton kills live previous instance (SIGTERM trapped → SIGKILL)
+OK   singleton pidfile points at current pid after kill
+OK   breaker: failures 1..3 stay under the cap
+OK   breaker: 4th failure trips
+OK   breaker: attempts tracked in state
+OK   breaker: other task unaffected
+OK   blockTask moves the Ready line under ## Blocked
+OK   blocked section holds task line + findings summary (whitespace collapsed)
+OK   blocked section sits before ## Done
+OK   blocked task leaves the Ready queue (no solo reschedule)
+OK   blockTask is idempotent
+OK   blockTask unknown id returns false
+OK   blockTask escapes the id regex
+OK   breaker: gate pass resets the counter
+OK   parseAuxTaskLines: single valid line
+OK   parseAuxTaskLines: multiple valid lines keep order
+OK   parseAuxTaskLines: size tag accepted when followed by area tag
+OK   parseAuxTaskLines: caps at 5 lines
+OK   parseAuxTaskLines: no markers → no lines
+OK   parseAuxTaskLines: unterminated block takes the rest
+OK   parseAuxTaskLines rejects: shell semicolon
+OK   parseAuxTaskLines rejects: backtick substitution
+OK   parseAuxTaskLines rejects: curl verb
+OK   parseAuxTaskLines rejects: bad id format
+OK   parseAuxTaskLines rejects: unknown area
+OK   parseAuxTaskLines rejects: missing area
+OK   parseAuxTaskLines rejects: not a task line
+OK   mayPush: exactly the allowed file
+OK   mayPush: extra file refuses
+OK   mayPush: empty diff refuses
+OK   mayPush: wrong single file refuses
+OK   appendReadyLines: appends at the end of ## Ready
+OK   appendReadyLines: lines land inside the Ready section
+OK   appendReadyLines: Blocked/Done untouched
+OK   appendReadyLines: duplicate id refused
+OK   appendReadyLines: duplicate did not double-insert
+OK   appendReadyLines: empty input is a no-op
+OK   appendCommitAndPush: lands with the guard green
+OK   appendCommitAndPush: exactly one push for the happy path
+OK   appendCommitAndPush: lines committed into BACKLOG.md
+OK   appendCommitAndPush: guard refusal refuses the push
+OK   appendCommitAndPush: refused means zero pushes
+OK   appendCommitAndPush: non-fast-forward retries then lands
+OK   appendCommitAndPush: push retried twice with sleeps
+OK   appendCommitAndPush: all-duplicate lines converge as a noop success (desired state present)
+OK   appendCommitAndPush real-git smoke: apostrophed message lands
+OK   appendCommitAndPush real-git smoke: line landed on origin/pilot/meta
+OK   appendCommitAndPush real-git smoke: apostrophed subject intact
+OK   appendCommitAndPush real-git smoke: origin/main untouched (no direct push)
+OK   appendCommitAndPush real-git smoke: diff is exactly BACKLOG.md
+OK   writeAuxSandboxConfig: bash/edit/external_directory denied, webfetch allowed
+OK   landMetaCommit: guard refusal refuses
+OK   landMetaCommit: guard refusal ⇒ zero pilot/meta pushes
+OK   landMetaCommit: refused diff never armed a PR
+OK   landMetaCommit: noop is success with zero commits
+OK   landMetaCommit: abort reports failed
+OK   landMetaCommit: commit dropped by a peer ⇒ honest failure, never false success
+OK   landMetaCommit: undeterminable sha fails closed (retried, never reported pushed)
+OK   landMetaCommit: auto-merge armed but unconfirmed ⇒ honest failure, state not cleared
+OK   landMetaCommit: arm-phase interleaving lands only on confirmed MERGED
+OK   landMetaCommit: arm order is view → create → auto → immediate squash → confirm polls
+OK   landMetaCommit: confirmation polls interleave with sleeps until MERGED (never trusts the arm)
+OK   landMetaCommit: MERGED with a replaced head is an honest failure (drop-during-arm)
+OK   landMetaCommit: pending peer PR is waited out, then landed after MERGED
+OK   landMetaCommit: checks running past the budget ⇒ honest failure, no false success
+OK   landMetaCommit: next-cycle retry after the queued merge converges as a noop success
+OK   mayPushUnderDir: every file under the dir passes
+OK   mayPushUnderDir: file outside the dir refuses
+OK   mayPushUnderDir: empty diff refuses
+OK   mayPushUnderDir: real sample filenames within the cap pass
+OK   mayPushUnderDir: over the per-landing file cap refuses
+OK   mayPushUnderDir: filename not matching the sample shape refuses
+OK   landMetaCommit real-git smoke: landing reports pushed
+OK   landMetaCommit real-git smoke: commit is on origin/pilot/meta
+OK   landMetaCommit real-git smoke: origin/main untouched
+OK   landMetaCommit real-git smoke: worktree left on main
+OK   metapush: no site pushes origin main or locally merges into main
+OK   pendingRefill: save/read round-trip preserves lines + message
+OK   pendingRefill: corrupt JSON reads as null without throwing
+OK   pendingRefill: clear removes the store
+OK   pendingRefill: relandDetail summaries
+OK   pendingRefill: push outage lands nothing
+OK   pendingRefill: failed landing is saved as pending
+OK   pendingRefill: syncWorkspace reset does not lose drafted tasks
+OK   pendingRefill: reland pushes when git recovers
+OK   pendingRefill: reland clears the store
+OK   pendingRefill: relanded line is on origin/pilot/meta
+OK   pendingRefill: already-landed ids reland as empty
+OK   pendingRefill: empty reland clears the store
+OK   pendingRefill: empty reland never pushes
+OK   pendingRefill: reland with push down keeps the store
+OK   loadState rolls daily counters
+OK   loadState keeps taskAttempts across midnight
+OK   loadState backfills missing taskAttempts
+OK   writeJsonAtomic: rename swaps the destination
+OK   writeJsonAtomic: .tmp never survives on success
+OK   writeJsonAtomic: failed rename rethrows to the caller
+OK   writeJsonAtomic: failed rename removes the .tmp
+OK   writeJsonAtomic: failed rename leaves the old destination intact
+OK   writeJsonAtomic: failed write rethrows and cleans the .tmp
+OK   saveState: atomic write round-trips through loadState
+OK   saveState: no .tmp residue in the state dir
+OK   parseBacklog: trailing area tag parsed and stripped from spec
+OK   parseBacklog: untagged task has empty area
+OK   parseBacklog: only the trailing tag counts
+OK   parseBacklog: tagged task stays in the Ready queue
+OK   parseBacklog: unknown area tag falls back to serial (empty)
+OK   parseBacklog: known area tag accepted
+OK   clampSlots: default/invalid go to 1
+OK   clampSlots: accepts ints up to the hard cap
+OK   pickTasks: distinct areas run in parallel, same area waits
+OK   pickTasks: busy area is skipped for new slots
+OK   pickTasks: respects free slot count
+OK   pickTasks: zero free slots picks nothing
+OK   pickTasks: untagged tasks are independent — full parallelism across slots
+OK   pickTasks: explicit same-area tasks still dedupe (affinity rules)
+OK   pickTasks: queue order (priority) respected
+OK   pickBatch: remaining budget caps the batch (in-flight counted)
+OK   pickBatch: exhausted budget picks nothing
+OK   pickBatch: slots cap still applies with budget to spare
+OK   slots=2 simulation: same-area tasks never run concurrently
+OK   slots=2 simulation: daily task budget is a hard cap
+OK   slots=2 simulation: two tasks of distinct areas ran simultaneously
+OK   P1-099 eager-fill: both slots fill when the 3 tasks span >= 2 area keys
+OK   P1-099 eager-fill: a pipeline end immediately starts the next schedulable task
+OK   P1-099 eager-fill: every queued task scheduled exactly once
+OK   P1-099 eager-fill: same-area tasks never run concurrently
+OK   P1-099 eager-fill: freed slot picks a distinct-key task, same-key stays queued
+OK   P1-099 eager-fill: all-same-area queue picks nothing extra
+OK   P1-099 eager-fill: budget 0 picks nothing
+OK   affinity: ui task prefers the slot that just ran ui
+OK   affinity: most recent same-area run wins
+OK   affinity: expired TTL falls back to the lowest slot
+OK   affinity: busy area never assigned
+OK   affinity: solo tasks never gain affinity
+OK   affinity: two picks never share a slot
+OK   stagger: first pick starts immediately
+OK   stagger: 20s between simultaneous slot starts
+OK   validSegment accepts ids/names
+OK   validSegment rejects traversal
+OK   kindFor kinds
+OK   artifactMime csv
+OK   artifactMime derives from the name (case-insensitive, safe default)
+OK   readArtifact reads inside root
+OK   readArtifact blocks traversal
+OK   readArtifact missing is missing
+OK   readArtifact refuses symlinks (even to outside the root)
+OK   listArtifacts lists and classifies (symlinks excluded)
+OK   listArtifacts filters by session
+OK   readArtifact caps at MAX_ARTIFACT_BYTES with a distinct too-large reason
+OK   artifacts prompt: marker, [file: line, localhost preview pin — and NO per-session dir
+OK   P1-096: system block is byte-identical across sessions (provider prefix cache)
+OK   P1-096: path line carries the marker and the session's absolute artifacts dir
+OK   P1-096: path part appended on the first turn
+OK   P1-096: path part is the LAST part, user parts intact
+OK   P1-096: second path-part call is a no-op (marker dedupe)
+OK   P1-096: body without parts → path part skipped
+OK   P1-096: body with no text part → path part skipped (fail-open)
+OK   workspaceCoversArtifacts: AGENTS.md with the artifacts path → true
+OK   workspaceCoversArtifacts: lowercase agents.md with the marker → true
+OK   workspaceCoversArtifacts: AGENTS.md without the protocol → false
+OK   workspaceCoversArtifacts: no AGENTS.md → false (fail-open)
+OK   workspaceCoversArtifacts: empty directory → false
+OK   inject: body without system gains the block; parts untouched
+OK   inject: appends after a client-provided system prompt
+OK   inject: second call is a no-op (marker dedupe)
+OK   fmtBytes: zero/sub-KB/KB/MB/GB/negative
+OK   artifactMentions matches filenames mentioned in text
+OK   P2-097: fetchArtifact throws the friendly ArtifactTooLarge on 413
+OK   P2-097: fetchArtifact keeps null for missing artifacts
+OK   split preview: viewport threshold + divider drag clamp
+OK   parseMarkdown block types
+OK   parseMarkdown table cells
+OK   parseInline bold/code/link
+OK   parseInline rejects javascript: hrefs (plain text, no link)
+OK   parseInline keeps mailto links
+OK   parseCsv basic
+OK   parseCsv quoted comma
+OK   parseCsv escaped quotes
+OK   browseTarget accepts http
+OK   browseTarget accepts https
+OK   browseTarget rejects file:
+OK   browseTarget rejects javascript:
+OK   browseTarget rejects garbage
+OK   browseTarget rejects oversize
+OK   validSession accepts simple
+OK   validSession rejects empty/long/path
+OK   touchedUi: web file
+OK   touchedUi: desktop file
+OK   touchedUi: daemon-only diff
+OK   touchedUi: empty diff
+OK   touchedUi: prefixed lines rejected
+OK   touchedUi: lookalike apps/webui rejected
+OK   touchedUi: lookalike apps/webs rejected
+OK   planner: P0/P1 need the planner phase
+OK   planner: P2/P3 skip straight to the builder
+OK   planner: spec path follows the task id
+OK   planner: prompt targets the spec file with all sections
+OK   planner: retry attempt mentions the previous failure
+OK   planner: no lessons → prompt stays clean
+OK   planner: prompt carries injected IER lessons
+OK   planner: keyword-matched lessons reach the prompt (match criterion)
+OK   planner: prompt carries the failure-lessons block
+OK   planner: validateSpec accepts the full template
+OK   planner: validateSpec tolerates heading suffixes
+OK   planner: validateSpec rejects a missing section
+OK   planner: validateSpec rejects empty content
+OK   planner: validateSpec rejects oversized bodies
+OK   planner: validateSpec rejects pipeline control markers
+OK   planner: codeChanges filters the spec path
+OK   planner: codeChanges spec-only diff is empty
+OK   planner: codeChanges without a spec keeps everything
+OK   planner: commitSpec enforces a spec-only branch
+OK   planner: branch diff is exactly the spec
+OK   planner: tampered tracked file restored
+OK   planner: planner junk wiped from the worktree
+OK   planner: commitSpec rejects an invalid spec
+OK   planner: commitSpecWithReason names the missing sections
+OK   planner: commitSpecWithReason reports a missing spec file
+OK   planner: commitSpec false without a spec file
+OK   guardalert: specRejectReason accepts the full template
+OK   guardalert: specRejectReason names the missing section
+OK   guardalert: specRejectReason flags a control marker
+OK   guardalert: specRejectReason flags an oversized spec
+OK   planner: builder prompt cites the spec when present
+OK   planner: builder prompt silent without a spec
+OK   planner: quality reviewer gets the spec criterion
+OK   planner: no spec criterion without a spec
+OK   planner: security reviewer never gets the spec criterion
+OK   reviewer: security reviewer gets the premise line
+OK   reviewer: quality reviewer gets the premise line
+OK   constitution: item 7 pins the first-boot product invariant
+OK   size: (size: L) parsed and stripped before (area:)
+OK   size: absent tag defaults to S
+OK   size: tag after the area tag also parses
+OK   size: unknown value falls back to S and stays in spec
+OK   budgetsFor: S keeps the classic budgets
+OK   budgetsFor: M behaves like S
+OK   budgetsFor: L scales to 6 rounds / 90min / 6 attempts
+OK   budgetsFor: undefined size falls back to S
+OK   isOverCap: L with 5 attempts keeps going (cap 6)
+OK   isOverCap: S with 4 attempts is capped
+OK   isOverCap: undefined attempts is below every cap
+OK   preserveBranch: first attempt (0/undefined) recreates the branch
+OK   preserveBranch: later attempt keeps an existing branch
+OK   preserveBranch: missing branch falls back to fresh
+OK   pilotInfra: any diff line under apps/pilot/ marks the lane
+OK   pilotInfra: lookalike paths and UI-only diffs are not the lane
+OK   pilotInfra: corpus gate demands >=3 samples per command
+OK   planner: L task demands numbered milestones in the spec
+OK   planner: S task gets no milestone demand
+OK   builder: L task gets the milestone-per-round instruction
+OK   builder: attempt>1 orders continuation from the preserved branch
+OK   builder: attempt 1 has no continuation block
+OK   reviewer: incremental scope note cites the range
+OK   reviewer: no incremental note for total diffs
+OK   cache: builder prefix byte-identical past the EVIDENCE heading across tasks/rounds
+OK   cache: builder constitution precedes the task text and the IER lessons
+OK   cache: builder round moved out of the stable role line
+OK   cache: planner prefix stable across tasks/attempts
+OK   cache: planner constitution precedes the task text and the IER lessons
+OK   cache: reviewer prefix byte-identical through the verdict contract
+OK   cache: reviewer constitution precedes the task text
+OK   cache: scribe prefix byte-identical through the LESSONS contract
+OK   cache: scribe constitution precedes the task text
+OK   cache: scribe prompt carries no findings block
+OK   cache: builder prompt carries no slot path
+OK   cache: planner prompt carries no slot path
+OK   cache: reviewer prompt carries no slot path
+OK   cache: scribe prompt carries no slot path
+OK   cache: strategist prompt carries no slot path
+OK   cache: researcher prompt carries no slot path
+OK   cache: explorer prompt carries no slot path
+OK   cache: forensic prompt carries no slot path
+OK   cache: strategist variable blocks come after the stable rules
+OK   cache: strategist lessons land after the AUX-TASKS contract
+OK   cache: forensic data blocks come after the section contract
+OK   cache: explorer per-run session/shotsDir land after the stable contract
+OK   branchHasCommits: preserved branch has commits beyond origin/main
+OK   branchHasCommits: branch at origin/main has none
+OK   spec recovery: tampered tip falls back to the committed planner spec
+OK   spec recovery: deleted tip still recovers from history
+OK   spec recovery: no history at all returns null
+{"ts":"2026-09-04T04:38:19-03:00","level":"info","msg":"branch preserved from previous attempt","data":{"task":"P1-036T","attempt":2}}
+OK   P1-036: attempt 2 with preserved branch resumes it
+OK   P1-036: attempt 2 HEAD is the task branch
+OK   P1-036: attempt-1 commit survives the resume
+OK   P1-036: attempt-1 work present in the worktree
+OK   P1-036: attempt 0 recreates the branch (fresh path)
+OK   P1-036: attempt 0 branch points at origin/main
+OK   P1-036: attempt 0 leaves the stale commit unreachable
+OK   P1-036: undefined attempts behaves like attempt 0
+OK   P1-036: undefined attempts drops the stale commit
+OK   P1-036: missing branch with attempts>0 falls back to fresh
+OK   P1-036: fallback still creates the branch at origin/main
+OK   stdlibShadow: clean diff passes
+OK   stdlibShadow: root struct.py fails
+OK   stdlibShadow: subdir struct.py ok
+OK   stdlibShadow: rename into os.py fails
+OK   stdlibShadow: deleted json.py no hit
+OK   stdlibShadow: modified types.py not an introduction
+OK   stdlibShadow: every hardcoded name is caught
+OK   stdlibShadow: case-insensitive on root file
+OK   stdlibShadow: non-stdlib root file passes
+OK   parseFindings: bullet lines after verdict
+OK   verifyFindings: valid path:line kept
+OK   verifyFindings: kept exactly the 2 resolvable findings
+OK   verifyFindings: snippet present in diff kept
+OK   verifyFindings: exactly 4 hallucinations dropped
+OK   verifyFindings: nonexistent path dropped
+OK   verifyFindings: empty cited line dropped
+OK   verifyFindings: out-of-range line dropped
+OK   verifyFindings: citation-free finding dropped
+OK   verifyFindings: snippet absent from diff dropped
+OK   verifyFindings: prose mention of real file resolves
+OK   verifyFindings: URL not mistaken for a file citation
+OK   p2-038: parseVerdict takes the LAST marker (approve then changes)
+OK   p2-038: parseVerdict takes the LAST marker (changes then approve)
+OK   p2-038: parseVerdict single markers
+OK   p2-038: parseVerdict case-insensitive with spacing
+OK   p2-038: parseVerdict no marker → null
+OK   p2-038: reviewerOk — APPROVE with verified findings REJECTS
+OK   p2-038: reviewerOk — clean APPROVE approves
+OK   p2-038: reviewerOk — REQUEST_CHANGES with verified findings rejects
+OK   p1-073: reviewerOk — all findings dropped → fail-closed rejection (incident path)
+OK   p2-038: reviewerOk — no marker fails closed
+OK   p1-103: reviewerOk — REQUEST_CHANGES with only [NIT] findings approves
+OK   p1-103: reviewerOk — [BLOCKING] finding rejects
+OK   p1-103: reviewerOk — untagged finding fails closed as BLOCKING
+OK   p1-103: reviewerOk — verified NIT + unverifiable residue still rejects (P1-073)
+OK   p1-103: reviewerOk — nit-only REQUEST_CHANGES with no evidence at all rejects
+OK   p1-103: isBlockingFinding contract
+OK   p1-103: findingsRepeat — same file citation repeats across rounds
+OK   p1-103: findingsRepeat — different citations do not repeat
+OK   p1-103: findingsRepeat — citation-free findings match on normalized text
+OK   p1-103: findingsRepeat — empty previous round never repeats
+OK   p2-038: parseFindings anchored at the LAST marker
+OK   p2-038: REAL finding — bare-name file:line + real symbol resolves
+OK   p2-038: FAKE finding — real file:line but symbol exists nowhere → hallucinated
+OK   p2-038: symbol present in the reviewed diff → finding valid
+OK   p2-038: cited line empty/out-of-range still hallucinated
+OK   p2-038: nonexistent file with real-looking symbol hallucinated
+OK   p2-038: file-path-shaped quotes are citations, not symbols
+OK   p1-065: cross-file finding with symbols spread across citations KEPT
+OK   p1-065: cross-file repro (DOCTOR_ID_RE + TASK_ID_RE) kept verbatim
+OK   p1-065: absence finding kept (symbol resolves via the union)
+OK   p1-065: nonexistent symbol dropped (0 union matches)
+OK   p1-065: nonexistent file dropped
+OK   p1-065: tier-2 — one real >=6-char span keeps the finding even when the full set fails
+OK   p1-065: short (<6 chars) quoted spans never trigger tier-2
+OK   p1-102: APPROVE rationale bullets are NOT findings
+OK   p1-102: REQUEST_CHANGES bullets still parse
+OK   p1-102: marker-less output still yields candidate findings (fail-closed)
+OK   p1-102: verbatim diff quote wins over a failed path:line (shell-injection drop fixture)
+OK   p1-102: verbatim diff quote wins over an empty cited line (qrcode devDep drop fixture)
+OK   p1-102: no quote + no resolvable citation still dropped
+OK   p1-102: drop reason recorded (file not found)
+OK   p1-102: drop reason recorded (line beyond EOF)
+OK   p1-102: quote absent from the diff never bypasses verification
+OK   p1-102: quoted bare path repeated in diff headers never self-verifies
+OK   p1-102: tagUnverified tags deduped dropped findings for the builder
+OK   evidence: builder prompt mandates the EVIDENCE block
+OK   evidence: builder prompt requires typecheck + test:unit
+OK   evidence: non-UI prompt shows the shot keys as conditional lines
+OK   evidence: UI prompt asks both sized screenshots
+OK   evidence: task-done marker stays the last line
+OK   evidence: parses commands after the marker
+OK   evidence: multi-line pasted output preserved
+OK   evidence: shot paths parsed
+OK   evidence: block stops at the task-done marker
+OK   evidence: no marker → null
+OK   evidence: prose quoting the marker is ignored
+OK   evidence: works without a trailing task-done marker
+OK   evidence: padded block rejected
+OK   evidence: block cap leaves headroom for honest full pastes
+OK   evidence: prompt teaches the positional browse CLI the tool implements
+OK   evidence: prompt drops the unpredictable screencapture fallback
+OK   evidence: containment accepts a truncated real paste
+OK   evidence: empty paste honest only for a silent re-run
+OK   evidence: fabricated line diverges
+OK   evidence: whitespace/ANSI normalized
+OK   evidence: line normalization is order/spacing insensitive
+OK   corpus: >= 3 samples for every evidence command
+OK   corpus: every real sample matches itself (and stays idempotent)
+OK   corpus: ANSI/spacing noise on real outputs still matches
+OK   corpus: truncated real paste still matches
+OK   corpus: fabricated line over real output still rejected
+OK   corpus: same-commit cross-pairs match both ways (no false positives)
+OK   evidence: ISO stamps, pids and random tempdirs never diverge two green runs
+OK   corpus: slug mirrors the command string
+OK   corpus: sanitizer masks home paths, user dirs and long hex
+OK   corpus: sanitizer no-ops with an empty home
+OK   corpus: append writes, dedupes identical, seqs new files
+OK   corpus: capture records the gate re-runs and lands via pilot/meta
+OK   corpus: capture commit is on origin/pilot/meta, not on origin/main
+OK   corpus: identical re-capture dedupes away
+OK   corpus: hostile task id neutralized in the commit message
+OK   corpus gate: the shipped corpus is green
+OK   corpus gate: empty corpus fails closed
+OK   corpus gate: <3 samples for ANY command rejects the gate
+OK   corpus gate: 3 samples per command is green
+OK   corpus gate: fabrication probe matches the matcher's rejection rule
+OK   corpus gate: a permissive matcher regression is caught (fabricated line accepted)
+OK   corpus gate: a rejecting matcher regression is caught (self-match fails)
+OK   evidence: pngSize null on missing file / bad magic
+OK   evidence: shot dims accept 1440x900 (and 2x Retina)
+OK   evidence: shot dims accept 390-wide (and 2x)
+OK   evidence: shot dims reject wrong sizes
+OK   evidence: honest paste survives re-execution
+OK   evidence: fabricated output rejected by re-execution
+OK   evidence: empty paste for a verbose command rejected
+OK   evidence: missing block rejected
+OK   evidence: verbose paste over silent successful re-run accepted
+OK   evidence: non-allowlisted command dropped, never executed
+OK   evidence: prompt-looking lines in real output don't reject an honest block
+OK   evidence: needsUiEvidence is the union of area tag and diff
+OK   evidence: prompt warns that UI diffs need shots even untagged
+OK   evidence: stale screenshot rejected by mtime bound
+OK   evidence: fresh screenshot passes the mtime bound
+OK   evidence: freshness off when not requested
+OK   evidence: missing required command rejected
+OK   evidence: pngSize reads IHDR dimensions
+OK   evidence: UI shots verified by dimension
+OK   evidence: unreadable shot rejected
+OK   rerun cache: preflight + evidence re-run + gate step share ONE execution
+OK   rerun cache: same command in another slot workspace runs again
+OK   rerun cache: other command in the same workspace runs again
+OK   rerun key: workspace and command are not aliased into one key
+OK   rerun cache: failure is cached — no second execution either
+OK   rerun cache: full round — typecheck executes 1x per round, not 3x (P2-040)
+OK   P1-101: exec captures stdout AND stderr on success
+OK   P1-101: exec keeps the stderr tail on failure
+OK   P1-101: runStepWithRetry deterministic failure — 2 executions, flaky=false
+OK   P1-101: runStepWithRetry keeps the second (red) result cached
+OK   P1-101: runStepWithRetry flaky — fail 1st, pass 2nd
+OK   P1-101: runStepWithRetry leaves a green cache entry (no re-execution)
+OK   P1-101: gate — build failing 2x rejects at step build, later steps never run
+OK   P1-101: gate — battery stops at the red step (unit only ran at evidence, later steps skipped)
+OK   P1-101: gate — cited command failing once recovers via the evidence retry (flaky)
+OK   P1-101: gate — battery step failing once is flaky, not a rejection
+OK   P1-101: gate — divergent paste fails at evidence with NO retry (P2-009 intact)
+OK   P1-101: gateFindingBlock — first line names the step, tail capped at 1500
+OK   clickPoint: in-range passes
+OK   clickPoint: edge inclusive
+OK   clickPoint: beyond width rejected
+OK   clickPoint: beyond height rejected
+OK   clickPoint: negative rejected
+OK   clickPoint: NaN rejected
+OK   clickPoint: no silent clamp to edge (round-3)
+OK   viewport: absent params keep live viewport
+OK   viewport: absent w only
+OK   viewport: valid
+OK   viewport: clamped to max
+OK   viewport: zero rejected (round-1 bug shrank shots to 200)
+OK   viewport: garbage rejected
+OK   latestUiShot: empty dir
+OK   latestUiShot: newest by mtime, not lexical
+OK   latestUiShot: ignores non-png
+OK   latestUiShot: builder shots excluded from evidence
+OK   latestUiShot: other task's shot excluded
+OK   latestUiShot: per-task filter returns own shot
+OK   latestUiShot: unscoped call still works
+OK   pruneShots: keeps only newest N
+OK   preflight: defaults are 5s timeout / 15s wait x3 retries (~45s)
+OK   preflight: default URL is the local opencode serve (pinned fallback, env-independent)
+OK   preflight: healthy API is up with zero waits
+{"ts":"2026-09-04T04:38:22-03:00","level":"warn","msg":"opencode API down — waiting before agent spawn (attempt NOT counted)","data":{"url":"http://127.0.0.1:4096","retry":1,"of":3}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"warn","msg":"opencode API down — waiting before agent spawn (attempt NOT counted)","data":{"url":"http://127.0.0.1:4096","retry":2,"of":3}}
+OK   preflight: transient outage waits 15s per retry and recovers
+{"ts":"2026-09-04T04:38:22-03:00","level":"warn","msg":"opencode API down — waiting before agent spawn (attempt NOT counted)","data":{"url":"http://127.0.0.1:4096","retry":1,"of":3}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"warn","msg":"opencode API down — waiting before agent spawn (attempt NOT counted)","data":{"url":"http://127.0.0.1:4096","retry":2,"of":3}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"warn","msg":"opencode API down — waiting before agent spawn (attempt NOT counted)","data":{"url":"http://127.0.0.1:4096","retry":3,"of":3}}
+OK   preflight: API dead through all retries gives up after the wait window
+OK   preflight: healthy:false body counts as down
+OK   preflight: network error counts as down
+OK   preflight: non-2xx counts as down
+OK   preflight: non-JSON 200 body counts as up
+OK   resume: canned output extracts the ses_ id
+OK   resume: canned output extracts task_ ids in order
+OK   resume: plain output yields no ids
+OK   resume: prose tokens task_id/task_ids/glued words are not captured
+OK   resume: prose tokens do not evict or distort real ids
+OK   resume: glued ses_ prose is not captured
+OK   resume: a real anchored ses_ id still captures
+OK   resume: split task id not committed while incomplete
+OK   resume: split task id completed by the tail buffer
+OK   resume: session id stays pending while its match ends at the chunk edge
+OK   resume: split session id completed on the next chunk
+OK   resume: duplicate task ids collapse to one
+OK   resume: block carries session + task ids and the continue instruction
+OK   resume: no ids -> empty block
+OK   resume: task id list is capped
+OK   resume: round N+1 prompt contains the captured session + task ids
+OK   resume: round 1 prompt without ids has no resume block
+OK   resume: prompt keeps the mandatory evidence block intact
+OK   resume: failed round opens resume state with its ids
+OK   resume: a later failed round dedupes ids and tracks the latest session
+OK   resume: successful round resets resume state (no false crash claim on review-fix rounds)
+OK   resume: state cap keeps the FIRST ids (later garbage cannot evict real ones)
+OK   resume: block names the failed round
+OK   resume: block sits before (not under) the reviewer findings header
+OK   resume: per-stream scans merge without duplicate ids
+OK   resume: merge prefers the stdout session when both streams saw one
+OK   resume: crash on a non-final round retries (failure notice lives in the block, not findings)
+OK   resume: crash retry boundary is round < maxRounds
+OK   resume: crash on the final round aborts with the pre-spike detail
+OK   disk guard: default threshold is 5GB
+OK   disk guard: below threshold aborts with clear detail
+OK   disk guard: at/above threshold proceeds
+OK   disk guard: unavailable probe fails open
+OK   disk guard: statfs probe returns bytes on a real dir
+{"ts":"2026-09-04T04:38:22-03:00","level":"warn","msg":"disk low: 4.2gb free (need 5.0gb) — deploy aborted before npm ci/build"}
+OK   disk guard: mocked threshold aborts deploy before npm ci
+OK   disk guard: supervisor notified with disk-low detail
+OK   disk guard: abort emits start + disk-guard deploy events
+OK   soak lane: regular deploy keeps the configured window
+OK   soak lane: pilot-infra deploy soaks 3min (operator override 2026-09-03)
+OK   soak lane: the pilot lane is flat 3min regardless of monitorMin
+OK   baseline: no samples → rate 0
+OK   baseline: 1 failing probe of 3 → 1/3
+OK   soak rate: window below SOAK_WINDOW never trips
+OK   soak rate: clean window on clean baseline continues
+OK   soak rate: 1/5 failures on clean baseline is inside tolerance
+OK   soak rate: 2/5 failures on clean baseline rolls back
+OK   soak rate: a flaky baseline (1/3 failing) absorbs an equal window
+OK   soak rate: degradation beyond a flaky baseline rolls back
+OK   soak rate: tolerance constant pins the 20% margin
+OK   soak lane: baseline is 3 probes; extra live invariants every 5 checks
+OK   soak lane: baseline rate is the failing fraction of the sampled probes
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":1,"of":20,"healthy":true}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":2,"of":20,"healthy":true}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":3,"of":20,"healthy":true}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":4,"of":20,"healthy":true}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":5,"of":20,"healthy":true}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":6,"of":20,"healthy":true}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":7,"of":20,"healthy":true}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":8,"of":20,"healthy":true}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":9,"of":20,"healthy":true}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":10,"of":20,"healthy":true}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":11,"of":20,"healthy":true}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":12,"of":20,"healthy":true}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":13,"of":20,"healthy":true}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":14,"of":20,"healthy":true}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":15,"of":20,"healthy":true}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":16,"of":20,"healthy":true}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":17,"of":20,"healthy":true}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":18,"of":20,"healthy":true}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":19,"of":20,"healthy":true}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":20,"of":20,"healthy":true}}
+OK   soak lane: green 20-check run schedules live invariants exactly at 5/10/15/20
+OK   soak lane: every check emits a soak event through the injectable sink
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":1,"of":20,"healthy":true}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":2,"of":20,"healthy":true}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":3,"of":20,"healthy":true}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":4,"of":20,"healthy":false}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":5,"of":20,"healthy":false}}
+OK   soak lane: 2/5 failing window trips the rate rollback at check 5 (live ran first)
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":1,"of":10,"healthy":false}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":2,"of":10,"healthy":false}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":3,"of":10,"healthy":false}}
+OK   soak lane: 3 consecutive failures roll back as health at check 3
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":1,"of":10,"healthy":true}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":2,"of":10,"healthy":true}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":3,"of":10,"healthy":true}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":4,"of":10,"healthy":true}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":5,"of":10,"healthy":true}}
+OK   soak lane: failed live invariant rolls back at its check with the output tail
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":1,"of":10,"healthy":true}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":2,"of":10,"healthy":true}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":3,"of":10,"healthy":false}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":4,"of":10,"healthy":true}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":5,"of":10,"healthy":false}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":6,"of":10,"healthy":true}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":7,"of":10,"healthy":true}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":8,"of":10,"healthy":false}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":9,"of":10,"healthy":true}}
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"soak","data":{"check":10,"of":10,"healthy":true}}
+OK   soak lane: regular deploy never runs live invariants nor the rate rule
+OK   deploy guard: walks past unverified bookkeeping commits to the newest verified merge
+OK   deploy guard: newest verified sha wins
+OK   deploy guard: quarantined sha skipped — walk falls back to the last good verified sha
+OK   deploy guard: nothing verified → null (a direct push to main never deploys)
+OK   deploy guard: walk capped at MAX_WALK_COMMITS (fail-closed on both sides)
+OK   deploy guard: non-object-id lines are never selected
+OK   deploy guard: unverified sha refused
+OK   deploy guard: verified-but-quarantined sha refused
+OK   deploy guard: verified non-quarantined sha passes
+OK   deploy guard: unverifiable sha charset refused
+OK   deploy guard: tolerant parse — corrupt lines and invalid shas skipped
+OK   deploy guard: recordVerifiedMerge persists + dedupes per sha
+OK   deploy guard: recordVerifiedMerge rejects an invalid sha
+OK   deploy guard: quarantineSha persists + dedupes per sha
+OK   deploy guard: verified list capped at MAX_VERIFIED_ENTRIES
+OK   deploy guard: quarantine list capped at MAX_QUARANTINE_ENTRIES
+{"ts":"2026-09-04T04:38:22-03:00","level":"warn","msg":"sha not gate-verified — deploy refused"}
+OK   deploy guard: unverified sha refused before any git step
+{"ts":"2026-09-04T04:38:22-03:00","level":"warn","msg":"sha quarantined after a failed deploy — deploy refused"}
+OK   deploy guard: quarantined sha refused before any git step
+OK   dirty guard: empty status → null
+OK   dirty guard: untracked-only status → null
+OK   dirty guard: tracked modifications abort with paths
+OK   dirty guard: failed probe fails closed
+OK   dirty guard: >3 paths summarized with +k more
+{"ts":"2026-09-04T04:38:22-03:00","level":"warn","msg":"prod checkout dirty: 1 tracked file(s) modified (f.txt) — deploy aborted before reset"}
+OK   dirty guard: dirty prod checkout aborts the deploy before reset
+OK   dirty guard: start + dirty-guard events emitted, ok:false
+OK   dirty guard: supervisor notified once under the task id
+OK   dirty guard: operator edit survives (nothing reset)
+OK   dirty guard: HEAD unchanged
+OK   tierb doctor: no models configured → probe skipped, run never called
+OK   tierb doctor: broken binary → red with output tail
+OK   tierb doctor: healthy binary → first line of claude --version
+OK   tierb doctor: runDoctor notifies the supervisor once with doctor/ok:false
+OK   tierb doctor: runDoctor emits a red tierB-binary phase
+OK   tierb doctor: doctor pass complete goes red
+OK   tierb spawn: alert cadence pinned at 3
+OK   tierb spawn: 0/1/2 consecutive failures stay quiet
+OK   tierb spawn: fires on 3 and 6, not 4
+OK   tierb spawn: consecutive spawn failures accumulate to 3
+OK   tierb spawn: any non-spawn outcome resets the streak
+OK   tierb spawn: fresh failure starts at 1
+OK   guardalert: threshold pinned at 2
+OK   guardalert: first rejection stays quiet
+OK   guardalert: second consecutive rejection alerts
+OK   guardalert: guards count independently
+OK   guardalert: a pass of the guard resets its streak
+OK   guardalert: detail fits the event feed cap
+OK   guardalert: detail is single-line
+OK   guardalert: below the threshold nothing is emitted or notified
+{"ts":"2026-09-04T04:38:22-03:00","level":"error","msg":"guard-repeat","data":{"task":"T2","guard":"validateSpec","count":2,"reason":"validateSpec rejected 2x in a row: missing section(s): edge cases"}}
+OK   guardalert: threshold raise emits one alert event with the reason
+OK   guardalert: threshold raise notifies once with the same detail
+OK   guardalert: countFailSteps ignores alert events
+OK   fast install: identical persisted hash → fast
+OK   fast install: different persisted hash → ci
+OK   fast install: no persisted state → ci (fail-closed)
+OK   fast install: empty/unusable current hash → ci
+OK   fast install: LOCK_HASH_RE pins full sha256 hex
+OK   fast install: readLastInstall on a missing file → null
+OK   fast install: writeLastInstall/readLastInstall roundtrip
+OK   fast install: corrupt json → null
+OK   fast install: non-hex hash → null
+OK   fast install: truncated hash → null
+OK   fast install: writeLastInstall rejects an invalid hash
+OK   fast install: FAST_INSTALL_CMD is an offline no-wipe install with scripts ignored
+OK   fast install: ELECTRON_CACHE + --ignore-scripts pinned on both npm ci attempts
+OK   fast install: rollback npm ci also uses the electron cache + --ignore-scripts
+OK   fast install: deploy emits an install event with mode + duration
+OK   rollback health: window is 30s at the shared 5s probe cadence
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"rollback-health","data":{"healthy":true,"windowSec":10}}
+OK   rollback health: healthy prod verifies immediately with an ok rollback-health event
+{"ts":"2026-09-04T04:38:22-03:00","level":"info","msg":"rollback-health","data":{"healthy":true,"windowSec":10}}
+OK   rollback health: prod recovering inside the window still verifies ok
+{"ts":"2026-09-04T04:38:22-03:00","level":"warn","msg":"rollback-health","data":{"healthy":false,"windowSec":10}}
+OK   rollback health: unhealthy prod after rollback emits ok=false and escalates
+OK   rollback health: latest unhealthy verdict lights the dashboard chip
+OK   rollback health: a healthy verdict clears the chip
+OK   rollback health: a later clean deploy supersedes an old alert
+OK   rollback health: feed without verdicts never fakes an alert
+OK   rollback health: rollback() wires verifyRollbackHealth (no blind sleep)
+OK   P1-034: HEAD moved → reload
+OK   P1-034: same sha → no reload
+OK   P1-034: invalid ids → no reload
+OK   P1-034: sha-vs-HEAD self-reload diff removed
+OK   P3-101: HEAD moved past boot sha → drifted
+OK   P3-101: same sha → not drifted
+OK   P3-101: undefined boot sha (git failed) → not drifted
+OK   P3-101: undefined current sha → not drifted
+OK   P3-101: malformed shas → not drifted (no restart flapping)
+OK   P3-101: idle + no deploy + drift → reload
+OK   P3-101: slot running → never reload (no mid-pipeline self-kill)
+OK   P3-101: deploy in flight → never reload
+OK   P3-101: no drift → no reload even when idle
+OK   P3-101: loop self-heal exit routed through shouldSelfHealReload
+OK   P1-104: drain polls at RELOAD_DRAIN_POLL_MS until slots reach 0
+OK   P1-104: drain holds new picks while waiting, releases when drained
+OK   P1-104: drain feeds the heartbeat on every poll
+OK   P1-104: drain returns the waited ms (0 when already drained)
+OK   P1-104: already-drained slots reload immediately (no poll, no beat)
+OK   P1-104: deploy reload drains before process.exit when slots are running
+OK   P1-104: launchDeploy wires slotsRunning + holdNewPicks into deploy
+OK   P1-104: fillFreeSlots honors the drain hold (no new picks while draining)
+OK   quarantine escalation: successful write stays silent
+{"ts":"2026-09-04T04:38:22-03:00","level":"warn","msg":"quarantine write failed — sha remains deployable","data":{"sha":"not-a-s"}}
+OK   quarantine escalation: write failure notifies the supervisor
+OK   quarantine escalation: failed write leaves no file entry
+{"ts":"2026-09-04T04:38:22-03:00","level":"warn","msg":"quarantine write failed — sha remains deployable","data":{"sha":"zz"}}
+OK   quarantine escalation: notify crash is best-effort, never rejects
+OK   merge identity: squash commit subject matches the task
+OK   merge identity: --no-ff fallback merge commit matches the task
+OK   merge identity: bookkeeping commit is never a verified merge
+OK   merge identity: another task's subject does not match
+OK   merge identity: id-prefix confusion rejected
+OK   merge identity: invalid sha/id charset refused
+OK   experience: cap pinned at 60
+OK   experience: parseLessons reads only the Lessons section
+OK   experience: parseLessons empty when section missing
+OK   experience: picks only keyword-matched lessons
+OK   experience: higher score first (title beats spec weight)
+OK   experience: ties resolved most-recent-first
+OK   experience: no match → empty injection
+OK   experience: capped at 5 lessons
+OK   experience: normalizeLesson rewrites the fonte tag
+OK   experience: normalizeLesson drops junk
+OK   experience: append dedupes against the file and adds new
+OK   experience: append is idempotent
+OK   experience: append preserves existing lessons (no amnesia)
+OK   experience: append caps at 3 and creates the section
+OK   experience: prune removes dupes + oldest above cap
+OK   experience: dedupe keeps the newest occurrence only
+OK   experience: keeps the most recent lessons
+OK   experience: at/under cap is a no-op
+OK   experience: JACCARD_DUPE pinned at 0.6
+OK   experience: jaccard of identical sets is 1, disjoint is 0
+OK   experience: isHarnessLesson matches process vocabulary
+OK   experience: paraphrase with jaccard >= 0.6 is dropped on append
+OK   experience: dedupeAndPrune drops the older paraphrase
+OK   experience: short lessons skip the semantic dedupe
+OK   backlog: doneTaskIds parses only the Done section
+OK   experience: prune archives the harness-done lesson only
+OK   experience: product lesson is never archived, even when oldest
+OK   experience: archived equals the removed harness lines
+OK   experience: harness lesson from an undone fonte is not archived
+OK   expmaint: prune runs, archives the harness lesson, stamps its own guard
+OK   expmaint: archived entry is a failure lesson with step archived + fonte task
+OK   expmaint: commit + guarded push executed
+OK   expmaint: logs the maintenance line
+OK   expmaint: same-day re-run is a guarded no-op
+OK   expmaint: refused push never throws — archive lands, guard stamps, committed stays honest
+OK   expmaint: real appendFailureLesson roundtrip (fs-first, outside worktrees)
+OK   expmaint: archived lessons come from the landed fresh-copy pass, not the stale workspace
+OK   expmaint: the stale workspace archive decision is discarded on success
+OK   experience: lessonsBlock injects nothing when empty
+OK   experience: builder prompt carries the injected lessons
+OK   experience: template + landed doc name the planner audience (P2-042, no stale claim)
+OK   experience: parseScribeLessons takes max 3 between markers
+OK   experience: parseScribeLessons requires SCRIBE:DONE
+OK   experience: parseScribeLessons empty without marker
+OK   experience: maintain prunes a file above the cap
+OK   experience: maintain is a no-op below the cap
+OK   experience: maintain on a missing file does nothing
+OK   failure lessons: parses only kind:failure lines, skips corrupt
+OK   failure lessons: empty content → empty list
+OK   failure lessons: malformed optional fields degrade to defaults
+OK   failure lessons: empty list → no prompt block
+OK   failure lessons: block cites task id, step, findings and gate tail
+OK   failure lessons: block caps at 10 most recent
+OK   failure lessons: formatFailureLesson collapses whitespace and bounds parts
+OK   failure lessons: read missing file → []
+OK   failure lessons: append creates parent dirs
+OK   failure lessons: read roundtrip
+OK   failure lessons: append caps findings
+OK   failure lessons: stored fields are bounded
+OK   failure lessons: readRecentFailureLessons caps at max
+OK   failure lessons: archived entries cap at 3 of the slots
+OK   failure lessons: real failures keep >= 7 slots via backfill
+OK   failure lessons: all-real window is untouched
+OK   lesson impact: folds merges/rounds/tokens into the right cohort
+OK   pairing: host-only allowlist is not 'phone paired'
+OK   pairing: empty allowlist is not 'phone paired'
+OK   pairing: unlabeled device counts as a phone
+OK   pairing: phone closes the overlay
+OK   pairing: overlay visible with QR and no phone
+OK   pairing: overlay hidden once the phone pairs
+OK   pairing: overlay hidden without a QR
+OK   pairing: overlay hidden with no state (daemon down)
+OK   p1-070 localPairing: full link → loopback relay + room + daemon key
+OK   p1-070 localPairing: null link → null
+OK   p1-070 localPairing: missing token → null
+OK   p1-070 localPairing: missing room → null
+OK   p1-070 localPairing: missing ecdhPub → null
+OK   p1-070 localPairing: non-finite port → null
+OK   p1-070 local-mode state (uri/qr null) can never render the QR overlay
+OK   p1-070 i18n en: pairRemoteTitle + pairRemoteAction present
+OK   p1-070 i18n en: localConnecting names the local daemon
+OK   p1-070 i18n en: pairIntro explains the zero-ceremony local auto-connect
+OK   p1-070 i18n pt: pairRemoteTitle + pairRemoteAction present
+OK   p1-070 i18n pt: localConnecting names the local daemon
+OK   p1-070 i18n pt: pairIntro explains the zero-ceremony local auto-connect
+OK   versions: equal is compatible
+OK   versions: daemon minor ahead is compatible
+OK   versions: daemon patch ahead is compatible
+OK   versions: daemon older minor flags
+OK   versions: daemon older patch flags
+OK   versions: daemon major ahead flags
+OK   versions: daemon major behind flags
+OK   versions: -dev suffix tolerated (equal)
+OK   versions: -dev suffix tolerated (reversed)
+OK   versions: -dev does not hide a major drift
+OK   versions: leading v tolerated
+OK   versions: missing daemon version is compatible
+OK   versions: missing app version is compatible
+OK   versions: non-semver daemon is compatible
+OK   tray: healthy tooltip text
+OK   tray: down tooltip text
+OK   tray: login item supported on macOS
+OK   tray: login item supported on Windows
+OK   tray: login item hidden on Linux
+OK   tray: tooltip strings are distinct and carry the daemon state
+OK   tray: usable asset wins over the data-URL fallback
+OK   tray: missing/empty asset falls back to the data-URL glyph
+OK   tray: fallback is never a template image
+OK   tray: template set on darwin only
+OK   tray: template asset committed at 16px with 2x variant
+OK   tray: template assets packaged via electron-builder files
+OK   tray: update-available label
+OK   tray: update-not-available label
+OK   tray: unrecognized-feed label
+OK   tray: feed-unreachable label
+OK   tray: disabled → no status item (null)
+OK   tray: the five status labels are distinct
+OK   tray: update label keeps the mandated em-dash phrasing
+OK   logs: logsDirPath is <userData>/logs
+OK   logs: missing dir is created recursively
+OK   logs: existing dir is opened (mkdir idempotent)
+OK   logs: mkdir failure is swallowed (log-only)
+OK   logs: openPath failure is swallowed (log-only)
+OK   notify: healthy→down fires 'down'
+OK   notify: down→healthy fires 'back'
+OK   notify: healthy→healthy is deduped
+OK   notify: down→down is deduped
+OK   notify: boot observation (null→down) stays silent
+OK   notify: boot observation (null→healthy) stays silent
+OK   notify: message strings are distinct and non-empty
+OK   aumid: constant matches the electron-builder appId
+OK   aumid: win32 resolves the appId
+OK   aumid: darwin resolves null (Info.plist covers it)
+OK   aumid: linux resolves null
+OK   aumid: unknown platform resolves null
+OK   aumid: win32 wires setAppUserModelId exactly 1x
+OK   aumid: darwin never calls setAppUserModelId
+OK   window-state: valid on-screen bounds pass through
+OK   window-state: second display counts as on-screen
+OK   window-state: off-screen (display disconnected) → default
+OK   window-state: fully beyond right edge → default
+OK   window-state: size-only state is valid (x/y omitted → Electron centers)
+OK   window-state: sizes below the min are clamped
+OK   window-state: garbage shapes → default (non-object, non-numeric, zero/negative)
+OK   window-state: state file lives in the given userData dir
+OK   window-state: missing file → default, no crash
+OK   window-state: save then load roundtrips the bounds
+OK   window-state: loaded bounds match what was saved
+OK   window-state: corrupted JSON file → default without crashing
+OK   window-state: write failure is log-only (unwritable dir)
+OK   shutdown: idle state is not shutting down
+{"ts":"2026-09-04T07:38:40.946Z","level":"info","msg":"daemon shutting down","data":{"signal":"SIGTERM","activeConnections":2,"uptimeS":65}}
+OK   shutdown: hard timer queued at DRAIN_MS (plus settle)
+OK   shutdown: stops listeners exactly once
+OK   shutdown: exits with code 0 after drain
+OK   shutdown: flag flips while draining
+OK   shutdown: hard timer consumed on clean path
+{"ts":"2026-09-04T07:38:40.947Z","level":"info","msg":"daemon shutting down","data":{"signal":"SIGTERM","activeConnections":0,"uptimeS":0}}
+{"ts":"2026-09-04T07:38:40.947Z","level":"warn","msg":"shutdown already in progress; exiting immediately","data":{"signal":"SIGINT"}}
+OK   shutdown: second signal exits immediately (code 0)
+OK   shutdown: second signal does not re-run cleanup
+{"ts":"2026-09-04T07:38:40.947Z","level":"info","msg":"daemon shutting down","data":{"signal":"SIGTERM","activeConnections":0,"uptimeS":0}}
+OK   shutdown: drain timer forces exit(0)
+OK   shutdown: http server stops accepting (keep-alive drained ≤2s)
+OK   shutdown: ws peer receives close code 1001
+OK   relay-shutdown: idle state is not shutting down
+OK   relay-shutdown: hard timer queued at DRAIN_MS (plus settle)
+OK   relay-shutdown: stops listeners exactly once
+OK   relay-shutdown: exits with code 0 after drain
+OK   relay-shutdown: flag flips while draining
+OK   relay-shutdown: hard timer consumed on clean path
+OK   relay-shutdown: final JSONL log carries uptime + closed count
+OK   relay-shutdown: second signal exits immediately (code 0)
+OK   relay-shutdown: second signal does not re-run cleanup
+OK   relay-shutdown: drain timer forces exit(0)
+OK   relay-shutdown: ws client receives close 1001 'server shutting down'
+OK   relay-shutdown: server refuses new connections after close()
+OK   audit: sliding window keeps the last 10 cycles
+OK   audit: 1 task failing 4x in 10 cycles never trips the fever
+OK   audit: 2 distinct tasks failing do not trip the fever
+OK   audit: 2 distinct failing tasks in a partial window stay calm
+OK   audit: 3 distinct failing tasks trip the fever
+OK   audit: repeats of the same task do not deepen the fever
+OK   audit: 2 id-less failures do not trip yet
+OK   audit: 3 crashed pipelines trip the fever (conservative)
+OK   audit: burst trigger constant is 2 blocks
+OK   audit: one block is not a burst
+OK   audit: 2 blocks within 30min trip the burst trigger
+OK   audit: stale blocks no longer count (pruned lazily)
+OK   audit: recording prunes timestamps outside the window
+OK   audit: enterAuditMode trips once
+OK   audit: entering clears the trigger windows
+OK   audit: audit state carries reason + since
+OK   audit: resume not due before 2h
+OK   audit: resume due after 2h without failure
+OK   audit: fresh failure pushes the resume deadline
+OK   audit: success does not push the resume deadline
+OK   audit: block landing also pushes the deadline
+OK   audit: clear resets every breaker counter
+OK   audit: healthy state has no trigger
+OK   audit diagnosis: api probe result carried through
+OK   audit diagnosis: top step is the double-failing one
+OK   audit diagnosis: gate-fail of lessoned task not double counted
+OK   audit diagnosis: retrying task counted from gate-fail
+OK   audit diagnosis: top task merges lessons + live attempts
+OK   audit diagnosis: live-attempt-only task present
+OK   audit diagnosis: one-line log format
+OK   audit diagnosis: missing sources degrade to none
+OK   audit diagnosis: empty format
+OK   loadState keeps fever windows across midnight
+OK   loadState keeps audit mode across midnight
+OK   loadState backfills fever fields for legacy state
+OK   loadState rejects a malformed audit mode
+OK   infra kind: structured api-down flag → api-down
+OK   infra kind: structured spawn flag → spawn
+OK   infra kind: structured timeout flag → timeout
+OK   infra kind: finding citing ECONNREFUSED is merit
+OK   infra kind: gatekeeper rejection is merit
+OK   infra kind: review rounds exhausted is merit
+OK   infra kind: empty diff is merit
+OK   infra kind: ok result with econnrefused text is not infra
+OK   infra kind: preflight failure carries api-down
+OK   infra: 12 infra outcomes never feed the fever window
+OK   infra: infra outcomes burn no attempts
+OK   infra: merit control still records cycle + attempt
+OK   infra: doctor cadence constant is 3
+OK   infra: doctor wakes exactly on the 3rd and 6th failure
+OK   infra: loadState backfills infraFails for legacy state
+OK   P1-104: 12 crashes burn no per-task attempts
+OK   P1-104: crashes count in the diagnostic infraFails counter
+OK   P1-104: a crash loop still trips the global fever breaker
+OK   P1-104: doctor wakes exactly on the 3rd and 6th crash
+OK   P1-104: crash catch routes through recordPipelineCrash, never tripCircuitBreaker
+OK   P2-125: confirm budget is 60 polls × 5s = 5min
+OK   P2-125: merge exec failed but PR confirms MERGED ⇒ success
+OK   P2-125: create failure falls through to pr list (PR reused)
+OK   P2-125: merge addressed by PR number, never by branch
+OK   P2-125: immediate confirmation has zero artificial latency (no sleep before poll 0)
+OK   P2-125: MERGED with another headRefOid ⇒ failure, never success
+OK   P2-125: merge never confirmed ⇒ ok=false with infra=timeout
+OK   P2-125: unconfirmed detail carries the gh merge tail
+OK   P2-125: every poll in the budget ran
+OK   P2-125: sleep only between polls (59 sleeps for 60 polls)
+OK   P2-125: infra merge failure burns no per-task attempt
+OK   P2-125: infra merge failure never feeds the fever window
+OK   P2-125: unresolvable PR number ⇒ infra network
+OK   P2-125: detail carries the gh create/list tails
+OK   P2-125: each captured gh tail is capped at 300 chars
+OK   P2-125: merge failure line propagates the structured infra kind
+OK   P2-125: the old reason-free merge detail no longer exists
+OK   P2-125: P2-058 verified-merge guard untouched (recordVerifiedMerge + isTaskMergeSha still wired)
+OK   loadState rolls the daily merge counter at midnight
+OK   loadState backfills merges for legacy state
+OK   failSteps: groups gate-fail events by step
+OK   failSteps: keeps every failing step
+OK   failSteps: empty on a clean feed
+OK   burnDown: always returns 7 buckets ending today
+OK   burnDown: splits ok/failed per day
+OK   burnDown: today zero-filled
+OK   burnDown: tolerates malformed rows
+OK   phaseDur: averages multi-round phases
+OK   phaseDur: closes every tracked phase
+OK   phaseDur: no completed sample → phase omitted
+OK   phaseDur: empty feed → empty summary
+OK   P1-101: gate-flaky/gate-fail don't break the gatekeeper pairing; one sample
+OK   P1-101: merge no longer closes the gatekeeper phase
+OK   clearAuditMode: wipes the diagnosis with the pause
+OK   explorer: parses valid findings with severity/area/evidence
+OK   explorer: unknown area degrades to serial
+OK   explorer: invalid severity dropped
+OK   explorer: nonexistent shot dropped
+OK   explorer: duplicate titles deduped keeping the first
+OK   explorer: detail collapses whitespace/newlines
+OK   explorer: max option caps insertion
+OK   explorer: default budget cap is the module constant
+OK   explorer: budgets keep the run cost predictable
+OK   explorer: session name derives a never-used key from the date
+OK   explorer: prompt keys the run to its own fresh session
+OK   explorer: prompt demands an untouched first-boot shot at 1440x900
+OK   explorer: prompt carries the product-premise questions
+OK   explorer: prompt keeps the structured output contract
+OK   explorer: inserted line lands as a parseable Ready task
+OK   explorer: inserted spec carries severity + evidence path
+OK   explorer claim: first call sets explorerLast and persists before the run
+OK   explorer claim: same-day re-claim is a no-op that never re-saves
+OK   explorer push retry: lands on a later attempt
+OK   explorer push retry: re-applies and commits on each attempt
+OK   explorer push retry: waits between attempts only
+OK   explorer push retry: finding inserted into BACKLOG
+OK   explorer push retry: false after exhausting the budget
+OK   explorer push retry: broken worktree fails without pushing or arming a PR
+OK   explorer push retry: real git lands the commit on origin/pilot/meta
+OK   explorer push retry: origin/main never receives the finding directly
+OK   fable: parses prioritized improvements with evidence and file:line
+OK   fable: lowercase priority normalizes, unknown area degrades to serial
+OK   fable: unknown priority dropped (fail closed)
+OK   fable: nonexistent evidence dropped
+OK   fable: duplicate titles deduped keeping the first
+OK   fable: title whitespace collapses
+OK   fable: max option caps insertion
+OK   fable: default budget cap is the module constant
+OK   fable: spec carries priority, evidence and where
+OK   fable landing: reports pushed when the meta PR merges
+OK   fable landing: improvement lands as a [fable][P1] P3 backlog line
+OK   fable landing: spec keeps priority + evidence + where
+OK   fable: journey set has exactly the six mandated steps
+OK   fable: journey shot names are stable and digits-only dated
+OK   fable: explorer prompt lists every journey shot with its stable name
+OK   fable: explorer prompt mandates the exact-name shot set
+OK   fable: fable prompt cites every journey shot path
+OK   fable: fable prompt demands PRODUCT.md grounding and verified file:line
+OK   fable: fable prompt keeps the structured output contract
+OK   fable: tier-B budget keeps the review bounded
+OK   p2-105 claudeArgs mounts extra evidence dirs after the workspace
+OK   nightlyIdleDue: undefined lastCycleAt → due immediately
+OK   nightlyIdleDue: just cycled → not due
+OK   nightlyIdleDue: 1h59m idle → not due
+OK   nightlyIdleDue: 2h01m idle → due
+OK   nightlyIdleDue: exactly 2h → due
+OK   nightlySkipDue: busy inside the 03:xx window (hour 3) → null
+OK   nightlySkipDue: busy at hour 4 with pass pending → reason
+OK   nightlySkipDue: already recorded today → null
+OK   nightlySkipDue: pass already ran today → null
+OK   nightlySkipDue: slots idle → null
+OK   recordCycle: stamps lastCycleAt with the injected now
+OK   recordCycle: merit-fail refreshes lastCycleAt too
+OK   busy day: skip due fires for a pending pass
+OK   busy day: event line carries task=nightly phase=skipped
+OK   busy day: nightlySkipped round-trips through state.json
+OK   loadState: garbage nightly fields tolerated
+OK   loadState: lastCycleAt survives midnight
+OK   loadState: nightlySkipped survives midnight
+OK   idle day: idle-window trigger fires
+OK   idle day: pass not done (explorerLast unset) → guards pass
+OK   idle day: slots idle → no skip record
+OK   p1-059 claudeArgs pins the tier-B argv contract
+OK   p1-059 shouldFallbackTierB: not ok
+OK   p1-059 shouldFallbackTierB: timed out
+OK   p1-059 shouldFallbackTierB: empty output
+OK   p1-059 shouldFallbackTierB: marker missing
+OK   p1-059 shouldFallbackTierB: ok with marker
+OK   p1-059 shouldFallbackTierB: no marker required
+OK   p1-059 no models block → tier A for strategist
+OK   p1-059 no models block → tier A for planner
+OK   p1-059 no models block → tier A for forensic
+OK   p1-059 no models block → tier A for reviewerEscalation
+OK   p1-059 tierB block resolves per-role models
+OK   p1-059 normalizeModels keeps string values, drops garbage
+OK   p1-059 normalizeModels: non-object → undefined
+OK   p1-059 normalizeModels: empty tiers → undefined
+OK   p1-073 needsEscalation: all-dropped escalates in any round
+OK   p1-103 needsEscalation: repeated findings with a rejection escalate
+OK   p1-103 needsEscalation: repetition with both approvals does not escalate
+OK   p1-103 needsEscalation: no repetition, no escalation
+OK   p1-059 forensicDue: never ran
+OK   p1-059 forensicDue: unparsable date
+OK   p1-059 forensicDue: within 7 days
+OK   p1-059 forensicDue: older than 7 days
+OK   p1-059 extractReport: body before marker, echo-safe
+OK   p1-059 extractReport: missing marker keeps everything
+OK   p1-059 forensicPrompt carries the sections + marker
+OK   p1-059 listGateFails: missing dir → []
+OK   p1-059 listGateFails: sorted by mtime desc
+OK   p1-059 listGateFails: cap keeps most recent
+OK   p1-035 startHeartbeat: touches >=2x while armed
+OK   p1-035 startHeartbeat: stop() halts all touches
+OK   p1-035 runAgent: silent agent resolves ok with empty output
+OK   p1-035 runAgent: silent agent fed the watchdog (>=2 beats in 300ms)
+OK   p1-035 runAgent: preflight failure aborts before spawn
+OK   p1-035 runAgent: no heartbeat armed on preflight failure
+OK   p1-061 localWsUrl builds ws://127.0.0.1:<port>/ws?token=…
+OK   p1-061 localWsUrl encodes the token
+OK   p1-061 failover predicate: 0 and 1 failures stay sticky local
+OK   p1-061 failover predicate: 2 consecutive failures hand over to relay
+OK   p1-061 isLoopbackAddr: v4, v6 and v4-mapped
+OK   p1-061 isLoopbackAddr: foreign addr rejected
+OK   p1-061 origin: absent (non-browser) allowed
+OK   p1-061 origin: Electron loadFile allowed
+OK   p1-061 origin: loopback pages allowed
+OK   p1-061 origin: arbitrary web pages rejected
+OK   p1-061 upgrade predicate: exact path + loopback + origin + token
+OK   p1-061 no daemon log call contains token=
+OK   p1-046 openChat sets chatSession and pushes the chat slot
+OK   p1-046 opening a pane keeps the active chat (chat + artifact coexist)
+OK   p1-046 opening a second pane leaves exactly ONE active rail slot
+OK   p1-046 back() pops the pane stack
+OK   p1-046 back() to chat keeps the session
+OK   p1-046 back() from chat closes the conversation and lands home
+OK   p1-046 topSlot falls back to chat on the home screen
+OK   p1-046 share enters and leaves the stack without touching the chat
+OK   p1-046 the stack never holds duplicates
+OK   p1-046 replace() swaps the top slot, preserving the chat below
+OK   p1-046 reset() clears the whole view state (disconnect/switchMachine)
+OK   p1-046 back() on the home screen is a no-op
+OK   p1-046 closeChat clears the session and drops the chat slot
+OK   doc2pdf allowlist is exactly the office formats
+OK   doc2pdf accepts .docx
+OK   doc2pdf accepts .doc
+OK   doc2pdf accepts .rtf
+OK   doc2pdf accepts .html
+OK   doc2pdf accepts .csv
+OK   doc2pdf accepts .xlsx
+OK   doc2pdf accepts .pptx
+OK   doc2pdf rejects disallowed extension
+OK   doc2pdf rejects file without extension
+OK   doc2pdf rejects dotfile as extension-less
+OK   doc2pdf rejects trailing-dot name
+OK   doc2pdf accepts uppercase extensions
+OK   doc2pdf empty ext is empty string
+OK   doc2pdf soffice wins wherever it appears
+OK   doc2pdf falls back to native on darwin
+OK   doc2pdf native unusable on linux
+OK   doc2pdf soffice usable on linux
+OK   doc2pdf no candidates means no converter
+OK   doc2pdf malformed candidates are ignored
+OK   doc2pdf non-array candidates fail graceful
+OK   forensic: task with pipeline start builds timeline
+OK   forensic: title captured from pipeline start
+OK   forensic: timeline sorted by parsed instant across sources
+OK   forensic: merged card status
+OK   forensic: rounds counted from phase entries
+OK   forensic: gate fails counted
+OK   forensic: effort in minutes from wall clock
+OK   forensic: merge sha parsed from deploy detail
+OK   forensic: decisions include events.jsonl narration
+OK   forensic: gate tail kept for navigation
+OK   forensic: running card without result
+OK   forensic: ETA projects avg minus elapsed
+OK   forensic: narration attributed to latest task context
+OK   forensic: avg duration from ok results only
+OK   forensic: progress full for merged task
+OK   forensic: partial progress for running
+OK   forensic: shots filtered by task prefix
+OK   forensic: shot path validation rejects traversal
+OK   forensic: shot path accepts real shape
+OK   forensic: takeover extraction from real builder log lines
+OK   takeover: real workspace clone accepted
+OK   takeover: shell breakout rejected
+OK   takeover: $() command substitution rejected
+OK   takeover: backtick substitution rejected
+OK   takeover: AppleScript trailing-backslash breakout rejected
+OK   takeover: single quote rejected (shell quote escape)
+OK   takeover: path escaping the pilot root rejected
+OK   takeover: path outside pilot root rejected
+OK   takeover: non-repo child of pilot root rejected
+OK   takeover: relative path rejected
+OK   takeover: missing value rejected
+OK   takeover: session id only ses_<alnum>
+OK   takeover: hostile session id rejected
+OK   takeover: missing session id rejected
+OK   i18n: en and pt share the exact same key set
+OK   i18n: no empty strings in either locale
+OK   i18n: vars interpolatable in both locales
+OK   i18n conn: every connection-screen key resolves per locale (no raw-key fallback)
+OK   i18n conn pt: banner, recovery action and scanner copy are pt-BR
+OK   i18n conn en: banner, recovery action and scanner copy are English
+OK   i18n conn: deskGreeting interpolates {machine} in both locales
+OK   i18n conn: no hardcoded pt copy in the desktop empty state
+OK   i18n conn: no hardcoded en copy in the QR scanner
+OK   degraded: never-seen daemon down is a first contact, not an incident
+OK   degraded: daemon down after a healthy poll is the incident state
+OK   degraded: reconnecting wins regardless of the seen marker (watchdog never gives up)
+OK   degraded: no shell state → no degraded journey
+OK   degraded: healthy poll (mode=local) stamps the seen marker
+OK   degraded: outage states never stamp the seen marker
+OK   degraded: journey copy resolves per locale (no raw-key fallback)
+OK   costs: session id charset guard
+OK   costs: total sums input+output+both caches
+OK   costs: parser keeps canonical ids only
+OK   costs: parser survives garbage
+OK   costs: sql inlines validated ids
+OK   costs: query maps session → total tokens
+OK   costs: query failure rejects instead of throwing sync
+OK   costs: applySessionCosts records the task total
+OK   costs: non-session ids are filtered before the query
+OK   costs: re-applied session recomputes instead of double counting
+OK   costs: a second session adds to the task total
+OK   costs: failed DB read keeps the previous total
+OK   costs: hostile task id is ignored
+OK   costs: rolling window prunes oldest tasks
+OK   pricing: GLM-5.2 is tier A with Z.ai list prices
+OK   pricing: Sonnet 4.6 is tier B with Anthropic list prices
+OK   pricing: sources are cited with an as-of date
+OK   pricing: GLM 1M+1M+1M = $6.06 all tier A
+OK   pricing: Sonnet 1M of each = $22.05 all tier B
+OK   pricing: unpriced models are counted, never converted to $0
+OK   pricing: empty breakdown prices to zero
+OK   pricing: model column json blob normalizes to the id
+OK   pricing: legacy plain-string model normalizes too
+OK   pricing: missing/garbage model → unknown
+OK   pricing: reconciler folds tier-A usd from the model column
+OK   pricing: legacy totals-only fold counts tokens as unpriced
+OK   pricing: __proto__/constructor keys price as unpriced, never NaN
+OK   pricing: __proto__ model cannot pollute Object.prototype or drop tokens
+OK   pricing: __proto__ passes through normalization as an inert key
+OK   pricing: re-fold replaces instead of double counting
+OK   cache: rows parser keeps canonical ids and 4-way breakdown
+OK   cache: rows parser survives garbage
+OK   cache: rows query maps session → breakdown
+OK   cache: totals view still sums all four kinds
+OK   cache: breakdown folded into taskCache
+OK   cache: totals path unchanged by the fold
+OK   cache: fold returns the log payload with the hit ratio
+OK   cache: re-fold replaces instead of double counting
+OK   cache: failed DB read keeps the previous fold
+OK   cache: ratio helper
+OK   slot cache: fold returns the log payload with the slot
+OK   slot cache: fold writes the breakdown under the slot key
+OK   slot cache: re-fold replaces instead of accumulating
+OK   slot cache: slots fold independently
+OK   slot cache: nothing to fold → null, store untouched
+OK   slot cache: zero-denominator ratio stays 0
+OK   cache: rolling window prunes taskCache in lockstep
+OK   cache: loadState backfills taskCache for legacy files
+OK   cache: loadState backfills slotCache for legacy files (P1-078)
+OK   cache: normalizePilotState backfills slotCache
+OK   doctor refs: runs the exact fetch+reset+clean sequence
+OK   doctor refs: ok and reports the HEAD move
+OK   doctor refs: idempotent — same HEAD logs changed=false
+OK   doctor refs: failed reset reports the step
+OK   doctor backlog: healthy sections + unique ids
+OK   doctor backlog: missing ## Done is a problem
+OK   doctor backlog: missing ## Ready is a problem
+OK   doctor backlog: duplicate ids detected across sections
+OK   doctor backlog: ids quoted inside a spec are not duplicates
+OK   doctor backlog: loadBacklog path counts ready tasks
+OK   doctor backlog: missing file is a finding, not a crash
+OK   doctor attempts: clear one id
+OK   doctor attempts: clearing an unknown id is a no-op
+OK   doctor attempts: clear all
+OK   doctor attempts: clearing empty state stays zero
+OK   doctor state: normalizePilotState fills schema defaults
+OK   doctor attempts args: no flag reports
+OK   doctor attempts args: --clear <id> clears one
+OK   doctor attempts args: bare --clear errors
+OK   doctor attempts args: --clear <garbage> errors
+OK   doctor attempts args: --clear <unknown id> errors
+OK   doctor attempts cli: report leaves every counter alone
+OK   doctor attempts cli: bare --clear is rejected
+OK   doctor attempts cli: --clear <id> clears and persists
+OK   doctor attempts cli: garbage id rejected
+OK   doctor state: legacy/garbage fields normalized
+OK   doctor state: idempotent — second pass changes nothing
+OK   doctor state: corrupt file reset to defaults
+OK   doctor branches: deletes only PR-less branches
+OK   doctor branches: open PR is skipped
+OK   doctor branches: gh failure is fail-safe (skip)
+OK   doctor branches: preserved retry branch is protected
+OK   doctor branches: protected branch is not deleted
+OK   doctor branches: checked-out branch never deleted
+OK   doctor branches: preserved retry branch is protected
+OK   doctor branches: gh down skips every branch
+OK   doctor branches: off-shape refname skipped unmanaged
+OK   doctor branches: off-shape refname never reaches a shell command
+OK   doctor branches: valid task branch still deleted next to it
+OK   doctor branches: failed deletion reports ok=false
+OK   recency: noon today is today
+OK   recency: 5 minutes ago is today
+OK   recency: noon yesterday is yesterday
+OK   recency: 8 days ago is earlier
+OK   recency: unknown (0) is earlier
+OK   recency: NaN is earlier
+OK   recency: small clock skew into the future stays today
+OK   recency: 1h wall-clock gap across midnight is yesterday, not today
+OK   recency: boundary — exactly local midnight today is today
+OK   recency: boundary — 1ms before local midnight is yesterday
+OK   recency: boundary — exactly yesterday's local midnight is yesterday
+OK   recency: boundary — 1ms before yesterday's midnight is earlier
+OK   recency: groupByRecency buckets and preserves recency order
+OK   archive: newest archived first
+OK   archive: re-archiving dedupes to the front
+OK   archive: restore removes only the target
+OK   archive: archived set is capped
+OK   preview: the LAST text event wins per session
+OK   preview: whitespace is collapsed to one line
+OK   preview: long text clipped with an ellipsis
+OK   preview: sessions without text have no entry
+OK   preview: clipPreview trims the edges
+OK   hotfix: inline VERDICT mention passes spec guard
+OK   hotfix: line-leading fake output still rejected
+OK   p2-124 accountInitial: simple name → first letter uppercase
+OK   p2-124 accountInitial: whitespace only → empty
+OK   p2-124 accountInitial: leading digits count
+OK   p2-124 accountInitial: accented letter uppercases
+OK   p2-124 accountInitial: no letter/digit → empty (avatar glyph)
+OK   p2-124 accountPlanKey: local daemon → planLocal
+OK   p2-124 accountPlanKey: anything else → planRemote
+OK   p2-124 i18n en: all 10 sidebar keys exist and are non-empty
+OK   p2-124 i18n en: planLocal reads as local
+OK   p2-124 i18n pt: all 10 sidebar keys exist and are non-empty
+OK   p2-124 i18n pt: planLocal reads as local
+OK   P2-127: tsc emits a runnable relay dist
+OK   P2-127: GET /healthz answers 200 with ok json
+OK   P2-127: both sockets joined the same room
+OK   P2-127: sealed frame round-trips and opens with the right AAD
+OK   P2-127: wrong seq or sender cannot open the payload
+OK   P2-127: SIGTERM ends the relay cleanly (exit 0)
+UNIT TESTS PASSED
+OK   detect: package name opencode-remote → pilot battery, byte-identical commands
+OK   detect: apps/pilot source tree → pilot even under a foreign package name
+OK   detect: foreign TS repo with the conventional trio → 3 allowlisted steps, no pilot-only ones
+OK   detect: allowlist is exactly the conventional trio
+OK   detect: package-lock.json present → lock-sync joins the battery
+OK   detect: no lockfile → no lock-sync; missing build/unit scripts → steps skipped, kind stays node
+OK   detect (P1-056): scripts outside the allowlist are never scheduled — only unit runs
+OK   detect: no package.json → unknown (fail closed)
+OK   detect: broken package.json JSON → unknown
+OK   detect: package.json without scripts → node with zero steps
+OK   script names: npm charset only, no shell metacharacters survive
+OK   gate: foreign repo battery green — trio ran, nothing else
+OK   gate: build step executed with cwd = the foreign repo's own sandbox
+OK   gate (P1-056): decoy scripts (prepare/evil) never executed, no lockfile → no lock-sync
+OK   gate: unknown profile → red at step profile, before any command executes
+
+all gate-profile checks passed
+OK   spec pin: two loopback URLs in order (canonicalized)
+OK   https://example.com and portless http://localhost never match
+OK   the daemon's own port 8792 is ignored (no self-preview)
+OK   https on loopback is allowed
+OK   invalid ports (0, >65535) are ignored
+OK   port 65535 is valid
+OK   trailing punctuation is not part of the URL
+OK   max 4 URLs per call
+OK   repeated URL inside one call is emitted once
+OK   URL longer than 2048 chars is ignored
+OK   empty/garbage input is safe
+OK   first emission of sessionID:url passes
+OK   same sessionID:url within the TTL is dropped
+OK   same url on a DIFFERENT session passes
+OK   same sessionID:url after the 10min TTL passes again
+OK   cap evicts the oldest entry
+OK   cap: evicted entry can be emitted again
+OK   wiring: assistant part emits with the PART-level sessionID (SDK TextPart source)
+OK   wiring: properties.sessionID is the fallback when the part carries none
+OK   wiring: part.sessionID wins over properties.sessionID
+OK   wiring: fail closed — unknown/evicted role emits NOTHING
+OK   wiring: user part emits NOTHING
+OK   wiring: empty sessionID drops the candidate (no cross-session dedupe key)
+OK   wiring: non-text part and foreign event type emit NOTHING
+OK   wiring: streamed user echo suppressed, assistant part emitted
+OK   spec pin: ocr.preview envelope parses to {sessionID, url}
+OK   non-preview events are rejected
+OK   missing envelope is rejected
+OK   missing url is rejected
+OK   non-http url is rejected
+OK   normalizeHttpUrl keeps https
+OK   normalizeHttpUrl rejects ftp/file
+OK   normalizeHttpUrl rejects garbage
+OK   prompt still carries the artifacts marker
+OK   P1-072: prompt now PERMITS http.server and asks the agent to mention http://localhost:<porta>
+OK   P1-072: the old prohibition is gone
+
+preview tests: all green
+OK   P1-064 e2e: 500-message session tail paints in <2s (511ms)
+OK   P1-064 e2e: exactly one paged history op on session open
+OK   P1-064 e2e: exactly one opencode history fetch behind it
+OK   P1-064 e2e: served page stays under 100KB (10131B)
+OK   P1-064 e2e: drawer toggle issues no second history fetch
+message paging e2e: all green
+OK   acceptance 1: repeat id replaces in place, id-less appended (5 unique ids)
+OK   acceptance 1: order a1..a4,u1,a5 with the replacement at a1's slot
+OK   acceptance 1: existing list is not mutated (pure merge)
+OK   acceptance 1: replay is idempotent
+OK   resync: history entries replace streamed versions in place
+OK   multi-part message collapses to one bubble
+OK   id-less replay: identical optimistic bubble is not duplicated
+OK   id-less: distinct optimistic user messages both survive
+OK   images-only history bubble survives when its id is not in incoming
+OK   fetched page version replaces a same-id bubble in place (with its own images)
+bubble merge: all green
+OK   reasoning part creates an expanded state
+OK   first reasoning part anchors startedAt
+OK   latest reasoning snapshot wins, startedAt preserved
+OK   answer text freezes the thinking window (collapsed)
+OK   endedAt pinned at the first text part
+OK   reasoning after text reopens the block (endedAt reset)
+OK   session.idle freezes the window (collapsed)
+OK   seconds round to whole values (5s window)
+OK   seconds floor at 1 (sub-second thinking)
+OK   seconds round up (2.5s -> 3)
+OK   events of other sessions are ignored
+OK   tool part creates no thinking state
+OK   empty reasoning snapshot is ignored
+OK   tool part mid-turn does NOT freeze the window (stays expanded)
+OK   tool part mid-turn leaves endedAt untouched
+OK   file part mid-turn does NOT freeze the window
+OK   reasoning after a tool part keeps the original startedAt
+OK   answer text freezes the window even after mid-turn tool parts
+OK   history: reasoning renders as the thinking block above the answer
+OK   history: user rows never carry thinking
+OK   history: thinking block starts collapsed (no secs in history)
+OK   live: active thinking is expanded
+OK   live: finalized thinking is collapsed
+OK   no thinking at all: collapsed decision is false (null-safe)
+thinking state: all green
+OK   one line of text keeps the single-line height
+OK   three lines grow to three line-heights + padding
+OK   a 40-line paste clamps to the 6-line cap
+OK   zero/negative scrollHeight floors at one line
+OK   sub-pixel scrollHeights round up to one line
+OK   degenerate line-height is floored at 1px
+OK   fractional computed line-height rounds to whole px
+OK   label joins agent and model
+OK   label with default model shows only the agent
+OK   label with empty agent shows only the model
+OK   label with nothing set is empty
+
+composer helpers: all green
+OK   en: zero emoji/glyph-as-icon strings
+OK   pt: zero emoji/glyph-as-icon strings
+OK   en pushOn is plain
+OK   pt pushOn is plain
+OK   en copied is plain
+OK   pt rewindBtn is plain
+OK   en/pt stay key-aligned
+
+all i18n-emoji checks passed
+OK   short text passes through
+OK   whitespace collapses
+OK   two sentences kept
+OK   long text is clipped to budget
+OK   long clip ends at sentence boundary
+OK   long clip keeps the first sentence
+OK   no-boundary text cut at word edge with ellipsis
+OK   fenced code is stripped
+OK   inline code keeps its content
+OK   link keeps the label
+OK   empty stays empty
+OK   pilot and daemon pressure math agree
+OK   web red band matches the pilot recycle threshold
+OK   50% of the window is 50
+OK   0 tokens is 0% pressure
+OK   zero window is 0% (no divide-by-zero)
+OK   negative window is 0%
+OK   NaN tokens are 0%
+OK   over the window caps at 100%
+OK   warn threshold at 70%
+OK   critical threshold at 85%
+OK   isContextCritical matches the 85% threshold
+OK   over-window pressure is still critical
+OK   bare model key resolves
+OK   qualified model key resolves
+OK   unknown provider is 0
+OK   unknown model is 0
+OK   zero context is 0 (fail-open)
+OK   session token total sums all five kinds
+OK   parseRecap extracts the body
+OK   parseRecap drops the trailing noise
+OK   parseRecap on malformed output is empty
+OK   recapBlock is empty for an empty recap
+OK   recapBlock explains the clean recycle
+OK   builderPrompt carries the recap block
+OK   builderPrompt without recap has no block
+OK   recapPrompt asks for task/findings/next-step
+OK   loadRecapCarry on a fresh task is null
+OK   saveRecapCarry round-trips
+OK   carryover id guard: traversal id is a no-op
+OK   clearRecapCarry removes the file
+OK   recordContextPressure keeps the last 8 samples
+OK   recordContextPressure drops NaN
+OK   fetchSessionContext returns the pressure
+OK   fetchSessionContext tokens = DB columns sum
+OK   fixture session sits in the critical band
+OK   fetchSessionContext rejects junk ids
+OK   fetchSessionContext fail-open on session error
+OK   fetchSessionContext fail-open on unknown model
+OK   fetchSessionContext fail-open on provider error
+OK   fetchSessionContext fail-open when the server is down
+OK   critical session → recycle decision
+OK   applyCheckpoint kills the session (fresh one opens next round)
+OK   applyCheckpoint never burns an attempt (infra, P1-074)
+OK   applyCheckpoint drops the killed session from the resume block
+OK   resumable subagent task ids survive the recycle
+OK   sub-critical session is not recycled
+OK   applyCheckpoint is an identity below the threshold
+OK   unusable recap keeps the session (fail-open)
+OK   unmeasurable session is fail-open
+OK   no session → no checkpoint
+OK   recycled round prompt no longer advertises the killed session via -s
+OK   recycled round prompt carries the recap
+OK   dropResumeSession on null is null
+OK   empty cache misses
+OK   fresh cache hits the bare model key
+OK   fresh cache hits the qualified model key
+OK   stale cache misses (TTL)
+OK   unknown model misses even when fresh
+OK   zero-context models are not cached
+OK   clear forces a miss
+OK   buildWindowMap matches contextWindowFor
+OK   pilot and daemon window lookups agree (bare key)
+OK   pilot and daemon window lookups agree (qualified model id)
+OK   pilot and daemon window lookups agree (m.id alias)
+OK   pilot and daemon window lookups agree (m.id alias via catalog key)
+OK   pilot and daemon window lookups agree (provider-qualified catalog key)
+OK   pilot and daemon window lookups agree (unknown model)
+OK   pilot and daemon window lookups agree (unknown provider)
+OK   recapBlock promises a clean recycle with no attempt burned
+OK   the critical predicate alone drives the recycle
+OK   firstSentence takes the first sentence
+OK   firstSentence handles ? and !
+OK   firstSentence collapses whitespace/newlines
+OK   firstSentence caps long text with an ellipsis
+OK   firstSentence empty is empty
+
+all green
+OK   bucket: burst capacity fills (10 takes)
+OK   bucket: rejects when empty
+OK   bucket: partial refill after 12s
+OK   bucket: refills to full after 60s
+OK   bucket: rejects again after drain
+OK   bucket: legitimate rate never exhausts
+OK   relay: legitimate client passes and is routed
+OK   relay: legitimate client not disconnected
+OK   relay: flooded device disconnected with 4xxx
+OK   relay: self-declared owner is rate limited too
+OK   relay: join/empty frames accounted in the budget
+OK   metrics: rate_limited_total counted the floods
+OK   relay: default budget passes 900-frame chunk storm
+OK   relay: chunk-storm socket not disconnected
+relay-ratelimit: ALL OK
+OK   payload: ok is literal true
+OK   payload: version is the monorepo version
+OK   payload: uptimeS is whole seconds
+OK   payload: rooms is the live count
+OK   payload: roomsRejected is the live counter
+OK   payload: exactly the five specified fields
+OK   payload: clamps negative uptime
+OK   handler: GET /healthz answers 200
+OK   handler: content-type application/json
+OK   handler: body shape {ok,version,uptimeS,rooms,roomsRejected}
+OK   handler: rooms reflects live room count
+OK   handler: roomsRejected reflects live counter
+OK   handler: query string tolerated
+OK   handler: other paths get 404
+OK   handler: non-GET on probe path gets 404
+relay-healthz: ALL OK
+OK   ipcap: admits up to the cap
+OK   ipcap: cap+1 is refused
+OK   ipcap: other IPs unaffected
+OK   ipcap: counts reflects live slots
+OK   ipcap: release reopens a slot
+OK   ipcap: refused attempt adds no count
+OK   ipcap: last release drops the entry
+OK   ipcap: release of unknown IP is a no-op
+OK   ipcap: 0 disables — every admit passes
+OK   ipcap: 0 disables — no state kept
+OK   ipcap: 0 disables — release is a no-op
+OK   normalize: mapped IPv4 unmasks to the plain IPv4
+OK   normalize: plain IPv4 passes through
+OK   normalize: mapped and plain share the bucket
+OK   normalize: mapped hex tail unmasks too
+OK   normalize: IPv6 loopback stays
+OK   normalize: /64 key is the compressed lowercase prefix
+OK   normalize: uncompressed and compressed /64 siblings agree
+OK   normalize: neighbor /64 aggregates differently
+OK   normalize: trailing-zero prefix compresses
+OK   normalize: garbage degrades to raw key
+OK   ipcap: mapped addr takes the plain-IPv4 budget
+OK   ipcap: release via the mapped twin reopens for plain
+OK   ipcap: same /64 shares budget
+OK   ipcap: same /64 cap+1 is refused
+OK   ipcap: neighbor /64 unaffected
+OK   ipcap: counts keys are normalized
+OK   clientIp: hops 0 ignores a forged header
+OK   clientIp: absent header with hops 0 uses remoteAddress
+OK   clientIp: fractional hops floor to the integer part
+OK   clientIp: hops 1 in a two-entry chain picks the rightmost entry
+OK   clientIp: hops 2 in the same chain picks the leftmost entry
+OK   clientIp: chain shorter than hops falls back
+OK   clientIp: absent header with hops > 0 falls back
+OK   clientIp: malformed chosen entry falls back
+OK   clientIp: malformed entry at hop position falls back
+OK   clientIp: out-of-range octet is not a valid address
+OK   clientIp: mapped remoteAddress normalizes with hops 0
+OK   clientIp: mapped IPv4 in the trusted hop unmasks too
+OK   clientIp: trusted IPv6 hop aggregates by /64
+OK   ipcap: trusted hop key shares the plain-IPv4 budget
+OK   relay: connections under the cap are admitted
+OK   relay: cap+1 from the same IP is refused
+OK   relay: refusal closes with 1013 'too many connections'
+OK   relay: admitted peers unaffected by the refusal
+OK   relay: released slot is reusable (close handler)
+OK   relay: previously admitted peer still open
+OK   relay: IPv6 loopback has its own bucket
+OK   relay: disabled cap admits any number of connections
+OK   relay: disabled cap never closes a connection
+relay-ipcap: ALL OK
+OK   validator: daemon-shaped 32-hex id is valid
+OK   validator: 8-char lower bound is valid
+OK   validator: 128-char upper bound is valid
+OK   validator: underscores and hyphens are valid
+OK   validator: uppercase is valid
+OK   validator: 7 chars is too short
+OK   validator: 129 chars is too long
+OK   validator: empty string is invalid
+OK   validator: space is invalid
+OK   validator: dot is invalid
+OK   validator: slash is invalid
+OK   validator: control char is invalid
+OK   validator: unicode is invalid
+OK   validator: numbers are invalid
+OK   validator: null is invalid
+OK   validator: objects are invalid
+OK   rooms: valid daemon-shaped id joins and routes
+OK   rooms: 9th distinct room is dropped
+OK   rooms: capped socket is not disconnected
+OK   rooms: re-join of an existing room passes at the cap
+OK   rooms: invalid ids are counted as rejected
+OK   rooms: socket survives invalid-id frames
+OK   rooms: another socket can still open a new room
+OK   rooms: /metrics prom exposes relay_rooms_rejected
+OK   rooms: /metrics json exposes rooms_rejected
+OK   rooms: /healthz exposes rooms_rejected
+OK   rooms: /healthz never leaks room ids
+relay-rooms: ALL OK
+OK   liveness: fresh pong survives
+OK   liveness: silent beyond interval+grace is stale
+OK   liveness: exactly interval+grace silent survives (strict bound)
+OK   liveness: interval 0 disables the sweep
+OK   liveness: negative interval disables the sweep
+OK   liveness: unmarked peer is never swept
+OK   liveness: grace 0 makes one interval the budget
+OK   liveness: only the stale peer is returned
+OK   liveness: silent peer is terminated within budget
+OK   liveness: termination carries no close frame (1006)
+OK   liveness: heartbeating peer survives the sweeps
+OK   liveness: stale_terminated counter incremented
+OK   liveness: reaped peer's room released (2 rooms -> 1)
+OK   liveness: reaped socket frees the per-IP slot
+OK   metrics: relay_stale_terminated exposed in prom format
+OK   liveness: interval 0 keeps silent peers connected
+OK   liveness: interval 0 never increments the reaper counter
+relay-liveness: ALL OK
+OK   append: file created under userData/logs
+OK   append: message and payload present
+OK   append: line has local timestamp + level
+OK   append: mirror sink received the line
+OK   append: error level flagged
+OK   append: Error serialized with message
+OK   append: two entries total (stacks may span lines)
+[2026-09-04T04:39:09.142-03:00] [log] L1-first
+[2026-09-04T04:39:09.142-03:00] [log] L2-second
+[2026-09-04T04:39:09.142-03:00] [log] L3-third
+OK   cap: rotated previous file exists
+OK   cap: previous file holds the old lines
+OK   cap: active file holds only post-rotation lines
+[2026-09-04T04:39:09.143-03:00] [log] line-0
+[2026-09-04T04:39:09.143-03:00] [log] line-1
+[2026-09-04T04:39:09.143-03:00] [log] line-2
+[2026-09-04T04:39:09.143-03:00] [log] line-3
+[2026-09-04T04:39:09.143-03:00] [log] line-4
+[2026-09-04T04:39:09.143-03:00] [log] line-5
+[2026-09-04T04:39:09.143-03:00] [log] line-6
+[2026-09-04T04:39:09.144-03:00] [log] line-7
+[2026-09-04T04:39:09.144-03:00] [log] line-8
+[2026-09-04T04:39:09.144-03:00] [log] line-9
+OK   rotation: only 2 files kept
+OK   rotation: active file still appends
+OK   failing fs: never throws
+OK   failing fs: mirror still receives every line
+[2026-09-04T04:39:09.145-03:00] [log] before-wipe
+[2026-09-04T04:39:09.145-03:00] [log] after-wipe
+OK   ENOENT: recreating dir keeps logging without throw
+OK   rotate: renames active → .1
+OK   rotate: failed rotation is a false, not a throw
+OK   formatLine: assembles timestamp, level and message
+OK   serializePart: null/undefined become String()
+OK   serializePart: circular object does not throw
+OK   serializePart: Error keeps stack
+OK   formatTimestamp: offset-suffixed local time
+OK   LOG_CAP_BYTES is ~1MB
+OK   pipe guard: attaches an error listener per stream
+OK   pipe guard: unattachable stream is skipped, never throws
+
+desktop log tests: all green
+OK   parse: valid record passes
+OK   parse: garbage is null
+OK   parse: negative pid rejected
+OK   parse: zero pid rejected
+OK   parse: missing startedAt rejected
+OK   parse: non-number startedAt rejected
+OK   path: record lives inside userData
+OK   read: missing file is null
+OK   write: valid record persists
+OK   read: round-trip returns the record
+OK   write: unwritable path is false, never throws
+OK   read: corrupted content is null
+OK   zombie: alive + earlier start warns
+OK   zombie: alive + unknowable lstart still warns (fail direction = warn)
+OK   zombie: dead holder stays quiet
+OK   zombie: same pid (reboot reuse of our own record) stays quiet
+OK   zombie: ps proves a younger process (PID reuse) stays quiet
+OK   zombie: clock-skewed future record stays quiet
+OK   lstart: BSD line parses into the right local date
+OK   lstart: garbage is null
+OK   lstart: empty is null
+OK   startedBefore: null ps output is unknowable
+OK   startedBefore: one minute ago is earlier
+OK   startedBefore: future-dated process is NOT earlier (PID reuse)
+OK   startedBefore: unparsable line is unknowable
+OK   leash: absent env is null
+OK   leash: garbage is null
+OK   leash: pid 0/1 rejected
+OK   leash: own pid rejected
+OK   leash: foreign pid accepted
+OK   sanity: record file content is compact JSON
+
+all instance-hygiene tests passed
+OK   mac: complete bundle has no problems
+OK   mac: removed daemon/index.js is reported with its bundle path
+OK   mac: removed web-dist/index.html is reported
+OK   mac: lists all problems, not just the first
+OK   mac: removed binary is reported
+OK   win: complete win-unpacked has no problems
+OK   win: missing .exe is reported
+OK   linux: complete linux-unpacked has no problems
+OK   linux: missing executable is reported
+OK   missing dir: reported clearly
+OK   resolve: finds the .app nested under dist
+OK   resolve: falls back to the -unpacked dir carrying resources/
+OK   resolve: null when nothing matches
+OK   resolve: null when dist root absent
+OK   findDmg: no dmg in a fresh dist root
+OK   findDmg: finds the dmg file
+OK   findDmg: directory named .dmg is not an artifact
+OK   findDmg: absent dist root → null
+
+dist-smoke tests: all green
+OK   append: file created under userData/logs
+OK   append: chunk bytes verbatim
+OK   append: subsequent chunks accumulate in order
+OK   cap: previous file holds the rotated-out line
+OK   cap: active file holds the newest line
+OK   cap: only 2 files kept
+OK   cap: active file still appends after rotations
+OK   failing fs: never throws
+OK   failing fs: every failure reported through the sink
+OK   oversized: lineless chunk flushed to disk
+OK   process tee: no-op (no throw) before init
+OK   process tee: chunk lands in the installed file
+OK   defaults: cap is ~1MB and 2 files kept
+
+sidecar log tests: all green
+OK   clientLogsDir: under ~/.opencode-remote/pilot/client-logs
+OK   crashFileName: sortable local timestamp + safe kind
+OK   formatCrashReport: kind + version + detail (ISO stamp, TZ-independent)
+OK   writeCrashReport: retention keeps the newest 20 files
+OK   writeCrashReport: exactly the newest files survive (oldest pruned)
+OK   writeCrashReport: detail carries the reason
+OK   diagnostics: app + electron version present
+OK   diagnostics: reconnecting attempt surfaced
+OK   diagnostics: crash file names present
+OK   diagnostics: update status present
+OK   diagnostics: log tail embedded
+OK   diagnostics: DIAG_LOG_TAIL is bounded (support-friendly)
+OK   diagnostics: healthy daemon wording
+OK   resolveUpdatePath: root feed.json
+OK   resolveUpdatePath: versioned artifact
+OK   resolveUpdatePath: encoded space decodes
+OK   resolveUpdatePath: empty → null
+OK   resolveUpdatePath: traversal .. → null
+OK   resolveUpdatePath: dot segment → null
+OK   resolveUpdatePath: dotfile → null
+OK   resolveUpdatePath: unknown extension → null
+OK   resolveUpdatePath: malformed escape → null
+OK   resolveUpdatePath: yml allowed
+OK   content types: zip + json + yml mapped
+OK   updatesDir: ~/.opencode-remote/updates
+
+client-ready tests: all green
+OK   alert: empty feed → null (chip stays dark)
+OK   alert: ignores unrelated events
+OK   alert: down verdict
+OK   alert: newest verdict wins (recovery clears)
+OK   alert: newest verdict wins (later down alerts)
+OK   enabled: no env, no plist → off
+OK   enabled: env url → on
+OK   enabled: plist present → on
+OK   watch: first healthy probe is silent (assumed up)
+OK   watch: one transition per flip, nothing else
+OK   server: /healthz answers 200 with ok:true
+OK   server: healthz payload shape
+OK   server: / serves index.html
+OK   server: asset served with js mime
+OK   server: hashed assets are immutable
+OK   server: sw.js is no-cache
+OK   server: unknown path → 404
+OK   server: traversal rejected
+OK   server: POST → 405
+OK   tls: openssl generated the throwaway certificate
+OK   tls: /healthz answers over https
+ALL OK
+OK   dedupe: 10 events with the same permissionID → 1 ask
+OK   dedupe: last occurrence wins (label updated)
+OK   normalize: legacy `id` field dedupes like permissionID
+OK   filter: events from other sessions are ignored
+OK   filter: non-permission events are ignored
+OK   origin: auto event marks the ask auto (real-time flip)
+OK   origin: plain ask is not auto
+OK   reconcile: pending + not responded + manual → actionable
+OK   reconcile: no resolved line while still pending
+OK   reconcile: gone from server pending → resolved, never actionable
+OK   reconcile: human-resolved origin is 'other'
+OK   reconcile: locally answered + still listed → no ghost card, no premature line
+OK   reconcile: autoMode=true → 0 actionable even with pending asks
+OK   reconcile: autoMode pending ask is not claimed as resolved
+OK   reconcile: auto-approved origin is 'auto'
+OK   reconcile: server pending seeds actionable without events (pre-mount asks)
+OK   reconcile: mixed board (a responded, b pending, c auto) splits correctly
+OK   404: mapped to already-resolved
+OK   404: other statuses keep the raw error path
+OK   autoFailed: autoMode + pending + recorded failure → 1 actionable flagged autoFailed
+OK   autoFailed: AutoMode suppression unchanged for asks without a recorded failure
+OK   autoFailed: later ocr.permission.auto wins → resolved 'auto', not actionable
+OK   autoFailed: failure from another session is ignored (suppression intact)
+ALL OK
+OK   valid path parses into sessionID/name/kind
+OK   relative path resolves against the root
+OK   md extension maps to kind md
+OK   file at the root (no session dir) is ignored
+OK   deeper nesting is ignored
+OK   invalid session segment is ignored
+OK   path outside the root is ignored
+OK   symlink is never announced as an artifact
+OK   deleted file is ignored (stat race)
+OK   artifact followed by idle opens the pane
+OK   idle without a write never opens
+OK   several writes in one turn: the newest wins
+OK   other sessions' events never interfere
+OK   two idles after one write consume the pending artifact once
+OK   a write after the idle re-arms for the next idle
+OK   kind mirror: html/md/csv/pdf/image/text/binary
+OK   pre-existing artifact is never announced at boot
+OK   new write is announced once
+OK   chunked rewrite settles into one announcement per change
+OK   session dir created after boot is watched (race-free)
+OK   stop() silences the watcher
+OK   sessionTitleMap resolves known ids, trims and skips unusable rows
+OK   sessionTitleMap over a non-array is empty
+OK   sessionTitleMap with no ids is empty
+OK   listArtifactsDetailed parses artifacts + titles
+OK   listArtifacts keeps returning the flat array
+OK   listArtifactsDetailed on a non-200 is empty
+OK   legacy daemon without titles still lists artifacts
+artifact auto: all green
+OK   normalizeVersion: plain semver
+OK   normalizeVersion: v-prefix strip
+OK   normalizeVersion: version embedded in CLI banner
+OK   normalizeVersion: prerelease kept
+OK   normalizeVersion: garbage is null
+OK   new tag: outcome is diverged
+OK   new tag: lastOpencodeRelease recorded with {tag, publishedAt}
+OK   new tag: existing state fields preserved
+OK   new tag: exactly one event appended
+OK   new tag: event is an audit line carrying the chip keyword
+OK   new tag: a human-readable warn is logged
+OK   fresh runtime: outcome is fresh
+OK   fresh runtime: no field recorded
+OK   fresh runtime: no event emitted
+OK   fresh with stale record: outcome is fresh
+OK   fresh with stale record: stale field removed, rest preserved
+OK   fresh with stale record: no event emitted
+OK   caught up: outcome is fresh (not unchanged)
+OK   caught up: stale record removed
+OK   caught up: no event emitted
+OK   caught up: no log noise
+OK   first diverged run records
+OK   second run with the same tag is a no-op
+OK   second run emits no duplicate event
+OK   second run keeps the recorded tag
+OK   fetch hits the exact GitHub endpoint
+OK   append failure: outcome is still diverged
+OK   append failure: state left unrecorded so the next run retries
+OK   append failure: warn logged
+OK   append failure: a healthy rerun retries the full diverged path
+OK   API down: outcome is api-down
+OK   API down: warn logged
+OK   API down: state untouched
+OK   API down: no event emitted
+OK   API 503: also api-down without crash
+OK   malformed payload: api-malformed
+OK   malformed payload: no field recorded
+OK   malformed payload: no event
+OK   local unknown: outcome is local-unknown
+OK   local unknown: no field recorded
+OK   local unknown: no event
+OK   corrupt state: outcome is state-corrupt
+OK   corrupt state: file left untouched
+OK   corrupt state: no event
+OK   fetch sets a User-Agent
+OK   fetch sends no auth (public endpoint, read-only)
+OK   fetch carries an abort timeout
+OK   fetch timeout is the spec's 10s
+OK   event feed is trimmed to 400 lines
+OK   trim keeps the newest lines
+OK   readStateRaw: missing file is null
+OK   readStateRaw: array root is null (not an object shape)
+release-watch: all green
+OK   settled: running child is not settled
+OK   settled: normal exit is settled
+OK   settled: signal death is settled (signalCode, exitCode stays null)
+OK   settled: our own kill() marks it settled
+OK   envHasTempMarker: real operator env dump → false
+OK   envHasTempMarker: any env value under <tmpdir>/ocr- → true
+OK   envHasTempMarker: presence of OCR_E2E_MARKER → true
+OK   envHasTempMarker: presence of OCR_DESKTOP_SESSION → true
+OK   envHasTempMarker: presence of OCR_USER_DATA_DIR → true
+OK   envHasTempMarker: empty hatch value does not count as set
+OK   envHasTempMarker: clean empty env → false
+OK   collectCandidates: matches exactly the three e2e argv shapes
+OK   killOrphans (daemon): argv matches but clean env is SPARED (operator's real app)
+OK   killOrphans (daemon): argv + hermetic env is KILLED via SIGTERM
+OK   killOrphans (relay): argv matches but clean env is SPARED (operator's real app)
+OK   killOrphans (relay): argv + hermetic env is KILLED via SIGTERM
+OK   killOrphans (desktop): argv matches but clean env is SPARED (operator's real app)
+OK   killOrphans (desktop): argv + hermetic env is KILLED via SIGTERM
+OK   killOrphans: unreadable env is spared (fail-safe, never guess-kill)
+OK   killOrphans: SIGTERM survivor gets SIGKILL
+OK   bootOnEphemeralPort: happy path boots and returns the port
+OK   bootOnEphemeralPort: a readiness answer after the child was signal-killed is rejected as a port thief
+OK   bootOnEphemeralPort: signal-dead child fails the boot with a diagnostic
+OK   bootOnEphemeralPort: timeout names the port holder (lsof diagnostic)
+OK   poisoned decoy is running
+OK   readProcessEnv: argv KEY=VALUE tokens never become env entries
+OK   readProcessEnv: an <tmpdir>/ocr- path in ARGV does not mark the env (spare direction)
+OK   readProcessEnv: genuine env keys still parse (PATH present)
+OK   killOrphans: poisoned-argv process with clean env is SPARED end-to-end
+
+e2e-orphans tests: all green
+OK   backoff: base 2000 doubling per attempt (1,2,4,8)
+OK   backoff: capped at 30000ms from attempt 5 on
+OK   backoff: sequence is monotonic non-decreasing up to the cap
+OK   jitter: every delay within [0, min(cap, base*2^(n-1))]
+OK   jitter: random=0 collapses to immediate retry
+OK   jitter: constant random keeps the schedule monotonic
+OK   state: three schedules land on attempt 3
+OK   state: reset returns to attempt zero with no pending delay
+OK   state: after reset the next schedule restarts the ladder
+OK   health: snapshot is { attempt, nextDelayMs } with numeric fields
+OK   health: relayRetry null when connected, state object otherwise
+relay-backoff: all checks passed
+OK   match: v0.2.0 against 0.2.0/0.2.0 has no problems
+OK   match: prerelease semver tag is accepted
+OK   drift: root package.json reported by exact path
+OK   drift: apps/desktop/package.json reported by exact path
+OK   drift: both files stale → both reported at once
+OK   tag: missing leading v is reported even when versions match
+OK   tag: non-semver "banana" is reported
+OK   tag: non-semver "vbanana" is reported
+OK   tag: non-semver "v1.2" is reported
+OK   tag: non-semver "v1.2.3.4" is reported
+OK   tag: non-semver "v" is reported
+OK   cli: tag equal to the real versions exits 0
+OK   cli: mismatched tag exits 1 listing every problem
+OK   cli: non-semver tag exits 1
+
+release-preflight tests: all green
+warning: You appear to have cloned an empty repository.
+warning: You appear to have cloned an empty repository.
+warning: You appear to have cloned an empty repository.
+[desktop] window-state unreadable (/var/folders/v1/chbzjjpn1z9bmdw7rxcyf4w80000gn/T/ocr-winstate-1vKEAO/window-state.json), using defaults: SyntaxError: Expected property name or '}' in JSON at position 1 (line 1 column 2)
+    at JSON.parse (<anonymous>)
+    at loadWindowBounds (~/.opencode-remote/pilot/repo-2/apps/desktop/src/window-state.ts:84:38)
+    at <anonymous> (~/.opencode-remote/pilot/repo-2/scripts/unit.test.ts:4770:8)
+[desktop] window-state write failed (/var/folders/v1/chbzjjpn1z9bmdw7rxcyf4w80000gn/T/ocr-winstate-1vKEAO/gone/window-state.json): Error: ENOENT: no such file or directory, open '/var/folders/v1/chbzjjpn1z9bmdw7rxcyf4w80000gn/T/ocr-winstate-1vKEAO/gone/window-state.json'
+    at writeFileSync (node:fs:2430:20)
+    at saveWindowBounds (~/.opencode-remote/pilot/repo-2/apps/desktop/src/window-state.ts:96:5)
+    at <anonymous> (~/.opencode-remote/pilot/repo-2/scripts/unit.test.ts:4775:5) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/var/folders/v1/chbzjjpn1z9bmdw7rxcyf4w80000gn/T/ocr-winstate-1vKEAO/gone/window-state.json'
+}
+warning: You appear to have cloned an empty repository.
+[desktop] desktop-log write failed: Error: disk full
+[desktop] desktop-log write failed: Error: disk full
+release-preflight: FAIL v9.9.9
+  - package.json: version 0.2.0 does not match tag v9.9.9
+  - apps/desktop/package.json: version 0.2.0 does not match tag v9.9.9
+release-preflight: 2 problem(s) found
+release-preflight: bump BOTH package.json (root + apps/desktop) together with the tag
+release-preflight: FAIL vnope
+  - tag "vnope" is not a semver version — expected vX.Y.Z
+release-preflight: 1 problem(s) found
+release-preflight: bump BOTH package.json (root + apps/desktop) together with the tag

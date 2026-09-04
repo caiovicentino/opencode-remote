@@ -125,6 +125,16 @@ remoto, zero confiança**.
   responder, mostra o retry automático visível, mantém os dados locais (idioma, tema)
   funcionando, dá feedback real no "Reconectar agora" (spinner + toast) e deixa o
   pareamento manual a um clique
+- **Aviso do upstream (P2-138)** — o daemon pode estar saudável enquanto o servidor
+  de agente que ele proxyfica não está (`opencode serve` não instalado, porta errada,
+  senha mudada). O `/api/health` traz o veredito classificado (`opencode.state`:
+  unauthorized / unreachable / timeout / unhealthy) e o shell desktop repassa ao
+  renderer pelo mesmo canal dos campos de versão. O cartão calmo do primeiro boot e a
+  nova seção **Ajuda do servidor de agente** (topo das Configurações) dizem então o
+  que aconteceu e o que fazer — um bloco único dentro de uma superfície existente,
+  nunca um segundo banner — com botão secundário que abre a seção de ajuda direto do
+  cartão de primeiro boot. reason/hint do daemon entram só como detalhe secundário em
+  texto; nenhum token ou segredo entra na copy exibida
 - **Auto-preview** — quando o agent menciona uma URL `http(s)://localhost:<porta>` /
   `127.0.0.1:<porta>` na resposta, o daemon emite um evento sintético `ocr.preview`
   (parse determinístico de URL, dedupe por sessão por 10 minutos) e o app desktop abre o
@@ -207,12 +217,46 @@ recuperados do plist, nunca descartados sem querença).
 
 Todo release do GitHub traz o instalador macOS de verdade,
 `OpenCode Remote-<version>-arm64.dmg` (alvo `dmg` do electron-builder, janela
-com a marca do projeto). Releases são **assinados e notarizados** somente
-quando o runner tem um certificado Developer ID Application configurado (além
-das credenciais Apple de notarização); sem identidade de assinatura o build é
-ad-hoc e basta right-click → **Open** uma vez para passar pelo Gatekeeper.
+com a marca do projeto). Um preflight de assinatura
+(`apps/desktop/scripts/signing-profile.mjs`) roda antes do empacotamento e
+escolhe um de dois modos:
+
+- **Developer ID + notarizado** — quando o runner tem um certificado
+  Developer ID Application (`CSC_LINK` ou `CSC_NAME`, com
+  `CSC_IDENTITY_AUTO_DISCOVERY` ausente ou `true`) além das credenciais
+  Apple de notarização (`APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`,
+  `APPLE_TEAM_ID`). O bundle é assinado com hardened runtime e as
+  entitlements de `build/entitlements.mac.plist` e depois notarizado.
+- **Ad-hoc (padrão)** — sem esses secrets o DMG sai ad-hoc e basta
+  right-click → **Open** uma vez para passar pelo Gatekeeper. O preflight só
+  liga a notarização quando o certificado é realmente utilizável: certificado
+  configurado com `CSC_IDENTITY_AUTO_DISCOVERY=false` (que o electron-builder
+  ignoraria em silêncio) ou credenciais de notarização sem certificado são
+  reportados como problema e o build volta para ad-hoc em vez de falhar.
+
 Quem prefere Homebrew usa o `Formula/opencode-remote.rb` (AGPL-3.0-only,
 checksum fixado automaticamente pelo pipeline de release a cada tag).
+
+**Release**: a tag `vX.Y.Z` precisa ter a mesma versão nos **dois**
+`package.json` (raiz e `apps/desktop`). O workflow de release roda
+`scripts/release-preflight.ts` como primeiro passo e bloqueia o release em
+caso de divergência, além de rodar `npm run dist:smoke --workspace
+@ocr/desktop` no bundle empacotado antes do upload do DMG — suba a versão dos
+dois arquivos junto com a tag.
+
+## Relay hospedado (Docker)
+
+Não quer hospedar o relay no seu Mac? `deploy/relay/Dockerfile` gera uma imagem
+multi-stage enxuta (node 22 slim, compilada com tsc, usuário não-root,
+`HEALTHCHECK` no `/healthz`) para qualquer plataforma de containers — aponte o
+TLS do provedor pra ela, defina `RELAY_URL` no daemon e pareie o celular de
+novo. O relay continua cego: nunca vê plaintext nem chaves. O daemon valida o
+`RELAY_URL` no boot e falha fechado: só `ws://`/`wss://` conectam, `ws://` pra
+host não-loopback é recusado — URL inválida desativa a conexão com o relay
+(motivo logado uma vez no boot e exposto em `/api/health`, campo aditivo
+`relay`) e esconde o QR de pareamento; o modo local do app desktop não depende
+do relay e segue funcionando. Runbook:
+[docs/RELAY-HOSTING.md](docs/RELAY-HOSTING.md).
 
 ## CLI
 
@@ -301,9 +345,12 @@ bundle do daemon) antes de empacotar, então funciona também num checkout limpo
 **Empacotamento (P1-050)**: `npm run dist --workspace @ocr/desktop` agora
 também produz um **`OpenCode Remote-<versão>.dmg`** distribuível (janela de
 instalação com branding, versão semântica no About e no nome do arquivo).
-Builds são assinados ad-hoc — no primeiro abre, clique direito → **Abrir**
-para passar pelo Gatekeeper; depois o app se comporta como qualquer app
-instalado.
+Builds locais são assinados ad-hoc com hardened runtime e as entitlements
+compartilhadas (`build/entitlements.mac.plist`) — no primeiro abre, clique
+direito → **Abrir** para passar pelo Gatekeeper; depois o app se comporta
+como qualquer app instalado. No release, o preflight de assinatura só liga a
+notarização quando há certificado Developer ID e credenciais Apple de fato
+configurados (veja *Instalador do app desktop*).
 
 **Auto-update com consentimento (P1-050)**: o shell empacotado checa a pasta
 versionada de updates do daemon (`http://127.0.0.1:8792/__ocr/updates/`
@@ -414,8 +461,7 @@ descobre que perdeu o controle.
 
 ## Roadmap
 
-Próximos: relay hospedado
-opcional, wizard de onboarding, compartilhamento de skills, push nativo iOS.
+Próximos: wizard de onboarding, compartilhamento de skills, push nativo iOS.
 
 ## Licença
 

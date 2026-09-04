@@ -1905,6 +1905,86 @@ select {
 .degraded-manual:hover {
   color: var(--text);
 }
+/* ── P2-138: upstream (opencode) notice ──────────────────────────────────────
+   One block inside the calm card / Settings help card — never a second banner
+   (P2-108). Same flat-surface language as .degraded-local: bordered panel on
+   the gray ladder, 3px state accent on the left edge, no gradients. */
+.degraded-upstream {
+  display: grid;
+  gap: 4px;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--status-wait);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  background: var(--surface);
+}
+.degraded-upstream.tone-info {
+  border-left-color: var(--accent);
+}
+.degraded-upstream-title {
+  margin: 0;
+  font-weight: 600;
+  color: var(--fg);
+}
+.degraded-upstream-action {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--text);
+  opacity: 0.85;
+}
+.degraded-upstream-detail {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.degraded-upstream-help {
+  justify-self: start;
+  margin-top: 2px;
+  padding: 6px 12px;
+  font-size: var(--font-size-sm);
+  color: var(--fg);
+  border-color: var(--border);
+  background: transparent;
+}
+.degraded-upstream-help:hover {
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+}
+/* ── P2-140: sidecar-exit verdict inside the calm card ───────────────────────
+   Same flat-surface language as .degraded-upstream (P2-108: one surface, never
+   a second banner): bordered panel on the gray ladder, 3px state accent on
+   the left edge (error red — the daemon died), no gradients, no emoji. */
+.degraded-exit {
+  display: grid;
+  gap: 4px;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--status-err);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  background: var(--surface);
+}
+.degraded-exit-title {
+  margin: 0;
+  font-weight: 600;
+  color: var(--fg);
+}
+.degraded-exit-action {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--text);
+  opacity: 0.85;
+}
+/* Settings help section (P2-138): the destination of the calm-card button. */
+.settings-help {
+  border-left: 3px solid var(--status-wait);
+}
+.settings-help-title {
+  margin: 0 0 2px;
+  font-weight: 600;
+  color: var(--fg);
+}
 /* spinner inside the reconnect button (trying state, P2-112) */
 .reconnect-spin {
   display: inline-block;

@@ -40,6 +40,14 @@ export interface PairingState {
   /** P3-054: versionMismatch(appVersion, daemonVersion) — computed in the
    * main process (pure comparator in versions.ts); the renderer only renders. */
   versionMismatch?: boolean;
+  /** P2-138: upstream (agent server / opencode) health detail from the
+   * daemon's /api/health — additive; absent on legacy daemons. reason/hint
+   * are static daemon strings the renderer only ever shows as text. */
+  opencode?: { state: string; reason: string; hint: string; checkedAt: string | null };
+  /** P2-140: why the local daemon sidecar died (P2-140 classifier verdict),
+   * set only on the daemon-down states. Additive; reason/hint are static
+   * shell strings the renderer only ever shows as text. */
+  sidecarExit?: { kind: string; reason: string; hint: string };
 }
 
 /**

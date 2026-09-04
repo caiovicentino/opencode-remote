@@ -5,13 +5,14 @@ import { join } from "node:path";
 import QRCode from "qrcode";
 import {
   DAEMON_METRICS_PORT,
-  fetchDaemonVersion,
+  fetchDaemonHealth,
   getPairUrl,
   isDaemonDown,
   readApiToken,
   readDaemonState,
   reconnectState,
   restartDaemon,
+  sidecarExitInfo,
   startDaemonSidecar,
   stateFilePath,
   stopDaemonSidecar,
@@ -282,6 +283,16 @@ const updateDialogSinks: UpdateDialogSinks = {
 function runUpdateCheck(source: string): void {
   void checkForUpdatesOnBoot({
     dialog: updateDialogSinks,
+    // P2-131 (round-2 review): yml feeds have no download engine — the manual
+    // flow hands the user the release page — but only for an explicit tray
+    // re-check. The boot check never auto-opens a browser tab, and update.ts
+    // dedupes so each version opens at most once per session.
+    openReleasePage:
+      source === "tray"
+        ? (url) => {
+            void shell.openExternal(url).catch((err) => logError("[desktop] opening release page failed:", err));
+          }
+        : undefined,
     onStatus: (status, version) => {
       lastUpdateStatus = status;
       refreshTrayMenu();
@@ -593,9 +604,19 @@ function withLocalMode(state: PairingState): PairingState {
 }
 
 /** Placeholder state while the sidecar is down for good (P2-017): no QR (the
- * old room/keys are dead with the daemon), just the "daemon down" flag. */
+ * old room/keys are dead with the daemon), just the "daemon down" flag.
+ * P2-140: carries the exit classifier's verdict so the renderer can say WHY
+ * the daemon died, not only that it gave up. */
 function daemonDownState(): PairingState {
-  return { uri: null, qrDataUrl: null, devices: 0, phonePaired: false, daemonDown: true };
+  const exit = sidecarExitInfo();
+  return {
+    uri: null,
+    qrDataUrl: null,
+    devices: 0,
+    phonePaired: false,
+    daemonDown: true,
+    sidecarExit: exit ? { kind: exit.kind, reason: exit.reason, hint: exit.hint } : undefined,
+  };
 }
 
 /** P1-053: adopted daemon (reused launchd/CLI install) lost mid-run — the
@@ -720,8 +741,11 @@ async function refreshPairingState(): Promise<void> {
     // One loopback call per poll; unknown version degrades to "no banner".
     // (The FORCE_VERSION_MISMATCH hatch never reaches this path — it returns
     // the deterministic forced state at the top of refreshPairingState.)
+    // P2-138: the same /api/health answer carries the upstream opencode
+    // detail (P2-135 classifier verdict) — propagated additively next to the
+    // version fields so the renderer can explain WHY the agent is unreachable.
     const appVersion = app.getVersion();
-    const daemonVersion = await fetchDaemonVersion(token);
+    const { version: daemonVersion, opencode } = await fetchDaemonHealth(token);
     const mismatch = versionMismatch(appVersion, daemonVersion);
     if (mismatch) {
       log(`[desktop] daemon version mismatch: daemon ${daemonVersion ?? "?"} · app ${appVersion}`);
@@ -759,6 +783,7 @@ async function refreshPairingState(): Promise<void> {
       appVersion,
       daemonVersion,
       versionMismatch: mismatch,
+      opencode: opencode ?? undefined,
     });
   } catch (err) {
     // Daemon down, token rotated or state file wiped: drop the cached state so

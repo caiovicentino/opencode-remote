@@ -40,7 +40,7 @@ import MissionControlView, { type DaemonApiFn } from "./components/MissionContro
 import CommandPalette from "./components/CommandPalette";
 import DegradedView from "./components/DegradedView";
 import ReconnectButton from "./components/ReconnectButton";
-import { degradedKind, sawHealthyDaemon } from "./lib/degraded";
+import { degradedKind, sawHealthyDaemon, sidecarExitNotice, upstreamNotice, type SidecarExitHealth, type UpstreamHealth } from "./lib/degraded";
 import {
   IconAlert,
   IconChat,
@@ -81,6 +81,10 @@ interface PairingState {
   appVersion?: string | null;
   daemonVersion?: string | null;
   versionMismatch?: boolean;
+  /** P2-138: upstream (opencode) health detail from the daemon's /api/health. */
+  opencode?: UpstreamHealth;
+  /** P2-140: why the local daemon died (desktop shell only). */
+  sidecarExit?: SidecarExitHealth;
 }
 
 /** Electron bridge from apps/desktop/src/preload.ts (absent in the browser). */
@@ -697,6 +701,19 @@ export default function App() {
   // same sentence. Only the info-only mismatch banner still floats above it.
   const kind = degradedKind(pairingState, everSeen);
   const versionMismatch = !!pairingState?.versionMismatch && !!pairingState?.daemonVersion;
+  // P2-138: upstream (opencode) verdict — null for ok/unknown/legacy payloads.
+  // Rendered ONLY inside existing calm surfaces (degraded card, Settings help
+  // section), never as a second banner (P2-108 single-surface rule).
+  const upstream = upstreamNotice(pairingState?.opencode);
+  // P2-140: why the local daemon died — null unless the shell attached an
+  // exit verdict. Rendered ONLY inside the degraded calm card (P2-108 rule).
+  const sidecarExit = sidecarExitNotice(pairingState?.sidecarExit);
+  // P1-071: the Settings help section is reachable from the first-boot calm
+  // card too — the stub request no-ops every fetch while no client exists.
+  const [helpOpen, setHelpOpen] = useState(false);
+  useEffect(() => {
+    if (phase === "paired") setHelpOpen(false);
+  }, [phase]);
   const reconnectBtn = desktopBridge()?.reconnectDaemon
     ? () => desktopBridge()!.reconnectDaemon!()
     : undefined;
@@ -750,6 +767,25 @@ export default function App() {
     );
   }
 
+  if (phase !== "paired" && helpOpen) {
+    // P2-138: the calm card's secondary button lands here — the Settings help
+    // section, reachable on first boot (P1-071) even with no daemon client.
+    // The stub request makes every settings fetch a quiet no-op.
+    return (
+      <div className="pair-wrap" data-phase={phase}>
+        <SettingsView
+          request={() => Promise.resolve({ status: 0, body: {} })}
+          onBack={() => setHelpOpen(false)}
+          getDiagnostics={desktopBridge()?.getDiagnostics}
+          onPairRemote={
+            desktopBridge()?.setRemotePairing ? () => void desktopBridge()?.setRemotePairing?.(true) : undefined
+          }
+          upstream={upstream}
+        />
+      </div>
+    );
+  }
+
   if (phase !== "paired") {
     // P2-112: in the desktop shell the unpaired screen is the degraded journey
     // (calm status + visible auto-retry + minimal local data) — never a
@@ -773,6 +809,9 @@ export default function App() {
             reconnectAttempts={pairingState?.reconnectAttempts}
             reconnect={reconnectBtn}
             onPairManually={() => setPairManual(true)}
+            upstream={upstream}
+            onOpenHelp={upstream ? () => setHelpOpen(true) : undefined}
+            sidecarExit={sidecarExit}
           />
         ) : (
           <PairingView
@@ -824,6 +863,7 @@ export default function App() {
       transport={clientRef.current?.transport}
       getDiagnostics={desktopBridge()?.getDiagnostics}
       onPairRemote={desktopBridge()?.setRemotePairing ? () => void desktopBridge()?.setRemotePairing?.(true) : undefined}
+      upstream={upstream}
     />
   );
   const filesNode = <FilesView request={request} onBack={goBack} />;

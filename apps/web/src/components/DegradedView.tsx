@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useT, setLang, getLang, type Lang } from "../lib/i18n";
-import type { DegradedKind } from "../lib/degraded";
+import type { DegradedKind, SidecarExitNotice, UpstreamNotice } from "../lib/degraded";
 import ReconnectButton from "./ReconnectButton";
 
 interface Props {
@@ -11,6 +11,14 @@ interface Props {
   /** Shell bridge's app:reconnectDaemon — absent in the plain browser. */
   reconnect?: () => Promise<boolean>;
   onPairManually: () => void;
+  /** P2-138: upstream (opencode) notice rendered INSIDE this calm card —
+   * never a second banner (P2-108 single-surface rule). */
+  upstream?: UpstreamNotice | null;
+  /** P2-138: secondary action — opens the Settings help section. */
+  onOpenHelp?: () => void;
+  /** P2-140: why the local daemon died (exit classifier verdict), rendered
+   * INSIDE this calm card — never a second banner (P2-108 rule). */
+  sidecarExit?: SidecarExitNotice | null;
 }
 
 /** P2-112: first-boot degraded journey (desktop shell). With the local daemon
@@ -20,7 +28,7 @@ interface Props {
  * "daemon fell" for a daemon the machine never met), a visible auto-retry
  * line with the attempt counter, a reconnect action with real feedback, the
  * purely-local data that keeps working, and manual pairing one click away. */
-export default function DegradedView({ kind, busy, reconnectAttempts, reconnect, onPairManually }: Props) {
+export default function DegradedView({ kind, busy, reconnectAttempts, reconnect, onPairManually, upstream, onOpenHelp, sidecarExit }: Props) {
   const t = useT();
   const [lang, setLangState] = useState<Lang>(getLang());
 
@@ -49,6 +57,30 @@ export default function DegradedView({ kind, busy, reconnectAttempts, reconnect,
           <p className="muted">{hint}</p>
         </div>
       </div>
+      {sidecarExit && (
+        <div className="degraded-exit" role="note">
+          <p className="degraded-exit-title">{t(sidecarExit.titleKey)}</p>
+          <p className="degraded-exit-action">{t(sidecarExit.actionKey)}</p>
+        </div>
+      )}
+      {upstream && (
+        <div className={`degraded-upstream tone-${upstream.tone}`} role="note">
+          <p className="degraded-upstream-title">{t(upstream.titleKey)}</p>
+          <p className="degraded-upstream-action">{t(upstream.actionKey)}</p>
+          {/* Daemon-provided detail: plain text interpolation only (React
+              escapes it) — the P2-138 spec forbids rendering it as HTML. */}
+          {(upstream.reason || upstream.hint) && (
+            <p className="degraded-upstream-detail">
+              {[upstream.reason, upstream.hint].filter(Boolean).join(" — ")}
+            </p>
+          )}
+          {onOpenHelp && (
+            <button className="degraded-upstream-help" onClick={onOpenHelp}>
+              {t("upstreamHelpAction")}
+            </button>
+          )}
+        </div>
+      )}
       {autoRetry && (
         <p className="degraded-retry" role="status">
           {t("degradedRetrying")}

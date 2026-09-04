@@ -8,6 +8,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { log, logError } from "./desktop-log";
 import { teeSidecarChunk } from "./sidecar-log";
+import { classifySidecarExit, type SidecarExitVerdict } from "./sidecarexit";
 
 // Single source of truth for the daemon API port: the desktop polls the exact
 // port the spawned child binds. OCR_DAEMON_METRICS_PORT is the desktop-facing
@@ -78,6 +79,12 @@ interface SidecarState {
   reused: boolean;
   /** Rolling stdout tail (bounded) scanned for the pairing URI. */
   stdoutTail: string;
+  /** P2-140: rolling stderr tail (same bound) — searched for exit-cause
+   * markers (EADDRINUSE, ENOENT) when the child dies. */
+  stderrTail: string;
+  /** P2-140: classification of the last unintentional exit (null before the
+   * first one, cleared on intentional stop / recovery). */
+  exit: SidecarExitVerdict | null;
   /** Entry resolved at the first successful start; respawns reuse it. */
   entry: DaemonEntry | null;
   /** Consecutive respawn attempts since the last confirmed-healthy daemon. */
@@ -95,6 +102,8 @@ const sidecar: SidecarState = {
   pairUrl: null,
   reused: false,
   stdoutTail: "",
+  stderrTail: "",
+  exit: null,
   entry: null,
   failures: 0,
   gaveUp: false,
@@ -209,25 +218,60 @@ export interface HealthWaitOptions {
   token?: string | null;
 }
 
+/** P2-138: upstream (agent server / opencode) detail from /api/health — the
+ * P2-135 classifier verdict as-is. Static pt-BR strings from the daemon; the
+ * renderer only ever renders them as text. */
+export interface DaemonUpstreamDetail {
+  state: string;
+  reason: string;
+  hint: string;
+  checkedAt: string | null;
+}
+
+export interface DaemonHealthInfo {
+  version: string | null;
+  /** null when absent/malformed (legacy daemon) — additive, never an error. */
+  opencode: DaemonUpstreamDetail | null;
+}
+
+/** Tolerant read of the P2-135 opencode object: only a well-shaped object
+ * passes; anything else degrades to null instead of leaking junk into the UI. */
+function toUpstreamDetail(raw: unknown): DaemonUpstreamDetail | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const o = raw as { state?: unknown; reason?: unknown; hint?: unknown; checkedAt?: unknown };
+  if (typeof o.state !== "string" || o.state === "") return null;
+  return {
+    state: o.state,
+    reason: typeof o.reason === "string" ? o.reason : "",
+    hint: typeof o.hint === "string" ? o.hint : "",
+    checkedAt: typeof o.checkedAt === "string" ? o.checkedAt : null,
+  };
+}
+
 /**
- * P3-054: authenticated GET /api/health returning only the daemon's own
- * version string (null when unreachable, unauthorized or malformed). The
- * pairing watcher calls this on every poll so the version-mismatch banner
- * always reflects the daemon that is actually answering right now — including
- * one the user replaced externally while the app stayed open.
+ * P3-054: authenticated GET /api/health returning the daemon's own version
+ * string (null when unreachable, unauthorized or malformed). The pairing
+ * watcher calls this on every poll so the version-mismatch banner always
+ * reflects the daemon that is actually answering right now — including one the
+ * user replaced externally while the app stayed open.
+ * P2-138: the same response also carries the upstream `opencode` detail
+ * object; one loopback call per poll serves both consumers.
  */
-export async function fetchDaemonVersion(token: string | null): Promise<string | null> {
-  if (token === null) return null;
+export async function fetchDaemonHealth(token: string | null): Promise<DaemonHealthInfo> {
+  if (token === null) return { version: null, opencode: null };
   try {
     const res = await fetch(`http://127.0.0.1:${DAEMON_METRICS_PORT}/api/health`, {
       headers: { authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
     });
-    if (res.status !== 200) return null;
-    const body = (await res.json().catch(() => ({}))) as { version?: unknown };
-    return typeof body.version === "string" ? body.version : null;
+    if (res.status !== 200) return { version: null, opencode: null };
+    const body = (await res.json().catch(() => ({}))) as { version?: unknown; opencode?: unknown };
+    return {
+      version: typeof body.version === "string" ? body.version : null,
+      opencode: toUpstreamDetail(body.opencode),
+    };
   } catch {
-    return null;
+    return { version: null, opencode: null };
   }
 }
 
@@ -373,6 +417,8 @@ function spawnChild(entry: DaemonEntry): void {
   sidecar.pairUrl = null;
   sidecar.reused = false;
   sidecar.stdoutTail = "";
+  sidecar.stderrTail = "";
+  sidecar.exit = null;
   child.stdout?.setEncoding("utf8");
   child.stdout?.on("data", (chunk: string) => {
     try {
@@ -389,7 +435,8 @@ function spawnChild(entry: DaemonEntry): void {
   });
   // P3-018: stderr was inherited before — same packaged-app invisibility as
   // stdout had. Forward to our own stderr (dev keeps the terminal view) and
-  // tee into the same sidecar log file the stdout chunks go to.
+  // tee into the same sidecar log file the stdout chunks go to. P2-140: the
+  // chunk also feeds the bounded tail the exit classifier reads.
   child.stderr?.setEncoding("utf8");
   child.stderr?.on("data", (chunk: string) => {
     try {
@@ -398,11 +445,24 @@ function spawnChild(entry: DaemonEntry): void {
       /* packaged headless runs may have no stderr attached */
     }
     teeSidecarChunk(chunk);
+    sidecar.stderrTail = (sidecar.stderrTail + chunk).slice(-STDOUT_TAIL_MAX);
   });
-  child.on("exit", () => {
+  child.on("exit", (code, signal) => {
     sidecar.exited = true;
+    // P2-140: remember WHY it died (port busy, missing entry, signal…); an
+    // intentional stop never overwrites the verdict — it clears it below.
     if (!sidecar.stopping) {
-      logError(`[desktop] daemon sidecar exited (code=${child.exitCode} signal=${child.signalCode})`);
+      sidecar.exit = classifySidecarExit({
+        code,
+        signal,
+        stderrTail: sidecar.stderrTail,
+      });
+    }
+    if (!sidecar.stopping) {
+      logError(
+        `[desktop] daemon sidecar exited (code=${code} signal=${signal})` +
+          (sidecar.exit ? ` — ${sidecar.exit.kind}: ${sidecar.exit.reason}` : ""),
+      );
       scheduleRespawn();
     }
   });
@@ -410,6 +470,10 @@ function spawnChild(entry: DaemonEntry): void {
   child.on("error", (err) => {
     sidecar.exited = true;
     if (!sidecar.stopping) {
+      // P2-140: a spawn-level failure carries its cause in err.message
+      // ("spawn … ENOENT") — run it through the same classifier so the UI
+      // says the install looks broken instead of a bare "daemon down".
+      sidecar.exit = classifySidecarExit({ code: null, signal: null, stderrTail: err.message });
       logError(`[desktop] daemon sidecar failed: ${err.message}`);
       scheduleRespawn();
     }
@@ -458,6 +522,7 @@ async function respawn(): Promise<void> {
     sidecar.spawned = false;
     sidecar.reused = true;
     sidecar.failures = 0;
+    sidecar.exit = null; // recovered — the last crash verdict is history
     // Adopted again → the infinite reconnect watchdog takes over (P1-053).
     startReconnectWatchdog();
     return;
@@ -468,6 +533,7 @@ async function respawn(): Promise<void> {
     if (healthy) {
       sidecar.failures = 0;
       sidecar.gaveUp = false;
+      sidecar.exit = null;
     }
   });
 }
@@ -480,6 +546,13 @@ export function isDaemonDown(): boolean {
 /** Diagnostic view into the respawn bookkeeping (eval battery asserts on it). */
 export function respawnState(): { failures: number; gaveUp: boolean } {
   return { failures: sidecar.failures, gaveUp: sidecar.gaveUp };
+}
+
+/** P2-140: why the sidecar died last (classifier verdict), or null while no
+ * unintentional exit has happened. Copied, so callers can never mutate the
+ * live classification — additive surface next to respawnState(). */
+export function sidecarExitInfo(): SidecarExitVerdict | null {
+  return sidecar.exit ? { ...sidecar.exit } : null;
 }
 
 /**
@@ -558,6 +631,7 @@ export async function stopDaemonSidecar(): Promise<void> {
   stopReconnectWatchdog();
   sidecar.failures = 0;
   sidecar.gaveUp = false;
+  sidecar.exit = null; // an intentional stop is not a crash to explain
   const child = sidecar.child;
   if (!child || !sidecar.spawned) return;
   sidecar.spawned = false;
