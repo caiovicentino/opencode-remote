@@ -255,7 +255,11 @@ Prefer not to host the relay on your own Mac? `deploy/relay/Dockerfile` builds
 a small multi-stage image (node 22 slim, tsc-compiled, non-root, `HEALTHCHECK`
 on `/healthz`) for any container platform — point your provider's TLS at it,
 set `RELAY_URL` on the daemon and re-pair the phone. The relay stays a blind
-router: it never sees plaintext or keys. Runbook:
+router: it never sees plaintext or keys. The optional metrics endpoint
+(`RELAY_METRICS_PORT`) binds loopback by default; setting
+`RELAY_METRICS_BIND` to a network address requires `RELAY_METRICS_TOKEN`
+(`Authorization: Bearer <token>`) — the relay refuses to boot an
+unauthenticated metrics endpoint exposed to the network. Runbook:
 [docs/RELAY-HOSTING.md](docs/RELAY-HOSTING.md).
 
 ## CLI

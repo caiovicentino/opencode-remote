@@ -31,7 +31,9 @@ builds this same image (the `caddy` profile adds TLS termination on top).
 | Variable | Default | Recommended in production (provider TLS in front) |
 |---|---|---|
 | `RELAY_PORT` | `8787` | Keep `8787` on the container's private network and publish it only to the TLS terminator. Set it if you map a different host port. |
-| `RELAY_METRICS_PORT` | unset (off) | Leave unset in containers: the metrics endpoint binds `127.0.0.1` on purpose, which is unreachable from outside the container. Enable it only for a scraper sharing the network namespace (e.g. k8s sidecar). |
+| `RELAY_METRICS_PORT` | unset (off) | Leave unset in containers unless a scraper needs it. When set, the endpoint serves counters on `/metrics` (JSON, or Prometheus text with `?format=prom`). |
+| `RELAY_METRICS_BIND` | `127.0.0.1` | Keep the loopback default unless your scraper sits outside the container (k8s sidecars share the network namespace and don't need it). Any non-loopback address **requires** `RELAY_METRICS_TOKEN` — the relay refuses to boot the metrics endpoint on a network-exposed interface without one (fail-closed) and logs the reason instead. |
+| `RELAY_METRICS_TOKEN` | unset (no auth) | Required whenever `RELAY_METRICS_BIND` leaves loopback. Scrapers must send `Authorization: Bearer <token>`; every other request gets an empty `401`. The endpoint exposes envelope counters only — no plaintext, no key material, no room ids. |
 | `RELAY_MAX_PER_IP` | `20` | Keep the default. Raise it only when many devices legitimately share one egress IP (office NAT, corporate VPN). `0` disables the cap. |
 | `RELAY_TRUST_PROXY_HOPS` | `0` | Leave `0` on direct exposure. Set it **only** to the exact number of trusted proxy layers in front of the relay (e.g. `1` for a single provider load balancer doing TLS termination) — see the section below. |
 | `RELAY_TLS_CERT` | unset | Leave unset — TLS belongs to the provider's load balancer; the relay then serves plain `ws://` internally and the outside world dials `wss://`. |
@@ -75,6 +77,18 @@ expose publicly (no room ids, no per-peer metadata):
 
 The image's `HEALTHCHECK` polls it locally every 30s; load balancers should
 use the same path as the HTTP health check.
+
+## Metrics endpoint
+
+`GET /metrics` (counters as JSON; add `?format=prom` for Prometheus text
+format) is **off by default** and, when enabled via `RELAY_METRICS_PORT`,
+binds `127.0.0.1` unless `RELAY_METRICS_BIND` says otherwise. Exposing it on
+the network requires setting `RELAY_METRICS_TOKEN`: without a token the relay
+refuses to start the listener on a non-loopback address and logs the reason
+once at boot. With a token configured, requests without a matching
+`Authorization: Bearer <token>` header receive a `401` with no body. Like
+`/healthz`, the payload is counter-only — the relay is a blind router and the
+metrics never carry plaintext or key material.
 
 ## Pointing a daemon at the hosted relay
 
