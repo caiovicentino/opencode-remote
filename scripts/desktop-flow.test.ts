@@ -388,6 +388,67 @@ try {
   );
   run("P2-112: manual pairing escape hatch", ["click", ".degraded-manual"], 15_000);
 
+  // --- P2-106: benchmark pairing journey — 4 evidence states ------------------
+  // (1) two titled sections on the ceremony screen, (2) scanner route,
+  // (3) styled invalid-code error with the inline format helper, and (4) the
+  // QR overlay with the demoted "pair later" link (local-boot beat below).
+  const connectTitle = run("P2-106: client section title", ["ipc", "document.querySelector('.pair-section-title')?.textContent ?? ''"], 15_000);
+  if (connectTitle.ok) {
+    check(
+      "P2-106: 'connect to another machine' section title (en|pt)",
+      /Connect to another machine|Conectar a outra máquina/.test(connectTitle.stdout),
+      connectTitle.stdout,
+    );
+  }
+  const sectionCount = run("P2-106: titled section count", ["ipc", "String(document.querySelectorAll('.pair-section').length)"], 15_000);
+  if (sectionCount.ok) check("P2-106: connect + host sections both render", sectionCount.stdout.replace(/"/g, "").trim() === "2", sectionCount.stdout);
+  const shotSections1440 = join(shotsDir, "P2-106-pairing-sections.png");
+  const shotSections390 = join(shotsDir, "P2-106-pairing-sections-390.png");
+  const sec1 = run("P2-106: 1440x900 sections shot", ["shot", shotSections1440, "1440", "900"], 15_000);
+  if (sec1.ok) check("P2-106: sections 1440x900 shot is a real PNG", pngSize(shotSections1440).join("x") === "1440x900");
+  // Geometry is read at 1440x900 (the shot command just set it): the column is
+  // capped at ~420px wide and vertically centered in the window.
+  const centerCol = run(
+    "P2-106: narrow centered column (~420px)",
+    ["ipc", "(() => { const el = document.querySelector('.pair-screen'); if (!el) return ''; const r = el.getBoundingClientRect(); return String(Math.round(r.width)) + 'x' + String(Math.round((r.top + r.bottom) / 2)); })()"],
+    15_000,
+  );
+  if (centerCol.ok) {
+    const m = centerCol.stdout.replace(/"/g, "").match(/(\d+)x(\d+)/);
+    check(
+      "P2-106: pair column reads ~420px wide, vertically centered",
+      !!m && Number(m[1]) >= 380 && Number(m[1]) <= 420 && Number(m[2]) >= 375 && Number(m[2]) <= 525,
+      centerCol.stdout,
+    );
+  }
+  const sec2 = run("P2-106: 390 sections shot", ["shot", shotSections390, "390", "844"], 15_000);
+  if (sec2.ok) check("P2-106: sections 390 shot is a real PNG", pngSize(shotSections390)[0] === 390);
+
+  // (2) scanner route: open it, prove the screen swapped, come back. The
+  // hermetic shell has no camera — the scanner's own error fallback is a
+  // valid render of this state.
+  run("P2-106: open the QR scanner", ["click", ".pair-section button.primary"], 15_000);
+  await waitProbe(
+    "P2-106: scanner screen rendered",
+    "document.querySelector('.screen header h1')?.textContent ?? ''",
+    (v) => /Scan pairing code|Escanear código de pareamento/.test(v),
+    cliEnv,
+    10,
+    500,
+  );
+  const shotScanner = join(shotsDir, "P2-106-pairing-scanner.png");
+  const sc1 = run("P2-106: 1440x900 scanner shot", ["shot", shotScanner, "1440", "900"], 15_000);
+  if (sc1.ok) check("P2-106: scanner 1440x900 shot is a real PNG", pngSize(shotScanner).join("x") === "1440x900");
+  run("P2-106: back from the scanner", ["click", ".screen header button"], 15_000);
+  await waitProbe(
+    "P2-106: back on the ceremony screen",
+    "!!document.querySelector('.pair-submit')",
+    (v) => /true/.test(v),
+    cliEnv,
+    10,
+    500,
+  );
+
   run("type invalid pairing code", ["type", "textarea", "opencode-remote://not-a-valid-code"], 15_000);
   // P2-049: the pairing screen copy moved into the i18n dictionary — on a
   // pt-BR host the button reads "Parear", so the old text="Pair" click broke
@@ -402,6 +463,21 @@ try {
       /Invalid pairing code|Código de pareamento inválido/.test(errText.stdout),
     );
   }
+  // P2-106: the styled error block also carries the inline expected-format
+  // helper and a live region so screen readers announce the failure.
+  const errHint = run("P2-106: invalid-code format helper", ["ipc", "document.querySelector('.pair-error-hint')?.textContent ?? ''"], 15_000);
+  if (errHint.ok) {
+    check(
+      "P2-106: helper names the expected pairing-URI format (en|pt)",
+      /Expected format: opencode-remote:\/\/pair|Formato esperado: opencode-remote:\/\/pair/.test(errHint.stdout),
+      errHint.stdout,
+    );
+  }
+  const errLive = run("P2-106: error live-region semantics", ["ipc", "(() => { const el = document.querySelector('.pair-error'); return el ? el.getAttribute('role') + '|' + el.getAttribute('aria-live') : ''; })()"], 15_000);
+  if (errLive.ok) check("P2-106: .pair-error is role=alert + aria-live=assertive", /alert\|assertive/.test(errLive.stdout), errLive.stdout);
+  const shotError = join(shotsDir, "P2-106-pairing-error.png");
+  const er1 = run("P2-106: 1440x900 error shot", ["shot", shotError, "1440", "900"], 15_000);
+  if (er1.ok) check("P2-106: error 1440x900 shot is a real PNG", pngSize(shotError).join("x") === "1440x900");
   const shot = run("screenshot captured", ["shot", shotPath], 15_000);
   if (shot.ok) {
     try {
@@ -736,6 +812,43 @@ try {
         }
         const s1 = run("local: 1440x900 evidence shot", ["shot", localShot, "1440", "900"], 15_000, localEnv);
         if (s1.ok) check("local: 1440x900 shot is a real PNG", pngSize(localShot).join("x") === "1440x900");
+
+        // --- P2-106: QR overlay state (4th evidence state) -----------------------
+        // Request remote pairing from Settings: the next poll fetches the
+        // hermetic daemon's pairing URI, renders the QR overlay, and the
+        // demoted "pair later" quiet link dismisses it back to local quiet.
+        const overlayClicked = run("P2-106: request remote pairing (Settings entry)", ["click", ".pair-remote-entry"], 15_000, localEnv);
+        if (overlayClicked.ok) {
+          await waitProbe(
+            "P2-106: QR overlay renders",
+            "!!document.querySelector('.pair-overlay')",
+            (v) => /true/.test(v),
+            localEnv,
+            24,
+            500,
+          );
+          const shotOverlay = join(shotsDir, "P2-106-pairing-overlay.png");
+          const o1 = run("P2-106: 1440x900 overlay shot", ["shot", shotOverlay, "1440", "900"], 15_000, localEnv);
+          if (o1.ok) check("P2-106: overlay 1440x900 shot is a real PNG", pngSize(shotOverlay).join("x") === "1440x900");
+          const laterClass = run("P2-106: 'pair later' classes", ["ipc", "document.querySelector('.pair-overlay-later')?.className ?? ''"], 15_000, localEnv);
+          if (laterClass.ok) {
+            check(
+              "P2-106: 'pair later' is the quiet link, not .primary",
+              /pair-overlay-later/.test(laterClass.stdout) && !/primary/.test(laterClass.stdout),
+              laterClass.stdout,
+            );
+          }
+          run("P2-106: dismiss via the quiet link", ["click", ".pair-overlay-later"], 15_000, localEnv);
+          await waitProbe(
+            "P2-106: overlay dismissed",
+            "!!document.querySelector('.pair-overlay')",
+            (v) => /false/.test(v),
+            localEnv,
+            10,
+            500,
+          );
+        }
+
         const s2 = run("local: 390 evidence shot", ["shot", localShot390, "390", "844"], 15_000, localEnv);
         if (s2.ok) check("local: 390 shot is a real PNG", pngSize(localShot390)[0] === 390);
 
