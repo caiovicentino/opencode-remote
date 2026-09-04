@@ -36,6 +36,13 @@ export interface Health {
   version: string;
   machine: string;
   opencodeHealthy: boolean;
+  /** P2-135: detail of the last agent-server probe; additive — older daemons omit it. */
+  opencode?: {
+    state: "unknown" | "ok" | "unauthorized" | "unreachable" | "timeout" | "unhealthy";
+    reason: string;
+    hint: string;
+    checkedAt: string | null;
+  };
   relayConnected: boolean;
   /** P2-129: present (non-null) only while the daemon is scheduling its next relay dial. */
   relayRetry?: { attempt: number; nextDelayMs: number } | null;
