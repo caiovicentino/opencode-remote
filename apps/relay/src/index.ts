@@ -2,12 +2,14 @@ import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import { readFileSync } from "node:fs";
 import { WebSocketServer, type WebSocket } from "ws";
-import { healthzHandler } from "./healthz";
-import { TokenBucket } from "./ratelimit";
-import { IpCap, normalizeIp } from "./ipcap";
-import { isValidRoomId, MAX_ROOMS_PER_SOCKET } from "./roomid";
-import { createShutdown, stopAccepting } from "./shutdown";
-import { decideStale } from "./liveness";
+// relative imports carry .js specifiers so plain `node` can run the tsc emit
+// (deploy/relay/Dockerfile + tsconfig.build.json) — tsx resolves them too
+import { healthzHandler } from "./healthz.js";
+import { TokenBucket } from "./ratelimit.js";
+import { IpCap, normalizeIp } from "./ipcap.js";
+import { isValidRoomId, MAX_ROOMS_PER_SOCKET } from "./roomid.js";
+import { createShutdown, stopAccepting } from "./shutdown.js";
+import { decideStale } from "./liveness.js";
 
 /**
  * Relay: a blind router.

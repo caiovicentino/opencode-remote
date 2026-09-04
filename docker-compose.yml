@@ -14,7 +14,7 @@ services:
   relay:
     build:
       context: .
-      dockerfile: Dockerfile.relay
+      dockerfile: deploy/relay/Dockerfile
     ports:
       - "8787:8787"
     restart: unless-stopped
