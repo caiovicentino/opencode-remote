@@ -12,7 +12,7 @@ import { copyText, hasClipboardApi, legacyCopy } from "../apps/web/src/lib/clipb
 import { mimeFor } from "../apps/web/src/lib/files";
 import { timeAgo, sessionUpdatedTs } from "../apps/web/src/lib/time";
 import { sessionTitleOf } from "../apps/web/src/lib/title";
-import { dict } from "../apps/web/src/lib/i18n";
+import { dict, translate } from "../apps/web/src/lib/i18n";
 import { permissionPreview } from "../apps/web/src/lib/permission";
 import { applySessionFilters, isPilotTitle, splitPilotSessions } from "../apps/web/src/lib/sessionFilter";
 import { initialUnreadState, reduceUnread } from "../apps/web/src/lib/unread";
@@ -6121,6 +6121,66 @@ const ptKeys = Object.keys(dict.pt).sort();
 check("i18n: en and pt share the exact same key set", JSON.stringify(enKeys) === JSON.stringify(ptKeys));
 check("i18n: no empty strings in either locale", enKeys.every((k) => String((dict.en as Record<string, string>)[k]).trim() !== "") && ptKeys.every((k) => String((dict.pt as Record<string, string>)[k]).trim() !== ""));
 check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "olderMessages", "changesFor", "connTitle"].every((k) => String((dict.en as Record<string, string>)[k]).includes("{") && String((dict.pt as Record<string, string>)[k]).includes("{")));
+
+// --- P2-118: connection screens resolve to ONE locale ---------------------------
+// The daemon-down banner, its recovery button and the neighboring pairing /
+// scanner copy must all come from the same dictionary, per app locale — the
+// explorer nightly caught a screen mixing a pt-BR banner with English actions.
+{
+  const connKeys = [
+    "daemonDown", "reconnectNow", "reconnecting", "daemonMismatch",
+    "localConnecting", "connecting", "pairBtn", "invalidCode", "retry",
+    "pairIntro", "scanQr", "orPaste",
+    "pairRemoteTitle", "pairRemoteHint", "pairRemoteAction",
+    "scanPairingTitle", "scanPointCamera", "scanBackManual",
+    "camDenied", "camNotFound", "camBusy", "camInterrupted", "camUnavailable",
+    "deskGreeting", "deskEmptyHint",
+  ];
+  const resolved = (lang: "en" | "pt") => connKeys.map((k) => translate(lang, k));
+  check(
+    "i18n conn: every connection-screen key resolves per locale (no raw-key fallback)",
+    (["en", "pt"] as const).every((lang) => resolved(lang).every((s, i) => s !== connKeys[i] && s.trim() !== "")),
+  );
+  // pt-BR: banner + actions must read Portuguese on the connection screen.
+  check(
+    "i18n conn pt: banner, recovery action and scanner copy are pt-BR",
+    translate("pt", "daemonDown").includes("Daemon local caiu") &&
+      translate("pt", "reconnectNow") === "Reconectar agora" &&
+      translate("pt", "scanPairingTitle").includes("Escanear") &&
+      translate("pt", "scanPointCamera").includes("câmera") &&
+      translate("pt", "deskEmptyHint").includes("barra lateral"),
+  );
+  // en: same screen, English copy — no pt leakage.
+  check(
+    "i18n conn en: banner, recovery action and scanner copy are English",
+    translate("en", "daemonDown").includes("Local daemon is down") &&
+      translate("en", "reconnectNow") === "Reconnect now" &&
+      translate("en", "scanPairingTitle") === "Scan pairing code" &&
+      translate("en", "deskGreeting").startsWith("hello"),
+  );
+  // deskGreeting interpolates the machine name the same way in both locales.
+  check(
+    "i18n conn: deskGreeting interpolates {machine} in both locales",
+    translate("en", "deskGreeting", { machine: ", foo" }) === "hello, foo!" &&
+      translate("pt", "deskGreeting", { machine: ", foo" }) === "olá, foo!",
+  );
+  // The old hardcoded strings must be gone from the sources that render the
+  // banner-adjacent screens (regression guard against reintroducing the mix).
+  const src = (p: string) => readFileSync(join(import.meta.dirname, "..", p), "utf8");
+  const appSrc = src("apps/web/src/App.tsx");
+  const qrSrc = src("apps/web/src/components/QrScanner.tsx");
+  check(
+    "i18n conn: no hardcoded pt copy in the desktop empty state",
+    !appSrc.includes("Selecione uma conversa") && !appSrc.includes(">olá"),
+  );
+  check(
+    "i18n conn: no hardcoded en copy in the QR scanner",
+    !qrSrc.includes("Scan pairing code") &&
+      !qrSrc.includes("Back to manual pairing") &&
+      !qrSrc.includes("Point the camera") &&
+      !qrSrc.includes("Camera permission denied"),
+  );
+}
 
 // --- P2-028 per-task token costs from opencode.db -----------------------------
 {

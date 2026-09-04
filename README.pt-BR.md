@@ -131,7 +131,10 @@ remoto, zero confiança**.
   verdade, consertando o light theme no shell desktop
 - **UI bilíngue + teclado** — todas as telas (pareamento, composer do chat, diálogos de
   atividade e diff) saem de um dicionário único EN/pt-BR; diálogos fecham com Esc e prendem
-  o focus, e o painel de sessões é totalmente navegável por teclado
+  o focus, e o painel de sessões é totalmente navegável por teclado. As telas de conexão
+  seguem um único idioma de ponta a ponta: banners de daemon caído/reconectando, o scanner
+  de QR e o estado vazio do desktop resolvem o copy do mesmo dicionário das ações vizinhas —
+  sem mistura pt-BR/inglês numa mesma tela
 
 ## Quick Start (Mac → iPhone, ~5 min)
 
