@@ -581,7 +581,13 @@ offers **Restart now / Later** — nothing installs without an explicit click, a
 deferred version is not re-offered during the session, and repeated checks
 never stack stale offers. Staging a release is a plain copy:
 drop `<version>/` with the artifact under `~/.opencode-remote/updates/` and
-rewrite `feed.json` (see `docs/troubleshooting.md`). Dev runs stay opt-in via
+rewrite `feed.json` (see `docs/troubleshooting.md`). P2-161: the port recorded
+in `feed.json`'s absolute loopback `url` is resolved when the route serves the
+document, not when the release is staged — after a fallback-port boot
+(8793–8796) the daemon retargets the url at the port it actually bound, so the
+feed is found and the download lands; artifacts (`zip`, `dmg`, `exe`, `yml`,
+`blockmap`) are streamed verbatim and `latest.yml` is never rewritten (its
+`path` field is relative to the feed's own address). Dev runs stay opt-in via
 `OCR_UPDATE_FEED`.
 
 **Crash reports & diagnostics (P1-050)**: fatal main-process errors and

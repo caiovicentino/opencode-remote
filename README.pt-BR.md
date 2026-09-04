@@ -436,7 +436,14 @@ instalado, então build ad-hoc (padrão sem os segredos de assinatura) segue
 manual, pela página de releases. Publicar um release é copiar arquivos:
 solte `<versão>/` com
 o artefato em `~/.opencode-remote/updates/` e reescreva `feed.json` (ver
-`docs/troubleshooting.md`). Em dev, o update segue opt-in via `OCR_UPDATE_FEED`.
+`docs/troubleshooting.md`). P2-161: a porta gravada no campo `url` (absoluto,
+loopback) do `feed.json` é resolvida na hora em que a rota serve o documento,
+não quando o release é staged — após um boot em porta de fallback (8793–8796)
+o daemon reaponta a url para a porta realmente bindada, então o feed é
+encontrado e o download sai; artefatos (`zip`, `dmg`, `exe`, `yml`,
+`blockmap`) seguem em stream verbatim e o `latest.yml` nunca é reescrito (o
+campo `path` dele é relativo ao endereço do próprio feed). Em dev, o update
+segue opt-in via `OCR_UPDATE_FEED`.
 
 **Relatórios de crash & diagnóstico (P1-050)**: erros fatais do main process e
 crashes do renderer viram arquivos com timestamp em
