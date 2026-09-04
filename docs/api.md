@@ -42,6 +42,17 @@ opencode-remote token
 Prompts are asynchronous: the endpoint returns `202 { accepted }` while the
 agent works. Poll `messages` for the reply, or use the SDK's `sendAndWait`.
 
+### `/api/health` — relay retry state (P2-129)
+
+`GET /api/health` keeps `relayConnected` and adds an additive `relayRetry`
+field: `null` while the relay is connected, otherwise
+`{ attempt, nextDelayMs }` — which retry is scheduled and the wait in ms until
+the daemon dials again. Reconnects use exponential backoff with full jitter
+(2s base, doubling per attempt, 30s cap) instead of a fixed 2s, so a fleet of
+daemons no longer hammers a downed relay twice per second nor reconnects all
+in lockstep; each reschedule also bumps the `ocr_relay_retries_total` counter
+on the metrics endpoint.
+
 ### Pairing state (P2-007)
 
 Two read-only routes serve the desktop shell's first-run QR overlay; they are

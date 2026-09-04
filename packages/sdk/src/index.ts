@@ -37,6 +37,8 @@ export interface Health {
   machine: string;
   opencodeHealthy: boolean;
   relayConnected: boolean;
+  /** P2-129: present (non-null) only while the daemon is scheduling its next relay dial. */
+  relayRetry?: { attempt: number; nextDelayMs: number } | null;
 }
 
 export interface Client {
