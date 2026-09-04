@@ -271,6 +271,13 @@ import {
   writeHintFlag,
 } from "../apps/desktop/src/closehint";
 import { updateMenuLabel } from "../apps/desktop/src/update";
+import {
+  nextCheckDelayMs,
+  UPDATE_RECHECK_BACKOFF_START_MS,
+  UPDATE_RECHECK_BASE_MS,
+  UPDATE_RECHECK_JITTER,
+  UPDATE_RECHECK_MIN_MS,
+} from "../apps/desktop/src/updateschedule";
 import { appIdForPlatform, applyAppUserModelId, daemonNotify, NOTIFY_BACK_BODY, NOTIFY_DOWN_BODY, WINDOWS_APP_ID } from "../apps/desktop/src/notify";
 import { DEEP_LINK_QUERY_MAX, deepLinkFromArgv, parseDeepLink } from "../apps/desktop/src/deeplink";
 import {
@@ -8547,6 +8554,104 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P2-154: only the failing side is blamed when one file is unreadable",
     halfUnreadable.problems.length === 1 && halfUnreadable.problems[0]!.includes("RELAY_TLS_CERT"),
+  );
+}
+
+// --- desktop update recheck schedule (P2-155) --------------------------------
+{
+  const BASE = UPDATE_RECHECK_BASE_MS;
+  const successStatuses = ["update-not-available", "update-available", "update-available-manual"] as const;
+  const failureStatuses = ["feed-unreachable", "unrecognized-feed"] as const;
+  const JITTER_MIN = BASE * (1 - UPDATE_RECHECK_JITTER); // 19_440_000 (5.4 h)
+  const JITTER_MAX = BASE * (1 + UPDATE_RECHECK_JITTER); // 23_760_000 (6.6 h)
+
+  // 1. all seven statuses
+  check("P2-155: disabled → null (no surface, zero timers)", nextCheckDelayMs("disabled", 0, Math.random) === null);
+  check(
+    "P2-155: update-downloaded → null (consent already offered, only restart applies)",
+    nextCheckDelayMs("update-downloaded", 0, Math.random) === null,
+  );
+  for (const s of successStatuses) {
+    const d = nextCheckDelayMs(s, 0, Math.random);
+    check(`P2-155: ${s} → base interval with jitter`, d !== null && d >= JITTER_MIN && d <= JITTER_MAX);
+  }
+  for (const s of failureStatuses) {
+    const d = nextCheckDelayMs(s, 1, Math.random);
+    check(`P2-155: ${s} → first backoff step (15 min)`, d === 900_000);
+  }
+
+  // 2. jitter bounds are exact
+  for (const s of successStatuses) {
+    check(
+      `P2-155: ${s} with random()=0 → exactly 0.9 × base`,
+      nextCheckDelayMs(s, 0, () => 0) === 19_440_000,
+    );
+    const d = nextCheckDelayMs(s, 0, () => 0.999999)!;
+    check(
+      `P2-155: ${s} with random()=0.999999 → just under 1.1 × base`,
+      d > 23_759_000 && d < 23_760_001,
+    );
+  }
+
+  // 3. exponential backoff grows per consecutive failure (no random read)
+  for (const s of failureStatuses) {
+    check(
+      `P2-155: ${s} backoff 1/2/3 failures → 15/30/60 min`,
+      nextCheckDelayMs(s, 1, Math.random) === 900_000 &&
+        nextCheckDelayMs(s, 2, Math.random) === 1_800_000 &&
+        nextCheckDelayMs(s, 3, Math.random) === 3_600_000,
+    );
+  }
+
+  // 4. backoff saturates at the base interval
+  for (const s of failureStatuses) {
+    check(
+      `P2-155: ${s} 10 and 50 failures cap at the 6 h base`,
+      nextCheckDelayMs(s, 10, Math.random) === 21_600_000 && nextCheckDelayMs(s, 50, Math.random) === 21_600_000,
+    );
+  }
+
+  // 5. hard floor: no random and no counter can go below 5 min
+  const hostileRandoms = [() => 0, () => -1, () => 1, () => Number.NaN];
+  for (const s of [...successStatuses, ...failureStatuses]) {
+    for (const r of hostileRandoms) {
+      const d = nextCheckDelayMs(s, 0, r);
+      check(`P2-155: ${s} floor holds (random=${r.name || "anon"})`, d === null || d >= 300_000);
+    }
+  }
+  check(
+    "P2-155: random()=1 stays within the +10% ceiling (no runaway)",
+    nextCheckDelayMs("update-not-available", 0, () => 1) === Math.round(JITTER_MAX),
+  );
+
+  // 6. the failure counter is normalized: negative/fractional/NaN → 0
+  for (const bad of [-1, -99, 0.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+    check(
+      `P2-155: consecutiveFailures=${bad} behaves as 0 (15 min first step)`,
+      nextCheckDelayMs("feed-unreachable", bad, Math.random) === UPDATE_RECHECK_BACKOFF_START_MS,
+    );
+  }
+
+  // 7. the real main.ts arms the timer from the resolved status and cleans up on quit
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  const willQuitAt = mainSrc.indexOf('app.on("will-quit"');
+  const willQuitHandler = willQuitAt >= 0 ? mainSrc.slice(willQuitAt, willQuitAt + 600) : "";
+  check(
+    "P2-155: main.ts schedules runUpdateCheck('scheduled') via a guarded setTimeout",
+    mainSrc.includes("nextCheckDelayMs") &&
+      mainSrc.includes('runUpdateCheck("scheduled")') &&
+      /updateRecheckTimer = setTimeout\(/.test(mainSrc) &&
+      mainSrc.includes("if (!updatesEnabled()) return;"),
+  );
+  check(
+    "P2-155: will-quit clears the recheck timer before the daemon teardown",
+    willQuitHandler.includes("clearTimeout(updateRecheckTimer)") &&
+      willQuitHandler.indexOf("clearTimeout(updateRecheckTimer)") < willQuitHandler.indexOf("if (daemonStopped) return;") &&
+      willQuitHandler.includes("updateRecheckTimer = null"),
+  );
+  check(
+    "P2-155: schedule constants are 6 h base / 5 min floor / 15 min backoff start",
+    BASE === 21_600_000 && UPDATE_RECHECK_MIN_MS === 300_000 && UPDATE_RECHECK_BACKOFF_START_MS === 900_000,
   );
 }
 

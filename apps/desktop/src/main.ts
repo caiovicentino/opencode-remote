@@ -29,6 +29,7 @@ import { daemonTooltip, loginItemSupported, logsDirPath, openLogsFolder, trayIco
 import { badgePlan, type BadgePlan } from "./badge";
 import { CLOSE_HINT_LOG, closeHintPlan, hintFlagPath, readHintFlag, writeHintFlag } from "./closehint";
 import { checkForUpdatesOnBoot, updatesEnabled, updateMenuLabel, type UpdateDialogSinks, type UpdateStatus } from "./update";
+import { nextCheckDelayMs } from "./updateschedule";
 import { loadWindowBounds, saveWindowBounds, WINDOW_MIN, windowStateFile } from "./window-state";
 import { installFatalErrorHandlers, onRendererGone, ReloadGuard } from "./crash";
 import { clientLogsDir, writeCrashReport } from "./crash-log";
@@ -65,6 +66,14 @@ let lastUpdateStatus: UpdateStatus | null = null;
 // the dock badge is (or would be) showing. Exposed via app:unreadBadge for
 // the desktop harness; never derived from the OS itself.
 let lastUnreadBadge = 0;
+// P2-155: periodic update recheck. The app can stay alive for weeks with the
+// window closed to the tray (P2-152), so the boot-only check would pin the
+// installed version forever. `updateRecheckTimer` holds the single pending
+// setTimeout (cleared before any reschedule — a tray re-check during a
+// scheduled wait replaces it, never stacks); `updateFeedFailures` counts
+// consecutive dead-feed checks and drives the 15 min → 6 h backoff.
+let updateRecheckTimer: NodeJS.Timeout | null = null;
+let updateFeedFailures = 0;
 
 // P3-012: file logging installed before anything can log — console.* in the
 // packaged app is invisible to the stage-5 user (no terminal), so every
@@ -303,7 +312,35 @@ function runUpdateCheck(source: string): void {
       refreshTrayMenu();
       log(`[desktop] update status (${source}): ${status}${version ? ` ${version}` : ""}`);
     },
-  }).catch((err) => logError(`[desktop] update check failed (${source}):`, err));
+    // P2-155: the resolved status drives the next scheduled recheck (covers
+    // "disabled" too, which never passes through onStatus).
+  })
+    .then((status) => scheduleNextUpdateCheck(status))
+    .catch((err) => {
+      logError(`[desktop] update check failed (${source}):`, err);
+      // An unexpected throw must not kill the recheck loop forever — treat it
+      // as a dead feed so the backoff keeps the periodic check alive.
+      scheduleNextUpdateCheck("feed-unreachable");
+    });
+}
+
+// P2-155: plan and arm the next update check from the status the last one
+// resolved with. Derived from checkForUpdatesOnBoot's return value — never
+// from onStatus — so the autoUpdater's own update-downloaded emission doesn't
+// schedule anything behind the consent flow's back.
+function scheduleNextUpdateCheck(status: UpdateStatus): void {
+  if (updateRecheckTimer) {
+    clearTimeout(updateRecheckTimer);
+    updateRecheckTimer = null;
+  }
+  if (!updatesEnabled()) return;
+  if (status === "feed-unreachable" || status === "unrecognized-feed") updateFeedFailures++;
+  else updateFeedFailures = 0;
+  const delay = nextCheckDelayMs(status, updateFeedFailures, Math.random);
+  if (delay == null) return;
+  log(`[desktop] update recheck (${status}) in ${Math.round(delay / 60_000)} min`);
+  updateRecheckTimer = setTimeout(() => runUpdateCheck("scheduled"), delay);
+  updateRecheckTimer.unref?.();
 }
 
 async function onReady(): Promise<void> {
@@ -566,6 +603,11 @@ async function onReady(): Promise<void> {
     quitting = true;
   });
   app.on("will-quit", (event) => {
+    // P2-155: a pending periodic recheck must not outlive the app.
+    if (updateRecheckTimer) {
+      clearTimeout(updateRecheckTimer);
+      updateRecheckTimer = null;
+    }
     // Encerra o daemon que subimos antes de sair (idempotente).
     if (daemonStopped) return;
     event.preventDefault();
