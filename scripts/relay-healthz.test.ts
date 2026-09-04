@@ -6,6 +6,7 @@
  */
 import { createServer, get, type Server } from "node:http";
 import { healthzHandler, healthzPayload } from "../apps/relay/src/healthz";
+import { metricsAuthOk, metricsBinding } from "../apps/relay/src/metricsbind";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -80,6 +81,59 @@ check("handler: other paths get 404", (await request("GET", "/other")).status ==
 check("handler: non-GET on probe path gets 404", (await request("POST", "/healthz")).status === 404);
 
 server.close();
+
+// --- 3. metrics binding decision (P2-132, pure functions) --------------------
+// The relay boot starts the listener only when `port > 0 && problems.length
+// === 0`; these checks exercise that exact expression on the pure result.
+
+check("metrics: absent port turns everything off", (() => {
+  const b = metricsBinding({});
+  return b.port === 0 && b.host === "127.0.0.1" && b.token === "" && b.problems.length === 0;
+})());
+check("metrics: port 0 turns everything off", metricsBinding({ RELAY_METRICS_PORT: "0" }).port === 0);
+check("metrics: garbage port is off, not a crash", metricsBinding({ RELAY_METRICS_PORT: "abc" }).port === 0);
+
+check("metrics: loopback bind without token keeps current behavior", (() => {
+  const b = metricsBinding({ RELAY_METRICS_PORT: "9100" });
+  return b.port === 9100 && b.host === "127.0.0.1" && b.token === "" && b.problems.length === 0;
+})());
+check("metrics: explicit loopback bind without token allowed", (() => {
+  const b = metricsBinding({ RELAY_METRICS_PORT: "9100", RELAY_METRICS_BIND: "127.0.0.1" });
+  return b.port === 9100 && b.problems.length === 0;
+})());
+
+check("metrics: public bind without token is a problem, listener must not start", (() => {
+  const b = metricsBinding({ RELAY_METRICS_PORT: "9100", RELAY_METRICS_BIND: "0.0.0.0" });
+  return b.problems.length > 0 && !(b.port > 0 && b.problems.length === 0);
+})());
+check("metrics: unknown hostname counts as non-loopback (fail-closed)", (() => {
+  const b = metricsBinding({ RELAY_METRICS_PORT: "9100", RELAY_METRICS_BIND: "metrics.internal" });
+  return b.problems.length > 0;
+})());
+
+check("metrics: public bind with token accepted", (() => {
+  const b = metricsBinding({
+    RELAY_METRICS_PORT: "9100",
+    RELAY_METRICS_BIND: "0.0.0.0",
+    RELAY_METRICS_TOKEN: "s3cret",
+  });
+  return b.port === 9100 && b.host === "0.0.0.0" && b.token === "s3cret" && b.problems.length === 0;
+})());
+check("metrics: loopback with token also accepted", (() => {
+  const b = metricsBinding({ RELAY_METRICS_PORT: "9100", RELAY_METRICS_TOKEN: "s3cret" });
+  return b.port === 9100 && b.problems.length === 0 && b.token === "s3cret";
+})());
+
+// --- 4. metrics auth: constant-time bearer check (P2-132, pure function) -----
+const TOKEN = "s3cret";
+check("metrics auth: missing header rejected", metricsAuthOk(undefined, TOKEN) === false);
+check("metrics auth: wrong prefix rejected", metricsAuthOk("Basic s3cret", TOKEN) === false);
+check("metrics auth: bare scheme without token rejected", metricsAuthOk("Bearer", TOKEN) === false);
+check("metrics auth: wrong token rejected", metricsAuthOk("Bearer nope", TOKEN) === false);
+check("metrics auth: token sharing a prefix with the real one rejected", metricsAuthOk("Bearer s3cret-", TOKEN) === false);
+check("metrics auth: correct bearer accepted", metricsAuthOk("Bearer s3cret", TOKEN) === true);
+check("metrics auth: empty expected token never authenticates", metricsAuthOk("Bearer s3cret", "") === false);
+
 if (failures) process.exit(1);
 console.log("relay-healthz: ALL OK");
 process.exit(0);

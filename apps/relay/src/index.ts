@@ -10,6 +10,7 @@ import { IpCap, clientIp } from "./ipcap.js";
 import { isValidRoomId, MAX_ROOMS_PER_SOCKET } from "./roomid.js";
 import { createShutdown, stopAccepting } from "./shutdown.js";
 import { decideStale } from "./liveness.js";
+import { metricsAuthOk, metricsBinding } from "./metricsbind.js";
 
 /**
  * Relay: a blind router.
@@ -87,8 +88,13 @@ interface Socket extends WebSocket {
 
 const rooms = new Map<string, Set<Socket>>();
 
-// --- optional metrics endpoint (localhost-only) -----------------------------
-const METRICS_PORT = Number(process.env.RELAY_METRICS_PORT ?? 0);
+// --- optional metrics endpoint (bind configurable, token-optional) -----------
+// P2-132: the bind address is configurable (RELAY_METRICS_BIND) so a scraper
+// outside the container can reach it, and an optional bearer token
+// (RELAY_METRICS_TOKEN) guards it. Fail-closed: a non-loopback bind without
+// a token is logged once here instead of starting an unauthenticated
+// network-exposed endpoint.
+const METRICS = metricsBinding(process.env);
 const m = {
   connectionsTotal: 0,
   framesRouted: 0,
@@ -99,8 +105,12 @@ const m = {
   staleTerminated: 0,
   startedAt: Date.now(),
 };
-if (METRICS_PORT) {
+if (METRICS.port && METRICS.problems.length === 0) {
   createHttpServer((req, res) => {
+    if (METRICS.token && !metricsAuthOk(req.headers.authorization, METRICS.token)) {
+      res.writeHead(401).end();
+      return;
+    }
     if (req.url?.startsWith("/metrics")) {
       if (req.url.includes("format=prom")) {
         const lines = [
@@ -150,9 +160,17 @@ if (METRICS_PORT) {
     }
     res.writeHead(404).end();
   })
-    .listen(METRICS_PORT, "127.0.0.1", () =>
-      ev("info", "metrics listening", { port: METRICS_PORT, bind: "127.0.0.1" }),
+    .listen(METRICS.port, METRICS.host, () =>
+      ev("info", "metrics listening", {
+        port: METRICS.port,
+        bind: METRICS.host,
+        auth: Boolean(METRICS.token),
+      }),
     );
+} else {
+  for (const reason of METRICS.problems) {
+    ev("warn", "metrics endpoint disabled (fail-closed)", { reason });
+  }
 }
 
 function join(socket: Socket, room: string) {
