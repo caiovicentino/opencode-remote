@@ -100,6 +100,22 @@ abrir o app que o bundle empacotado carrega `web-dist/index.html`, o sidecar
 `daemon/index.js` e o binário (layouts mac/win/linux) — também fora do gate por
 design; é o chão do estágio 5 (instaladores assinados).
 
+**Perfil de gate por repo (P2-116).** A bateria acima pressupõe um checkout do
+próprio pilot; apontar o pipeline para um repo externo quebraria o gate (os
+`scripts/*.ts` não existem lá) ou — pior — executaria scripts arbitrários do
+`package.json` alheio (superfície P1-056). O gate resolve um **perfil por
+workspace** (`apps/pilot/src/gateprofile.ts`), por detecção de stack, sem
+executar nada do alvo: um checkout do pilot (nome `opencode-remote` ou a
+própria árvore `apps/pilot/src/`) roda a bateria completa de sempre; um repo
+Node/TS externo roda **apenas** os scripts convencionais (`typecheck`, `build`,
+`test:unit`) que existirem no `package.json` dele, mais `lock-sync`
+(`npm ci --dry-run`) só quando houver `package-lock.json` — nada fora dessa
+allowlist é executado, e os steps pilot-only (smokes de desktop, corpus,
+invariants) nunca vazam para o repo externo. Repo sem bateria detectável
+ reprova em fail-closed no step `profile`, antes mesmo do evidence. Cada step
+roda com cwd no **worktree sandbox do próprio repo alvo** (o clone do slot),
+nunca na árvore de produção.
+
 O gate também roda a invariant **anti module-shadowing** (P2-014): o diff de
 merge (`origin/main...HEAD`) não pode introduzir na **raiz do workspace**
 arquivo com nome de módulo stdlib de runtime (`struct.py`, `os.py`, `base64.py`,

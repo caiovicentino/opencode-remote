@@ -2875,6 +2875,11 @@ check("stdlibShadow: non-stdlib root file passes", stdlibShadowHits("A\tmain.py\
 // --- P1-101: deterministic gate before reviewers + retry-once flaky -----------
 {
   const ws = mkdtempSync(join(tmpdir(), "p1-101-"));
+  // P2-116: the gate resolves a per-repo profile from the workspace. These
+  // checks pin the PILOT battery (build step, integration flake), so the
+  // fixture must detect as the pilot repo — name marker only, no scripts run
+  // (the harness injects `run`).
+  writeFileSync(ws + "/package.json", JSON.stringify({ name: "opencode-remote", private: true }));
 
   // exec() now captures stderr alongside stdout (vite warnings live on stderr;
   // losing them faked "pasted output diverges" rejections)

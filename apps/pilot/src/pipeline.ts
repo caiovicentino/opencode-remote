@@ -13,6 +13,7 @@ import { touchHeartbeat, type PilotConfig, type PilotState } from "./state";
 import { appendLessonsToWorkspace, pickRelevantLessons, readExperienceFile } from "./experience";
 import { defaultLessonsFile, failureLessonsBlock, readRecentFailureLessons } from "./failureLessons";
 import { captureGateCorpus, CORPUS_COMMANDS, CORPUS_DIR, loadGateCorpus } from "./gate-corpus";
+import { detectGateProfile, type GateProfile } from "./gateprofile";
 import type { InfraFailureKind } from "./audit";
 import {
   clearRecapCarry,
@@ -1710,13 +1711,21 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
     // starts with a fresh map: the builder may have changed the code.
     const rerunResults: RerunResults = new Map();
 
+    // P2-116: resolve the per-repo gate profile once per round — the preflight
+    // typecheck and the gate battery must agree on which battery this repo runs.
+    const profile = detectGateProfile(ws);
     // preflight: a broken build must never reach the reviewers (they cost LLM
-    // tokens and would only re-report the same typecheck errors)
-    const pre = cachedExec(rerunResults, "npm run typecheck --silent", ws, { timeoutMin: 10 });
-    if (!pre.ok) {
-      findings = `${findings}\n[typecheck still failing — fix these first]\n${pre.output.slice(-1500)}`;
-      emit("phase", { task: t.id, phase: "builder", detail: "preflight typecheck failed → next round", ok: false });
-      continue;
+    // tokens and would only re-report the same typecheck errors). A repo whose
+    // profile has no typecheck step (foreign target) skips the preflight —
+    // the gate itself fails closed at the profile step.
+    const typecheckCmd = profile.steps.find(([n]) => n === "typecheck")?.[1];
+    if (typecheckCmd) {
+      const pre = cachedExec(rerunResults, typecheckCmd, ws, { timeoutMin: 10 });
+      if (!pre.ok) {
+        findings = `${findings}\n[typecheck still failing — fix these first]\n${pre.output.slice(-1500)}`;
+        emit("phase", { task: t.id, phase: "builder", detail: "preflight typecheck failed → next round", ok: false });
+        continue;
+      }
     }
 
     // P1-101: deterministic gate BEFORE the reviewers — evidence, battery and
@@ -1725,7 +1734,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
     // spent reviewer tokens and then killed the attempt at the gate).
     const gateSha = headSha(ws);
     emit("phase", { task: t.id, phase: "gatekeeper" });
-    const gate = deterministicGate(ws, t, build.output, startedAtMs, rerunResults, nameOnly);
+    const gate = deterministicGate(ws, t, build.output, startedAtMs, rerunResults, nameOnly, undefined, profile);
     for (const step of gate.flaky) {
       emit("phase", { task: t.id, phase: "gate-flaky", ok: true, detail: step });
       console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "gate-flaky", data: { task: t.id, round, step } }));
@@ -2214,6 +2223,11 @@ export type GateResult =
  * `flaky` and reported to the caller via the `gate-flaky` event. The evidence
  * re-run retries once ONLY when a cited command itself failed (transient red);
  * a pasted-output divergence is fabrication territory and never retries.
+ *
+ * P2-116: the battery itself is per-repo (gateprofile.ts). A pilot checkout
+ * runs the full battery (invariants included); a foreign Node/TS repo runs
+ * only the allowlisted conventional scripts it actually defines; an
+ * undetectable repo fails closed at the "profile" step.
  */
 export function deterministicGate(
   ws: string,
@@ -2226,20 +2240,26 @@ export function deterministicGate(
   rerunResults: RerunResults,
   nameOnly: string,
   run?: (cmd: string, cwd: string) => { ok: boolean; output: string },
+  // P2-116: per-repo profile — pilot battery vs the foreign-repo allowlist.
+  // Resolved from the workspace when omitted (the production path).
+  profile: GateProfile = detectGateProfile(ws),
 ): GateResult {
   const flaky: string[] = [];
-  const steps: Array<[string, string]> = [
-    ["typecheck", "npm run typecheck --silent"],
-    ["build", "npm run build --silent"],
-    ["unit", "npm run test:unit --silent"],
-    ["lock-sync", "npm ci --dry-run --no-audit --no-fund --loglevel=error"],
-    ["reconnect", "npx tsx scripts/reconnect.test.ts"],
-    ["integration", "npx tsx scripts/integration.ts"],
-    ["desktop-sidecar", "npx tsx scripts/desktop-sidecar.test.ts"],
-    ["invariants", "npx tsx scripts/invariants.ts"],
-    // NOTE: live tests (download/push/smoke/live-eval) run post-deploy via
-    // `invariants --live` + health checks — they need RELAY_URL + prod pairing.
-  ];
+  // P2-116 fail closed: no detectable battery (no/undetectable package.json) →
+  // nothing in this workspace may be certified. Evidence never even runs.
+  if (profile.kind === "unknown") {
+    return {
+      ok: false,
+      step: "profile",
+      tail: `no gate profile for ${ws} — target repo has no package.json battery (expected npm scripts: typecheck, build, test:unit)`,
+      flaky,
+    };
+  }
+  // P2-116: the battery comes from the per-repo profile (pilot: full battery
+  // incl. invariants; foreign: only the allowlisted conventional scripts it
+  // actually defines). The pilot-only steps below (desktop smokes, corpus)
+  // must never leak into a foreign repo — those script files do not exist there.
+  const steps: Array<[string, string]> = [...profile.steps];
   // Desktop render smoke (P0-002): when the diff touches the desktop shell or
   // the web UI it renders, go beyond process boot — did-finish-load + renderer
   // console capture + #root mounted content — so a white window (e.g. asset
@@ -2252,7 +2272,9 @@ export function deterministicGate(
       const p = l.trim();
       return p.startsWith("apps/desktop/") || p.startsWith("apps/web/");
     });
-  if (renderTouched) {
+  // P2-116: pilot-only steps — the desktop smokes spawn this repo's Electron
+  // harness; a foreign repo has no scripts/desktop-*.ts to run.
+  if (profile.kind === "pilot" && renderTouched) {
     steps.push(["desktop-render", "npx tsx scripts/desktop-render.test.ts"]);
     // P1-051: real interaction flow against the packaged shell (Playwright
     // _electron via tools/desktop.mjs) — open → interact → shot → assert IPC.
@@ -2298,8 +2320,9 @@ export function deterministicGate(
   // P1-044 (a): a task that edits the pipeline's own code must leave the golden
   // corpus green — the gate's own calibration cannot regress through a merge.
   // Unknown diff → fail-closed (the corpus check is cheap and deterministic).
+  // P2-116: corpus fixtures are pilot gate outputs — a pilot-only concern.
   const pilotInfraTouched = !nameOnly.trim() || touchedPilotInfraFromDiff(nameOnly);
-  if (pilotInfraTouched) {
+  if (profile.kind === "pilot" && pilotInfraTouched) {
     const corpus = corpusGateDetail();
     if (corpus) return { ok: false, step: "corpus", tail: corpus, flaky };
   }
