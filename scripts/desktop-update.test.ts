@@ -18,7 +18,8 @@
 import { createServer } from "node:http";
 import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -40,6 +41,8 @@ const {
   parseFeed,
   publicFeedUrl,
 } = await import("../apps/desktop/src/update.ts");
+// P2-146: pure Squirrel.Mac feed builder (CLI in the release workflow).
+const { buildSquirrelFeed } = await import("../apps/desktop/scripts/update-feed.mjs");
 
 // --- feedUrlFromEnv ----------------------------------------------------------
 check("feedUrlFromEnv: unset → null", feedUrlFromEnv({}) === null);
@@ -421,8 +424,8 @@ check("resolvedFeedUrl: dev unpackaged stays disabled", resolvedFeedUrl({}, fals
 
 // --- P2-098: public fallback feed for third-party installs --------------------
 check(
-  "publicFeedUrl: packaged default on darwin = GitHub releases latest-mac.yml",
-  publicFeedUrl({}, true, "darwin") === "https://github.com/caiovicentino/opencode-remote/releases/latest/download/latest-mac.yml",
+  "publicFeedUrl: packaged default on darwin = GitHub releases update-mac.json (Squirrel JSON, P2-146)",
+  publicFeedUrl({}, true, "darwin") === "https://github.com/caiovicentino/opencode-remote/releases/latest/download/update-mac.json",
 );
 check(
   "publicFeedUrl: OCR_PUBLIC_UPDATE_FEED overrides (forks/staging)",
@@ -496,6 +499,130 @@ check(
   );
   if (savedFeed !== undefined) process.env.OCR_UPDATE_FEED = savedFeed;
   else delete process.env.OCR_UPDATE_FEED;
+}
+
+// --- P2-146: Squirrel.Mac JSON feed published from the release ----------------
+{
+  // YML (the fixture above) is a valid latest-mac.yml: version 0.2.1, zip
+  // "OpenCode Remote-0.2.1-mac.zip" (with a space in the name), notes, date.
+  const distFiles = ["OpenCode Remote-0.2.1-mac.zip", "OpenCode Remote-0.2.1.dmg", "latest-mac.yml"];
+  const good = buildSquirrelFeed("v0.2.1", YML, distFiles, "caiovicentino/opencode-remote");
+  check("P2-146: valid dist → feed without problems", good.problems.length === 0 && good.feed !== null);
+  check(
+    "P2-146: feed url = release download of the zip, file name percent-encoded",
+    good.feed.url ===
+      "https://github.com/caiovicentino/opencode-remote/releases/download/v0.2.1/OpenCode%20Remote-0.2.1-mac.zip",
+  );
+  check("P2-146: feed name = yml version (Squirrel reads the version from `name`)", good.feed.name === "0.2.1");
+  check("P2-146: feed notes = yml releaseNotes", good.feed.notes.includes("notas fake"));
+  check("P2-146: pub_date = yml releaseDate as ISO", good.feed.pub_date === new Date("2026-09-01").toISOString());
+  check(
+    "P2-146: darwin resolves the JSON format with zero yml in the path",
+    parseFeed(JSON.stringify(good.feed))?.format === "json" && parseFeed(JSON.stringify(good.feed))?.version === "0.2.1",
+  );
+
+  const spaced = buildSquirrelFeed(
+    "v1.0.0",
+    YML.replaceAll("0.2.1", "1.0.0").replaceAll("OpenCode Remote-1.0.0-mac.zip", "My App 1.0-arm64-mac.zip"),
+    ["My App 1.0-arm64-mac.zip", "latest-mac.yml"],
+    "acme/remote",
+  );
+  check(
+    "P2-146: artifact name with spaces is percent-encoded in the download url",
+    spaced.feed.url === "https://github.com/acme/remote/releases/download/v1.0.0/My%20App%201.0-arm64-mac.zip",
+  );
+
+  const noZip = buildSquirrelFeed("v0.2.1", YML, ["OpenCode Remote-0.2.1.dmg", "latest-mac.yml"], "acme/remote");
+  check(
+    "P2-146: missing zip → problem (Squirrel installs only from a zip), no feed",
+    noZip.feed === null && noZip.problems.length === 1 && noZip.problems[0].includes("*.zip"),
+  );
+
+  const diverged = buildSquirrelFeed("v0.3.0", YML, distFiles, "acme/remote");
+  check(
+    "P2-146: yml version diverging from the tag → problem, no feed",
+    diverged.feed === null &&
+      diverged.problems.length === 1 &&
+      diverged.problems[0].includes("0.2.1") &&
+      diverged.problems[0].includes("v0.3.0"),
+  );
+
+  const unreadable = buildSquirrelFeed("v0.2.1", "<html>404</html>", distFiles, "acme/remote");
+  check(
+    "P2-146: unreadable yml (no `version:` line) → problem",
+    unreadable.feed === null && unreadable.problems.some((p) => p.includes("unreadable")),
+  );
+  const absent = buildSquirrelFeed("v0.2.1", null, distFiles, "acme/remote");
+  check(
+    "P2-146: absent latest-mac.yml → problem",
+    absent.feed === null && absent.problems.some((p) => p.includes("latest-mac.yml")),
+  );
+
+  // The feed is useless without an artifact Squirrel can apply — assert the
+  // REAL packaging config carries the zip target, not a test fixture.
+  const builderYml = readFileSync(join(repoRoot, "apps", "desktop", "electron-builder.yml"), "utf8");
+  const macBlock = builderYml.slice(builderYml.indexOf("\nmac:"), builderYml.indexOf("\ndmg:"));
+  check(
+    "P2-146: real electron-builder.yml mac targets = dmg + dir + zip",
+    macBlock.includes("- target: dmg") && macBlock.includes("- target: dir") && macBlock.includes("- target: zip"),
+  );
+
+  // CLI mode (what the release workflow runs): writes dist/update-mac.json on
+  // success; exit 1 listing ALL problems at once on a broken dist — same UX
+  // as dist:smoke. --dist keeps the run hermetic (no apps/desktop/dist needed).
+  const cliRoot = mkdtempSync(join(tmpdir(), "ocr-update-feed-"));
+  try {
+    writeFileSync(join(cliRoot, "OpenCode Remote-0.2.1-mac.zip"), "zip");
+    writeFileSync(join(cliRoot, "latest-mac.yml"), YML);
+    const cli = spawnSync(
+      process.execPath,
+      [join(repoRoot, "apps", "desktop", "scripts", "update-feed.mjs"), "--dist", cliRoot, "--tag", "v0.2.1"],
+      { encoding: "utf8" },
+    );
+    check(
+      "P2-146: CLI exits 0 and writes update-mac.json into the dist root",
+      cli.status === 0 && existsSync(join(cliRoot, "update-mac.json")),
+    );
+    const written = JSON.parse(readFileSync(join(cliRoot, "update-mac.json"), "utf8"));
+    check(
+      "P2-146: CLI-written feed carries url/name/notes/pub_date",
+      typeof written.url === "string" && written.name === "0.2.1" && typeof written.pub_date === "string",
+    );
+
+    rmSync(join(cliRoot, "update-mac.json"));
+    writeFileSync(join(cliRoot, "latest-mac.yml"), YML_030); // version 0.3.0 ≠ tag v0.2.1
+    rmSync(join(cliRoot, "OpenCode Remote-0.2.1-mac.zip"));
+    const bad = spawnSync(
+      process.execPath,
+      [join(repoRoot, "apps", "desktop", "scripts", "update-feed.mjs"), "--dist", cliRoot, "--tag", "v0.2.1"],
+      { encoding: "utf8" },
+    );
+    check(
+      "P2-146: CLI exit 1 prints every problem at once and writes nothing",
+      bad.status === 1 &&
+        bad.stderr.includes("0.3.0") &&
+        bad.stderr.includes("*.zip") &&
+        bad.stderr.includes("problem(s)") &&
+        !existsSync(join(cliRoot, "update-mac.json")),
+    );
+  } finally {
+    rmSync(cliRoot, { recursive: true, force: true });
+  }
+
+  // Boot check over the public darwin feed: a JSON body is handed to
+  // Squirrel.Mac (serverType json) — never the manual yml flow.
+  const darwinUpdater = fakeUpdater();
+  check(
+    "P2-146: packaged darwin + JSON public feed → update-available with Squirrel wired",
+    (await checkForUpdatesOnBoot({
+      packaged: true,
+      platform: "darwin",
+      currentVersion: "0.2.0",
+      updater: darwinUpdater,
+      fetchImpl: fakeFetcher(JSON.stringify(good.feed)),
+      log: () => {},
+    })) === "update-available" && darwinUpdater.spy.feedURLs[0]?.serverType === "json",
+  );
 }
 
 {

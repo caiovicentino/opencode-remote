@@ -254,6 +254,17 @@ Homebrew users get the same code via the `Formula/opencode-remote.rb` formula
 (AGPL-3.0-only, checksum pinned automatically by the release pipeline at tag
 time).
 
+Since P2-146 the macOS packaging also produces the zip artifact Squirrel.Mac
+needs (`<name>-<version>-mac.zip`, additive to the DMG) and the release
+workflow publishes `update-mac.json` — a Squirrel.Mac JSON feed built from
+`latest-mac.yml` by `apps/desktop/scripts/update-feed.mjs`, with the zip's
+release-download URL. **macOS installs update themselves**: the packaged shell
+fetches that feed and applies the release in the background (with the consent
+dialog below) — but only when the running app is **Developer ID signed**
+(P2-136): Squirrel.Mac refuses an update whose code signature does not match
+the installed app, so ad-hoc signed builds (the default without signing
+secrets) keep the manual flow via the release page.
+
 ### Desktop app installer (Windows)
 
 Releases also ship a Windows installer, `OpenCode Remote Setup <version>.exe`
@@ -490,12 +501,14 @@ demand from the tray (**Check for updates**). P2-098: when that staged feed is
 absent — the normal case on a plain DMG install — the shell falls back to the
 public yml feed attached to the latest GitHub release, so the tray still
 reports "update available" on third-party machines. P2-131: that fallback is
-platform-aware — `latest-mac.yml` on macOS, `latest.yml` on Windows, and no
+platform-aware — `update-mac.json` on macOS, `latest.yml` on Windows, and no
 feed at all on other platforms (the whole check stays `disabled` with zero
 network requests there) — and `OCR_PUBLIC_UPDATE_FEED` remains an absolute
 override that ignores the platform. The two platforms update differently: on
-**macOS** the staged Squirrel JSON feed (when present) downloads the release in
-the background and a consent dialog applies it; on **Windows** there is no
+**macOS** the public fallback is a real Squirrel.Mac JSON feed (P2-146), so
+the release downloads in the background and the consent dialog applies it —
+the download only completes on a Developer ID signed build (P2-136), while
+ad-hoc signed installs stay manual; on **Windows** there is no
 download engine yet (Squirrel.Windows support pending), so a yml feed resolves
 to `update-available-manual` and an explicit **Check for updates** click opens
 the release page — at most once per version per session, and never
@@ -757,8 +770,14 @@ updates" item that re-runs the check and refreshes the menu in place. Applying
 a release always goes through the consent dialog (P1-050): the updater asks
 "Restart now / Later" once the download finishes — a deferred version is not
 re-offered in the same session. On macOS the packaged shell updates itself
-this way; on Windows (no Squirrel.Windows integration yet) the shell opens the
-release page instead of downloading anything (P2-131).
+this way, and the same Squirrel JSON feed is published on every GitHub release
+(`update-mac.json`, built by `apps/desktop/scripts/update-feed.mjs` from the
+packaged `latest-mac.yml` + mac zip — P2-146) so third-party installs
+auto-update too, but only when the app is Developer ID signed (P2-136):
+Squirrel.Mac rejects an update whose signature does not match the installed
+app, so ad-hoc builds keep the manual release page. On Windows (no
+Squirrel.Windows integration yet) the shell opens the release page instead of
+downloading anything (P2-131).
 
 ## Roadmap
 

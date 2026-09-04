@@ -56,6 +56,11 @@ mac:
   target:
     - target: dmg
     - target: dir
+    # P2-146: Squirrel.Mac only installs from a zip — every release now also
+    # ships the <name>-<version>-mac.zip the autoUpdater applies, and the
+    # release workflow's update-mac.json (scripts/update-feed.mjs) points at
+    # it. Additive: dmg stays the human installer, dir keeps dist:smoke fast.
+    - target: zip
   category: public.app-category.developer-tools
   icon: build/icon.png
   hardenedRuntime: true
