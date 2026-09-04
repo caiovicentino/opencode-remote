@@ -11,6 +11,7 @@ import { parsePairingUri, localWsUrl, shouldFailoverToRelay } from "../apps/web/
 import { isLoopbackAddr, localOriginAllowed, localUpgradeAllowed } from "../apps/daemon/src/localws";
 import { parseRelayUrl, redactRelayUrl } from "../apps/daemon/src/relayurl";
 import { classifyUpstream, UPSTREAM_PROBE_TIMEOUT_MS } from "../apps/daemon/src/upstream";
+import { opencodeCandidates, pickOpencodeBinary } from "../apps/daemon/src/opencodebin";
 import { copyText, hasClipboardApi, legacyCopy } from "../apps/web/src/lib/clipboard";
 import { mimeFor } from "../apps/web/src/lib/files";
 import { timeAgo, sessionUpdatedTs } from "../apps/web/src/lib/time";
@@ -7465,6 +7466,124 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     return a.state === b.state && a.reason === b.reason && a.hint === b.hint;
   })());
   check("P2-135: probe timeout cap is exported and sane", UPSTREAM_PROBE_TIMEOUT_MS === 5_000);
+}
+
+// --- P2-149: opencode binary resolution (pure) + refused-branch split ---------
+
+{
+  // ECONNREFUSED wrapped the way Node/undici wraps it — same shape as P2-135.
+  const refusedErr = () =>
+    Object.assign(new Error("fetch failed"), {
+      name: "TypeError",
+      cause: Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:4096"), { code: "ECONNREFUSED" }),
+    });
+
+  check("P2-149: PATH entry with an executable binary resolves with source path", (() => {
+    const candidates = opencodeCandidates({ PATH: "/usr/local/bin:/bin" }, "darwin", "/home/u");
+    const pick = pickOpencodeBinary(candidates, (p) => p === "/usr/local/bin/opencode");
+    return pick.source === "path" && pick.path === "/usr/local/bin/opencode";
+  })());
+  check("P2-149: only a known location executable resolves with source known", (() => {
+    const candidates = opencodeCandidates({ PATH: "/usr/local/bin" }, "darwin", "/home/u");
+    const pick = pickOpencodeBinary(candidates, (p) => p === "/home/u/.opencode/bin/opencode");
+    return pick.source === "known" && pick.path === "/home/u/.opencode/bin/opencode";
+  })());
+  check("P2-149: nothing executable resolves to null/null", (() => {
+    const candidates = opencodeCandidates({ PATH: "/usr/local/bin" }, "darwin", "/home/u");
+    const pick = pickOpencodeBinary(candidates, () => false);
+    return pick.path === null && pick.source === null;
+  })());
+  check("P2-149: throwing isExecutable is discarded, not propagated", (() => {
+    const candidates = opencodeCandidates({ PATH: "/a" }, "darwin", "/home/u");
+    let first = true;
+    const pick = pickOpencodeBinary(candidates, (p) => {
+      if (first) {
+        first = false;
+        throw new Error("EACCES");
+      }
+      return p === "/home/u/.opencode/bin/opencode";
+    });
+    return pick.path === "/home/u/.opencode/bin/opencode" && pick.source === "known";
+  })());
+  check("P2-149: win32 candidates all end in .exe and never contain a slash", (() => {
+    const candidates = opencodeCandidates(
+      {
+        PATH: "C:\\ops\\bin;C:\\Program Files\\opencode",
+        LOCALAPPDATA: "C:\\Users\\u\\AppData\\Local",
+        ProgramFiles: "C:\\Program Files",
+      },
+      "win32",
+      "C:\\Users\\u",
+    );
+    return (
+      candidates.length > 0 && candidates.every((c) => c.path.endsWith(".exe") && !c.path.includes("/"))
+    );
+  })());
+  check("P2-149: dedupe keeps first occurrence (PATH wins over known) in order", (() => {
+    const candidates = opencodeCandidates({ PATH: "/opt/homebrew/bin:/usr/local/bin" }, "darwin", "/home/u");
+    const paths = candidates.map((c) => c.path);
+    const expected = [
+      "/opt/homebrew/bin/opencode",
+      "/usr/local/bin/opencode",
+      "/home/u/.opencode/bin/opencode",
+    ];
+    return (
+      paths.length === expected.length &&
+      paths.every((p, i) => p === expected[i]) &&
+      candidates[0].source === "path" &&
+      candidates[2].source === "known"
+    );
+  })());
+  check("P2-149: relative/empty PATH entries are dropped; trailing slash normalized", (() => {
+    const candidates = opencodeCandidates({ PATH: "bin:.:~/x::/usr/local/bin/" }, "darwin", "/home/u");
+    const paths = candidates.map((c) => c.path);
+    return (
+      candidates.length === 3 &&
+      candidates[0].path === "/usr/local/bin/opencode" &&
+      candidates[0].source === "path" &&
+      paths.filter((p) => p === "/usr/local/bin/opencode").length === 1 &&
+      paths.every((p) => !p.includes("//"))
+    );
+  })());
+  check("P2-149: missing PATH still yields the known locations; win32 defaults to C:\\Program Files", (() => {
+    const candidates = opencodeCandidates({ LOCALAPPDATA: "C:\\Users\\u\\AppData\\Local" }, "win32", "C:\\Users\\u");
+    return (
+      !candidates.some((c) => c.path.includes("undefined")) &&
+      candidates.some((c) => c.path === "C:\\Program Files\\opencode\\opencode.exe") &&
+      candidates.some((c) => c.path === "C:\\Users\\u\\AppData\\Local\\opencode\\bin\\opencode.exe")
+    );
+  })());
+
+  check("P2-149: refused with binary present vs absent — same state, different hints", (() => {
+    const withBinary = classifyUpstream({ error: refusedErr(), binaryFound: true });
+    const withoutBinary = classifyUpstream({ error: refusedErr(), binaryFound: false });
+    return (
+      withBinary.state === "unreachable" &&
+      withoutBinary.state === "unreachable" &&
+      withBinary.reason !== withoutBinary.reason &&
+      withBinary.hint !== withoutBinary.hint &&
+      withBinary.hint.length > 0 &&
+      withoutBinary.hint.length > 0
+    );
+  })());
+  check("P2-149: binary-absent hint tells the user to install opencode first", (() => {
+    const v = classifyUpstream({ error: refusedErr(), binaryFound: false });
+    return /instal/i.test(v.hint) && !/rodando/.test(v.hint);
+  })());
+  check("P2-149: absent binaryFound keeps the legacy refused verdict byte a byte", (() => {
+    const v = classifyUpstream({ error: refusedErr() });
+    return (
+      v.state === "unreachable" &&
+      v.reason === "conexão recusada" &&
+      v.hint === "o servidor do agente não está aceitando conexões — verifique se o opencode está rodando nesta máquina"
+    );
+  })());
+  check("P2-149: verdicts never expose the resolved binary path", (() => {
+    const binPath = "/opt/homebrew/bin/opencode";
+    const a = classifyUpstream({ error: refusedErr(), binaryFound: true });
+    const b = classifyUpstream({ error: refusedErr(), binaryFound: false });
+    return [a.reason, a.hint, b.reason, b.hint].every((s) => !s.includes(binPath) && !s.includes("/home/"));
+  })());
 }
 
 // --- P2-138: upstream notice mapping (pure, same contract as /api/health) -----

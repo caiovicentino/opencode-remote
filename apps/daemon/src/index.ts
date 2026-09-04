@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, statSync, readdirSync, openSync, readSync, closeSync, appendFileSync, copyFileSync, createReadStream } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, statSync, readdirSync, openSync, readSync, closeSync, appendFileSync, copyFileSync, createReadStream, accessSync, constants } from "node:fs";
 import { stat } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -65,6 +65,7 @@ import {
   type UpstreamDetail,
   type UpstreamVerdict,
 } from "./upstream.js";
+import { opencodeCandidates, pickOpencodeBinary, type OpencodeBinaryPick } from "./opencodebin.js";
 import {
   injectArtifactsPathPart,
   injectArtifactsSystem,
@@ -1278,6 +1279,28 @@ let opencodeDetail: UpstreamDetail = {
 };
 metrics.gauge("ocr_opencode_healthy", 1);
 
+// P2-149: resolve the opencode binary once at boot and, at most, once a minute
+// while the upstream looks unreachable, so the refused hint can separate
+// "server stopped" from "server never installed" without an accessSync per
+// watchdog tick. Only the boolean + origin ever leave this module state.
+let binaryPick: OpencodeBinaryPick = { path: null, source: null };
+let binaryCheckedAt = 0;
+
+/** Re-resolve the opencode binary (rate-limited to one check per minute
+ * unless forced); the pick feeds binaryFound/binarySource — never the path. */
+function refreshOpencodeBinary(force = false): void {
+  if (!force && Date.now() - binaryCheckedAt < 60_000) return;
+  binaryCheckedAt = Date.now();
+  binaryPick = pickOpencodeBinary(opencodeCandidates(process.env, process.platform, homedir()), (p) => {
+    try {
+      accessSync(p, constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
 /** Record a finished probe: refreshes the /api/health detail and the legacy
  * boolean gauge. Returns whether the upstream counts as healthy. */
 function recordUpstream(verdict: UpstreamVerdict): boolean {
@@ -1307,9 +1330,13 @@ async function probeUpstream(): Promise<UpstreamVerdict> {
     } catch {
       bodyOk = false;
     }
-    return classifyUpstream({ status: res.status, body, bodyOk });
+    return classifyUpstream({ status: res.status, body, bodyOk, binaryFound: binaryPick.path !== null });
   } catch (err) {
-    return classifyUpstream({ error: err, timedOut: signal.aborted });
+    // P2-149: the probe never reached the server — refresh the binary pick
+    // (rate-limited to once a minute) so the refused hint can say "install"
+    // when the binary is gone, without re-scanning on every healthy tick.
+    refreshOpencodeBinary();
+    return classifyUpstream({ error: err, timedOut: signal.aborted, binaryFound: binaryPick.path !== null });
   }
 }
 
@@ -2155,7 +2182,14 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
         opencodeHealthy: metrics.get("ocr_opencode_healthy") === 1,
         // P2-135: additive detail of the last upstream probe; opencodeHealthy
         // above keeps its legacy boolean shape for existing clients.
-        opencode: opencodeDetail,
+        // P2-149: binaryFound/binarySource separate "opencode stopped" from
+        // "opencode never installed" — only the boolean and the origin are
+        // exposed; no absolute path, token or password ever reaches the payload.
+        opencode: {
+          ...opencodeDetail,
+          binaryFound: binaryPick.path !== null,
+          binarySource: binaryPick.source,
+        },
         relayConnected,
         relayRetry: relayConnected ? null : relayRetry.snapshot(),
         // P2-139: additive boot-validation verdict of RELAY_URL; relayConnected
@@ -2651,6 +2685,9 @@ async function main() {
   // boot healthcheck: fail loudly early if opencode is unreachable
   // P2-135: the probe now feeds the same classifier as the watchdog, so the
   // very first /api/health answer already carries the real failure mode.
+  // P2-149: resolve the opencode binary once up front so even the boot verdict
+  // distinguishes "server stopped" from "server never installed".
+  refreshOpencodeBinary(true);
   const signal = AbortSignal.timeout(UPSTREAM_PROBE_TIMEOUT_MS);
   try {
     const res = await fetch(new URL("/global/health", OPENCODE_URL), {
@@ -2664,11 +2701,12 @@ async function main() {
     } catch {
       bodyOk = false;
     }
-    const verdict = classifyUpstream({ status: res.status, body, bodyOk });
+    const verdict = classifyUpstream({ status: res.status, body, bodyOk, binaryFound: binaryPick.path !== null });
     recordUpstream(verdict);
     log("info", "opencode healthcheck", { status: res.status, state: verdict.state, reason: verdict.reason });
   } catch (err) {
-    const verdict = classifyUpstream({ error: err, timedOut: signal.aborted });
+    refreshOpencodeBinary();
+    const verdict = classifyUpstream({ error: err, timedOut: signal.aborted, binaryFound: binaryPick.path !== null });
     recordUpstream(verdict);
     log("warn", "opencode unreachable at boot (will keep retrying events)", {
       opencode: OPENCODE_URL,

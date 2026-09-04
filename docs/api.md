@@ -65,13 +65,20 @@ server (opencode) in detail:
 | `reason` | string | short pt-BR description of what was observed |
 | `hint` | string | actionable pt-BR next step ("" when nothing needs doing) — becomes the down-push body, prefixed with the machine name |
 | `checkedAt` | string \| null | ISO timestamp of that probe; `null` before the first one |
+| `binaryFound` | boolean | additive (P2-149): `true` when an executable `opencode` binary exists on this machine — resolved from `PATH` plus known install locations once at boot and refreshed at most once a minute while the upstream is unreachable |
+| `binarySource` | `path` \| `known` \| null | additive (P2-149): where the binary was found (`"path"` = a `PATH` entry, `"known"` = a known install location); `null` when none is executable |
 
 The probes (boot healthcheck + 60s watchdog) classify HTTP status, parsed
 body and fetch errors: a 401/403 becomes `unauthorized`, connection-refused
 `unreachable`, an aborted 5s probe `timeout`, and a 2xx with
-`healthy: false` or a malformed body `unhealthy`. `reason`/`hint` are static
-strings — the 401 case says the token was refused without ever quoting it, so
-no secrets, tokens or passwords ever appear in the health payload.
+`healthy: false` or a malformed body `unhealthy`. Since P2-149 the
+connection-refused case splits by `binaryFound` (same `unreachable` state):
+with a binary present the hint says to check whether the agent server is
+running, without one it says to install opencode first. `reason`/`hint` are
+static strings — the 401 case says the token was refused without ever quoting
+it, and `binaryFound`/`binarySource` expose only the boolean and the origin,
+so no secrets, tokens, passwords or absolute binary paths ever appear in the
+health payload.
 
 ### Pairing state (P2-007)
 

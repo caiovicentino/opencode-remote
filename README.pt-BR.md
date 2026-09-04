@@ -142,7 +142,12 @@ remoto, zero confiança**.
   que aconteceu e o que fazer — um bloco único dentro de uma superfície existente,
   nunca um segundo banner — com botão secundário que abre a seção de ajuda direto do
   cartão de primeiro boot. reason/hint do daemon entram só como detalhe secundário em
-  texto; nenhum token ou segredo entra na copy exibida
+  texto; nenhum token ou segredo entra na copy exibida. Desde a P2-149 o objeto
+  `opencode` também traz `binaryFound` e `binarySource` (`"path"`, `"known"` ou
+  `null`): o daemon resolve o binário executável do opencode no boot (e no máximo
+  uma vez por minuto com o upstream inalcançável) para separar "opencode parado"
+  ("verifique se o opencode está rodando") de "opencode nunca instalado" ("instale
+  o opencode primeiro"); nenhum caminho absoluto entra em `reason`, `hint` ou payload
 - **Auto-preview** — quando o agent menciona uma URL `http(s)://localhost:<porta>` /
   `127.0.0.1:<porta>` na resposta, o daemon emite um evento sintético `ocr.preview`
   (parse determinístico de URL, dedupe por sessão por 10 minutos) e o app desktop abre o

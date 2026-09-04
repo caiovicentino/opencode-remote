@@ -582,9 +582,18 @@ authorizes `/api/*` until the daemon restarts.
 pt-BR `hint` and the `checkedAt` timestamp of the last probe. The classifier
 distinguishes what used to collapse into one generic failure: server not
 installed, wrong port, refused token (401) and a slow/hung server now each
-carry a specific reason. The "opencode is DOWN" push uses that same hint as
-its body (prefixed with the machine name), so the phone tells you what to do
-instead of repeating a fixed phrase. The full contract lives in `docs/api.md`.
+carry a specific reason. Since P2-149 the `opencode` object also carries
+`binaryFound` and `binarySource`: `binaryFound` is true when an executable
+`opencode` binary exists on this machine (resolved from `PATH` plus known
+install locations once at boot, refreshed at most once a minute while the
+upstream is unreachable), and `binarySource` is `"path"`, `"known"` or `null`
+depending on where it was found — so a refused connection reads as "start the
+server" when a binary exists and as "install opencode first" when it does not.
+No absolute path, token or password ever appears in `reason`, `hint` or the
+payload — only the boolean and the origin. The "opencode is DOWN" push uses the
+classifier's hint as its body (prefixed with the machine name), so the phone
+tells you what to do instead of repeating a fixed phrase. The full contract
+lives in `docs/api.md`.
 
 **Zero pairing on the host machine**: the desktop shell treats the daemon on
 the same machine as one trust domain (loopback, same user, 0600
