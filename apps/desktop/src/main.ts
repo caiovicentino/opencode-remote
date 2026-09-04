@@ -408,12 +408,15 @@ async function onReady(): Promise<void> {
   ipcMain.handle("app:localLink", () => {
     const raw = readDaemonState();
     if (!raw?.apiToken) return null;
+    const portReason = daemonPortReason();
     return {
       port: activeDaemonPort(),
       token: raw.apiToken,
       room: raw.room,
       ecdhPub: raw.ecdhPub,
-      portReason: daemonPortReason(),
+      // Absent (not null) before the one-shot port resolution — matches the
+      // declared optional contract in preload's LocalLink.
+      ...(portReason !== null ? { portReason } : {}),
     };
   });
   // Boot pairing URI captured from the daemon sidecar's stdout (null when the
