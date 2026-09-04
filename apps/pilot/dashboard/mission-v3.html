@@ -401,6 +401,17 @@ function apply(e, quiet) {
     else { if (s.state !== "blocked") eject(s, RINGS[RING.backlog].k + 0.03, COL.red); s.gone = Math.max(s.gone || 0, now + (RM ? 4 : 14)); if (MOCK) world.failures++; }
     return;
   }
+  // ── P2-115 repeated-guard-rejection alert (validateSpec / verifyFindings) ──
+  if (e.type === "alert") {
+    const s = shipFor(e);
+    if (s) {
+      tremor(s, 1);
+      s.color = COL.red;
+      tag(s, `GUARD ${(e.phase || "").toUpperCase()}`, COL.red, 6);
+      if (!quiet) burstAt(s.x, s.y, COL.red, 18, 0.8);
+    }
+    return;
+  }
   if (e.type !== "phase") return;
   const s = shipFor(e); if (!s) return;
   const ph = e.phase || "";
@@ -1039,6 +1050,7 @@ function gateSteps(t0, task, failAt) {
   // ── flight C: planner cannot produce a spec → blocked ──
   at(gB2 + 27, "loop", { task: C, phase: "picked", detail: "Empty state do pareamento", slot: 1 });
   at(gB2 + 28, "phase", { task: C, phase: "planner" });
+  at(gB2 + 30, "alert", { task: C, phase: "validateSpec", ok: false, detail: "validateSpec rejected 2x in a row: missing section(s): edge cases" });
   at(gB2 + 32, "phase", { task: C, phase: "planner-done", ok: false, detail: "no valid spec" });
   at(gB2 + 33, "phase", { task: C, phase: "blocked", ok: false, detail: "moved to ## Blocked after 4 attempts" });
   at(gB2 + 33.5, "result", { task: C, ok: false, detail: "planner: no valid spec", slot: 1 });

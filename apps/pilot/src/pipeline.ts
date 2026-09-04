@@ -6,6 +6,7 @@ import { nowLocalISO } from "./log";
 import { markDone, type Task } from "./backlog";
 import { landMetaCommit, metaIo } from "./metapush";
 import { emit } from "./events";
+import { clearGuardRejections, raiseGuardAlert } from "./guardalert";
 import { latestUiShot } from "./shot";
 import { defaultVerifiedMergesFile, recordVerifiedMerge } from "./deployguard";
 import { touchHeartbeat, type PilotConfig, type PilotState } from "./state";
@@ -163,18 +164,36 @@ When finished, your LAST line of output must be exactly: PLANNER:DONE`;
  * bounded (size caps) and must not contain the pipeline's own control markers
  * (VERDICT:/...-DONE) which downstream output parsers trust.
  */
-export function validateSpec(content: string): boolean {
-  if (content.split("\n").length > 400 || content.length > 40_000) return false;
+const SPEC_MARKER_RE = /^\s*(VERDICT:|PILOT:TASK-DONE|PLANNER:DONE|SCRIBE:DONE)/i;
+
+/**
+ * P2-115: the rejection reason behind `validateSpec` — null when the spec
+ * passes. Same logic, but the planner loop can surface WHY a guard rejected
+ * (missing section vs control marker vs size) instead of a bare boolean.
+ */
+export function specRejectReason(content: string): string | null {
+  const lines = content.split("\n");
+  if (lines.length > 400 || content.length > 40_000)
+    return `spec too large (${lines.length} lines / ${content.length} chars)`;
   // anchored: a spec may DISCUSS these markers inline (e.g. a parseFindings fix
   // quotes `VERDICT:`); only a line that fakes a harness output is a hack
   // fenced code blocks are quoted evidence/examples — markers there are legit
-    const outside = content.replace(/```[\s\S]*?```/g, (m) => m.replace(/[^\n]/g, " "));
-    if (/^\s*(VERDICT:|PILOT:TASK-DONE|PLANNER:DONE|SCRIBE:DONE)/im.test(outside)) return false;
+  const outside = content.replace(/```[\s\S]*?```/g, (m) => m.replace(/[^\n]/g, " "));
+  const outsideLines = outside.split("\n");
+  for (let i = 0; i < outsideLines.length; i++) {
+    const m = SPEC_MARKER_RE.exec(outsideLines[i] ?? "");
+    if (m?.[1]) return `control marker at line ${i + 1}: ${m[1].replace(/:$/, "")}`;
+  }
   const headings = content
     .split("\n")
     .filter((l) => l.startsWith("## "))
     .map((l) => l.slice(3).trim().toLowerCase());
-  return SPEC_SECTIONS.every((s) => headings.some((h) => h.startsWith(s.toLowerCase())));
+  const missing = SPEC_SECTIONS.filter((s) => !headings.some((h) => h.startsWith(s.toLowerCase())));
+  return missing.length ? `missing section(s): ${missing.map((s) => s.toLowerCase()).join(", ")}` : null;
+}
+
+export function validateSpec(content: string): boolean {
+  return specRejectReason(content) === null;
 }
 
 /**
@@ -1027,17 +1046,25 @@ export function writeAuxSandboxConfig(ws: string) {
  * gone before the builder ever runs.
  */
 export function commitSpec(ws: string, id: string): boolean {
+  return commitSpecWithReason(ws, id).ok;
+}
+
+/** P2-115: commitSpec carrying the rejection reason for the guard alert. */
+export type CommitSpecResult = { ok: true } | { ok: false; reason: string };
+
+export function commitSpecWithReason(ws: string, id: string): CommitSpecResult {
   const path = specPathFor(id);
-  if (!path) return false;
+  if (!path) return { ok: false, reason: "invalid task id" };
   const abs = join(ws, path);
-  if (!existsSync(abs)) return false;
+  if (!existsSync(abs)) return { ok: false, reason: `${path} missing on disk` };
   let content: string;
   try {
     content = readFileSync(abs, "utf8");
   } catch {
-    return false;
+    return { ok: false, reason: "spec unreadable" };
   }
-  if (!validateSpec(content)) return false;
+  const reject = specRejectReason(content);
+  if (reject) return { ok: false, reason: reject };
   // rewind branch AND worktree to origin/main; keep the specs/ dir (validated
   // content is rewritten from memory) and the agent sandbox config
   exec("git reset -q --hard origin/main", { cwd: ws, allowFail: true });
@@ -1046,13 +1073,16 @@ export function commitSpec(ws: string, id: string): boolean {
     mkdirSync(dirname(abs), { recursive: true });
     writeFileSync(abs, content);
   } catch {
-    return false;
+    return { ok: false, reason: "spec write failed" };
   }
   exec(`git add ${path}`, { cwd: ws, allowFail: true });
   exec(`git commit -qm "pilot(${id}): planner spec"`, { cwd: ws, allowFail: true });
   // airtight: the branch diff must be exactly the spec file, nothing else
   const names = exec("git diff --name-only origin/main...HEAD", { cwd: ws, allowFail: true });
-  return names.ok && names.output.trim() === path;
+  if (!names.ok) return { ok: false, reason: `branch diff not spec-only: ${names.output.trim().slice(-80) || "git error"}` };
+  return names.output.trim() === path
+    ? { ok: true }
+    : { ok: false, reason: `branch diff not spec-only: ${names.output.trim() || "(empty)"}` };
 }
 
 /** P1-060: true when a local branch ref exists in the workspace. */
@@ -1443,6 +1473,8 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "planner", data: { task: t.id } }));
       let plannerSession: string | undefined;
       let specOk = false;
+      // P2-115: the last guard rejection reason, surfaced in the terminal detail
+      let lastSpecReason = "";
       // P2-042: the planner writes the spec the builder+reviewers are held to,
       // so it must know the same patterns the builder knows — top-5 IER lessons
       // keyword-matched against the task plus the 10 most recent failure lessons.
@@ -1467,16 +1499,25 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
         trackSession(out.sessionId);
         // deterministic validation + commit: the LLM is never trusted, only the
         // on-disk file (all six sections present) counts as a spec
-        specOk = commitSpec(ws, t.id);
-        if (specOk) break;
+        const res = commitSpecWithReason(ws, t.id);
+        specOk = res.ok;
+        if (specOk) {
+          // P2-115: a passing guard clears the repeated-rejection streak
+          clearGuardRejections(t.id, "validateSpec");
+          break;
+        }
+        const specReason = res.ok ? "" : res.reason;
+        lastSpecReason = specReason;
+        // P2-115: the same guard rejecting 2x in a row alerts the operator
+        raiseGuardAlert(t.id, "validateSpec", specReason);
         console.log(
-          JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "planner attempt produced no valid spec", data: { task: t.id, attempt } }),
+          JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "planner attempt produced no valid spec", data: { task: t.id, attempt, reason: specReason } }),
         );
       }
       if (!specOk) {
         // terminal ok:false so the dashboard doesn't hang on "working" (round-3)
         emit("phase", { task: t.id, phase: "planner-done", ok: false, detail: "no valid spec" });
-        return { ok: false, detail: `planner did not produce a valid ${specFile} after 2 attempt(s)` };
+        return { ok: false, detail: `planner did not produce a valid ${specFile} after 2 attempt(s)${lastSpecReason ? ` — last: ${lastSpecReason}` : ""}` };
       }
       emit("phase", { task: t.id, phase: "planner-done", ok: true, detail: specFile });
     } else {
@@ -1753,14 +1794,28 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
     const secOk = reviewerOk(sec.output, secVerified.kept, secVerified.dropped);
     const qualOk = reviewerOk(qual.output, qualVerified.kept, qualVerified.dropped);
     if (secAllDropped || qualAllDropped) {
+      // P2-115: surface WHY every finding was unverifiable — one alert per
+      // round, listing up to 2 distinct drop reasons per all-dropped reviewer
+      const dropReasons = (name: string, v: { dropped: string[]; reasons: Record<string, string> }) => {
+        const rs = [...new Set(v.dropped.map((f) => v.reasons[f] ?? "unknown"))].slice(0, 2);
+        return `${name}: ${v.dropped.length}/${v.dropped.length} finding(s) dropped (${rs.join(" | ")})`;
+      };
+      const guardReason = [
+        ...(secAllDropped ? [dropReasons("security", secVerified)] : []),
+        ...(qualAllDropped ? [dropReasons("quality", qualVerified)] : []),
+      ].join("; ");
+      raiseGuardAlert(t.id, "verifyFindings", guardReason);
       console.log(
         JSON.stringify({
           ts: nowLocalISO(),
           level: "info",
           msg: "review findings all unverifiable → fail-closed (escalate or reject)",
-          data: { task: t.id, round },
+          data: { task: t.id, round, reason: guardReason },
         }),
       );
+    } else {
+      // P2-115: at least one reviewer kept findings — the guard is healthy
+      clearGuardRejections(t.id, "verifyFindings");
     }
     // P1-059 reviewer escalation: P1-103 changed the trigger — the arbiter is
     // for a concern the builder could NOT address in a fix round (the same
