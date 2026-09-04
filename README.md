@@ -325,6 +325,15 @@ keeps the purely-local data (language, theme) working. "Reconnect now" gives
 real feedback (spinner + trying state + result toast), and manual pairing
 stays one click away.
 
+**Benchmark pairing journey (P2-106)**: the manual pairing screen is a narrow
+(~420px), vertically centered column with a one-sentence intro and two titled
+sections — **Connect to another machine** (scan/paste, this device as client)
+and **Pair a phone with this machine** (host entry). An invalid pairing code
+renders a styled error block with an inline helper showing the expected
+`opencode-remote://pair?…` format (announced to screen readers), and on the
+first-run QR splash "Pair later" is now a quiet text link — the QR is the only
+primary element on that screen.
+
 **Auto-preview (P1-072)**: when the agent brings up a local site (http.server,
 vite, a dev server…) and mentions `http://localhost:<port>` in its reply, the
 Browser pane opens by itself next to the chat, pointed at that URL, rendered

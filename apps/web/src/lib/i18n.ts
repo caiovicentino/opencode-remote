@@ -244,13 +244,21 @@ export const dict = {
     unitMin: "min",
     // pairing screen (P2-049). P1-070: local-first wording — the desktop
     // auto-connects to the daemon on the same machine, no code needed there.
+    // P2-106: one sentence — the ceremony sections below carry the detail.
     pairIntro:
-      "OpenCode Remote pairs with the daemon on this machine automatically — no code needed here. To connect from another device, scan the daemon's QR or paste a pairing code. Traffic is end-to-end encrypted; the relay cannot read it.",
+      "OpenCode Remote pairs with the daemon on this machine automatically — to connect from another device, scan the daemon's QR or paste a pairing code.",
+    // P2-106: the two pairing directions get titled sections (client / host).
+    pairConnectTitle: "Connect to another machine",
+    pairHostTitle: "Pair a phone with this machine",
     scanQr: "Scan QR code",
     orPaste: "— or paste manually —",
     pairBtn: "Pair",
     connecting: "Connecting…",
     invalidCode: "Invalid pairing code",
+    // P2-106: inline recovery helper under the invalid-code error — shows the
+    // shape of a well-formed pairing URI so the fix is obvious.
+    invalidCodeHint:
+      "Expected format: opencode-remote://pair?v=2&relay=… — copy the whole code, exactly as the other machine shows it.",
     // chat composer + header (P2-049)
     send: "Send",
     messagePlaceholder: "Message the agent…",
@@ -512,13 +520,21 @@ export const dict = {
     unitMin: "min",
     // pairing screen (P2-049). P1-070: copy local-first — o desktop se conecta
     // sozinho ao daemon da mesma máquina, sem código aqui.
+    // P2-106: uma frase — as seções abaixo carregam o detalhe.
     pairIntro:
-      "O OpenCode Remote se conecta sozinho ao daemon desta máquina — nenhum código é necessário aqui. Para conectar de outro dispositivo, escaneie o QR do daemon ou cole um código de pareamento. O tráfego é criptografado ponta a ponta; o relay não consegue lê-lo.",
+      "O OpenCode Remote se conecta sozinho ao daemon desta máquina — para conectar outro dispositivo, escaneie o QR do daemon ou cole um código de pareamento.",
+    // P2-106: as duas direções do pareamento viram seções tituladas (cliente/host).
+    pairConnectTitle: "Conectar a outra máquina",
+    pairHostTitle: "Parear um celular com esta máquina",
     scanQr: "Escanear QR code",
     orPaste: "— ou cole manualmente —",
     pairBtn: "Parear",
     connecting: "Conectando…",
     invalidCode: "Código de pareamento inválido",
+    // P2-106: helper inline sob o erro de código inválido — mostra o formato
+    // esperado pra correção ser óbvia.
+    invalidCodeHint:
+      "Formato esperado: opencode-remote://pair?v=2&relay=… — copie o código inteiro, exatamente como a outra máquina mostra.",
     // chat composer + header (P2-049)
     send: "Enviar",
     messagePlaceholder: "Mensagem pro agente…",

@@ -40,14 +40,19 @@ export default function PairingView({ phase, error, onPair, onRetry, onPairRemot
   // as a first-contact dead weight.
   const ceremony = !localMode;
 
+  // P2-106: the two pairing directions read as titled sections — "connect to
+  // another machine" (this device as client: scan/paste) vs "pair a phone
+  // with this machine" (this device as host). The error keeps the
+  // locale-independent .pair-error hook the desktop-flow gate asserts on.
   return (
-    <div className="screen">
+    <div className="screen pair-screen">
       <header>
         <h1 style={{ fontSize: "1rem", margin: 0 }}>OpenCode Remote</h1>
       </header>
       <p className="muted pair-intro">{t("pairIntro")}</p>
       {ceremony && (
-        <>
+        <section className="pair-section">
+          <h2 className="pair-section-title">{t("pairConnectTitle")}</h2>
           <button
             className="primary"
             disabled={busy}
@@ -55,7 +60,7 @@ export default function PairingView({ phase, error, onPair, onRetry, onPairRemot
           >
             {t("scanQr")}
           </button>
-          <p className="muted" style={{ alignSelf: "center" }}>{t("orPaste")}</p>
+          <p className="muted pair-or">{t("orPaste")}</p>
           <textarea
             rows={4}
             placeholder="opencode-remote://pair?v=2&relay=…"
@@ -70,19 +75,25 @@ export default function PairingView({ phase, error, onPair, onRetry, onPairRemot
           >
             {busy ? (localMode ? t("localConnecting") : t("connecting")) : t("pairBtn")}
           </button>
-        </>
+        </section>
       )}
       {phase === "error" && (
-        <>
-          <p className="pair-error" style={{ color: "var(--danger)" }}>{error}</p>
-          <button onClick={onRetry}>{t("retry")}</button>
-        </>
+        <div className="pair-error" role="alert" aria-live="assertive">
+          <p className="pair-error-msg">{error}</p>
+          {error === t("invalidCode") && (
+            <p className="pair-error-hint">{t("invalidCodeHint")}</p>
+          )}
+          <button className="pair-error-retry" onClick={onRetry}>{t("retry")}</button>
+        </div>
       )}
       {onPairRemote && (
-        <button className="pair-remote-entry" onClick={onPairRemote} disabled={busy}>
-          <b>{t("pairRemoteTitle")}</b>
-          <span className="muted">{t("pairRemoteHint")}</span>
-        </button>
+        <section className="pair-section">
+          <h2 className="pair-section-title">{t("pairHostTitle")}</h2>
+          <button className="pair-remote-entry" onClick={onPairRemote} disabled={busy}>
+            <b>{t("pairRemoteTitle")}</b>
+            <span className="muted">{t("pairRemoteHint")}</span>
+          </button>
+        </section>
       )}
     </div>
   );

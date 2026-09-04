@@ -1437,6 +1437,21 @@ select {
   background: var(--qr-bg); /* QR modules stay dark-on-light for scanner contrast */
   padding: 10px;
 }
+/* P2-106: "pair later" demoted from .primary — the QR is the hero, the only
+   loud element; dismissal becomes a quiet text link underneath. */
+.pair-overlay-later {
+  background: transparent;
+  border: none;
+  padding: 6px 10px;
+  color: var(--muted);
+  font-size: 0.8rem;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: color-mix(in srgb, var(--muted) 55%, transparent);
+}
+.pair-overlay-later:hover {
+  color: var(--text);
+}
 
 /* first-run splash (P1-050): wordmark, value line, 3-step onboarding */
 .splash-logo {
@@ -1549,6 +1564,74 @@ select {
 }
 .pair-wrap {
   height: 100%;
+}
+/* ── P2-106: benchmark pairing journey ───────────────────────────────────────
+   One narrow, vertically centered column of focus. Scoped to .pair-screen so
+   the degraded journey (same wrapper, wider status card) keeps its layout. */
+.pair-wrap .pair-screen {
+  max-width: 420px;
+  justify-content: center;
+  padding-left: 20px;
+  padding-right: 20px;
+}
+/* The two pairing directions (client ceremony / host entry) as titled cards. */
+.pair-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  text-align: left;
+}
+.pair-section-title {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.pair-or {
+  align-self: center;
+  margin: 0;
+  font-size: 0.78rem;
+}
+/* Invalid-code error: styled block (was an inline-colored <p>) + inline
+   helper with the expected format, announced via role=alert/aria-live. */
+.pair-error {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-md);
+  background: var(--banner-danger-bg);
+  text-align: left;
+}
+.pair-error-msg {
+  margin: 0;
+  font-weight: 600;
+  color: var(--danger);
+}
+.pair-error-hint {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--text);
+  opacity: 0.8;
+  overflow-wrap: anywhere;
+}
+.pair-error-retry {
+  margin-top: 8px;
+  align-self: flex-start;
+  padding: 6px 12px;
+  font-size: var(--font-size-sm);
+  color: var(--danger);
+  border-color: var(--danger);
+  background: transparent;
 }
 
 /* ── P2-112: first-boot degraded journey ─────────────────────────────────────
