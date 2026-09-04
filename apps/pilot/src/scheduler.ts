@@ -7,7 +7,12 @@ import type { Task } from "./backlog";
  * serially — the conservative default until the strategist tags it.
  */
 export function areaKey(t: Task): string {
-  return t.area ? `area:${t.area}` : "solo";
+  // Untagged tasks are independent work: each gets its own key so they run in
+  // parallel across slots (the old shared "solo" bucket capped the fleet at 1
+  // pick per cycle no matter how many slots the operator asked for). Explicit
+  // (area: …) tags still dedupe — same-area tasks share files/caches, so the
+  // P1-078 affinity rules keep them serialized.
+  return t.area ? `area:${t.area}` : `id:${t.id}`;
 }
 
 /**
