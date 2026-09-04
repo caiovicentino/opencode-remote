@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { APP_VERSION } from "../version";
 import { useT, setLang, getLang, type Lang } from "../lib/i18n";
+import { getTtsLang, setTtsLang as persistTtsLang, type TtsLang } from "../lib/voice";
 import type { UpstreamNotice } from "../lib/degraded";
 
 interface Props {
@@ -115,6 +116,7 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
   const [notify, setNotify] = useState({ permission: true, idle: true });
   const [autoMode, setAutoMode] = useState(false);
   const [lang, setLangState] = useState<Lang>(getLang());
+  const [ttsLang, setTtsLangState] = useState<TtsLang>(getTtsLang());
   const t = useT();
   const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
   const [configFile, setConfigFile] = useState("");
@@ -443,6 +445,21 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
               <option value="en">English</option>
               <option value="es">Spanish</option>
               <option value="fr">French</option>
+            </select>
+          </label>
+          <label style={{ display: "block", marginTop: 8 }}>
+            {t("voiceOutLang")}:{" "}
+            <select
+              value={ttsLang}
+              onChange={(e) => {
+                const next = e.target.value as TtsLang;
+                persistTtsLang(next);
+                setTtsLangState(next);
+              }}
+            >
+              <option value="pt-BR">Português (Antonio)</option>
+              <option value="en-US">English (Andrew)</option>
+              <option value="es-ES">Español (Alvaro)</option>
             </select>
           </label>
         </div>

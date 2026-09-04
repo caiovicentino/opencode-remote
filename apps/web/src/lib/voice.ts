@@ -2,6 +2,26 @@
 // brief — at most a couple of sentences, and only slightly more when the
 // answer is dense. The full text always stays visible in the chat.
 
+/** Voice languages the daemon can speak (mirrors daemon spoken.ts). */
+export const TTS_LANGS = ["pt-BR", "en-US", "es-ES"] as const;
+export type TtsLang = (typeof TTS_LANGS)[number];
+const TTS_LANG_KEY = "ocr-tts-lang";
+
+export function getTtsLang(): TtsLang {
+  try {
+    const v = localStorage.getItem(TTS_LANG_KEY);
+    return (TTS_LANGS as readonly string[]).includes(v ?? "") ? (v as TtsLang) : "pt-BR";
+  } catch {
+    return "pt-BR";
+  }
+}
+
+export function setTtsLang(lang: TtsLang): void {
+  try {
+    localStorage.setItem(TTS_LANG_KEY, lang);
+  } catch {}
+}
+
 /** Strip the parts of a markdown answer that read badly aloud: fenced code
  * blocks, inline code, markdown emphasis and link URLs. */
 export function stripForSpeech(text: string): string {

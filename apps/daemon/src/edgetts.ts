@@ -7,11 +7,27 @@ import { readFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { normalizeLang, type SpeechLang } from "./spoken.js";
 
 const TTS_TIMEOUT_MS = 30_000;
 /** Upper bound on a single request: replies are spoken briefly (the client
  * sends only the brief); anything longer is a bug and gets rejected. */
 export const MAX_TTS_CHARS = 2000;
+
+/** One natural voice per supported speech language (allowlist — the client
+ * never picks the voice string directly). */
+export const TTS_VOICES: Record<SpeechLang, string> = {
+  "pt-BR": "pt-BR-AntonioNeural",
+  "en-US": "en-US-AndrewNeural",
+  "es-ES": "es-ES-AlvaroNeural",
+};
+
+/** Resolve an untrusted lang value to a fixed voice; an env override (legacy
+ * OCR_TTS_VOICE) replaces the pt-BR default. */
+export function resolveVoice(lang: unknown, ptOverride?: string): { lang: SpeechLang; voice: string } {
+  const l = normalizeLang(lang);
+  return { lang: l, voice: (l === "pt-BR" && ptOverride) || TTS_VOICES[l] };
+}
 
 export function detectEdgeTts(): string | null {
   try {

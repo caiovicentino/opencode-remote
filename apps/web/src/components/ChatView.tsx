@@ -37,7 +37,7 @@ import {
 import { getCachedSession, putCachedSession } from "../lib/sessionCache";
 import { appendDraft, getDraft, setDraft } from "../lib/drafts";
 import { firstSentence, pressureLevel } from "../lib/context";
-import { speakBrief } from "../lib/voice";
+import { getTtsLang, speakBrief } from "../lib/voice";
 import { clampComposerHeight, composerSelectorLabel } from "../lib/composer";
 import { mergeBubbles, rowsToBubbles, type Bubble, type HistoryRow } from "../lib/bubbleMerge";
 import {
@@ -1779,7 +1779,7 @@ export default function ChatView({
   async function speak(text: string) {
     if (!text.trim()) return;
     try {
-      const res = await request("POST", "/__ocr/voice/tts", { text }, undefined, 45_000);
+      const res = await request("POST", "/__ocr/voice/tts", { text, lang: getTtsLang() }, undefined, 45_000);
       if (res.status !== 200) return;
       const { audioB64 } = res.body as { audioB64?: string };
       if (!audioB64) return;

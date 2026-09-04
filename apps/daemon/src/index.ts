@@ -49,7 +49,8 @@ import {
   validateTakeoverSessionId,
 } from "./pilotforensic.js";
 import { detectWhisper, transcribeAudio, type WhisperTool } from "./whisper.js";
-import { detectEdgeTts, synthesizeSpeech } from "./edgetts.js";
+import { detectEdgeTts, resolveVoice, synthesizeSpeech, TTS_VOICES } from "./edgetts.js";
+import { spokenNumbers, SPEECH_LANGS } from "./spoken.js";
 import { metrics, startMetricsServer, VERSION } from "./metrics.js";
 import { loadRoutines, saveRoutines, type Routine } from "./routines.js";
 import { ARTIFACTS_ROOT, artifactMime, kindFor, listArtifacts, readArtifact, sessionTitleMap } from "./artifacts.js";
@@ -218,7 +219,7 @@ let appSettings: AppSettings;
 let whisperTool: WhisperTool | null = null;
 // local TTS replies (optional; edge-tts CLI) — P2-125 voice mode
 let edgeTtsBin: string | null = null;
-const TTS_VOICE = process.env.OCR_TTS_VOICE ?? "pt-BR-AntonioNeural";
+const TTS_PT_VOICE = process.env.OCR_TTS_VOICE;
 
 interface UploadEntry {
   parts: string[];
@@ -746,10 +747,10 @@ end tell`;
   // answer to mp3. The client speaks at most a couple of sentences — the full
   // text stays in the chat.
   if (req.path === "/__ocr/voice/tts-status" && req.method === "GET") {
-    return { id: req.id, status: 200, body: { available: !!edgeTtsBin, voice: TTS_VOICE } };
+    return { id: req.id, status: 200, body: { available: !!edgeTtsBin, voice: resolveVoice("pt-BR", TTS_PT_VOICE).voice, voices: TTS_VOICES, langs: SPEECH_LANGS } };
   }
   if (req.path === "/__ocr/voice/tts" && req.method === "POST") {
-    const { text } = req.body as { text?: string };
+    const { text, lang } = req.body as { text?: string; lang?: string };
     if (!text || typeof text !== "string" || text.length > 2000) {
       return { id: req.id, status: 400, body: { error: "text required (1..2000 chars)" } };
     }
@@ -758,7 +759,10 @@ end tell`;
     }
     try {
       const t0 = Date.now();
-      const audio = await synthesizeSpeech(edgeTtsBin, text, TTS_VOICE);
+      const { lang: spoken0, voice } = resolveVoice(lang, TTS_PT_VOICE);
+      // numbers/IDs/percentages read as natural words, never raw digits
+      const spoken = spokenNumbers(text, spoken0);
+      const audio = await synthesizeSpeech(edgeTtsBin, spoken, voice);
       metrics.inc("ocr_tts_total");
       metrics.inc("ocr_tts_ms_total", Date.now() - t0);
       return { id: req.id, status: 200, body: { audioB64: audio.toString("base64"), mime: "audio/mpeg" } };
@@ -2656,7 +2660,7 @@ async function main() {
   else log("info", "voice transcription unavailable (optional feature)");
 
   edgeTtsBin = detectEdgeTts();
-  if (edgeTtsBin) log("info", "voice replies available", { voice: TTS_VOICE });
+  if (edgeTtsBin) log("info", "voice replies available", { voice: resolveVoice("pt-BR", TTS_PT_VOICE).voice, voices: TTS_VOICES });
   else log("info", "voice replies unavailable (edge-tts not found; optional feature)");
 
   log("info", "daemon starting (protocol v2)", {

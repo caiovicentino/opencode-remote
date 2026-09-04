@@ -51,4 +51,41 @@ check("link keeps the label", stripForSpeech("veja [docs](https://x.com) aí") =
 // empty input stays empty
 check("empty stays empty", speakBrief("   ") === "");
 
+// ─── spoken-number normalization (apps/daemon/src/spoken.ts) ───────────────
+import { normalizeLang, numberWords, spokenNumbers } from "../apps/daemon/src/spoken";
+import { resolveVoice } from "../apps/daemon/src/edgetts";
+
+// pt-BR core readings
+check("pt ratio", spokenNumbers("Temos 45/200 tarefas.", "pt-BR") === "Temos quarenta e cinco de duzentos tarefas.", spokenNumbers("45/200", "pt-BR"));
+check("pt percent", spokenNumbers("98% de sucesso", "pt-BR") === "noventa e oito por cento de sucesso", spokenNumbers("98%", "pt-BR"));
+check("pt percent decimal", spokenNumbers("aceitação 3.2%", "pt-BR") === "aceitação três vírgula dois por cento", spokenNumbers("3.2%", "pt-BR"));
+check("pt clock", spokenNumbers("às 15:10", "pt-BR") === "às quinze e dez", spokenNumbers("15:10", "pt-BR"));
+check("pt duration clock", spokenNumbers("levou 42:31", "pt-BR") === "levou quarenta e dois, trinta e um", spokenNumbers("42:31", "pt-BR"));
+check("pt task id", spokenNumbers("P2-153 mergeada", "pt-BR") === "P dois, cento e cinquenta e três mergeada", spokenNumbers("P2-153", "pt-BR"));
+check("pt thousands", spokenNumbers("1.234 arquivos", "pt-BR") === "mil duzentos e trinta e quatro arquivos", spokenNumbers("1.234", "pt-BR"));
+check("pt money", spokenNumbers("custou R$ 100", "pt-BR") === "custou cem reais", spokenNumbers("R$ 100", "pt-BR"));
+check("pt gigabytes", spokenNumbers("2 GB livres", "pt-BR") === "dois gigabytes livres", spokenNumbers("2 GB", "pt-BR"));
+check("pt iso date", spokenNumbers("deploy 2026-09-04", "pt-BR") === "deploy quatro de setembro de dois mil e vinte e seis", spokenNumbers("2026-09-04", "pt-BR"));
+check("pt big year", numberWords(2026, "pt-BR") === "dois mil e vinte e seis", numberWords(2026, "pt-BR"));
+check("pt million", numberWords(2_000_000, "pt-BR") === "dois milhões", numberWords(2_000_000, "pt-BR"));
+
+// en-US
+check("en ratio", spokenNumbers("45/200 tasks done", "en-US") === "forty five of two hundred tasks done", spokenNumbers("45/200", "en-US"));
+check("en percent", spokenNumbers("98% uptime", "en-US") === "ninety eight percent uptime", spokenNumbers("98%", "en-US"));
+check("en thousands", spokenNumbers("1,234 files", "en-US") === "one thousand two hundred thirty four files", spokenNumbers("1,234", "en-US"));
+check("en decimal", spokenNumbers("latency 0.8s ok", "en-US") === "latency zero point eight s ok", spokenNumbers("0.8", "en-US"));
+check("en clock", spokenNumbers("at 15:10 sharp", "en-US") === "at fifteen ten sharp", spokenNumbers("15:10", "en-US"));
+
+// es-ES
+check("es percent", spokenNumbers("98% de éxito", "es-ES") === "noventa y ocho por ciento de éxito", spokenNumbers("98%", "es-ES"));
+check("es ratio", spokenNumbers("45/200 tareas", "es-ES") === "cuarenta y cinco de doscientos tareas", spokenNumbers("45/200", "es-ES"));
+check("es veintiun mil", numberWords(21000, "es-ES") === "veintiún mil", numberWords(21000, "es-ES"));
+
+// URL/email tokens survive untouched
+check("url untouched", spokenNumbers("veja https://x.com/10 e 5 GB", "pt-BR") === "veja https://x.com/10 e cinco gigabytes", spokenNumbers("https://x.com/10", "pt-BR"));
+
+// lang allowlist falls back to pt-BR
+check("unknown lang falls back", normalizeLang("fr") === "pt-BR" && normalizeLang(undefined) === "pt-BR");
+check("voice allowlist", resolveVoice("en-US").voice === "en-US-AndrewNeural" && resolveVoice("garbage").voice.startsWith("pt-BR"));
+
 process.exit(failures ? 1 : 0);
