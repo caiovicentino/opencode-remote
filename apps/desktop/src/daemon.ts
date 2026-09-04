@@ -18,8 +18,9 @@ import { candidatePorts, pickDaemonPort, type DaemonPortReason } from "./daemonp
 // fallback so a shell that already configured it stays consistent. This is the
 // PREFERRED port — P2-143 lets the actual port drift to a deterministic
 // fallback (8793–8796) when something else already owns the preferred one.
-export const DAEMON_METRICS_PORT =
-  Number(process.env.OCR_DAEMON_METRICS_PORT) || Number(process.env.OCR_METRICS_PORT) || 8792;
+const ENV_PORT_OVERRIDE =
+  Number(process.env.OCR_DAEMON_METRICS_PORT) || Number(process.env.OCR_METRICS_PORT) || 0;
+export const DAEMON_METRICS_PORT = ENV_PORT_OVERRIDE || 8792;
 
 // --- P2-143: one-shot daemon port resolution ----------------------------------
 
@@ -60,16 +61,25 @@ function isLoopbackPortFree(port: number): Promise<boolean> {
  * Resolve the daemon port exactly once per process (P2-143): walk the
  * candidate list — preferred port first, then the deterministic fallbacks —
  * adopting a port that already runs OUR daemon ("reused") or the first free
- * one. An env override (OCR_DAEMON_METRICS_PORT / OCR_METRICS_PORT) keeps
- * candidatePorts at a single entry, so the behavior is byte-for-byte the old
- * fixed-port one. The reason is logged once here and never again by the
- * respawn/watchdog paths — they reuse the decision via activeDaemonPort().
+ * one. An env override (OCR_DAEMON_METRICS_PORT / OCR_METRICS_PORT) is
+ * absolute: candidatePorts collapses to exactly that port (inside or outside
+ * the 8792–8796 span), so the behavior is byte-for-byte the old fixed-port
+ * one. The reason is logged once here and never again by the respawn/watchdog
+ * paths — they reuse the decision via activeDaemonPort().
  */
 async function resolveDaemonPortOnce(): Promise<void> {
   if (resolvedPort !== null) return;
   const pick = await pickDaemonPort(
-    candidatePorts(DAEMON_METRICS_PORT),
+    candidatePorts(DAEMON_METRICS_PORT, ENV_PORT_OVERRIDE > 0),
     isLoopbackPortFree,
+    // Identity is probed on EVERY candidate, not only the preferred one: our
+    // own daemon may legitimately sit on a fallback port (previous session
+    // crashed before the shell could stop it) and must be adopted instead of
+    // shadowed by a second spawn. The token only ever reaches a responder
+    // that first reproduces the daemon's 401-challenge (see healthOnce), and
+    // the walk stops at the first free port — so restricting the probe to the
+    // preferred port would buy nothing against a deliberate mimic (same-user
+    // processes can read the 0600 state file anyway) while regressing adoption.
     (p) => healthOnce(p, sidecar.token),
   );
   resolvedPort = pick.port;

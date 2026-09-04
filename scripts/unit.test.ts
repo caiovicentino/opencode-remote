@@ -7786,6 +7786,26 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     ports5.length === 1 && ports5[0] === 9321 && pick5.port === 9321 && pick5.reason === "preferred",
   );
 
+  // 5b. In-span override (e.g. OCR_DAEMON_METRICS_PORT=8794): the override is
+  // absolute EVEN inside the 8792–8796 span — single entry, the shell uses
+  // exactly that port and never drifts to 8792 against the operator's choice.
+  const ports5b = candidatePorts(8794, true);
+  check("P2-143: in-span override 8794 → single candidate", ports5b.length === 1 && ports5b[0] === 8794);
+  check("P2-143: override 9321 with flag → single candidate", (() => {
+    const ports = candidatePorts(9321, true);
+    return ports.length === 1 && ports[0] === 9321;
+  })());
+  const pick5b = await pickDaemonPort(ports5b, async () => false, async () => false);
+  check(
+    "P2-143: in-span override squatted → {none, 8794}, never drifts to 8792",
+    pick5b.reason === "none" && pick5b.port === 8794,
+  );
+  const pick5c = await pickDaemonPort(ports5b, async () => true, async () => false);
+  check(
+    "P2-143: in-span override free → {preferred, 8794}",
+    pick5c.reason === "preferred" && pick5c.port === 8794,
+  );
+
   // 6. Span shape: preferred first, the rest ascending, no duplicates.
   check("P2-143: candidatePorts(8792) has 5 entries", candidatePorts(8792).length === 5);
   check("P2-143: candidatePorts(8794) = [8794,8792,8793,8795,8796], no duplicates", (() => {

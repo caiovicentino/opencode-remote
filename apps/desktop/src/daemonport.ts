@@ -12,10 +12,13 @@ export const DAEMON_PORT_SPAN = 5;
 /**
  * The preferred port followed by up to DAEMON_PORT_SPAN - 1 deterministic
  * alternatives inside the 8792–8796 span, no duplicates, preferred always
- * first. A preferred port OUTSIDE the span (a documented env override, for
- * example) disables the fallback by construction: only that port is returned.
+ * first. The fallback is disabled by construction (single-entry list) when
+ * `overrideActive` is true — an env override (OCR_DAEMON_METRICS_PORT /
+ * OCR_METRICS_PORT) is absolute: the shell uses exactly that port, whether it
+ * points inside the span (8794) or outside it (9321).
  */
-export function candidatePorts(preferred: number): number[] {
+export function candidatePorts(preferred: number, overrideActive = false): number[] {
+  if (overrideActive) return [preferred];
   const first = DEFAULT_DAEMON_PORT;
   const last = DEFAULT_DAEMON_PORT + DAEMON_PORT_SPAN - 1;
   if (preferred < first || preferred > last) return [preferred];
