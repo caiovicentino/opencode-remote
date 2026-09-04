@@ -6,6 +6,7 @@
 // sha-guard/deploy events from tests must never land in the production feed.
 process.env.PILOT_EVENTS_FILE = "/tmp/pilot-unit-events.jsonl";
 import { b64, fromB64, seal, openSealed, seqAad } from "@ocr/protocol";
+import { mergeConflictBlock } from "../apps/pilot/src/pipeline";
 import { parsePairingUri, localWsUrl, shouldFailoverToRelay } from "../apps/web/src/lib/client";
 import { isLoopbackAddr, localOriginAllowed, localUpgradeAllowed } from "../apps/daemon/src/localws";
 import { parseRelayUrl, redactRelayUrl } from "../apps/daemon/src/relayurl";
@@ -7867,6 +7868,14 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+// P2-126-class: mergeConflictBlock only fires on CONFLICTING and carries the
+// task id + both-sides instruction.
+{
+  const block = mergeConflictBlock("CONFLICTING", "P2-123");
+  check("conflict block fires on CONFLICTING", block.includes("pilot/P2-123") && block.includes("git merge origin/main") && block.includes("BOTH sides"));
+  check("clean mergeable yields no block", mergeConflictBlock("MERGEABLE", "P2-123") === "" && mergeConflictBlock(null, "P2-123") === "" && mergeConflictBlock(undefined, "P2-123") === "");
 }
 
 if (failures > 0) {
