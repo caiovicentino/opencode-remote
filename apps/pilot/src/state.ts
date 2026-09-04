@@ -157,6 +157,10 @@ export interface PilotState {
   infraFails?: number;
   /** P1-014 stop-loss: pipeline failures per task id (circuit breaker). */
   taskAttempts: Record<string, number>;
+  /** P2-137: task id → spec-format failures already recorded. The first one is
+   * infra (free retry); survives the midnight rollover — otherwise the free
+   * spec-format retry would be reborn every day. Cleared when the task merges. */
+  specFails?: Record<string, number>;
   redteamLast?: string;
   researchLast?: string;
   /** P3-052: last YYYY-MM-DD the nightly explorer ran (once per day). */
@@ -279,6 +283,13 @@ export function loadState(file = STATE_FILE): PilotState {
     const infraFails = typeof s.infraFails === "number" && Number.isFinite(s.infraFails) ? s.infraFails : 0;
     const shared = {
       taskAttempts: attempts,
+      // P2-137: spec-format counters survive midnight (lifetime record, like
+      // taskAttempts); garbage/legacy entries are dropped, never crash
+      specFails: s.specFails && typeof s.specFails === "object"
+        ? (Object.fromEntries(
+            Object.entries(s.specFails as Record<string, unknown>).filter(([, v]) => typeof v === "number" && Number.isFinite(v)),
+          ) as Record<string, number>)
+        : {},
       cycles: Array.isArray(s.cycles) ? s.cycles : [],
       blockEvents: Array.isArray(s.blockEvents) ? s.blockEvents.filter((t) => typeof t === "number") : [],
       auditMode: normalizeAudit(s.auditMode),
