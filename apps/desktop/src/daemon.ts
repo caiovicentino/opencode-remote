@@ -209,25 +209,60 @@ export interface HealthWaitOptions {
   token?: string | null;
 }
 
+/** P2-138: upstream (agent server / opencode) detail from /api/health — the
+ * P2-135 classifier verdict as-is. Static pt-BR strings from the daemon; the
+ * renderer only ever renders them as text. */
+export interface DaemonUpstreamDetail {
+  state: string;
+  reason: string;
+  hint: string;
+  checkedAt: string | null;
+}
+
+export interface DaemonHealthInfo {
+  version: string | null;
+  /** null when absent/malformed (legacy daemon) — additive, never an error. */
+  opencode: DaemonUpstreamDetail | null;
+}
+
+/** Tolerant read of the P2-135 opencode object: only a well-shaped object
+ * passes; anything else degrades to null instead of leaking junk into the UI. */
+function toUpstreamDetail(raw: unknown): DaemonUpstreamDetail | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const o = raw as { state?: unknown; reason?: unknown; hint?: unknown; checkedAt?: unknown };
+  if (typeof o.state !== "string" || o.state === "") return null;
+  return {
+    state: o.state,
+    reason: typeof o.reason === "string" ? o.reason : "",
+    hint: typeof o.hint === "string" ? o.hint : "",
+    checkedAt: typeof o.checkedAt === "string" ? o.checkedAt : null,
+  };
+}
+
 /**
- * P3-054: authenticated GET /api/health returning only the daemon's own
- * version string (null when unreachable, unauthorized or malformed). The
- * pairing watcher calls this on every poll so the version-mismatch banner
- * always reflects the daemon that is actually answering right now — including
- * one the user replaced externally while the app stayed open.
+ * P3-054: authenticated GET /api/health returning the daemon's own version
+ * string (null when unreachable, unauthorized or malformed). The pairing
+ * watcher calls this on every poll so the version-mismatch banner always
+ * reflects the daemon that is actually answering right now — including one the
+ * user replaced externally while the app stayed open.
+ * P2-138: the same response also carries the upstream `opencode` detail
+ * object; one loopback call per poll serves both consumers.
  */
-export async function fetchDaemonVersion(token: string | null): Promise<string | null> {
-  if (token === null) return null;
+export async function fetchDaemonHealth(token: string | null): Promise<DaemonHealthInfo> {
+  if (token === null) return { version: null, opencode: null };
   try {
     const res = await fetch(`http://127.0.0.1:${DAEMON_METRICS_PORT}/api/health`, {
       headers: { authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
     });
-    if (res.status !== 200) return null;
-    const body = (await res.json().catch(() => ({}))) as { version?: unknown };
-    return typeof body.version === "string" ? body.version : null;
+    if (res.status !== 200) return { version: null, opencode: null };
+    const body = (await res.json().catch(() => ({}))) as { version?: unknown; opencode?: unknown };
+    return {
+      version: typeof body.version === "string" ? body.version : null,
+      opencode: toUpstreamDetail(body.opencode),
+    };
   } catch {
-    return null;
+    return { version: null, opencode: null };
   }
 }
 

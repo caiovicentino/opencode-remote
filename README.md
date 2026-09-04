@@ -369,6 +369,18 @@ keeps the purely-local data (language, theme) working. "Reconnect now" gives
 real feedback (spinner + trying state + result toast), and manual pairing
 stays one click away.
 
+**Upstream notice (P2-138)**: the daemon can be healthy while the agent server
+it proxies is not (`opencode serve` not installed, wrong port, changed
+password). `/api/health` carries the classified verdict (`opencode.state`:
+unauthorized / unreachable / timeout / unhealthy) and the desktop shell
+forwards it to the renderer over the same channel as the version fields. The
+calm first-boot card and the new **Agent server help** section at the top of
+Settings then say exactly what happened and what to do — as one block inside
+an existing surface, never a second banner — with a secondary button that
+opens that help section straight from the first-boot card. The daemon's own
+reason/hint strings render as secondary text only; no tokens or secrets are
+ever part of the displayed copy.
+
 **Benchmark pairing journey (P2-106)**: the manual pairing screen is a narrow
 (~420px), vertically centered column with a one-sentence intro and two titled
 sections — **Connect to another machine** (scan/paste, this device as client)

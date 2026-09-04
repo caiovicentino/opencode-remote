@@ -5,7 +5,7 @@ import { join } from "node:path";
 import QRCode from "qrcode";
 import {
   DAEMON_METRICS_PORT,
-  fetchDaemonVersion,
+  fetchDaemonHealth,
   getPairUrl,
   isDaemonDown,
   readApiToken,
@@ -730,8 +730,11 @@ async function refreshPairingState(): Promise<void> {
     // One loopback call per poll; unknown version degrades to "no banner".
     // (The FORCE_VERSION_MISMATCH hatch never reaches this path — it returns
     // the deterministic forced state at the top of refreshPairingState.)
+    // P2-138: the same /api/health answer carries the upstream opencode
+    // detail (P2-135 classifier verdict) — propagated additively next to the
+    // version fields so the renderer can explain WHY the agent is unreachable.
     const appVersion = app.getVersion();
-    const daemonVersion = await fetchDaemonVersion(token);
+    const { version: daemonVersion, opencode } = await fetchDaemonHealth(token);
     const mismatch = versionMismatch(appVersion, daemonVersion);
     if (mismatch) {
       log(`[desktop] daemon version mismatch: daemon ${daemonVersion ?? "?"} · app ${appVersion}`);
@@ -769,6 +772,7 @@ async function refreshPairingState(): Promise<void> {
       appVersion,
       daemonVersion,
       versionMismatch: mismatch,
+      opencode: opencode ?? undefined,
     });
   } catch (err) {
     // Daemon down, token rotated or state file wiped: drop the cached state so

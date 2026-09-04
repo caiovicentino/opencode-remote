@@ -14,7 +14,7 @@ import { mimeFor } from "../apps/web/src/lib/files";
 import { timeAgo, sessionUpdatedTs } from "../apps/web/src/lib/time";
 import { sessionTitleOf } from "../apps/web/src/lib/title";
 import { dict, translate } from "../apps/web/src/lib/i18n";
-import { degradedKind, sawHealthyDaemon } from "../apps/web/src/lib/degraded";
+import { degradedKind, sawHealthyDaemon, upstreamNotice, type UpstreamHealth } from "../apps/web/src/lib/degraded";
 import { permissionPreview } from "../apps/web/src/lib/permission";
 import { applySessionFilters, isPilotTitle, splitPilotSessions } from "../apps/web/src/lib/sessionFilter";
 import { initialUnreadState, reduceUnread } from "../apps/web/src/lib/unread";
@@ -7221,6 +7221,74 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     return a.state === b.state && a.reason === b.reason && a.hint === b.hint;
   })());
   check("P2-135: probe timeout cap is exported and sane", UPSTREAM_PROBE_TIMEOUT_MS === 5_000);
+}
+
+// --- P2-138: upstream notice mapping (pure, same contract as /api/health) -----
+
+{
+  // The daemon payload shape the desktop shell propagates (P2-135 classifier).
+  const health = (state: string, reason = "motivo", hint = "dica"): UpstreamHealth => ({
+    state,
+    reason,
+    hint,
+    checkedAt: "2026-09-04T12:00:00.000Z",
+  });
+
+  // All five classifier states: the four non-ok ones map to a notice.
+  check("P2-138: unreachable maps to an info notice with actionable copy", (() => {
+    const n = upstreamNotice(health("unreachable", "conexão recusada", "verifique se o opencode está rodando"));
+    return !!n && n.tone === "info" && n.titleKey === "upstreamUnreachableTitle" &&
+      n.actionKey === "upstreamUnreachableAction" && n.reason === "conexão recusada" && n.hint === "verifique se o opencode está rodando";
+  })());
+  check("P2-138: unauthorized maps to a warn notice", (() => {
+    const n = upstreamNotice(health("unauthorized"));
+    return !!n && n.tone === "warn" && n.titleKey === "upstreamUnauthorizedTitle" && n.actionKey === "upstreamUnauthorizedAction";
+  })());
+  check("P2-138: timeout maps to a warn notice", (() => {
+    const n = upstreamNotice(health("timeout"));
+    return !!n && n.tone === "warn" && n.titleKey === "upstreamTimeoutTitle" && n.actionKey === "upstreamTimeoutAction";
+  })());
+  check("P2-138: unhealthy maps to a warn notice", (() => {
+    const n = upstreamNotice(health("unhealthy"));
+    return !!n && n.tone === "warn" && n.titleKey === "upstreamUnhealthyTitle" && n.actionKey === "upstreamUnhealthyAction";
+  })());
+  // ...and `ok` itself maps to NO notice (silence is the contract).
+  check("P2-138: ok state produces no notice", upstreamNotice(health("ok", "opencode saudável", "")) === null);
+
+  // Absent / legacy / malformed payloads must never invent a notice.
+  check("P2-138: absent opencode object produces no notice", upstreamNotice(null) === null && upstreamNotice(undefined) === null);
+  check("P2-138: unknown initial state produces no notice", upstreamNotice(health("unknown")) === null);
+  check("P2-138: legacy payload without the opencode field produces no notice", upstreamNotice({}) === null);
+  check("P2-138: malformed payload (non-string state) produces no notice", upstreamNotice({ state: 42, reason: "x", hint: "y" } as unknown as UpstreamHealth) === null);
+  check("P2-138: non-string reason/hint degrade to empty strings, never crash", (() => {
+    const n = upstreamNotice({ state: "timeout", reason: 7, hint: { bad: true } } as unknown as UpstreamHealth);
+    return !!n && n.reason === "" && n.hint === "";
+  })());
+
+  // Copy parity: every notice key resolves in both locales (no raw-key leak),
+  // and the Settings help section keys exist too.
+  const noticeKeys = [
+    "upstreamUnreachableTitle", "upstreamUnreachableAction",
+    "upstreamUnauthorizedTitle", "upstreamUnauthorizedAction",
+    "upstreamTimeoutTitle", "upstreamTimeoutAction",
+    "upstreamUnhealthyTitle", "upstreamUnhealthyAction",
+    "upstreamHelpAction", "upstreamHelpTitle",
+  ];
+  check(
+    "P2-138: notice copy resolves per locale (en + pt) and never leaks the raw key",
+    (["en", "pt"] as const).every((lang) =>
+      noticeKeys.every((k) => {
+        const s = translate(lang, k);
+        return !!s && s !== k && dict[lang][k] === s;
+      }),
+    ),
+  );
+  check("P2-138: copy carries no markup (rendered as text, never HTML)", noticeKeys.every((k) =>
+    (["en", "pt"] as const).every((lang) => {
+      const s = dict[lang][k];
+      return !s.includes("<") && !s.includes(">") && !s.includes("`") && !s.includes("{") && !s.includes("}");
+    }),
+  ));
 }
 
 // --- P2-133: orphan-test reachability (pure fixtures) ------------------------
