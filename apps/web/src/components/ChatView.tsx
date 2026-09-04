@@ -1842,14 +1842,25 @@ export default function ChatView({
     }
   }
 
-  // Host capability probe (edge-tts installed?) — one shot on first mount.
+  // Host capability probe (edge-tts installed?) — retry while pairing settles:
+  // a one-shot probe on mount always races the first WS connect.
   useEffect(() => {
     let alive = true;
-    void request("GET", "/__ocr/voice/tts-status")
-      .then((res) => {
-        if (alive) setTtsReady(res.status === 200 && (res.body as { available?: boolean }).available === true);
-      })
-      .catch(() => alive && setTtsReady(false));
+    let attempts = 0;
+    const probe = () => {
+      if (!alive) return;
+      attempts++;
+      void request("GET", "/__ocr/voice/tts-status")
+        .then((res) => {
+          if (!alive) return;
+          if (res.status === 200) setTtsReady((res.body as { available?: boolean }).available === true);
+          else if (attempts < 10) window.setTimeout(probe, 1500);
+        })
+        .catch(() => {
+          if (alive && attempts < 10) window.setTimeout(probe, 1500);
+        });
+    };
+    probe();
     return () => {
       alive = false;
     };
