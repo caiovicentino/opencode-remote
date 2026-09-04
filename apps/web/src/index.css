@@ -1263,6 +1263,124 @@ select {
     transition: none;
   }
 }
+/* ── P2-148: first-run welcome (desktop) ─────────────────────────────────
+   Three steps, shown once. Same centered 640px axis as the P2-123 home;
+   flat surfaces on P3-083 tokens only; 150–300ms motion that dies under
+   prefers-reduced-motion (P3-087). */
+.welcome {
+  height: 100%;
+  overflow-y: auto;
+  display: flex;
+  justify-content: center;
+}
+.welcome-col {
+  width: 100%;
+  max-width: 640px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--space-4);
+  padding: var(--space-6) var(--space-5);
+  animation: welcome-in var(--motion-slow) var(--ease-out);
+}
+@keyframes welcome-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.welcome header {
+  text-align: center;
+}
+.welcome-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.welcome-step-of {
+  font-size: var(--font-size-xs);
+  color: var(--muted);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.welcome-skip,
+.welcome-later {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-md);
+  transition: color var(--motion-fast) var(--ease-out);
+}
+.welcome-skip:hover,
+.welcome-later:hover {
+  color: var(--fg);
+}
+.welcome-step {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  padding: var(--space-5);
+  animation: welcome-step-in var(--motion-slow) var(--ease-out);
+}
+@keyframes welcome-step-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.welcome-step-title {
+  margin: 0;
+  font-size: var(--font-size-body);
+}
+.welcome-step .welcome-next {
+  margin-top: var(--space-1);
+}
+/* the agent step hosts the degraded-journey status card and upstream block —
+   stretch them edge to edge inside the step surface */
+.welcome-agent .degraded-status,
+.welcome-agent .degraded-upstream {
+  width: 100%;
+}
+.welcome-agent .degraded-status h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+.welcome-agent .degraded-status p {
+  margin: 2px 0 0;
+}
+.welcome-pair .pair-section {
+  padding: 0;
+  border: none;
+  background: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .welcome,
+  .welcome-col,
+  .welcome-step,
+  .welcome-skip,
+  .welcome-later {
+    animation: none;
+    transition: none;
+  }
+}
 /* mobile chrome never shows inside the desktop shell */
 .desk .tabbar,
 .desk .has-tabbar {

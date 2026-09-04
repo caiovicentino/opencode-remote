@@ -112,6 +112,9 @@ check("desktop shell built (dist-electron/preload.js)", existsSync(preload));
 // P1-089 beat is the first to relaunch a session dir).
 const session = `df-${process.pid}-${Date.now()}`;
 const cliEnv = { ...process.env, OCR_DESKTOP_SESSION: session };
+// P2-148: hermeticEnv honors a caller-set OCR_USER_DATA_DIR (welcome-flag
+// relaunch beat) — an inherited value must never contaminate every boot.
+delete cliEnv.OCR_USER_DATA_DIR;
 
 // Hard budget: the whole flow must fit (spec criterion). P1-070 added the
 // "local boot" block (real hermetic daemon + fresh instance + degradation
@@ -140,9 +143,11 @@ const cliEnv = { ...process.env, OCR_DESKTOP_SESSION: session };
 // OCR_DAEMON_ENTRY fake dying with EADDRINUSE + the calm-card verdict),
 // growing it to 240s; P2-117 added the Scan-QR state-machine beats
 // (camera-blocked boot + fake-camera boot: unavailable/preview states,
-// 390px preview, NO SIGNAL fallback, paste CTA) inside the same budget.
+// 390px preview, NO SIGNAL fallback, paste CTA) inside the same budget;
+// P2-148 added the welcome beats (the three-step first-run onboarding walk
+// plus a second same-userData boot proving the flag persists), 270s.
 const startedAt = Date.now();
-const DEADLINE_MS = 240_000;
+const DEADLINE_MS = 270_000;
 const shotPath = join(tmpdir(), "ocr-desktop-flow", `flow-${process.pid}.png`);
 // Evidence shots live in the builder dir (never used as review evidence).
 // Declared up front: the P2-112 degraded-journey beats record there too.
@@ -316,6 +321,9 @@ async function testWebviewPane(): Promise<void> {
 }
 
 let keeperBooted = false;
+// P2-148 beat B: the userData the keeper minted (reported by `open`) is
+// reused by a second hermetic boot after the keeper closes.
+let bootInfo: { userData?: string } | null = null;
 try {
   const opened = run("open (hermetic launch)", ["open"], 45_000);
   keeperBooted = opened.ok;
@@ -330,7 +338,6 @@ try {
   // Electron binary against the SAME userData the keeper minted (`open`
   // reports it since P2-069) — the lock must reject it before any window.
   phase("P2-069: single instance per userData");
-  let bootInfo: { userData?: string } | null = null;
   try {
     bootInfo = JSON.parse(opened.stdout.trim()) as { userData?: string };
   } catch {}
@@ -390,6 +397,42 @@ try {
     wins.ok && /"visible":\s*false/.test(wins.stdout) && !/"visible":\s*true/.test(wins.stdout),
     wins.ok ? wins.stdout : "wins probe failed — window visibility unproven",
   );
+  // --- P2-148: first-run welcome — three steps, shown once --------------------
+  // Fresh userData boots into the onboarding instead of a bare home: (1) the
+  // one-sentence intro, (2) the local agent's state (P2-112 calm copy + the
+  // P2-138 upstream notice) and (3) the phone-pairing invitation with an
+  // explicit "do this later". Skipping stamps the flag — the second boot on
+  // the same userData is beat B at the bottom of this suite.
+  phase("P2-148: welcome walk (keeper boot)");
+  const welcomeStep = run("P2-148: welcome rendered on first boot", ["ipc", "document.querySelector('.welcome')?.getAttribute('data-welcome-step') ?? 'MISS'"], 15_000);
+  if (welcomeStep.ok) check("P2-148: step 1 is the intro", welcomeStep.stdout.replace(/"/g, "").trim() === "1", welcomeStep.stdout);
+  const welcomeNoBanner = run("P2-148: banner count probe under the onboarding", ["ipc", "String(document.querySelectorAll('.daemon-reconnecting, .daemon-down, .conn-banner').length)"], 15_000);
+  if (welcomeNoBanner.ok) check("P2-148: zero daemon banners while the onboarding shows", welcomeNoBanner.stdout.replace(/"/g, "").trim() === "0", welcomeNoBanner.stdout);
+  const welcomeShot = join(shotsDir, "P2-148-welcome-1440.png");
+  const w1 = run("P2-148: 1440x900 welcome shot", ["shot", welcomeShot, "1440", "900"], 15_000);
+  if (w1.ok) check("P2-148: 1440x900 welcome shot is a real PNG", pngSize(welcomeShot).join("x") === "1440x900");
+  run("P2-148: advance to the agent step", ["click", ".welcome-next"], 15_000);
+  const agentStep = run("P2-148: agent step rendered", ["ipc", "document.querySelector('.welcome-agent')?.textContent ?? 'MISS'"], 15_000);
+  if (agentStep.ok) {
+    check(
+      "P2-148: agent step copy is the calm degraded wording (en|pt)",
+      /Local agent|Agente local|Connecting for the first time|Conectando pela primeira vez/.test(agentStep.stdout),
+      agentStep.stdout,
+    );
+  }
+  run("P2-148: advance to the pairing step", ["click", ".welcome-next"], 15_000);
+  const pairStep = run("P2-148: pairing invitation rendered", ["ipc", "document.querySelector('.welcome .pair-section-title')?.textContent ?? 'MISS'"], 15_000);
+  if (pairStep.ok) check("P2-148: host section title inside the welcome", /Pair a phone|Parear um celular/.test(pairStep.stdout), pairStep.stdout);
+  const later = run("P2-148: explicit 'do this later' option", ["ipc", "!!document.querySelector('.welcome-later')"], 15_000);
+  if (later.ok) check("P2-148: .welcome-later present", /true/.test(later.stdout));
+  const welcomeShot390 = join(shotsDir, "P2-148-welcome-390.png");
+  const w2 = run("P2-148: 390 welcome shot", ["shot", welcomeShot390, "390", "844"], 15_000);
+  if (w2.ok) check("P2-148: 390 welcome shot is a real PNG", pngSize(welcomeShot390)[0] === 390);
+  run("P2-148: skip the onboarding", ["click", ".welcome-skip"], 15_000);
+  const welcomeGone = run("P2-148: welcome absent after skip", ["ipc", "!!document.querySelector('.welcome')"], 15_000);
+  if (welcomeGone.ok) check("P2-148: .welcome unmounted after skip", /false/.test(welcomeGone.stdout));
+  const homeBack = run("P2-148: home rendered after skip", ["ipc", "!!document.querySelector('.degraded')"], 15_000);
+  if (homeBack.ok) check("P2-148: .degraded home after the onboarding", /true/.test(homeBack.stdout));
   // --- P2-112: first boot with a dead daemon degrades, never dead-ends --------
   // The old journey stranded a first-time user on the pairing wall with a red
   // "daemon fell" alert for a daemon this machine had never met. Now the
@@ -666,6 +709,9 @@ try {
     const reconnOpen = run("reconnect: open (hermetic launch)", ["open"], 45_000, reconnEnv);
     reconnBooted = reconnOpen.ok;
     if (reconnOpen.ok) {
+      // P2-148: fresh userData boots into the first-run welcome — skip it so
+      // the reconnecting journey card is on screen for the probes below.
+      run("reconnect: skip the first-run welcome", ["click", ".welcome-skip"], 15_000, reconnEnv);
       // Locale-proof: the journey card's data attribute (class from App.tsx).
       const dom = run("reconnect: degraded journey carries the reconnecting status", ["ipc", "document.querySelector('.degraded')?.getAttribute('data-degraded-kind') ?? ''"], 15_000, reconnEnv);
       if (dom.ok) check("reconnect: reconnecting kind on the journey card", dom.stdout.includes("reconnecting"), dom.stdout);
@@ -724,6 +770,8 @@ try {
     const mOpen = run("mismatch: open (hermetic launch)", ["open"], 45_000, mismatchEnv);
     mismatchBooted = mOpen.ok;
     if (mOpen.ok) {
+      // P2-148: fresh userData boots into the first-run welcome — skip it.
+      run("mismatch: skip the first-run welcome", ["click", ".welcome-skip"], 15_000, mismatchEnv);
       // Precedence: the forced mismatch state wins over hermeticEnv's
       // OCR_DAEMON_FORCE_DOWN — warn strip in, red daemon-down strip out.
       const dom = run("mismatch: .daemon-version-mismatch banner rendered", ["ipc", "!!document.querySelector('.daemon-version-mismatch')"], 15_000, mismatchEnv);
@@ -788,6 +836,8 @@ try {
       const open = run("scan: open (camera-blocked launch)", ["open"], 45_000, scanBlockEnv);
       scanBooted = open.ok;
       if (open.ok) {
+        // P2-148: fresh userData boots into the first-run welcome — skip it.
+        run("scan: skip the first-run welcome", ["click", ".welcome-skip"], 15_000, scanBlockEnv);
         // P2-112 integration: a hermetic fresh boot lands on the DegradedView
         // first-contact card — the pairing form (and with it the scanner
         // option) lives one deliberate click away.
@@ -820,6 +870,8 @@ try {
       const open = run("scan-live: open (fake-camera launch)", ["open"], 45_000, scanFakeEnv);
       scanFakeBooted = open.ok;
       if (open.ok) {
+        // P2-148: fresh userData boots into the first-run welcome — skip it.
+        run("scan-live: skip the first-run welcome", ["click", ".welcome-skip"], 15_000, scanFakeEnv);
         // P2-112 integration (same as the camera-blocked boot): the fresh
         // hermetic instance shows the first-contact card first.
         run("scan-live: manual pairing escape hatch", ["click", ".degraded-manual"], 15_000, scanFakeEnv);
@@ -948,6 +1000,9 @@ try {
       const open = run("local: open (hermetic local-boot launch)", ["open"], 45_000, localEnv);
       localBooted = open.ok;
       if (open.ok) {
+        // P2-148: fresh userData boots into the first-run welcome — skip it.
+        // The local auto-pair completes in the background either way.
+        run("local: skip the first-run welcome", ["click", ".welcome-skip"], 15_000, localEnv);
         const state = run("local: IPC app:pairingState", ["ipc", "window.ocrDesktop.getPairingState()"], 15_000, localEnv);
         if (state.ok) {
           let parsed: { mode?: string; uri?: string | null; qrDataUrl?: string | null } | null = null;
@@ -1985,11 +2040,14 @@ try {
             if (alive.status !== 0) break;
             await new Promise((r) => setTimeout(r, 500));
           }
-          const open2 = run("P1-089: open (second hermetic boot, live fake backend)", ["open"], 45_000, localEnv2);
-          localBooted = open2.ok;
-          if (open2.ok) {
-            await waitProbe(
-              "P1-089: boot-2 paired hook rendered",
+  const open2 = run("P1-089: open (second hermetic boot, live fake backend)", ["open"], 45_000, localEnv2);
+  localBooted = open2.ok;
+  if (open2.ok) {
+    // P2-148: this boot mints a fresh userData too — the first-run welcome
+    // covers the chat until skipped.
+    run("P1-089: skip the first-run welcome", ["click", ".welcome-skip"], 15_000, localEnv2);
+    await waitProbe(
+      "P1-089: boot-2 paired hook rendered",
               "document.querySelector('[data-phase]')?.getAttribute('data-phase') ?? ''",
               (v) => v.includes("paired"),
               localEnv2,
@@ -2881,6 +2939,8 @@ try {
       const open = run("P2-138: open (hermetic launch)", ["open"], 45_000, upstreamEnv);
       upstreamBooted = open.ok;
       if (open.ok) {
+        // P2-148: fresh userData boots into the first-run welcome — skip it.
+        run("P2-138: skip the first-run welcome", ["click", ".welcome-skip"], 15_000, upstreamEnv);
         await waitProbe(
           "P2-138: app paired with the hermetic daemon",
           "document.querySelector('[data-phase]')?.getAttribute('data-phase') ?? ''",
@@ -2969,6 +3029,9 @@ try {
     const open = run("P2-140: open (hermetic launch with a dying fake daemon)", ["open"], 45_000, exitEnv);
     exitBooted = open.ok;
     if (open.ok) {
+      // P2-148: fresh userData boots into the first-run welcome — skip it so
+      // the calm card (and its exit verdict) is on screen for the probes.
+      run("P2-140: skip the first-run welcome", ["click", ".welcome-skip"], 15_000, exitEnv);
       const hintShown = await waitProbe(
         "P2-140: exit hint rendered inside the calm card",
         "!!document.querySelector('.degraded-exit')",
@@ -3031,6 +3094,44 @@ try {
   }
 } finally {
   if (keeperBooted) spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: cliEnv });
+}
+
+// --- P2-148 beat B: the welcome flag survives the relaunch -------------------
+// Same userData as the keeper boot (where beat A skipped the onboarding):
+// after the first instance is fully closed (single-instance lock, P2-069), a
+// fresh hermetic boot with the SAME OCR_USER_DATA_DIR must land straight on
+// the home — the onboarding never comes back.
+phase("P2-148: welcome flag survives the relaunch (same userData)");
+if (bootInfo?.userData) {
+  const welcomeEnv = {
+    ...process.env,
+    OCR_DESKTOP_SESSION: `${session}-welcome2`,
+    OCR_USER_DATA_DIR: bootInfo.userData,
+  };
+  let welcomeBooted = false;
+  try {
+    // single-instance lock (P2-069): the outer finally's close returns before
+    // the keeper's async shutdown (12s quit grace + SIGKILL) is done — wait
+    // for the keeper PROCESS to be gone, same loop as the P1-089 relaunch.
+    for (let i = 0; i < 32; i++) {
+      const alive = spawnSync("pgrep", ["-f", "tools/desktop\\.mjs"], { encoding: "utf8" });
+      if (alive.status !== 0) break;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    const open2 = run("P2-148: open (second boot, same userData)", ["open"], 45_000, welcomeEnv);
+    welcomeBooted = open2.ok;
+    if (open2.ok) {
+      run("P2-148: boot rendered the app", ["see", "OpenCode Remote"], 15_000, welcomeEnv);
+      const noWelcome = run("P2-148: onboarding absent on the second boot", ["ipc", "!!document.querySelector('.welcome')"], 15_000, welcomeEnv);
+      if (noWelcome.ok) check("P2-148: .welcome not rendered again", /false/.test(noWelcome.stdout));
+      const home2 = run("P2-148: home directly on the second boot", ["ipc", "!!document.querySelector('.degraded')"], 15_000, welcomeEnv);
+      if (home2.ok) check("P2-148: degraded home shown instead of the onboarding", /true/.test(home2.stdout));
+    }
+  } finally {
+    if (welcomeBooted) spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: welcomeEnv });
+  }
+} else {
+  check("P2-148: keeper reported its userData dir for beat B", false, "no bootInfo.userData");
 }
 
 // Spec criterion 5: hermetic means hermetic — the app log must show the
