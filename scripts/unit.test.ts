@@ -2,6 +2,9 @@
  * Unit tests for pure glue code the e2e scripts don't cover.
  * Run: npx tsx scripts/unit.test.ts
  */
+// P2-120: isolate the event sink BEFORE any pilot module evaluates — synthetic
+// sha-guard/deploy events from tests must never land in the production feed.
+process.env.PILOT_EVENTS_FILE = "/tmp/pilot-unit-events.jsonl";
 import { b64, fromB64, seal, openSealed, seqAad } from "@ocr/protocol";
 import { parsePairingUri, localWsUrl, shouldFailoverToRelay } from "../apps/web/src/lib/client";
 import { isLoopbackAddr, localOriginAllowed, localUpgradeAllowed } from "../apps/daemon/src/localws";
