@@ -8,6 +8,7 @@ process.env.PILOT_EVENTS_FILE = "/tmp/pilot-unit-events.jsonl";
 import { b64, fromB64, seal, openSealed, seqAad } from "@ocr/protocol";
 import { parsePairingUri, localWsUrl, shouldFailoverToRelay } from "../apps/web/src/lib/client";
 import { isLoopbackAddr, localOriginAllowed, localUpgradeAllowed } from "../apps/daemon/src/localws";
+import { parseRelayUrl } from "../apps/daemon/src/relayurl";
 import { classifyUpstream, UPSTREAM_PROBE_TIMEOUT_MS } from "../apps/daemon/src/upstream";
 import { copyText, hasClipboardApi, legacyCopy } from "../apps/web/src/lib/clipboard";
 import { mimeFor } from "../apps/web/src/lib/files";
@@ -7377,6 +7378,45 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P2-136: release.yml runs the preflight and only notarizes on its developer-id/no-problems verdict",
     releaseYml.includes("signing-profile.mjs") && releaseYml.includes("steps.signing.outputs.notarize"),
+  );
+}
+
+// --- P2-139: RELAY_URL boot validation (pure, fail-closed) -------------------
+
+{
+  const ok = parseRelayUrl("ws://127.0.0.1:8787");
+  check(
+    "P2-139: loopback ws default accepted",
+    ok.problems.length === 0 && !ok.secure && ok.host === "127.0.0.1:8787",
+  );
+  const wssPublic = parseRelayUrl("wss://relay.example.com:8788");
+  check(
+    "P2-139: wss on a public host accepted",
+    wssPublic.problems.length === 0 && wssPublic.secure && wssPublic.href === "wss://relay.example.com:8788/",
+  );
+  const wsPublic = parseRelayUrl("ws://relay.example.com:8788");
+  check("P2-139: ws on a public host is a problem", wsPublic.problems.length > 0 && !wsPublic.secure);
+  check(
+    "P2-139: ws public host still reports href/host for diagnostics",
+    wsPublic.href === "ws://relay.example.com:8788/" && wsPublic.host === "relay.example.com:8788",
+  );
+  check("P2-139: http scheme rejected", parseRelayUrl("http://relay.example.com:8788").problems.length > 0);
+  check("P2-139: https scheme rejected", parseRelayUrl("https://relay.example.com").problems.length > 0);
+  const empty = parseRelayUrl("");
+  check("P2-139: empty string rejected", empty.problems.length > 0 && empty.href === "" && empty.host === "");
+  check("P2-139: whitespace-only rejected", parseRelayUrl("   ").problems.length > 0);
+  const malformed = parseRelayUrl("not a url");
+  check("P2-139: malformed URL rejected", malformed.problems.length > 0 && malformed.href === "");
+  check(
+    "P2-139: trailing slash normalization",
+    parseRelayUrl("ws://127.0.0.1:8787").href === parseRelayUrl("ws://127.0.0.1:8787/").href,
+  );
+  check("P2-139: localhost counts as loopback over ws", parseRelayUrl("ws://localhost:8787").problems.length === 0);
+  check("P2-139: ipv6 ::1 counts as loopback over ws", parseRelayUrl("ws://[::1]:8787").problems.length === 0);
+  check("P2-139: wss never triggers the plain-ws problem", parseRelayUrl("wss://relay.example.com").problems.length === 0);
+  check(
+    "P2-139: problem mentions the env var so the operator knows what to fix",
+    parseRelayUrl("http://x.example").problems.every((p) => p.includes("RELAY_URL")),
   );
 }
 

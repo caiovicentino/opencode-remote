@@ -58,6 +58,7 @@ import { ArtifactWatcher } from "./artifactwatch.js";
 import { createShutdown, stopAccepting } from "./shutdown.js";
 import { localUpgradeAllowed } from "./localws.js";
 import { createRelayRetry } from "./relayretry.js";
+import { parseRelayUrl } from "./relayurl.js";
 import {
   classifyUpstream,
   UPSTREAM_PROBE_TIMEOUT_MS,
@@ -85,6 +86,13 @@ import { emit } from "../../pilot/src/events";
 import type { PilotEvent } from "../../pilot/src/events";
 
 const RELAY_URL = process.env.RELAY_URL ?? "ws://127.0.0.1:8787";
+// P2-139: validate RELAY_URL once at boot — a typo, a wrong scheme or plain
+// ws:// on a public host must not become a silent reconnect loop (now with
+// backoff) that still serves the phone a QR it can never use. Fail-closed:
+// with any problem the daemon never opens the relay socket; local mode is
+// unaffected because it does not ride the relay.
+const relayUrl = parseRelayUrl(RELAY_URL);
+const relayDisabled = relayUrl.problems.length > 0;
 const OPENCODE_URL = process.env.OPENCODE_URL ?? "http://127.0.0.1:4096";
 const OPENCODE_USER = process.env.OPENCODE_SERVER_USERNAME ?? "opencode";
 const OPENCODE_PASS = process.env.OPENCODE_SERVER_PASSWORD ?? "";
@@ -1807,6 +1815,10 @@ process.on("SIGTERM", () => void shutdown("SIGTERM"));
 process.on("SIGINT", () => void shutdown("SIGINT"));
 
 function connectRelay() {
+  // P2-139: an invalid RELAY_URL never opens a socket. The reason is logged
+  // once at boot instead of repeating on every retry; nothing here schedules
+  // a reconnect, so the backoff loop never starts.
+  if (relayDisabled) return;
   const ws = new WebSocket(RELAY_URL);
   relaySocket = ws;
 
@@ -2146,6 +2158,13 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
         opencode: opencodeDetail,
         relayConnected,
         relayRetry: relayConnected ? null : relayRetry.snapshot(),
+        // P2-139: additive boot-validation verdict of RELAY_URL; relayConnected
+        // and relayRetry above keep their exact shape.
+        relay: {
+          url: RELAY_URL,
+          ok: !relayDisabled,
+          reason: relayDisabled ? relayUrl.problems.join(" ") : null,
+        },
       });
       return true;
     }
@@ -2612,6 +2631,15 @@ async function main() {
     pairedClients: readAllowlist().length,
   });
 
+  // P2-139: log the fail-closed verdict exactly once at boot — retry-time
+  // logging would just repeat the same static config error forever.
+  if (relayDisabled) {
+    log("error", "RELAY_URL is invalid — relay connection disabled (fail-closed)", {
+      relay: RELAY_URL,
+      problems: relayUrl.problems,
+    });
+  }
+
   const metricsPort = Number(process.env.OCR_METRICS_PORT);
   if (metricsPort) {
     apiServer = startMetricsServer(metricsPort, handleApi);
@@ -2649,22 +2677,35 @@ async function main() {
     });
   }
 
-  pairingUri =
-    `opencode-remote://pair?v=2` +
-    `&relay=${encodeURIComponent(RELAY_URL)}` +
-    `&room=${daemon.room}` +
-    `&k=${encodeURIComponent(daemon.identity.publicKey)}` +
-    `&vapid=${encodeURIComponent(daemon.vapid.publicKey)}` +
-    `&name=${encodeURIComponent(machineName)}`;
+  if (relayDisabled) {
+    // P2-139: a QR embedding an unusable relay URL is worse than no QR —
+    // withhold the pairing URI entirely (not printed here, and
+    // /__ocr/pairing-uri keeps serving null). The desktop app's local mode
+    // (P1-070) never rides the relay and keeps working.
+    console.log(`\n  opencode remote daemon (protocol v2)`);
+    console.log(`  machine:  ${machineName}`);
+    console.log(`  opencode: ${OPENCODE_URL}`);
+    console.log(`  relay:    ${RELAY_URL} (invalid — relay disabled, see log)`);
+    console.log(`  clients:  ${readAllowlist().length} paired`);
+    console.log(`\n  Pairing QR withheld: fix RELAY_URL and restart the daemon.\n`);
+  } else {
+    pairingUri =
+      `opencode-remote://pair?v=2` +
+      `&relay=${encodeURIComponent(RELAY_URL)}` +
+      `&room=${daemon.room}` +
+      `&k=${encodeURIComponent(daemon.identity.publicKey)}` +
+      `&vapid=${encodeURIComponent(daemon.vapid.publicKey)}` +
+      `&name=${encodeURIComponent(machineName)}`;
 
-  console.log(`\n  opencode remote daemon (protocol v2)`);
-  console.log(`  machine:  ${machineName}`);
-  console.log(`  opencode: ${OPENCODE_URL}`);
-  console.log(`  relay:    ${RELAY_URL}`);
-  console.log(`  clients:  ${readAllowlist().length} paired`);
-  console.log(`\n  Pair with the PWA by scanning this QR code:\n`);
-  console.log(await QRCode.toString(pairingUri, { type: "terminal", small: true }));
-  console.log(`  or paste: ${pairingUri}\n`);
+    console.log(`\n  opencode remote daemon (protocol v2)`);
+    console.log(`  machine:  ${machineName}`);
+    console.log(`  opencode: ${OPENCODE_URL}`);
+    console.log(`  relay:    ${RELAY_URL}`);
+    console.log(`  clients:  ${readAllowlist().length} paired`);
+    console.log(`\n  Pair with the PWA by scanning this QR code:\n`);
+    console.log(await QRCode.toString(pairingUri, { type: "terminal", small: true }));
+    console.log(`  or paste: ${pairingUri}\n`);
+  }
 
   connectRelay();
   void forwardEvents();

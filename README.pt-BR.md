@@ -240,7 +240,12 @@ Não quer hospedar o relay no seu Mac? `deploy/relay/Dockerfile` gera uma imagem
 multi-stage enxuta (node 22 slim, compilada com tsc, usuário não-root,
 `HEALTHCHECK` no `/healthz`) para qualquer plataforma de containers — aponte o
 TLS do provedor pra ela, defina `RELAY_URL` no daemon e pareie o celular de
-novo. O relay continua cego: nunca vê plaintext nem chaves. Runbook:
+novo. O relay continua cego: nunca vê plaintext nem chaves. O daemon valida o
+`RELAY_URL` no boot e falha fechado: só `ws://`/`wss://` conectam, `ws://` pra
+host não-loopback é recusado — URL inválida desativa a conexão com o relay
+(motivo logado uma vez no boot e exposto em `/api/health`, campo aditivo
+`relay`) e esconde o QR de pareamento; o modo local do app desktop não depende
+do relay e segue funcionando. Runbook:
 [docs/RELAY-HOSTING.md](docs/RELAY-HOSTING.md).
 
 ## CLI
