@@ -8631,7 +8631,6 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
-<<<<<<< HEAD
 // --- P2-161: staged feed.json port resolved at serve time ---------------------
 {
   const feed = (port: number) =>
@@ -8689,8 +8688,6 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     zero.rewritten === false && negative.rewritten === false && nan.rewritten === false && huge.rewritten === false && zero.reason === "invalid-port" && zero.body === feed(8792),
   );
 }
-=======
->>>>>>> b9213e7 (pilot(P1-056): gate fora do repo — juiz separado com veredito assinado (ed25519))
 
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);
