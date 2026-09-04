@@ -422,8 +422,10 @@ override that ignores the platform. The two platforms update differently: on
 **macOS** the staged Squirrel JSON feed (when present) downloads the release in
 the background and a consent dialog applies it; on **Windows** there is no
 download engine yet (Squirrel.Windows support pending), so a yml feed resolves
-to `update-available-manual` and the shell opens the GitHub release page —
-nothing is downloaded or installed behind your back. The fallback triggers for
+to `update-available-manual` and an explicit **Check for updates** click opens
+the release page — at most once per version per session, and never
+automatically at boot (the boot decision is log/tray only, P2-131) — nothing is
+downloaded or installed behind your back. The fallback triggers for
 the packaged default only — a feed pointed at explicitly via `OCR_UPDATE_FEED`
 never produces an outbound request behind your back. When a newer `feed.json`
 is found on macOS, the release downloads in the background and a consent dialog
@@ -647,9 +649,13 @@ with `url`/`name`/`notes`) — both are parsed and a newer release is logged as
 built-in `autoUpdater` (`setFeedURL` + `checkForUpdates`, `serverType: "json"`),
 which downloads it in the background. yml feeds have no download engine (the
 built-in updater cannot read `latest-mac.yml` — spike finding): since P2-131
-they resolve to the dedicated `update-available-manual` status and the shell
-opens the release page (`shell.openExternal`) so the user can install by hand;
-`setFeedURL` is only ever called on the JSON feed path. Feed or network
+they resolve to the dedicated `update-available-manual` status, and the release
+page opens via `shell.openExternal` only when the user explicitly clicks
+**Check for updates** — never automatically at boot, and at most once per
+version per session. GitHub-hosted feeds point at the repo's releases page;
+self-hosted `OCR_PUBLIC_UPDATE_FEED` overrides point at the feed's own
+directory (where the artifacts live). `setFeedURL` is only ever called on the
+JSON feed path. Feed or network
 failures are strictly log-only and never block or crash the window.
 
 Whenever a feed is configured, the tray menu also gains two items (P3-019): a

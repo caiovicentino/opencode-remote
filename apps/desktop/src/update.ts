@@ -135,19 +135,46 @@ export function publicFeedUrl(
 const RELEASES_PAGE_URL = "https://github.com/caiovicentino/opencode-remote/releases/latest";
 
 /**
- * P2-131: the human-readable page a manual update points at. Derived from the
- * feed URL when it is a GitHub `releases/latest/download/<asset>` link, so
- * forks serving their own yml feed land on their own releases; anything else
- * (staged loopback feeds, exotic overrides) falls back to the canonical page.
+ * P2-131: the human-readable page a manual update points at. GitHub
+ * `releases/latest/download/<asset>` feeds map to the repo's releases page, so
+ * forks land on their own releases; self-hosted overrides (OCR_PUBLIC_UPDATE_
+ * FEED) point at the feed's own directory — the release artifacts always live
+ * next to the feed file, and silently sending those users to the upstream
+ * repo would be surprising (round-2 review).
  */
 export function releasePageUrl(feedUrl: string): string {
-  const m = /^https:\/\/github\.com\/([^/\s]+)\/([^/\s]+)\/releases\/latest\/download\/[^/?#\s]+$/.exec(feedUrl.trim());
-  return m ? `https://github.com/${m[1]}/${m[2]}/releases/latest` : RELEASES_PAGE_URL;
+  const gh = /^https:\/\/github\.com\/([^/\s]+)\/([^/\s]+)\/releases\/latest\/download\/[^/?#\s]+$/.exec(feedUrl.trim());
+  if (gh) return `https://github.com/${gh[1]}/${gh[2]}/releases/latest`;
+  try {
+    const url = new URL(feedUrl.trim());
+    if (url.protocol !== "https:" && url.protocol !== "http:") return RELEASES_PAGE_URL;
+    const dir = url.pathname.endsWith("/") ? url.pathname : url.pathname.replace(/[^/]*$/, "");
+    return `${url.protocol}//${url.host}${dir}`;
+  } catch {
+    return RELEASES_PAGE_URL;
+  }
 }
 
-/** True when an update source exists (explicit env or packaged default). */
-export function updatesEnabled(env: NodeJS.ProcessEnv = process.env, packaged = app?.isPackaged ?? false): boolean {
-  return resolvedFeedUrl(env, packaged) != null;
+/**
+ * P2-131 (round-2 review): manual-update versions whose release page was
+ * already opened this session. The JSON path has the offering/declined
+ * bookkeeping in stateFor; the manual path has no updater instance to key a
+ * WeakMap on, so a plain session set keeps repeated checks (boot + every tray
+ * click) from spamming a browser tab per re-check.
+ */
+const manualOpened = new Set<string>();
+
+/** True when an update surface exists for this platform: an explicitly staged
+ * feed, or a packaged build on a platform with a public feed default. Mirrors
+ * the boot-check gate so the tray never offers "Check for updates" on a
+ * platform whose check would only ever answer "disabled" (round-2 review). */
+export function updatesEnabled(
+  env: NodeJS.ProcessEnv = process.env,
+  packaged = app?.isPackaged ?? false,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  if (feedUrlFromEnv(env)) return true;
+  return packaged && publicFeedUrl(env, packaged, platform) != null;
 }
 
 /** Numeric dotted-version compare: isNewerVersion("0.2.0", "0.2.1") === true. */
@@ -240,7 +267,9 @@ export interface UpdateCheckOptions {
   platform?: NodeJS.Platform;
   /** P2-131: invoked when an update is detected through a yml feed — a format
    * with no download engine — and handed the release page URL. main.ts wires
-   * it to shell.openExternal; omitted (tests, drivers) means nothing opens. */
+   * it to shell.openExternal for user-initiated tray re-checks only; the boot
+   * check never auto-opens a browser, and each version opens at most once per
+   * session. */
   openReleasePage?: (url: string) => void;
 }
 
@@ -382,7 +411,7 @@ export async function checkForUpdatesOnBoot(opts: UpdateCheckOptions = {}): Prom
   const platform = opts.platform ?? process.platform;
   let feedUrl = injected ? opts.feedUrl! : resolvedFeedUrl(process.env, packaged);
   // P2-131: the public feed for the platform is also the feature gate. A
-  // platform electron-builder publishes no yml for (no default, no
+  // platform for which electron-builder publishes no yml (no default and no
   // OCR_PUBLIC_UPDATE_FEED override) has no update surface at all — not even
   // the staged Squirrel.Mac loopback default, which only a macOS autoUpdater
   // could consume. Disabled means zero network requests.
@@ -469,8 +498,14 @@ export async function checkForUpdatesOnBoot(opts: UpdateCheckOptions = {}): Prom
   }
   // P2-131: yml feed → no background download exists for this format, so the
   // update is manual: surface the dedicated status and point the user at the
-  // release page (main.ts wires the sink to shell.openExternal).
+  // release page. The page only opens when the caller wired the sink (main.ts
+  // does that for user-initiated tray re-checks, never for the boot check —
+  // an outdated install must not auto-open a browser at every launch) and at
+  // most once per version per session.
   log("update check: yml feed has no download engine — update is manual, opening the release page");
-  opts.openReleasePage?.(releasePageUrl(feedUrl));
+  if (opts.openReleasePage && !manualOpened.has(feed.version)) {
+    manualOpened.add(feed.version);
+    opts.openReleasePage(releasePageUrl(feedUrl));
+  }
   return finish("update-available-manual", feed.version);
 }

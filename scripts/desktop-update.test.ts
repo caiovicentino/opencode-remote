@@ -73,6 +73,10 @@ const yml = parseFeed(YML);
 check("parseFeed: yml version", yml?.version === "0.2.1" && yml.format === "yml");
 check("parseFeed: yml release notes block", yml?.notes.includes("notas fake") === true && yml.notes.includes("segunda linha") === true);
 check("parseFeed: yml inline notes", parseFeed("version: 1.2.3\nreleaseNotes: nota unica\n")?.notes === "nota unica");
+// Version variants for the session-dedup tests (each manual version must be
+// independently openable).
+const YML_030 = YML.replaceAll("0.2.1", "0.3.0");
+const YML_040 = YML.replaceAll("0.2.1", "0.4.0");
 const json = parseFeed(
   JSON.stringify({ url: "http://127.0.0.1/x.zip", name: "0.2.1", notes: "fake release notes", releaseDate: "2026-09-01" }),
 );
@@ -192,11 +196,54 @@ check(
       "https://github.com/foo/bar/releases/latest",
   );
   check(
-    "releasePageUrl: non-GitHub feed → canonical releases page",
-    releasePageUrl("https://feeds.example/staging/latest-mac.yml") ===
-      "https://github.com/caiovicentino/opencode-remote/releases/latest",
+    "releasePageUrl: self-hosted feed → the feed's own directory (never the upstream repo)",
+    releasePageUrl("https://feeds.example/staging/latest-mac.yml") === "https://feeds.example/staging/" &&
+      releasePageUrl("https://fork.dev/latest.yml") === "https://fork.dev/",
   );
 }
+{
+  // Round-2 review: the release page must open at most once per version per
+  // session — boot + every tray re-check otherwise spam a browser tab.
+  const dedupUpdater = fakeUpdater();
+  const opened: string[] = [];
+  const dedupOpts = {
+    feedUrl: "http://127.0.0.1:9/latest-mac.yml",
+    currentVersion: "0.2.0",
+    updater: dedupUpdater,
+    fetchImpl: fakeFetcher(YML_030),
+    log: () => {},
+    openReleasePage: (url: string) => opened.push(url),
+  };
+  await checkForUpdatesOnBoot(dedupOpts);
+  await checkForUpdatesOnBoot(dedupOpts);
+  await checkForUpdatesOnBoot(dedupOpts);
+  check("P2-131 r2: repeated checks open the release page once per version", opened.length === 1);
+  // A boot-style check (no sink wired) must not consume the version: the next
+  // user-initiated re-check still opens the page exactly once.
+  await checkForUpdatesOnBoot({ ...dedupOpts, fetchImpl: fakeFetcher(YML_040), openReleasePage: undefined });
+  await checkForUpdatesOnBoot({ ...dedupOpts, fetchImpl: fakeFetcher(YML_040) });
+  check(
+    "P2-131 r2: boot never opens (no sink), a NEW version opens again on the next tray re-check",
+    opened.length === 2 && opened[1] === "http://127.0.0.1:9/",
+  );
+}
+
+// --- P2-131: the tray gate mirrors the boot check (round-2 review) ------------
+check(
+  "updatesEnabled: packaged darwin/win32 → true, packaged linux → false",
+  updatesEnabled({}, true, "darwin") === true &&
+    updatesEnabled({}, true, "win32") === true &&
+    updatesEnabled({}, true, "linux") === false,
+);
+check(
+  "updatesEnabled: explicit staged feed keeps the tray item on feed-less platforms",
+  updatesEnabled({ OCR_UPDATE_FEED: "http://127.0.0.1:9/feed.json" }, false, "linux") === true,
+);
+check(
+  "updatesEnabled: OCR_PUBLIC_UPDATE_FEED override enables a feed-less platform",
+  updatesEnabled({ OCR_PUBLIC_UPDATE_FEED: "https://fork.dev/latest.yml" }, true, "linux") === true,
+);
+check("updatesEnabled: dev unpackaged without env stays disabled", updatesEnabled({}, false) === false);
 
 const notNewerLogs: string[] = [];
 check(
@@ -252,6 +299,7 @@ import {
   resolvedFeedUrl,
   shouldOfferInstall,
   updateMenuLabel,
+  updatesEnabled,
   versionFromDownloadedArgs,
   type UpdateDialogSinks,
 } from "../apps/desktop/src/update.ts";
