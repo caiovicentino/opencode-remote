@@ -1934,11 +1934,12 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
   // GET /dashboard — pilot three.js mission control (static file). P1-057: the
   // apiToken is NEVER embedded in the HTML anymore — the browser proves itself
   // via the token box / ?token= (saved to localStorage) or a session cookie.
-  // GET /dashboard/v3 — the orbital Mission Control candidate (mission-v3.html),
-  // served side by side with the current one so the operator can compare.
+  // GET /dashboard and /dashboard/v3 — Mission Control (mission-v3.html).
+  // The old orbital dashboard is retired for now; both URLs serve v3 so
+  // existing links and the desktop pane keep working.
   if (req.method === "GET" && (url.pathname === "/dashboard" || url.pathname === "/dashboard/v3")) {
     try {
-      const variant = url.pathname === "/dashboard/v3" ? "mission-v3" : "index";
+      const variant = "mission-v3" as const;
       const html = readFileSync(dashboardFile(variant), "utf8").replace("__APITOKEN__", "");
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
       res.end(html);
