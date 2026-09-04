@@ -30,13 +30,15 @@ extraResources:
       - "**/*"
   # Daemon sidecar bundle (apps/desktop/scripts/bundle-daemon.mjs →
   # dist-daemon/index.js), shipped where resolveEntry() looks for it.
-  # dashboard.html rides along: the CJS bundle has no import.meta, so the
-  # /dashboard route resolves it via __dirname (dashboardFile() in the daemon).
+  # dashboard.html + dashboard-v3.html ride along: the CJS bundle has no
+  # import.meta, so the /dashboard route resolves them via __dirname
+  # (dashboardFile() in the daemon).
   - from: dist-daemon
     to: daemon
     filter:
       - "index.js"
       - "dashboard.html"
+      - "dashboard-v3.html"
 mac:
   # P1-050: client-ready packaging. `dmg` produces the distributable
   # OpenCode Remote-<version>.dmg; `dir` keeps a plain .app around for the

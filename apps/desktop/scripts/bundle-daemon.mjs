@@ -6,10 +6,11 @@
 // Node builtins stay external (platform=node); ws's optional native accel
 // deps are external too — ws try/catches their require and falls back.
 //
-// Also copies the pilot dashboard next to the bundle as dashboard.html: the
-// CJS bundle has no import.meta, so the daemon resolves /dashboard via
-// __dirname (see dashboardFile() in apps/daemon/src/index.ts) and
-// electron-builder.yml ships both files from dist-daemon.
+// Also copies the pilot dashboards next to the bundle (dashboard.html and
+// dashboard-v3.html): the CJS bundle has no import.meta, so the daemon
+// resolves /dashboard via __dirname (see dashboardFile() in
+// apps/daemon/src/index.ts) and electron-builder.yml ships the files from
+// dist-daemon.
 //
 // Run: npm run build:daemon --workspace @ocr/desktop
 import { copyFileSync, readFileSync } from "node:fs";
@@ -48,4 +49,8 @@ await build({
 copyFileSync(
   join(repoRoot, "apps", "pilot", "dashboard", "index.html"),
   join(desktop, "dist-daemon", "dashboard.html"),
+);
+copyFileSync(
+  join(repoRoot, "apps", "pilot", "dashboard", "mission-v3.html"),
+  join(desktop, "dist-daemon", "dashboard-v3.html"),
 );
