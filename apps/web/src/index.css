@@ -1552,6 +1552,26 @@ select {
   }
 }
 
+/* P2-117: the desktop's secondary path into the scanner — a quiet bordered
+   button in the same language as .pair-remote-entry, so the paste form reads
+   as primary and the camera as the option. */
+.pair-scan-entry {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+.pair-scan-entry:hover {
+  background: var(--surface);
+}
+.pair-scan-entry:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 /* explicit remote-pairing entry (desktop shell, P1-070): a quiet bordered row
    that turns the QR ceremony back on — from the unpaired screen or Settings.
    Same visual language as .card, no decoration. */
@@ -1633,6 +1653,79 @@ select {
 }
 .pair-overlay-later:hover {
   color: var(--text);
+}
+
+/* QR scanner state machine (P2-117): looking → preview → unavailable.
+   The stage keeps a 4:3 box at every width so a 390px phone never collapses
+   to just the caption, and the unavailable state replaces the black void
+   with a bordered panel + paste-code CTA. */
+.qr-stage {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  max-width: 100%;
+  aspect-ratio: 4 / 3;
+  max-height: 60vh;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: #000;
+}
+.qr-video {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  max-width: 100%;
+  max-height: 60vh;
+  object-fit: cover;
+  display: block;
+}
+.qr-looking {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.qr-spinner {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  border-top-color: var(--text);
+  animation: qr-spin 0.9s linear infinite;
+}
+@keyframes qr-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.qr-unavailable {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  align-items: flex-start;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+.qr-unavailable-title {
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+.qr-unavailable .qr-paste-cta {
+  align-self: stretch;
+}
+.qr-hint {
+  margin: 0;
+  font-size: 0.8rem;
 }
 
 /* first-run splash (P1-050): wordmark, value line, 3-step onboarding */
