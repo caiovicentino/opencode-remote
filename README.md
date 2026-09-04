@@ -423,6 +423,15 @@ keeps the purely-local data (language, theme) working. "Reconnect now" gives
 real feedback (spinner + trying state + result toast), and manual pairing
 stays one click away.
 
+**First-run welcome (P2-148)**: the very first desktop launch walks through
+three steps — what the app is (one sentence), the local agent's live state
+(reusing the calm degraded-journey copy and the P2-138 upstream notice), and
+the phone-pairing invitation with an explicit "do this later". It is skippable
+at any moment; finishing or skipping stamps a flag in the renderer's
+localStorage (no IPC, no main-process change), so existing users — including
+everyone upgrading with a stored pairing — never see it. It renders as a
+single full-screen surface: no banners, no pairing overlay (P2-108 rule).
+
 **Upstream notice (P2-138)**: the daemon can be healthy while the agent server
 it proxies is not (`opencode serve` not installed, wrong port, changed
 password). `/api/health` carries the classified verdict (`opencode.state`:

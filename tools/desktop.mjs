@@ -260,7 +260,10 @@ function keeperLog(...parts) {
  * stable daemon-down object instead of null. Same test-only pattern as the
  * other OCR_DAEMON_* escape hatches. */
 function hermeticEnv() {
-  const dir = mkdtempSync(join(tmpdir(), "ocr-desktop-app-"));
+  // P2-148: the caller may pin the userData dir (welcome-flag relaunch beat
+  // in scripts/desktop-flow.test.ts reuses boot 1's dir) — same precedent as
+  // OCR_DAEMON_ENTRY. Default still mints a fresh temp dir per launch.
+  const dir = process.env.OCR_USER_DATA_DIR ?? mkdtempSync(join(tmpdir(), "ocr-desktop-app-"));
   const stateFile = join(dir, "daemon-state.json");
   writeFileSync(stateFile, "{}");
   const env = {

@@ -17,6 +17,7 @@ import { timeAgo, sessionUpdatedTs } from "../apps/web/src/lib/time";
 import { sessionTitleOf } from "../apps/web/src/lib/title";
 import { dict, translate } from "../apps/web/src/lib/i18n";
 import { degradedKind, sawHealthyDaemon, sidecarExitNotice, upstreamNotice, type SidecarExitHealth, type UpstreamHealth } from "../apps/web/src/lib/degraded";
+import { WELCOME_DONE, shouldShowWelcome } from "../apps/web/src/lib/welcome";
 import { permissionPreview } from "../apps/web/src/lib/permission";
 import { applySessionFilters, isPilotTitle, splitPilotSessions } from "../apps/web/src/lib/sessionFilter";
 import { initialUnreadState, reduceUnread } from "../apps/web/src/lib/unread";
@@ -6655,6 +6656,42 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "degraded: journey copy resolves per locale (no raw-key fallback)",
     (["en", "pt"] as const).every((lang) => degradedKeys.every((k) => {
+      const s = translate(lang, k);
+      return s !== k && s.trim() !== "";
+    })),
+  );
+}
+
+// --- P2-148: first-run welcome flag (pure decision) -----------------------------
+{
+  // Corrupted/partial writes must never count as "done" — a wiped-looking
+  // flag shows the onboarding again rather than silently skipping it.
+  const CORRUPT = ["", "0", "true", " 1 ", "{}"];
+  check(
+    "welcome: absent flag + no pairing shows the onboarding",
+    shouldShowWelcome(null, false) === true && shouldShowWelcome(undefined, false) === true,
+  );
+  check(
+    "welcome: the done flag suppresses it even with no pairing",
+    shouldShowWelcome(WELCOME_DONE, false) === false && shouldShowWelcome("1", false) === false,
+  );
+  check(
+    "welcome: an existing pairing never shows the onboarding (upgraders)",
+    shouldShowWelcome(null, true) === false && shouldShowWelcome(WELCOME_DONE, true) === false,
+  );
+  check(
+    "welcome: corrupted flag values count as absent",
+    CORRUPT.every((v) => shouldShowWelcome(v, false) === true) &&
+      CORRUPT.every((v) => shouldShowWelcome(v, true) === false),
+  );
+  const welcomeKeys = [
+    "welcomeStepOf", "welcomeStep1Title", "welcomeStep1Body", "welcomeStart",
+    "welcomeSkip", "welcomeNext", "welcomeStep2Title", "welcomeAgentOk",
+    "welcomeStep3Title", "welcomeStep3Body", "welcomeLater",
+  ];
+  check(
+    "welcome: onboarding copy resolves per locale (no raw-key fallback)",
+    (["en", "pt"] as const).every((lang) => welcomeKeys.every((k) => {
       const s = translate(lang, k);
       return s !== k && s.trim() !== "";
     })),

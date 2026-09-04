@@ -233,6 +233,21 @@ export const dict = {
       "Reopen the app — it reconnects by itself; if this keeps happening, close other heavy programs.",
     sidecarUnknownTitle: "The daemon exited unexpectedly",
     sidecarUnknownAction: "Reopen the app; if it persists, send the diagnostic from Settings → Help.",
+    // P2-148: first-run welcome — three steps, shown once, skippable at any
+    // time. Calm, plain sentences; step 2 reuses the degraded-journey copy.
+    welcomeStepOf: "Step {n} of 3",
+    welcomeStep1Title: "Control this machine from your phone",
+    welcomeStep1Body:
+      "OpenCode Remote runs your AI agent on this machine and pairs it with your phone — end-to-end encrypted.",
+    welcomeStart: "Get started",
+    welcomeSkip: "Skip",
+    welcomeNext: "Next",
+    welcomeStep2Title: "Your local agent",
+    welcomeAgentOk: "Local agent running",
+    welcomeStep3Title: "Pair a phone (optional)",
+    welcomeStep3Body:
+      "You can scan the pairing code anytime from Settings — or do it now and control this machine from anywhere.",
+    welcomeLater: "Do this later",
     reconnectTrying: "Trying…",
     reconnectStarted: "Daemon restart started — the app reconnects on its own.",
     reconnectFailed: "Could not restart the daemon — try again in a moment.",
@@ -564,6 +579,22 @@ export const dict = {
     sidecarKilledAction: "Reabra o app — ele reconecta sozinho; se repetir, feche outros programas pesados.",
     sidecarUnknownTitle: "O daemon saiu de forma inesperada",
     sidecarUnknownAction: "Reabra o app; se persistir, envie o diagnóstico em Configurações → Ajuda.",
+    // P2-148: boas-vindas de primeira execução — três passos, mostrados uma
+    // vez, puláveis a qualquer momento. Frases simples e calmas; o passo 2
+    // reusa a copy da jornada degradada.
+    welcomeStepOf: "Passo {n} de 3",
+    welcomeStep1Title: "Controle esta máquina pelo celular",
+    welcomeStep1Body:
+      "O OpenCode Remote roda seu agente de IA nesta máquina e pareia com o seu celular — criptografado ponta a ponta.",
+    welcomeStart: "Começar",
+    welcomeSkip: "Pular",
+    welcomeNext: "Avançar",
+    welcomeStep2Title: "Seu agente local",
+    welcomeAgentOk: "Agente local em execução",
+    welcomeStep3Title: "Parear um celular (opcional)",
+    welcomeStep3Body:
+      "Dá para escanear o código de pareamento quando quiser nas Configurações — ou fazer agora e controlar esta máquina de longe.",
+    welcomeLater: "Fazer isso depois",
     reconnectTrying: "Tentando…",
     reconnectStarted: "Reinício do daemon iniciado — o app reconecta sozinho.",
     reconnectFailed: "Não deu pra reiniciar o daemon agora — tente de novo em instantes.",

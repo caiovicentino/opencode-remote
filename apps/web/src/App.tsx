@@ -43,8 +43,10 @@ import MissionControlView, { type DaemonApiFn } from "./components/MissionContro
 import ErrorBoundary from "./components/ErrorBoundary";
 import CommandPalette from "./components/CommandPalette";
 import DegradedView from "./components/DegradedView";
+import WelcomeView from "./components/WelcomeView";
 import ReconnectButton from "./components/ReconnectButton";
 import { degradedKind, sawHealthyDaemon, sidecarExitNotice, upstreamNotice, type SidecarExitHealth, type UpstreamHealth } from "./lib/degraded";
+import { WELCOME_DONE, WELCOME_KEY, shouldShowWelcome } from "./lib/welcome";
 import {
   IconAlert,
   IconChat,
@@ -242,6 +244,30 @@ export default function App() {
   useEffect(() => {
     if (phase === "paired") setPairManual(false);
   }, [phase]);
+
+  // P2-148: first-run welcome (desktop shell only). The pure decision reads
+  // the persisted flag and the stored pairing — a corrupted flag counts as
+  // absent, and anyone with a stored pairing never sees the onboarding.
+  const [showWelcome, setShowWelcome] = useState(() => {
+    if (!desktopBridge()) return false;
+    let flag: string | null = null;
+    try {
+      flag = localStorage.getItem(WELCOME_KEY);
+    } catch {
+      flag = null;
+    }
+    return shouldShowWelcome(flag, loadPairings().length > 0 || !!loadState());
+  });
+
+  // P2-148: finishing (or skipping) stamps the flag in the renderer's
+  // localStorage — no IPC, no main-process change, no second banner.
+  function finishWelcome() {
+    try {
+      localStorage.setItem(WELCOME_KEY, WELCOME_DONE);
+    } catch {}
+    setShowWelcome(false);
+  }
+
   useEffect(() => {
     const bridge = desktopBridge();
     if (!bridge?.getPairingState) return;
@@ -746,6 +772,25 @@ export default function App() {
     ) : (
       mismatchBanner
     );
+
+  // P2-148: first-run onboarding — a single full-screen surface with no
+  // banners and no pairing overlay (P2-108 single-surface rule). It covers
+  // every phase: the local daemon may finish auto-connecting in the
+  // background while the user walks the three steps.
+  if (showWelcome) {
+    return (
+      <div className="pair-wrap" data-phase={phase}>
+        <WelcomeView
+          kind={kind}
+          busy={phase === "connecting"}
+          upstream={upstream}
+          reconnect={reconnectBtn}
+          onPairRemote={desktopBridge()?.setRemotePairing ? () => void desktopBridge()?.setRemotePairing?.(true) : undefined}
+          onDone={finishWelcome}
+        />
+      </div>
+    );
+  }
 
   if (addingMachine) {
     return (
