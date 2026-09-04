@@ -13,6 +13,7 @@ import { mimeFor } from "../apps/web/src/lib/files";
 import { timeAgo, sessionUpdatedTs } from "../apps/web/src/lib/time";
 import { sessionTitleOf } from "../apps/web/src/lib/title";
 import { dict, translate } from "../apps/web/src/lib/i18n";
+import { degradedKind, sawHealthyDaemon } from "../apps/web/src/lib/degraded";
 import { permissionPreview } from "../apps/web/src/lib/permission";
 import { applySessionFilters, isPilotTitle, splitPilotSessions } from "../apps/web/src/lib/sessionFilter";
 import { initialUnreadState, reduceUnread } from "../apps/web/src/lib/unread";
@@ -6179,6 +6180,50 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       !qrSrc.includes("Back to manual pairing") &&
       !qrSrc.includes("Point the camera") &&
       !qrSrc.includes("Camera permission denied"),
+  );
+}
+
+// --- P2-112: first-boot degraded journey decision (pure logic) ------------------
+{
+  check(
+    "degraded: never-seen daemon down is a first contact, not an incident",
+    degradedKind({ daemonDown: true }, false) === "first-contact",
+  );
+  check(
+    "degraded: daemon down after a healthy poll is the incident state",
+    degradedKind({ daemonDown: true }, true) === "down",
+  );
+  check(
+    "degraded: reconnecting wins regardless of the seen marker (watchdog never gives up)",
+    degradedKind({ reconnecting: true, daemonDown: true }, false) === "reconnecting" &&
+      degradedKind({ reconnecting: true }, true) === "reconnecting",
+  );
+  check("degraded: no shell state → no degraded journey", degradedKind(null, false) === "none" && degradedKind(null, true) === "none");
+  check(
+    "degraded: healthy poll (mode=local) stamps the seen marker",
+    sawHealthyDaemon({ mode: "local" }) === true &&
+      sawHealthyDaemon({ daemonVersion: "0.2.0" }) === true &&
+      sawHealthyDaemon({ versionMismatch: true, daemonVersion: "0.0.1-force" }) === true,
+  );
+  check(
+    "degraded: outage states never stamp the seen marker",
+    sawHealthyDaemon({ daemonDown: true }) === false &&
+      sawHealthyDaemon({ reconnecting: true, reconnectAttempts: 3 }) === false &&
+      sawHealthyDaemon(null) === false,
+  );
+  // Copy parity for the journey: every degraded title/hint key resolves in
+  // both locales (same contract as the P2-118 connection screens).
+  const degradedKeys = [
+    "firstContactTitle", "firstContactHint", "degradedRetrying", "degradedDownHint",
+    "degradedLocalTitle", "degradedLocalHint", "degradedPairManually",
+    "reconnectTrying", "reconnectStarted", "reconnectFailed",
+  ];
+  check(
+    "degraded: journey copy resolves per locale (no raw-key fallback)",
+    (["en", "pt"] as const).every((lang) => degradedKeys.every((k) => {
+      const s = translate(lang, k);
+      return s !== k && s.trim() !== "";
+    })),
   );
 }
 

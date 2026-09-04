@@ -135,6 +135,9 @@ const cliEnv = { ...process.env, OCR_DESKTOP_SESSION: session };
 const startedAt = Date.now();
 const DEADLINE_MS = 180_000;
 const shotPath = join(tmpdir(), "ocr-desktop-flow", `flow-${process.pid}.png`);
+// Evidence shots live in the builder dir (never used as review evidence).
+// Declared up front: the P2-112 degraded-journey beats record there too.
+const shotsDir = join(homedir(), ".opencode-remote", "pilot", "shots", "builder");
 // P1-051 round 2: session state (socket, token, log) lives in a 0700 dir.
 const logFile = join(tmpdir(), `ocr-desktop-${session}`, "keeper.log");
 
@@ -315,6 +318,76 @@ try {
     wins.ok && /"visible":\s*false/.test(wins.stdout) && !/"visible":\s*true/.test(wins.stdout),
     wins.ok ? wins.stdout : "wins probe failed — window visibility unproven",
   );
+  // --- P2-112: first boot with a dead daemon degrades, never dead-ends --------
+  // The old journey stranded a first-time user on the pairing wall with a red
+  // "daemon fell" alert for a daemon this machine had never met. Now the
+  // unpaired shell shows the degraded journey: calm first-contact status,
+  // visible auto-retry, reconnect WITH feedback, minimal local data — and
+  // manual pairing one click away.
+  const degraded = run("P2-112: degraded journey rendered on first boot", ["ipc", "!!document.querySelector('.degraded')"], 15_000);
+  if (degraded.ok) check("P2-112: .degraded present", /true/.test(degraded.stdout));
+  const kindEl = run("P2-112: journey kind attribute", ["ipc", "document.querySelector('.degraded')?.getAttribute('data-degraded-kind') ?? ''"], 15_000);
+  if (kindEl.ok) check("P2-112: never-seen daemon reads as first contact", kindEl.stdout.includes("first-contact"), kindEl.stdout);
+  const noRed = run("P2-112: accusatory red banner absent on first contact", ["ipc", "!!document.querySelector('.daemon-down')"], 15_000);
+  if (noRed.ok) check("P2-112: .daemon-down not rendered for a never-seen daemon", /false/.test(noRed.stdout));
+  const calmTitle = run("P2-112: first-contact status copy", ["ipc", "document.querySelector('.degraded-status h2')?.textContent ?? ''"], 15_000);
+  if (calmTitle.ok) {
+    check(
+      "P2-112: non-accusatory first-contact title (en|pt)",
+      /Conectando pela primeira vez|Connecting for the first time/.test(calmTitle.stdout),
+      calmTitle.stdout,
+    );
+  }
+  const retryLine = run("P2-112: auto-retry line copy", ["ipc", "document.querySelector('.degraded-retry')?.textContent ?? ''"], 15_000);
+  if (retryLine.ok) {
+    check(
+      "P2-112: visible auto-retry indicator (en|pt)",
+      /Tentando sozinho|Retrying automatically/.test(retryLine.stdout),
+      retryLine.stdout,
+    );
+  }
+  run("P2-112: calm status really visible on screen", ["see", "Conectando pela primeira vez"], 15_000);
+  const dshot1440 = join(shotsDir, "P2-112-firstboot-degraded.png");
+  const dshot390 = join(shotsDir, "P2-112-firstboot-degraded-390.png");
+  const d1 = run("P2-112: 1440x900 degraded-journey shot", ["shot", dshot1440, "1440", "900"], 15_000);
+  if (d1.ok) check("P2-112: 1440x900 shot is a real PNG", pngSize(dshot1440).join("x") === "1440x900");
+  const d2 = run("P2-112: 390 degraded-journey shot", ["shot", dshot390, "390", "844"], 15_000);
+  if (d2.ok) check("P2-112: 390 shot is a real PNG", pngSize(dshot390)[0] === 390);
+  const reconnBtn = run("P2-112: reconnect button in the degraded view", ["ipc", "!!document.querySelector('.degraded-reconnect-btn')"], 15_000);
+  if (reconnBtn.ok) check("P2-112: reconnect button present", /true/.test(reconnBtn.stdout));
+
+  // "Reconnect now" must give real feedback: trying state (spinner, ≥2s) and
+  // then a result toast. Hermetically the restart is an honest no-op (no
+  // sidecar entry to restart), so the toast reports the failure.
+  run("P2-112: click Reconnect now", ["click", ".degraded-reconnect-btn"], 15_000);
+  await waitProbe(
+    "P2-112: result toast appears after the trying state",
+    "!!document.querySelector('.ocr-toast')",
+    (v) => /true/.test(v),
+    cliEnv,
+    12,
+    500,
+  );
+  const toastCopy = run("P2-112: toast copy", ["ipc", "document.querySelector('.ocr-toast')?.textContent ?? ''"], 15_000);
+  if (toastCopy.ok) {
+    check(
+      "P2-112: honest result toast (en|pt)",
+      /Não deu pra reiniciar o daemon|Could not restart the daemon/.test(toastCopy.stdout),
+      toastCopy.stdout,
+    );
+  }
+  // The toast floats above the bottom of the card — let it auto-dismiss
+  // (4s) before clicking the escape hatch underneath.
+  await waitProbe(
+    "P2-112: toast auto-dismisses",
+    "!!document.querySelector('.ocr-toast')",
+    (v) => /false/.test(v),
+    cliEnv,
+    10,
+    500,
+  );
+  run("P2-112: manual pairing escape hatch", ["click", ".degraded-manual"], 15_000);
+
   run("type invalid pairing code", ["type", "textarea", "opencode-remote://not-a-valid-code"], 15_000);
   // P2-049: the pairing screen copy moved into the i18n dictionary — on a
   // pt-BR host the button reads "Parear", so the old text="Pair" click broke
@@ -357,13 +430,10 @@ try {
     // is "down" — never the null state a previous gate race-depended on.
     check("pairingState is the deterministic daemon-down object", daemonDown === true);
   }
-  // P1-053: the daemon-down banner carries the one-click recovery button
-  // (wired to app:reconnectDaemon → restartDaemon) instead of "reopen the app".
-  // Copy follows the machine locale (pt-BR on the gate host); the DOM query
-  // via ipc is the locale-proof version of the same assertion.
-  const btn = run("reconnect button present in the daemon-down banner", ["ipc", "!!document.querySelector('.daemon-reconnect-btn')"], 15_000);
-  if (btn.ok) check("reconnect button renders the pt-BR copy", /true/.test(btn.stdout));
-  run("daemon-down banner shows the reconnect button", ["see", "Reconectar agora"], 15_000);
+  // P1-053/P2-112: the one-click recovery button (app:reconnectDaemon →
+  // restartDaemon) now lives in the degraded journey's status card — asserted
+  // in the P2-112 block above, while that view is on screen (before the
+  // manual-pairing hatch click).
 
   // --- P1-070: the new local-first copy is visible with no daemon at all ------
   // Reviewer gap (round 1): the new i18n copy must be exercised here, not only
@@ -429,8 +499,9 @@ try {
   await testWebviewPane();
 
   // --- P1-053: the "reconnecting…" hermetic state (second launch) --------------
-  // An ADOPTED daemon going missing is never terminal: the yellow banner shows
-  // an active reconnecting state with the attempt counter and NO QR overlay.
+  // An ADOPTED daemon going missing is never terminal. P2-112: the status now
+  // lives in the degraded journey card (title carries the attempt counter) —
+  // still an active, recoverable state, NO QR overlay, no re-pairing.
   // Recorded as evidence shots (1440x900 desktop + 390 mobile) in the builder
   // shots dir per the spec.
   const reconnEnv = {
@@ -438,7 +509,6 @@ try {
     OCR_DESKTOP_SESSION: `${session}-reconn`,
     OCR_DAEMON_FORCE_RECONNECTING: "1",
   };
-  const shotsDir = join(homedir(), ".opencode-remote", "pilot", "shots", "builder");
   const shot1440 = join(shotsDir, "P1-053-reconnecting.png");
   const shot390 = join(shotsDir, "P1-053-reconnecting-390.png");
   let reconnBooted = false;
@@ -446,11 +516,19 @@ try {
     const reconnOpen = run("reconnect: open (hermetic launch)", ["open"], 45_000, reconnEnv);
     reconnBooted = reconnOpen.ok;
     if (reconnOpen.ok) {
-      // Locale-proof: the yellow banner element itself (class from index.css).
-      const dom = run("reconnect: .daemon-reconnecting banner rendered", ["ipc", "!!document.querySelector('.daemon-reconnecting')"], 15_000, reconnEnv);
-      if (dom.ok) check("reconnect: banner element present", /true/.test(dom.stdout));
+      // Locale-proof: the journey card's data attribute (class from App.tsx).
+      const dom = run("reconnect: degraded journey carries the reconnecting status", ["ipc", "document.querySelector('.degraded')?.getAttribute('data-degraded-kind') ?? ''"], 15_000, reconnEnv);
+      if (dom.ok) check("reconnect: reconnecting kind on the journey card", dom.stdout.includes("reconnecting"), dom.stdout);
+      const title = run("reconnect: status title copy", ["ipc", "document.querySelector('.degraded-status h2')?.textContent ?? ''"], 15_000, reconnEnv);
+      if (title.ok) {
+        check(
+          "reconnect: attempt counter in the status title (en|pt)",
+          /Reconectando ao daemon|Reconnecting to daemon/.test(title.stdout) && /\(\d+\)/.test(title.stdout),
+          title.stdout,
+        );
+      }
       // Machine locale is pt-BR; `see` is the real visible-text check.
-      run("reconnect: yellow banner text visible", ["see", "Reconectando ao daemon"], 15_000, reconnEnv);
+      run("reconnect: status text visible", ["see", "Reconectando ao daemon"], 15_000, reconnEnv);
       const reconnState = run("reconnect: IPC app:pairingState", ["ipc", "window.ocrDesktop.getPairingState()"], 15_000, reconnEnv);
       if (reconnState.ok) {
         let parsed: { reconnecting?: boolean; reconnectAttempts?: number; uri?: string | null; qrDataUrl?: string | null } | null = null;

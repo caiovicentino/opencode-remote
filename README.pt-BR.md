@@ -114,6 +114,13 @@ remoto, zero confiança**.
   ligados, `nodeIntegration` desligado, popups desligados), com barra de URL editável, reload
   e botão maximizar (~80% de largura). O modo screenshot via Playwright (`/api/browse`) segue
   como fallback no PWA e como superfície de browse dos reviewers (`tools/browse.mjs`)
+- **Primeiro boot degradado (P2-112)** — com o daemon local inacessível no primeiro
+  contato, o app não trava mais no pareamento: um cartão calmo ("Conectando pela
+  primeira vez…" — nunca um alerta vermelho de "daemon caiu" pra um daemon nunca
+  visto) explica que conversas, arquivos e artifacts sincronizam quando o daemon
+  responder, mostra o retry automático visível, mantém os dados locais (idioma, tema)
+  funcionando, dá feedback real no "Reconectar agora" (spinner + toast) e deixa o
+  pareamento manual a um clique
 - **Auto-preview** — quando o agent menciona uma URL `http(s)://localhost:<porta>` /
   `127.0.0.1:<porta>` na resposta, o daemon emite um evento sintético `ocr.preview`
   (parse determinístico de URL, dedupe por sessão por 10 minutos) e o app desktop abre o

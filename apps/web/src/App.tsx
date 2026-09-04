@@ -37,6 +37,9 @@ import { previewFromEvent } from "./lib/preview";
 import type { ArtifactMeta } from "./lib/artifacts";
 import MissionControlView, { type DaemonApiFn } from "./components/MissionControlView";
 import CommandPalette from "./components/CommandPalette";
+import DegradedView from "./components/DegradedView";
+import ReconnectButton from "./components/ReconnectButton";
+import { degradedKind, sawHealthyDaemon } from "./lib/degraded";
 import {
   IconChat,
   IconFolder,
@@ -49,6 +52,10 @@ import {
 type Phase = "unpaired" | "connecting" | "paired" | "error";
 
 type TabId = "sessions" | "files" | "settings";
+
+/** P2-112: once a live daemon answered on this machine, a later outage is an
+ * incident (red banner); before that, every outage is a first contact. */
+const DAEMON_SEEN_KEY = "ocr_daemon_seen";
 
 /** Mirrors apps/desktop/src/preload.ts PairingState (kept in sync by tests). */
 interface PairingState {
@@ -205,6 +212,25 @@ export default function App() {
   useEffect(() => {
     pairingStateRef.current = pairingState;
   }, [pairingState]);
+
+  // P2-112: has this machine ever met a live daemon? Stamped only AFTER a
+  // healthy observation lands (paired phase, healthy poll, mismatch verdict
+  // or a proved local auto-connect) — never optimistically, so a first boot
+  // with a dead daemon keeps the calm first-contact copy instead of an
+  // accusatory "daemon fell" alert.
+  const [everSeen, setEverSeen] = useState(() => localStorage.getItem(DAEMON_SEEN_KEY) === "1");
+  useEffect(() => {
+    if (phase !== "paired" && !sawHealthyDaemon(pairingState)) return;
+    if (localStorage.getItem(DAEMON_SEEN_KEY) !== "1") localStorage.setItem(DAEMON_SEEN_KEY, "1");
+    setEverSeen(true);
+  }, [phase, pairingState]);
+
+  // P2-112: the degraded first-boot journey replaces the pairing screen in the
+  // desktop shell; this flag is the explicit escape hatch into manual pairing.
+  const [pairManual, setPairManual] = useState(false);
+  useEffect(() => {
+    if (phase === "paired") setPairManual(false);
+  }, [phase]);
   useEffect(() => {
     const bridge = desktopBridge();
     if (!bridge?.getPairingState) return;
@@ -660,41 +686,37 @@ export default function App() {
   // state (yellow) with the attempt counter instead. P3-054: a healthy daemon
   // that is OLDER than the shell (or a different major) gets the non-blocking
   // mismatch banner — same recovery button, daemon keeps working meanwhile.
-  const reconnecting = !!pairingState?.reconnecting;
-  const daemonDown = !!pairingState?.daemonDown;
+  // P2-112: the banner kinds that belong to the unpaired journey (down,
+  // reconnecting, first contact) render inside the DegradedView status card
+  // instead of a fixed strip — one status surface, never two copies of the
+  // same sentence. Only the info-only mismatch banner still floats above it.
+  const kind = degradedKind(pairingState, everSeen);
   const versionMismatch = !!pairingState?.versionMismatch && !!pairingState?.daemonVersion;
-  const banner = reconnecting ? (
-    <div className="daemon-reconnecting" role="status">
-      ⟳ {t("reconnecting", { n: pairingState?.reconnectAttempts ?? 0 })}
-    </div>
-  ) : daemonDown ? (
-    <div className="daemon-down" role="alert">
-      ⚠︎ {t("daemonDown")}{" "}
-      {desktopBridge()?.reconnectDaemon && (
-        <button
-          className="daemon-reconnect-btn"
-          onClick={() => void desktopBridge()?.reconnectDaemon?.()}
-        >
-          {t("reconnectNow")}
-        </button>
-      )}
-    </div>
-  ) : versionMismatch ? (
+  const reconnectBtn = desktopBridge()?.reconnectDaemon
+    ? () => desktopBridge()!.reconnectDaemon!()
+    : undefined;
+  const mismatchBanner = versionMismatch ? (
     <div className="daemon-version-mismatch" role="status">
       {t("daemonMismatch", {
         d: pairingState?.daemonVersion ?? "?",
         a: pairingState?.appVersion ?? "?",
       })}{" "}
-      {desktopBridge()?.reconnectDaemon && (
-        <button
-          className="daemon-reconnect-btn"
-          onClick={() => void desktopBridge()?.reconnectDaemon?.()}
-        >
-          {t("reconnectNow")}
-        </button>
-      )}
+      {reconnectBtn && <ReconnectButton reconnect={reconnectBtn} />}
     </div>
   ) : null;
+  const banner =
+    kind === "reconnecting" ? (
+      <div className="daemon-reconnecting" role="status">
+        ⟳ {t("reconnecting", { n: pairingState?.reconnectAttempts ?? 0 })}
+      </div>
+    ) : kind === "down" ? (
+      <div className="daemon-down" role="alert">
+        ⚠︎ {t("daemonDown")}{" "}
+        {reconnectBtn && <ReconnectButton reconnect={reconnectBtn} />}
+      </div>
+    ) : (
+      mismatchBanner
+    );
 
   if (addingMachine) {
     return (
@@ -723,30 +745,51 @@ export default function App() {
   }
 
   if (phase !== "paired") {
+    // P2-112: in the desktop shell the unpaired screen is the degraded journey
+    // (calm status + visible auto-retry + minimal local data) — never a
+    // dead-end pairing wall. Only for a genuine first boot (nothing stored):
+    // a user with a stored pairing keeps the classic screen with its error
+    // detail and the status banners. The PWA always keeps PairingView (there
+    // is no shell status to degrade on).
+    const degraded =
+      !!desktopBridge() && !pairManual && pairingState?.mode !== "remote" && !loadState();
     return (
-      <div className={banner ? "pair-wrap has-daemon-down" : "pair-wrap"} data-phase={phase}>
-        {banner}
+      <div
+        className={(degraded ? mismatchBanner : banner) ? "pair-wrap has-daemon-down" : "pair-wrap"}
+        data-phase={phase}
+      >
+        {degraded ? mismatchBanner : banner}
         {pairingOverlay}
-        <PairingView
-          phase={phase}
-          error={error}
-          onPair={(uri) => {
-            const pairing = parsePairingUri(uri);
-            if (!pairing) {
-              setError(t("invalidCode"));
-              setPhase("error");
-              return;
-            }
-            void connect(pairing, true);
-          }}
-          onRetry={() => {
-            const stored = loadState();
-            if (stored) void connect(stored.pairing, false);
-            else setPhase("unpaired");
-          }}
-          onPairRemote={desktopBridge()?.setRemotePairing ? () => void desktopBridge()?.setRemotePairing?.(true) : undefined}
-          localMode={pairingState?.mode === "local"}
-        />
+        {degraded ? (
+          <DegradedView
+            kind={kind}
+            busy={phase === "connecting"}
+            reconnectAttempts={pairingState?.reconnectAttempts}
+            reconnect={reconnectBtn}
+            onPairManually={() => setPairManual(true)}
+          />
+        ) : (
+          <PairingView
+            phase={phase}
+            error={error}
+            onPair={(uri) => {
+              const pairing = parsePairingUri(uri);
+              if (!pairing) {
+                setError(t("invalidCode"));
+                setPhase("error");
+                return;
+              }
+              void connect(pairing, true);
+            }}
+            onRetry={() => {
+              const stored = loadState();
+              if (stored) void connect(stored.pairing, false);
+              else setPhase("unpaired");
+            }}
+            onPairRemote={desktopBridge()?.setRemotePairing ? () => void desktopBridge()?.setRemotePairing?.(true) : undefined}
+            localMode={pairingState?.mode === "local"}
+          />
+        )}
       </div>
     );
   }

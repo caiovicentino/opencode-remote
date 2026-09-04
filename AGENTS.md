@@ -203,7 +203,11 @@ evidências — duas 1440x900 com `prefers-reduced-motion` off/on e uma 390x844
 global zera toda animação (`animation-name` computado vira `none`); a UI
 usa animações 150–300ms ease-out (slide-in/out do painel de artifact com
 backdrop, entrada de mensagens, hover da sidebar, transições de pane) e
-NADA anima em dados tabulares/auditoria (Mission Control/CSV); use
+NADA anima em dados tabulares/auditoria (Mission Control/CSV); P2-112
+adicionou a jornada degradada do primeiro boot sem daemon (card de status
+calmo "conectando pela primeira vez…" no lugar do alerta vermelho, retry
+automático visível, feedback real do "Reconectar agora" com spinner+toast e
+o hatch de pareamento manual); use
 `OCR_DESKTOP_SESSION` próprio para não colidir
 com a sessão de outro processo. P1-081: com `OCR_DESKTOP_SESSION` setado o app
 NÃO mostra janela (`showMainWindow` no-op + `paintWhenInitiallyHidden`, interação

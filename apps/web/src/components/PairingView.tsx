@@ -34,34 +34,44 @@ export default function PairingView({ phase, error, onPair, onRetry, onPairRemot
     );
   }
 
+  // P2-112: in local mode the intro promises automatic pairing — showing the
+  // full scan/paste ceremony right below contradicted it. The manual widgets
+  // stay available for the explicit remote ceremony (pairRemote entry), not
+  // as a first-contact dead weight.
+  const ceremony = !localMode;
+
   return (
     <div className="screen">
       <header>
         <h1 style={{ fontSize: "1rem", margin: 0 }}>OpenCode Remote</h1>
       </header>
       <p className="muted pair-intro">{t("pairIntro")}</p>
-      <button
-        className="primary"
-        disabled={busy}
-        onClick={() => setScanning(true)}
-      >
-        {t("scanQr")}
-      </button>
-      <p className="muted" style={{ alignSelf: "center" }}>{t("orPaste")}</p>
-      <textarea
-        rows={4}
-        placeholder="opencode-remote://pair?v=2&relay=…"
-        value={code}
-        onChange={(e) => setCode(e.target.value)}
-        disabled={busy}
-      />
-      <button
-        className="pair-submit"
-        disabled={busy || !code.trim()}
-        onClick={() => onPair(code)}
-      >
-        {busy ? (localMode ? t("localConnecting") : t("connecting")) : t("pairBtn")}
-      </button>
+      {ceremony && (
+        <>
+          <button
+            className="primary"
+            disabled={busy}
+            onClick={() => setScanning(true)}
+          >
+            {t("scanQr")}
+          </button>
+          <p className="muted" style={{ alignSelf: "center" }}>{t("orPaste")}</p>
+          <textarea
+            rows={4}
+            placeholder="opencode-remote://pair?v=2&relay=…"
+            value={code}
+            onChange={(e) => setCode(e.target.value)}
+            disabled={busy}
+          />
+          <button
+            className="pair-submit"
+            disabled={busy || !code.trim()}
+            onClick={() => onPair(code)}
+          >
+            {busy ? (localMode ? t("localConnecting") : t("connecting")) : t("pairBtn")}
+          </button>
+        </>
+      )}
       {phase === "error" && (
         <>
           <p className="pair-error" style={{ color: "var(--danger)" }}>{error}</p>
