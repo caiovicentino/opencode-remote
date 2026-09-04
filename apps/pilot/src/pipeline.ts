@@ -2352,7 +2352,17 @@ async function mergeTask(
     `gh pr create --head pilot/${t.id} --title ${JSON.stringify(title)} --body ${JSON.stringify("Autonomous pipeline merge — gatekeeper green (typecheck, build, reconnect, integration, invariants, download).")}`,
     { cwd: ws, timeoutMin: 5, allowFail: true },
   );
-  if (pr.ok) {
+  // Operator-merge races and transient gh/API failures can leave the PR already
+  // open from a previous cycle — reuse it instead of failing forever.
+  let prReady = pr.ok;
+  if (!prReady) {
+    const existing = exec(
+      `gh pr list --head pilot/${t.id} --state open --json number --jq length`,
+      { cwd: ws, timeoutMin: 1, allowFail: true },
+    );
+    prReady = existing.ok && existing.output.trim().startsWith("1");
+  }
+  if (prReady) {
     const merge = exec("gh pr merge --squash --delete-branch --auto || gh pr merge --squash --delete-branch", {
       cwd: ws,
       timeoutMin: 5,
