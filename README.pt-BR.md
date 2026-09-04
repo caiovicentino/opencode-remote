@@ -220,7 +220,10 @@ Certificado**; abra `https://<LAN_IP>:5173` no Safari → **Adicionar à Tela de
 Início** → escaneie o QR. Sem os overrides `PWA_*`/`RELAY_TLS_*` vale o layout
 tailscale padrão — **mas um clone novo não tem `.certs/`**: sem certificados
 gerados o relay sobe em ws puro na 8788, então use `RELAY_URL="ws://$LAN_IP:8788"`
-e deixe de fora `PWA_TLS_*`/`NODE_EXTRA_CA_CERTS` também. Portas e certificados
+e deixe de fora `PWA_TLS_*`/`NODE_EXTRA_CA_CERTS` também. `RELAY_TLS_CERT`/`RELAY_TLS_KEY`
+são um par obrigatório: defina os dois para terminação `wss://` direta ou nenhum —
+definir só um, valor em branco ou arquivo ilegível faz o relay recusar o boot
+(exit 1) em vez de servir `ws://` puro sem avisar. Portas e certificados
 são variáveis de ambiente. O serviço do pilot segue a mesma regra:
 `deploy/install-pilot.sh` não tem hostname fixo — defina `RELAY_URL` (e
 `NODE_EXTRA_CA_CERTS` para wss com CA local; na reinstalação os dois são
