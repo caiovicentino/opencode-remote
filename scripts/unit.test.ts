@@ -9,6 +9,8 @@ import { b64, fromB64, seal, openSealed, seqAad } from "@ocr/protocol";
 import { mergeConflictBlock } from "../apps/pilot/src/pipeline";
 import { parsePairingUri, localWsUrl, shouldFailoverToRelay } from "../apps/web/src/lib/client";
 import { isLoopbackAddr, localOriginAllowed, localUpgradeAllowed } from "../apps/daemon/src/localws";
+import { classifyRelayClose, effectiveRetryDelayMs } from "../apps/daemon/src/relayclose";
+import { createRelayRetry } from "../apps/daemon/src/relayretry";
 import { parseRelayUrl, redactRelayUrl } from "../apps/daemon/src/relayurl";
 import { classifyUpstream, UPSTREAM_PROBE_TIMEOUT_MS } from "../apps/daemon/src/upstream";
 import { opencodeCandidates, pickOpencodeBinary } from "../apps/daemon/src/opencodebin";
@@ -8548,6 +8550,77 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "P2-154: only the failing side is blamed when one file is unreadable",
     halfUnreadable.problems.length === 1 && halfUnreadable.problems[0]!.includes("RELAY_TLS_CERT"),
   );
+}
+
+// --- P2-156: relay close-code triage (pure classifier + floor/max rule) ------
+
+{
+  // 1. the five kinds with the exact codes/reasons apps/relay/src emits
+  const busy = classifyRelayClose(1013, "server busy");
+  const tooMany = classifyRelayClose(1013, "too many connections");
+  const roomFull = classifyRelayClose(1013, "room full");
+  check(
+    "P2-156: all three 1013 reasons classify as capacity",
+    busy.kind === "capacity" && tooMany.kind === "capacity" && roomFull.kind === "capacity",
+  );
+  check("P2-156: 4029 rate limited classifies as rate-limited", classifyRelayClose(4029, "rate limited").kind === "rate-limited");
+  check("P2-156: 1001 shutdown classifies as draining", classifyRelayClose(1001, "server shutting down").kind === "draining");
+  check("P2-156: 1000 classifies as normal", classifyRelayClose(1000, "").kind === "normal");
+  check("P2-156: 1006 abrupt drop classifies as transient", classifyRelayClose(1006, "").kind === "transient");
+
+  // 2. reason is corroboration only: empty/unknown still classify by code
+  check("P2-156: 1013 with empty reason falls to capacity by code", classifyRelayClose(1013, "").kind === "capacity");
+  check("P2-156: 1013 with unknown reason falls to capacity by code", classifyRelayClose(1013, "some other reason").kind === "capacity");
+  check("P2-156: 4029 with empty reason falls to rate-limited by code", classifyRelayClose(4029, "").kind === "rate-limited");
+  check("P2-156: 1001 with unknown reason falls to draining by code", classifyRelayClose(1001, "whatever").kind === "draining");
+  check("P2-156: unknown code with any reason falls to transient", classifyRelayClose(4321, "server busy").kind === "transient");
+
+  // 3. undefined code (abnormal death, no close frame) → transient
+  check("P2-156: undefined code is transient", classifyRelayClose(undefined, "").kind === "transient");
+  check("P2-156: undefined code has zero floor", classifyRelayClose(undefined).floorMs === 0);
+
+  // 4. per-kind floors
+  check(
+    "P2-156: floors are 30s capacity / 60s rate-limited / 0 others",
+    classifyRelayClose(1013).floorMs === 30_000 &&
+      classifyRelayClose(4029).floorMs === 60_000 &&
+      classifyRelayClose(1001).floorMs === 0 &&
+      classifyRelayClose(1000).floorMs === 0 &&
+      classifyRelayClose(1006).floorMs === 0,
+  );
+
+  // 5. hints are pt-BR operator copy: no paths, URLs, tokens or room ids
+  const hints = [1013, 4029, 1001, 1000, 1006, undefined].map((c) => classifyRelayClose(c as number | undefined).hint);
+  check(
+    "P2-156: every kind ships a non-empty hint free of secrets",
+    hints.every((h) => h.length > 0 && !h.includes("/") && !h.includes("ws") && !h.includes("room")),
+  );
+
+  // 6. max(floor, jitter): capacity never re-dials before 30s, transient = P2-129
+  const capacityVerdict = classifyRelayClose(1013);
+  check("P2-156: capacity floor dominates any jittered schedule", effectiveRetryDelayMs(0, capacityVerdict) === 30_000 && effectiveRetryDelayMs(30_000, capacityVerdict) === 30_000 && effectiveRetryDelayMs(120_000, capacityVerdict) === 120_000);
+  const rateVerdict = classifyRelayClose(4029);
+  check("P2-156: rate-limited floor dominates any jittered schedule", effectiveRetryDelayMs(0, rateVerdict) === 60_000 && effectiveRetryDelayMs(60_000, rateVerdict) === 60_000);
+  const transientVerdict = classifyRelayClose(1006);
+  check(
+    "P2-156: transient defers entirely to the jittered P2-129 schedule",
+    effectiveRetryDelayMs(0, transientVerdict) === 0 &&
+      effectiveRetryDelayMs(2_000, transientVerdict) === 2_000 &&
+      effectiveRetryDelayMs(30_000, transientVerdict) === 30_000,
+  );
+  for (const kind of ["draining", "normal"] as const) {
+    const v = classifyRelayClose(kind === "draining" ? 1001 : 1000);
+    check(`P2-156: ${kind} defers entirely to the jittered schedule`, effectiveRetryDelayMs(7_500, v) === 7_500);
+  }
+  // walk the real P2-129 curve with a pinned random: transient delays must be
+  // byte-for-byte what the retry module alone would produce
+  const withFloor = createRelayRetry({ random: () => 0.3 });
+  const pure = createRelayRetry({ random: () => 0.3 });
+  let identical = true;
+  for (let i = 0; i < 10; i++) {
+    identical &&= effectiveRetryDelayMs(withFloor.schedule(), transientVerdict) === pure.schedule();
+  }
+  check("P2-156: 10 retries under transient match the bare P2-129 curve", identical);
 }
 
 if (failures > 0) {

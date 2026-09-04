@@ -290,6 +290,17 @@ host não-loopback é recusado — URL inválida desativa a conexão com o relay
 do relay e segue funcionando. Runbook:
 [docs/RELAY-HOSTING.md](docs/RELAY-HOSTING.md).
 
+**Reconexão guiada pelo código de fechamento (P2-156)**: quando o socket do
+relay fecha, o daemon classifica o código em vez de tratar qualquer queda como
+problema de rede. `1013` (server busy / too many connections / room full) o
+relay está lotado e o tempo de reconexão passa a valer no mínimo 30s; `4029`
+(rate limited) no mínimo 60s; `1001` (desligamento) e `1000` reconectam pelo
+cronograma normal; qualquer outro código (incluída a queda abrupta 1006)
+mantém a curva com jitter da P2-129 intocada. O veredito aparece nos campos
+aditivos `closeCode`/`closeKind` na linha de log `relay connection lost` e como
+`lastClose: { code, kind }` dentro do objeto `relayRetry` do `/api/health` —
+a reason bruta nunca é exposta.
+
 ## CLI
 
 ```bash
