@@ -15,7 +15,7 @@ import { mimeFor } from "../apps/web/src/lib/files";
 import { timeAgo, sessionUpdatedTs } from "../apps/web/src/lib/time";
 import { sessionTitleOf } from "../apps/web/src/lib/title";
 import { dict, translate } from "../apps/web/src/lib/i18n";
-import { degradedKind, sawHealthyDaemon, upstreamNotice, type UpstreamHealth } from "../apps/web/src/lib/degraded";
+import { degradedKind, sawHealthyDaemon, sidecarExitNotice, upstreamNotice, type SidecarExitHealth, type UpstreamHealth } from "../apps/web/src/lib/degraded";
 import { permissionPreview } from "../apps/web/src/lib/permission";
 import { applySessionFilters, isPilotTitle, splitPilotSessions } from "../apps/web/src/lib/sessionFilter";
 import { initialUnreadState, reduceUnread } from "../apps/web/src/lib/unread";
@@ -250,6 +250,7 @@ import {
 } from "../apps/pilot/src/deployguard";
 import type { PilotConfig } from "../apps/pilot/src/state";
 import { overlayVisible, phonePaired, localPairing } from "../apps/desktop/src/pairing";
+import { classifySidecarExit } from "../apps/desktop/src/sidecarexit";
 import { versionMismatch } from "../apps/desktop/src/versions";
 import { daemonTooltip, loginItemSupported, logsDirPath, openLogsFolder, trayIconSource } from "../apps/desktop/src/tray";
 import { updateMenuLabel } from "../apps/desktop/src/update";
@@ -7431,6 +7432,101 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     (["en", "pt"] as const).every((lang) => {
       const s = dict[lang][k];
       return !s.includes("<") && !s.includes(">") && !s.includes("`") && !s.includes("{") && !s.includes("}");
+    }),
+  ));
+}
+
+// --- P2-140: sidecar exit classifier (pure, no electron/child_process) --------
+
+{
+  // The five kinds the spec names, driven by the exact shapes the shell feeds
+  // in (exit code + signal + bounded stderr tail).
+  check("P2-140: EADDRINUSE in stderr classifies as port-busy with actionable hint", (() => {
+    const v = classifySidecarExit({ code: 1, signal: null, stderrTail: "Error: listen EADDRINUSE: address already in use 127.0.0.1:8792" });
+    return v.kind === "port-busy" && v.reason.length > 0 && v.hint.length > 0;
+  })());
+  check("P2-140: ENOENT in stderr classifies as entry-missing", (() => {
+    const v = classifySidecarExit({ code: 1, signal: null, stderrTail: "ErrorCode=ENOENT, syscall=spawn" });
+    return v.kind === "entry-missing" && v.hint.length > 0;
+  })());
+  check("P2-140: SIGKILL exit (null code) classifies as killed", (() => {
+    const v = classifySidecarExit({ code: null, signal: "SIGKILL", stderrTail: "" });
+    return v.kind === "killed" && v.reason.length > 0 && v.hint.length > 0;
+  })());
+  check("P2-140: empty stderr with a nonzero code classifies as unknown", (() => {
+    const v = classifySidecarExit({ code: 1, signal: null, stderrTail: "" });
+    return v.kind === "unknown" && v.reason.length > 0 && v.hint.length > 0;
+  })());
+  check("P2-140: code zero without an intentional stop also classifies as unknown", (() => {
+    const v = classifySidecarExit({ code: 0, signal: null, stderrTail: "" });
+    return v.kind === "unknown";
+  })());
+  check("P2-140: nonzero code with marker-free stderr classifies as runtime-error", (() => {
+    const v = classifySidecarExit({ code: 1, signal: null, stderrTail: "TypeError: foo is not a function" });
+    return v.kind === "runtime-error" && v.hint.length > 0;
+  })());
+  // A busy port stays the story even when the child was killed afterwards —
+  // the port verdict is the actionable one.
+  check("P2-140: port-busy marker wins over a later kill signal", (() => {
+    const v = classifySidecarExit({ code: null, signal: "SIGKILL", stderrTail: "EADDRINUSE" });
+    return v.kind === "port-busy";
+  })());
+  check("P2-140: stderr tail is only searched, never echoed (static copy, no secrets)", (() => {
+    const secret = "apiToken=super-secret-9f8e7d6c";
+    const v = classifySidecarExit({ code: 1, signal: null, stderrTail: `${secret}\nEADDRINUSE` });
+    return !v.reason.includes(secret) && !v.hint.includes(secret) && !v.reason.includes("/") && !v.hint.includes("/");
+  })());
+  check("P2-140: classifier output is deterministic for identical inputs", (() => {
+    const a = classifySidecarExit({ code: 1, signal: null, stderrTail: "EADDRINUSE" });
+    const b = classifySidecarExit({ code: 1, signal: null, stderrTail: "EADDRINUSE" });
+    return a.kind === b.kind && a.reason === b.reason && a.hint === b.hint;
+  })());
+
+  // Renderer mapping: kind → i18n keys, tolerant to absent/malformed payloads.
+  const exit = (kind: string): SidecarExitHealth => ({ kind, reason: "motivo", hint: "dica" });
+  check("P2-140: port-busy maps to the port-busy notice", (() => {
+    const n = sidecarExitNotice(exit("port-busy"));
+    return !!n && n.titleKey === "sidecarPortBusyTitle" && n.actionKey === "sidecarPortBusyAction";
+  })());
+  check("P2-140: entry-missing maps to the entry-missing notice", (() => {
+    const n = sidecarExitNotice(exit("entry-missing"));
+    return !!n && n.titleKey === "sidecarEntryMissingTitle" && n.actionKey === "sidecarEntryMissingAction";
+  })());
+  check("P2-140: killed maps to the killed notice", (() => {
+    const n = sidecarExitNotice(exit("killed"));
+    return !!n && n.titleKey === "sidecarKilledTitle" && n.actionKey === "sidecarKilledAction";
+  })());
+  check("P2-140: runtime-error maps to the runtime-error notice", (() => {
+    const n = sidecarExitNotice(exit("runtime-error"));
+    return !!n && n.titleKey === "sidecarRuntimeErrorTitle" && n.actionKey === "sidecarRuntimeErrorAction";
+  })());
+  check("P2-140: unknown maps to the unknown notice", (() => {
+    const n = sidecarExitNotice(exit("unknown"));
+    return !!n && n.titleKey === "sidecarUnknownTitle" && n.actionKey === "sidecarUnknownAction";
+  })());
+  check("P2-140: absent or malformed sidecarExit objects produce no notice", sidecarExitNotice(null) === null && sidecarExitNotice(undefined) === null && sidecarExitNotice({}) === null && sidecarExitNotice({ kind: 42 }) === null);
+
+  // Copy parity: every key resolves in both locales (no raw-key leak).
+  const exitKeys = [
+    "sidecarPortBusyTitle", "sidecarPortBusyAction",
+    "sidecarEntryMissingTitle", "sidecarEntryMissingAction",
+    "sidecarRuntimeErrorTitle", "sidecarRuntimeErrorAction",
+    "sidecarKilledTitle", "sidecarKilledAction",
+    "sidecarUnknownTitle", "sidecarUnknownAction",
+  ];
+  check(
+    "P2-140: exit-warning copy resolves per locale (en + pt) and never leaks the raw key",
+    (["en", "pt"] as const).every((lang) =>
+      exitKeys.every((k) => {
+        const s = translate(lang, k);
+        return !!s && s !== k && dict[lang][k] === s;
+      }),
+    ),
+  );
+  check("P2-140: exit-warning copy carries no markup, paths or emoji", exitKeys.every((k) =>
+    (["en", "pt"] as const).every((lang) => {
+      const s = dict[lang][k];
+      return !s.includes("<") && !s.includes(">") && !s.includes("{") && !s.includes("}") && !s.includes("/") && !/\p{Extended_Pictographic}/u.test(s);
     }),
   ));
 }

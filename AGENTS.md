@@ -176,7 +176,7 @@ Desktop app: para interagir com o app Electron real use o harness
 `tools/desktop.mjs` (`open/see/click/type/shot/ipc/close`, mesma DX do
 browse.mjs) — launch hermético, sem daemon de produção. Quando o diff toca
 `apps/desktop/` ou `apps/web/`, o gate roda `npm run test:desktop-flow` (fluxo
-de interação real, <225s — P1-070 adicionou o bloco "local boot" com daemon
+de interação real, <240s — P1-070 adicionou o bloco "local boot" com daemon
 hermético real; P1-080 adicionou o repro de overflow do chat: bolha com diff
 longo em janela estreita, nada pode sair do viewport; P1-089 adicionou o beat
 queue→flush→reentrada com segundo boot hermético contra um fake de opencode:
@@ -217,7 +217,13 @@ seletor de máquina); P2-112
 adicionou a jornada degradada do primeiro boot sem daemon (card de status
 calmo "conectando pela primeira vez…" no lugar do alerta vermelho, retry
 automático visível, feedback real do "Reconectar agora" com spinner+toast e
-o hatch de pareamento manual); use
+o hatch de pareamento manual); P2-140 adicionou ao mesmo card calmo o
+porquê da morte do daemon local (classificador puro `sidecarexit.ts`
+recebe code/signal/cauda de stderr, veredito port-busy/entry-missing/
+runtime-error/killed/unknown via `sidecarExit` no `ocr:pairing-state`,
+copy acionável sem caminhos nem segredos; o harness honra um
+`OCR_DAEMON_ENTRY` real apontado pro script fake que morre com EADDRINUSE);
+use
 `OCR_DESKTOP_SESSION` próprio para não colidir
 com a sessão de outro processo. P1-081: com `OCR_DESKTOP_SESSION` setado o app
 NÃO mostra janela (`showMainWindow` no-op + `paintWhenInitiallyHidden`, interação

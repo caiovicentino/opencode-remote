@@ -50,6 +50,11 @@ export interface PairingState {
   /** P2-138: upstream opencode health detail — optional and additive so a
    * legacy daemon (no field) still renders every existing surface. */
   opencode?: DaemonUpstreamDetail;
+  /** P2-140: why the local daemon sidecar died — P2-140 classifier verdict
+   * (kind port-busy | entry-missing | runtime-error | killed | unknown plus
+   * static reason/hint), set only on the daemon-down states. Optional and
+   * additive: absent before the first unintentional exit. */
+  sidecarExit?: { kind: string; reason: string; hint: string };
 }
 
 contextBridge.exposeInMainWorld("ocrDesktop", {

@@ -12,6 +12,7 @@ import {
   readDaemonState,
   reconnectState,
   restartDaemon,
+  sidecarExitInfo,
   startDaemonSidecar,
   stateFilePath,
   stopDaemonSidecar,
@@ -603,9 +604,19 @@ function withLocalMode(state: PairingState): PairingState {
 }
 
 /** Placeholder state while the sidecar is down for good (P2-017): no QR (the
- * old room/keys are dead with the daemon), just the "daemon down" flag. */
+ * old room/keys are dead with the daemon), just the "daemon down" flag.
+ * P2-140: carries the exit classifier's verdict so the renderer can say WHY
+ * the daemon died, not only that it gave up. */
 function daemonDownState(): PairingState {
-  return { uri: null, qrDataUrl: null, devices: 0, phonePaired: false, daemonDown: true };
+  const exit = sidecarExitInfo();
+  return {
+    uri: null,
+    qrDataUrl: null,
+    devices: 0,
+    phonePaired: false,
+    daemonDown: true,
+    sidecarExit: exit ? { kind: exit.kind, reason: exit.reason, hint: exit.hint } : undefined,
+  };
 }
 
 /** P1-053: adopted daemon (reused launchd/CLI install) lost mid-run — the

@@ -219,6 +219,20 @@ export const dict = {
     upstreamUnhealthyAction: "Restart opencode on this machine and check the server version.",
     upstreamHelpAction: "Open setup help",
     upstreamHelpTitle: "Agent server help",
+    // P2-140: why the local daemon died — inside the same calm degraded card.
+    // Honest, actionable, one surface; no paths, tokens or secrets in copy.
+    sidecarPortBusyTitle: "Another app took the daemon's port",
+    sidecarPortBusyAction:
+      "Close the program using the daemon's local port (or restart the machine) and reopen the app.",
+    sidecarEntryMissingTitle: "Daemon files are missing",
+    sidecarEntryMissingAction: "Reinstall the app to restore the installation, then reopen it.",
+    sidecarRuntimeErrorTitle: "The daemon failed to start",
+    sidecarRuntimeErrorAction: "Reopen the app; if it persists, send the diagnostic from Settings → Help.",
+    sidecarKilledTitle: "The system shut the daemon down",
+    sidecarKilledAction:
+      "Reopen the app — it reconnects by itself; if this keeps happening, close other heavy programs.",
+    sidecarUnknownTitle: "The daemon exited unexpectedly",
+    sidecarUnknownAction: "Reopen the app; if it persists, send the diagnostic from Settings → Help.",
     reconnectTrying: "Trying…",
     reconnectStarted: "Daemon restart started — the app reconnects on its own.",
     reconnectFailed: "Could not restart the daemon — try again in a moment.",
@@ -510,6 +524,19 @@ export const dict = {
     upstreamUnhealthyAction: "Reinicie o opencode nesta máquina e confira a versão do servidor.",
     upstreamHelpAction: "Abrir ajuda da configuração",
     upstreamHelpTitle: "Ajuda do servidor de agente",
+    // P2-140: por que o daemon local morreu — dentro do mesmo card calmo.
+    // Tom honesto e acionável, uma superfície só; sem caminhos nem segredos.
+    sidecarPortBusyTitle: "Outro programa ocupou a porta do daemon",
+    sidecarPortBusyAction:
+      "Feche o programa que usa a porta do daemon (ou reinicie a máquina) e reabra o app.",
+    sidecarEntryMissingTitle: "Arquivos do daemon não encontrados",
+    sidecarEntryMissingAction: "Reinstale o aplicativo para restaurar a instalação e reabra.",
+    sidecarRuntimeErrorTitle: "O daemon falhou ao iniciar",
+    sidecarRuntimeErrorAction: "Reabra o app; se persistir, envie o diagnóstico em Configurações → Ajuda.",
+    sidecarKilledTitle: "O sistema encerrou o daemon",
+    sidecarKilledAction: "Reabra o app — ele reconecta sozinho; se repetir, feche outros programas pesados.",
+    sidecarUnknownTitle: "O daemon saiu de forma inesperada",
+    sidecarUnknownAction: "Reabra o app; se persistir, envie o diagnóstico em Configurações → Ajuda.",
     reconnectTrying: "Tentando…",
     reconnectStarted: "Reinício do daemon iniciado — o app reconecta sozinho.",
     reconnectFailed: "Não deu pra reiniciar o daemon agora — tente de novo em instantes.",

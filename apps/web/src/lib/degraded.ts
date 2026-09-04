@@ -81,3 +81,42 @@ export function upstreamNotice(health: UpstreamHealth | null | undefined): Upstr
       return null;
   }
 }
+
+/** P2-140: tolerant view of the shell's `sidecarExit` object (the desktop's
+ * daemon-sidecar exit verdict). Fields are validated, never trusted — absent
+ * before the first unintentional exit. */
+export interface SidecarExitHealth {
+  kind?: unknown;
+  reason?: unknown;
+  hint?: unknown;
+}
+
+/** One sidecar-exit warning: i18n keys for headline + suggested action, so
+ * the copy goes through useT (pt-BR + en) and never includes file paths,
+ * tokens or secrets — the classifier's reason/hint stay in the desktop log.
+ * Rendered ONLY inside the degraded calm card (P2-108 single-surface rule). */
+export interface SidecarExitNotice {
+  titleKey: string;
+  actionKey: string;
+}
+
+/** Map the P2-140 exit kind to a user-facing warning. Returns null for an
+ * absent/malformed object — silence is always safe. All five kinds map to a
+ * notice: the shell only attaches the object when the daemon actually died. */
+export function sidecarExitNotice(exit: SidecarExitHealth | null | undefined): SidecarExitNotice | null {
+  const kind = typeof exit?.kind === "string" ? exit.kind : "";
+  switch (kind) {
+    case "port-busy":
+      return { titleKey: "sidecarPortBusyTitle", actionKey: "sidecarPortBusyAction" };
+    case "entry-missing":
+      return { titleKey: "sidecarEntryMissingTitle", actionKey: "sidecarEntryMissingAction" };
+    case "runtime-error":
+      return { titleKey: "sidecarRuntimeErrorTitle", actionKey: "sidecarRuntimeErrorAction" };
+    case "killed":
+      return { titleKey: "sidecarKilledTitle", actionKey: "sidecarKilledAction" };
+    case "unknown":
+      return { titleKey: "sidecarUnknownTitle", actionKey: "sidecarUnknownAction" };
+    default:
+      return null;
+  }
+}
