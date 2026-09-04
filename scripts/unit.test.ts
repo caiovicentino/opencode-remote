@@ -204,6 +204,7 @@ import {
   DRAIN_MS as RELAY_DRAIN_MS,
   type RelayLog,
 } from "../apps/relay/src/shutdown";
+import { tlsPlan } from "../apps/relay/src/tlsconfig";
 import { touchedUiFromDiff, needsEscalation, parseFindings, verifyFindings, isTaskMergeSha, parseVerdict, reviewerOk, tagUnverified, isBlockingFinding, findingsRepeat } from "../apps/pilot/src/pipeline";
 import { stdlibShadowHits } from "./stdlib-shadow";
 import { latestUiShot, pruneShots } from "../apps/pilot/src/shot";
@@ -8480,6 +8481,72 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P2-153: release-verify declares shell: bash (P2-126 lesson)",
     block.includes("shell: bash"),
+  );
+}
+
+// --- P2-154: relay TLS pair preflight is fail-closed -------------------------
+{
+  // the readable probe is injected, so every scenario below stays pure —
+  // no filesystem, no real paths
+  const readableAll = () => true;
+  const readableNone = () => false;
+
+  const ok = tlsPlan({ RELAY_TLS_CERT: "/certs/relay.pem", RELAY_TLS_KEY: "/certs/relay.key" }, readableAll);
+  check(
+    "P2-154: cert+key defined and readable → mode tls with both paths resolved and zero problems",
+    ok.mode === "tls" && ok.certPath === "/certs/relay.pem" && ok.keyPath === "/certs/relay.key" && ok.problems.length === 0,
+  );
+
+  const plain = tlsPlan({}, readableAll);
+  check(
+    "P2-154: empty env → plain without problems (provider TLS in front is the documented mode)",
+    plain.mode === "plain" && plain.certPath === "" && plain.keyPath === "" && plain.problems.length === 0,
+  );
+
+  const onlyCert = tlsPlan({ RELAY_TLS_CERT: "/certs/relay.pem" }, readableAll);
+  check(
+    "P2-154: only RELAY_TLS_CERT defined is a problem citing the variable",
+    onlyCert.mode !== "tls" && onlyCert.problems.length === 1 && onlyCert.problems[0]!.includes("RELAY_TLS_CERT"),
+  );
+
+  const onlyKey = tlsPlan({ RELAY_TLS_KEY: "/certs/relay.key" }, readableAll);
+  check(
+    "P2-154: only RELAY_TLS_KEY defined is a problem citing the variable",
+    onlyKey.mode !== "tls" && onlyKey.problems.length === 1 && onlyKey.problems[0]!.includes("RELAY_TLS_KEY"),
+  );
+
+  const blankCert = tlsPlan({ RELAY_TLS_CERT: "   ", RELAY_TLS_KEY: "/certs/relay.key" }, readableAll);
+  check(
+    "P2-154: blank RELAY_TLS_CERT value is a problem, never silently ignored",
+    blankCert.mode !== "tls" && blankCert.problems.some((p) => p.includes("RELAY_TLS_CERT")),
+  );
+
+  const blankKey = tlsPlan({ RELAY_TLS_CERT: "/certs/relay.pem", RELAY_TLS_KEY: "" }, readableAll);
+  check(
+    "P2-154: empty-string RELAY_TLS_KEY is a problem too (set-but-blank ≠ absent)",
+    blankKey.mode !== "tls" && blankKey.problems.some((p) => p.includes("RELAY_TLS_KEY")),
+  );
+
+  const unreadable = tlsPlan(
+    { RELAY_TLS_CERT: "/etc/secret/live/relay.pem", RELAY_TLS_KEY: "/etc/secret/live/relay.key" },
+    readableNone,
+  );
+  check(
+    "P2-154: unreadable files are two problems that cite each variable and NEVER leak the path",
+    unreadable.mode !== "tls" &&
+      unreadable.problems.length === 2 &&
+      unreadable.problems.some((p) => p.includes("RELAY_TLS_CERT")) &&
+      unreadable.problems.some((p) => p.includes("RELAY_TLS_KEY")) &&
+      unreadable.problems.every((p) => !p.includes("/etc/secret")),
+  );
+
+  const halfUnreadable = tlsPlan(
+    { RELAY_TLS_CERT: "/etc/secret/live/relay.pem", RELAY_TLS_KEY: "/etc/secret/live/relay.key" },
+    (p) => p.endsWith(".key"),
+  );
+  check(
+    "P2-154: only the failing side is blamed when one file is unreadable",
+    halfUnreadable.problems.length === 1 && halfUnreadable.problems[0]!.includes("RELAY_TLS_CERT"),
   );
 }
 

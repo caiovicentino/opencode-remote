@@ -222,7 +222,10 @@ scan the QR. Omit the `PWA_*`/`RELAY_TLS_*` overrides to keep the default
 tailscale layout — **but note that a fresh clone has no `.certs/`**: without
 generated certificates the relay installs plain-ws on 8788, so pair it with
 `RELAY_URL="ws://$LAN_IP:8788"` and leave the `PWA_TLS_*`/`NODE_EXTRA_CA_CERTS`
-vars out too. Every port and cert path is an environment variable
+vars out too. `RELAY_TLS_CERT`/`RELAY_TLS_KEY` are a mandatory pair: set both
+for direct `wss://` termination or neither — setting only one, leaving a
+blank value, or pointing at an unreadable file makes the relay refuse to boot
+(exit 1) instead of silently serving plain `ws://`. Every port and cert path is an environment variable
 (`RELAY_PORT`, `PWA_PORT`, `PWA_HOST`…). The autonomous pilot service follows
 the same rule: `deploy/install-pilot.sh` has no hardcoded hostname — set
 `RELAY_URL` in the environment (re-installs without it keep the value already
@@ -324,7 +327,12 @@ ceilings (`RELAY_MAX_SOCKETS`, `RELAY_MAX_PER_ROOM`, `RELAY_MAX_FRAME_BYTES`,
 defaults 1000 / 10 / 1000000) are env-configurable without recompiling and
 validated fail-closed: a non-numeric, zero/negative, per-room-above-sockets
 or above-16 MiB frame value makes the relay refuse to boot — reasons logged
-once, exit 1, no listener. On `SIGTERM` the drain is visible to the load
+once, exit 1, no listener. The same discipline applies to the TLS pair
+(`RELAY_TLS_CERT` + `RELAY_TLS_KEY`): a mandatory pair, set both for direct
+`wss://` termination or neither to serve plain `ws://` behind a proxy that
+terminates TLS — one variable alone, a blank value, or an unreadable file
+refuses the boot (reason cites the variable, never the path). On `SIGTERM`
+the drain is visible to the load
 balancer (P2-145): `/healthz` answers `503` with `ok:false,draining:true`
 and WebSocket upgrades are refused while the drain runs, so the balancer
 stops routing new peers to the closing instance — the container

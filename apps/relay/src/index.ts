@@ -1,6 +1,6 @@
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
-import { readFileSync } from "node:fs";
+import { accessSync, constants as fsConstants, readFileSync } from "node:fs";
 import { WebSocketServer, type WebSocket } from "ws";
 // relative imports carry .js specifiers so plain `node` can run the tsc emit
 // (deploy/relay/Dockerfile + tsconfig.build.json) — tsx resolves them too
@@ -12,6 +12,7 @@ import { createShutdown, refuseUpgrade, stopAccepting } from "./shutdown.js";
 import { decideStale } from "./liveness.js";
 import { metricsAuthOk, metricsBinding } from "./metricsbind.js";
 import { relayLimits } from "./limits.js";
+import { tlsPlan } from "./tlsconfig.js";
 
 /**
  * Relay: a blind router.
@@ -39,6 +40,27 @@ if (LIMITS.problems.length > 0) {
   process.exit(1);
 }
 const { maxSockets, maxPerRoom, maxFrame, drainGraceMs } = LIMITS;
+// P2-154: the optional TLS pair (RELAY_TLS_CERT + RELAY_TLS_KEY) is resolved
+// fail-closed BEFORE any listener exists — metrics included. One variable
+// without the other, a set-but-blank value, or an unreadable file each
+// refuse the boot (exit 1, no listener) instead of silently serving plain
+// HTTP on a public host or crashing with a stack trace that leaks the cert
+// path. Both variables absent keeps the documented provider-TLS layout
+// (P2-127 container: plain HTTP behind the terminator).
+const TLS = tlsPlan(process.env, (path) => {
+  try {
+    accessSync(path, fsConstants.R_OK);
+    return true;
+  } catch {
+    return false;
+  }
+});
+if (TLS.problems.length > 0) {
+  for (const reason of TLS.problems) {
+    ev("warn", "invalid relay TLS pair, refusing to start (fail-closed)", { reason });
+  }
+  process.exit(1);
+}
 // per-connection rate limit on forwarded message frames (0 disables).
 // Defaults are sized to pass the daemon's worst-case chunked transfer
 // (MAX_CHUNKS = 512 frames, concurrent sessions interleaved on one socket)
@@ -207,13 +229,13 @@ function ev(level: "info" | "warn", msg: string, data?: unknown) {
   console.log(JSON.stringify({ ts: new Date().toISOString(), level, msg, ...(data ? { data } : {}) }));
 }
 
-// optional TLS: set RELAY_TLS_CERT + RELAY_TLS_KEY to serve wss:// directly
-// (browsers refuse ws:// from https:// pages — mixed content)
-const tlsCert = process.env.RELAY_TLS_CERT;
-const tlsKey = process.env.RELAY_TLS_KEY;
-const server = tlsCert && tlsKey
-  ? createHttpsServer({ cert: readFileSync(tlsCert), key: readFileSync(tlsKey) })
-  : createHttpServer();
+// optional TLS (P2-154): the plan resolved above already validated the pair —
+// only a fully valid "tls" mode reaches file IO here; plain keeps the exact
+// pre-P2-154 server (browsers refuse ws:// from https:// pages — mixed content)
+const server =
+  TLS.mode === "tls"
+    ? createHttpsServer({ cert: readFileSync(TLS.certPath), key: readFileSync(TLS.keyPath) })
+    : createHttpServer();
 const wss = new WebSocketServer({ noServer: true, maxPayload: maxFrame });
 let counter = 0;
 
@@ -266,7 +288,11 @@ server.on("upgrade", (req, socket, head) => {
 server.listen(PORT, () => {
   ev("info", "relay listening", {
     port: PORT,
-    tls: Boolean(tlsCert),
+    tls: TLS.mode === "tls",
+    // P2-154: additive provenance field — "env" when the relay terminates
+    // TLS itself, "none" behind a provider terminator. No cert/key material
+    // or path is ever logged here.
+    tlsSource: TLS.mode === "tls" ? "env" : "none",
     maxFrame,
     maxPerRoom,
     maxPerIp: MAX_PER_IP,

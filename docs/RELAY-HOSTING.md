@@ -64,8 +64,8 @@ builds this same image (the `caddy` profile adds TLS termination on top).
 | `RELAY_MAX_PER_IP` | `20` | Keep the default. Raise it only when many devices legitimately share one egress IP (office NAT, corporate VPN). `0` disables the cap. |
 | `RELAY_TRUST_PROXY_HOPS` | `0` | Leave `0` on direct exposure. Set it **only** to the exact number of trusted proxy layers in front of the relay (e.g. `1` for a single provider load balancer doing TLS termination) — see the section below. |
 | `RELAY_DRAIN_GRACE_MS` | `0` | Extra window between the moment a `SIGTERM` marks the instance as draining (`/healthz` flips to `503`) and the moment the live sockets are closed. Default `0` keeps the historical behavior; raise it (max `2000`) when your load balancer polls `/healthz` too rarely to notice the 503 before `docker stop` proceeds. See the sections below. |
-| `RELAY_TLS_CERT` | unset | Leave unset — TLS belongs to the provider's load balancer; the relay then serves plain `ws://` internally and the outside world dials `wss://`. |
-| `RELAY_TLS_KEY` | unset | Leave unset. Set `RELAY_TLS_CERT` + `RELAY_TLS_KEY` **together** only when the relay terminates TLS itself (no LB in front): both files must be readable by the `node` user, and the relay serves `wss://` directly. |
+| `RELAY_TLS_CERT` | unset | Leave unset for provider TLS in front (the default layout). Set **only together with `RELAY_TLS_KEY`** — the two form a mandatory pair — when the relay terminates TLS itself; both files must be readable by the `node` user and the relay serves `wss://` directly. |
+| `RELAY_TLS_KEY` | unset | See `RELAY_TLS_CERT`. Either variable alone, a set-but-blank value, or an unreadable file **refuses the boot** (fail-closed) — the relay never silently downgrades a public host to plain HTTP. |
 
 The relay also accepts `RELAY_RATE_PER_MIN`, `RELAY_RATE_BURST` (per-connection
 token bucket) and `RELAY_PING_INTERVAL_S` (stale-socket sweep). The defaults
@@ -84,6 +84,32 @@ An absent or blank variable keeps the documented default, so an empty env
 reproduces the historical limits exactly. Nothing about the blind-router
 property changes with the configured values: the relay still never reads
 plaintext or key material.
+
+### The TLS pair is mandatory together and fail-closed (P2-154)
+
+`RELAY_TLS_CERT` and `RELAY_TLS_KEY` are validated as a pair before any
+listener opens. Exactly two configurations boot:
+
+- **Both variables unset** — plain `ws://` internally. This is valid **only**
+  behind a proxy that terminates TLS (the documented container layout: the
+  provider's load balancer owns the certificate and the outside world dials
+  `wss://`).
+- **Both variables set, non-blank, and both files readable by the relay
+  user** — the relay serves `wss://` itself (browsers refuse `ws://` from
+  `https://` pages).
+
+Everything else refuses to boot — one variable without the other, a
+set-but-blank value, or a file the relay cannot read. Each reason is logged
+once (JSONL, `invalid relay TLS pair, refusing to start`) and the process
+exits with code `1` before **any** listener opens, metrics included: a
+half-configured relay never silently downgrades a public host to plain HTTP,
+and an unreadable certificate never crashes the boot with a stack trace.
+Problem messages cite the offending variable (`RELAY_TLS_CERT` /
+`RELAY_TLS_KEY`) and never contain the file path — log shippers get no
+host-local detail. The `relay listening` line carries an additive
+`tlsSource` field (`env` when the relay terminates TLS itself, `none` behind
+a terminator); no pre-existing field changed meaning, and no log line ever
+prints certificate or key material.
 
 ## Behind a proxy: `x-forwarded-for` and the per-IP cap
 
