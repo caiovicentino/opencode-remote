@@ -92,6 +92,10 @@ import {
   validateSpec,
   verifyEvidence,
   writeAuxSandboxConfig,
+  mergePrForTask,
+  PR_MERGE_CONFIRM_DELAY_MS,
+  PR_MERGE_CONFIRM_POLLS,
+  type PrMergeIo,
 } from "../apps/pilot/src/pipeline";
 import {
   appendLessons,
@@ -5268,6 +5272,110 @@ check(
     "P1-104: crash catch routes through recordPipelineCrash, never tripCircuitBreaker",
     pilotIndexSrc.includes("const wake = recordPipelineCrash(state);") &&
       !pilotIndexSrc.includes("pipeline crashed: ${detail}"),
+  );
+}
+
+// --- P2-125: the task-PR merge confirms MERGED fail-closed, gh noise is infra ----
+{
+  // budget pin: ~5 minutes, same shape as the meta-PR confirmation
+  check("P2-125: confirm budget is 60 polls × 5s = 5min", PR_MERGE_CONFIRM_POLLS * PR_MERGE_CONFIRM_DELAY_MS === 300_000);
+
+  const sha = "c".repeat(40);
+  const otherSha = "d".repeat(40);
+  // Fake gh surface (zero network): create fails (PR already open from a
+  // previous cycle), list resolves the number, merge exec FAILS (the
+  // P2-117/P2-123 shape: --auto armed under branch protection errors at arm
+  // time) and the poll loop then decides what the view reports.
+  const mkIo = (view: () => { state: string; headRefOid: string } | null, mergeOutput = "gh: failed to arm auto-merge") => {
+    const calls: string[] = [];
+    let sleeps = 0;
+    const io: PrMergeIo = {
+      exec: (cmd) => {
+        calls.push(cmd);
+        if (cmd.startsWith("gh pr create")) return { ok: false, output: "a pull request for head pilot/P2-125 already exists" };
+        if (cmd.startsWith("gh pr list")) return { ok: true, output: "42\n" };
+        if (cmd.startsWith("gh pr merge")) return { ok: false, output: mergeOutput };
+        if (cmd.startsWith("gh pr view")) {
+          const snap = view();
+          return snap
+            ? { ok: true, output: JSON.stringify({ state: snap.state, headRefOid: snap.headRefOid }) }
+            : { ok: false, output: "no pull requests" };
+        }
+        return { ok: false, output: `unexpected exec: ${cmd}` };
+      },
+      sleep: () => {
+        sleeps++;
+        return Promise.resolve();
+      },
+    };
+    return { io, calls, getSleeps: () => sleeps };
+  };
+
+  // THE P2-117/P2-123 criterion: merge exec errored, PR still confirms MERGED
+  // with our sha ⇒ success (auto-merge was armed; the squash fired later).
+  const confirmed = mkIo(() => ({ state: "MERGED", headRefOid: sha }));
+  const confirmedOut = await mergePrForTask(confirmed.io, {
+    branch: "pilot/P2-125",
+    title: "t",
+    body: "b",
+    pushedSha: sha,
+  });
+  check("P2-125: merge exec failed but PR confirms MERGED ⇒ success", confirmedOut.ok === true);
+  check("P2-125: create failure falls through to pr list (PR reused)", confirmed.calls.some((c) => c.startsWith("gh pr list --head pilot/P2-125 --state all")));
+  check("P2-125: merge addressed by PR number, never by branch", confirmed.calls.some((c) => c.startsWith("gh pr merge 42 ")) && confirmed.calls.some((c) => c.startsWith("gh pr view 42 ")) && !confirmed.calls.some((c) => c.startsWith("gh pr view pilot/")));
+  check("P2-125: immediate confirmation has zero artificial latency (no sleep before poll 0)", confirmed.getSleeps() === 0);
+
+  // MERGED with another headRefOid is a real anomaly — merit, never success
+  const swapped = mkIo(() => ({ state: "MERGED", headRefOid: otherSha }));
+  const swappedOut = await mergePrForTask(swapped.io, { branch: "pilot/P2-125", title: "t", body: "b", pushedSha: sha });
+  check("P2-125: MERGED with another headRefOid ⇒ failure, never success", swappedOut.ok === false && swappedOut.infra === undefined);
+
+  // queued forever: view stays OPEN for the whole budget ⇒ honest infra
+  // timeout; polling never sleeps before reading (59 sleeps for 60 polls)
+  const queued = mkIo(() => ({ state: "OPEN", headRefOid: sha }));
+  const queuedOut = await mergePrForTask(queued.io, { branch: "pilot/P2-125", title: "t", body: "b", pushedSha: sha });
+  check("P2-125: merge never confirmed ⇒ ok=false with infra=timeout", queuedOut.ok === false && queuedOut.infra === "timeout");
+  check("P2-125: unconfirmed detail carries the gh merge tail", queuedOut.detail.includes("failed to arm auto-merge"));
+  check("P2-125: every poll in the budget ran", queued.calls.filter((c) => c.startsWith("gh pr view")).length === PR_MERGE_CONFIRM_POLLS);
+  check("P2-125: sleep only between polls (59 sleeps for 60 polls)", queued.getSleeps() === PR_MERGE_CONFIRM_POLLS - 1);
+
+  // the runSlot infra branch: structured kind → recordInfraFailure only —
+  // no taskAttempts entry, no fever sample (mirrors apps/pilot/src/index.ts)
+  const st = { date: "2026-09-04", tasks: 0, deploys: 0, failures: 0, taskAttempts: {} } as PilotState;
+  const kind = resultInfraKind({ ok: queuedOut.ok, infra: queuedOut.infra });
+  if (kind) recordInfraFailure(st);
+  else {
+    recordCycle(st, false, "P2-125");
+    recordTaskFailure(st, "P2-125", 4);
+  }
+  check("P2-125: infra merge failure burns no per-task attempt", Object.keys(st.taskAttempts).length === 0);
+  check("P2-125: infra merge failure never feeds the fever window", feverReason(st) === null);
+
+  // both create and list dead: no PR number resolvable ⇒ infra network, and
+  // the detail carries each captured gh tail (≤300 chars per step)
+  const bothDead = mkIo(() => null);
+  bothDead.io.exec = (cmd) => {
+    bothDead.calls.push(cmd);
+    if (cmd.startsWith("gh pr create")) return { ok: false, output: "x".repeat(400) };
+    if (cmd.startsWith("gh pr list")) return { ok: false, output: "gh: no default remote (network down)" };
+    return { ok: false, output: "" };
+  };
+  const deadOut = await mergePrForTask(bothDead.io, { branch: "pilot/P2-125", title: "t", body: "b", pushedSha: sha });
+  check("P2-125: unresolvable PR number ⇒ infra network", deadOut.ok === false && deadOut.infra === "network");
+  check("P2-125: detail carries the gh create/list tails", deadOut.detail.includes("pr create failed:") && deadOut.detail.includes("pr list: gh: no default remote"));
+  check("P2-125: each captured gh tail is capped at 300 chars", deadOut.detail.includes("x".repeat(300)) && !deadOut.detail.includes("x".repeat(301)));
+
+  // wiring pin: the caller propagates `infra` and the reason-free generic
+  // detail is gone (it was the whole bug — merit classification of gh noise)
+  const pipelineSrc = readFileSync(join(import.meta.dirname, "..", "apps", "pilot", "src", "pipeline.ts"), "utf8");
+  check(
+    "P2-125: merge failure line propagates the structured infra kind",
+    pipelineSrc.includes("infra: merged.infra") && pipelineSrc.includes("gate green but the PR merge failed: ${merged.detail}"),
+  );
+  check("P2-125: the old reason-free merge detail no longer exists", !pipelineSrc.includes("gate green but the PR merge failed — the next cycle retries the PR"));
+  check(
+    "P2-125: P2-058 verified-merge guard untouched (recordVerifiedMerge + isTaskMergeSha still wired)",
+    pipelineSrc.includes("isTaskMergeSha(ws, postMergeHead, t.id)") && pipelineSrc.includes("recordVerifiedMerge(defaultVerifiedMergesFile(), postMergeHead, t.id"),
   );
 }
 
