@@ -29,6 +29,7 @@ import {
   injectArtifactsSystem,
   workspaceCoversArtifacts,
 } from "../apps/daemon/src/sessionctx";
+import { CLOSE_HINT_LOG } from "../apps/desktop/src/closehint";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 
@@ -147,9 +148,11 @@ delete cliEnv.OCR_USER_DATA_DIR;
 // P2-148 added the welcome beats (the three-step first-run onboarding walk
 // plus a second same-userData boot proving the flag persists), 270s;
 // P2-150 added the taskbar-overlay badge beat (push 12 → bridge round-trip,
-// one-window aliveness probe, 1440x900 shot) inside the same budget.
+// one-window aliveness probe, 1440x900 shot) inside the same budget; P2-152
+// added the close-to-tray hint beat (fresh-userData close from the renderer +
+// a second same-userData boot proving the one-shot flag), growing it to 300s.
 const startedAt = Date.now();
-const DEADLINE_MS = 270_000;
+const DEADLINE_MS = 300_000;
 const shotPath = join(tmpdir(), "ocr-desktop-flow", `flow-${process.pid}.png`);
 // Evidence shots live in the builder dir (never used as review evidence).
 // Declared up front: the P2-112 degraded-journey beats record there too.
@@ -3159,6 +3162,97 @@ if (bootInfo?.userData) {
   }
 } else {
   check("P2-148: keeper reported its userData dir for beat B", false, "no bootInfo.userData");
+}
+
+// --- P2-152: the one-time close-to-tray hint ----------------------------------
+// Closing the window hides it instead of quitting (P2-021) but nothing said
+// so — the app just "vanished" for the leigo user. Now the FIRST non-quitting
+// close fires one native notification and stamps userData/close-hint.flag.
+// Beat: fresh userData → close the window from the renderer → the window
+// survives (wins probe), desktop.log carries exactly one hint line and the
+// flag is stamped with the sentinel → the instance is closed (single-instance
+// lock, P2-069) → a second boot on the SAME userData closes again and the log
+// still carries exactly one line.
+phase("P2-152: one-time close-to-tray hint");
+{
+  const hintDir = mkdtempSync(join(tmpdir(), "ocr-flow-closehint-"));
+  const hintEnv = { ...process.env, OCR_DESKTOP_SESSION: `${session}-closehint`, OCR_USER_DATA_DIR: hintDir };
+  const hintEnv2 = { ...process.env, OCR_DESKTOP_SESSION: `${session}-closehint2`, OCR_USER_DATA_DIR: hintDir };
+  const hintLog = join(hintDir, "logs", "desktop.log");
+  const hintFlag = join(hintDir, "close-hint.flag");
+  const hintLines = (): number => {
+    try {
+      return readFileSync(hintLog, "utf8").split(CLOSE_HINT_LOG).length - 1;
+    } catch {
+      return 0;
+    }
+  };
+  let hintBooted = false;
+  let hintBooted2 = false;
+  try {
+    const open = run("P2-152: open (fresh userData)", ["open"], 45_000, hintEnv);
+    hintBooted = open.ok;
+    if (open.ok) {
+      run("P2-152: boot rendered the app", ["see", "OpenCode Remote"], 15_000, hintEnv);
+      // Deviation from the spec (justified in the commit): the renderer's DOM
+      // window.close() destroys the window WITHOUT firing the cancellable
+      // close event (proven — wins went to 0 and no handler ran), so it is
+      // NOT the red button. The harness close-window command calls
+      // win.close() in the main process, the same native close path the OS
+      // close button uses — exactly what close-to-tray intercepts.
+      run("P2-152: close the window (red-button path)", ["close-window"], 15_000, hintEnv);
+      // The hint + flag stamp happen right after the hide, but the
+      // notification is fire-and-forget — poll briefly for the stamp.
+      let stamped = false;
+      for (let i = 0; i < 20 && !stamped; i++) {
+        stamped = existsSync(hintFlag);
+        if (!stamped) await new Promise((r) => setTimeout(r, 250));
+      }
+      check("P2-152: hint flag stamped in userData", stamped, hintFlag);
+      const wins = run("P2-152: wins probe after the close", ["wins"], 15_000, hintEnv);
+      if (wins.ok) {
+        let count = -1;
+        try {
+          const arr = JSON.parse(wins.stdout) as unknown;
+          count = Array.isArray(arr) ? arr.length : -1;
+        } catch {}
+        check("P2-152: window survives the close (close-to-tray)", count === 1, wins.stdout);
+      }
+      check("P2-152: exactly one hint line in desktop.log", hintLines() === 1, `count=${hintLines()}`);
+      check("P2-152: flag content is the sentinel", (() => {
+        try {
+          return readFileSync(hintFlag, "utf8") === "1";
+        } catch {
+          return false;
+        }
+      })());
+      // The window is hidden but the first instance is still alive holding
+      // the single-instance lock — quit it for real (quitting=true, so this
+      // close lands no hint line) before booting the second instance.
+      run("P2-152: quit the first instance", ["close"], 45_000, hintEnv);
+    }
+    // Single-instance lock (P2-069): the close above returns before the
+    // keeper's async shutdown finishes — wait for the keeper PROCESS to be
+    // gone before reopening the same userData, same loop as the P2-148
+    // relaunch beat.
+    for (let i = 0; i < 32; i++) {
+      const alive = spawnSync("pgrep", ["-f", "tools/desktop\\.mjs"], { encoding: "utf8" });
+      if (alive.status !== 0) break;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    const open2 = run("P2-152: open (second boot, same userData)", ["open"], 45_000, hintEnv2);
+    hintBooted2 = open2.ok;
+    if (open2.ok) {
+      run("P2-152: boot rendered the app again", ["see", "OpenCode Remote"], 15_000, hintEnv2);
+      run("P2-152: close the window again", ["close-window"], 15_000, hintEnv2);
+      await new Promise((r) => setTimeout(r, 1500));
+      check("P2-152: second close stays silent (shown once)", hintLines() === 1, `count=${hintLines()}`);
+    }
+  } finally {
+    if (hintBooted2) spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: hintEnv2 });
+    if (hintBooted) spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: hintEnv });
+    rmSync(hintDir, { recursive: true, force: true });
+  }
 }
 
 // Spec criterion 5: hermetic means hermetic — the app log must show the

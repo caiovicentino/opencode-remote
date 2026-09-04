@@ -258,6 +258,17 @@ import { candidatePorts, pickDaemonPort } from "../apps/desktop/src/daemonport";
 import { versionMismatch } from "../apps/desktop/src/versions";
 import { daemonTooltip, loginItemSupported, logsDirPath, openLogsFolder, trayIconSource } from "../apps/desktop/src/tray";
 import { badgePlan } from "../apps/desktop/src/badge";
+import {
+  CLOSE_HINT_BODY_MENUBAR,
+  CLOSE_HINT_BODY_TRAY,
+  CLOSE_HINT_LOG,
+  CLOSE_HINT_SENTINEL,
+  CLOSE_HINT_TITLE,
+  closeHintPlan,
+  hintFlagPath,
+  readHintFlag,
+  writeHintFlag,
+} from "../apps/desktop/src/closehint";
 import { updateMenuLabel } from "../apps/desktop/src/update";
 import { appIdForPlatform, applyAppUserModelId, daemonNotify, NOTIFY_BACK_BODY, NOTIFY_DOWN_BODY, WINDOWS_APP_ID } from "../apps/desktop/src/notify";
 import { DEEP_LINK_QUERY_MAX, deepLinkFromArgv, parseDeepLink } from "../apps/desktop/src/deeplink";
@@ -4759,6 +4770,49 @@ check(
   check("badge: overlay disk committed as a 32px PNG", pngSize(overlay)?.w === 32 && pngSize(overlay)?.h === 32);
   const builderYml = readFileSync(join(desktopRoot, "electron-builder.yml"), "utf8");
   check("badge: overlay packaged via electron-builder files", builderYml.includes("build/overlayBadge.png"));
+}
+
+// --- desktop closehint: one-time close-to-tray hint plan (P2-152) ----------------
+{
+  // Flag absent ⇒ notify; darwin speaks of the menu bar, win32/linux of the
+  // system tray.
+  const darwin = closeHintPlan("darwin", null);
+  check("hint: darwin with no flag notifies with the menu-bar body", darwin.kind === "notify" && darwin.title === CLOSE_HINT_TITLE && darwin.body === CLOSE_HINT_BODY_MENUBAR);
+  check("hint: win32 with no flag notifies with the tray body", closeHintPlan("win32", null).body === CLOSE_HINT_BODY_TRAY);
+  check("hint: linux with no flag notifies with the tray body", closeHintPlan("linux", null).body === CLOSE_HINT_BODY_TRAY);
+  // Sentinel ⇒ total silence on every platform (like the badge zero).
+  for (const p of ["darwin", "win32", "linux"]) {
+    const silent = closeHintPlan(p, CLOSE_HINT_SENTINEL);
+    check(`hint: sentinel flag silences on ${p}`, silent.kind === "none" && silent.title === "" && silent.body === "");
+  }
+  // Anything that is not the exact sentinel counts as not shown (fail-open,
+  // P2-148 lesson): absent, empty, padded, wrong value, corrupted JSON.
+  const corrupt = ["", "0", " 1 ", "1\n", '{"shown":true}', CLOSE_HINT_SENTINEL + CLOSE_HINT_SENTINEL];
+  check(
+    "hint: empty/corrupt flags all count as not shown",
+    corrupt.every((f) => closeHintPlan("darwin", f).kind === "notify"),
+  );
+  check("hint: undefined flag counts as not shown", closeHintPlan("darwin", undefined).kind === "notify");
+  // Unknown platform falls back to the generic tray wording.
+  check("hint: unknown platform uses the generic tray body", closeHintPlan("sunos", null).kind === "notify" && closeHintPlan("sunos", null).body === CLOSE_HINT_BODY_TRAY);
+  // Read sink throwing (missing file, bad disk) ⇒ null, decision stays notify.
+  const thrown = readHintFlag(() => {
+    throw new Error("boom");
+  });
+  check("hint: read sink throwing reads as absent", thrown === null && closeHintPlan("darwin", thrown).kind === "notify");
+  // Write sink throwing ⇒ false, no exception escapes.
+  check("hint: write sink throwing reports failure", writeHintFlag(() => { throw new Error("boom"); }) === false);
+  let stamped = "";
+  check("hint: write sink success stamps the sentinel", writeHintFlag((v) => { stamped = v; }) === true && stamped === CLOSE_HINT_SENTINEL);
+  // Flag path lives at the userData root (same shape as window-state.json).
+  check("hint: flag path is userData/close-hint.flag", hintFlagPath("/tmp/x") === join("/tmp/x", "close-hint.flag"));
+  // Copy discipline: no emoji/glyph-as-icon (P2-107 regex) and no path
+  // separators in anything user-visible.
+  const BANNED = /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{2300}-\u{23FF}\u{2500}-\u{25FF}\u{FE0F}]/u;
+  const copy = [CLOSE_HINT_TITLE, CLOSE_HINT_BODY_MENUBAR, CLOSE_HINT_BODY_TRAY, CLOSE_HINT_LOG];
+  check("hint: copy has no emoji/glyph-as-icon", copy.every((s) => !BANNED.test(s)));
+  check("hint: copy is path-free", copy.every((s) => !s.includes("/") && !s.includes("\\")));
+  check("hint: log marker is unique and names the feature", CLOSE_HINT_LOG.includes("close-to-tray") && CLOSE_HINT_LOG.startsWith("[desktop]"));
 }
 
 // --- desktop tray: update status item label (P3-019) ----------------------------
