@@ -7006,6 +7006,27 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     const v = classifyUpstream({ error: Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:4096"), { code: "ECONNREFUSED" }) });
     return v.state === "unreachable" && /recusada/.test(v.reason) && v.hint.length > 0;
   })());
+  check("P2-135: real fetch shape — TypeError 'fetch failed' with ECONNREFUSED cause — classifies as refused", (() => {
+    // Node/undici wraps connection failures: top-level TypeError carries no
+    // detail, the ECONNREFUSED error only appears in .cause. Regressions here
+    // collapse "server not installed / wrong port" into the generic verdict.
+    const v = classifyUpstream({
+      error: Object.assign(new Error("fetch failed"), {
+        name: "TypeError",
+        cause: Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:4096"), { code: "ECONNREFUSED" }),
+      }),
+    });
+    return v.state === "unreachable" && /recusada/.test(v.reason) && v.hint.length > 0;
+  })());
+  check("P2-135: plain-object cause with code (no Error wrapper) still classified as refused", (() => {
+    const v = classifyUpstream({
+      error: Object.assign(new Error("fetch failed"), {
+        name: "TypeError",
+        cause: { code: "ECONNREFUSED", message: "connect ECONNREFUSED 127.0.0.1:4096" },
+      }),
+    });
+    return v.state === "unreachable" && /recusada/.test(v.reason);
+  })());
   check("P2-135: abort/timeout error classifies as timeout", (() => {
     const v = classifyUpstream({ error: Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" }) });
     return v.state === "timeout" && v.hint.length > 0;

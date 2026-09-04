@@ -42,9 +42,28 @@ export interface UpstreamProbe {
  * `timeout` instead of stalling the watchdog tick forever. */
 export const UPSTREAM_PROBE_TIMEOUT_MS = 5_000;
 
+/** Stringify an error for classification: walks the whole `cause` chain (Node/
+ * undici fetch wraps connection failures as a top-level `TypeError: fetch failed`
+ * with the real `ECONNREFUSED`-class error only in `.cause`) and picks up the
+ * `code` property at every link. Depth-capped; deterministic. */
 function errText(err: unknown): string {
-  if (err instanceof Error) return `${err.name} ${err.message}`.toLowerCase();
-  return String(err ?? "").toLowerCase();
+  let text = "";
+  let cur: unknown = err;
+  for (let depth = 0; depth < 5 && cur != null; depth++) {
+    if (cur instanceof Error) {
+      text += ` ${cur.name} ${cur.message}`;
+      const code = (cur as { code?: unknown }).code;
+      if (typeof code === "string") text += ` ${code}`;
+    } else if (typeof cur === "object") {
+      const obj = cur as { code?: unknown; message?: unknown };
+      if (typeof obj.code === "string") text += ` ${obj.code}`;
+      if (typeof obj.message === "string") text += ` ${obj.message}`;
+    } else {
+      text += ` ${String(cur)}`;
+    }
+    cur = (cur as { cause?: unknown }).cause;
+  }
+  return text.toLowerCase();
 }
 
 function isTimeout(probe: UpstreamProbe, err: string): boolean {
@@ -61,18 +80,20 @@ export function classifyUpstream(probe: UpstreamProbe = {}): UpstreamVerdict {
   const err = probe.error ? errText(probe.error) : "";
 
   if (probe.error || probe.timedOut) {
+    // refused can never be a timeout, so it is checked first — this is the
+    // "server not installed / wrong port" case the UI must distinguish
+    if (!isTimeout(probe, err) && err.includes("econnrefused")) {
+      return {
+        state: "unreachable",
+        reason: "conexão recusada",
+        hint: "o servidor do agente não está aceitando conexões — verifique se o opencode está rodando nesta máquina",
+      };
+    }
     if (isTimeout(probe, err)) {
       return {
         state: "timeout",
         reason: "opencode não respondeu a tempo",
         hint: "o servidor do agente está lento ou travado; reinicie o opencode se persistir",
-      };
-    }
-    if (err.includes("econnrefused")) {
-      return {
-        state: "unreachable",
-        reason: "conexão recusada",
-        hint: "o servidor do agente não está aceitando conexões — verifique se o opencode está rodando nesta máquina",
       };
     }
     return {

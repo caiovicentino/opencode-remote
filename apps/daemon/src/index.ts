@@ -1286,10 +1286,11 @@ function recordUpstream(verdict: UpstreamVerdict): boolean {
 
 /** One probe against the upstream /global/health, classified by upstream.ts. */
 async function probeUpstream(): Promise<UpstreamVerdict> {
+  const signal = AbortSignal.timeout(UPSTREAM_PROBE_TIMEOUT_MS);
   try {
     const res = await fetch(new URL("/global/health", OPENCODE_URL), {
       headers: authHeader ? { authorization: authHeader } : {},
-      signal: AbortSignal.timeout(UPSTREAM_PROBE_TIMEOUT_MS),
+      signal,
     });
     let body: unknown;
     let bodyOk = true;
@@ -1300,7 +1301,7 @@ async function probeUpstream(): Promise<UpstreamVerdict> {
     }
     return classifyUpstream({ status: res.status, body, bodyOk });
   } catch (err) {
-    return classifyUpstream({ error: err });
+    return classifyUpstream({ error: err, timedOut: signal.aborted });
   }
 }
 
@@ -2621,10 +2622,11 @@ async function main() {
   // boot healthcheck: fail loudly early if opencode is unreachable
   // P2-135: the probe now feeds the same classifier as the watchdog, so the
   // very first /api/health answer already carries the real failure mode.
+  const signal = AbortSignal.timeout(UPSTREAM_PROBE_TIMEOUT_MS);
   try {
     const res = await fetch(new URL("/global/health", OPENCODE_URL), {
       headers: authHeader ? { authorization: authHeader } : {},
-      signal: AbortSignal.timeout(UPSTREAM_PROBE_TIMEOUT_MS),
+      signal,
     });
     let body: unknown;
     let bodyOk = true;
@@ -2637,7 +2639,7 @@ async function main() {
     recordUpstream(verdict);
     log("info", "opencode healthcheck", { status: res.status, state: verdict.state, reason: verdict.reason });
   } catch (err) {
-    const verdict = classifyUpstream({ error: err });
+    const verdict = classifyUpstream({ error: err, timedOut: signal.aborted });
     recordUpstream(verdict);
     log("warn", "opencode unreachable at boot (will keep retrying events)", {
       opencode: OPENCODE_URL,

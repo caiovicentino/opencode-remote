@@ -63,7 +63,7 @@ server (opencode) in detail:
 |---|---|---|
 | `state` | `unknown` \| `ok` \| `unauthorized` \| `unreachable` \| `timeout` \| `unhealthy` | `unknown` until the first probe finishes, then the classified outcome |
 | `reason` | string | short pt-BR description of what was observed |
-| `hint` | string | actionable pt-BR next step ("" when nothing needs doing) — used verbatim in the down-push notification |
+| `hint` | string | actionable pt-BR next step ("" when nothing needs doing) — becomes the down-push body, prefixed with the machine name |
 | `checkedAt` | string \| null | ISO timestamp of that probe; `null` before the first one |
 
 The probes (boot healthcheck + 60s watchdog) classify HTTP status, parsed
