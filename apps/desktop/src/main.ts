@@ -27,6 +27,7 @@ import { applyAppUserModelId, daemonNotify, NOTIFY_BACK_BODY, NOTIFY_DOWN_BODY, 
 import { deepLinkFromArgv, parseDeepLink } from "./deeplink";
 import { daemonTooltip, loginItemSupported, logsDirPath, openLogsFolder, trayIconSource } from "./tray";
 import { badgePlan, type BadgePlan } from "./badge";
+import { CLOSE_HINT_LOG, closeHintPlan, hintFlagPath, readHintFlag, writeHintFlag } from "./closehint";
 import { checkForUpdatesOnBoot, updatesEnabled, updateMenuLabel, type UpdateDialogSinks, type UpdateStatus } from "./update";
 import { loadWindowBounds, saveWindowBounds, WINDOW_MIN, windowStateFile } from "./window-state";
 import { installFatalErrorHandlers, onRendererGone, ReloadGuard } from "./crash";
@@ -715,6 +716,35 @@ function observeDaemonHealth(down: boolean): void {
   }
 }
 
+/** One-time close-to-tray hint (P2-152): since P2-021 a plain close hides the
+ * window with the daemon sidecar and tray still alive, but nothing said so —
+ * the leigo user closes the window and believes the app is gone. The first
+ * non-quitting close fires ONE native notification and stamps a flag in
+ * userData; decision logic is pure (src/closehint.ts) and tested in
+ * scripts/unit.test.ts. Entirely best-effort — same discipline as
+ * observeDaemonHealth(): nothing here may block the hide() above it, and the
+ * real quit path (quitting === true) never reaches this. */
+function maybeShowCloseHint(): void {
+  try {
+    const file = hintFlagPath(app.getPath("userData"));
+    const plan = closeHintPlan(process.platform, readHintFlag(() => readFileSync(file, "utf8")));
+    if (plan.kind === "none") return;
+    if (!Notification.isSupported()) {
+      log("[desktop] close hint skipped: notifications unsupported");
+      return;
+    }
+    new Notification({ title: plan.title, body: plan.body, silent: true }).show();
+    log(CLOSE_HINT_LOG);
+    // Stamp only after the notification actually went out — a platform without
+    // support never burns the one-shot chance.
+    if (!writeHintFlag((value) => writeFileSync(file, value, "utf8"))) {
+      log("[desktop] close hint flag write failed");
+    }
+  } catch (err) {
+    logError("[desktop] close hint failed:", err);
+  }
+}
+
 /** P3-054: deterministic mismatch state for the harness (see the hatch note
  * above). uri/qrDataUrl stay null so the QR overlay can never open from it —
  * same shape discipline as reconnectingState(). */
@@ -948,6 +978,9 @@ function createWindow(): BrowserWindow {
     if (!quitting) {
       event.preventDefault();
       win.hide();
+      // P2-152: one-time "still running" hint — only on the close-to-tray
+      // branch, never on a real quit. Best-effort, after the hide.
+      maybeShowCloseHint();
     }
   });
   win.on("closed", () => {

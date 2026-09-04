@@ -499,6 +499,12 @@ best-effort: em plataformas sem suporte a notificação o shell segue rodando
 em silêncio — com a janela fechada no tray, é assim que o usuário leigo
 descobre que perdeu o controle.
 
+**Fechar a janela mantém o app na bandeja**: na primeira vez que a janela é
+fechada, uma notificação nativa única avisa que o OpenCode Remote continua
+rodando — na barra de menus no macOS, na bandeja do sistema no Windows/Linux
+— e como reabrir (clique no ícone da bandeja ou abra o app de novo). A dica
+aparece uma única vez; fechar de novo, ou reabrir depois, não notifica.
+
 ## Roadmap
 
 Próximos: wizard de onboarding, compartilhamento de skills, push nativo iOS.

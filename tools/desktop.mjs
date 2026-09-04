@@ -93,7 +93,7 @@ async function clientMain() {
     console.log(
       "usage: node tools/desktop.mjs open [shot.png [w h]] | see <texto> | click <sel> | " +
         "type <sel> <texto> | shot <out.png> [w h] | ipc <expr> | motion reduce|no-preference | " +
-        "menu <id> | menu-click <id> | wins | close",
+        "menu <id> | menu-click <id> | wins | close-window | close",
     );
     process.exit(cmd ? 0 : 2);
   }
@@ -144,6 +144,8 @@ async function clientMain() {
     fail(await send({ cmd: "menu-click", id: args[0] }));
   } else if (cmd === "wins") {
     fail(await send({ cmd: "wins" }));
+  } else if (cmd === "close-window") {
+    fail(await send({ cmd: "close-window" }));
   } else if (cmd === "close") {
     fail(await send({ cmd: "close" }, CLOSE_DEADLINE_MS + 5_000));
   } else {
@@ -478,6 +480,20 @@ async function handle(electronApp, page, msg, env) {
         BrowserWindow.getAllWindows().map((w) => ({ visible: w.isVisible() })),
       );
       return { ok: true, result: windows };
+    }
+    case "close-window": {
+      // P2-152: red-button equivalent — the main-process win.close() goes
+      // through the SAME cancellable native close path as the OS close
+      // button. (The renderer's DOM window.close() is NOT equivalent: it
+      // destroys the window without ever firing the cancellable close
+      // event, so close-to-tray and the one-time hint never engage.)
+      const closed = await electronApp.evaluate(({ BrowserWindow }) => {
+        const win = BrowserWindow.getAllWindows()[0];
+        if (!win) return false;
+        win.close();
+        return true;
+      });
+      return { ok: true, result: closed };
     }
     case "ipc": {
       const result = await page.evaluate(msg.expr);
