@@ -1,0 +1,47 @@
+[
+  {
+    "file": "scripts/routines.test.ts",
+    "runner": "manual — `npx tsx scripts/routines.test.ts` post-deploy",
+    "reason": "live test: needs a production RELAY_URL and a paired daemon; the gate sandbox has neither"
+  },
+  {
+    "file": "scripts/download.test.ts",
+    "runner": "manual — `npx tsx scripts/download.test.ts` post-deploy",
+    "reason": "live test: needs a production RELAY_URL and a paired daemon; the gate sandbox has neither"
+  },
+  {
+    "file": "scripts/push.test.ts",
+    "runner": "manual — `npx tsx scripts/push.test.ts` post-deploy",
+    "reason": "live test: needs a production RELAY_URL and a paired daemon; the gate sandbox has neither"
+  },
+  {
+    "file": "scripts/localws.test.ts",
+    "runner": "npm run test:e2e (manual)",
+    "reason": "spins a real ephemeral relay+daemon pair; too slow/flaky-prone for the gate battery"
+  },
+  {
+    "file": "scripts/chunk.test.ts",
+    "runner": "npm run test:e2e (manual)",
+    "reason": "same ephemeral relay+daemon e2e harness as localws.test.ts"
+  },
+  {
+    "file": "scripts/desktop-flow.test.ts",
+    "runner": "npm run test:desktop-flow (conditional gate step for UI diffs)",
+    "reason": "needs a real Electron via the P1-051 harness; gate runs it only when the diff touches apps/desktop or apps/web"
+  },
+  {
+    "file": "scripts/desktop-render.test.ts",
+    "runner": "npm run test:desktop-render (conditional gate step for UI diffs)",
+    "reason": "needs a real Electron; gate runs it only when the diff touches apps/desktop or apps/web"
+  },
+  {
+    "file": "scripts/desktop-update.test.ts",
+    "runner": "npm run test:desktop-update (manual)",
+    "reason": "needs a real Electron and a packaged build; nothing in the automated battery invokes it by design"
+  },
+  {
+    "file": "scripts/desktop-crash.test.ts",
+    "runner": "npm run test:desktop-crash (manual)",
+    "reason": "needs a real Electron (crash/restart of the desktop shell)"
+  }
+]

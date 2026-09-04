@@ -52,6 +52,8 @@ import {
   tokensSql,
 } from "../apps/pilot/src/costs";
 import { normalizeSessionModel, PRICE_SOURCES, PRICE_TABLE, taskCostUSD } from "../apps/pilot/src/pricing";
+import { PILOT_GATE_STEPS } from "../apps/pilot/src/gateprofile";
+import { unreachableTests } from "./testreachability";
 import { CORPUS_COMMANDS, CORPUS_SAMPLE_RE, appendCorpusSample, captureGateCorpus, corpusSlug, loadGateCorpus, sanitizeForCorpus } from "../apps/pilot/src/gate-corpus";
 import {
   builderPrompt,
@@ -6977,6 +6979,84 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     relayProc?.kill("SIGKILL");
     rmSync(smokeDir, { recursive: true, force: true });
   }
+}
+
+// --- P2-133: orphan-test reachability (pure fixtures) ------------------------
+
+{
+  const FIXTURE_SCRIPTS: Record<string, string> = {
+    "test:unit": "tsx scripts/in-chain.test.ts",
+    "test:never-invoked": "tsx scripts/in-never-invoked.test.ts",
+    "test:ci-runner": "tsx scripts/in-ci-only.test.ts",
+    typecheck: "tsc --noEmit",
+  };
+  const GATE = ["npm run typecheck --silent", "npm run build --silent", "npm run test:unit --silent"];
+  const CI = ["- run: npm run test:unit", "- run: npx tsx scripts/in-ci-only.test.ts"].join("\n");
+  const REGISTRY = [
+    { file: "scripts/only-registered.test.ts", runner: "manual", reason: "live test" },
+    { file: "scripts/in-chain.test.ts", runner: "npm run test:unit", reason: "belt and braces" },
+  ];
+  const FILES = [
+    "scripts/in-chain.test.ts",
+    "scripts/in-never-invoked.test.ts",
+    "scripts/in-ci-only.test.ts",
+    "scripts/only-registered.test.ts",
+    "scripts/nowhere.test.ts",
+  ];
+  const orphans = unreachableTests(FILES, FIXTURE_SCRIPTS, GATE, CI, REGISTRY);
+  check("P2-133: file cited only in a never-invoked script is unreachable (declaration is not coverage)", orphans.includes("scripts/in-never-invoked.test.ts"));
+  check("P2-133: file inside the test:unit chain is reachable", !orphans.includes("scripts/in-chain.test.ts"));
+  check("P2-133: file only executed by CI is reachable", !orphans.includes("scripts/in-ci-only.test.ts"));
+  check("P2-133: file only in the declared registry is not an orphan", !orphans.includes("scripts/only-registered.test.ts"));
+  check("P2-133: file cited nowhere is an orphan", orphans.includes("scripts/nowhere.test.ts"));
+  check(
+    "P2-133: orphans are exactly the two uncovered fixtures, in input order",
+    JSON.stringify(orphans) === JSON.stringify(["scripts/in-never-invoked.test.ts", "scripts/nowhere.test.ts"]),
+  );
+  check(
+    "P2-133: registered AND in the chain is never an error",
+    !unreachableTests(["scripts/in-chain.test.ts"], FIXTURE_SCRIPTS, GATE, CI, REGISTRY).includes("scripts/in-chain.test.ts"),
+  );
+  check(
+    "P2-133: CI citing a script name only via npm run still expands the chain",
+    unreachableTests(
+      ["scripts/in-chain.test.ts"],
+      { ...FIXTURE_SCRIPTS, "test:unit": "tsx scripts/other.test.ts && tsx scripts/in-chain.test.ts" },
+      GATE,
+      CI,
+      [],
+    ).length === 0,
+  );
+  check(
+    "P2-133: registry entry with extra path segments matches by basename",
+    unreachableTests(
+      ["scripts/only-registered.test.ts"],
+      {},
+      [],
+      "",
+      [{ file: "./scripts/only-registered.test.ts", runner: "r", reason: "why" }],
+    ).length === 0,
+  );
+}
+
+// --- P2-133: real-repo assertion — a future orphan test fails the gate -------
+
+{
+  const root = join(import.meta.dirname, "..");
+  const testFiles = readdirSync(join(root, "scripts"))
+    .filter((f) => f.endsWith(".test.ts"))
+    .sort()
+    .map((f) => `scripts/${f}`);
+  const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { scripts?: Record<string, string> };
+  const gateCommands = PILOT_GATE_STEPS.map(([, cmd]) => cmd);
+  const ciText = readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8");
+  const registry = JSON.parse(readFileSync(join(root, "scripts", "test-registry.json"), "utf8"));
+  const orphans = unreachableTests(testFiles, pkg.scripts ?? {}, gateCommands, ciText, registry);
+  if (orphans.length > 0) {
+    console.error(`  orphan test files (add to test:unit/CI or scripts/test-registry.json): ${orphans.join(", ")}`);
+  }
+  check("P2-133: real repo — every test file is executed by a runner or declared in test-registry.json", orphans.length === 0);
+  check("P2-133: registry covers the known live/daemon and Electron tests", (Array.isArray(registry) ? registry : registry.entries ?? []).length >= 9);
 }
 
 if (failures > 0) {

@@ -1378,3 +1378,12 @@ queima attempt do builder de um jeito que parece falha de task. O script
 Run manual: `npx tsx scripts/opencode-release-watch.ts` (cobre via
 `scripts/release-watch.test.ts` na bateria `test:unit`, com fetch mockado).
 Wiring no loop do pipeline é follow-up — o spike valida o sinal primeiro.
+
+## Testes órfãos não passam despercebidos (P2-133)
+
+Todo `scripts/*.test.ts` precisa ser executado por um runner real — bateria do
+gate, cadeia `test:unit` ou CI — ou estar declarado em `scripts/test-registry.json`
+(teste ao vivo/Electron, com runner e motivo). A asserção final de
+`scripts/unit.test.ts` roda `scripts/testreachability.ts` (puro, sem I/O) contra o
+repositório real: script declarado no package.json e nunca invocado não conta como
+cobertura, e qualquer teste órfão futuro reprova o gate.
