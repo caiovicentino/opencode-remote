@@ -580,7 +580,10 @@ try {
 
     const scanFakeEnv = {
       ...process.env,
-      OCR_DESKTOP_SESSION: `${session}-scan-live`,
+      // P1-089 lesson: the keeper's unix socket lives at
+      // $TMPDIR/ocr-desktop-<session>/keeper.sock and macOS truncates AF_UNIX
+      // bind() paths at 104 chars — keep the session suffix SHORT.
+      OCR_DESKTOP_SESSION: `${session}-scan2`,
       OCR_DESKTOP_MEDIA_FAKE: "1",
     };
     let scanFakeBooted = false;

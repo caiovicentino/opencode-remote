@@ -41,12 +41,13 @@ export default function QrScanner({ onScan, onCancel, onPaste }: Props) {
     let watchdog: ReturnType<typeof setInterval> | null = null;
     let cancelled = false;
     let frames = 0;
-    const startedAt = performance.now();
+    let startedAt = performance.now();
 
     function fail(r: ScanReason) {
       if (cancelled || doneRef.current) return;
       setReason(r);
       setPhase("unavailable");
+      cancelAnimationFrame(raf);
       stream?.getTracks().forEach((tr) => tr.stop());
       stream = null;
       if (watchdog) clearInterval(watchdog);
@@ -54,8 +55,11 @@ export default function QrScanner({ onScan, onCancel, onPaste }: Props) {
 
     /** Empty-feed detector (P2-117): a capture device with no input shows its
      * own "NO SIGNAL" OSD in the video element — never render that. A feed
-     * with no decodable frames past the grace period is unavailable. */
+     * with no decodable frames past the grace period is unavailable. The
+     * grace clock starts here, when the stream actually plays — a slow
+     * permission prompt must not eat the window (round-3 review). */
     function startWatchdog() {
+      startedAt = performance.now();
       watchdog = setInterval(() => {
         const video = videoRef.current;
         if (!video) return;
