@@ -71,6 +71,23 @@ porque o deploy só embarca SHA verificado pós-gate (P2-058). Critério
 operacional: 24h de logs do pipeline sem nenhum push direto em `main`;
 deploys continuam saindo de PRs mergeados (SHAs verificados, P2-058).
 
+O PR de task segue o mesmo espírito fail-closed (P2-125): `mergeTask` resolve o
+número do PR por `gh pr list --head pilot/<ID> --state all` (cria o PR,
+reutiliza o existente e continua válido após o `--delete-branch`), roda
+`gh pr merge <n> --squash --delete-branch --auto || gh pr merge <n> --squash
+--delete-branch` e **confirma por poll** — até ~5 min (60 polls × 5s) de
+`gh pr view <n> --json state,headRefOid` — que `state === "MERGED"` **e**
+`headRefOid ===` o sha empurrado antes de reportar sucesso, mesmo quando o
+próprio exec do merge retornou erro (auto-merge armado sob proteção de branch).
+Os últimos 300 chars do output de cada passo `gh` (create/list/merge) entram no
+`detail` da falha e no evento `phase: merge` — o motivo real chega ao log e às
+failure lessons em vez do genérico "merge failed". Quando nem o poll confirma,
+o resultado é classificado como **infra** (`infra: timeout`/`network`): soma em
+`infraFails`, não queima attempt, não alimenta a janela de febre e a task volta
+a ser agendada no ciclo seguinte. O guard de sha verificado do deploy (P2-058)
+e a proibição de push direto em `main` (P1-076) seguem idênticos — não existe
+fallback de merge local.
+
 ### Roles (todos `opencode run` headless)
 
 | Role | O que faz | Timeout |
@@ -613,6 +630,17 @@ mesmo caminho da P1-074: contador diagnóstico `infraFails` + pass do doctor a
 cada 3 ocorrências. O breaker global de febre continua enxergando cada crash
 como amostra não atribuída (P2-063), então um crash loop sistêmico ainda pausa
 a fila em modo auditoria.
+
+**Merge de PR que falha é infra, não mérito (P2-125)**: a falha do `gh` no
+merge do PR de task (API fora, `--auto` enfileirado que não confirma,
+número de PR não resolvível) não é finding de código — `mergePrForTask`
+devolve o campo estruturado `infra` (`timeout` quando o poll de confirmação
+estoura o orçamento de ~5 min, `network` quando create+list não resolvem o PR)
+e o resultado segue o caminho da P1-074: soma em `infraFails`, zero attempts
+queimados, zero amostras de febre, task re-agendada no ciclo seguinte. Anomalia
+real de mérito (PR mergeado com outro sha) **não** recebe `infra` e continua
+queimando attempt. Ver "merge por PR" acima para o formato do detail com a
+razão real do `gh`.
 
 **Checkpoint de pressão de contexto (P1-079)**: o builder resume a MESMA sessão
 opencode entre rounds (cache de contexto), então o total de tokens só cresce. Antes

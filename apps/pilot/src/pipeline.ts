@@ -1413,7 +1413,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
   try {
     recap = loadRecapCarry(t.id)?.recap ?? "";
   } catch {}
-  let merged = false;
+  let merged: PrMergeOutcome | null = null;
   let lastStream = 0;
   // P1-075: builder rounds executed + IER lessons injected (peak across
   // rounds) — folded into state.lessonImpact by the caller.
@@ -1889,8 +1889,9 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       // concurrent main pushes are safe: the PR path is serialized server-side
       // by GitHub, the local fallback re-fetches and retries on non-fast-forward.
       merged = await mergeTask(cfg, ws, t, state, rerunResults);
-      emit("phase", { task: t.id, phase: "merge", ok: merged });
-      if (merged) {
+      // P2-125: the phase event carries the real gh reason (truncated by emit)
+      emit("phase", { task: t.id, phase: "merge", ok: merged.ok, detail: merged.detail });
+      if (merged.ok) {
         // gate passed — the per-task carryover files have no reason to linger
         const f = gateFailFile(t.id);
         if (f) {
@@ -1911,7 +1912,11 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
           );
         }
       }
-      if (!merged) return { ok: false, detail: "gate green but the PR merge failed — the next cycle retries the PR", ...roundMeta() };
+      // P2-125: the failure detail carries the actual gh reason and the
+      // structured infra kind (timeout/network) routes through the infra
+      // path — no attempt burned, no fever sample, re-scheduled next cycle.
+      if (!merged.ok)
+        return { ok: false, detail: `gate green but the PR merge failed: ${merged.detail}`, infra: merged.infra, ...roundMeta() };
     } else {
       // Only verified findings reach the builder prompt as evidence (P2-015).
       // P1-059 round 2: on escalation rejection the arbiter ADDS its verified
@@ -2329,6 +2334,98 @@ export function deterministicGate(
   return { ok: true, flaky };
 }
 
+/** Injectable sinks for mergePrForTask (unit battery pins the semantics). */
+export interface PrMergeIo {
+  exec: (cmd: string) => { ok: boolean; output: string };
+  sleep: (ms: number) => Promise<void>;
+}
+
+/** Outcome of the task-PR merge: `infra` classifies unambiguous gh-side noise
+ * (P2-125) so runSlot's classifier spares the attempt counter and the fever
+ * window — a merit anomaly (e.g. another sha merged) leaves it unset. */
+export interface PrMergeOutcome {
+  ok: boolean;
+  detail: string;
+  infra?: InfraFailureKind;
+}
+
+/** Confirmation budget (~5 min, same shape as MERGE_CONFIRM_POLLS in metapush). */
+export const PR_MERGE_CONFIRM_POLLS = 60;
+export const PR_MERGE_CONFIRM_DELAY_MS = 5_000;
+
+const PR_MERGE_TAIL = 300;
+
+function ghTail(output: string): string {
+  return output.trim().slice(-PR_MERGE_TAIL);
+}
+
+/**
+ * P2-125: create + merge the task PR and CONFIRM it landed with OUR sha as
+ * the merged head — the same fail-closed confirmation `armMetaPr` applies to
+ * the meta PR. Every gh step's output is captured and its last 300 chars ride
+ * the failure detail, so the real reason reaches the phase event, the pipeline
+ * log and the failure lessons (a green gate with a "generic merge failed" was
+ * how P2-117/P2-123 burned 8 attempts). Under branch protection
+ * `gh pr merge --auto` only QUEUES the squash: success is polled from
+ * `gh pr view --json state,headRefOid` (state MERGED + headRefOid === the
+ * pushed sha) — even when the merge exec itself returned an error. If nothing
+ * confirms within the budget the outcome is honest infra ("timeout"): the
+ * next cycle re-schedules instead of burning an attempt. The PR is always
+ * addressed by NUMBER (`--delete-branch` removes the ref, the poll must stay
+ * valid) and there is deliberately NO local-merge/push-to-main fallback
+ * (P1-076).
+ */
+export async function mergePrForTask(
+  io: PrMergeIo,
+  args: { branch: string; title: string; body: string; pushedSha: string },
+): Promise<PrMergeOutcome> {
+  const create = io.exec(
+    `gh pr create --head ${args.branch} --title ${JSON.stringify(args.title)} --body ${JSON.stringify(args.body)}`,
+  );
+  // Operator-merge races and transient gh/API failures can leave the PR already
+  // open from a previous cycle — resolve its NUMBER instead of failing forever
+  // (`--state all` also matches a PR whose branch was deleted by --delete-branch).
+  const list = io.exec(`gh pr list --head ${args.branch} --state all --json number --jq '.[0].number'`);
+  const prNumber = Number.parseInt(list.output.trim(), 10);
+  if (!Number.isInteger(prNumber) || prNumber <= 0) {
+    // both steps dead ⇒ gh/API unavailable (infra) — the branch is on origin;
+    // the next cycle retries the PR.
+    return {
+      ok: false,
+      infra: "network",
+      detail: `pr create failed: ${ghTail(create.output)} | pr list: ${ghTail(list.output)}`,
+    };
+  }
+  // --auto only works once branch protection exists; the immediate squash is
+  // the fallback. Failure here is NOT fatal: the squash may be queued anyway.
+  const merge = io.exec(
+    `gh pr merge ${prNumber} --squash --delete-branch --auto || gh pr merge ${prNumber} --squash --delete-branch`,
+  );
+  const mergeTail = ghTail(merge.output);
+  for (let poll = 0; poll < PR_MERGE_CONFIRM_POLLS; poll++) {
+    if (poll > 0) await io.sleep(PR_MERGE_CONFIRM_DELAY_MS);
+    const view = io.exec(`gh pr view ${prNumber} --json state,headRefOid`);
+    if (!view.ok) continue; // gh unavailable — undeterminable, keep polling
+    let snap: { state?: unknown; headRefOid?: unknown };
+    try {
+      snap = JSON.parse(view.output);
+    } catch {
+      continue; // malformed JSON — undeterminable, keep polling
+    }
+    const state = typeof snap.state === "string" ? snap.state : "";
+    const head = typeof snap.headRefOid === "string" ? snap.headRefOid : "";
+    // a head that is not ours (before or at merge) is a real anomaly, not infra
+    if (head && head !== args.pushedSha) {
+      return { ok: false, detail: `PR #${prNumber} head is ${head.slice(0, 7)}, not our ${args.pushedSha.slice(0, 7)} — merge exec: ${mergeTail}` };
+    }
+    if (state === "MERGED") {
+      if (head === args.pushedSha) return { ok: true, detail: `PR #${prNumber} squash-merged, head confirmed` };
+      return { ok: false, detail: `PR #${prNumber} MERGED with another head — merge exec: ${mergeTail}` };
+    }
+  }
+  return { ok: false, infra: "timeout", detail: `merge unconfirmed after ~5min: ${mergeTail}` };
+}
+
 /**
  * P1-101: merge half of the old gatekeeper() — push the branch, open + merge
  * the audit-trail PR, record the verified merge sha and land the mark-done
@@ -2341,40 +2438,32 @@ async function mergeTask(
   t: Task,
   state: PilotState,
   rerunResults: RerunResults,
-): Promise<boolean> {
+): Promise<PrMergeOutcome> {
   // merge via GitHub PR for audit trail
   const title = `pilot(${t.id}): ${t.title}`;
   // P2-058 (round 2): HEAD before the merge attempt — the post-merge record
-  // must prove HEAD actually moved past this tip
+  // must prove HEAD actually moved past this tip. Also the sha the PR merge
+  // must confirm (headRefOid === pushedSha) before reporting success.
   const preMergeHead = headSha(ws);
   exec(`git push -q origin pilot/${t.id}`, { cwd: ws, allowFail: true });
-  const pr = exec(
-    `gh pr create --head pilot/${t.id} --title ${JSON.stringify(title)} --body ${JSON.stringify("Autonomous pipeline merge — gatekeeper green (typecheck, build, reconnect, integration, invariants, download).")}`,
-    { cwd: ws, timeoutMin: 5, allowFail: true },
+  // P2-125: the PR create/merge runs through the injectable PrMergeIo with
+  // fail-closed confirmation — see mergePrForTask. P1-076: no local-merge
+  // fallback — a merge without a PR has no audit trail, and a direct push to
+  // main defeats branch protection. The branch is on origin; the next cycle
+  // retries the PR.
+  const outcome = await mergePrForTask(
+    {
+      exec: (cmd) => exec(cmd, { cwd: ws, timeoutMin: 5, allowFail: true }),
+      sleep: (ms) => new Promise<void>((r) => setTimeout(r, ms)),
+    },
+    {
+      branch: `pilot/${t.id}`,
+      title,
+      body: "Autonomous pipeline merge — gatekeeper green (typecheck, build, reconnect, integration, invariants, download).",
+      pushedSha: preMergeHead,
+    },
   );
-  // Operator-merge races and transient gh/API failures can leave the PR already
-  // open from a previous cycle — reuse it instead of failing forever.
-  let prReady = pr.ok;
-  if (!prReady) {
-    const existing = exec(
-      `gh pr list --head pilot/${t.id} --state open --json number --jq length`,
-      { cwd: ws, timeoutMin: 1, allowFail: true },
-    );
-    prReady = existing.ok && existing.output.trim().startsWith("1");
-  }
-  if (prReady) {
-    const merge = exec("gh pr merge --squash --delete-branch --auto || gh pr merge --squash --delete-branch", {
-      cwd: ws,
-      timeoutMin: 5,
-      allowFail: true,
-    });
-    if (!merge.ok) return false;
-  } else {
-    // P1-076: no local-merge fallback — a merge without a PR has no audit
-    // trail, and a direct push to main defeats branch protection. The branch
-    // is on origin; the next cycle retries the PR.
-    return false;
-  }
+  if (!outcome.ok) return outcome;
   // bring workspace main up to date with the merge, then mark the task done
   exec("git checkout -q main", { cwd: ws, allowFail: true });
   exec("git pull -q origin main", { cwd: ws, allowFail: true });
@@ -2428,7 +2517,7 @@ async function mergeTask(
   } else {
     state.mergesSinceCorpus = mergesSinceCorpus;
   }
-  return true;
+  return { ok: true, detail: outcome.detail };
 }
 
 function headSha(ws: string): string {
