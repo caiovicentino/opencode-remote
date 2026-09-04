@@ -80,6 +80,7 @@ import {
   normalizeEvidenceLine,
   parseEvidenceBlock,
   plannerPrompt,
+  plannerRetryPolicy,
   pngSize,
   rebaseOutcome,
   reviewerPrompt,
@@ -150,6 +151,7 @@ import {
   recordInfraFailure,
   recordPipelineCrash,
   resultInfraKind,
+  specFailureIsInfra,
 } from "../apps/pilot/src/audit";
 import {
   appendCommitAndPush,
@@ -1481,6 +1483,23 @@ function ghMergingIo(realIo: { exec: (cmd: string) => { ok: boolean; output: str
   }
 }
 
+// --- P2-137 specFails: the spec-format free-retry survives the midnight rollover --
+{
+  const dir = mkdtempSync(join(tmpdir(), "pilot-state-"));
+  try {
+    const file = join(dir, "state.json");
+    writeFileSync(file, JSON.stringify({ date: "2026-01-01", tasks: 1, deploys: 0, failures: 0, taskAttempts: {}, specFails: { "P2-137": 1 } }));
+    const rolled = loadState(file);
+    check("loadState keeps specFails across midnight", rolled.specFails?.["P2-137"] === 1);
+    writeFileSync(file, JSON.stringify({ date: "2026-01-01", tasks: 1, deploys: 0, failures: 0 }));
+    check("loadState backfills missing specFails", Object.keys(loadState(file).specFails ?? {}).length === 0);
+    writeFileSync(file, JSON.stringify({ date: "2026-01-01", tasks: 1, deploys: 0, failures: 0, specFails: { "P2-137": "garbage", "P0-001": 2 } }));
+    check("loadState drops garbage specFails entries", loadState(file).specFails?.["P2-137"] === undefined && loadState(file).specFails?.["P0-001"] === 2);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 // --- P2-024 writeJsonAtomic: state.json survives a crash mid-write --------------
 {
   const makeIo = () => {
@@ -2094,6 +2113,43 @@ check("touchedUi: lookalike apps/webs rejected", !touchedUiFromDiff("apps/webs/s
   );
   check("planner: codeChanges spec-only diff is empty", codeChanges("specs/P0-999.md\n", "specs/P0-999.md").length === 0);
   check("planner: codeChanges without a spec keeps everything", codeChanges("specs/P0-999.md\n", null).length === 1);
+
+  // --- P2-137: planner learns from its own rejection — repair prompt with the
+  // exact guard reason, conditional 3rd attempt, spec-format infra franchise
+  {
+    const sixHeadings = ["## Problem", "## Approach", "## Touched files", "## Edge cases", "## Acceptance criteria", "## Out of scope"];
+    const pMissing = plannerPrompt(TASK, 2, [], "", "missing section(s): edge cases");
+    const listIdx = sixHeadings.map((h) => pMissing.indexOf(`- ${h}`));
+    check(
+      "planner: repair prompt cites the exact reason and lists all six headings in order",
+      pMissing.includes('"missing section(s): edge cases"') &&
+        listIdx.every((idx) => idx > pMissing.indexOf("TASK (")) && // repair block lives in the variable tail
+        listIdx.every((idx, n) => n === 0 || idx > listIdx[n - 1]!),
+    );
+    const pLarge = plannerPrompt(TASK, 2, [], "", "spec too large (500 lines / 60000 chars)");
+    check(
+      "planner: too-large repair cites the reason without the heading list",
+      pLarge.includes('"spec too large (500 lines / 60000 chars)"') && !pLarge.includes("- ## Problem"),
+    );
+    const pA = plannerPrompt(TASK, 2, [], "", "missing section(s): problem");
+    const pB = plannerPrompt(TASK, 3, [], "", "control marker at line 4: VERDICT");
+    const stable = pA.indexOf("TASK (");
+    check("planner: repair block keeps the P1-077 stable prefix byte-identical across reasons/attempts", stable > 0 && pA.slice(0, stable) === pB.slice(0, stable));
+    check("planner: attempt 1 without a rejection reason gets no repair block", !plannerPrompt(TASK, 1).includes("PREVIOUS SPEC REJECTION"));
+    check(
+      "planner: format-repairable reason earns a 3rd attempt",
+      plannerRetryPolicy("missing section(s): problem", 2) === true && plannerRetryPolicy("control marker at line 4: VERDICT", 2) === true,
+    );
+    check("planner: too-large/unknown reasons stop at 2 attempts", plannerRetryPolicy("spec too large (500 lines / 60000 chars)", 2) === false && plannerRetryPolicy("", 2) === false);
+    check(
+      "planner: attempt 1 always retries, attempt 3 (and ≤0) never does",
+      plannerRetryPolicy("spec too large (500 lines / 60000 chars)", 1) === true &&
+        plannerRetryPolicy("missing section(s): problem", 3) === false &&
+        plannerRetryPolicy("missing section(s): problem", 0) === false,
+    );
+    check("planner: first spec-format failure is infra, the second is merit", specFailureIsInfra(0) === true && specFailureIsInfra(1) === false);
+    check("infra kind: spec-format rides the structured flag", resultInfraKind({ ok: false, infra: "spec-format" }) === "spec-format" && resultInfraKind({ ok: false }) === null);
+  }
 
   // commitSpec IS the "enforced, not prompted" guarantee — drive it against a
   // scratch git repo with a misbehaving (junk-committing) planner

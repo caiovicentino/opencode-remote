@@ -658,6 +658,21 @@ retry que atualiza o head do PR usa `--force-with-lease` (mesmo precedente do
 `metapush`): a origin ainda está no tip do attempt anterior, e um push plain
 seria rejeitado non-fast-forward deixando o PR apontando pro sha velho.
 
+**Falha de formato de spec é infra uma vez por task (P2-137)**: quando o planner
+não produz um `specs/<ID>.md` válido, o `specRejectReason` (seção faltando,
+marker de controle, spec grande demais) agora entra no próprio prompt de retry
+(bloco `PREVIOUS SPEC REJECTION`, no fim da cauda variável — prefixo estável da
+P1-077 intacto) e, para motivos reparáveis por formato, `plannerRetryPolicy`
+libera uma **3ª tentativa** (`PLANNER_MAX_ATTEMPTS = 3`; spec grande demais ou
+motivo desconhecido param em 2, como antes). A **primeira** falha de formato de
+cada task é classificada como infra (`infra: "spec-format"`, mesmo caminho da
+P1-074: zero attempts, zero febre, contador diagnostic `infraFails` + doctor) —
+a franquia fica em `state.specFails` (sobrevive ao rollover de meia-noite e é
+limpada quando a task mergeia); da segunda falha de formato em diante é mérito
+exato como antes, então task genuinamente quebrada ainda queima attempts e
+pode ser bloqueada. O evento `planner-done` de falha carrega `no valid spec —
+<motivo>` no detail, e o detail terminal cita o número real de attempts gastos.
+
 **Checkpoint de pressão de contexto (P1-079)**: o builder resume a MESMA sessão
 opencode entre rounds (cache de contexto), então o total de tokens só cresce. Antes
 de cada round o pipeline mede a pressão — tokens da sessão (API do opencode, os
@@ -838,6 +853,15 @@ sem spec.
   tamanho) — o warn `planner attempt produced no valid spec` carrega `reason`, o
   detail terminal traz `— last: <motivo>` e a 2ª rejeição consecutiva dispara o
   **alerta de guard repetido** (evento `alert` + notify; ver seção do doctor).
+- **Planner aprende com a própria rejeição (P2-137)**: o `plannerPrompt` ganhou
+  um 5º parâmetro `rejectReason` — um bloco de reparo no **fim** do prompt (a
+  cauda variável; prefixo estável da P1-077 byte-idêntico) cita o motivo
+  literal como dado entre aspas e, quando é seção faltando, lista as seis
+  headings exigidas na ordem. `plannerRetryPolicy(motivo, attempt)` decide se
+  há nova tentativa: motivo reparável por formato (seção faltando / marker de
+  controle) libera uma 3ª tentativa; spec grande demais ou motivo desconhecido
+  param em 2. A primeira falha de formato por task é infra (`spec-format`,
+  zero attempts); ver o parágrafo P2-137 na seção de infra acima.
 - O dashboard (`apps/pilot/dashboard`) conhece as fases `planner`/`planner-done`:
   só o node backlog acende e o builder aparece como "working" durante o spec.
 - Se a task já está mergeada em `origin/main`, o planner é pulado (senão o
