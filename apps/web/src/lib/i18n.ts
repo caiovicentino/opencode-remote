@@ -181,6 +181,21 @@ export const dict = {
       "Show the pairing QR to control this machine from your phone — traffic is end-to-end encrypted.",
     pairRemoteAction: "Show pairing QR",
     localConnecting: "Connecting to the local daemon…",
+    // degraded first-boot journey (desktop, P2-112): a dead daemon on first
+    // boot is never a dead end — calm status, visible auto-retry, minimal
+    // local data, and the manual pairing screen one click away.
+    firstContactTitle: "Connecting for the first time…",
+    firstContactHint:
+      "Conversations, files and artifacts sync as soon as the local daemon answers. Nothing is lost — this screen keeps trying on its own.",
+    degradedRetrying: "Retrying automatically…",
+    degradedDownHint:
+      "Automatic retries stopped. Use Reconnect now — or just wait: the app reconnects by itself when the daemon is back.",
+    degradedLocalTitle: "Available offline",
+    degradedLocalHint: "Language and theme live on this machine — they work right now.",
+    degradedPairManually: "Pair another device manually",
+    reconnectTrying: "Trying…",
+    reconnectStarted: "Daemon restart started — the app reconnects on its own.",
+    reconnectFailed: "Could not restart the daemon — try again in a moment.",
     // command palette (desktop, P1-046)
     palettePlaceholder: "Search conversations and actions…",
     paletteEmpty: "No matches",
@@ -419,6 +434,21 @@ export const dict = {
       "Mostra o QR de pareamento para controlar esta máquina do celular — tráfego criptografado ponta a ponta.",
     pairRemoteAction: "Mostrar QR de pareamento",
     localConnecting: "Conectando ao daemon local…",
+    // jornada degradada no primeiro boot (desktop, P2-112): daemon morto no
+    // primeiro contato nunca vira beco sem saída — status calmo, retry
+    // automático visível, dados locais mínimos e o pareamento a um clique.
+    firstContactTitle: "Conectando pela primeira vez…",
+    firstContactHint:
+      "Conversas, arquivos e artifacts sincronizam assim que o daemon local responder. Nada se perde — esta tela segue tentando sozinha.",
+    degradedRetrying: "Tentando sozinho…",
+    degradedDownHint:
+      "As tentativas automáticas pararam. Use Reconectar agora — ou espere: quando o daemon voltar, o app reconecta sozinho.",
+    degradedLocalTitle: "Disponível offline",
+    degradedLocalHint: "Idioma e tema ficam nesta máquina — funcionam agora.",
+    degradedPairManually: "Parear outro dispositivo manualmente",
+    reconnectTrying: "Tentando…",
+    reconnectStarted: "Reinício do daemon iniciado — o app reconecta sozinho.",
+    reconnectFailed: "Não deu pra reiniciar o daemon agora — tente de novo em instantes.",
     // command palette (desktop, P1-046)
     palettePlaceholder: "Buscar conversas e ações…",
     paletteEmpty: "Nada encontrado",

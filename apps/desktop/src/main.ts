@@ -352,11 +352,15 @@ async function onReady(): Promise<void> {
   // apiToken, allowlist file or raw HTTP responses.
   ipcMain.handle("app:pairingState", () => pairingState);
   // P1-053: one-click recovery from the daemon-down banner — the same manual
-  // restart path the tray's "Restart daemon" action uses (P3-017).
-  ipcMain.handle("app:reconnectDaemon", () => {
-    void restartDaemon().catch((err) => logError("[desktop] banner reconnect failed:", err));
-    return true;
-  });
+  // restart path the tray's "Restart daemon" action uses (P3-017). P2-112:
+  // resolves with the real restart outcome so the renderer's trying state and
+  // result toast tell the truth instead of a blind fire-and-forget true.
+  ipcMain.handle("app:reconnectDaemon", () =>
+    restartDaemon().catch((err) => {
+      logError("[desktop] banner reconnect failed:", err);
+      return false;
+    }),
+  );
   // P3-053: dock unread badge — the renderer derives the count (lib/unread.ts)
   // and pushes it on every change. darwin/linux get a real dock badge; Windows
   // is a deliberate no-op (app.setBadgeCount has no effect there — an overlay

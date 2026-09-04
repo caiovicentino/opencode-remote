@@ -307,6 +307,15 @@ the list (hidden on the phone board too, with a restore action in the group).
 The `Cmd+K` switcher now shows the **last known message line** under each
 conversation in the search results.
 
+**Degraded first boot (P2-112)**: when the local daemon is unreachable on
+first launch, the app no longer dead-ends on the pairing screen. A calm status
+card — "Connecting for the first time…" for a daemon this machine has never
+met, never a red "daemon fell" alert — explains that conversations, files and
+artifacts sync as soon as the daemon answers, shows the automatic retry, and
+keeps the purely-local data (language, theme) working. "Reconnect now" gives
+real feedback (spinner + trying state + result toast), and manual pairing
+stays one click away.
+
 **Auto-preview (P1-072)**: when the agent brings up a local site (http.server,
 vite, a dev server…) and mentions `http://localhost:<port>` in its reply, the
 Browser pane opens by itself next to the chat, pointed at that URL, rendered
