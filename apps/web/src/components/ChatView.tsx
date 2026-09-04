@@ -34,6 +34,7 @@ import {
 import { getCachedSession, putCachedSession } from "../lib/sessionCache";
 import { appendDraft, getDraft, setDraft } from "../lib/drafts";
 import { firstSentence, pressureLevel } from "../lib/context";
+import { speakBrief } from "../lib/voice";
 import { clampComposerHeight, composerSelectorLabel } from "../lib/composer";
 import { mergeBubbles, rowsToBubbles, type Bubble, type HistoryRow } from "../lib/bubbleMerge";
 import {
@@ -43,7 +44,7 @@ import {
   type ThinkingState,
 } from "../lib/thinking";
 import { initialUnreadState, reduceUnread, sendUnreadToShell } from "../lib/unread";
-import { ArtifactIcon, IconArrowUp, IconChat, IconChevronDown, IconDownload, IconLaptop, IconMic, IconPlus, IconWrench } from "./icons";
+import { ArtifactIcon, IconArrowLeft, IconArrowUp, IconChat, IconCheck, IconChevronDown, IconChevronUp, IconClock, IconDownload, IconLaptop, IconMic, IconPlus, IconRefresh, IconSpeaker, IconWrench, IconX } from "./icons";
 
 interface Props {
   sessionId: string;
@@ -68,6 +69,10 @@ interface Props {
   paneArtifact?: ArtifactMeta | null;
   /** Called after paneArtifact is adopted so the source can clear its pending state. */
   onPaneArtifactConsumed?: () => void;
+  /** P2-108: the shell already shows .daemon-reconnecting/.daemon-down — the
+   * in-chat .conn-banner must not duplicate the same sentence (one banner
+   * only). The mobile PWA has no shell banner and keeps it. */
+  shellBannerVisible?: boolean;
 }
 
 interface QuestionInfo {
@@ -265,6 +270,7 @@ export default function ChatView({
   onBack,
   paneArtifact,
   onPaneArtifactConsumed,
+  shellBannerVisible = false,
 }: Props) {
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
@@ -292,6 +298,13 @@ export default function ChatView({
     return () => clearTimeout(t);
   }, [error]);
   const [recState, setRecState] = useState<"idle" | "rec" | "busy">("idle");
+  // P2-125 voice replies: toggle + playback state. Availability comes from the
+  // daemon (edge-tts installed on the host); the full answer stays in the chat.
+  const [ttsOn, setTtsOn] = useState(() => localStorage.getItem("ocr-tts-on") === "1");
+  const [ttsReady, setTtsReady] = useState(false);
+  const [speaking, setSpeaking] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const spokenRef = useRef<string | null>(null);
   const [images, setImages] = useState<PendingImage[]>([]);
   const [uploading, setUploading] = useState(false);
   const [models, setModels] = useState<{ providerID: string; modelID: string; name: string }[]>([]);
@@ -1803,6 +1816,100 @@ export default function ChatView({
     setRecState("idle");
   }
 
+  // ── P2-125 voice replies �─────────────────────────────────────────────
+  function stopSpeaking() {
+    audioRef.current?.pause();
+    audioRef.current = null;
+    setSpeaking(false);
+  }
+
+  async function speak(text: string) {
+    if (!text.trim()) return;
+    try {
+      const res = await request("POST", "/__ocr/voice/tts", { text }, undefined, 45_000);
+      if (res.status !== 200) return;
+      const { audioB64 } = res.body as { audioB64?: string };
+      if (!audioB64) return;
+      stopSpeaking();
+      const bytes = Uint8Array.from(atob(audioB64), (c) => c.charCodeAt(0));
+      const url = URL.createObjectURL(new Blob([bytes], { type: "audio/mpeg" }));
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      audio.onended = audio.onerror = () => {
+        setSpeaking(false);
+        URL.revokeObjectURL(url);
+        if (audioRef.current === audio) audioRef.current = null;
+      };
+      setSpeaking(true);
+      void audio.play();
+    } catch {
+      // voice replies are best-effort; the answer text is already on screen
+    }
+  }
+
+  // Host capability probe (edge-tts installed?) — retry while pairing settles:
+  // a one-shot probe on mount always races the first WS connect.
+  useEffect(() => {
+    let alive = true;
+    let attempts = 0;
+    const probe = () => {
+      if (!alive) return;
+      attempts++;
+      void request("GET", "/__ocr/voice/tts-status")
+        .then((res) => {
+          if (!alive) return;
+          if (res.status === 200) setTtsReady((res.body as { available?: boolean }).available === true);
+          else if (attempts < 10) window.setTimeout(probe, 1500);
+        })
+        .catch(() => {
+          if (alive && attempts < 10) window.setTimeout(probe, 1500);
+        });
+    };
+    probe();
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Speak the newest complete assistant reply while the toggle is on. The
+  // debounce swallows streaming updates: speech fires once the answer settles.
+  useEffect(() => {
+    if (!ttsOn || !ttsReady) return;
+    let last: Bubble | undefined;
+    for (let i = bubbles.length - 1; i >= 0; i--) {
+      const b = bubbles[i];
+      if (b && b.role === "assistant") {
+        last = b;
+        break;
+      }
+    }
+    if (!last || !last.messageID || last.pending || !last.text?.trim()) return;
+    if (spokenRef.current === last.messageID) return;
+    const id = last.messageID;
+    const timer = setTimeout(() => {
+      spokenRef.current = id;
+      void speak(speakBrief(last!.text));
+    }, 1200);
+    return () => clearTimeout(timer);
+  }, [bubbles, ttsOn, ttsReady]);
+
+  function toggleTts() {
+    if (speaking) {
+      stopSpeaking();
+      return;
+    }
+    const next = !ttsOn;
+    setTtsOn(next);
+    localStorage.setItem("ocr-tts-on", next ? "1" : "0");
+    if (next) spokenRef.current = null;
+  }
+
+  // switching sessions (or unmounting) stops any playing audio
+  useEffect(() => {
+    return () => stopSpeaking();
+  }, [sessionId]);
+
   // P1-079: pinned recap — the session summary when the backend provides one,
   // else the first sentence of the last assistant message.
   let lastAssistant = "";
@@ -1818,7 +1925,9 @@ export default function ChatView({
   return (
     <div className={`screen${splitOpen ? " artifact-split" : ""}`}>
       <header>
-        <button className="chat-back" onClick={onBack}>←</button>
+        <button className="chat-btn chat-back" onClick={onBack} aria-label={t("back")}>
+          <IconArrowLeft />
+        </button>
         <h1
           title={sessionTitle}
           style={{
@@ -1853,7 +1962,7 @@ export default function ChatView({
           </div>
         )}
         <button
-          className="chat-handoff"
+          className="chat-btn chat-handoff"
           onClick={() => void handoffToDesktop()}
           aria-label={t("handoffBtn")}
           title={t("handoffBtn")}
@@ -1861,28 +1970,32 @@ export default function ChatView({
           <IconLaptop />
         </button>
         <button
+          className="chat-btn"
           onClick={() => void exportChat()}
           disabled={exporting}
           aria-label={t("exportBtn")}
           title={t("exportBtn")}
         >
-          {exporting ? "…" : <IconDownload />}
+          <IconDownload />
         </button>
         <button
+          className="chat-btn"
           onClick={() => {
             setShowActivity((v) => !v);
             ensureToolHistory();
           }}
           aria-label={t("toolActivity")}
-          style={showActivity ? { borderColor: "var(--accent)" } : undefined}
+          data-active={showActivity || undefined}
         >
           <IconWrench />
         </button>
       </header>
 
-      {connStatus !== "paired" && (
+      {/* P2-108: one reconnect banner only — when the shell strip is already
+          showing, this in-chat banner stays silent. */}
+      {connStatus !== "paired" && !shellBannerVisible && (
         <div className="conn-banner" role="status" title={t("connTitle", { status: connStatus })}>
-          <span className="conn-banner-spin" aria-hidden>⟳</span>{" "}
+          <IconRefresh size={14} className="conn-banner-spin" aria-hidden />{" "}
           {t("reconnecting", { n: Math.max(connAttempts, 1) })}
         </div>
       )}
@@ -1935,8 +2048,8 @@ export default function ChatView({
             </div>
           )}
           {winStart > 0 && (
-            <div className="muted" style={{ textAlign: "center", fontSize: "0.75rem" }}>
-              ↑ {t("olderMessages", { n: winStart })}
+            <div className="muted msg-older" style={{ textAlign: "center", fontSize: "0.75rem" }}>
+              <IconChevronUp size={12} aria-hidden /> {t("olderMessages", { n: winStart })}
             </div>
           )}
           {winStart === 0 && hasMore && !loadingHistory && (
@@ -2080,7 +2193,7 @@ export default function ChatView({
             aria-label={t("jumpToEnd")}
             title={t("jumpToEnd")}
           >
-            ↓
+            <IconChevronDown size={16} aria-hidden />
           </button>
         )}
         </div>
@@ -2262,7 +2375,9 @@ export default function ChatView({
           </div>
         )}
         {autoNote && (
-          <p style={{ color: "var(--muted)", margin: 0 }}>✔ {autoNote}</p>
+          <p style={{ color: "var(--muted)", margin: 0, display: "inline-flex", alignItems: "center", gap: 4 }}>
+            <IconCheck size={13} aria-hidden /> {autoNote}
+          </p>
         )}
         {canUnrevert && (
           <button style={{ margin: "2px 0" }} onClick={() => void unrevert()}>
@@ -2431,6 +2546,16 @@ export default function ChatView({
                 <IconMic />
               )}
             </button>
+            {ttsReady && (
+              <button
+                className={`composer-btn composer-tts${ttsOn ? " composer-tts-on" : ""}${speaking ? " composer-tts-speaking" : ""}`}
+                onClick={toggleTts}
+                aria-label={speaking ? t("stopSpeaking") : ttsOn ? t("voiceReplyOn") : t("voiceReply")}
+                title={speaking ? t("stopSpeaking") : ttsOn ? t("voiceReplyOn") : t("voiceReply")}
+              >
+                <IconSpeaker />
+              </button>
+            )}
             <div className="composer-spacer" />
             <div className="composer-model" ref={modelMenuRef}>
               <button
@@ -2559,11 +2684,11 @@ export default function ChatView({
         <Modal label={t("toolActivity")} z={55} onClose={() => setShowActivity(false)}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <button onClick={() => setShowActivity(false)} aria-label={t("close")}>
-              ✕
+              <IconX size={16} />
             </button>
             <div style={{ flex: 1, fontWeight: 600, fontSize: "0.9rem" }}>{t("toolActivity")}</div>
             <button onClick={() => void loadToolHistory()} aria-label={t("refreshTools")}>
-              ↻
+              <IconRefresh size={16} />
             </button>
           </div>
           <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
@@ -2573,6 +2698,9 @@ export default function ChatView({
                 <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                   <span
                     style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 4,
                       fontSize: "0.72rem",
                       color:
                         a.status === "error"
@@ -2582,7 +2710,14 @@ export default function ChatView({
                             : "inherit",
                     }}
                   >
-                    {a.status === "completed" ? "✓" : a.status === "error" ? "✗" : "⏳"} {a.tool}
+                    {a.status === "completed" ? (
+                      <IconCheck size={12} aria-hidden />
+                    ) : a.status === "error" ? (
+                      <IconX size={12} aria-hidden />
+                    ) : (
+                      <IconClock size={12} aria-hidden />
+                    )}{" "}
+                    {a.tool}
                   </span>
                   <span
                     className="muted"
@@ -2628,7 +2763,7 @@ export default function ChatView({
         >
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <button onClick={() => setDiff(null)} aria-label={t("close")}>
-              ✕
+              <IconX size={16} />
             </button>
             <div style={{ flex: 1, fontWeight: 600, fontSize: "0.9rem" }}>
               {diff.loading ? t("loadingDiff") : t("changesFor", { action: diff.ask?.label ?? "…" })}

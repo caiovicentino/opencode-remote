@@ -1,3 +1,5 @@
+import workletSource from "./recorder-worklet.js?raw";
+
 export class WavRecorder {
   private ctx: AudioContext | null = null;
   private stream: MediaStream | null = null;
@@ -11,7 +13,11 @@ export class WavRecorder {
     });
     this.ctx = new AudioContext({ sampleRate: 16000 });
     if (this.ctx.state === "suspended") await this.ctx.resume();
-    await this.ctx.audioWorklet.addModule("/recorder-worklet.js");
+    // P2-125: the worklet rides the bundle as a blob URL — an absolute path
+    // breaks under the desktop shell (file://) and any non-root base.
+    const workletUrl = URL.createObjectURL(new Blob([workletSource], { type: "application/javascript" }));
+    await this.ctx.audioWorklet.addModule(workletUrl);
+    URL.revokeObjectURL(workletUrl);
     this.node = new AudioWorkletNode(this.ctx, "rec-processor");
     this.node.port.onmessage = (e) => {
       const buf = e.data as Float32Array;

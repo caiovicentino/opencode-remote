@@ -5,13 +5,14 @@ import { join } from "node:path";
 import QRCode from "qrcode";
 import {
   DAEMON_METRICS_PORT,
-  fetchDaemonVersion,
+  fetchDaemonHealth,
   getPairUrl,
   isDaemonDown,
   readApiToken,
   readDaemonState,
   reconnectState,
   restartDaemon,
+  sidecarExitInfo,
   startDaemonSidecar,
   stateFilePath,
   stopDaemonSidecar,
@@ -28,6 +29,15 @@ import { checkForUpdatesOnBoot, updatesEnabled, updateMenuLabel, type UpdateDial
 import { loadWindowBounds, saveWindowBounds, WINDOW_MIN, windowStateFile } from "./window-state";
 import { installFatalErrorHandlers, onRendererGone, ReloadGuard } from "./crash";
 import { clientLogsDir, writeCrashReport } from "./crash-log";
+import {
+  instanceRecordPath,
+  isProcessAlive,
+  keeperPidFromEnv,
+  processStartedBefore,
+  readInstanceRecord,
+  writeInstanceRecord,
+  zombieWarning,
+} from "./instances";
 import { buildDiagnosticReport, DIAG_LOG_TAIL } from "./diagnostics";
 import { desktopLogFile } from "./desktop-log";
 
@@ -140,12 +150,29 @@ const rendererReloadGuard = new ReloadGuard();
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
+  // P2-069: a second real instance must never paint its own (white) window on
+  // top of the running one. Quit quietly — the winner receives second-instance
+  // and focuses itself — after explaining the verdict in the shared desktop.log
+  // (same userData, so the line lands right where support looks first).
+  const holder = readInstanceRecord(instanceRecordPath(app.getPath("userData")));
+  log(
+    `[desktop] another instance already owns this userData` +
+      (holder ? ` (pid ${holder.pid}, started ${new Date(holder.startedAt).toISOString()})` : "") +
+      ` — focusing it instead of opening a second window`,
+  );
   app.quit();
 } else {
   // P3-020: Windows toasts are dropped by the OS unless the AppUserModelID is
   // set (must match electron-builder.yml's appId); must happen before ready.
   // macOS resolves the identity via Info.plist, so the call is skipped there.
   applyAppUserModelId(app, process.platform);
+  // P2-069 leash (b, test-only hatch): the hermetic harness (tools/desktop.mjs)
+  // passes its own pid via OCR_KEEPER_PID. If the keeper dies — SIGKILL from a
+  // pre-flight reaper, an OOM, anything — the Electron instance used to leak
+  // forever (the 32h white-window zombie). The app now watches the keeper and
+  // quits within WATCHDOG_MS of its death. Never set outside the harness.
+  const keeperPid = keeperPidFromEnv(process.env);
+  if (keeperPid) startKeeperLeash(keeperPid);
   // P3-014: OS-level registration for opencode-remote:// pair links. Packaged
   // builds only — a dev run must never steal the OS handler — and only on the
   // platforms that support the flow (macOS open-url, Windows second-instance
@@ -173,6 +200,55 @@ if (!gotLock) {
       logError("[desktop] startup failed:", err);
       app.quit();
     });
+}
+
+// --- instance hygiene (P2-069) ------------------------------------------------
+// Same-userData zombie detection: the boot-record file (instances.ts) survives
+// crashes and SIGKILLs, so an alive holder with an earlier start at boot time
+// is exactly the "white window lived for 32h" incident. Log-only: killing other
+// processes is the pre-flight reaper's job (scripts/e2e-orphans.ts), never the
+// shell's.
+
+/** Logs a zombie warning for a still-alive earlier instance (if any), then
+ * records this boot as the current holder of the userData. */
+function logInstanceBoot(): void {
+  const file = instanceRecordPath(app.getPath("userData"));
+  const nowMs = Date.now();
+  const previous = readInstanceRecord(file);
+  if (previous) {
+    const alive = isProcessAlive(previous.pid);
+    const warn = zombieWarning({
+      previous,
+      currentPid: process.pid,
+      nowMs,
+      alive,
+      startedBeforeCurrent: alive ? processStartedBefore(previous.pid, nowMs) : null,
+    });
+    if (warn) log(`[desktop] ${warn}`);
+  }
+  if (!writeInstanceRecord(file, { pid: process.pid, startedAt: nowMs })) {
+    logError("[desktop] instance boot record write failed (continuing)");
+  }
+}
+
+/** P2-069 (b): hermetic-instance leash — quit when the keeper pid disappears
+ * (see the OCR_KEEPER_PID note in the lock branch above). The graceful quit can
+ * stall (the harness keeper carries the same 12s SIGKILL fallback for the same
+ * reason), so a 4s grace is followed by app.exit() — the leash must never
+ * leave a zombie behind, and it only ever runs in harness instances. */
+function startKeeperLeash(keeperPid: number): void {
+  const WATCHDOG_MS = 5_000;
+  const LEASH_GRACE_MS = 4_000;
+  const timer = setInterval(() => {
+    if (isProcessAlive(keeperPid)) return;
+    clearInterval(timer);
+    log(`[desktop] keeper pid ${keeperPid} is gone — quitting hermetic instance (P2-069)`);
+    app.quit();
+    setTimeout(() => {
+      log("[desktop] leash grace elapsed without a clean quit — exiting (P2-069)");
+      app.exit(0);
+    }, LEASH_GRACE_MS).unref();
+  }, WATCHDOG_MS);
 }
 
 // --- auto-update flow (P1-050) ------------------------------------------------
@@ -207,6 +283,16 @@ const updateDialogSinks: UpdateDialogSinks = {
 function runUpdateCheck(source: string): void {
   void checkForUpdatesOnBoot({
     dialog: updateDialogSinks,
+    // P2-131 (round-2 review): yml feeds have no download engine — the manual
+    // flow hands the user the release page — but only for an explicit tray
+    // re-check. The boot check never auto-opens a browser tab, and update.ts
+    // dedupes so each version opens at most once per session.
+    openReleasePage:
+      source === "tray"
+        ? (url) => {
+            void shell.openExternal(url).catch((err) => logError("[desktop] opening release page failed:", err));
+          }
+        : undefined,
     onStatus: (status, version) => {
       lastUpdateStatus = status;
       refreshTrayMenu();
@@ -216,6 +302,7 @@ function runUpdateCheck(source: string): void {
 }
 
 async function onReady(): Promise<void> {
+  logInstanceBoot();
   buildMenu();
   buildTray();
 
@@ -352,11 +439,15 @@ async function onReady(): Promise<void> {
   // apiToken, allowlist file or raw HTTP responses.
   ipcMain.handle("app:pairingState", () => pairingState);
   // P1-053: one-click recovery from the daemon-down banner — the same manual
-  // restart path the tray's "Restart daemon" action uses (P3-017).
-  ipcMain.handle("app:reconnectDaemon", () => {
-    void restartDaemon().catch((err) => logError("[desktop] banner reconnect failed:", err));
-    return true;
-  });
+  // restart path the tray's "Restart daemon" action uses (P3-017). P2-112:
+  // resolves with the real restart outcome so the renderer's trying state and
+  // result toast tell the truth instead of a blind fire-and-forget true.
+  ipcMain.handle("app:reconnectDaemon", () =>
+    restartDaemon().catch((err) => {
+      logError("[desktop] banner reconnect failed:", err);
+      return false;
+    }),
+  );
   // P3-053: dock unread badge — the renderer derives the count (lib/unread.ts)
   // and pushes it on every change. darwin/linux get a real dock badge; Windows
   // is a deliberate no-op (app.setBadgeCount has no effect there — an overlay
@@ -524,9 +615,19 @@ function withLocalMode(state: PairingState): PairingState {
 }
 
 /** Placeholder state while the sidecar is down for good (P2-017): no QR (the
- * old room/keys are dead with the daemon), just the "daemon down" flag. */
+ * old room/keys are dead with the daemon), just the "daemon down" flag.
+ * P2-140: carries the exit classifier's verdict so the renderer can say WHY
+ * the daemon died, not only that it gave up. */
 function daemonDownState(): PairingState {
-  return { uri: null, qrDataUrl: null, devices: 0, phonePaired: false, daemonDown: true };
+  const exit = sidecarExitInfo();
+  return {
+    uri: null,
+    qrDataUrl: null,
+    devices: 0,
+    phonePaired: false,
+    daemonDown: true,
+    sidecarExit: exit ? { kind: exit.kind, reason: exit.reason, hint: exit.hint } : undefined,
+  };
 }
 
 /** P1-053: adopted daemon (reused launchd/CLI install) lost mid-run — the
@@ -651,8 +752,11 @@ async function refreshPairingState(): Promise<void> {
     // One loopback call per poll; unknown version degrades to "no banner".
     // (The FORCE_VERSION_MISMATCH hatch never reaches this path — it returns
     // the deterministic forced state at the top of refreshPairingState.)
+    // P2-138: the same /api/health answer carries the upstream opencode
+    // detail (P2-135 classifier verdict) — propagated additively next to the
+    // version fields so the renderer can explain WHY the agent is unreachable.
     const appVersion = app.getVersion();
-    const daemonVersion = await fetchDaemonVersion(token);
+    const { version: daemonVersion, opencode } = await fetchDaemonHealth(token);
     const mismatch = versionMismatch(appVersion, daemonVersion);
     if (mismatch) {
       log(`[desktop] daemon version mismatch: daemon ${daemonVersion ?? "?"} · app ${appVersion}`);
@@ -690,6 +794,7 @@ async function refreshPairingState(): Promise<void> {
       appVersion,
       daemonVersion,
       versionMismatch: mismatch,
+      opencode: opencode ?? undefined,
     });
   } catch (err) {
     // Daemon down, token rotated or state file wiped: drop the cached state so

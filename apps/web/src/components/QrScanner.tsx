@@ -15,7 +15,9 @@ interface Props {
 export type ScanPhase = "looking" | "preview" | "unavailable";
 export type ScanReason = "permission" | "no-device" | "busy" | "interrupted" | "no-signal" | "generic";
 
-/** getUserMedia failure names → the reason the state machine reports. */
+/** getUserMedia failure names → the reason the state machine reports.
+ * P2-118: every reason renders dictionary copy at render time (scanErr_*),
+ * so a language switch mid-error still re-renders in the new locale. */
 function errorReason(err: unknown): ScanReason {
   const name = (err as { name?: string })?.name ?? "";
   if (name === "NotAllowedError") return "permission";
@@ -29,11 +31,11 @@ function errorReason(err: unknown): ScanReason {
  * Renders a visible state machine — looking → preview → unavailable — so the
  * screen never degrades to an empty black box with a single gray caption. */
 export default function QrScanner({ onScan, onCancel, onPaste }: Props) {
+  const t = useT();
   const videoRef = useRef<HTMLVideoElement>(null);
   const [phase, setPhase] = useState<ScanPhase>("looking");
   const [reason, setReason] = useState<ScanReason>("generic");
   const doneRef = useRef(false);
-  const t = useT();
 
   useEffect(() => {
     let stream: MediaStream | null = null;
@@ -148,8 +150,8 @@ export default function QrScanner({ onScan, onCancel, onPaste }: Props) {
       data-reason={phase === "unavailable" ? reason : undefined}
     >
       <header>
-        <button onClick={onCancel} aria-label={t("scanBack")}>←</button>
-        <h1 style={{ fontSize: "0.9rem", margin: 0, flex: 1 }}>{t("scanTitle")}</h1>
+        <button onClick={onCancel} aria-label={t("scanBackManual")}>←</button>
+        <h1 style={{ fontSize: "0.9rem", margin: 0, flex: 1 }}>{t("scanPairingTitle")}</h1>
       </header>
       {phase === "unavailable" ? (
         <div className="qr-unavailable" role="alert">
@@ -169,7 +171,7 @@ export default function QrScanner({ onScan, onCancel, onPaste }: Props) {
           )}
         </div>
       )}
-      <p className="muted qr-hint">{t("scanHint")}</p>
+      <p className="muted qr-hint">{t("scanPointCamera")}</p>
     </div>
   );
 }

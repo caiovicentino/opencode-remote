@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  P2-136: entitlements for the hardened-runtime build (mac block of
+  electron-builder.yml points entitlements/entitlementsInherit here). Required
+  for Developer ID signing + notarization; harmless for the ad-hoc build.
+
+  Keys are the union of what the Electron runtime and the daemon sidecar need:
+    - allow-jit: V8's JIT needs MAP_JIT on Apple Silicon under hardened runtime.
+    - allow-unsigned-executable-memory: V8's executable memory on x64.
+    - disable-library-validation: Electron Framework and friends must load even
+      when signed by a different Team ID than the outer bundle.
+    - allow-dyld-environment-variables: the daemon sidecar is the same Electron
+      binary re-spawned with ELECTRON_RUN_AS_NODE=1 (src/daemon.ts) and inherits
+      the caller's DYLD_* environment.
+-->
+<plist version="1.0">
+  <dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+  </dict>
+</plist>

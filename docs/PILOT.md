@@ -71,6 +71,23 @@ porque o deploy só embarca SHA verificado pós-gate (P2-058). Critério
 operacional: 24h de logs do pipeline sem nenhum push direto em `main`;
 deploys continuam saindo de PRs mergeados (SHAs verificados, P2-058).
 
+O PR de task segue o mesmo espírito fail-closed (P2-125): `mergeTask` resolve o
+número do PR por `gh pr list --head pilot/<ID> --state all` (cria o PR,
+reutiliza o existente e continua válido após o `--delete-branch`), roda
+`gh pr merge <n> --squash --delete-branch --auto || gh pr merge <n> --squash
+--delete-branch` e **confirma por poll** — até ~5 min (60 polls × 5s) de
+`gh pr view <n> --json state,headRefOid` — que `state === "MERGED"` **e**
+`headRefOid ===` o sha empurrado antes de reportar sucesso, mesmo quando o
+próprio exec do merge retornou erro (auto-merge armado sob proteção de branch).
+Os últimos 300 chars do output de cada passo `gh` (create/list/merge) entram no
+`detail` da falha e no evento `phase: merge` — o motivo real chega ao log e às
+failure lessons em vez do genérico "merge failed". Quando nem o poll confirma,
+o resultado é classificado como **infra** (`infra: timeout`/`network`): soma em
+`infraFails`, não queima attempt, não alimenta a janela de febre e a task volta
+a ser agendada no ciclo seguinte. O guard de sha verificado do deploy (P2-058)
+e a proibição de push direto em `main` (P1-076) seguem idênticos — não existe
+fallback de merge local.
+
 ### Roles (todos `opencode run` headless)
 
 | Role | O que faz | Timeout |
@@ -99,6 +116,22 @@ desse output (`npm run dist:smoke --workspace @ocr/desktop`, P3-010) valida sem
 abrir o app que o bundle empacotado carrega `web-dist/index.html`, o sidecar
 `daemon/index.js` e o binário (layouts mac/win/linux) — também fora do gate por
 design; é o chão do estágio 5 (instaladores assinados).
+
+**Perfil de gate por repo (P2-116).** A bateria acima pressupõe um checkout do
+próprio pilot; apontar o pipeline para um repo externo quebraria o gate (os
+`scripts/*.ts` não existem lá) ou — pior — executaria scripts arbitrários do
+`package.json` alheio (superfície P1-056). O gate resolve um **perfil por
+workspace** (`apps/pilot/src/gateprofile.ts`), por detecção de stack, sem
+executar nada do alvo: um checkout do pilot (nome `opencode-remote` ou a
+própria árvore `apps/pilot/src/`) roda a bateria completa de sempre; um repo
+Node/TS externo roda **apenas** os scripts convencionais (`typecheck`, `build`,
+`test:unit`) que existirem no `package.json` dele, mais `lock-sync`
+(`npm ci --dry-run`) só quando houver `package-lock.json` — nada fora dessa
+allowlist é executado, e os steps pilot-only (smokes de desktop, corpus,
+invariants) nunca vazam para o repo externo. Repo sem bateria detectável
+ reprova em fail-closed no step `profile`, antes mesmo do evidence. Cada step
+roda com cwd no **worktree sandbox do próprio repo alvo** (o clone do slot),
+nunca na árvore de produção.
 
 O gate também roda a invariant **anti module-shadowing** (P2-014): o diff de
 merge (`origin/main...HEAD`) não pode introduzir na **raiz do workspace**
@@ -562,7 +595,12 @@ default 4; task size L tem cap próprio de 6, P1-060) o breaker dispara:
 
 1. a linha da task sai de `## Ready` e vai para a seção `## Blocked` do
    BACKLOG.md (landing via PR `pilot/meta`, com resumo do último findings) — o painel FILA do
-   dashboard já mostra as duas filas;
+   dashboard já mostra as duas filas; a edição é idempotente (P2-142): reusa o
+   primeiro cabeçalho `## Blocked` existente (a linha entra logo abaixo dele,
+   antes de `## Done` ou no fim do arquivo), considera task já bloqueada em
+   **qualquer** seção `## Blocked` e, na mesma escrita, colapsa cabeçalhos
+   `## Blocked` duplicados num único sem descartar nenhuma linha — arquivos
+   legados com várias seções se normalizam sozinhos na próxima escrita real;
 2. um **único** `notifySupervisor` "task blocked after N attempts" é enviado;
 3. a task não é re-agendada: cooldown infinito até um humano (ou o red team)
    mover de volta para `## Ready` — o contador é zerado quando a task passa no
@@ -597,6 +635,48 @@ mesmo caminho da P1-074: contador diagnóstico `infraFails` + pass do doctor a
 cada 3 ocorrências. O breaker global de febre continua enxergando cada crash
 como amostra não atribuída (P2-063), então um crash loop sistêmico ainda pausa
 a fila em modo auditoria.
+
+**Merge de PR que falha é infra, não mérito (P2-125)**: a falha do `gh` no
+merge do PR de task (API fora, `--auto` enfileirado que não confirma,
+número de PR não resolvível) não é finding de código — `mergePrForTask`
+devolve o campo estruturado `infra` (`timeout` quando o poll de confirmação
+estoura o orçamento de ~5 min, `network` quando create+list não resolvem o PR)
+e o resultado segue o caminho da P1-074: soma em `infraFails`, zero attempts
+queimados, zero amostras de febre, task re-agendada no ciclo seguinte. Anomalia
+real de mérito (PR mergeado com outro sha) **não** recebe `infra` e continua
+queimando attempt. Ver "merge por PR" acima para o formato do detail com a
+razão real do `gh`.
+
+**PR bloqueado por conflito com main é infra `conflict` + rebase no resume
+(P2-134)**: o poll de confirmação também lê `mergeable`/`mergeStateStatus` —
+se o GitHub já marca o PR como `CONFLICTING`/`DIRTY`, o loop sai no poll
+corrente com `infra: "conflict"` (novo kind, mesmo caminho da P1-074: zero
+attempts, zero febre) em vez de queimar os ~5 min de orçamento e um attempt a
+cada ciclo, como morreram P2-117/P2-123/P2-126. No caminho de resume,
+`setupTaskBranch` rebasa a branch preservada em `origin/main` antes de devolver
+`resumed`; rebase conflitante é fail-closed (P2-114): `git rebase --abort`, a
+branch fica intacta no tip preservado (nunca `reset --hard` sobre histórico
+preservado, P1-060) e o builder resolve o conflito no round seguinte. Como o
+rebase limpo reescreve os commits, o sha muda e o gate determinístico re-executa
+sobre o novo HEAD — nenhum merge acontece sobre certificação velha. O push de
+retry que atualiza o head do PR usa `--force-with-lease` (mesmo precedente do
+`metapush`): a origin ainda está no tip do attempt anterior, e um push plain
+seria rejeitado non-fast-forward deixando o PR apontando pro sha velho.
+
+**Falha de formato de spec é infra uma vez por task (P2-137)**: quando o planner
+não produz um `specs/<ID>.md` válido, o `specRejectReason` (seção faltando,
+marker de controle, spec grande demais) agora entra no próprio prompt de retry
+(bloco `PREVIOUS SPEC REJECTION`, no fim da cauda variável — prefixo estável da
+P1-077 intacto) e, para motivos reparáveis por formato, `plannerRetryPolicy`
+libera uma **3ª tentativa** (`PLANNER_MAX_ATTEMPTS = 3`; spec grande demais ou
+motivo desconhecido param em 2, como antes). A **primeira** falha de formato de
+cada task é classificada como infra (`infra: "spec-format"`, mesmo caminho da
+P1-074: zero attempts, zero febre, contador diagnostic `infraFails` + doctor) —
+a franquia fica em `state.specFails` (sobrevive ao rollover de meia-noite e é
+limpada quando a task mergeia); da segunda falha de formato em diante é mérito
+exato como antes, então task genuinamente quebrada ainda queima attempts e
+pode ser bloqueada. O evento `planner-done` de falha carrega `no valid spec —
+<motivo>` no detail, e o detail terminal cita o número real de attempts gastos.
 
 **Checkpoint de pressão de contexto (P1-079)**: o builder resume a MESMA sessão
 opencode entre rounds (cache de contexto), então o total de tokens só cresce. Antes
@@ -665,6 +745,8 @@ e logados em `apps/pilot/src/doctor.ts`:
 - **`backlog`** — valida seções (`## Ready`/`## Done` obrigatórias, `## Blocked`
   opcional) + ids de task únicos em todas as seções, via `loadBacklog`; somente
   leitura — backlog inválido é reportado (log warn + exit 1), nunca auto-editado;
+  mais de um cabeçalho `## Blocked` gera **aviso** sem invalidar o arquivo
+  (P2-142: a próxima escrita do stop-loss colapsa tudo num único cabeçalho);
 - **`branches`** — deleta branches locais `pilot/*` **sem PR aberto**; fail-safe:
   só deleta com `gh` respondendo (PR aberto, gh indisponível, branch checked-out
   ou de task com tentativa viva no breaker — preservada para retry, P1-060 —
@@ -778,6 +860,15 @@ sem spec.
   tamanho) — o warn `planner attempt produced no valid spec` carrega `reason`, o
   detail terminal traz `— last: <motivo>` e a 2ª rejeição consecutiva dispara o
   **alerta de guard repetido** (evento `alert` + notify; ver seção do doctor).
+- **Planner aprende com a própria rejeição (P2-137)**: o `plannerPrompt` ganhou
+  um 5º parâmetro `rejectReason` — um bloco de reparo no **fim** do prompt (a
+  cauda variável; prefixo estável da P1-077 byte-idêntico) cita o motivo
+  literal como dado entre aspas e, quando é seção faltando, lista as seis
+  headings exigidas na ordem. `plannerRetryPolicy(motivo, attempt)` decide se
+  há nova tentativa: motivo reparável por formato (seção faltando / marker de
+  controle) libera uma 3ª tentativa; spec grande demais ou motivo desconhecido
+  param em 2. A primeira falha de formato por task é infra (`spec-format`,
+  zero attempts); ver o parágrafo P2-137 na seção de infra acima.
 - O dashboard (`apps/pilot/dashboard`) conhece as fases `planner`/`planner-done`:
   só o node backlog acende e o builder aparece como "working" durante o spec.
 - Se a task já está mergeada em `origin/main`, o planner é pulado (senão o
@@ -800,6 +891,13 @@ o que fez e o gate **re-executa** a prova:
   reprova). As linhas `shot-*:` aparecem no template de todo builder — para task
   sem tag de UI, como bloco condicional ("if this round's diff touches
   apps/web/ or apps/desktop/, also cite").
+  P2-144: a validação do PNG acontece na captura, não só no gate —
+  `tools/pngcheck.mjs` (`checkPng`) exige assinatura, IHDR com dimensões > 0 e
+  chunk final IEND; o `shot` do harness desktop (`tools/desktop.mjs`, incluindo
+  o shot opcional do `open`) apaga o arquivo parcial, repete o screenshot uma
+  única vez e então falha com o motivo exato, e o `tools/browse.mjs shot` recusa
+  bytes inválidos antes de gravar — nunca mais PNG truncado fingindo ser
+  evidência até queimar attempts no gate (caso P2-117).
   Um único predicado (`needsUiEvidence`) comanda **prompt e gate**: task taggada
   `ui`/`desktop` recebe o bloco de shots explicitamente, e todo builder é avisado
   de que diff que toque `apps/web/`/`apps/desktop/` exige os dois shots mesmo
@@ -1334,3 +1432,12 @@ queima attempt do builder de um jeito que parece falha de task. O script
 Run manual: `npx tsx scripts/opencode-release-watch.ts` (cobre via
 `scripts/release-watch.test.ts` na bateria `test:unit`, com fetch mockado).
 Wiring no loop do pipeline é follow-up — o spike valida o sinal primeiro.
+
+## Testes órfãos não passam despercebidos (P2-133)
+
+Todo `scripts/*.test.ts` precisa ser executado por um runner real — bateria do
+gate, cadeia `test:unit` ou CI — ou estar declarado em `scripts/test-registry.json`
+(teste ao vivo/Electron, com runner e motivo). A asserção final de
+`scripts/unit.test.ts` roda `scripts/testreachability.ts` (puro, sem I/O) contra o
+repositório real: script declarado no package.json e nunca invocado não conta como
+cobertura, e qualquer teste órfão futuro reprova o gate.

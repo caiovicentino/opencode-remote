@@ -43,6 +43,39 @@ export default function PairingView({ phase, error, onPair, onRetry, onPairRemot
     return <QrScanner onScan={handleScan} onCancel={() => setScanning(false)} onPaste={backToPaste} />;
   }
 
+  // P2-112: in local mode the intro promises automatic pairing — showing the
+  // full scan/paste ceremony right below contradicted it. The manual widgets
+  // stay available for the explicit remote ceremony (pairRemote entry), not
+  // as a first-contact dead weight.
+  const ceremony = !localMode;
+
+  // P2-106: the two pairing directions read as titled sections — "connect to
+  // another machine" (this device as client: scan/paste) vs "pair a phone
+  // with this machine" (this device as host). The error keeps the
+  // locale-independent .pair-error hook the desktop-flow gate asserts on.
+
+  // P2-117: paste-first on the desktop (the camera path is the option);
+  // scan-first on the phone.
+  const pasteForm = (
+    <>
+      <textarea
+        className="pair-code"
+        rows={4}
+        placeholder="opencode-remote://pair?v=2&relay=…"
+        value={code}
+        onChange={(e) => setCode(e.target.value)}
+        disabled={busy}
+      />
+      <button
+        className={preferPaste ? "pair-submit primary" : "pair-submit"}
+        disabled={busy || !code.trim()}
+        onClick={() => onPair(code)}
+      >
+        {busy ? (localMode ? t("localConnecting") : t("connecting")) : t("pairBtn")}
+      </button>
+    </>
+  );
+
   const scanButton = (
     <button
       className={preferPaste ? "pair-scan-entry" : "primary pair-scan-entry"}
@@ -54,63 +87,46 @@ export default function PairingView({ phase, error, onPair, onRetry, onPairRemot
   );
 
   return (
-    <div className="screen">
+    <div className="screen pair-screen">
       <header>
         <h1 style={{ fontSize: "1rem", margin: 0 }}>OpenCode Remote</h1>
       </header>
       <p className="muted pair-intro">{t("pairIntro")}</p>
-      {preferPaste ? (
-        <>
-          <textarea
-            className="pair-code"
-            rows={4}
-            placeholder="opencode-remote://pair?v=2&relay=…"
-            value={code}
-            onChange={(e) => setCode(e.target.value)}
-            disabled={busy}
-          />
-          <button
-            className="pair-submit primary"
-            disabled={busy || !code.trim()}
-            onClick={() => onPair(code)}
-          >
-            {busy ? (localMode ? t("localConnecting") : t("connecting")) : t("pairBtn")}
-          </button>
-          <p className="muted" style={{ alignSelf: "center" }}>{t("orScan")}</p>
-          {scanButton}
-        </>
-      ) : (
-        <>
-          {scanButton}
-          <p className="muted" style={{ alignSelf: "center" }}>{t("orPaste")}</p>
-          <textarea
-            className="pair-code"
-            rows={4}
-            placeholder="opencode-remote://pair?v=2&relay=…"
-            value={code}
-            onChange={(e) => setCode(e.target.value)}
-            disabled={busy}
-          />
-          <button
-            className="pair-submit"
-            disabled={busy || !code.trim()}
-            onClick={() => onPair(code)}
-          >
-            {busy ? (localMode ? t("localConnecting") : t("connecting")) : t("pairBtn")}
-          </button>
-        </>
+      {ceremony && (
+        <section className="pair-section">
+          <h2 className="pair-section-title">{t("pairConnectTitle")}</h2>
+          {preferPaste ? (
+            <>
+              {pasteForm}
+              <p className="muted pair-or">{t("orScan")}</p>
+              {scanButton}
+            </>
+          ) : (
+            <>
+              {scanButton}
+              <p className="muted pair-or">{t("orPaste")}</p>
+              {pasteForm}
+            </>
+          )}
+        </section>
       )}
       {phase === "error" && (
-        <>
-          <p className="pair-error" style={{ color: "var(--danger)" }}>{error}</p>
-          <button onClick={onRetry}>{t("retry")}</button>
-        </>
+        <div className="pair-error" role="alert" aria-live="assertive">
+          <p className="pair-error-msg">{error}</p>
+          {error === t("invalidCode") && (
+            <p className="pair-error-hint">{t("invalidCodeHint")}</p>
+          )}
+          <button className="pair-error-retry" onClick={onRetry}>{t("retry")}</button>
+        </div>
       )}
       {onPairRemote && (
-        <button className="pair-remote-entry" onClick={onPairRemote} disabled={busy}>
-          <b>{t("pairRemoteTitle")}</b>
-          <span className="muted">{t("pairRemoteHint")}</span>
-        </button>
+        <section className="pair-section">
+          <h2 className="pair-section-title">{t("pairHostTitle")}</h2>
+          <button className="pair-remote-entry" onClick={onPairRemote} disabled={busy}>
+            <b>{t("pairRemoteTitle")}</b>
+            <span className="muted">{t("pairRemoteHint")}</span>
+          </button>
+        </section>
       )}
     </div>
   );

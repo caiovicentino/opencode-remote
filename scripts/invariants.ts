@@ -31,9 +31,13 @@ try {
     /export function seqAad/.test(proto) && /additionalData/.test(proto),
   );
 
-  // relay stays blind + frame cap
+  // relay stays blind + frame cap. P2-141: the cap literal moved from
+  // index.ts into the validated limits module (env-configurable, fail-closed
+  // boot), so the cap check reads limits.ts; the blind-router check still
+  // reads index.ts itself. Scan-target change only — no check weakened.
   const relay = readFileSync(join(ROOT, "apps/relay/src/index.ts"), "utf8");
-  check("relay: MAX_FRAME cap present", /MAX_FRAME\s*=\s*[\d_]+/.test(relay));
+  const relayLimitsSrc = readFileSync(join(ROOT, "apps/relay/src/limits.ts"), "utf8");
+  check("relay: MAX_FRAME cap present", /MAX_FRAME\s*=\s*[\d_]+/.test(relayLimitsSrc));
   check("relay: no crypto deps (blind router)", !/aes-|crypto\.subtle|AES-GCM/i.test(relay.replace(/\/\/[^\n]*/g, "")));
 
   // daemon guards

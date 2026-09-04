@@ -471,6 +471,8 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
     if (result.ok) {
       recordCycle(state, true, task.id); // P2-032 fever window (P2-063: attributed to the task)
       delete state.taskAttempts[task.id]; // gate passed — breaker reset
+      // P2-137: the spec-format free-retry franchise resets on merge
+      if (state.specFails) delete state.specFails[task.id];
     } else {
       // P1-074: infra noise (API down, spawn error, timeout without output)
       // burns no attempt, adds no fever sample and blocks nothing — it counts

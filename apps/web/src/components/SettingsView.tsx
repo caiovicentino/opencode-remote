@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { APP_VERSION } from "../version";
 import { useT, setLang, getLang, type Lang } from "../lib/i18n";
+import type { UpstreamNotice } from "../lib/degraded";
 
 interface Props {
   request: (
@@ -17,6 +18,9 @@ interface Props {
   /** P1-070: desktop shell only — explicit "pair a remote phone" action that
    * turns the QR ceremony on (app:setRemotePairing). */
   onPairRemote?: () => void;
+  /** P2-138: upstream (opencode) notice — renders the help section the calm
+   * card's secondary button links to; absent when the agent server is fine. */
+  upstream?: UpstreamNotice | null;
 }
 
 interface Device {
@@ -105,7 +109,7 @@ export function applyTheme() {
   document.documentElement.style.fontSize = font === "small" ? "14px" : font === "large" ? "19px" : "16.5px";
 }
 
-export default function SettingsView({ request, onBack, transport, getDiagnostics, onPairRemote }: Props) {
+export default function SettingsView({ request, onBack, transport, getDiagnostics, onPairRemote, upstream }: Props) {
   const [devices, setDevices] = useState<Device[]>([]);
   const [name, setName] = useState("");
   const [notify, setNotify] = useState({ permission: true, idle: true });
@@ -222,6 +226,22 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
 
       <div className="list">
         {msg && <p className="muted">{msg}</p>}
+
+        {upstream && (
+          <div className="card settings-help">
+            <h3>{t("upstreamHelpTitle")}</h3>
+            <p className="settings-help-title">{t(upstream.titleKey)}</p>
+            <p className="muted" style={{ margin: "2px 0 0" }}>
+              {t(upstream.actionKey)}
+            </p>
+            {/* Daemon detail as secondary text — never rendered as HTML. */}
+            {(upstream.reason || upstream.hint) && (
+              <p className="muted settings-help-detail" style={{ margin: "6px 0 0", fontSize: "var(--font-size-sm)" }}>
+                {[upstream.reason, upstream.hint].filter(Boolean).join(" — ")}
+              </p>
+            )}
+          </div>
+        )}
 
         <div className="card">
           <h3>About</h3>

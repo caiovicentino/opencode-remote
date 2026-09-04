@@ -23,6 +23,7 @@ import {
   desktopLogFile,
   formatLine,
   formatTimestamp,
+  installPipeGuards,
   LOG_CAP_BYTES,
   LOG_MAX_FILES,
   logsDir,
@@ -189,6 +190,27 @@ const realFs: LogFs = {
   const ts = formatTimestamp(new Date("2026-09-01T12:00:00Z"));
   check("formatTimestamp: offset-suffixed local time", /^[+-]\d{2}:\d{2}$/.test(ts.slice(-6)) && ts.length === 29);
   check("LOG_CAP_BYTES is ~1MB", LOG_CAP_BYTES === 1_000_000);
+}
+
+// --- P2-069: pipe guards (a dead stdout reader must not crash the shell) -------
+{
+  const attached: string[] = [];
+  const fake = {
+    on(event: string, cb: () => void) {
+      attached.push(event);
+      if (event === "error") cb(); // must not throw synchronously
+      return fake;
+    },
+  };
+  installPipeGuards([fake, null as unknown as { on: (e: string, cb: () => void) => unknown }]);
+  check("pipe guard: attaches an error listener per stream", attached.join(",") === "error");
+  const exploding = {
+    on() {
+      throw new Error("not attachable");
+    },
+  };
+  installPipeGuards([exploding as unknown as { on: (e: string, cb: () => void) => unknown }]);
+  check("pipe guard: unattachable stream is skipped, never throws", true);
 }
 
 console.log(failures === 0 ? "\ndesktop log tests: all green" : `\nFAILURES: ${failures}`);

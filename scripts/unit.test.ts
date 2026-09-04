@@ -8,15 +8,19 @@ process.env.PILOT_EVENTS_FILE = "/tmp/pilot-unit-events.jsonl";
 import { b64, fromB64, seal, openSealed, seqAad } from "@ocr/protocol";
 import { parsePairingUri, localWsUrl, shouldFailoverToRelay } from "../apps/web/src/lib/client";
 import { isLoopbackAddr, localOriginAllowed, localUpgradeAllowed } from "../apps/daemon/src/localws";
+import { parseRelayUrl, redactRelayUrl } from "../apps/daemon/src/relayurl";
+import { classifyUpstream, UPSTREAM_PROBE_TIMEOUT_MS } from "../apps/daemon/src/upstream";
 import { copyText, hasClipboardApi, legacyCopy } from "../apps/web/src/lib/clipboard";
 import { mimeFor } from "../apps/web/src/lib/files";
 import { timeAgo, sessionUpdatedTs } from "../apps/web/src/lib/time";
 import { sessionTitleOf } from "../apps/web/src/lib/title";
-import { dict } from "../apps/web/src/lib/i18n";
+import { dict, translate } from "../apps/web/src/lib/i18n";
+import { degradedKind, sawHealthyDaemon, sidecarExitNotice, upstreamNotice, type SidecarExitHealth, type UpstreamHealth } from "../apps/web/src/lib/degraded";
 import { permissionPreview } from "../apps/web/src/lib/permission";
 import { applySessionFilters, isPilotTitle, splitPilotSessions } from "../apps/web/src/lib/sessionFilter";
 import { initialUnreadState, reduceUnread } from "../apps/web/src/lib/unread";
 import { recencyGroup, groupByRecency, startOfLocalDay } from "../apps/web/src/lib/recency";
+import { accountInitial, accountPlanKey } from "../apps/web/src/lib/account";
 import { toggleArchived, ARCHIVED_MAX } from "../apps/web/src/lib/archive";
 import { previewFromEvents, clipPreview } from "../apps/web/src/lib/sessionPreview";
 import {
@@ -50,6 +54,8 @@ import {
   tokensSql,
 } from "../apps/pilot/src/costs";
 import { normalizeSessionModel, PRICE_SOURCES, PRICE_TABLE, taskCostUSD } from "../apps/pilot/src/pricing";
+import { PILOT_GATE_STEPS } from "../apps/pilot/src/gateprofile";
+import { unreachableTests } from "./testreachability";
 import { CORPUS_COMMANDS, CORPUS_SAMPLE_RE, appendCorpusSample, captureGateCorpus, corpusSlug, loadGateCorpus, sanitizeForCorpus } from "../apps/pilot/src/gate-corpus";
 import {
   builderPrompt,
@@ -75,7 +81,9 @@ import {
   normalizeEvidenceLine,
   parseEvidenceBlock,
   plannerPrompt,
+  plannerRetryPolicy,
   pngSize,
+  rebaseOutcome,
   reviewerPrompt,
   crashRoundDecision,
   resumeBlock,
@@ -90,6 +98,11 @@ import {
   validateSpec,
   verifyEvidence,
   writeAuxSandboxConfig,
+  mergeBlockReason,
+  mergePrForTask,
+  PR_MERGE_CONFIRM_DELAY_MS,
+  PR_MERGE_CONFIRM_POLLS,
+  type PrMergeIo,
 } from "../apps/pilot/src/pipeline";
 import {
   appendLessons,
@@ -139,12 +152,14 @@ import {
   recordInfraFailure,
   recordPipelineCrash,
   resultInfraKind,
+  specFailureIsInfra,
 } from "../apps/pilot/src/audit";
 import {
   appendCommitAndPush,
   appendReadyLines,
   auxPushIo,
   blockTask,
+  blockTaskEdit,
   doneTaskIds,
   loadBacklog,
   mayPush,
@@ -159,9 +174,9 @@ import { landMetaCommit, mayPushUnderDir, metaIo, META_BRANCH, type MetaPushIo }
 import { EXPLORER_MAX_FINDINGS, EXPLORER_MAX_STEPS, EXPLORER_TIMEOUT_MIN, EXPLORER_PUSH_RETRIES, EXPLORER_PUSH_WAIT_MS, FABLE_MARKER, FABLE_MAX_FINDINGS, JOURNEY_STEPS, claimExplorerRun, commitAndPushFindings, commitAndPushFableFindings, explorerPrompt, explorerSessionName, explorerSpec, fablePrompt, fableSpec, journeyShotName, parseExplorerFindings, parseFableFindings, type ExplorerFinding, type FableFinding } from "../apps/pilot/src/explorer";
 import { noteTierBOutcome, resetTierBSpawnStreak, runAgent, API_PREFLIGHT, apiHealthy, TIERB_SPAWN_ALERT_EVERY, shouldAlertTierBSpawn, claudeArgs, idScanner, mergeAgentIds, OPENCODE_URL_DEFAULT, scanIds, shouldFallbackTierB, waitForApi } from "../apps/pilot/src/runner";
 import { GUARD_ALERT_THRESHOLD, clearGuardRejections, guardAlertDetail, noteGuardRejection, raiseGuardAlert, resetGuardAlerts } from "../apps/pilot/src/guardalert";
-import { mkdtempSync, mkdirSync, readdirSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync, utimesSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync, utimesSync, copyFileSync } from "node:fs";
 import { execSync, spawn } from "node:child_process";
-import { createServer } from "node:http";
+import { createServer, get } from "node:http";
 import { AddressInfo } from "node:net";
 import { connect as netConnect } from "node:net";
 import WebSocket, { WebSocketServer } from "ws";
@@ -235,6 +250,7 @@ import {
 } from "../apps/pilot/src/deployguard";
 import type { PilotConfig } from "../apps/pilot/src/state";
 import { overlayVisible, phonePaired, localPairing } from "../apps/desktop/src/pairing";
+import { classifySidecarExit } from "../apps/desktop/src/sidecarexit";
 import { versionMismatch } from "../apps/desktop/src/versions";
 import { daemonTooltip, loginItemSupported, logsDirPath, openLogsFolder, trayIconSource } from "../apps/desktop/src/tray";
 import { updateMenuLabel } from "../apps/desktop/src/update";
@@ -259,6 +275,8 @@ import {
   type ViewState,
 } from "../apps/web/src/lib/viewState";
 import { ALLOWED_EXTS, extOf, pickConverter, validateExt } from "../tools/doc2pdf.mjs";
+import { checkPng } from "../tools/pngcheck.mjs";
+import { signingProfile } from "../apps/desktop/scripts/signing-profile.mjs";
 import {
   avgDoneDuration,
   buildCards,
@@ -741,6 +759,83 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
     check("breaker: gate pass resets the counter", recordTaskFailure(st, "T-001", 4) === false && st.taskAttempts["T-001"] === 1);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// --- P2-142 blockTaskEdit: idempotent stop-loss + Blocked-header normalization ---
+{
+  const t1 = "- [ ] (T-001) [P1] Task A — spec: fails 4x";
+  const withDone = `# BACKLOG\n\n## Ready\n\n${t1}\n\n## Done\n- [x] (T-000) [P1] Old — done\n`;
+  const dupes = [
+    "# BACKLOG",
+    "",
+    "## Ready",
+    "",
+    t1,
+    "",
+    "## Blocked",
+    "- [ ] (T-010) [P1] First — spec: x",
+    "",
+    "## Blocked",
+    "- [ ] (T-011) [P2] Second — spec: y",
+    "",
+    "## Blocked",
+    "- [ ] (T-012) [P3] Third — spec: z",
+    "",
+    "## Done",
+    "- [x] (T-000) [P1] Old — done",
+  ].join("\n");
+  const everyTaskOnce = (md: string) =>
+    ["(T-001)", "(T-010)", "(T-011)", "(T-012)"].every((id) => (md.match(new RegExp(id.replace(/[()]/g, "\\$&"), "g")) ?? []).length === 1);
+
+  // single existing header is reused — never a second section
+  const oneHeader = `# BACKLOG\n\n## Ready\n\n${t1}\n\n## Blocked\n- [ ] (T-099) [P2] Old — spec: x\n\n## Done\n- [x] (T-000) [P1] Old — done\n`;
+  const reused = blockTaskEdit(oneHeader, "T-001", "max review rounds — findings:\n- a\n- b");
+  check("blockTaskEdit: reuses the existing Blocked header", reused.result === "applied" && (reused.text.match(/^## Blocked$/gm) ?? []).length === 1);
+  check("blockTaskEdit: new line sits right below the reused header", /^## Blocked\n- \[ \] \(T-001\)/m.test(reused.text));
+  check("blockTaskEdit: existing blocked lines stay", reused.text.includes("- [ ] (T-099) [P2] Old — spec: x"));
+  check("blockTaskEdit: line leaves the Ready queue", !/## Ready\n\n- \[ \] \(T-001\)/.test(reused.text));
+  check("blockTaskEdit: findings summary collapsed + attached", reused.text.includes("(T-001) [P1] Task A — spec: fails 4x — max review rounds — findings: - a - b"));
+
+  // no header at all → created before ## Done
+  const created = blockTaskEdit(withDone, "T-001", "boom");
+  check(
+    "blockTaskEdit: without a header one is created before ## Done",
+    created.result === "applied" && created.text.includes("## Blocked\n- [ ] (T-001) [P1] Task A — spec: fails 4x — boom\n\n## Done"),
+  );
+
+  // no header, no ## Done → appended at the end of the file
+  const noDone = blockTaskEdit(`# BACKLOG\n\n## Ready\n\n${t1}\n`, "T-001", "boom");
+  check(
+    "blockTaskEdit: without Done the header lands at the end of the file",
+    noDone.result === "applied" && noDone.text.trimEnd().endsWith("## Blocked\n- [ ] (T-001) [P1] Task A — spec: fails 4x — boom"),
+  );
+
+  // duplicate headers collapse into one, preserving every task line in order
+  const collapsedEdit = blockTaskEdit(dupes, "T-001", "circuit broken");
+  check("blockTaskEdit: duplicate Blocked headers collapse into one", collapsedEdit.result === "applied" && (collapsedEdit.text.match(/^## Blocked$/gm) ?? []).length === 1);
+  check("blockTaskEdit: collapse discards no task line", everyTaskOnce(collapsedEdit.text));
+  check("blockTaskEdit: collapse preserves the existing task order", collapsedEdit.text.indexOf("(T-010)") < collapsedEdit.text.indexOf("(T-011)") && collapsedEdit.text.indexOf("(T-011)") < collapsedEdit.text.indexOf("(T-012)"));
+  check("blockTaskEdit: entry lands under the surviving header", collapsedEdit.text.includes("## Blocked\n- [ ] (T-001) [P1] Task A — spec: fails 4x — circuit broken\n- [ ] (T-010)"));
+  check("blockTaskEdit: Done section survives the collapse", collapsedEdit.text.includes("## Done\n- [x] (T-000) [P1] Old — done"));
+
+  // already-blocked detection considers ANY Blocked section
+  const noop = blockTaskEdit(dupes, "T-011", "x");
+  check("blockTaskEdit: task under a later Blocked section is noop with untouched text", noop.result === "noop" && noop.text === dupes);
+  check("blockTaskEdit: unknown id is missing", blockTaskEdit(dupes, "T-999", "x").result === "missing");
+  check("blockTaskEdit: regex metacharacters in the id stay literal", blockTaskEdit(dupes, "T-001) [P1] x.*", "y").result === "missing");
+
+  // disk wrapper keeps read → edit → write and normalizes legacy files
+  const dir2 = mkdtempSync(join(tmpdir(), "pilot-blocknorm-"));
+  try {
+    writeFileSync(join(dir2, "BACKLOG.md"), dupes);
+    check("blockTask: legacy multi-section file normalizes on a real write", blockTask(dir2, "T-001", "circuit broken") === "applied");
+    const md2 = readFileSync(join(dir2, "BACKLOG.md"), "utf8");
+    check("blockTask: normalized file carries exactly one Blocked section", (md2.match(/^## Blocked$/gm) ?? []).length === 1);
+    check("blockTask: normalized file keeps every task line", everyTaskOnce(md2));
+    check("blockTask: second block of an already-blocked task stays noop", blockTask(dir2, "T-012", "again") === "noop" && readFileSync(join(dir2, "BACKLOG.md"), "utf8") === md2);
+  } finally {
+    rmSync(dir2, { recursive: true, force: true });
   }
 }
 
@@ -1469,6 +1564,23 @@ function ghMergingIo(realIo: { exec: (cmd: string) => { ok: boolean; output: str
   }
 }
 
+// --- P2-137 specFails: the spec-format free-retry survives the midnight rollover --
+{
+  const dir = mkdtempSync(join(tmpdir(), "pilot-state-"));
+  try {
+    const file = join(dir, "state.json");
+    writeFileSync(file, JSON.stringify({ date: "2026-01-01", tasks: 1, deploys: 0, failures: 0, taskAttempts: {}, specFails: { "P2-137": 1 } }));
+    const rolled = loadState(file);
+    check("loadState keeps specFails across midnight", rolled.specFails?.["P2-137"] === 1);
+    writeFileSync(file, JSON.stringify({ date: "2026-01-01", tasks: 1, deploys: 0, failures: 0 }));
+    check("loadState backfills missing specFails", Object.keys(loadState(file).specFails ?? {}).length === 0);
+    writeFileSync(file, JSON.stringify({ date: "2026-01-01", tasks: 1, deploys: 0, failures: 0, specFails: { "P2-137": "garbage", "P0-001": 2 } }));
+    check("loadState drops garbage specFails entries", loadState(file).specFails?.["P2-137"] === undefined && loadState(file).specFails?.["P0-001"] === 2);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 // --- P2-024 writeJsonAtomic: state.json survives a crash mid-write --------------
 {
   const makeIo = () => {
@@ -2082,6 +2194,43 @@ check("touchedUi: lookalike apps/webs rejected", !touchedUiFromDiff("apps/webs/s
   );
   check("planner: codeChanges spec-only diff is empty", codeChanges("specs/P0-999.md\n", "specs/P0-999.md").length === 0);
   check("planner: codeChanges without a spec keeps everything", codeChanges("specs/P0-999.md\n", null).length === 1);
+
+  // --- P2-137: planner learns from its own rejection — repair prompt with the
+  // exact guard reason, conditional 3rd attempt, spec-format infra franchise
+  {
+    const sixHeadings = ["## Problem", "## Approach", "## Touched files", "## Edge cases", "## Acceptance criteria", "## Out of scope"];
+    const pMissing = plannerPrompt(TASK, 2, [], "", "missing section(s): edge cases");
+    const listIdx = sixHeadings.map((h) => pMissing.indexOf(`- ${h}`));
+    check(
+      "planner: repair prompt cites the exact reason and lists all six headings in order",
+      pMissing.includes('"missing section(s): edge cases"') &&
+        listIdx.every((idx) => idx > pMissing.indexOf("TASK (")) && // repair block lives in the variable tail
+        listIdx.every((idx, n) => n === 0 || idx > listIdx[n - 1]!),
+    );
+    const pLarge = plannerPrompt(TASK, 2, [], "", "spec too large (500 lines / 60000 chars)");
+    check(
+      "planner: too-large repair cites the reason without the heading list",
+      pLarge.includes('"spec too large (500 lines / 60000 chars)"') && !pLarge.includes("- ## Problem"),
+    );
+    const pA = plannerPrompt(TASK, 2, [], "", "missing section(s): problem");
+    const pB = plannerPrompt(TASK, 3, [], "", "control marker at line 4: VERDICT");
+    const stable = pA.indexOf("TASK (");
+    check("planner: repair block keeps the P1-077 stable prefix byte-identical across reasons/attempts", stable > 0 && pA.slice(0, stable) === pB.slice(0, stable));
+    check("planner: attempt 1 without a rejection reason gets no repair block", !plannerPrompt(TASK, 1).includes("PREVIOUS SPEC REJECTION"));
+    check(
+      "planner: format-repairable reason earns a 3rd attempt",
+      plannerRetryPolicy("missing section(s): problem", 2) === true && plannerRetryPolicy("control marker at line 4: VERDICT", 2) === true,
+    );
+    check("planner: too-large/unknown reasons stop at 2 attempts", plannerRetryPolicy("spec too large (500 lines / 60000 chars)", 2) === false && plannerRetryPolicy("", 2) === false);
+    check(
+      "planner: attempt 1 always retries, attempt 3 (and ≤0) never does",
+      plannerRetryPolicy("spec too large (500 lines / 60000 chars)", 1) === true &&
+        plannerRetryPolicy("missing section(s): problem", 3) === false &&
+        plannerRetryPolicy("missing section(s): problem", 0) === false,
+    );
+    check("planner: first spec-format failure is infra, the second is merit", specFailureIsInfra(0) === true && specFailureIsInfra(1) === false);
+    check("infra kind: spec-format rides the structured flag", resultInfraKind({ ok: false, infra: "spec-format" }) === "spec-format" && resultInfraKind({ ok: false }) === null);
+  }
 
   // commitSpec IS the "enforced, not prompted" guarantee — drive it against a
   // scratch git repo with a misbehaving (junk-committing) planner
@@ -2875,6 +3024,11 @@ check("stdlibShadow: non-stdlib root file passes", stdlibShadowHits("A\tmain.py\
 // --- P1-101: deterministic gate before reviewers + retry-once flaky -----------
 {
   const ws = mkdtempSync(join(tmpdir(), "p1-101-"));
+  // P2-116: the gate resolves a per-repo profile from the workspace. These
+  // checks pin the PILOT battery (build step, integration flake), so the
+  // fixture must detect as the pilot repo — name marker only, no scripts run
+  // (the harness injects `run`).
+  writeFileSync(ws + "/package.json", JSON.stringify({ name: "opencode-remote", private: true }));
 
   // exec() now captures stderr alongside stdout (vite warnings live on stderr;
   // losing them faked "pasted output diverges" rejections)
@@ -5264,6 +5418,283 @@ check(
   );
 }
 
+// --- P2-125: the task-PR merge confirms MERGED fail-closed, gh noise is infra ----
+{
+  // budget pin: ~5 minutes, same shape as the meta-PR confirmation
+  check("P2-125: confirm budget is 60 polls × 5s = 5min", PR_MERGE_CONFIRM_POLLS * PR_MERGE_CONFIRM_DELAY_MS === 300_000);
+
+  const sha = "c".repeat(40);
+  const otherSha = "d".repeat(40);
+  // Fake gh surface (zero network): create fails (PR already open from a
+  // previous cycle), list resolves the number, merge exec FAILS (the
+  // P2-117/P2-123 shape: --auto armed under branch protection errors at arm
+  // time) and the poll loop then decides what the view reports.
+  const mkIo = (view: () => { state: string; headRefOid: string } | null, mergeOutput = "gh: failed to arm auto-merge") => {
+    const calls: string[] = [];
+    let sleeps = 0;
+    const io: PrMergeIo = {
+      exec: (cmd) => {
+        calls.push(cmd);
+        if (cmd.startsWith("gh pr create")) return { ok: false, output: "a pull request for head pilot/P2-125 already exists" };
+        if (cmd.startsWith("gh pr list")) return { ok: true, output: "42\n" };
+        if (cmd.startsWith("gh pr merge")) return { ok: false, output: mergeOutput };
+        if (cmd.startsWith("gh pr view")) {
+          const snap = view();
+          return snap
+            ? { ok: true, output: JSON.stringify({ state: snap.state, headRefOid: snap.headRefOid }) }
+            : { ok: false, output: "no pull requests" };
+        }
+        return { ok: false, output: `unexpected exec: ${cmd}` };
+      },
+      sleep: () => {
+        sleeps++;
+        return Promise.resolve();
+      },
+    };
+    return { io, calls, getSleeps: () => sleeps };
+  };
+
+  // THE P2-117/P2-123 criterion: merge exec errored, PR still confirms MERGED
+  // with our sha ⇒ success (auto-merge was armed; the squash fired later).
+  const confirmed = mkIo(() => ({ state: "MERGED", headRefOid: sha }));
+  const confirmedOut = await mergePrForTask(confirmed.io, {
+    branch: "pilot/P2-125",
+    title: "t",
+    body: "b",
+    pushedSha: sha,
+  });
+  check("P2-125: merge exec failed but PR confirms MERGED ⇒ success", confirmedOut.ok === true);
+  check("P2-125: create failure falls through to pr list (PR reused)", confirmed.calls.some((c) => c.startsWith("gh pr list --head pilot/P2-125 --state all")));
+  check("P2-125: merge addressed by PR number, never by branch", confirmed.calls.some((c) => c.startsWith("gh pr merge 42 ")) && confirmed.calls.some((c) => c.startsWith("gh pr view 42 ")) && !confirmed.calls.some((c) => c.startsWith("gh pr view pilot/")));
+  check("P2-125: immediate confirmation has zero artificial latency (no sleep before poll 0)", confirmed.getSleeps() === 0);
+
+  // MERGED with another headRefOid is a real anomaly — merit, never success
+  const swapped = mkIo(() => ({ state: "MERGED", headRefOid: otherSha }));
+  const swappedOut = await mergePrForTask(swapped.io, { branch: "pilot/P2-125", title: "t", body: "b", pushedSha: sha });
+  check("P2-125: MERGED with another headRefOid ⇒ failure, never success", swappedOut.ok === false && swappedOut.infra === undefined);
+
+  // queued forever: view stays OPEN for the whole budget ⇒ honest infra
+  // timeout; polling never sleeps before reading (59 sleeps for 60 polls)
+  const queued = mkIo(() => ({ state: "OPEN", headRefOid: sha }));
+  const queuedOut = await mergePrForTask(queued.io, { branch: "pilot/P2-125", title: "t", body: "b", pushedSha: sha });
+  check("P2-125: merge never confirmed ⇒ ok=false with infra=timeout", queuedOut.ok === false && queuedOut.infra === "timeout");
+  check("P2-125: unconfirmed detail carries the gh merge tail", queuedOut.detail.includes("failed to arm auto-merge"));
+  check("P2-125: every poll in the budget ran", queued.calls.filter((c) => c.startsWith("gh pr view")).length === PR_MERGE_CONFIRM_POLLS);
+  check("P2-125: sleep only between polls (59 sleeps for 60 polls)", queued.getSleeps() === PR_MERGE_CONFIRM_POLLS - 1);
+
+  // the runSlot infra branch: structured kind → recordInfraFailure only —
+  // no taskAttempts entry, no fever sample (mirrors apps/pilot/src/index.ts)
+  const st = { date: "2026-09-04", tasks: 0, deploys: 0, failures: 0, taskAttempts: {} } as PilotState;
+  const kind = resultInfraKind({ ok: queuedOut.ok, infra: queuedOut.infra });
+  if (kind) recordInfraFailure(st);
+  else {
+    recordCycle(st, false, "P2-125");
+    recordTaskFailure(st, "P2-125", 4);
+  }
+  check("P2-125: infra merge failure burns no per-task attempt", Object.keys(st.taskAttempts).length === 0);
+  check("P2-125: infra merge failure never feeds the fever window", feverReason(st) === null);
+
+  // both create and list dead: no PR number resolvable ⇒ infra network, and
+  // the detail carries each captured gh tail (≤300 chars per step)
+  const bothDead = mkIo(() => null);
+  bothDead.io.exec = (cmd) => {
+    bothDead.calls.push(cmd);
+    if (cmd.startsWith("gh pr create")) return { ok: false, output: "x".repeat(400) };
+    if (cmd.startsWith("gh pr list")) return { ok: false, output: "gh: no default remote (network down)" };
+    return { ok: false, output: "" };
+  };
+  const deadOut = await mergePrForTask(bothDead.io, { branch: "pilot/P2-125", title: "t", body: "b", pushedSha: sha });
+  check("P2-125: unresolvable PR number ⇒ infra network", deadOut.ok === false && deadOut.infra === "network");
+  check("P2-125: detail carries the gh create/list tails", deadOut.detail.includes("pr create failed:") && deadOut.detail.includes("pr list: gh: no default remote"));
+  check("P2-125: each captured gh tail is capped at 300 chars", deadOut.detail.includes("x".repeat(300)) && !deadOut.detail.includes("x".repeat(301)));
+
+  // wiring pin: the caller propagates `infra` and the reason-free generic
+  // detail is gone (it was the whole bug — merit classification of gh noise)
+  const pipelineSrc = readFileSync(join(import.meta.dirname, "..", "apps", "pilot", "src", "pipeline.ts"), "utf8");
+  check(
+    "P2-125: merge failure line propagates the structured infra kind",
+    pipelineSrc.includes("infra: merged.infra") && pipelineSrc.includes("gate green but the PR merge failed: ${merged.detail}"),
+  );
+  check("P2-125: the old reason-free merge detail no longer exists", !pipelineSrc.includes("gate green but the PR merge failed — the next cycle retries the PR"));
+  check(
+    "P2-125: P2-058 verified-merge guard untouched (recordVerifiedMerge + isTaskMergeSha still wired)",
+    pipelineSrc.includes("isTaskMergeSha(ws, postMergeHead, t.id)") && pipelineSrc.includes("recordVerifiedMerge(defaultVerifiedMergesFile(), postMergeHead, t.id"),
+  );
+}
+
+// --- P2-134: conflict-blocked PR is infra, resume rebase refreshes the branch -----
+{
+  // pure classifier: only CONFLICTING/DIRTY block; anything else (missing
+  // fields, MERGEABLE, UNKNOWN, BLOCKED, BEHIND, non-string values) keeps the
+  // poll running exactly as before
+  check("P2-134: mergeable=CONFLICTING ⇒ blocked", (mergeBlockReason({ mergeable: "CONFLICTING" }) ?? "").includes("CONFLICTING"));
+  check("P2-134: mergeStateStatus=DIRTY ⇒ blocked", (mergeBlockReason({ mergeStateStatus: "DIRTY" }) ?? "").includes("DIRTY"));
+  const both = mergeBlockReason({ mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" }) ?? "";
+  check("P2-134: both fields ⇒ reason cites both", both.includes("CONFLICTING") && both.includes("DIRTY"));
+  check(
+    "P2-134: clean/blocked/behind/unknown snapshots never block",
+    mergeBlockReason({}) === null &&
+      mergeBlockReason({ mergeable: "MERGEABLE" }) === null &&
+      mergeBlockReason({ mergeable: "UNKNOWN", mergeStateStatus: "UNKNOWN" }) === null &&
+      mergeBlockReason({ mergeable: "BLOCKED" }) === null &&
+      mergeBlockReason({ mergeStateStatus: "BEHIND" }) === null,
+  );
+  check(
+    "P2-134: non-string fields behave as absent (external JSON)",
+    mergeBlockReason({ mergeable: 1, mergeStateStatus: null }) === null && mergeBlockReason({ mergeable: undefined, mergeStateStatus: undefined }) === null,
+  );
+
+  // fake gh surface (zero network), same mold as P2-125: create fails (PR
+  // already open), list resolves the number, merge exec fails, the poll loop
+  // decides what the view reports — now with the P2-134 conflict fields.
+  const sha = "c".repeat(40);
+  const mkIo134 = (view: () => { state: string; headRefOid: string; mergeable?: string; mergeStateStatus?: string } | null) => {
+    const calls: string[] = [];
+    let sleeps = 0;
+    const io: PrMergeIo = {
+      exec: (cmd) => {
+        calls.push(cmd);
+        if (cmd.startsWith("gh pr create")) return { ok: false, output: "a pull request for head pilot/P2-134 already exists" };
+        if (cmd.startsWith("gh pr list")) return { ok: true, output: "42\n" };
+        if (cmd.startsWith("gh pr merge")) return { ok: false, output: "gh: failed to arm auto-merge" };
+        if (cmd.startsWith("gh pr view")) {
+          const snap = view();
+          return snap ? { ok: true, output: JSON.stringify(snap) } : { ok: false, output: "no pull requests" };
+        }
+        return { ok: false, output: `unexpected exec: ${cmd}` };
+      },
+      sleep: () => {
+        sleeps++;
+        return Promise.resolve();
+      },
+    };
+    return { io, calls, getSleeps: () => sleeps };
+  };
+
+  // THE P2-117/P2-123/P2-126 shape: gate green, PR parked on a merge conflict
+  // with main ⇒ bail out on the CURRENT poll with infra "conflict"
+  const conflicting = mkIo134(() => ({ state: "OPEN", headRefOid: sha, mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" }));
+  const conflictOut = await mergePrForTask(conflicting.io, { branch: "pilot/P2-134", title: "t", body: "b", pushedSha: sha });
+  check("P2-134: CONFLICTING PR ⇒ ok=false with infra=conflict", conflictOut.ok === false && conflictOut.infra === "conflict");
+  check("P2-134: conflict detail cites the real GitHub reason", conflictOut.detail.includes("PR #42 blocked:") && conflictOut.detail.includes("CONFLICTING") && conflictOut.detail.includes("DIRTY"));
+  check("P2-134: conflict bails on the current poll (exactly 1 view, 0 sleeps)", conflicting.calls.filter((c) => c.startsWith("gh pr view")).length === 1 && conflicting.getSleeps() === 0);
+  check("P2-134: poll query pinned to state,headRefOid,mergeable,mergeStateStatus", conflicting.calls.some((c) => c === "gh pr view 42 --json state,headRefOid,mergeable,mergeStateStatus"));
+
+  // MERGED wins over the conflict check — residual mergeable fields are noise
+  const mergeable = mkIo134(() => ({ state: "MERGED", headRefOid: sha, mergeable: "UNKNOWN" }));
+  const mergeableOut = await mergePrForTask(mergeable.io, { branch: "pilot/P2-134", title: "t", body: "b", pushedSha: sha });
+  check("P2-134: MERGED with residual mergeable=UNKNOWN ⇒ success", mergeableOut.ok === true);
+  const residual = mkIo134(() => ({ state: "MERGED", headRefOid: sha, mergeable: "CONFLICTING" }));
+  const residualOut = await mergePrForTask(residual.io, { branch: "pilot/P2-134", title: "t", body: "b", pushedSha: sha });
+  check("P2-134: MERGED wins over a residual CONFLICTING (order pinned)", residualOut.ok === true);
+
+  // snapshot without mergeable/mergeStateStatus (old gh): today's behavior —
+  // poll the whole budget, then honest infra timeout
+  const noField = mkIo134(() => ({ state: "OPEN", headRefOid: sha }));
+  const noFieldOut = await mergePrForTask(noField.io, { branch: "pilot/P2-134", title: "t", body: "b", pushedSha: sha });
+  check("P2-134: snapshot without mergeable keeps polling ⇒ infra=timeout", noFieldOut.ok === false && noFieldOut.infra === "timeout");
+  check("P2-134: legacy snapshot runs the full poll budget", noField.calls.filter((c) => c.startsWith("gh pr view")).length === PR_MERGE_CONFIRM_POLLS);
+
+  // the runSlot infra branch: structured "conflict" → recordInfraFailure only —
+  // no taskAttempts entry, no fever sample (mirrors apps/pilot/src/index.ts)
+  const st = { date: "2026-09-04", tasks: 0, deploys: 0, failures: 0, taskAttempts: {} } as PilotState;
+  const kind = resultInfraKind({ ok: conflictOut.ok, infra: conflictOut.infra });
+  check("P2-134: conflict is a structured infra kind", kind === "conflict");
+  if (kind) recordInfraFailure(st);
+  else {
+    recordCycle(st, false, "P2-134");
+    recordTaskFailure(st, "P2-134", 4);
+  }
+  check("P2-134: conflict burns no per-task attempt", Object.keys(st.taskAttempts).length === 0);
+  check("P2-134: conflict never feeds the fever window", feverReason(st) === null);
+
+  // pure outcome interpretation of the resume rebase
+  check("P2-134: rebaseOutcome ok ⇒ clean", rebaseOutcome({ ok: true, output: "" }) === "clean");
+  check("P2-134: rebaseOutcome !ok ⇒ conflict (never throws)", rebaseOutcome({ ok: false, output: "CONFLICT (content): Merge conflict in shared.txt" }) === "conflict");
+
+  // Real-git acceptance (P1-036 lesson: never mock git)
+  const originDir = mkdtempSync(join(tmpdir(), "ocr-rebaseorigin-"));
+  const wsRepo = mkdtempSync(join(tmpdir(), "ocr-rebasews-"));
+  try {
+    execSync(`git init -q --bare ${JSON.stringify(originDir)}`, { stdio: ["ignore", "pipe", "pipe"] });
+    const g = (c: string) => execSync(c, { cwd: wsRepo, stdio: ["ignore", "pipe", "pipe"] });
+    g("git init -q -b main .");
+    g("git config user.email t@t.local");
+    g("git config user.name t");
+    writeFileSync(join(wsRepo, "README.md"), "base\n");
+    g("git add . && git commit -qm base");
+    g(`git remote add origin ${JSON.stringify(originDir)}`);
+    g("git push -q origin main");
+
+    // clean rebase: preserved branch commits b.txt while another slot's merge
+    // (non-conflicting) advanced origin/main with a.txt. The previous attempt
+    // already PUSHED the branch (mergeTask), so origin sits at the pre-rebase
+    // tip — the exact scenario where a plain retry push is rejected.
+    g("git checkout -qb pilot/P2-134T");
+    writeFileSync(join(wsRepo, "b.txt"), "branch work\n");
+    g("git add . && git commit -qm 'branch work'");
+    const preservedSha = g("git rev-parse HEAD").toString().trim();
+    g("git push -q origin pilot/P2-134T");
+    g("git checkout -q main");
+    writeFileSync(join(wsRepo, "a.txt"), "main moved\n");
+    g("git add . && git commit -qm 'main moved'");
+    g("git push -q origin main");
+
+    check("P2-134: clean resume rebase reports resumed", setupTaskBranch(wsRepo, "P2-134T", 1) === true);
+    check("P2-134: HEAD is the task branch", g("git rev-parse --abbrev-ref HEAD").toString().trim() === "pilot/P2-134T");
+    let ancestor = false;
+    try {
+      g("git merge-base --is-ancestor origin/main HEAD");
+      ancestor = true;
+    } catch {}
+    check("P2-134: rebased branch contains origin/main", ancestor);
+    check("P2-134: branch work survived the rebase", existsSync(join(wsRepo, "b.txt")));
+    check("P2-134: main's new file is present after the rebase", existsSync(join(wsRepo, "a.txt")));
+    check("P2-134: clean rebase rewrote the branch tip (gate re-runs on the new sha)", g("git rev-parse HEAD").toString().trim() !== preservedSha);
+
+    // the rewritten branch must still be able to update the PR head: a plain
+    // push is rejected non-fast-forward (origin at the pre-rebase tip), the
+    // production retry push (--force-with-lease, same as metapush) succeeds
+    const okCmd = (c: string) => {
+      try {
+        g(c);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    check("P2-134: plain retry push after rebase is rejected (the blocking shape)", !okCmd("git push -q origin pilot/P2-134T"));
+    check("P2-134: force-with-lease retry push lands the rewritten branch", okCmd("git push -q --force-with-lease origin pilot/P2-134T"));
+    check("P2-134: origin PR head now matches the rebased HEAD", g("git rev-parse origin/pilot/P2-134T").toString().trim() === g("git rev-parse HEAD").toString().trim());
+    const pipelineSrc = readFileSync(join(import.meta.dirname, "..", "apps", "pilot", "src", "pipeline.ts"), "utf8");
+    check("P2-134: retry push is pinned to --force-with-lease in the source", pipelineSrc.includes("git push -q --force-with-lease origin pilot/${t.id}"));
+
+    // conflicting rebase: both sides edit the same file ⇒ abort, branch intact
+    g("git checkout -qb pilot/P2-134C origin/main");
+    writeFileSync(join(wsRepo, "shared.txt"), "branch version\n");
+    g("git add . && git commit -qm 'branch edits shared'");
+    const conflictSha = g("git rev-parse HEAD").toString().trim();
+    g("git checkout -q main");
+    writeFileSync(join(wsRepo, "shared.txt"), "main version\n");
+    g("git add . && git commit -qm 'main edits shared'");
+    g("git push -q origin main");
+    g("git checkout -q main"); // workspace sits anywhere; the branch is the carrier
+
+    check("P2-134: conflicting resume rebase still reports resumed", setupTaskBranch(wsRepo, "P2-134C", 1) === true);
+    check("P2-134: abort leaves the branch at the preserved tip", g("git rev-parse refs/heads/pilot/P2-134C").toString().trim() === conflictSha);
+    check("P2-134: abort leaves a clean worktree", g("git status --porcelain").toString() === "");
+    check("P2-134: no rebase state left behind", !existsSync(join(wsRepo, ".git", "rebase-merge")) && !existsSync(join(wsRepo, ".git", "rebase-apply")));
+    check("P2-134: worktree shows the branch content, not main's", readFileSync(join(wsRepo, "shared.txt"), "utf8") === "branch version\n");
+
+    // first attempt: fresh path, branch born at origin/main, no rebase runs
+    check("P2-134: first attempt takes the fresh path (no rebase)", setupTaskBranch(wsRepo, "P2-134U", 0) === false);
+    check("P2-134: fresh branch sits at origin/main", g("git rev-parse refs/heads/pilot/P2-134U").toString().trim() === g("git rev-parse origin/main").toString().trim());
+  } finally {
+    rmSync(originDir, { recursive: true, force: true });
+    rmSync(wsRepo, { recursive: true, force: true });
+  }
+}
+
 // --- P2-045 dashboard v2: honest counters + diagnostics aggregations --------------
 {
   const dir = mkdtempSync(join(tmpdir(), "pilot-metrics-"));
@@ -6122,6 +6553,110 @@ check("i18n: en and pt share the exact same key set", JSON.stringify(enKeys) ===
 check("i18n: no empty strings in either locale", enKeys.every((k) => String((dict.en as Record<string, string>)[k]).trim() !== "") && ptKeys.every((k) => String((dict.pt as Record<string, string>)[k]).trim() !== ""));
 check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "olderMessages", "changesFor", "connTitle"].every((k) => String((dict.en as Record<string, string>)[k]).includes("{") && String((dict.pt as Record<string, string>)[k]).includes("{")));
 
+// --- P2-118: connection screens resolve to ONE locale ---------------------------
+// The daemon-down banner, its recovery button and the neighboring pairing /
+// scanner copy must all come from the same dictionary, per app locale — the
+// explorer nightly caught a screen mixing a pt-BR banner with English actions.
+{
+  const connKeys = [
+    "daemonDown", "reconnectNow", "reconnecting", "daemonMismatch",
+    "localConnecting", "connecting", "pairBtn", "invalidCode", "retry",
+    "pairIntro", "scanQr", "orPaste",
+    "pairRemoteTitle", "pairRemoteHint", "pairRemoteAction",
+    "scanPairingTitle", "scanPointCamera", "scanBackManual",
+    "camDenied", "camNotFound", "camBusy", "camInterrupted", "camUnavailable",
+    "deskGreeting", "deskEmptyHint",
+  ];
+  const resolved = (lang: "en" | "pt") => connKeys.map((k) => translate(lang, k));
+  check(
+    "i18n conn: every connection-screen key resolves per locale (no raw-key fallback)",
+    (["en", "pt"] as const).every((lang) => resolved(lang).every((s, i) => s !== connKeys[i] && s.trim() !== "")),
+  );
+  // pt-BR: banner + actions must read Portuguese on the connection screen.
+  check(
+    "i18n conn pt: banner, recovery action and scanner copy are pt-BR",
+    translate("pt", "daemonDown").includes("Daemon local caiu") &&
+      translate("pt", "reconnectNow") === "Reconectar agora" &&
+      translate("pt", "scanPairingTitle").includes("Escanear") &&
+      translate("pt", "scanPointCamera").includes("câmera") &&
+      translate("pt", "deskEmptyHint").includes("barra lateral"),
+  );
+  // en: same screen, English copy — no pt leakage.
+  check(
+    "i18n conn en: banner, recovery action and scanner copy are English",
+    translate("en", "daemonDown").includes("Local daemon is down") &&
+      translate("en", "reconnectNow") === "Reconnect now" &&
+      translate("en", "scanPairingTitle") === "Scan pairing code" &&
+      translate("en", "deskGreeting").startsWith("hello"),
+  );
+  // deskGreeting interpolates the machine name the same way in both locales.
+  check(
+    "i18n conn: deskGreeting interpolates {machine} in both locales",
+    translate("en", "deskGreeting", { machine: ", foo" }) === "hello, foo!" &&
+      translate("pt", "deskGreeting", { machine: ", foo" }) === "olá, foo!",
+  );
+  // The old hardcoded strings must be gone from the sources that render the
+  // banner-adjacent screens (regression guard against reintroducing the mix).
+  const src = (p: string) => readFileSync(join(import.meta.dirname, "..", p), "utf8");
+  const appSrc = src("apps/web/src/App.tsx");
+  const qrSrc = src("apps/web/src/components/QrScanner.tsx");
+  check(
+    "i18n conn: no hardcoded pt copy in the desktop empty state",
+    !appSrc.includes("Selecione uma conversa") && !appSrc.includes(">olá"),
+  );
+  check(
+    "i18n conn: no hardcoded en copy in the QR scanner",
+    !qrSrc.includes("Scan pairing code") &&
+      !qrSrc.includes("Back to manual pairing") &&
+      !qrSrc.includes("Point the camera") &&
+      !qrSrc.includes("Camera permission denied"),
+  );
+}
+
+// --- P2-112: first-boot degraded journey decision (pure logic) ------------------
+{
+  check(
+    "degraded: never-seen daemon down is a first contact, not an incident",
+    degradedKind({ daemonDown: true }, false) === "first-contact",
+  );
+  check(
+    "degraded: daemon down after a healthy poll is the incident state",
+    degradedKind({ daemonDown: true }, true) === "down",
+  );
+  check(
+    "degraded: reconnecting wins regardless of the seen marker (watchdog never gives up)",
+    degradedKind({ reconnecting: true, daemonDown: true }, false) === "reconnecting" &&
+      degradedKind({ reconnecting: true }, true) === "reconnecting",
+  );
+  check("degraded: no shell state → no degraded journey", degradedKind(null, false) === "none" && degradedKind(null, true) === "none");
+  check(
+    "degraded: healthy poll (mode=local) stamps the seen marker",
+    sawHealthyDaemon({ mode: "local" }) === true &&
+      sawHealthyDaemon({ daemonVersion: "0.2.0" }) === true &&
+      sawHealthyDaemon({ versionMismatch: true, daemonVersion: "0.0.1-force" }) === true,
+  );
+  check(
+    "degraded: outage states never stamp the seen marker",
+    sawHealthyDaemon({ daemonDown: true }) === false &&
+      sawHealthyDaemon({ reconnecting: true, reconnectAttempts: 3 }) === false &&
+      sawHealthyDaemon(null) === false,
+  );
+  // Copy parity for the journey: every degraded title/hint key resolves in
+  // both locales (same contract as the P2-118 connection screens).
+  const degradedKeys = [
+    "firstContactTitle", "firstContactHint", "degradedRetrying", "degradedDownHint",
+    "degradedLocalTitle", "degradedLocalHint", "degradedPairManually",
+    "reconnectTrying", "reconnectStarted", "reconnectFailed",
+  ];
+  check(
+    "degraded: journey copy resolves per locale (no raw-key fallback)",
+    (["en", "pt"] as const).every((lang) => degradedKeys.every((k) => {
+      const s = translate(lang, k);
+      return s !== k && s.trim() !== "";
+    })),
+  );
+}
+
 // --- P2-028 per-task token costs from opencode.db -----------------------------
 {
   const SESS = { id: "ses_abc123456", tokens_input: 1000, tokens_output: 100, tokens_cache_read: 20, tokens_cache_write: 5 };
@@ -6346,6 +6881,15 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   {
     const d = validateBacklog("## Ready\n- [ ] (P9-001) [P1] mentions (P9-002) mid-spec — spec: x\n## Done\n");
     check("doctor backlog: ids quoted inside a spec are not duplicates", d.ok && d.duplicateIds.length === 0);
+  }
+  {
+    // P2-142: legacy multi-section files warn but stay valid — the stop-loss self-normalizes
+    const dupDiag = validateBacklog("## Ready\n\n## Blocked\n\n## Blocked\n\n## Blocked\n\n## Done\n");
+    check(
+      "doctor backlog: duplicate Blocked headers warn (self-normalizing)",
+      dupDiag.ok && dupDiag.warnings.length === 1 && dupDiag.warnings[0]!.includes("3 duplicate ## Blocked sections") && dupDiag.warnings[0]!.includes("next stop-loss write"),
+    );
+    check("doctor backlog: single Blocked header warns nothing", validateBacklog("## Ready\n\n## Blocked\n\n## Done\n").warnings.length === 0);
   }
   {
     const dir = mkdtempSync(join(tmpdir(), "pilot-doctor-"));
@@ -6591,6 +7135,680 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   ].join("\n");
   check("hotfix: inline VERDICT mention passes spec guard", validateSpec(inline) === true);
   check("hotfix: line-leading fake output still rejected", validateSpec(faked) === false);
+}
+
+// ── P2-124: sidebar account footer (accountInitial/accountPlanKey + i18n) ────
+{
+  check("p2-124 accountInitial: simple name → first letter uppercase", accountInitial("caio-mbp") === "C");
+  check("p2-124 accountInitial: whitespace only → empty", accountInitial("  ") === "");
+  check("p2-124 accountInitial: leading digits count", accountInitial("42-node") === "4");
+  check("p2-124 accountInitial: accented letter uppercases", accountInitial("émile") === "É");
+  check("p2-124 accountInitial: no letter/digit → empty (avatar glyph)", accountInitial("—") === "");
+  check("p2-124 accountPlanKey: local daemon → planLocal", accountPlanKey(true) === "planLocal");
+  check("p2-124 accountPlanKey: anything else → planRemote", accountPlanKey(false) === "planRemote");
+  for (const lang of ["en", "pt"] as const) {
+    const d = dict[lang] as Record<string, string>;
+    const keys = [
+      "newShort",
+      "navConversations",
+      "navArtifacts",
+      "navBrowser",
+      "navFiles",
+      "navMission",
+      "navSettings",
+      "planLocal",
+      "planRemote",
+      "accountSwitch",
+    ];
+    check(
+      `p2-124 i18n ${lang}: all 10 sidebar keys exist and are non-empty`,
+      keys.every((k) => typeof d[k] === "string" && d[k].trim() !== ""),
+    );
+    check(`p2-124 i18n ${lang}: planLocal reads as local`, /local/i.test(translate(lang, "planLocal")));
+  }
+}
+
+// --- P2-127: hosted-relay smoke — the tsc-compiled dist the image runs -------
+// No docker dependency: compile apps/relay to a tmp dist with the same
+// tsconfig.build.json the image uses, run it on a kernel-assigned port,
+// probe /healthz, round-trip a sealed frame between two sockets in one room
+// and shut the process down cleanly.
+{
+  const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+  const smokeDir = mkdtempSync(join(tmpdir(), "ocr-relay-smoke-"));
+  const distDir = join(smokeDir, "apps", "relay", "dist");
+  let relayProc: ReturnType<typeof spawn> | null = null;
+  const smokeGuard = setTimeout(() => {
+    console.error("P2-127 relay smoke timed out");
+    relayProc?.kill("SIGKILL");
+    process.exit(1);
+  }, 60_000);
+  smokeGuard.unref();
+  try {
+    // mirror the image layout: /package.json + /apps/relay/dist/index.js —
+    // the dist reads ../../../package.json to report the version on /healthz
+    copyFileSync(join(repoRoot, "package.json"), join(smokeDir, "package.json"));
+    symlinkSync(join(repoRoot, "node_modules"), join(smokeDir, "node_modules"));
+    execSync(
+      `${JSON.stringify(process.execPath)} ${JSON.stringify(join(repoRoot, "node_modules", "typescript", "bin", "tsc"))} -p ${JSON.stringify(join(repoRoot, "apps", "relay", "tsconfig.build.json"))} --outDir ${JSON.stringify(distDir)}`,
+      { cwd: repoRoot, stdio: "pipe" },
+    );
+    check("P2-127: tsc emits a runnable relay dist", existsSync(join(distDir, "index.js")));
+
+    // ephemeral port asked to the kernel: bind 0, read the assignment, release
+    const probe = createServer();
+    await new Promise<void>((r) => probe.listen(0, "127.0.0.1", r));
+    const smokePort = (probe.address() as AddressInfo).port;
+    await new Promise<void>((r) => probe.close(() => r()));
+
+    relayProc = spawn(process.execPath, [join(distDir, "index.js")], {
+      cwd: smokeDir,
+      env: { ...process.env, RELAY_PORT: String(smokePort), OCR_E2E_MARKER: "1" },
+      stdio: ["ignore", "ignore", "inherit"],
+    });
+    process.on("exit", () => relayProc?.kill("SIGTERM"));
+
+    // GET /healthz: 200 + {"ok":true,...} — the first successful fetch both
+    // proves the boot and is the probe (poll until the server listens)
+    const fetchHealthz = () =>
+      new Promise<{ status: number; body: string }>((resolve, reject) => {
+        const req = get(`http://127.0.0.1:${smokePort}/healthz`, (res) => {
+          let body = "";
+          res.on("data", (c) => (body += c));
+          res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
+        });
+        req.on("error", reject);
+        req.end();
+      });
+    let healthz: { status: number; body: string } | null = null;
+    for (let attempt = 0; attempt < 50 && !healthz; attempt++) {
+      try {
+        healthz = await fetchHealthz();
+      } catch {
+        await new Promise((r) => setTimeout(r, 200));
+      }
+    }
+    if (!healthz) throw new Error("P2-127: relay never came up");
+    const health = JSON.parse(healthz.body) as { ok: boolean; version: string };
+    check(
+      "P2-127: GET /healthz answers 200 with ok json",
+      healthz.status === 200 && health.ok === true && typeof health.version === "string",
+    );
+
+    // sealed frame round-trip: the room grammar needs 8..128 id chars
+    const smokeRoom = `smokeroom${Date.now().toString(36)}`;
+    const fromA = "smoke-client";
+    const fromB = "smoke-daemon";
+    const smokeKey = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, [
+      "encrypt",
+      "decrypt",
+    ]);
+    const dial = (from: string) =>
+      new Promise<WebSocket>((resolve, reject) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${smokePort}`);
+        ws.on("open", () => {
+          ws.send(JSON.stringify({ room: smokeRoom, from, payload: "" })); // join
+          resolve(ws);
+        });
+        ws.on("error", reject);
+      });
+    const nextFrame = (ws: WebSocket, ms = 5000) =>
+      new Promise<{ from?: string; seq?: number; payload?: string }>((resolve) => {
+        const t = setTimeout(() => resolve({}), ms).unref();
+        ws.once("message", (d) => {
+          clearTimeout(t);
+          resolve(JSON.parse(d.toString()));
+        });
+      });
+
+    const wsA = await dial(fromA);
+    const wsB = await dial(fromB);
+    // A gets B's join echoed back — both sockets sit in the same room
+    const joinEcho = await nextFrame(wsA);
+    check("P2-127: both sockets joined the same room", joinEcho.from === fromB && joinEcho.payload === "");
+
+    const smokeSeq = 1;
+    const sealedPayload = await seal({ type: "op", text: "secret" }, smokeKey, seqAad(fromA, smokeSeq));
+    wsA.send(JSON.stringify({ room: smokeRoom, from: fromA, seq: smokeSeq, payload: sealedPayload }));
+    const got = await nextFrame(wsB);
+    const opened =
+      typeof got.payload === "string"
+        ? await openSealed<{ type: string; text: string }>(got.payload, smokeKey, seqAad(fromA, smokeSeq))
+        : null;
+    check(
+      "P2-127: sealed frame round-trips and opens with the right AAD",
+      got.from === fromA && opened?.type === "op" && opened?.text === "secret",
+    );
+    // replay protection stays with the endpoints: wrong seq or sender opens nothing
+    check(
+      "P2-127: wrong seq or sender cannot open the payload",
+      typeof got.payload === "string" &&
+        (await openSealed(got.payload!, smokeKey, seqAad(fromA, 2))) === null &&
+        (await openSealed(got.payload!, smokeKey, seqAad("evil", smokeSeq))) === null,
+    );
+
+    wsA.close();
+    wsB.close();
+    // clean shutdown: SIGTERM drains (≤3s) and exits 0
+    const exited = new Promise<number>((resolve) => relayProc!.once("exit", (code) => resolve(code ?? -1)));
+    relayProc!.kill("SIGTERM");
+    const exitCode = await Promise.race([
+      exited,
+      new Promise<number>((r) => setTimeout(() => r(-1), 6000).unref()),
+    ]);
+    check("P2-127: SIGTERM ends the relay cleanly (exit 0)", exitCode === 0);
+  } finally {
+    clearTimeout(smokeGuard);
+    relayProc?.kill("SIGKILL");
+    rmSync(smokeDir, { recursive: true, force: true });
+  }
+}
+
+// --- P2-135: upstream agent-server classifier (pure, no fetch/net imports) ---
+
+{
+  check("P2-135: healthy 200 classifies as ok with empty hint", (() => {
+    const v = classifyUpstream({ status: 200, body: { healthy: true, version: "1.2.3" }, bodyOk: true });
+    return v.state === "ok" && v.reason.length > 0 && v.hint === "";
+  })());
+  check("P2-135: 200 with healthy:false classifies as unhealthy", (() => {
+    const v = classifyUpstream({ status: 200, body: { healthy: false }, bodyOk: true });
+    return v.state === "unhealthy" && v.reason.length > 0 && v.hint.length > 0;
+  })());
+  check("P2-135: 200 with malformed body classifies as unhealthy", (() => {
+    const v = classifyUpstream({ status: 200, body: undefined, bodyOk: false });
+    return v.state === "unhealthy" && /malformada/.test(v.reason);
+  })());
+  check("P2-135: 401 classifies as unauthorized with actionable hint", (() => {
+    const v = classifyUpstream({ status: 401, body: { error: "unauthorized" }, bodyOk: true });
+    return v.state === "unauthorized" && v.hint.length > 0;
+  })());
+  check("P2-135: 403 classifies as unauthorized too", classifyUpstream({ status: 403 }).state === "unauthorized");
+  check("P2-135: connection refused classifies as unreachable", (() => {
+    const v = classifyUpstream({ error: Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:4096"), { code: "ECONNREFUSED" }) });
+    return v.state === "unreachable" && /recusada/.test(v.reason) && v.hint.length > 0;
+  })());
+  check("P2-135: real fetch shape — TypeError 'fetch failed' with ECONNREFUSED cause — classifies as refused", (() => {
+    // Node/undici wraps connection failures: top-level TypeError carries no
+    // detail, the ECONNREFUSED error only appears in .cause. Regressions here
+    // collapse "server not installed / wrong port" into the generic verdict.
+    const v = classifyUpstream({
+      error: Object.assign(new Error("fetch failed"), {
+        name: "TypeError",
+        cause: Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:4096"), { code: "ECONNREFUSED" }),
+      }),
+    });
+    return v.state === "unreachable" && /recusada/.test(v.reason) && v.hint.length > 0;
+  })());
+  check("P2-135: plain-object cause with code (no Error wrapper) still classified as refused", (() => {
+    const v = classifyUpstream({
+      error: Object.assign(new Error("fetch failed"), {
+        name: "TypeError",
+        cause: { code: "ECONNREFUSED", message: "connect ECONNREFUSED 127.0.0.1:4096" },
+      }),
+    });
+    return v.state === "unreachable" && /recusada/.test(v.reason);
+  })());
+  check("P2-135: abort/timeout error classifies as timeout", (() => {
+    const v = classifyUpstream({ error: Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" }) });
+    return v.state === "timeout" && v.hint.length > 0;
+  })());
+  check("P2-135: explicit timedOut flag classifies as timeout", classifyUpstream({ timedOut: true }).state === "timeout");
+  check("P2-135: unexpected HTTP status classifies as unhealthy", classifyUpstream({ status: 502 }).state === "unhealthy");
+  check("P2-135: probe payload never echoes secrets (static reason/hint)", (() => {
+    const secret = "super-secret-token-9f8e7d6c";
+    const v401 = classifyUpstream({ status: 401, body: { error: secret }, bodyOk: true });
+    const vRefused = classifyUpstream({ error: new Error(`connect ECONNREFUSED token=${secret}`) });
+    return !v401.reason.includes(secret) && !v401.hint.includes(secret) && !vRefused.reason.includes(secret) && !vRefused.hint.includes(secret);
+  })());
+  check("P2-135: classifier output is deterministic for identical probes", (() => {
+    const a = classifyUpstream({ status: 200, body: { healthy: true }, bodyOk: true });
+    const b = classifyUpstream({ status: 200, body: { healthy: true }, bodyOk: true });
+    return a.state === b.state && a.reason === b.reason && a.hint === b.hint;
+  })());
+  check("P2-135: probe timeout cap is exported and sane", UPSTREAM_PROBE_TIMEOUT_MS === 5_000);
+}
+
+// --- P2-138: upstream notice mapping (pure, same contract as /api/health) -----
+
+{
+  // The daemon payload shape the desktop shell propagates (P2-135 classifier).
+  const health = (state: string, reason = "motivo", hint = "dica"): UpstreamHealth => ({
+    state,
+    reason,
+    hint,
+    checkedAt: "2026-09-04T12:00:00.000Z",
+  });
+
+  // All five classifier states: the four non-ok ones map to a notice.
+  check("P2-138: unreachable maps to an info notice with actionable copy", (() => {
+    const n = upstreamNotice(health("unreachable", "conexão recusada", "verifique se o opencode está rodando"));
+    return !!n && n.tone === "info" && n.titleKey === "upstreamUnreachableTitle" &&
+      n.actionKey === "upstreamUnreachableAction" && n.reason === "conexão recusada" && n.hint === "verifique se o opencode está rodando";
+  })());
+  check("P2-138: unauthorized maps to a warn notice", (() => {
+    const n = upstreamNotice(health("unauthorized"));
+    return !!n && n.tone === "warn" && n.titleKey === "upstreamUnauthorizedTitle" && n.actionKey === "upstreamUnauthorizedAction";
+  })());
+  check("P2-138: timeout maps to a warn notice", (() => {
+    const n = upstreamNotice(health("timeout"));
+    return !!n && n.tone === "warn" && n.titleKey === "upstreamTimeoutTitle" && n.actionKey === "upstreamTimeoutAction";
+  })());
+  check("P2-138: unhealthy maps to a warn notice", (() => {
+    const n = upstreamNotice(health("unhealthy"));
+    return !!n && n.tone === "warn" && n.titleKey === "upstreamUnhealthyTitle" && n.actionKey === "upstreamUnhealthyAction";
+  })());
+  // ...and `ok` itself maps to NO notice (silence is the contract).
+  check("P2-138: ok state produces no notice", upstreamNotice(health("ok", "opencode saudável", "")) === null);
+
+  // Absent / legacy / malformed payloads must never invent a notice.
+  check("P2-138: absent opencode object produces no notice", upstreamNotice(null) === null && upstreamNotice(undefined) === null);
+  check("P2-138: unknown initial state produces no notice", upstreamNotice(health("unknown")) === null);
+  check("P2-138: legacy payload without the opencode field produces no notice", upstreamNotice({}) === null);
+  check("P2-138: malformed payload (non-string state) produces no notice", upstreamNotice({ state: 42, reason: "x", hint: "y" } as unknown as UpstreamHealth) === null);
+  check("P2-138: non-string reason/hint degrade to empty strings, never crash", (() => {
+    const n = upstreamNotice({ state: "timeout", reason: 7, hint: { bad: true } } as unknown as UpstreamHealth);
+    return !!n && n.reason === "" && n.hint === "";
+  })());
+
+  // Copy parity: every notice key resolves in both locales (no raw-key leak),
+  // and the Settings help section keys exist too.
+  const noticeKeys = [
+    "upstreamUnreachableTitle", "upstreamUnreachableAction",
+    "upstreamUnauthorizedTitle", "upstreamUnauthorizedAction",
+    "upstreamTimeoutTitle", "upstreamTimeoutAction",
+    "upstreamUnhealthyTitle", "upstreamUnhealthyAction",
+    "upstreamHelpAction", "upstreamHelpTitle",
+  ];
+  check(
+    "P2-138: notice copy resolves per locale (en + pt) and never leaks the raw key",
+    (["en", "pt"] as const).every((lang) =>
+      noticeKeys.every((k) => {
+        const s = translate(lang, k);
+        return !!s && s !== k && dict[lang][k] === s;
+      }),
+    ),
+  );
+  check("P2-138: copy carries no markup (rendered as text, never HTML)", noticeKeys.every((k) =>
+    (["en", "pt"] as const).every((lang) => {
+      const s = dict[lang][k];
+      return !s.includes("<") && !s.includes(">") && !s.includes("`") && !s.includes("{") && !s.includes("}");
+    }),
+  ));
+}
+
+// --- P2-140: sidecar exit classifier (pure, no electron/child_process) --------
+
+{
+  // The five kinds the spec names, driven by the exact shapes the shell feeds
+  // in (exit code + signal + bounded stderr tail).
+  check("P2-140: EADDRINUSE in stderr classifies as port-busy with actionable hint", (() => {
+    const v = classifySidecarExit({ code: 1, signal: null, stderrTail: "Error: listen EADDRINUSE: address already in use 127.0.0.1:8792" });
+    return v.kind === "port-busy" && v.reason.length > 0 && v.hint.length > 0;
+  })());
+  check("P2-140: ENOENT in stderr classifies as entry-missing", (() => {
+    const v = classifySidecarExit({ code: 1, signal: null, stderrTail: "ErrorCode=ENOENT, syscall=spawn" });
+    return v.kind === "entry-missing" && v.hint.length > 0;
+  })());
+  check("P2-140: SIGKILL exit (null code) classifies as killed", (() => {
+    const v = classifySidecarExit({ code: null, signal: "SIGKILL", stderrTail: "" });
+    return v.kind === "killed" && v.reason.length > 0 && v.hint.length > 0;
+  })());
+  check("P2-140: empty stderr with a nonzero code classifies as unknown", (() => {
+    const v = classifySidecarExit({ code: 1, signal: null, stderrTail: "" });
+    return v.kind === "unknown" && v.reason.length > 0 && v.hint.length > 0;
+  })());
+  check("P2-140: code zero without an intentional stop also classifies as unknown", (() => {
+    const v = classifySidecarExit({ code: 0, signal: null, stderrTail: "" });
+    return v.kind === "unknown";
+  })());
+  check("P2-140: nonzero code with marker-free stderr classifies as runtime-error", (() => {
+    const v = classifySidecarExit({ code: 1, signal: null, stderrTail: "TypeError: foo is not a function" });
+    return v.kind === "runtime-error" && v.hint.length > 0;
+  })());
+  // A busy port stays the story even when the child was killed afterwards —
+  // the port verdict is the actionable one.
+  check("P2-140: port-busy marker wins over a later kill signal", (() => {
+    const v = classifySidecarExit({ code: null, signal: "SIGKILL", stderrTail: "EADDRINUSE" });
+    return v.kind === "port-busy";
+  })());
+  check("P2-140: stderr tail is only searched, never echoed (static copy, no secrets)", (() => {
+    const secret = "apiToken=super-secret-9f8e7d6c";
+    const v = classifySidecarExit({ code: 1, signal: null, stderrTail: `${secret}\nEADDRINUSE` });
+    return !v.reason.includes(secret) && !v.hint.includes(secret) && !v.reason.includes("/") && !v.hint.includes("/");
+  })());
+  check("P2-140: classifier output is deterministic for identical inputs", (() => {
+    const a = classifySidecarExit({ code: 1, signal: null, stderrTail: "EADDRINUSE" });
+    const b = classifySidecarExit({ code: 1, signal: null, stderrTail: "EADDRINUSE" });
+    return a.kind === b.kind && a.reason === b.reason && a.hint === b.hint;
+  })());
+
+  // Renderer mapping: kind → i18n keys, tolerant to absent/malformed payloads.
+  const exit = (kind: string): SidecarExitHealth => ({ kind, reason: "motivo", hint: "dica" });
+  check("P2-140: port-busy maps to the port-busy notice", (() => {
+    const n = sidecarExitNotice(exit("port-busy"));
+    return !!n && n.titleKey === "sidecarPortBusyTitle" && n.actionKey === "sidecarPortBusyAction";
+  })());
+  check("P2-140: entry-missing maps to the entry-missing notice", (() => {
+    const n = sidecarExitNotice(exit("entry-missing"));
+    return !!n && n.titleKey === "sidecarEntryMissingTitle" && n.actionKey === "sidecarEntryMissingAction";
+  })());
+  check("P2-140: killed maps to the killed notice", (() => {
+    const n = sidecarExitNotice(exit("killed"));
+    return !!n && n.titleKey === "sidecarKilledTitle" && n.actionKey === "sidecarKilledAction";
+  })());
+  check("P2-140: runtime-error maps to the runtime-error notice", (() => {
+    const n = sidecarExitNotice(exit("runtime-error"));
+    return !!n && n.titleKey === "sidecarRuntimeErrorTitle" && n.actionKey === "sidecarRuntimeErrorAction";
+  })());
+  check("P2-140: unknown maps to the unknown notice", (() => {
+    const n = sidecarExitNotice(exit("unknown"));
+    return !!n && n.titleKey === "sidecarUnknownTitle" && n.actionKey === "sidecarUnknownAction";
+  })());
+  check("P2-140: absent or malformed sidecarExit objects produce no notice", sidecarExitNotice(null) === null && sidecarExitNotice(undefined) === null && sidecarExitNotice({}) === null && sidecarExitNotice({ kind: 42 }) === null);
+
+  // Copy parity: every key resolves in both locales (no raw-key leak).
+  const exitKeys = [
+    "sidecarPortBusyTitle", "sidecarPortBusyAction",
+    "sidecarEntryMissingTitle", "sidecarEntryMissingAction",
+    "sidecarRuntimeErrorTitle", "sidecarRuntimeErrorAction",
+    "sidecarKilledTitle", "sidecarKilledAction",
+    "sidecarUnknownTitle", "sidecarUnknownAction",
+  ];
+  check(
+    "P2-140: exit-warning copy resolves per locale (en + pt) and never leaks the raw key",
+    (["en", "pt"] as const).every((lang) =>
+      exitKeys.every((k) => {
+        const s = translate(lang, k);
+        return !!s && s !== k && dict[lang][k] === s;
+      }),
+    ),
+  );
+  check("P2-140: exit-warning copy carries no markup, paths or emoji", exitKeys.every((k) =>
+    (["en", "pt"] as const).every((lang) => {
+      const s = dict[lang][k];
+      return !s.includes("<") && !s.includes(">") && !s.includes("{") && !s.includes("}") && !s.includes("/") && !/\p{Extended_Pictographic}/u.test(s);
+    }),
+  ));
+}
+
+// --- P2-133: orphan-test reachability (pure fixtures) ------------------------
+
+{
+  const FIXTURE_SCRIPTS: Record<string, string> = {
+    "test:unit": "tsx scripts/in-chain.test.ts",
+    "test:never-invoked": "tsx scripts/in-never-invoked.test.ts",
+    "test:ci-runner": "tsx scripts/in-ci-only.test.ts",
+    typecheck: "tsc --noEmit",
+  };
+  const GATE = ["npm run typecheck --silent", "npm run build --silent", "npm run test:unit --silent"];
+  const CI = ["- run: npm run test:unit", "- run: npx tsx scripts/in-ci-only.test.ts"].join("\n");
+  const REGISTRY = [
+    { file: "scripts/only-registered.test.ts", runner: "manual", reason: "live test" },
+    { file: "scripts/in-chain.test.ts", runner: "npm run test:unit", reason: "belt and braces" },
+  ];
+  const FILES = [
+    "scripts/in-chain.test.ts",
+    "scripts/in-never-invoked.test.ts",
+    "scripts/in-ci-only.test.ts",
+    "scripts/only-registered.test.ts",
+    "scripts/nowhere.test.ts",
+  ];
+  const orphans = unreachableTests(FILES, FIXTURE_SCRIPTS, GATE, CI, REGISTRY);
+  check("P2-133: file cited only in a never-invoked script is unreachable (declaration is not coverage)", orphans.includes("scripts/in-never-invoked.test.ts"));
+  check("P2-133: file inside the test:unit chain is reachable", !orphans.includes("scripts/in-chain.test.ts"));
+  check("P2-133: file only executed by CI is reachable", !orphans.includes("scripts/in-ci-only.test.ts"));
+  check("P2-133: file only in the declared registry is not an orphan", !orphans.includes("scripts/only-registered.test.ts"));
+  check("P2-133: file cited nowhere is an orphan", orphans.includes("scripts/nowhere.test.ts"));
+  check(
+    "P2-133: orphans are exactly the two uncovered fixtures, in input order",
+    JSON.stringify(orphans) === JSON.stringify(["scripts/in-never-invoked.test.ts", "scripts/nowhere.test.ts"]),
+  );
+  check(
+    "P2-133: registered AND in the chain is never an error",
+    !unreachableTests(["scripts/in-chain.test.ts"], FIXTURE_SCRIPTS, GATE, CI, REGISTRY).includes("scripts/in-chain.test.ts"),
+  );
+  check(
+    "P2-133: CI citing a script name only via npm run still expands the chain",
+    unreachableTests(
+      ["scripts/in-chain.test.ts"],
+      { ...FIXTURE_SCRIPTS, "test:unit": "tsx scripts/other.test.ts && tsx scripts/in-chain.test.ts" },
+      GATE,
+      CI,
+      [],
+    ).length === 0,
+  );
+  check(
+    "P2-133: registry entry with extra path segments matches by basename",
+    unreachableTests(
+      ["scripts/only-registered.test.ts"],
+      {},
+      [],
+      "",
+      [{ file: "./scripts/only-registered.test.ts", runner: "r", reason: "why" }],
+    ).length === 0,
+  );
+}
+
+// --- P2-133: real-repo assertion — a future orphan test fails the gate -------
+
+{
+  const root = join(import.meta.dirname, "..");
+  const testFiles = readdirSync(join(root, "scripts"))
+    .filter((f) => f.endsWith(".test.ts"))
+    .sort()
+    .map((f) => `scripts/${f}`);
+  const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { scripts?: Record<string, string> };
+  const gateCommands = PILOT_GATE_STEPS.map(([, cmd]) => cmd);
+  const ciText = readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8");
+  const registry = JSON.parse(readFileSync(join(root, "scripts", "test-registry.json"), "utf8"));
+  const orphans = unreachableTests(testFiles, pkg.scripts ?? {}, gateCommands, ciText, registry);
+  if (orphans.length > 0) {
+    console.error(`  orphan test files (add to test:unit/CI or scripts/test-registry.json): ${orphans.join(", ")}`);
+  }
+  check("P2-133: real repo — every test file is executed by a runner or declared in test-registry.json", orphans.length === 0);
+  check("P2-133: registry covers the known live/daemon and Electron tests", (Array.isArray(registry) ? registry : registry.entries ?? []).length >= 9);
+}
+
+// --- P2-136: signing profile — mac notarization preflight ----------------------
+
+{
+  const APPLE = { APPLE_ID: "ops@example.com", APPLE_APP_SPECIFIC_PASSWORD: "abcd-efgh-ijkl-mnop", APPLE_TEAM_ID: "TEAM1234" };
+  const pEmpty = signingProfile({});
+  check("P2-136: empty env → ad-hoc, no notarization, no problems", pEmpty.mode === "adhoc" && pEmpty.notarizes === false && pEmpty.problems.length === 0);
+
+  const pNotaryOnly = signingProfile({ ...APPLE });
+  check(
+    "P2-136: Apple credentials without a signing certificate → problem, stays ad-hoc",
+    pNotaryOnly.mode === "adhoc" && pNotaryOnly.notarizes === false && pNotaryOnly.problems.length === 1,
+  );
+
+  const pCertOnly = signingProfile({ CSC_LINK: "/tmp/dev-id.p12" });
+  check(
+    "P2-136: certificate without Apple credentials → Developer ID signing, no notarization",
+    pCertOnly.mode === "developer-id" && pCertOnly.notarizes === false && pCertOnly.problems.length === 0,
+  );
+
+  const full = { CSC_LINK: "/tmp/dev-id.p12", ...APPLE };
+  const pFullDiscoveryOn = signingProfile({ ...full });
+  check(
+    "P2-136: everything present, auto discovery on (unset) → Developer ID + notarization",
+    pFullDiscoveryOn.mode === "developer-id" && pFullDiscoveryOn.notarizes === true && pFullDiscoveryOn.problems.length === 0,
+  );
+
+  const pFullDiscoveryOff = signingProfile({ ...full, CSC_IDENTITY_AUTO_DISCOVERY: "false" });
+  check(
+    "P2-136: everything present but auto discovery off → problem, stays ad-hoc (cert would be ignored)",
+    pFullDiscoveryOff.mode === "adhoc" && pFullDiscoveryOff.notarizes === false && pFullDiscoveryOff.problems.length === 1,
+  );
+
+  const pExplicitTrue = signingProfile({ ...full, CSC_IDENTITY_AUTO_DISCOVERY: "true" });
+  check("P2-136: explicit CSC_IDENTITY_AUTO_DISCOVERY=true behaves like unset", pExplicitTrue.notarizes === true && pExplicitTrue.problems.length === 0);
+
+  const pCscName = signingProfile({ CSC_NAME: "Developer ID Application: Example (TEAM1234)" });
+  check("P2-136: CSC_NAME alone counts as a signing credential", pCscName.mode === "developer-id" && pCscName.problems.length === 0);
+
+  const pPartialApple = signingProfile({ ...full, APPLE_TEAM_ID: "" });
+  check(
+    "P2-136: partial Apple credentials → signing without notarization (same all-three rule as the workflow)",
+    pPartialApple.mode === "developer-id" && pPartialApple.notarizes === false && pPartialApple.problems.length === 0,
+  );
+
+  check(
+    "P2-136: problems cite the exact env vars to fix (dist-smoke problem format)",
+    (pNotaryOnly.problems[0] ?? "").includes("CSC_LINK") &&
+      (pFullDiscoveryOff.problems[0] ?? "").includes("CSC_IDENTITY_AUTO_DISCOVERY"),
+  );
+}
+
+// --- P2-136: real-repo assertion — builder config stays wired to the plist -----
+
+{
+  const root = join(import.meta.dirname, "..");
+  const plist = readFileSync(join(root, "apps", "desktop", "build", "entitlements.mac.plist"), "utf8");
+  const builderYml = readFileSync(join(root, "apps", "desktop", "electron-builder.yml"), "utf8");
+  const releaseYml = readFileSync(join(root, ".github", "workflows", "release.yml"), "utf8");
+  const entitlementKeys = [
+    "com.apple.security.cs.allow-jit",
+    "com.apple.security.cs.allow-unsigned-executable-memory",
+    "com.apple.security.cs.disable-library-validation",
+    "com.apple.security.cs.allow-dyld-environment-variables",
+  ];
+  check("P2-136: entitlements plist carries the Electron + node-sidecar keys", entitlementKeys.every((k) => plist.includes(k)));
+  check(
+    "P2-136: mac block wires hardened runtime + entitlements/entitlementsInherit",
+    builderYml.includes("hardenedRuntime: true") &&
+      builderYml.includes("gatekeeperAssess: false") &&
+      builderYml.includes("entitlements: build/entitlements.mac.plist") &&
+      builderYml.includes("entitlementsInherit: build/entitlements.mac.plist"),
+  );
+  check("P2-136: plist is shipped in the files list", builderYml.includes("- build/entitlements.mac.plist"));
+  check(
+    "P2-136: release.yml runs the preflight and only notarizes on its developer-id/no-problems verdict",
+    releaseYml.includes("signing-profile.mjs") && releaseYml.includes("steps.signing.outputs.notarize"),
+  );
+}
+
+// --- P2-139: RELAY_URL boot validation (pure, fail-closed) -------------------
+
+{
+  const ok = parseRelayUrl("ws://127.0.0.1:8787");
+  check(
+    "P2-139: loopback ws default accepted",
+    ok.problems.length === 0 && !ok.secure && ok.host === "127.0.0.1:8787",
+  );
+  const wssPublic = parseRelayUrl("wss://relay.example.com:8788");
+  check(
+    "P2-139: wss on a public host accepted",
+    wssPublic.problems.length === 0 && wssPublic.secure && wssPublic.href === "wss://relay.example.com:8788/",
+  );
+  const wsPublic = parseRelayUrl("ws://relay.example.com:8788");
+  check("P2-139: ws on a public host is a problem", wsPublic.problems.length > 0 && !wsPublic.secure);
+  check(
+    "P2-139: ws public host still reports href/host for diagnostics",
+    wsPublic.href === "ws://relay.example.com:8788/" && wsPublic.host === "relay.example.com:8788",
+  );
+  check("P2-139: http scheme rejected", parseRelayUrl("http://relay.example.com:8788").problems.length > 0);
+  check("P2-139: https scheme rejected", parseRelayUrl("https://relay.example.com").problems.length > 0);
+  const empty = parseRelayUrl("");
+  check("P2-139: empty string rejected", empty.problems.length > 0 && empty.href === "" && empty.host === "");
+  check("P2-139: whitespace-only rejected", parseRelayUrl("   ").problems.length > 0);
+  const malformed = parseRelayUrl("not a url");
+  check("P2-139: malformed URL rejected", malformed.problems.length > 0 && malformed.href === "");
+  check(
+    "P2-139: trailing slash normalization",
+    parseRelayUrl("ws://127.0.0.1:8787").href === parseRelayUrl("ws://127.0.0.1:8787/").href,
+  );
+  check("P2-139: localhost counts as loopback over ws", parseRelayUrl("ws://localhost:8787").problems.length === 0);
+  check("P2-139: ipv6 ::1 counts as loopback over ws", parseRelayUrl("ws://[::1]:8787").problems.length === 0);
+  check("P2-139: wss never triggers the plain-ws problem", parseRelayUrl("wss://relay.example.com").problems.length === 0);
+  check(
+    "P2-139: problem mentions the env var so the operator knows what to fix",
+    parseRelayUrl("http://x.example").problems.every((p) => p.includes("RELAY_URL")),
+  );
+  // round 2: strict dotted-quad loopback — nip.io-style wildcards must NOT pass
+  check("P2-139: 127.0.0.1.evil.com is NOT loopback over ws", parseRelayUrl("ws://127.0.0.1.evil.com:8787").problems.length > 0);
+  check("P2-139: 127.attacker.com is NOT loopback over ws", parseRelayUrl("ws://127.attacker.com").problems.length > 0);
+  check("P2-139: real 127.0.0.1 still loopback over ws", parseRelayUrl("ws://127.0.0.1:8787").problems.length === 0);
+  check("P2-139: 127.0.0.255 (full octet) is loopback over ws", parseRelayUrl("ws://127.0.0.255").problems.length === 0);
+  check("P2-139: 127.0.0.256 is rejected outright by the URL parser", parseRelayUrl("ws://127.0.0.256").problems.length > 0);
+  // round 2: userinfo redaction for display surfaces (logs + /api/health)
+  check("P2-139: redactRelayUrl strips user:pass@", redactRelayUrl("wss://user:token@relay.example.com:8788") === "wss://relay.example.com:8788");
+  check("P2-139: redactRelayUrl keeps plain URLs", redactRelayUrl("ws://127.0.0.1:8787") === "ws://127.0.0.1:8787");
+  check("P2-139: redactRelayUrl ignores @ inside path", redactRelayUrl("ws://host:8788/pa@th") === "ws://host:8788/pa@th");
+  check("P2-139: redactRelayUrl tolerates unparseable strings", redactRelayUrl("not a url") === "not a url");
+  check("P2-139: redactRelayUrl handles no-authority strings", redactRelayUrl("nonsense") === "nonsense");
+}
+
+// --- P2-144: tools/pngcheck.mjs — evidence PNG sanity at capture time --------
+{
+  const CRC_TABLE = Array.from({ length: 256 }, (_, n) => {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    return c;
+  });
+  const crc32 = (data: Buffer) => {
+    let c = 0xffffffff;
+    for (const b of data) c = CRC_TABLE[(c ^ b) & 0xff]! ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type: string, data: Buffer) => {
+    const head = Buffer.alloc(4);
+    head.writeUInt32BE(data.length);
+    const body = Buffer.concat([Buffer.from(type, "latin1"), data]);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(body));
+    return Buffer.concat([head, body, crc]);
+  };
+  const ihdr = (w: number, h: number) => {
+    const d = Buffer.alloc(13);
+    d.writeUInt32BE(w, 0);
+    d.writeUInt32BE(h, 4);
+    return chunk("IHDR", d);
+  };
+  const SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const iend = chunk("IEND", Buffer.alloc(0));
+  const valid = Buffer.concat([SIG, ihdr(1440, 900), iend]);
+
+  const ok = checkPng(valid);
+  check(
+    "P2-144: valid minimal PNG passes with real dimensions",
+    ok.ok === true && ok.width === 1440 && ok.height === 900 && ok.reason === null,
+  );
+  const badSig = Buffer.from([...valid]);
+  badSig[1] = 0x00;
+  const badSigCheck = checkPng(badSig);
+  check(
+    "P2-144: wrong signature rejected with reason",
+    badSigCheck.ok === false && /signature/.test(badSigCheck.reason),
+  );
+  const shortBuf = Buffer.concat([SIG, Buffer.alloc(8)]);
+  check(
+    "P2-144: buffer shorter than the header rejected",
+    checkPng(shortBuf).ok === false && checkPng(Buffer.alloc(0)).ok === false,
+  );
+  const zero = checkPng(Buffer.concat([SIG, ihdr(0, 900), iend]));
+  check("P2-144: IHDR zero dimension rejected with reason", zero.ok === false && /zero/.test(zero.reason));
+  const noIend = checkPng(Buffer.concat([SIG, ihdr(1440, 900)]));
+  check("P2-144: file without IEND rejected", noIend.ok === false && /IEND/.test(noIend.reason));
+  const noIhdr = checkPng(Buffer.concat([SIG, iend]));
+  check("P2-144: missing IHDR rejected", noIhdr.ok === false && /IHDR/.test(noIhdr.reason));
+  const truncated = checkPng(Buffer.concat([SIG, ihdr(1440, 900).subarray(0, 8)]));
+  check(
+    "P2-144: chunk running past end of file rejected",
+    truncated.ok === false && /truncated/.test(truncated.reason),
+  );
+
+  // cross-check: the gate's own PNG reader agrees on the validated dimensions
+  const dir = mkdtempSync(join(tmpdir(), "pilot-pngcheck-"));
+  try {
+    const p = join(dir, "shot.png");
+    writeFileSync(p, valid);
+    const gate = pngSize(p);
+    check("P2-144: pngcheck agrees with the gate's pngSize", gate?.w === ok.width && gate?.h === ok.height);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 if (failures > 0) {

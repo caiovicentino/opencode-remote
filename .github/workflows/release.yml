@@ -12,6 +12,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # P2-130: tag and the two package.json versions must agree BEFORE anything
+      # is published — a drifting version produces a latest-mac.yml whose
+      # `version` field does not match the app binary, breaking electron-updater
+      # for every installed copy. Fails before `gh release create`.
+      - name: Release preflight (tag ↔ package.json versions)
+        run: npx --yes tsx@4.23.12 scripts/release-preflight.ts "$GITHUB_REF_NAME"
+
       - name: Build source tarball (node_modules excluded)
         run: |
           VERSION=${GITHUB_REF_NAME}
@@ -52,10 +59,11 @@ jobs:
           fi
 
   # P2-098: third-party installability — a release ships a real macOS installer
-  # (DMG), not just the source tarball. When the APPLE_ID /
-  # APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID secrets are configured the DMG
-  # is notarized (electron-builder `-c.mac.notarize=true`); without them the
-  # build stays ad-hoc signed and users right-click → Open once (README).
+  # (DMG), not just the source tarball. P2-136: a signing preflight decides the
+  # mode before packaging — with a usable Developer ID certificate (CSC_LINK/
+  # CSC_NAME) plus the Apple notarization secrets the DMG is signed with
+  # hardened runtime and notarized; without them the build stays ad-hoc signed
+  # and users right-click → Open once (README), exactly as before.
   desktop-dmg:
     runs-on: macos-14
     needs: release
@@ -72,22 +80,46 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build + package DMG (notarized when Apple credentials exist)
+      # P2-136: pure env inspection, always exits 0 — problems are reported as
+      # ::warning:: annotations and the outputs below keep the job green.
+      - name: Signing preflight (Developer ID or ad-hoc)
+        id: signing
         env:
-          # no codesigning identity in CI — ad-hoc signing (right-click → Open),
-          # upgraded to full notarization when the Apple secrets are configured
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_NAME: ${{ secrets.CSC_NAME }}
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.CSC_IDENTITY_AUTO_DISCOVERY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: node apps/desktop/scripts/signing-profile.mjs
+
+      - name: Build + package DMG (notarized when the signing profile allows)
+        env:
+          # No signing identity in CI by default — ad-hoc signing
+          # (right-click → Open). Discovery is only flipped on when the
+          # preflight proved a usable Developer ID identity: with
+          # CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder skips identity
+          # lookup entirely and would silently ignore the certificate.
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ steps.signing.outputs.mode == 'developer-id' && 'true' || 'false' }}
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_NAME: ${{ secrets.CSC_NAME }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           NOTARIZE=""
-          if [ -n "$APPLE_ID" ] && [ -n "$APPLE_APP_SPECIFIC_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
+          if [ "${{ steps.signing.outputs.notarize }}" = "true" ]; then
             NOTARIZE="-c.mac.notarize=true"
           else
-            echo "Apple credentials not configured — shipping ad-hoc signed DMG (skip notarization)"
+            echo "Signing profile: ${{ steps.signing.outputs.mode }} (notarize=no) — shipping ad-hoc signed DMG (skip notarization)"
           fi
           npm run dist --workspace @ocr/desktop -- $NOTARIZE
+
+      # P2-130: a broken bundle (e.g. web-dist/index.html missing → DMG that
+      # opens blank) must block the upload instead of shipping to users.
+      - name: Smoke-check the packaged bundle
+        run: npm run dist:smoke --workspace @ocr/desktop
 
       - name: Attach DMG + update metadata to the GitHub release
         env:

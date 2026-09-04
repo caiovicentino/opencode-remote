@@ -22,6 +22,9 @@ files:
   # sibling up automatically. Same asar-relative path appIcon() relies on.
   - build/trayTemplate.png
   - build/trayTemplate@2x.png
+  # P2-136: hardened-runtime entitlements (mac.entitlements points here) ride
+  # along in the bundle so the shipped app documents its own signing surface.
+  - build/entitlements.mac.plist
 extraResources:
   # Bundle the web UI so the packaged app can load it from resources/web-dist
   - from: ../web/dist
@@ -41,14 +44,22 @@ mac:
   # P1-050: client-ready packaging. `dmg` produces the distributable
   # OpenCode Remote-<version>.dmg; `dir` keeps a plain .app around for the
   # deterministic smoke check (npm run dist:smoke --workspace @ocr/desktop).
-  # Builds stay ad-hoc signed (no notarization credentials in this repo); the
+  # P2-136: hardened runtime + entitlements are always declared (they are
+  # mandatory for Developer ID signing/notarization and inert for ad-hoc
+  # signing). Without signing credentials the build stays ad-hoc signed; the
   # user-visible effect is a standard Gatekeeper "unidentified developer"
   # right-click → Open on first launch, documented in README/troubleshooting.
+  # Release notarization is decided by scripts/signing-profile.mjs, which the
+  # release workflow runs before packaging.
   target:
     - target: dmg
     - target: dir
   category: public.app-category.developer-tools
   icon: build/icon.png
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
 dmg:
   # Craft: branded installer window, no license/EULA noise.
   title: OpenCode Remote ${version}

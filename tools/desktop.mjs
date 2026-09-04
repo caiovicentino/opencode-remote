@@ -36,6 +36,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { checkPng } from "./pngcheck.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(HERE, "..");
@@ -111,12 +112,16 @@ async function clientMain() {
       }
     }
     if (shotOut) {
+      // P2-144: the keeper's shot() validates the freshly written PNG before
+      // answering, so this optional evidence shot uses the same checked path.
       const shot = await send({ cmd: "shot", out: shotOut, w, h });
       fail(shot);
       console.log(JSON.stringify({ ...shot, reused, session: SESSION }));
       return;
     }
-    console.log(JSON.stringify({ ok: true, reused, session: SESSION }));
+    // P2-069: expose the minted userData dir so callers (desktop-flow gate,
+    // explorer) can address THIS instance's userData directly.
+    console.log(JSON.stringify({ ok: true, reused, session: SESSION, userData: res?.userData }));
     return;
   }
   if (cmd === "see") {
@@ -263,8 +268,15 @@ function hermeticEnv() {
     ELECTRON_DISABLE_SECURITY_WARNINGS: "1",
     OCR_USER_DATA_DIR: dir,
     OCR_DAEMON_STATE_FILE: stateFile,
-    OCR_DAEMON_ENTRY: join(dir, "no-daemon-entry.js"),
+    // P2-140: the caller may point OCR_DAEMON_ENTRY at a real fake entry
+    // script (sidecar-exit beat) — honor it; the nonexistent default keeps
+    // every other hermetic launch spawn-free.
+    OCR_DAEMON_ENTRY: process.env.OCR_DAEMON_ENTRY ?? join(dir, "no-daemon-entry.js"),
     OCR_DAEMON_FORCE_DOWN: "1",
+    // P2-069 leash: the app watches this pid and quits when it disappears, so
+    // a keeper killed hard (SIGKILL from a pre-flight reaper, OOM, reboot)
+    // can no longer leak an Electron instance for hours — the P2-069 incident.
+    OCR_KEEPER_PID: String(process.pid),
   };
   // P1-070: local-boot mode — the caller booted a REAL hermetic daemon on a
   // free port and hands over its 0600 state file via OCR_DESKTOP_LOCAL_STATE.
@@ -375,7 +387,7 @@ async function keeperMain() {
           return;
         }
         resetIdle();
-        handle(electronApp, page, msg)
+        handle(electronApp, page, msg, env)
           .then(reply)
           .catch((err) => reply({ ok: false, error: String(err?.message ?? err).split("\n")[0] }));
       }
@@ -401,9 +413,20 @@ async function keeperMain() {
   const stop = () => void shutdown(electronApp, 0);
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);
+  // P2-069: last-resort leash — whatever exit path the keeper takes (including
+  // the uncaughtException above and shutdown's own hard-exit timer), the
+  // Electron instance must not outlive it. Synchronous on purpose: an "exit"
+  // handler cannot await the graceful quit() — SIGKILL the instance and let
+  // the OS reap it. Killing an already-dead pid is a harmless ESRCH.
+  const killInstance = () => {
+    try {
+      electronApp.process().kill("SIGKILL");
+    } catch {}
+  };
+  process.on("exit", killInstance);
 }
 
-async function handle(electronApp, page, msg) {
+async function handle(electronApp, page, msg, env) {
   switch (msg.cmd) {
     case "ping": {
       // Liveness probe, not a stub: the renderer target can die while the
@@ -416,7 +439,7 @@ async function handle(electronApp, page, msg) {
         void shutdown(electronApp, 1);
         return { ok: false, error: "app target is dead; keeper restarting" };
       }
-      return { ok: true, session: SESSION };
+      return { ok: true, session: SESSION, userData: env.OCR_USER_DATA_DIR };
     }
     case "see": {
       try {
@@ -511,9 +534,22 @@ async function shot(page, electronApp, msg) {
     await page.waitForTimeout(300);
   }
   mkdirSync(dirname(out), { recursive: true });
-  await page.screenshot({ path: out, scale: "css", timeout: 10_000 });
-  const buf = readFileSync(out);
-  return { ok: true, path: out, width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+  // P2-144: validate the freshly written file instead of trusting unchecked
+  // readUInt32BE bytes — a truncated PNG must never pose as evidence with
+  // garbage dimensions (P2-117 burned four attempts that way). On an invalid
+  // file: delete the partial, retry the screenshot exactly once, then fail
+  // with the exact reason so no partial file is left on disk.
+  let reason = "unreachable";
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await page.screenshot({ path: out, scale: "css", timeout: 10_000 });
+    const check = checkPng(readFileSync(out));
+    if (check.ok) return { ok: true, path: out, width: check.width, height: check.height };
+    reason = check.reason;
+    try {
+      unlinkSync(out);
+    } catch {}
+  }
+  return { ok: false, error: `invalid screenshot PNG after 2 attempts: ${reason}` };
 }
 
 async function quit(electronApp) {

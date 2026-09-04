@@ -572,10 +572,14 @@ select {
   align-self: flex-end;
   background: var(--user-bubble);
 }
+/* P2-107: assistant answers paint straight on the canvas — no bubble chrome.
+   The bubble is reserved for the user's own words (benchmark chat pattern). */
 .msg.assistant {
-  align-self: flex-start;
-  background: var(--surface);
-  border: 1px solid var(--border);
+  align-self: stretch;
+  max-width: 100%;
+  background: transparent;
+  border: none;
+  padding: 4px 0;
 }
 
 /* ── Composer (P3-086): one raised card — attachments, auto-grow input,
@@ -752,6 +756,41 @@ select {
 .composer-btn:active:not(:disabled) {
   transform: none;
 }
+/* P2-107: chat header actions share the composer's ghost chrome — quiet
+   icon buttons, no bordered boxes fighting the title (Linear/Raycast bar). */
+.chat-btn {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  padding: 7px;
+  border-radius: 9px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.chat-btn:hover:not(:disabled) {
+  background: var(--bg2);
+  color: var(--text);
+}
+.chat-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.chat-btn:active:not(:disabled) {
+  transform: none;
+}
+.chat-btn[data-active] {
+  color: var(--accent);
+  background: var(--bg2);
+}
+/* inline SVGs inside banner strips align with the text baseline */
+.daemon-down svg,
+.daemon-reconnecting svg,
+.msg-older svg {
+  vertical-align: -3px;
+}
 /* recording state: pulsing dot inside the mic button */
 .composer-mic-rec {
   width: 10px;
@@ -763,6 +802,14 @@ select {
 @keyframes mic-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.35; }
+}
+/* P2-125 voice replies: speaker toggle — armed = accent, speaking = pulse */
+.composer-tts-on:not(.composer-tts-speaking) {
+  color: var(--accent);
+}
+.composer-tts-speaking {
+  color: var(--accent);
+  animation: mic-pulse 1.2s ease-in-out infinite;
 }
 .composer-spacer {
   flex: 1;
@@ -875,6 +922,8 @@ select {
 
 /* ── Desktop two-pane shell (≥1024px): Claude-style sidebar + main pane ── */
 .desk {
+  /* P2-124: benchmark column width — 280px, one token for the whole shell */
+  --sidebar-w: 280px;
   display: flex;
   height: 100%;
   width: 100%;
@@ -884,11 +933,24 @@ select {
 .desk-side {
   display: flex;
   flex-direction: column;
-  width: 340px;
-  min-width: 340px;
+  width: var(--sidebar-w);
+  min-width: var(--sidebar-w);
   height: 100%;
   border-right: 1px solid var(--border);
   background: var(--panel);
+}
+/* P2-124: fixed top zone — primary action + section nav */
+.desk-side-top {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--border);
+}
+.desk-new {
+  width: 100%;
+  flex-shrink: 0;
 }
 .desk-side-scroll {
   flex: 1;
@@ -897,6 +959,10 @@ select {
 }
 /* the sessions list was built as a mobile "screen" — flatten it inside the sidebar */
 .desk-side .screen {
+  /* P2-124: fill the column edge-to-edge — width + margin 0 keep all four
+     zones (top, nav, list, footer) on one right edge, no ragged centering */
+  width: 100%;
+  margin: 0;
   max-width: none;
   padding: 10px;
   height: auto;
@@ -905,9 +971,7 @@ select {
 .desk-nav {
   display: flex;
   gap: 6px;
-  padding: 8px 10px;
-  border-top: 1px solid var(--border);
-  background: var(--panel);
+  padding: 0;
 }
 .desk-nav button {
   flex: 1;
@@ -1151,11 +1215,12 @@ select {
   border-color: var(--fg);
 }
 /* nav: Claude-like text rows instead of icon squares (merged with the
-   .desk-nav base above — vertical stack of left-aligned rows) */
+   .desk-nav base above — vertical stack of left-aligned rows; padding comes
+   from .desk-side-top, the nav itself is flush) */
 .desk-nav {
   flex-direction: column;
   gap: 1px;
-  padding: var(--space-2);
+  padding: 0;
 }
 .desk-nav button {
   display: flex;
@@ -1178,6 +1243,59 @@ select {
   color: var(--fg);
   background: var(--bg2);
 }
+/* P2-124: account footer — pinned bottom row, one shared right edge with the
+   rest of the column; opens the machine picker */
+.desk-account {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+  padding: var(--space-2);
+}
+.desk-account-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease-out);
+}
+.desk-account-btn:hover {
+  background: var(--bg2);
+}
+.desk-account-avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-sm);
+  background: var(--bg2);
+  color: var(--fg);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.desk-account-name {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.desk-account-plan {
+  font-size: var(--font-size-xs);
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.desk-account-btn .status-dot {
+  margin-left: auto;
+}
 /* greeting like the reference: serif, centered, warm mark */
 .desk-empty h2 {
   font-family: ui-serif, Georgia, "Times New Roman", serif;
@@ -1186,13 +1304,34 @@ select {
   letter-spacing: -0.01em;
 }
 .desk-greet-mark {
-  font-size: 2.6rem;
+  display: inline-flex;
   color: var(--accent);
   margin-bottom: 10px;
 }
 .desk-empty p {
   margin-top: 8px;
   font-size: 0.95rem;
+}
+/* P2-108: the empty state ends in an action — a composer-styled CTA that
+   starts a conversation, same surface language as the search input. */
+.desk-empty-compose {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 20px;
+  padding: 9px 18px;
+  font-size: 0.9rem;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+}
+.desk-empty-compose:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+.desk-empty-compose:disabled {
+  opacity: 0.6;
 }
 
 /* desktop flat session rows (variant="rows") */
@@ -1279,21 +1418,158 @@ select {
   background: var(--border);
 }
 
-/* desktop-only chrome: hide mobile-only controls, style sidebar top action */
+/* P2-108: mobile sessions chrome demoted to an overline — the machine name
+   is a label (0.72rem, tracked, muted), not a page title; the header actions
+   stay reachable as quiet ghost icons. */
+.sess-mobile-head {
+  padding: 2px 2px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.sess-machine-overline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  padding: 4px 2px;
+  cursor: pointer;
+  color: var(--muted);
+}
+.sess-machine-overline:active {
+  transform: none;
+}
+.sess-overline {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+.sess-head-actions {
+  display: flex;
+  gap: 2px;
+}
+.sess-head-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: var(--muted);
+  padding: 7px;
+  border-radius: var(--radius-sm);
+}
+.sess-head-actions button:hover {
+  color: var(--fg);
+  background: var(--bg2);
+}
+.sess-head-actions button.danger:hover {
+  color: var(--danger);
+}
+
+/* P2-108: badge filters live in a menu attached to the search — one quiet
+   affordance instead of a chip row above the list. */
+.sess-search-row {
+  position: relative;
+  display: flex;
+  gap: 6px;
+}
+.sess-search-row input {
+  flex: 1;
+  min-width: 0;
+}
+.sess-filter-btn {
+  position: relative;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 10px;
+  color: var(--muted);
+}
+.sess-filter-dot {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+}
+.sess-menu-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+}
+.sess-filter-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 31;
+  min-width: 170px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+.sess-filter-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  padding: 8px 10px;
+  font-size: 0.85rem;
+  text-align: left;
+  color: var(--fg);
+  border-radius: var(--radius-sm);
+}
+.sess-filter-item:hover {
+  background: var(--bg2);
+}
+.sess-filter-item[aria-checked="true"] {
+  color: var(--accent);
+}
+.sess-filter-check {
+  width: 14px;
+  display: inline-flex;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+/* desktop-only chrome: hide mobile-only controls */
 @media (min-width: 1024px) {
   .chat-back,
   .chat-handoff {
     display: none;
   }
-  .sess-new {
-    width: 100%;
-    flex-shrink: 0;
-    margin: 0 0 10px;
-  }
   .desk-side .list {
     display: flex;
     flex-direction: column;
   }
+}
+
+/* P2-117: the desktop's secondary path into the scanner — a quiet bordered
+   button in the same language as .pair-remote-entry, so the paste form reads
+   as primary and the camera as the option. */
+.pair-scan-entry {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+.pair-scan-entry:hover {
+  background: var(--surface);
+}
+.pair-scan-entry:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 /* explicit remote-pairing entry (desktop shell, P1-070): a quiet bordered row
@@ -1362,6 +1638,21 @@ select {
   border-radius: var(--radius-lg);
   background: var(--qr-bg); /* QR modules stay dark-on-light for scanner contrast */
   padding: 10px;
+}
+/* P2-106: "pair later" demoted from .primary — the QR is the hero, the only
+   loud element; dismissal becomes a quiet text link underneath. */
+.pair-overlay-later {
+  background: transparent;
+  border: none;
+  padding: 6px 10px;
+  color: var(--muted);
+  font-size: 0.8rem;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: color-mix(in srgb, var(--muted) 55%, transparent);
+}
+.pair-overlay-later:hover {
+  color: var(--text);
 }
 
 /* QR scanner state machine (P2-117): looking → preview → unavailable.
@@ -1511,9 +1802,12 @@ select {
 }
 /* P1-053: adopted daemon lost — active, recoverable state (yellow variant).
    P3-054: the version-mismatch banner shares the exact same warn strip —
-   the daemon is healthy, just older than the shell, so same severity. */
+   the daemon is healthy, just older than the shell, so same severity.
+   P2-112: first contact joins the group — a daemon this machine never met
+   going missing is not an incident, so no red strip. */
 .daemon-reconnecting,
-.daemon-version-mismatch {
+.daemon-version-mismatch,
+.daemon-first-contact {
   position: fixed;
   top: 0;
   left: 0;
@@ -1546,6 +1840,276 @@ select {
 .pair-wrap {
   height: 100%;
 }
+/* ── P2-106: benchmark pairing journey ───────────────────────────────────────
+   One narrow, vertically centered column of focus. Scoped to .pair-screen so
+   the degraded journey (same wrapper, wider status card) keeps its layout. */
+.pair-wrap .pair-screen {
+  max-width: 420px;
+  justify-content: center;
+  padding-left: 20px;
+  padding-right: 20px;
+}
+/* The two pairing directions (client ceremony / host entry) as titled cards. */
+.pair-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  text-align: left;
+}
+.pair-section-title {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.pair-or {
+  align-self: center;
+  margin: 0;
+  font-size: 0.78rem;
+}
+/* Invalid-code error: styled block (was an inline-colored <p>) + inline
+   helper with the expected format, announced via role=alert/aria-live. */
+.pair-error {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-md);
+  background: var(--banner-danger-bg);
+  text-align: left;
+}
+.pair-error-msg {
+  margin: 0;
+  font-weight: 600;
+  color: var(--danger);
+}
+.pair-error-hint {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--text);
+  opacity: 0.8;
+  overflow-wrap: anywhere;
+}
+.pair-error-retry {
+  margin-top: 8px;
+  align-self: flex-start;
+  padding: 6px 12px;
+  font-size: var(--font-size-sm);
+  color: var(--danger);
+  border-color: var(--danger);
+  background: transparent;
+}
+
+/* ── P2-112: first-boot degraded journey ─────────────────────────────────────
+   Desktop shell, daemon unreachable: one calm status card (never a dead-end
+   pairing wall), visible auto-retry, reconnect with real feedback, the
+   purely-local data that keeps working, manual pairing one click away.
+   Same visual language as .card — flat surfaces on the gray ladder, no
+   gradients, no glassmorphism. */
+.degraded {
+  justify-content: center;
+}
+.degraded-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  text-align: left;
+}
+.degraded-dot {
+  width: 10px;
+  height: 10px;
+  margin-top: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--status-wait);
+  animation: degraded-pulse 2s var(--ease-out) infinite;
+}
+.degraded-dot.err {
+  background: var(--status-err);
+  animation: none;
+}
+@keyframes degraded-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.degraded-status h2 {
+  margin: 0 0 4px;
+  font-size: 1.05rem;
+  line-height: var(--line-height-tight);
+  color: var(--fg);
+}
+.degraded-status p {
+  margin: 0;
+  max-width: 34rem;
+}
+.degraded-retry {
+  margin: -4px 0 0;
+  padding-left: 22px;
+  font-size: var(--font-size-sm);
+  color: var(--status-wait);
+  text-align: left;
+}
+.degraded-actions {
+  display: flex;
+  justify-content: flex-start;
+  padding-left: 22px;
+}
+.degraded-reconnect-btn {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+.degraded-reconnect-btn:hover {
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+}
+.degraded-local {
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  background: var(--surface);
+}
+.degraded-local h3 {
+  margin: 0 0 4px;
+  font-size: var(--font-size-md);
+  color: var(--fg);
+}
+.degraded-local p {
+  margin: 0 0 8px;
+  font-size: var(--font-size-sm);
+}
+.degraded-manual {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.degraded-manual:hover {
+  color: var(--text);
+}
+/* ── P2-138: upstream (opencode) notice ──────────────────────────────────────
+   One block inside the calm card / Settings help card — never a second banner
+   (P2-108). Same flat-surface language as .degraded-local: bordered panel on
+   the gray ladder, 3px state accent on the left edge, no gradients. */
+.degraded-upstream {
+  display: grid;
+  gap: 4px;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--status-wait);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  background: var(--surface);
+}
+.degraded-upstream.tone-info {
+  border-left-color: var(--accent);
+}
+.degraded-upstream-title {
+  margin: 0;
+  font-weight: 600;
+  color: var(--fg);
+}
+.degraded-upstream-action {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--text);
+  opacity: 0.85;
+}
+.degraded-upstream-detail {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.degraded-upstream-help {
+  justify-self: start;
+  margin-top: 2px;
+  padding: 6px 12px;
+  font-size: var(--font-size-sm);
+  color: var(--fg);
+  border-color: var(--border);
+  background: transparent;
+}
+.degraded-upstream-help:hover {
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+}
+/* ── P2-140: sidecar-exit verdict inside the calm card ───────────────────────
+   Same flat-surface language as .degraded-upstream (P2-108: one surface, never
+   a second banner): bordered panel on the gray ladder, 3px state accent on
+   the left edge (error red — the daemon died), no gradients, no emoji. */
+.degraded-exit {
+  display: grid;
+  gap: 4px;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--status-err);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  background: var(--surface);
+}
+.degraded-exit-title {
+  margin: 0;
+  font-weight: 600;
+  color: var(--fg);
+}
+.degraded-exit-action {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--text);
+  opacity: 0.85;
+}
+/* Settings help section (P2-138): the destination of the calm-card button. */
+.settings-help {
+  border-left: 3px solid var(--status-wait);
+}
+.settings-help-title {
+  margin: 0 0 2px;
+  font-weight: 600;
+  color: var(--fg);
+}
+/* spinner inside the reconnect button (trying state, P2-112) */
+.reconnect-spin {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 6px;
+  vertical-align: -1px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: reconnect-rotate 0.8s linear infinite;
+}
+@keyframes reconnect-rotate {
+  to { transform: rotate(360deg); }
+}
+/* result toast for the reconnect action (P2-112) */
+.ocr-toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 70;
+  max-width: min(90vw, 30rem);
+  padding: 9px 16px;
+  font-size: var(--font-size-sm);
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-overlay);
+  animation: screen-in var(--motion-fast) var(--ease-out);
+}
 
 /* ── side-by-side artifact preview (P2-062): chat left, artifact right ── */
 /* row wrapper around the chat column; the preview pane and divider join it
@@ -1574,6 +2138,9 @@ select {
   box-shadow: 0 2px 10px rgb(0 0 0 / 0.22);
   font-size: 1rem;
   line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 /* P2-049: connection dropped — slim in-flow banner with the attempt counter

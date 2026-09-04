@@ -27,8 +27,12 @@ private. That is the product: **local power, remote control, zero trust**.
 
 - **Full chat** with streaming, markdown, images and tool-activity history;
   the chat header shows the conversation's title (generic "session" while the
-  session has no title yet); a fresh conversation shows a welcome empty state
-  with quick tips (audio, photo or text). The view only auto-follows the
+  session has no title yet) and carries quiet ghost action buttons (handoff,
+  export, tool activity) matching the composer's icon chrome; a fresh
+  conversation shows a welcome empty state
+  with quick tips (audio, photo or text). Assistant replies paint straight
+  onto the canvas — the bubble is reserved for your own messages. The view
+  only auto-follows the
   newest message while you are already at the bottom — scroll up to read and
   a small ↓ pill appears to jump back to the tail; when the connection drops
   a slim banner with the reconnection attempt count replaces the old header dot.
@@ -62,7 +66,8 @@ private. That is the product: **local power, remote control, zero trust**.
 - **Files** — upload from the phone, preview anything, export a conversation
   as markdown with one tap; every file card has a ⧉ button that copies the
   file's full path (Clipboard API with an execCommand fallback)
-- **Handoff** — continue the exact session on your Mac (💻 button)
+- **Handoff** — continue the exact session on your Mac (laptop icon in the
+  chat header)
 - **Live board** — every session's state at a glance: working, waiting for
   your approval, asked a question, done, errored; cards show relative
   last-activity time (`5m`, `2h`, `3d`); sessions are sorted by most recent
@@ -150,7 +155,18 @@ private. That is the product: **local power, remote control, zero trust**.
   `prefers-color-scheme` live, with no reload
 - **Bilingual UI + keyboard access** — every screen (pairing, chat composer, tool
   activity and diff dialogs) reads from one EN/pt-BR dictionary, dialogs close
-  with Esc and trap focus, and the session board is fully reachable by keyboard
+  with Esc and trap focus, and the session board is fully reachable by keyboard.
+  Connection screens follow one locale end-to-end: daemon-down/reconnecting
+  banners, the QR scanner and the desktop empty state resolve their copy from
+  the same dictionary as the actions next to them — no pt-BR/English mix on a
+  single screen
+- **Quiet chrome, one status surface** — the mobile sessions header reads as a
+  0.72rem overline (machine name + connection dot) instead of a page title, the
+  badge filters fold into a menu attached to the search field (active filter
+  marked with a dot on the funnel icon), the desktop empty state ends in a
+  composer-styled "New conversation" action, and the daemon status is stated
+  once: the shell's reconnecting/down strip replaces — never duplicates — the
+  in-chat connection banner
 
 ## Quick Start (Mac → iPhone, ~5 min)
 
@@ -218,13 +234,63 @@ Node never trusts the macOS keychain.
 
 Every GitHub release ships a real macOS installer,
 `OpenCode Remote-<version>-arm64.dmg` (electron-builder `dmg` target, branded
-window). Releases are **signed and notarized** only when the release runner
-has a Developer ID Application certificate configured (plus the Apple
-notarization credentials); without a signing identity the build is ad-hoc
-signed and you right-click → **Open** once to pass Gatekeeper. Homebrew users
-get the same code via the `Formula/opencode-remote.rb` formula
+window). A signing preflight (`apps/desktop/scripts/signing-profile.mjs`) runs
+before packaging and picks one of two modes:
+
+- **Developer ID + notarized** — when the runner has a Developer ID
+  Application certificate (`CSC_LINK` or `CSC_NAME` secret, with
+  `CSC_IDENTITY_AUTO_DISCOVERY` unset or `true`) plus the Apple notarization
+  credentials (`APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`,
+  `APPLE_TEAM_ID`). The bundle is signed with hardened runtime and the
+  `build/entitlements.mac.plist` entitlements, then notarized.
+- **Ad-hoc (default)** — without those secrets the DMG ships ad-hoc signed and
+  you right-click → **Open** once to pass Gatekeeper. The preflight only turns
+  notarization on when the certificate is actually usable: a certificate
+  configured while `CSC_IDENTITY_AUTO_DISCOVERY=false` (electron-builder would
+  silently ignore it) or notarization credentials without a certificate are
+  reported as problems and the build falls back to ad-hoc instead of failing.
+
+Homebrew users get the same code via the `Formula/opencode-remote.rb` formula
 (AGPL-3.0-only, checksum pinned automatically by the release pipeline at tag
 time).
+
+**Releasing**: a tag `vX.Y.Z` must carry the same version in **both**
+`package.json` files (repo root and `apps/desktop`). The release workflow runs
+`scripts/release-preflight.ts` as its first step and blocks the release on any
+mismatch, and runs `npm run dist:smoke --workspace @ocr/desktop` on the
+packaged bundle before uploading the DMG — so bump the two files together with
+the tag.
+
+## Hosted relay (Docker)
+
+Prefer not to host the relay on your own Mac? `deploy/relay/Dockerfile` builds
+a small multi-stage image (node 22 slim, tsc-compiled, non-root, `HEALTHCHECK`
+on `/healthz`) for any container platform — point your provider's TLS at it,
+set `RELAY_URL` on the daemon and re-pair the phone. The relay stays a blind
+router: it never sees plaintext or keys. The optional metrics endpoint
+(`RELAY_METRICS_PORT`) binds loopback by default; setting
+`RELAY_METRICS_BIND` to a network address requires `RELAY_METRICS_TOKEN`
+(`Authorization: Bearer <token>`) — the relay refuses to boot an
+unauthenticated metrics endpoint exposed to the network. The admission
+ceilings (`RELAY_MAX_SOCKETS`, `RELAY_MAX_PER_ROOM`, `RELAY_MAX_FRAME_BYTES`,
+defaults 1000 / 10 / 1000000) are env-configurable without recompiling and
+validated fail-closed: a non-numeric, zero/negative, per-room-above-sockets
+or above-16 MiB frame value makes the relay refuse to boot — reasons logged
+once, exit 1, no listener. On `SIGTERM` the drain is visible to the load
+balancer (P2-145): `/healthz` answers `503` with `ok:false,draining:true`
+and WebSocket upgrades are refused while the drain runs, so the balancer
+stops routing new peers to the closing instance — the container
+`HEALTHCHECK` therefore reports unhealthy during the drain on purpose.
+`RELAY_DRAIN_GRACE_MS` (default `0`, max `2000`) delays the socket close
+after the 503 so coarse-polling balancers have time to notice. The daemon
+validates
+`RELAY_URL` at boot and fails closed: only `ws://`/`wss://` URLs dial, and
+plain `ws://` at a non-loopback host is refused — an invalid URL disables the
+relay connection (reason logged once at boot and surfaced in `/api/health` as
+an additive `relay` field) and withholds the pairing QR instead of serving one
+the phone can never use; the desktop app's local mode doesn't depend on the
+relay and keeps working. Runbook:
+[docs/RELAY-HOSTING.md](docs/RELAY-HOSTING.md).
 
 ## CLI
 
@@ -303,6 +369,45 @@ the list (hidden on the phone board too, with a restore action in the group).
 The `Cmd+K` switcher now shows the **last known message line** under each
 conversation in the search results.
 
+**Claude-level sidebar shell (P2-124)**: the desktop sidebar is a 280px
+navigation shell — a full-width **"+ New"** primary button and the section nav
+(Conversations, Artifacts, Browser, Files, Mission Control, Settings —
+consistent SVG icons, zero emoji) pinned to the top, the grouped conversation
+list (search + badge filters + Today/Yesterday/Earlier) in the middle, and a
+fixed **account footer** at the bottom showing the machine avatar/initial,
+name and connection mode ("Local · this machine" / "Remote · paired"). The
+footer opens the machine picker, the same overlay as the mobile header.
+
+**Degraded first boot (P2-112)**: when the local daemon is unreachable on
+first launch, the app no longer dead-ends on the pairing screen. A calm status
+card — "Connecting for the first time…" for a daemon this machine has never
+met, never a red "daemon fell" alert — explains that conversations, files and
+artifacts sync as soon as the daemon answers, shows the automatic retry, and
+keeps the purely-local data (language, theme) working. "Reconnect now" gives
+real feedback (spinner + trying state + result toast), and manual pairing
+stays one click away.
+
+**Upstream notice (P2-138)**: the daemon can be healthy while the agent server
+it proxies is not (`opencode serve` not installed, wrong port, changed
+password). `/api/health` carries the classified verdict (`opencode.state`:
+unauthorized / unreachable / timeout / unhealthy) and the desktop shell
+forwards it to the renderer over the same channel as the version fields. The
+calm first-boot card and the new **Agent server help** section at the top of
+Settings then say exactly what happened and what to do — as one block inside
+an existing surface, never a second banner — with a secondary button that
+opens that help section straight from the first-boot card. The daemon's own
+reason/hint strings render as secondary text only; no tokens or secrets are
+ever part of the displayed copy.
+
+**Benchmark pairing journey (P2-106)**: the manual pairing screen is a narrow
+(~420px), vertically centered column with a one-sentence intro and two titled
+sections — **Connect to another machine** (scan/paste, this device as client)
+and **Pair a phone with this machine** (host entry). An invalid pairing code
+renders a styled error block with an inline helper showing the expected
+`opencode-remote://pair?…` format (announced to screen readers), and on the
+first-run QR splash "Pair later" is now a quiet text link — the QR is the only
+primary element on that screen.
+
 **Auto-preview (P1-072)**: when the agent brings up a local site (http.server,
 vite, a dev server…) and mentions `http://localhost:<port>` in its reply, the
 Browser pane opens by itself next to the chat, pointed at that URL, rendered
@@ -343,25 +448,36 @@ clean checkout.
 produces a distributable **`OpenCode Remote-<version>-arm64.dmg`** (branded
 installer window, semantic version in the About panel and in the DMG file
 name) — and `npm run dist:smoke --workspace @ocr/desktop` verifies the
-bundle **and** the DMG artifact. Builds are ad-hoc signed — on first launch,
-right-click → **Open** once to pass Gatekeeper; afterwards the app behaves
-like any installed app. Tag releases ship that DMG + `latest-mac.yml` on
-GitHub (`.github/workflows/release.yml`), signed and notarized only when the
-runner also has a Developer ID certificate + Apple credentials configured.
+bundle **and** the DMG artifact. Local builds are ad-hoc signed with hardened
+runtime and the shared entitlements (`build/entitlements.mac.plist`) — on
+first launch, right-click → **Open** once to pass Gatekeeper; afterwards the
+app behaves like any installed app. Tag releases ship that DMG +
+`latest-mac.yml` on GitHub (`.github/workflows/release.yml`); the release's
+signing preflight notarizes only when a Developer ID certificate and the
+Apple credentials are actually configured (see *Desktop app installer*).
 
 **Auto-updates with consent (P1-050)**: the packaged shell checks the daemon's
 loopback updates folder (`http://127.0.0.1:8792/__ocr/updates/` — a versioned
 folder served by the same local daemon, no new network surface) at boot and on
 demand from the tray (**Check for updates**). P2-098: when that staged feed is
 absent — the normal case on a plain DMG install — the shell falls back to the
-public `latest-mac.yml` attached to the latest GitHub release, so the tray
-still reports "update available" on third-party machines (the decision is
-log/tray only for yml feeds; the background download + consent flow needs a
-Squirrel JSON feed like the staged one). The fallback triggers for the
-packaged default only — a feed pointed at explicitly via `OCR_UPDATE_FEED`
-never produces an outbound request behind your back. When a newer `feed.json` is
-found, the release downloads in the background and a consent dialog offers
-**Restart now / Later** — nothing installs without an explicit click, a
+public yml feed attached to the latest GitHub release, so the tray still
+reports "update available" on third-party machines. P2-131: that fallback is
+platform-aware — `latest-mac.yml` on macOS, `latest.yml` on Windows, and no
+feed at all on other platforms (the whole check stays `disabled` with zero
+network requests there) — and `OCR_PUBLIC_UPDATE_FEED` remains an absolute
+override that ignores the platform. The two platforms update differently: on
+**macOS** the staged Squirrel JSON feed (when present) downloads the release in
+the background and a consent dialog applies it; on **Windows** there is no
+download engine yet (Squirrel.Windows support pending), so a yml feed resolves
+to `update-available-manual` and an explicit **Check for updates** click opens
+the release page — at most once per version per session, and never
+automatically at boot (the boot decision is log/tray only, P2-131) — nothing is
+downloaded or installed behind your back. The fallback triggers for
+the packaged default only — a feed pointed at explicitly via `OCR_UPDATE_FEED`
+never produces an outbound request behind your back. When a newer `feed.json`
+is found on macOS, the release downloads in the background and a consent dialog
+offers **Restart now / Later** — nothing installs without an explicit click, a
 deferred version is not re-offered during the session, and repeated checks
 never stack stale offers. Staging a release is a plain copy:
 drop `<version>/` with the artifact under `~/.opencode-remote/updates/` and
@@ -375,6 +491,17 @@ renderer crashes land as timestamped files under
 clipboard — app/electron versions, platform, daemon state, the last desktop.log
 lines and the crash-file names. No secrets: the apiToken, allowlist and
 pairing URI are never included.
+
+**One shell per userData (P2-069)**: launching the app while an instance is
+already running simply focuses the existing window — a second copy never
+paints its own (possibly white) window. Every boot writes an instance record
+into its `userData`; if an older instance of the *same* userData is still
+alive with an earlier start, the new boot logs a `possible zombie instance`
+warning to `desktop.log` so a leaked shell (e.g. one whose keeper/parent died)
+is diagnosable from the **Open logs folder** item. Hermetic harness launches
+(`tools/desktop.mjs`) additionally watch the keeper's pid and quit by
+themselves when it disappears, so killed test runs can no longer leak
+Electron instances.
 
 The desktop shell boots the daemon as a **sidecar**: on launch it spawns the
 daemon — in packaged apps a single-file CJS bundle shipped at
@@ -395,6 +522,17 @@ polls. The dashboard HTML never carries the apiToken: authenticate with the
 token box (or `?token=`, stored in localStorage) or exchange the Bearer token
 once via `POST /api/session` for a 12-hour HttpOnly `ocr_session` cookie that
 authorizes `/api/*` until the daemon restarts.
+
+**Honest agent-server health (P2-135)**: `/api/health` keeps the legacy
+`opencodeHealthy` boolean and now also exposes an additive `opencode` object —
+`state` (`unknown` until the first probe, then `ok`, `unauthorized`,
+`unreachable`, `timeout` or `unhealthy`), a short `reason`, an actionable
+pt-BR `hint` and the `checkedAt` timestamp of the last probe. The classifier
+distinguishes what used to collapse into one generic failure: server not
+installed, wrong port, refused token (401) and a slow/hung server now each
+carry a specific reason. The "opencode is DOWN" push uses that same hint as
+its body (prefixed with the machine name), so the phone tells you what to do
+instead of repeating a fixed phrase. The full contract lives in `docs/api.md`.
 
 **Zero pairing on the host machine**: the desktop shell treats the daemon on
 the same machine as one trust domain (loopback, same user, 0600
@@ -573,22 +711,31 @@ The feed directory can contain an electron-builder-style `latest-mac.yml`
 with `url`/`name`/`notes`) — both are parsed and a newer release is logged as
 `update-available`. For JSON feeds the release is also handed to Electron's
 built-in `autoUpdater` (`setFeedURL` + `checkForUpdates`, `serverType: "json"`),
-which downloads it in the background; yml feeds are parse-and-log only, since
-the built-in updater cannot read `latest-mac.yml` (spike finding). Feed or
-network failures are strictly log-only and never block or crash the window.
+which downloads it in the background. yml feeds have no download engine (the
+built-in updater cannot read `latest-mac.yml` — spike finding): since P2-131
+they resolve to the dedicated `update-available-manual` status, and the release
+page opens via `shell.openExternal` only when the user explicitly clicks
+**Check for updates** — never automatically at boot, and at most once per
+version per session. GitHub-hosted feeds point at the repo's releases page;
+self-hosted `OCR_PUBLIC_UPDATE_FEED` overrides point at the feed's own
+directory (where the artifacts live). `setFeedURL` is only ever called on the
+JSON feed path. Feed or network
+failures are strictly log-only and never block or crash the window.
 
 Whenever a feed is configured, the tray menu also gains two items (P3-019): a
 disabled status line reflecting the latest check ("Update available — check for
-updates", "Update ready — restart to install", "Up to date", or the failure
-reason) and a clickable "Check for updates" item that re-runs the check and
-refreshes the menu in place. Applying a release always goes through the
-consent dialog (P1-050): the updater asks "Restart now / Later" once the
-download finishes — a deferred version is not re-offered in the same session.
+updates", "Update available — open release page", "Update ready — restart to
+install", "Up to date", or the failure reason) and a clickable "Check for
+updates" item that re-runs the check and refreshes the menu in place. Applying
+a release always goes through the consent dialog (P1-050): the updater asks
+"Restart now / Later" once the download finishes — a deferred version is not
+re-offered in the same session. On macOS the packaged shell updates itself
+this way; on Windows (no Squirrel.Windows integration yet) the shell opens the
+release page instead of downloading anything (P2-131).
 
 ## Roadmap
 
-Next up: hosted relay option,
-onboarding wizard, skills sharing, native iOS push.
+Next up: onboarding wizard, skills sharing, native iOS push.
 
 ## License
 
