@@ -60,6 +60,8 @@ export const dict = {
     filterAll: "All",
     filterWithBadge: "With badge",
     filterNoBadge: "No badge",
+    // P2-108: search-attached filter menu trigger
+    filterTitle: "Filter",
     loadingSessions: "Loading conversations…",
     noSessions: "No conversations yet.",
     ready: "ready",
@@ -340,6 +342,7 @@ export const dict = {
     filterAll: "Todas",
     filterWithBadge: "Com badge",
     filterNoBadge: "Sem badge",
+    filterTitle: "Filtrar",
     loadingSessions: "Carregando conversas…",
     noSessions: "Nenhuma conversa ainda.",
     ready: "pronto",

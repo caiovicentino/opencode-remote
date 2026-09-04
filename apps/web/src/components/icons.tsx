@@ -196,6 +196,15 @@ export function IconPlus(p: IconProps) {
   );
 }
 
+/** P2-108: sessions filter menu trigger (funnel). */
+export function IconFilter(p: IconProps) {
+  return (
+    <Icon {...p}>
+      <path d="M3 5h18l-7 8.5V19l-4 2v-7.5L3 5Z" />
+    </Icon>
+  );
+}
+
 /** P3-086: composer mic (functional placeholder — disabled without perms). */
 export function IconMic(p: IconProps) {
   return (

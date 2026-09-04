@@ -47,6 +47,7 @@ import {
   IconFolder,
   IconGlobe,
   IconLayers,
+  IconPlus,
   IconRadar,
   IconRefresh,
   IconSettings,
@@ -811,6 +812,9 @@ export default function App() {
       onBack={goBack}
       paneArtifact={paneArtifact}
       onPaneArtifactConsumed={() => setPaneArtifact(null)}
+      // P2-108: the shell strip (.daemon-reconnecting/.daemon-down) and the
+      // in-chat .conn-banner say the same sentence — never show both.
+      shellBannerVisible={kind === "reconnecting" || kind === "down"}
     />
   );
   const settingsNode = (
@@ -959,6 +963,16 @@ export default function App() {
                       daemon banners, so hardcoded text mixes locales. */}
                   <h2>{t("deskGreeting", { machine: machineName ? `, ${machineName.toLowerCase()}` : "" })}</h2>
                   <p>{t("deskEmptyHint")}</p>
+                  {/* P2-108: the empty state is a dead end no more — a
+                      composer-styled CTA starts a conversation right here. */}
+                  <button
+                    className="desk-empty-compose"
+                    disabled={creating}
+                    onClick={() => void createSession()}
+                  >
+                    <IconPlus size={14} aria-hidden />
+                    {creating ? t("creating") : t("paletteNewChat")}
+                  </button>
                 </div>
               </div>
             )}
