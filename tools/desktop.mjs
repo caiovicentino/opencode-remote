@@ -302,8 +302,16 @@ async function keeperMain() {
     env.OCR_DAEMON_FORCE_RECONNECTING = "1";
   }
   keeperLog("launching electron (session", SESSION + ")");
+  // P2-117: test-only hatch (scripts/desktop-flow.test.ts) — Chromium's fake
+  // camera gives the scanner a deterministic live feed so the preview state
+  // and the 390px layout are provable hermetically. Never set in production —
+  // same policy as OCR_DAEMON_FORCE_*.
+  const launchArgs = [join(repoRoot, "apps", "desktop")];
+  if (process.env.OCR_DESKTOP_MEDIA_FAKE === "1") {
+    launchArgs.unshift("--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream");
+  }
   const electronApp = await _electron.launch({
-    args: [join(repoRoot, "apps", "desktop")],
+    args: launchArgs,
     cwd: repoRoot,
     executablePath: req("electron"),
     env,
