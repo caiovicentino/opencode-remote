@@ -890,8 +890,10 @@ export default function App() {
               <div className="desk-empty">
                 <div>
                   <div className="desk-greet-mark">✻</div>
-                  <h2>olá{machineName ? `, ${machineName.toLowerCase()}` : ""}!</h2>
-                  <p>Selecione uma conversa na barra lateral</p>
+                  {/* P2-118: copy via the dict — this shell also renders the
+                      daemon banners, so hardcoded text mixes locales. */}
+                  <h2>{t("deskGreeting", { machine: machineName ? `, ${machineName.toLowerCase()}` : "" })}</h2>
+                  <p>{t("deskEmptyHint")}</p>
                 </div>
               </div>
             )}

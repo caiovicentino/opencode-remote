@@ -150,7 +150,11 @@ private. That is the product: **local power, remote control, zero trust**.
   `prefers-color-scheme` live, with no reload
 - **Bilingual UI + keyboard access** — every screen (pairing, chat composer, tool
   activity and diff dialogs) reads from one EN/pt-BR dictionary, dialogs close
-  with Esc and trap focus, and the session board is fully reachable by keyboard
+  with Esc and trap focus, and the session board is fully reachable by keyboard.
+  Connection screens follow one locale end-to-end: daemon-down/reconnecting
+  banners, the QR scanner and the desktop empty state resolve their copy from
+  the same dictionary as the actions next to them — no pt-BR/English mix on a
+  single screen
 
 ## Quick Start (Mac → iPhone, ~5 min)
 

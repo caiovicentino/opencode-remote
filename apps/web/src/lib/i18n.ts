@@ -37,13 +37,20 @@ function subscribe(fn: () => void) {
   return () => listeners.delete(fn);
 }
 
+/**
+ * P2-118: resolve copy for an explicit lang from the same dictionary useT
+ * reads — for code outside React (tests, plain callbacks) so every screen
+ * resolves to one locale, never a mix.
+ */
+export function translate(l: Lang, key: string, vars?: Record<string, string | number>): string {
+  let s = (dict[l] as Record<string, string>)[key] ?? (dict.en as Record<string, string>)[key] ?? key;
+  if (vars) for (const [k, v] of Object.entries(vars)) s = s.replace(`{${k}}`, String(v));
+  return s;
+}
+
 export function useT() {
   useSyncExternalStore(subscribe, getLang);
-  return (key: string, vars?: Record<string, string | number>) => {
-    let s = (dict[lang] as Record<string, string>)[key] ?? (dict.en as Record<string, string>)[key] ?? key;
-    if (vars) for (const [k, v] of Object.entries(vars)) s = s.replace(`{${k}}`, String(v));
-    return s;
-  };
+  return (key: string, vars?: Record<string, string | number>) => translate(lang, key, vars);
 }
 
 export const dict = {
@@ -272,6 +279,22 @@ export const dict = {
     groupArchived: "Archived ({n})",
     archive: "Archive",
     restore: "Restore",
+    // QR scanner (in-app camera, P2-118) — connection screen copy must follow
+    // the app locale like the daemon banners around it.
+    scanPairingTitle: "Scan pairing code",
+    scanPointCamera: "Point the camera at the QR code shown by the daemon.",
+    scanBackManual: "Back to manual pairing",
+    camDenied:
+      "Camera permission denied. Allow camera access for this site (Settings → Safari → Camera) and try again.",
+    camNotFound: "No camera found on this device.",
+    camBusy: "Camera is in use by another app. Close it and try again.",
+    camInterrupted:
+      "Camera was interrupted. Tap Scan again — iOS sometimes aborts the first attempt.",
+    camUnavailable: "camera unavailable",
+    // desktop empty state (P2-118): same shell as the daemon banners — copy
+    // must not mix locales. {machine} is ", <name>" or "".
+    deskGreeting: "hello{machine}!",
+    deskEmptyHint: "Select a conversation in the sidebar",
   },
   pt: {
     search: "Buscar conversas…",
@@ -494,5 +517,19 @@ export const dict = {
     groupArchived: "Arquivadas ({n})",
     archive: "Arquivar",
     restore: "Restaurar",
+    // scanner de QR (câmera in-app, P2-118)
+    scanPairingTitle: "Escanear código de pareamento",
+    scanPointCamera: "Aponte a câmera pro QR code mostrado pelo daemon.",
+    scanBackManual: "Voltar ao pareamento manual",
+    camDenied:
+      "Permissão de câmera negada. Permita o acesso pra este site (Ajustes → Safari → Câmera) e tente de novo.",
+    camNotFound: "Nenhuma câmera encontrada neste dispositivo.",
+    camBusy: "A câmera está em uso por outro app. Feche-o e tente de novo.",
+    camInterrupted:
+      "A câmera foi interrompida. Toque em Escanear de novo — o iOS às vezes aborta a primeira tentativa.",
+    camUnavailable: "câmera indisponível",
+    // estado vazio do desktop (P2-118): mesma tela dos banners de daemon.
+    deskGreeting: "olá{machine}!",
+    deskEmptyHint: "Selecione uma conversa na barra lateral",
   },
 } satisfies Record<Lang, Record<string, string>>;

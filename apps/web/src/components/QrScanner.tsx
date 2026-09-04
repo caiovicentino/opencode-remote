@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import jsQR from "jsqr";
+import { useT } from "../lib/i18n";
 
 interface Props {
   onScan: (text: string) => void;
@@ -7,20 +8,33 @@ interface Props {
 }
 
 /** iOS getUserMedia wraps permission dismissal and camera races in
- * AbortError — translate to what the user should actually do. */
-function friendlyError(err: unknown): string {
+ * AbortError — map to the dict key the user should actually read.
+ * P2-118: copy lives in the i18n dictionary so the scanner screen follows
+ * the app locale like the rest of the connection flow. Returns null for
+ * unknown errors (the raw browser message is shown instead). */
+function cameraErrorKey(err: unknown): string | null {
   const name = (err as { name?: string })?.name ?? "";
-  if (name === "NotAllowedError") return "Camera permission denied. Allow camera access for this site (Settings → Safari → Camera) and try again.";
-  if (name === "NotFoundError") return "No camera found on this device.";
-  if (name === "NotReadableError") return "Camera is in use by another app. Close it and try again.";
-  if (name === "AbortError") return "Camera was interrupted. Tap Scan again — iOS sometimes aborts the first attempt.";
-  return err instanceof Error ? err.message : "camera unavailable";
+  if (name === "NotAllowedError") return "camDenied";
+  if (name === "NotFoundError") return "camNotFound";
+  if (name === "NotReadableError") return "camBusy";
+  if (name === "AbortError") return "camInterrupted";
+  return null;
+}
+
+/** Resolve at render time (not catch time) so a language switch mid-error
+ * still re-renders in the new locale. Unknown errors keep the raw browser
+ * message; the fallback line is localized. */
+function cameraError(err: unknown, t: (key: string) => string): string {
+  const key = cameraErrorKey(err);
+  if (key) return t(key);
+  return err instanceof Error ? err.message : t("camUnavailable");
 }
 
 /** In-app QR scanner built on getUserMedia + jsQR. Works on iOS Safari. */
 export default function QrScanner({ onScan, onCancel }: Props) {
+  const t = useT();
   const videoRef = useRef<HTMLVideoElement>(null);
-  const [error, setError] = useState("");
+  const [error, setError] = useState<unknown>(null);
   const doneRef = useRef(false);
 
   useEffect(() => {
@@ -75,7 +89,7 @@ export default function QrScanner({ onScan, onCancel }: Props) {
           if (!cancelled) return start(false);
           return;
         }
-        setError(friendlyError(err));
+        setError(err);
       }
     }
 
@@ -91,13 +105,13 @@ export default function QrScanner({ onScan, onCancel }: Props) {
   return (
     <div className="screen">
       <header>
-        <button onClick={onCancel}>←</button>
-        <h1 style={{ fontSize: "0.9rem", margin: 0, flex: 1 }}>Scan pairing code</h1>
+        <button onClick={onCancel} aria-label={t("scanBackManual")}>←</button>
+        <h1 style={{ fontSize: "0.9rem", margin: 0, flex: 1 }}>{t("scanPairingTitle")}</h1>
       </header>
       {error ? (
         <>
-          <p style={{ color: "var(--danger)" }}>{error}</p>
-          <button onClick={onCancel}>Back to manual pairing</button>
+          <p style={{ color: "var(--danger)" }}>{cameraError(error, t)}</p>
+          <button onClick={onCancel}>{t("scanBackManual")}</button>
         </>
       ) : (
         <video
@@ -105,7 +119,7 @@ export default function QrScanner({ onScan, onCancel }: Props) {
           style={{ width: "100%", maxHeight: "60vh", objectFit: "cover", borderRadius: 12 }}
         />
       )}
-      <p className="muted">Point the camera at the QR code shown by the daemon.</p>
+      <p className="muted">{t("scanPointCamera")}</p>
     </div>
   );
 }
