@@ -53,6 +53,15 @@ daemons no longer hammers a downed relay twice per second nor reconnects all
 in lockstep; each reschedule also bumps the `ocr_relay_retries_total` counter
 on the metrics endpoint.
 
+Since P2-156 the `relayRetry` object also carries an additive `lastClose`:
+`null` until the relay socket has ever closed, otherwise
+`{ code, kind }` — the numeric close code and the triage kind of the most
+recent close (`capacity`, `rate-limited`, `draining`, `normal` or
+`transient`). A `capacity` (1013) or `rate-limited` (4029) close floors the
+reconnect wait at 30s/60s respectively, so a saturated relay is not hammered
+as if the network had dropped; `transient` keeps the bare P2-129 curve. The
+raw close reason is never exposed.
+
 ### `/api/health` — upstream agent state (P2-135)
 
 `GET /api/health` keeps the legacy `opencodeHealthy` boolean untouched and
