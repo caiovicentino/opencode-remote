@@ -65,7 +65,6 @@ export default function HomeView({ machineName, request, voice, creating, onStar
         // model list is optional
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // close the model menu on outside clicks, like the ChatView dropdown
