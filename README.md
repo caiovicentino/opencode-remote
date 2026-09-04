@@ -479,6 +479,17 @@ token box (or `?token=`, stored in localStorage) or exchange the Bearer token
 once via `POST /api/session` for a 12-hour HttpOnly `ocr_session` cookie that
 authorizes `/api/*` until the daemon restarts.
 
+**Honest agent-server health (P2-135)**: `/api/health` keeps the legacy
+`opencodeHealthy` boolean and now also exposes an additive `opencode` object —
+`state` (`unknown` until the first probe, then `ok`, `unauthorized`,
+`unreachable`, `timeout` or `unhealthy`), a short `reason`, an actionable
+pt-BR `hint` and the `checkedAt` timestamp of the last probe. The classifier
+distinguishes what used to collapse into one generic failure: server not
+installed, wrong port, refused token (401) and a slow/hung server now each
+carry a specific reason. The "opencode is DOWN" push uses that same hint as
+its body, so the phone tells you what to do instead of repeating a fixed
+phrase. The full contract lives in `docs/api.md`.
+
 **Zero pairing on the host machine**: the desktop shell treats the daemon on
 the same machine as one trust domain (loopback, same user, 0600
 `daemon.json`). If that daemon proves healthy at boot — the shell's

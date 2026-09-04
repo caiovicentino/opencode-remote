@@ -59,6 +59,12 @@ import { createShutdown, stopAccepting } from "./shutdown.js";
 import { localUpgradeAllowed } from "./localws.js";
 import { createRelayRetry } from "./relayretry.js";
 import {
+  classifyUpstream,
+  UPSTREAM_PROBE_TIMEOUT_MS,
+  type UpstreamDetail,
+  type UpstreamVerdict,
+} from "./upstream.js";
+import {
   injectArtifactsPathPart,
   injectArtifactsSystem,
   workspaceCoversArtifacts,
@@ -1253,31 +1259,65 @@ if (pwaWatchEnabled(process.env.PWA_HEALTHZ_URL, defaultPwaPlistPath())) {
 }
 
 // watchdog: tell the phone when the agent server goes down (and back up)
+// P2-135: probes feed classifyUpstream so /api/health and the down-push carry
+// the real failure mode (not installed, wrong port, bad token, slow server).
 let opencodeHealthy = true;
+let opencodeDetail: UpstreamDetail = {
+  state: "unknown",
+  reason: "aguardando a primeira sonda",
+  hint: "",
+  checkedAt: null,
+};
 metrics.gauge("ocr_opencode_healthy", 1);
+
+/** Record a finished probe: refreshes the /api/health detail and the legacy
+ * boolean gauge. Returns whether the upstream counts as healthy. */
+function recordUpstream(verdict: UpstreamVerdict): boolean {
+  opencodeDetail = {
+    state: verdict.state,
+    reason: verdict.reason,
+    hint: verdict.hint,
+    checkedAt: new Date().toISOString(),
+  };
+  const healthy = verdict.state === "ok";
+  metrics.gauge("ocr_opencode_healthy", healthy ? 1 : 0);
+  return healthy;
+}
+
+/** One probe against the upstream /global/health, classified by upstream.ts. */
+async function probeUpstream(): Promise<UpstreamVerdict> {
+  try {
+    const res = await fetch(new URL("/global/health", OPENCODE_URL), {
+      headers: authHeader ? { authorization: authHeader } : {},
+      signal: AbortSignal.timeout(UPSTREAM_PROBE_TIMEOUT_MS),
+    });
+    let body: unknown;
+    let bodyOk = true;
+    try {
+      body = await res.json();
+    } catch {
+      bodyOk = false;
+    }
+    return classifyUpstream({ status: res.status, body, bodyOk });
+  } catch (err) {
+    return classifyUpstream({ error: err });
+  }
+}
+
 setInterval(() => {
   void (async () => {
-    let healthy: boolean;
-    try {
-      const res = await fetch(new URL("/global/health", OPENCODE_URL), {
-        headers: authHeader ? { authorization: authHeader } : {},
-      });
-      const body = (await res.json().catch(() => ({}))) as { healthy?: boolean };
-      healthy = res.ok && body.healthy !== false;
-    } catch {
-      healthy = false;
-    }
-    metrics.gauge("ocr_opencode_healthy", healthy ? 1 : 0);
+    const verdict = await probeUpstream();
+    const healthy = recordUpstream(verdict);
     if (healthy !== opencodeHealthy) {
       opencodeHealthy = healthy;
       void pushToSubscribers(
         healthy ? "opencode is back ✅" : "opencode is DOWN ⛔",
         healthy
           ? `Agent server reachable again on ${machineName}`
-          : `Agent server unreachable on ${machineName} — chats will fail until it's back`,
+          : `${machineName}: ${verdict.hint}`,
         { url: "#/" },
       );
-      log("warn", "opencode health flipped", { healthy });
+      log("warn", "opencode health flipped", { healthy, state: verdict.state });
     }
   })();
 }, 60_000);
@@ -2100,6 +2140,9 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
         version: VERSION,
         machine: machineName,
         opencodeHealthy: metrics.get("ocr_opencode_healthy") === 1,
+        // P2-135: additive detail of the last upstream probe; opencodeHealthy
+        // above keeps its legacy boolean shape for existing clients.
+        opencode: opencodeDetail,
         relayConnected,
         relayRetry: relayConnected ? null : relayRetry.snapshot(),
       });
@@ -2576,15 +2619,30 @@ async function main() {
   }
 
   // boot healthcheck: fail loudly early if opencode is unreachable
+  // P2-135: the probe now feeds the same classifier as the watchdog, so the
+  // very first /api/health answer already carries the real failure mode.
   try {
     const res = await fetch(new URL("/global/health", OPENCODE_URL), {
       headers: authHeader ? { authorization: authHeader } : {},
+      signal: AbortSignal.timeout(UPSTREAM_PROBE_TIMEOUT_MS),
     });
-    const body = (await res.json()) as { healthy?: boolean; version?: string };
-    log("info", "opencode healthcheck", { status: res.status, ...body });
+    let body: unknown;
+    let bodyOk = true;
+    try {
+      body = await res.json();
+    } catch {
+      bodyOk = false;
+    }
+    const verdict = classifyUpstream({ status: res.status, body, bodyOk });
+    recordUpstream(verdict);
+    log("info", "opencode healthcheck", { status: res.status, state: verdict.state, reason: verdict.reason });
   } catch (err) {
+    const verdict = classifyUpstream({ error: err });
+    recordUpstream(verdict);
     log("warn", "opencode unreachable at boot (will keep retrying events)", {
       opencode: OPENCODE_URL,
+      state: verdict.state,
+      reason: verdict.reason,
       error: err instanceof Error ? err.message : String(err),
     });
   }

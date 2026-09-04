@@ -8,6 +8,7 @@ process.env.PILOT_EVENTS_FILE = "/tmp/pilot-unit-events.jsonl";
 import { b64, fromB64, seal, openSealed, seqAad } from "@ocr/protocol";
 import { parsePairingUri, localWsUrl, shouldFailoverToRelay } from "../apps/web/src/lib/client";
 import { isLoopbackAddr, localOriginAllowed, localUpgradeAllowed } from "../apps/daemon/src/localws";
+import { classifyUpstream, UPSTREAM_PROBE_TIMEOUT_MS } from "../apps/daemon/src/upstream";
 import { copyText, hasClipboardApi, legacyCopy } from "../apps/web/src/lib/clipboard";
 import { mimeFor } from "../apps/web/src/lib/files";
 import { timeAgo, sessionUpdatedTs } from "../apps/web/src/lib/time";
@@ -6979,6 +6980,50 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     relayProc?.kill("SIGKILL");
     rmSync(smokeDir, { recursive: true, force: true });
   }
+}
+
+// --- P2-135: upstream agent-server classifier (pure, no fetch/net imports) ---
+
+{
+  check("P2-135: healthy 200 classifies as ok with empty hint", (() => {
+    const v = classifyUpstream({ status: 200, body: { healthy: true, version: "1.2.3" }, bodyOk: true });
+    return v.state === "ok" && v.reason.length > 0 && v.hint === "";
+  })());
+  check("P2-135: 200 with healthy:false classifies as unhealthy", (() => {
+    const v = classifyUpstream({ status: 200, body: { healthy: false }, bodyOk: true });
+    return v.state === "unhealthy" && v.reason.length > 0 && v.hint.length > 0;
+  })());
+  check("P2-135: 200 with malformed body classifies as unhealthy", (() => {
+    const v = classifyUpstream({ status: 200, body: undefined, bodyOk: false });
+    return v.state === "unhealthy" && /malformada/.test(v.reason);
+  })());
+  check("P2-135: 401 classifies as unauthorized with actionable hint", (() => {
+    const v = classifyUpstream({ status: 401, body: { error: "unauthorized" }, bodyOk: true });
+    return v.state === "unauthorized" && v.hint.length > 0;
+  })());
+  check("P2-135: 403 classifies as unauthorized too", classifyUpstream({ status: 403 }).state === "unauthorized");
+  check("P2-135: connection refused classifies as unreachable", (() => {
+    const v = classifyUpstream({ error: Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:4096"), { code: "ECONNREFUSED" }) });
+    return v.state === "unreachable" && /recusada/.test(v.reason) && v.hint.length > 0;
+  })());
+  check("P2-135: abort/timeout error classifies as timeout", (() => {
+    const v = classifyUpstream({ error: Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" }) });
+    return v.state === "timeout" && v.hint.length > 0;
+  })());
+  check("P2-135: explicit timedOut flag classifies as timeout", classifyUpstream({ timedOut: true }).state === "timeout");
+  check("P2-135: unexpected HTTP status classifies as unhealthy", classifyUpstream({ status: 502 }).state === "unhealthy");
+  check("P2-135: probe payload never echoes secrets (static reason/hint)", (() => {
+    const secret = "super-secret-token-9f8e7d6c";
+    const v401 = classifyUpstream({ status: 401, body: { error: secret }, bodyOk: true });
+    const vRefused = classifyUpstream({ error: new Error(`connect ECONNREFUSED token=${secret}`) });
+    return !v401.reason.includes(secret) && !v401.hint.includes(secret) && !vRefused.reason.includes(secret) && !vRefused.hint.includes(secret);
+  })());
+  check("P2-135: classifier output is deterministic for identical probes", (() => {
+    const a = classifyUpstream({ status: 200, body: { healthy: true }, bodyOk: true });
+    const b = classifyUpstream({ status: 200, body: { healthy: true }, bodyOk: true });
+    return a.state === b.state && a.reason === b.reason && a.hint === b.hint;
+  })());
+  check("P2-135: probe timeout cap is exported and sane", UPSTREAM_PROBE_TIMEOUT_MS === 5_000);
 }
 
 // --- P2-133: orphan-test reachability (pure fixtures) ------------------------
