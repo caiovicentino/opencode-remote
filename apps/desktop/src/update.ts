@@ -46,6 +46,7 @@ export interface FeedInfo {
 export type UpdateStatus =
   | "disabled"
   | "update-available"
+  | "update-available-manual"
   | "update-not-available"
   | "update-downloaded"
   | "unrecognized-feed"
@@ -64,6 +65,10 @@ export function updateMenuLabel(status: UpdateStatus): string | null {
       // yet, and under the consent flow a plain restart never installs — the
       // dialog (update-downloaded → quitAndInstall) is the only apply path.
       return "Update available — check for updates";
+    case "update-available-manual":
+      // P2-131: yml feeds have no download engine (spike finding) — the shell
+      // opens the release page instead of downloading anything in background.
+      return "Update available — open release page";
     case "update-downloaded":
       return "Update ready — restart to install";
     case "update-not-available":
@@ -105,14 +110,39 @@ export function resolvedFeedUrl(env: NodeJS.ProcessEnv = process.env, packaged =
  * feed above only exists on a machine that actively stages releases
  * (~/.opencode-remote/updates); a plain DMG install has no daemon staged
  * files, so the packaged default would always end "feed unreachable". The
- * release workflow publishes `latest-mac.yml` on every GitHub release — that
- * is the public fallback (parsed for the decision; the download step still
- * needs a Squirrel JSON feed, see the spike note). OCR_PUBLIC_UPDATE_FEED
- * overrides it for forks/staging.
+ * release workflow publishes an electron-builder yml feed on every GitHub
+ * release — that is the public fallback (parsed for the decision; the download
+ * step still needs a Squirrel JSON feed, see the spike note). The file name is
+ * platform-specific (P2-131): `latest-mac.yml` on macOS, `latest.yml` on
+ * Windows, and no default at all elsewhere — until a platform has a download
+ * engine there is no feed to advertise. OCR_PUBLIC_UPDATE_FEED overrides it
+ * for forks/staging and, being an absolute override, ignores the platform.
  */
-export function publicFeedUrl(env: NodeJS.ProcessEnv = process.env, packaged = app?.isPackaged ?? false): string | null {
+export function publicFeedUrl(
+  env: NodeJS.ProcessEnv = process.env,
+  packaged = app?.isPackaged ?? false,
+  platform: NodeJS.Platform = process.platform,
+): string | null {
   if (!packaged) return null;
-  return env.OCR_PUBLIC_UPDATE_FEED?.trim() || "https://github.com/caiovicentino/opencode-remote/releases/latest/download/latest-mac.yml";
+  const override = env.OCR_PUBLIC_UPDATE_FEED?.trim();
+  if (override) return override;
+  const asset = platform === "darwin" ? "latest-mac.yml" : platform === "win32" ? "latest.yml" : null;
+  if (!asset) return null;
+  return `https://github.com/caiovicentino/opencode-remote/releases/latest/download/${asset}`;
+}
+
+/** Fallback releases page when the feed URL is not a GitHub download link. */
+const RELEASES_PAGE_URL = "https://github.com/caiovicentino/opencode-remote/releases/latest";
+
+/**
+ * P2-131: the human-readable page a manual update points at. Derived from the
+ * feed URL when it is a GitHub `releases/latest/download/<asset>` link, so
+ * forks serving their own yml feed land on their own releases; anything else
+ * (staged loopback feeds, exotic overrides) falls back to the canonical page.
+ */
+export function releasePageUrl(feedUrl: string): string {
+  const m = /^https:\/\/github\.com\/([^/\s]+)\/([^/\s]+)\/releases\/latest\/download\/[^/?#\s]+$/.exec(feedUrl.trim());
+  return m ? `https://github.com/${m[1]}/${m[2]}/releases/latest` : RELEASES_PAGE_URL;
 }
 
 /** True when an update source exists (explicit env or packaged default). */
@@ -206,6 +236,12 @@ export interface UpdateCheckOptions {
   onStatus?: (status: UpdateStatus, version: string | null) => void;
   /** Overrides the consent dialog (tests inject fakes). */
   dialog?: UpdateDialogSinks;
+  /** Overrides process.platform (tests drive the darwin/win32/other paths). */
+  platform?: NodeJS.Platform;
+  /** P2-131: invoked when an update is detected through a yml feed — a format
+   * with no download engine — and handed the release page URL. main.ts wires
+   * it to shell.openExternal; omitted (tests, drivers) means nothing opens. */
+  openReleasePage?: (url: string) => void;
 }
 
 // --- consent flow -------------------------------------------------------------
@@ -343,7 +379,16 @@ export async function checkForUpdatesOnBoot(opts: UpdateCheckOptions = {}): Prom
   // the public fallback only applies to the resolved packaged default.
   const injected = opts.feedUrl !== undefined;
   const packaged = opts.packaged ?? app?.isPackaged ?? false;
+  const platform = opts.platform ?? process.platform;
   let feedUrl = injected ? opts.feedUrl! : resolvedFeedUrl(process.env, packaged);
+  // P2-131: the public feed for the platform is also the feature gate. A
+  // platform electron-builder publishes no yml for (no default, no
+  // OCR_PUBLIC_UPDATE_FEED override) has no update surface at all — not even
+  // the staged Squirrel.Mac loopback default, which only a macOS autoUpdater
+  // could consume. Disabled means zero network requests.
+  const publicFeed =
+    opts.publicFeed !== undefined ? opts.publicFeed : publicFeedUrl(process.env, packaged, platform);
+  if (!injected && !feedUrlFromEnv(process.env) && !publicFeed) return "disabled";
   // No feed source → the feature is off: no fetch, no listeners, no log noise.
   if (!feedUrl) return "disabled";
   const updater = opts.updater !== undefined ? opts.updater : (autoUpdater as UpdaterLike | undefined);
@@ -371,11 +416,7 @@ export async function checkForUpdatesOnBoot(opts: UpdateCheckOptions = {}): Prom
     // only. A feed explicitly configured via OCR_UPDATE_FEED (dev / staging)
     // must never cause a surprise outbound request to github.com — it fails
     // with feed-unreachable so the operator sees the misconfiguration.
-    const fallback = injected || feedUrlFromEnv(process.env)
-      ? null
-      : opts.publicFeed !== undefined
-        ? opts.publicFeed
-        : publicFeedUrl(process.env, packaged);
+    const fallback = injected || feedUrlFromEnv(process.env) ? null : publicFeed;
     if (!fallback || fallback === feedUrl) {
       log(`update check: feed unreachable (${feedUrl}): ${err instanceof Error ? err.message : String(err)}`);
       return finish("feed-unreachable");
@@ -406,22 +447,30 @@ export async function checkForUpdatesOnBoot(opts: UpdateCheckOptions = {}): Prom
   // Squirrel.Mac so a packaged install downloads them in the background;
   // yml feeds stay parse+log (see the spike finding at the top).
   log(`update-available: ${feed.version}${feed.notes ? ` — ${feed.notes}` : ""}`);
-  if (feed.format === "json" && updater) {
+  if (feed.format === "json") {
     // P1-050: listeners attach at most once per updater instance (see
     // attachUpdateListeners) and the downloaded handler reads its version
     // from the event args — a second check here never stacks stale offers.
-    const dialog = opts.dialog ?? { askInstall: async () => "later", quitAndInstall: () => {} };
-    attachUpdateListeners(updater, { log, dialog, onStatus: opts.onStatus });
-    stateFor(updater).version = feed.version;
-    try {
-      updater.setFeedURL({ url: feedUrl, serverType: "json" });
-      updater.checkForUpdates();
-    } catch (err) {
-      log(`update check failed (log-only, continuing): ${err instanceof Error ? err.message : String(err)}`);
-      return finish("update-available", feed.version);
+    // setFeedURL is called ONLY here: yml feeds have no download engine, and
+    // handing a latest-*.yml to the built-in autoUpdater fails outright.
+    if (updater) {
+      const dialog = opts.dialog ?? { askInstall: async () => "later", quitAndInstall: () => {} };
+      attachUpdateListeners(updater, { log, dialog, onStatus: opts.onStatus });
+      stateFor(updater).version = feed.version;
+      try {
+        updater.setFeedURL({ url: feedUrl, serverType: "json" });
+        updater.checkForUpdates();
+      } catch (err) {
+        log(`update check failed (log-only, continuing): ${err instanceof Error ? err.message : String(err)}`);
+        return finish("update-available", feed.version);
+      }
     }
-  } else if (feed.format === "yml") {
-    log("update check: yml feed parsed (built-in autoUpdater needs a Squirrel JSON feed for the download step)");
+    return finish("update-available", feed.version);
   }
-  return finish("update-available", feed.version);
+  // P2-131: yml feed → no background download exists for this format, so the
+  // update is manual: surface the dedicated status and point the user at the
+  // release page (main.ts wires the sink to shell.openExternal).
+  log("update check: yml feed has no download engine — update is manual, opening the release page");
+  opts.openReleasePage?.(releasePageUrl(feedUrl));
+  return finish("update-available-manual", feed.version);
 }

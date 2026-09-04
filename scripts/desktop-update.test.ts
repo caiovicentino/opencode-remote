@@ -11,6 +11,9 @@
  *     fires its event, and that a dead feed never crashes the shell.
  *
  * Never touches the production daemon. Run: npx tsx scripts/desktop-update.test.ts
+ * Pass --unit-only (or set OCR_UPDATE_UNIT_ONLY=1) to run only the unit layer
+ * without spawning Electron — that is how the root test:unit chain consumes
+ * this file (P2-107: an orphan test file never runs in the gate).
  */
 import { createServer } from "node:http";
 import { spawn, spawnSync } from "node:child_process";
@@ -18,6 +21,10 @@ import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+// P2-131: unit-only mode skips the Electron e2e layer (no electron spawn, no
+// dist-electron build) so the fast root test:unit battery can include it.
+const UNIT_ONLY = process.argv.includes("--unit-only") || process.env.OCR_UPDATE_UNIT_ONLY === "1";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -137,8 +144,59 @@ const ymlStatus = await checkForUpdatesOnBoot({
   fetchImpl: fakeFetcher(YML),
   log: (l) => ymlLogs.push(l),
 });
-check("yml feed newer → update-available logged", ymlStatus === "update-available" && ymlLogs.some((l) => l.includes("update-available: 0.2.1")));
+check(
+  "yml feed newer → update-available-manual (no download engine, P2-131)",
+  ymlStatus === "update-available-manual" && ymlLogs.some((l) => l.includes("update-available: 0.2.1")),
+);
 check("yml feed: Squirrel NOT wired (spike finding)", ymlUpdater.spy.checks === 0);
+check("P2-131: yml feed never calls setFeedURL", ymlUpdater.spy.feedURLs.length === 0);
+
+// --- P2-131: manual update flow (yml feeds) -----------------------------------
+check(
+  "P2-131: update-available-manual has its own tray label",
+  updateMenuLabel("update-available-manual") === "Update available — open release page",
+);
+{
+  const manualUpdater = fakeUpdater();
+  const openedUrls: string[] = [];
+  const manualStatus = await checkForUpdatesOnBoot({
+    feedUrl: "https://github.com/acme/remote/releases/latest/download/latest-mac.yml",
+    currentVersion: "0.2.0",
+    updater: manualUpdater,
+    fetchImpl: fakeFetcher(YML),
+    log: () => {},
+    openReleasePage: (url) => openedUrls.push(url),
+  });
+  check(
+    "P2-131: yml update → manual status + openReleasePage sink gets the release page",
+    manualStatus === "update-available-manual" &&
+      JSON.stringify(openedUrls) === JSON.stringify(["https://github.com/acme/remote/releases/latest"]),
+  );
+  check(
+    "P2-131: manual flow leaves the updater completely untouched",
+    manualUpdater.spy.feedURLs.length === 0 && manualUpdater.spy.checks === 0,
+  );
+  check(
+    "P2-131: openReleasePage is optional — no sink, no crash",
+    (await checkForUpdatesOnBoot({
+      feedUrl: "http://127.0.0.1:9/latest-mac.yml",
+      currentVersion: "0.2.0",
+      updater: fakeUpdater(),
+      fetchImpl: fakeFetcher(YML),
+      log: () => {},
+    })) === "update-available-manual",
+  );
+  check(
+    "releasePageUrl: GitHub download link → releases/latest of the same repo",
+    releasePageUrl("https://github.com/foo/bar/releases/latest/download/latest.yml") ===
+      "https://github.com/foo/bar/releases/latest",
+  );
+  check(
+    "releasePageUrl: non-GitHub feed → canonical releases page",
+    releasePageUrl("https://feeds.example/staging/latest-mac.yml") ===
+      "https://github.com/caiovicentino/opencode-remote/releases/latest",
+  );
+}
 
 const notNewerLogs: string[] = [];
 check(
@@ -190,8 +248,10 @@ check(
 // --- P1-050: listener-once + consent flow (round-1 review regression) --------
 import {
   attachUpdateListeners,
+  releasePageUrl,
   resolvedFeedUrl,
   shouldOfferInstall,
+  updateMenuLabel,
   versionFromDownloadedArgs,
   type UpdateDialogSinks,
 } from "../apps/desktop/src/update.ts";
@@ -313,14 +373,82 @@ check("resolvedFeedUrl: dev unpackaged stays disabled", resolvedFeedUrl({}, fals
 
 // --- P2-098: public fallback feed for third-party installs --------------------
 check(
-  "publicFeedUrl: packaged default = GitHub releases latest-mac.yml",
-  publicFeedUrl({}, true) === "https://github.com/caiovicentino/opencode-remote/releases/latest/download/latest-mac.yml",
+  "publicFeedUrl: packaged default on darwin = GitHub releases latest-mac.yml",
+  publicFeedUrl({}, true, "darwin") === "https://github.com/caiovicentino/opencode-remote/releases/latest/download/latest-mac.yml",
 );
 check(
   "publicFeedUrl: OCR_PUBLIC_UPDATE_FEED overrides (forks/staging)",
   publicFeedUrl({ OCR_PUBLIC_UPDATE_FEED: "https://fork.dev/latest-mac.yml" }, true) === "https://fork.dev/latest-mac.yml",
 );
 check("publicFeedUrl: dev unpackaged has no public feed", publicFeedUrl({}, false) === null);
+
+// --- P2-131: platform-aware public feed ---------------------------------------
+check(
+  "publicFeedUrl: win32 → electron-builder latest.yml",
+  publicFeedUrl({}, true, "win32") === "https://github.com/caiovicentino/opencode-remote/releases/latest/download/latest.yml",
+);
+check(
+  "publicFeedUrl: platforms without a feed (linux, freebsd) → null",
+  publicFeedUrl({}, true, "linux") === null && publicFeedUrl({}, true, "freebsd") === null,
+);
+check(
+  "publicFeedUrl: OCR_PUBLIC_UPDATE_FEED is an absolute override — ignores the platform",
+  publicFeedUrl({ OCR_PUBLIC_UPDATE_FEED: "https://fork.dev/latest.yml" }, true, "linux") === "https://fork.dev/latest.yml" &&
+    publicFeedUrl({ OCR_PUBLIC_UPDATE_FEED: "https://fork.dev/latest.yml" }, true, "win32") === "https://fork.dev/latest.yml",
+);
+check(
+  "publicFeedUrl: default platform param follows process.platform",
+  publicFeedUrl({}, true) === publicFeedUrl({}, true, process.platform),
+);
+{
+  // A platform with no feed has the whole feature off: disabled BEFORE any
+  // network request — not even the staged Squirrel.Mac loopback default.
+  const requestedUrls: string[] = [];
+  const mustNotFetch = ((input: RequestInfo | URL) => {
+    requestedUrls.push(String(input));
+    return Promise.reject(new Error("ECONNREFUSED"));
+  }) as unknown as typeof fetch;
+  check(
+    "P2-131: platform without feed → disabled, zero network requests (packaged linux)",
+    (await checkForUpdatesOnBoot({
+      packaged: true,
+      platform: "linux",
+      currentVersion: "0.2.0",
+      updater: fakeUpdater(),
+      fetchImpl: mustNotFetch,
+      log: () => {},
+    })) === "disabled" && requestedUrls.length === 0,
+  );
+  check(
+    "P2-131: platform without feed → disabled, zero network requests (packaged freebsd)",
+    (await checkForUpdatesOnBoot({
+      packaged: true,
+      platform: "freebsd",
+      currentVersion: "0.2.0",
+      updater: fakeUpdater(),
+      fetchImpl: mustNotFetch,
+      log: () => {},
+    })) === "disabled" && requestedUrls.length === 0,
+  );
+  // The gate only short-circuits platform-less platforms: an explicit staged
+  // feed is operator intent and keeps failing loudly (P2-098 round 4).
+  const savedFeed = process.env.OCR_UPDATE_FEED;
+  process.env.OCR_UPDATE_FEED = "http://127.0.0.1:1/staged.json";
+  requestedUrls.length = 0;
+  check(
+    "P2-131: explicit OCR_UPDATE_FEED keeps the check alive on feed-less platforms (fails loudly, no public fetch)",
+    (await checkForUpdatesOnBoot({
+      packaged: true,
+      platform: "linux",
+      currentVersion: "0.2.0",
+      updater: fakeUpdater(),
+      fetchImpl: mustNotFetch,
+      log: () => {},
+    })) === "feed-unreachable" && JSON.stringify(requestedUrls) === JSON.stringify(["http://127.0.0.1:1/staged.json"]),
+  );
+  if (savedFeed !== undefined) process.env.OCR_UPDATE_FEED = savedFeed;
+  else delete process.env.OCR_UPDATE_FEED;
+}
 
 {
   const savedFeed = process.env.OCR_UPDATE_FEED;
@@ -341,6 +469,7 @@ check("publicFeedUrl: dev unpackaged has no public feed", publicFeedUrl({}, fals
   const fallbackLogs: string[] = [];
   check(
     "P2-098: staged loopback down → public latest-mac.yml fallback answers (packaged default)",
+    // The public fallback is a yml feed: since P2-131 that is a manual update.
     (await checkForUpdatesOnBoot({
       packaged: true,
       publicFeed: "http://127.0.0.1:9/latest-mac.yml",
@@ -348,7 +477,7 @@ check("publicFeedUrl: dev unpackaged has no public feed", publicFeedUrl({}, fals
       updater: fakeUpdater(),
       fetchImpl: sequenceFetcher,
       log: (l) => fallbackLogs.push(l),
-    })) === "update-available" && fallbackLogs.some((l) => l.includes("staged feed unreachable")),
+    })) === "update-available-manual" && fallbackLogs.some((l) => l.includes("staged feed unreachable")),
   );
   check(
     "P2-098: fallback fetch order = staged first, public second (one retry)",
@@ -413,106 +542,117 @@ check("publicFeedUrl: dev unpackaged has no public feed", publicFeedUrl({}, fals
 
 
 // --- e2e: compiled update.js inside the real Electron ------------------------
-const req = createRequire(join(repoRoot, "package.json"));
-const electronBin = req("electron") as unknown as string;
-check("electron binary resolved", typeof electronBin === "string" && existsSync(electronBin));
-const compiled = join(repoRoot, "apps", "desktop", "dist-electron", "update.js");
-if (!existsSync(compiled)) {
-  spawnSync("npm", ["run", "build", "--workspace", "@ocr/desktop"], { cwd: repoRoot, stdio: "inherit" });
-}
-check("desktop shell built (dist-electron/update.js)", existsSync(compiled));
-
-// Staged feed dir: latest-mac.yml (version 0.2.1 + fake release notes) plus the
-// same release as Squirrel.Mac JSON — both static, served on loopback.
-const feedServer = createServer((req, res) => {
-  if (req.url === "/latest-mac.yml") {
-    res.writeHead(200, { "content-type": "text/yaml" });
-    res.end(YML);
-  } else if (req.url === "/feed.json") {
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(
-      JSON.stringify({
-        url: `http://127.0.0.1:${(feedServer.address() as { port: number }).port}/OpenCode Remote-0.2.1-mac.zip`,
-        name: "0.2.1",
-        notes: "fake release notes",
-        releaseDate: "2026-09-01",
-      }),
-    );
-  } else {
-    res.writeHead(404);
-    res.end("nope");
+// P2-131: the e2e layer spawns real Electron and needs dist-electron — it is
+// skipped in unit-only mode so the fast root test:unit battery stays Electron-
+// free (P2-107: the file itself must still be wired into test:unit).
+async function runElectronE2E(): Promise<void> {
+  const req = createRequire(join(repoRoot, "package.json"));
+  const electronBin = req("electron") as unknown as string;
+  check("electron binary resolved", typeof electronBin === "string" && existsSync(electronBin));
+  const compiled = join(repoRoot, "apps", "desktop", "dist-electron", "update.js");
+  if (!existsSync(compiled)) {
+    spawnSync("npm", ["run", "build", "--workspace", "@ocr/desktop"], { cwd: repoRoot, stdio: "inherit" });
   }
-});
-await new Promise<void>((r) => feedServer.listen(0, "127.0.0.1", r));
-const feedPort = (feedServer.address() as { port: number }).port;
-process.on("exit", () => {
-  feedServer.closeAllConnections();
+  check("desktop shell built (dist-electron/update.js)", existsSync(compiled));
+
+  // Staged feed dir: latest-mac.yml (version 0.2.1 + fake release notes) plus the
+  // same release as Squirrel.Mac JSON — both static, served on loopback.
+  const feedServer = createServer((req, res) => {
+    if (req.url === "/latest-mac.yml") {
+      res.writeHead(200, { "content-type": "text/yaml" });
+      res.end(YML);
+    } else if (req.url === "/feed.json") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          url: `http://127.0.0.1:${(feedServer.address() as { port: number }).port}/OpenCode Remote-0.2.1-mac.zip`,
+          name: "0.2.1",
+          notes: "fake release notes",
+          releaseDate: "2026-09-01",
+        }),
+      );
+    } else {
+      res.writeHead(404);
+      res.end("nope");
+    }
+  });
+  await new Promise<void>((r) => feedServer.listen(0, "127.0.0.1", r));
+  const feedPort = (feedServer.address() as { port: number }).port;
+  process.on("exit", () => {
+    feedServer.closeAllConnections();
+    feedServer.close();
+  });
+
+  const DRIVER = join(repoRoot, "scripts", "desktop-update-driver.cjs");
+  const MARKER = "OCR_UPDATE_SMOKE_RESULT ";
+  // Async spawn (not spawnSync): the feed server lives in this process, and a
+  // sync wait would block the event loop so the server could never answer
+  // Electron's fetch (the request would only die on our 10s feed timeout).
+  async function runDriver(feedUrl: string | null): Promise<{ status: number; stdout: string }> {
+    const env = { ...process.env };
+    delete env.OCR_UPDATE_FEED;
+    if (feedUrl) env.OCR_UPDATE_FEED = feedUrl;
+    env.OCR_UPDATE_MODULE = compiled;
+    const child = spawn(electronBin, [DRIVER], {
+      cwd: repoRoot,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...env, ELECTRON_DISABLE_SECURITY_WARNINGS: "1" },
+    });
+    let stdout = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += String(chunk);
+    });
+    child.stderr.on("data", (chunk) => {
+      stdout += String(chunk);
+    });
+    const killed = setTimeout(() => child.kill("SIGKILL"), 30_000);
+    const status: number = await new Promise((resolve) => {
+      child.on("exit", (code, signal) => resolve(code ?? (signal ? -1 : -1)));
+    });
+    clearTimeout(killed);
+    return { status, stdout };
+  }
+  function resultOf(stdout: string): { status?: string } {
+    const line = stdout.split("\n").find((l) => l.startsWith(MARKER));
+    return line ? (JSON.parse(line.slice(MARKER.length)) as { status?: string }) : {};
+  }
+
+  const jsonRun = await runDriver(`http://127.0.0.1:${feedPort}/feed.json`);
+  check("e2e JSON feed: driver exits cleanly", jsonRun.status === 0);
+  check("e2e JSON feed: status update-available", resultOf(jsonRun.stdout).status === "update-available");
+  check(
+    "e2e JSON feed: app logs update-available (decision + real autoUpdater event)",
+    jsonRun.stdout.includes("update-available: 0.2.1") && jsonRun.stdout.includes("update-available (autoUpdater event)"),
+  );
+
+  const ymlRun = await runDriver(`http://127.0.0.1:${feedPort}/latest-mac.yml`);
+  check("e2e yml feed: driver exits cleanly", ymlRun.status === 0);
+  check(
+    "e2e yml feed: manual status from latest-mac.yml (0.2.1, fake notes, P2-131)",
+    resultOf(ymlRun.stdout).status === "update-available-manual" && ymlRun.stdout.includes("update-available: 0.2.1"),
+  );
+
+  const deadRun = await runDriver("http://127.0.0.1:1/feed.json");
+  check("e2e dead feed: driver exits cleanly (no crash)", deadRun.status === 0);
+  check(
+    "e2e dead feed: feed-unreachable, no update-available",
+    resultOf(deadRun.stdout).status === "feed-unreachable" && !deadRun.stdout.includes("update-available"),
+  );
+
+  const unsetRun = await runDriver(null);
+  check("e2e unset env: driver exits cleanly", unsetRun.status === 0);
+  check(
+    "e2e unset env: disabled and silent (no fetch, no update-available)",
+    resultOf(unsetRun.stdout).status === "disabled" && !unsetRun.stdout.includes("update-available"),
+  );
+
   feedServer.close();
-});
-
-const DRIVER = join(repoRoot, "scripts", "desktop-update-driver.cjs");
-const MARKER = "OCR_UPDATE_SMOKE_RESULT ";
-// Async spawn (not spawnSync): the feed server lives in this process, and a
-// sync wait would block the event loop so the server could never answer
-// Electron's fetch (the request would only die on our 10s feed timeout).
-async function runDriver(feedUrl: string | null): Promise<{ status: number; stdout: string }> {
-  const env = { ...process.env };
-  delete env.OCR_UPDATE_FEED;
-  if (feedUrl) env.OCR_UPDATE_FEED = feedUrl;
-  env.OCR_UPDATE_MODULE = compiled;
-  const child = spawn(electronBin, [DRIVER], {
-    cwd: repoRoot,
-    stdio: ["ignore", "pipe", "pipe"],
-    env: { ...env, ELECTRON_DISABLE_SECURITY_WARNINGS: "1" },
-  });
-  let stdout = "";
-  child.stdout.on("data", (chunk) => {
-    stdout += String(chunk);
-  });
-  child.stderr.on("data", (chunk) => {
-    stdout += String(chunk);
-  });
-  const killed = setTimeout(() => child.kill("SIGKILL"), 30_000);
-  const status: number = await new Promise((resolve) => {
-    child.on("exit", (code, signal) => resolve(code ?? (signal ? -1 : -1)));
-  });
-  clearTimeout(killed);
-  return { status, stdout };
-}
-function resultOf(stdout: string): { status?: string } {
-  const line = stdout.split("\n").find((l) => l.startsWith(MARKER));
-  return line ? (JSON.parse(line.slice(MARKER.length)) as { status?: string }) : {};
 }
 
-const jsonRun = await runDriver(`http://127.0.0.1:${feedPort}/feed.json`);
-check("e2e JSON feed: driver exits cleanly", jsonRun.status === 0);
-check("e2e JSON feed: status update-available", resultOf(jsonRun.stdout).status === "update-available");
-check(
-  "e2e JSON feed: app logs update-available (decision + real autoUpdater event)",
-  jsonRun.stdout.includes("update-available: 0.2.1") && jsonRun.stdout.includes("update-available (autoUpdater event)"),
-);
-
-const ymlRun = await runDriver(`http://127.0.0.1:${feedPort}/latest-mac.yml`);
-check("e2e yml feed: driver exits cleanly", ymlRun.status === 0);
-check(
-  "e2e yml feed: app logs update-available from latest-mac.yml (0.2.1, fake notes)",
-  resultOf(ymlRun.stdout).status === "update-available" && ymlRun.stdout.includes("update-available: 0.2.1"),
-);
-
-const deadRun = await runDriver("http://127.0.0.1:1/feed.json");
-check("e2e dead feed: driver exits cleanly (no crash)", deadRun.status === 0);
-check(
-  "e2e dead feed: feed-unreachable, no update-available",
-  resultOf(deadRun.stdout).status === "feed-unreachable" && !deadRun.stdout.includes("update-available"),
-);
-
-const unsetRun = await runDriver(null);
-check("e2e unset env: driver exits cleanly", unsetRun.status === 0);
-check(
-  "e2e unset env: disabled and silent (no fetch, no update-available)",
-  resultOf(unsetRun.stdout).status === "disabled" && !unsetRun.stdout.includes("update-available"),
-);
-
-feedServer.close();
+if (UNIT_ONLY) {
+  console.log("unit-only: Electron e2e layer skipped (--unit-only / OCR_UPDATE_UNIT_ONLY)");
+} else {
+  await runElectronE2E();
+}
 console.log(failures === 0 ? "\ndesktop update feed tests: all green" : `\nFAILURES: ${failures}`);
 process.exit(failures === 0 ? 0 : 1);

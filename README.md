@@ -413,14 +413,21 @@ loopback updates folder (`http://127.0.0.1:8792/__ocr/updates/` — a versioned
 folder served by the same local daemon, no new network surface) at boot and on
 demand from the tray (**Check for updates**). P2-098: when that staged feed is
 absent — the normal case on a plain DMG install — the shell falls back to the
-public `latest-mac.yml` attached to the latest GitHub release, so the tray
-still reports "update available" on third-party machines (the decision is
-log/tray only for yml feeds; the background download + consent flow needs a
-Squirrel JSON feed like the staged one). The fallback triggers for the
-packaged default only — a feed pointed at explicitly via `OCR_UPDATE_FEED`
-never produces an outbound request behind your back. When a newer `feed.json` is
-found, the release downloads in the background and a consent dialog offers
-**Restart now / Later** — nothing installs without an explicit click, a
+public yml feed attached to the latest GitHub release, so the tray still
+reports "update available" on third-party machines. P2-131: that fallback is
+platform-aware — `latest-mac.yml` on macOS, `latest.yml` on Windows, and no
+feed at all on other platforms (the whole check stays `disabled` with zero
+network requests there) — and `OCR_PUBLIC_UPDATE_FEED` remains an absolute
+override that ignores the platform. The two platforms update differently: on
+**macOS** the staged Squirrel JSON feed (when present) downloads the release in
+the background and a consent dialog applies it; on **Windows** there is no
+download engine yet (Squirrel.Windows support pending), so a yml feed resolves
+to `update-available-manual` and the shell opens the GitHub release page —
+nothing is downloaded or installed behind your back. The fallback triggers for
+the packaged default only — a feed pointed at explicitly via `OCR_UPDATE_FEED`
+never produces an outbound request behind your back. When a newer `feed.json`
+is found on macOS, the release downloads in the background and a consent dialog
+offers **Restart now / Later** — nothing installs without an explicit click, a
 deferred version is not re-offered during the session, and repeated checks
 never stack stale offers. Staging a release is a plain copy:
 drop `<version>/` with the artifact under `~/.opencode-remote/updates/` and
@@ -638,17 +645,23 @@ The feed directory can contain an electron-builder-style `latest-mac.yml`
 with `url`/`name`/`notes`) — both are parsed and a newer release is logged as
 `update-available`. For JSON feeds the release is also handed to Electron's
 built-in `autoUpdater` (`setFeedURL` + `checkForUpdates`, `serverType: "json"`),
-which downloads it in the background; yml feeds are parse-and-log only, since
-the built-in updater cannot read `latest-mac.yml` (spike finding). Feed or
-network failures are strictly log-only and never block or crash the window.
+which downloads it in the background. yml feeds have no download engine (the
+built-in updater cannot read `latest-mac.yml` — spike finding): since P2-131
+they resolve to the dedicated `update-available-manual` status and the shell
+opens the release page (`shell.openExternal`) so the user can install by hand;
+`setFeedURL` is only ever called on the JSON feed path. Feed or network
+failures are strictly log-only and never block or crash the window.
 
 Whenever a feed is configured, the tray menu also gains two items (P3-019): a
 disabled status line reflecting the latest check ("Update available — check for
-updates", "Update ready — restart to install", "Up to date", or the failure
-reason) and a clickable "Check for updates" item that re-runs the check and
-refreshes the menu in place. Applying a release always goes through the
-consent dialog (P1-050): the updater asks "Restart now / Later" once the
-download finishes — a deferred version is not re-offered in the same session.
+updates", "Update available — open release page", "Update ready — restart to
+install", "Up to date", or the failure reason) and a clickable "Check for
+updates" item that re-runs the check and refreshes the menu in place. Applying
+a release always goes through the consent dialog (P1-050): the updater asks
+"Restart now / Later" once the download finishes — a deferred version is not
+re-offered in the same session. On macOS the packaged shell updates itself
+this way; on Windows (no Squirrel.Windows integration yet) the shell opens the
+release page instead of downloading anything (P2-131).
 
 ## Roadmap
 

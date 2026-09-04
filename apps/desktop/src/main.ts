@@ -282,6 +282,11 @@ const updateDialogSinks: UpdateDialogSinks = {
 function runUpdateCheck(source: string): void {
   void checkForUpdatesOnBoot({
     dialog: updateDialogSinks,
+    // P2-131: yml feeds (public fallback, Windows) have no download engine —
+    // the manual flow opens the release page so the user can grab the build.
+    openReleasePage: (url) => {
+      void shell.openExternal(url).catch((err) => logError("[desktop] opening release page failed:", err));
+    },
     onStatus: (status, version) => {
       lastUpdateStatus = status;
       refreshTrayMenu();
