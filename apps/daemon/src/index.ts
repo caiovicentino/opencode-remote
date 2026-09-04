@@ -49,6 +49,7 @@ import {
   validateTakeoverSessionId,
 } from "./pilotforensic.js";
 import { detectWhisper, transcribeAudio, type WhisperTool } from "./whisper.js";
+import { detectEdgeTts, synthesizeSpeech } from "./edgetts.js";
 import { metrics, startMetricsServer, VERSION } from "./metrics.js";
 import { loadRoutines, saveRoutines, type Routine } from "./routines.js";
 import { ARTIFACTS_ROOT, artifactMime, kindFor, listArtifacts, readArtifact, sessionTitleMap } from "./artifacts.js";
@@ -199,6 +200,9 @@ let appSettings: AppSettings;
 
 // local whisper transcription (optional; scripts/setup-whisper.sh installs it)
 let whisperTool: WhisperTool | null = null;
+// local TTS replies (optional; edge-tts CLI) — P2-125 voice mode
+let edgeTtsBin: string | null = null;
+const TTS_VOICE = process.env.OCR_TTS_VOICE ?? "pt-BR-AntonioNeural";
 
 interface UploadEntry {
   parts: string[];
@@ -719,6 +723,31 @@ end tell`;
       return { id: req.id, status: 200, body: { text } };
     } catch (err) {
       metrics.inc("ocr_transcription_failures_total");
+      return { id: req.id, status: 500, body: { error: String(err instanceof Error ? err.message : err) } };
+    }
+  }
+  // Voice replies (P2-125): edge-tts renders a short brief of the assistant's
+  // answer to mp3. The client speaks at most a couple of sentences — the full
+  // text stays in the chat.
+  if (req.path === "/__ocr/voice/tts-status" && req.method === "GET") {
+    return { id: req.id, status: 200, body: { available: !!edgeTtsBin, voice: TTS_VOICE } };
+  }
+  if (req.path === "/__ocr/voice/tts" && req.method === "POST") {
+    const { text } = req.body as { text?: string };
+    if (!text || typeof text !== "string" || text.length > 2000) {
+      return { id: req.id, status: 400, body: { error: "text required (1..2000 chars)" } };
+    }
+    if (!edgeTtsBin) {
+      return { id: req.id, status: 501, body: { error: "voice replies unavailable; install edge-tts on the host" } };
+    }
+    try {
+      const t0 = Date.now();
+      const audio = await synthesizeSpeech(edgeTtsBin, text, TTS_VOICE);
+      metrics.inc("ocr_tts_total");
+      metrics.inc("ocr_tts_ms_total", Date.now() - t0);
+      return { id: req.id, status: 200, body: { audioB64: audio.toString("base64"), mime: "audio/mpeg" } };
+    } catch (err) {
+      metrics.inc("ocr_tts_failures_total");
       return { id: req.id, status: 500, body: { error: String(err instanceof Error ? err.message : err) } };
     }
   }
@@ -2512,6 +2541,10 @@ async function main() {
   whisperTool = await detectWhisper();
   if (whisperTool) log("info", "voice transcription available", { kind: whisperTool.kind });
   else log("info", "voice transcription unavailable (optional feature)");
+
+  edgeTtsBin = detectEdgeTts();
+  if (edgeTtsBin) log("info", "voice replies available", { voice: TTS_VOICE });
+  else log("info", "voice replies unavailable (edge-tts not found; optional feature)");
 
   log("info", "daemon starting (protocol v2)", {
     machine: machineName,

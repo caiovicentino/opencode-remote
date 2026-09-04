@@ -206,6 +206,17 @@ export function IconMic(p: IconProps) {
   );
 }
 
+/** P2-125: composer voice-reply toggle (spoken replies via edge-tts). */
+export function IconSpeaker(p: IconProps) {
+  return (
+    <Icon {...p}>
+      <path d="M11 5 6 9H3a1 1 0 0 0-1 1v4a1 1 0 0 0 1 1h3l5 4a1 1 0 0 0 1.6-.8V5.8A1 1 0 0 0 11 5Z" />
+      <path d="M17.5 8.5a1 1 0 1 0-1.4 1.4 3 3 0 0 1 0 4.2 1 1 0 1 0 1.4 1.4 5 5 0 0 0 0-7Z" />
+      <path d="M20.2 5.8a1 1 0 1 0-1.4 1.4 7 7 0 0 1 0 9.6 1 1 0 1 0 1.4 1.4 9 9 0 0 0 0-12.4Z" />
+    </Icon>
+  );
+}
+
 /** P3-086: inline agent/model dropdown chevron. */
 export function IconChevronDown(p: IconProps) {
   return (

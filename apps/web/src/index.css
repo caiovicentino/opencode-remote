@@ -764,6 +764,14 @@ select {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.35; }
 }
+/* P2-125 voice replies: speaker toggle — armed = accent, speaking = pulse */
+.composer-tts-on:not(.composer-tts-speaking) {
+  color: var(--accent);
+}
+.composer-tts-speaking {
+  color: var(--accent);
+  animation: mic-pulse 1.2s ease-in-out infinite;
+}
 .composer-spacer {
   flex: 1;
   min-width: 0;
