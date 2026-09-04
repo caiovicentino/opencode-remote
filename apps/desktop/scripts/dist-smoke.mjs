@@ -23,6 +23,10 @@
  * requires the DMG installer next to the bundle — it is the mac release
  * artifact third parties install (AC "dist:smoke gera DMG").
  *
+ * P2-126: the same default run validates the Windows side when the dist root
+ * carries a win-unpacked bundle — NSIS setup exe + latest.yml (pure fs
+ * checks; runs on any OS, no Windows required).
+ *
  * Usage: npm run dist:smoke --workspace @ocr/desktop [-- --dir <path>]
  * Run:   node scripts/dist-smoke.mjs [--dir <bundle>]
  */
@@ -134,6 +138,34 @@ export function findDmg(distRoot) {
   return null;
 }
 
+/**
+ * P2-126: the Windows release artifact is the NSIS setup exe. Mirrors findDmg:
+ * returns the first *.exe file directly under distRoot (sorted, deterministic),
+ * or null when electron-builder produced none. Pure fs checks — runs on any
+ * OS, no Windows required.
+ */
+export function findWindowsInstaller(distRoot) {
+  if (!existsSync(distRoot)) return null;
+  for (const entry of readdirSync(distRoot).sort()) {
+    if (entry.toLowerCase().endsWith(".exe") && isFile(join(distRoot, entry))) return join(distRoot, entry);
+  }
+  return null;
+}
+
+/**
+ * P2-126: validate the Windows side of a dist root — the NSIS setup exe plus
+ * the update metadata (latest.yml) the in-app update check falls back to.
+ * Reports problems in the listProblems format (one string each, empty means
+ * complete) and never requires Windows to run.
+ */
+export function windowsInstallerProblems(distRoot) {
+  const problems = [];
+  if (!existsSync(distRoot)) return [`dist root does not exist: ${distRoot}`];
+  if (!findWindowsInstaller(distRoot)) problems.push("no Windows setup *.exe under dist root");
+  if (!isFile(join(distRoot, "latest.yml"))) problems.push("missing file: latest.yml");
+  return problems;
+}
+
 function main() {
   const argv = process.argv.slice(2);
   let dir = null;
@@ -144,9 +176,12 @@ function main() {
     if (explicit) dir = resolve(explicit.slice("--dir=".length));
   }
 
-  // --dir-less runs target the default dist root: the bundle must ALSO have a
-  // DMG sibling (P2-098 — the mac release artifact third parties install).
-  const requireDmg = dir === null;
+  // --dir-less runs target the default dist root ("default run"): they must
+  // carry the platform-specific release artifacts — the mac DMG (P2-098)
+  // always, and the Windows pair (P2-126) whenever a win-unpacked bundle
+  // exists next to it. Named after the invocation, not the artifact: on a
+  // Windows/Linux dist root only the Windows side can apply.
+  const defaultRun = dir === null;
   if (!dir) {
     dir = resolveBundleDir(join(desktopDir, "dist"));
     if (!dir) {
@@ -175,7 +210,7 @@ function main() {
   console.log("  web-dist/index.html present");
   console.log("  daemon/index.js present");
   console.log("  app binary present");
-  if (requireDmg) {
+  if (defaultRun) {
     const dmg = findDmg(join(desktopDir, "dist"));
     if (!dmg) {
       console.error(
@@ -186,6 +221,22 @@ function main() {
       return;
     }
     console.log(`  dmg artifact present: ${basename(dmg)}`);
+  }
+  // P2-126: on a default run whose dist root carries Windows packaging output
+  // (win-unpacked), the NSIS setup exe + latest.yml are release artifacts too
+  // — same treatment as the DMG above. Skipped when no win-unpacked exists so
+  // mac-only dev machines keep passing; pure fs checks, no Windows required.
+  if (defaultRun && existsSync(join(desktopDir, "dist", "win-unpacked"))) {
+    const distRoot = join(desktopDir, "dist");
+    const winProblems = windowsInstallerProblems(distRoot);
+    if (winProblems.length > 0) {
+      console.error("dist-smoke: FAIL Windows installer incomplete under apps/desktop/dist");
+      for (const problem of winProblems) console.error(`  - ${problem}`);
+      console.error(`dist-smoke: ${winProblems.length} Windows problem(s) found`);
+      process.exitCode = 1;
+      return;
+    }
+    console.log(`  windows installer present: ${basename(findWindowsInstaller(distRoot))}`);
   }
 }
 

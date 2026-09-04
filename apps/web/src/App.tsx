@@ -767,6 +767,7 @@ export default function App() {
           onRetry={() => setAddingMachine(false)}
           onPairRemote={desktopBridge()?.setRemotePairing ? () => void desktopBridge()?.setRemotePairing?.(true) : undefined}
           localMode={pairingState?.mode === "local"}
+          preferPaste={!!desktopBridge()}
         />
       </div>
     );
@@ -838,6 +839,7 @@ export default function App() {
             }}
             onPairRemote={desktopBridge()?.setRemotePairing ? () => void desktopBridge()?.setRemotePairing?.(true) : undefined}
             localMode={pairingState?.mode === "local"}
+            preferPaste={!!desktopBridge()}
           />
         )}
       </div>

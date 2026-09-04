@@ -81,8 +81,22 @@ dmg:
       type: link
       path: /Applications
 win:
-  target: dir
+  # P2-126: `nsis` produces the real Windows installer third parties install
+  # (assisted setup, per-user, choosable install dir — same story as the mac
+  # dmg above); `dir` keeps the plain win-unpacked bundle around for the
+  # deterministic smoke check. Unsigned until CSC_LINK/CSC_KEY_PASSWORD are
+  # configured: SmartScreen shows a one-time warning (README).
+  target:
+    - target: nsis
+    - target: dir
   icon: build/icon.png
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  # Deterministic, version-templated file name — the release workflow glob-
+  # uploads it and dist-smoke's findWindowsInstaller() keys off the dist root.
+  artifactName: OpenCode Remote Setup ${version}.exe
 linux:
   target: dir
   icon: build/icon.png

@@ -254,6 +254,19 @@ Homebrew users get the same code via the `Formula/opencode-remote.rb` formula
 (AGPL-3.0-only, checksum pinned automatically by the release pipeline at tag
 time).
 
+### Desktop app installer (Windows)
+
+Releases also ship a Windows installer, `OpenCode Remote Setup <version>.exe`
+(electron-builder `nsis` target: assisted setup, per-user install, you can
+pick the installation directory), alongside the `latest.yml` metadata the
+in-app update check falls back to. Until a code-signing certificate is
+configured on the release runner (`CSC_LINK` / `CSC_KEY_PASSWORD` secrets),
+the installer is **unsigned** and Windows SmartScreen shows "Windows
+protected your PC" on first run — click **More info → Run anyway** once; the
+same one-time trust dance as the macOS Gatekeeper flow above. With the
+signing secrets in place the installer is signed automatically and the
+warning goes away.
+
 **Releasing**: a tag `vX.Y.Z` must carry the same version in **both**
 `package.json` files (repo root and `apps/desktop`). The release workflow runs
 `scripts/release-preflight.ts` as its first step and blocks the release on any
@@ -463,7 +476,12 @@ first launch, right-click → **Open** once to pass Gatekeeper; afterwards the
 app behaves like any installed app. Tag releases ship that DMG +
 `latest-mac.yml` on GitHub (`.github/workflows/release.yml`); the release's
 signing preflight notarizes only when a Developer ID certificate and the
-Apple credentials are actually configured (see *Desktop app installer*).
+Apple credentials are actually configured (see *Desktop app installer*). The
+same release pipeline ships the **Windows NSIS installer**
+(`OpenCode Remote Setup <version>.exe` + `latest.yml`) from a `windows-latest`
+runner — unsigned (SmartScreen, see the Windows section above) until the CSC
+signing secrets are configured; the smoke check validates the setup exe and
+the metadata on any OS, no Windows required.
 
 **Auto-updates with consent (P1-050)**: the packaged shell checks the daemon's
 loopback updates folder (`http://127.0.0.1:8792/__ocr/updates/` — a versioned
@@ -554,7 +572,12 @@ device)** or an `opencode-remote://` deep link. When a phone still needs to
 pair on first run, the QR opens with a proper **welcome splash** (pt/en): the
 product value up front and a three-step onboarding promising the first real
 value in under a minute. The manual QR/paste screen remains as a fallback
-(machines switcher → add machine).
+(machines switcher → add machine). On the desktop, **paste/deep-link is the
+primary path** — pointing a camera at another screen is a circular flow — and
+the in-app scanner is a visible state machine (looking → live preview →
+unavailable) that always offers the paste fallback; an empty camera feed
+(capture device with no signal) resolves to the unavailable state instead of
+rendering the device's own OSD placeholder.
 
 **Direct local connection (P1-061)**: on the host machine the desktop app
 skips the relay entirely — it dials the daemon's loopback WebSocket
