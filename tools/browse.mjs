@@ -9,6 +9,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
+import { checkPng } from "./pngcheck.mjs";
 
 const [, , cmd, ...args] = process.argv;
 const PORT = process.env.OCR_DAEMON_METRICS_PORT || process.env.OCR_METRICS_PORT || 8792;
@@ -35,6 +36,14 @@ async function api(path, method = "GET", body) {
 }
 
 function savePng(out, buf) {
+  // P2-144: validate the bytes with the same module the desktop harness uses —
+  // a truncated/corrupt PNG is reported with its exact reason and never lands
+  // on disk posing as evidence. No duplicated validation logic.
+  const check = checkPng(buf);
+  if (!check.ok) {
+    console.error(`invalid PNG: ${check.reason}`);
+    process.exit(1);
+  }
   const dir = dirname(out);
   if (dir && dir !== "." && !dir.startsWith("~")) mkdirSync(dir, { recursive: true });
   const path = out.startsWith("~") ? join(homedir(), out.slice(1)) : out;
