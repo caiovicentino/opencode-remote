@@ -251,6 +251,7 @@ import {
 import type { PilotConfig } from "../apps/pilot/src/state";
 import { overlayVisible, phonePaired, localPairing } from "../apps/desktop/src/pairing";
 import { classifySidecarExit } from "../apps/desktop/src/sidecarexit";
+import { candidatePorts, pickDaemonPort } from "../apps/desktop/src/daemonport";
 import { versionMismatch } from "../apps/desktop/src/versions";
 import { daemonTooltip, loginItemSupported, logsDirPath, openLogsFolder, trayIconSource } from "../apps/desktop/src/tray";
 import { updateMenuLabel } from "../apps/desktop/src/update";
@@ -7737,6 +7738,106 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check("P2-139: redactRelayUrl ignores @ inside path", redactRelayUrl("ws://host:8788/pa@th") === "ws://host:8788/pa@th");
   check("P2-139: redactRelayUrl tolerates unparseable strings", redactRelayUrl("not a url") === "not a url");
   check("P2-139: redactRelayUrl handles no-authority strings", redactRelayUrl("nonsense") === "nonsense");
+}
+
+// --- P2-143: daemon port fallback (pure picker, no electron/net) --------------
+
+{
+  // 1. preferred port free (and not our daemon) → picked as "preferred".
+  check("P2-143: free preferred port → {preferred, 8792}", (async () => {
+    const pick = await pickDaemonPort(candidatePorts(8792), async () => true, async () => false);
+    return pick.reason === "preferred" && pick.port === 8792;
+  })());
+
+  // 2. preferred port already running OUR daemon → adopt it; isFree never
+  // decides (identity is checked first and short-circuits the walk).
+  check("P2-143: our daemon on the preferred port → reused, isFree never consulted", (async () => {
+    let freeCalls = 0;
+    const pick = await pickDaemonPort(
+      candidatePorts(8792),
+      async () => {
+        freeCalls += 1;
+        return false;
+      },
+      async () => true,
+    );
+    return pick.reason === "reused" && pick.port === 8792 && freeCalls === 0;
+  })());
+
+  // 3. preferred occupied by a stranger, 8793 free → deterministic fallback.
+  check("P2-143: preferred squatted by a stranger → fallback to 8793", (async () => {
+    const busy = new Set([8792]);
+    const pick = await pickDaemonPort(
+      candidatePorts(8792),
+      async (p) => !busy.has(p),
+      async () => false,
+    );
+    return pick.reason === "fallback" && pick.port === 8793;
+  })());
+
+  // 4. every candidate occupied by strangers → "none" on the preferred port
+  // (spawn there, die with EADDRINUSE, P2-140 keeps explaining why).
+  check("P2-143: all 5 candidates squatted → {none, 8792}", (async () => {
+    const pick = await pickDaemonPort(candidatePorts(8792), async () => false, async () => false);
+    return pick.reason === "none" && pick.port === 8792;
+  })());
+
+  // 5. Override (preferred outside 8792–8796) → single-entry list, the picker
+  // never leaves the override port: fallback is off by construction.
+  check("P2-143: override 9321 → one candidate, picker stays on it", (async () => {
+    const ports = candidatePorts(9321);
+    const pick = await pickDaemonPort(ports, async () => true, async () => false);
+    return ports.length === 1 && ports[0] === 9321 && pick.port === 9321 && pick.reason === "preferred";
+  })());
+
+  // 6. Span shape: preferred first, the rest ascending, no duplicates.
+  check("P2-143: candidatePorts(8792) has 5 entries", candidatePorts(8792).length === 5);
+  check(
+    "P2-143: candidatePorts(8794) = [8794,8792,8793,8795,8796], no duplicates",
+    (() => {
+      const ports = candidatePorts(8794);
+      return (
+        ports[0] === 8794 &&
+        ports.join(",") === "8794,8792,8793,8795,8796" &&
+        new Set(ports).size === ports.length
+      );
+    })(),
+  );
+
+  // 7. Edge: our daemon on a NON-first candidate is still adopted ("reused").
+  check("P2-143: our daemon on 8793 adopted when 8792 is squatted", (async () => {
+    const busy = new Set([8792]);
+    let probed = 0;
+    const pick = await pickDaemonPort(
+      candidatePorts(8792),
+      async (p) => {
+        probed += 1;
+        return !busy.has(p);
+      },
+      async (p) => p === 8793,
+    );
+    // 8792: identity probe + free probe (false); 8793: identity probe wins.
+    return pick.reason === "reused" && pick.port === 8793 && probed === 1;
+  })());
+
+  // 8. Edge: a throwing probe only discards the candidate — never propagates.
+  check("P2-143: throwing isFree on the preferred discards it, walk continues", (async () => {
+    const pick = await pickDaemonPort(
+      candidatePorts(8792),
+      async (p) => {
+        if (p === 8792) throw new Error("EACCES");
+        return true;
+      },
+      async () => false,
+    );
+    return pick.reason === "fallback" && pick.port === 8793;
+  })());
+
+  // 9. Edge: empty candidate list → the module default with reason "none".
+  check("P2-143: empty candidate list → {none, DEFAULT_DAEMON_PORT}", (async () => {
+    const pick = await pickDaemonPort([], async () => true, async () => false);
+    return pick.reason === "none" && pick.port === 8792;
+  })());
 }
 
 if (failures > 0) {

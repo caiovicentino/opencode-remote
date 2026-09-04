@@ -16,6 +16,9 @@ export interface LocalLink {
   token: string;
   room?: string;
   ecdhPub?: string;
+  /** P2-143: why this port was picked ("reused" | "preferred" | "fallback" |
+   * "none"); absent before the one-shot port resolution ran. */
+  portReason?: string;
 }
 
 /** P2-138: upstream (agent server / opencode) health detail from the daemon's

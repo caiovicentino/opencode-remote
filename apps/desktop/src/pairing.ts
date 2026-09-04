@@ -73,6 +73,8 @@ export interface LocalPairingLink {
   token?: string;
   room?: string;
   ecdhPub?: string;
+  /** P2-143: why the daemon port was picked (diagnostic-only; optional). */
+  portReason?: string;
 }
 
 /** The Pairing shape the renderer's OcrClient.connect expects. Kept structural

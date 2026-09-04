@@ -4,7 +4,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import QRCode from "qrcode";
 import {
-  DAEMON_METRICS_PORT,
+  activeDaemonPort,
+  daemonPortReason,
   fetchDaemonHealth,
   getPairUrl,
   isDaemonDown,
@@ -132,6 +133,8 @@ function buildDiagnostics(): string {
       down: isDaemonDown(),
       reconnecting,
       attempts,
+      port: activeDaemonPort(),
+      portReason: daemonPortReason(),
     },
     logTail,
     crashFiles,
@@ -345,7 +348,7 @@ async function onReady(): Promise<void> {
       const stateFile = join(homedir(), ".opencode-remote", "daemon.json");
       const token = (JSON.parse(readFileSync(stateFile, "utf8")) as { apiToken?: string }).apiToken;
       if (!token) return null;
-      const res = await fetch(`http://127.0.0.1:${DAEMON_METRICS_PORT}${u.pathname}${u.search}`, {
+      const res = await fetch(`http://127.0.0.1:${activeDaemonPort()}${u.pathname}${u.search}`, {
         method,
         headers: { authorization: `Bearer ${token}` },
         body: method === "POST" ? JSON.stringify(req.body ?? {}) : undefined,
@@ -379,7 +382,7 @@ async function onReady(): Promise<void> {
       const stateFile = join(homedir(), ".opencode-remote", "daemon.json");
       const token = (JSON.parse(readFileSync(stateFile, "utf8")) as { apiToken?: string }).apiToken;
       if (!token) return null;
-      const res = await fetch(`http://127.0.0.1:${DAEMON_METRICS_PORT}${u.pathname}${u.search}`, {
+      const res = await fetch(`http://127.0.0.1:${activeDaemonPort()}${u.pathname}${u.search}`, {
         method,
         headers: { authorization: `Bearer ${token}` },
         body: method === "POST" ? JSON.stringify(req.body ?? {}) : undefined,
@@ -405,7 +408,13 @@ async function onReady(): Promise<void> {
   ipcMain.handle("app:localLink", () => {
     const raw = readDaemonState();
     if (!raw?.apiToken) return null;
-    return { port: DAEMON_METRICS_PORT, token: raw.apiToken, room: raw.room, ecdhPub: raw.ecdhPub };
+    return {
+      port: activeDaemonPort(),
+      token: raw.apiToken,
+      room: raw.room,
+      ecdhPub: raw.ecdhPub,
+      portReason: daemonPortReason(),
+    };
   });
   // Boot pairing URI captured from the daemon sidecar's stdout (null when the
   // daemon was reused or hasn't printed it yet) — lets the renderer auto-pair.
@@ -503,7 +512,7 @@ async function onReady(): Promise<void> {
   );
   const healthOK = daemonReady && (await waitForDaemonHealth());
   if (!healthOK) {
-    logError(`[desktop] daemon health not confirmed on :${DAEMON_METRICS_PORT} — continuing`);
+    logError(`[desktop] daemon health not confirmed on :${activeDaemonPort()} — continuing`);
   }
   // P1-070: boot-time local-mode decision. The daemon on this machine shares
   // the trust domain (loopback, same user, 0600 daemon.json) and healthOnce
@@ -725,7 +734,7 @@ async function refreshPairingState(): Promise<void> {
     }
     return;
   }
-  const base = `http://127.0.0.1:${DAEMON_METRICS_PORT}`;
+  const base = `http://127.0.0.1:${activeDaemonPort()}`;
   const headers = { authorization: `Bearer ${token}` };
   try {
     const devRes = await fetch(`${base}/__ocr/devices`, { headers, signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });

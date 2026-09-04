@@ -22,7 +22,15 @@ export interface DiagnosticsInput {
   /** Absolute userData path (identifies the logs folder; contains no secrets). */
   userData: string;
   /** Daemon sidecar state. */
-  daemon: { healthy: boolean; down: boolean; reconnecting: boolean; attempts: number };
+  daemon: {
+    healthy: boolean;
+    down: boolean;
+    reconnecting: boolean;
+    attempts: number;
+    /** P2-143: the resolved daemon API port + why it was chosen. */
+    port: number;
+    portReason: string | null;
+  };
   /** Last lines of desktop.log (oldest first), already bounded by the caller. */
   logTail: string[];
   /** Crash file NAMES in ~/.opencode-remote/pilot/client-logs (newest last). */
@@ -38,7 +46,7 @@ export function buildDiagnosticReport(d: DiagnosticsInput): string {
     `app: ${d.appVersion} (electron ${d.electronVersion})`,
     `platform: ${d.platform} / ${d.locale} / ${d.packaged ? "packaged" : "dev"}`,
     `userData: ${d.userData}`,
-    `daemon: ${d.daemon.healthy ? "healthy" : d.daemon.down ? "down (sidecar gave up)" : d.daemon.reconnecting ? `reconnecting (attempt ${d.daemon.attempts})` : "unhealthy"}`,
+    `daemon: ${d.daemon.healthy ? "healthy" : d.daemon.down ? "down (sidecar gave up)" : d.daemon.reconnecting ? `reconnecting (attempt ${d.daemon.attempts})` : "unhealthy"} — porta ${d.daemon.port}${d.daemon.portReason ? ` (${d.daemon.portReason})` : ""}`,
     `last update check: ${d.updateStatus ?? "none"}`,
     `crash files: ${d.crashFiles.length === 0 ? "none" : d.crashFiles.join(", ")}`,
     "--- desktop.log (last lines) ---",

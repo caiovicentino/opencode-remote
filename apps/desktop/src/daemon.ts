@@ -6,16 +6,76 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { createServer } from "node:net";
 import { log, logError } from "./desktop-log";
 import { teeSidecarChunk } from "./sidecar-log";
 import { classifySidecarExit, type SidecarExitVerdict } from "./sidecarexit";
+import { candidatePorts, pickDaemonPort, type DaemonPortReason } from "./daemonport";
 
 // Single source of truth for the daemon API port: the desktop polls the exact
 // port the spawned child binds. OCR_DAEMON_METRICS_PORT is the desktop-facing
 // override; OCR_METRICS_PORT (the daemon's own variable) is honored as a
-// fallback so a shell that already configured it stays consistent.
+// fallback so a shell that already configured it stays consistent. This is the
+// PREFERRED port — P2-143 lets the actual port drift to a deterministic
+// fallback (8793–8796) when something else already owns the preferred one.
 export const DAEMON_METRICS_PORT =
   Number(process.env.OCR_DAEMON_METRICS_PORT) || Number(process.env.OCR_METRICS_PORT) || 8792;
+
+// --- P2-143: one-shot daemon port resolution ----------------------------------
+
+/** The resolved daemon port (null until startDaemonSidecar resolved it once). */
+let resolvedPort: number | null = null;
+/** Why the resolved port was chosen; logged once, surfaced in diagnostics. */
+let resolvedReason: DaemonPortReason | null = null;
+
+/** The port the daemon answers on this session (resolved or the preferred
+ * default). Callers must read this instead of the DAEMON_METRICS_PORT
+ * constant so every surface follows the fallback decision. */
+export function activeDaemonPort(): number {
+  return resolvedPort ?? DAEMON_METRICS_PORT;
+}
+
+/** Why activeDaemonPort() is the right port ("reused" | "preferred" |
+ * "fallback" | "none"), or null before the one-shot resolution ran. */
+export function daemonPortReason(): DaemonPortReason | null {
+  return resolvedReason;
+}
+
+/**
+ * Bind-probe a loopback port and close it immediately — "can I listen here?"
+ * never leaves the machine. Lives here (not in the pure daemonport module)
+ * because node:net must not leak into unit-test land.
+ */
+function isLoopbackPortFree(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const probe = createServer();
+    probe.once("error", () => resolve(false));
+    probe.listen(port, "127.0.0.1", () => {
+      probe.close(() => resolve(true));
+    });
+  });
+}
+
+/**
+ * Resolve the daemon port exactly once per process (P2-143): walk the
+ * candidate list — preferred port first, then the deterministic fallbacks —
+ * adopting a port that already runs OUR daemon ("reused") or the first free
+ * one. An env override (OCR_DAEMON_METRICS_PORT / OCR_METRICS_PORT) keeps
+ * candidatePorts at a single entry, so the behavior is byte-for-byte the old
+ * fixed-port one. The reason is logged once here and never again by the
+ * respawn/watchdog paths — they reuse the decision via activeDaemonPort().
+ */
+async function resolveDaemonPortOnce(): Promise<void> {
+  if (resolvedPort !== null) return;
+  const pick = await pickDaemonPort(
+    candidatePorts(DAEMON_METRICS_PORT),
+    isLoopbackPortFree,
+    (p) => healthOnce(p, sidecar.token),
+  );
+  resolvedPort = pick.port;
+  resolvedReason = pick.reason;
+  log(`[desktop] daemon port ${pick.port} (${pick.reason})`);
+}
 const HEALTH_TIMEOUT_MS = 30_000;
 const HEALTH_POLL_MS = 500;
 /** Per-request fetch timeout for the challenge + authenticated health probes. */
@@ -260,7 +320,7 @@ function toUpstreamDetail(raw: unknown): DaemonUpstreamDetail | null {
 export async function fetchDaemonHealth(token: string | null): Promise<DaemonHealthInfo> {
   if (token === null) return { version: null, opencode: null };
   try {
-    const res = await fetch(`http://127.0.0.1:${DAEMON_METRICS_PORT}/api/health`, {
+    const res = await fetch(`http://127.0.0.1:${activeDaemonPort()}/api/health`, {
       headers: { authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
     });
@@ -277,7 +337,7 @@ export async function fetchDaemonHealth(token: string | null): Promise<DaemonHea
 
 /** Poll GET /api/health until it answers or the deadline expires. */
 export async function waitForDaemonHealth(opts: HealthWaitOptions = {}): Promise<boolean> {
-  const port = opts.port ?? DAEMON_METRICS_PORT;
+  const port = opts.port ?? activeDaemonPort();
   let token = opts.token !== undefined ? opts.token : (sidecar.token ?? readApiToken());
   const deadline = Date.now() + (opts.timeoutMs ?? HEALTH_TIMEOUT_MS);
   while (Date.now() < deadline) {
@@ -360,11 +420,21 @@ export async function startDaemonSidecar(
   // One token read shared by the reuse check and (via sidecar.token) the
   // post-spawn health wait — no TOCTOU on a token rotated between the two.
   sidecar.token = readApiToken();
-  // Reuse only on proven identity: with a null token we cannot authenticate
-  // the responder at all, so short-circuiting would "adopt" whatever process
-  // squats on the port and never spawn the real daemon.
-  if (sidecar.token !== null && (await healthOnce(DAEMON_METRICS_PORT, sidecar.token))) {
-    log(`[desktop] daemon already running on :${DAEMON_METRICS_PORT} — reusing it`);
+  // P2-143: pick the port once, before any adoption/spawn decision. With a
+  // null token the healthOnce injection always answers false (no identity
+  // proof, no adoption), so the walk degrades to preferred/fallback/none.
+  const firstResolution = resolvedPort === null;
+  await resolveDaemonPortOnce();
+  const port = activeDaemonPort();
+  // Reuse only on proven identity: on the first call the port pick already ran
+  // the authenticated probe (a "reused" verdict IS the proof); an anonymous
+  // squatter can never adopt. Later calls re-probe on the resolved port —
+  // the state file/responder may have changed under us — same as pre-P2-143.
+  const reuse =
+    (firstResolution && resolvedReason === "reused") ||
+    (!firstResolution && sidecar.token !== null && (await healthOnce(port, sidecar.token)));
+  if (reuse) {
+    log(`[desktop] daemon already running on :${port} — reusing it`);
     sidecar.reused = true; // enables the daemon.log pair-URI fallback
     // P1-053: an adopted daemon is not our child — track its health forever
     // instead of relying on the (hosted-only) respawn budget.
@@ -401,7 +471,7 @@ function spawnChild(entry: DaemonEntry): void {
       // second full Electron runtime instead of a plain Node one.
       ELECTRON_RUN_AS_NODE: "1",
       // Must match the port waitForDaemonHealth() polls (single source above).
-      OCR_METRICS_PORT: String(DAEMON_METRICS_PORT),
+      OCR_METRICS_PORT: String(activeDaemonPort()),
     },
     // stdout is piped (not inherited) so we can capture the boot pairing URI;
     // each chunk is forwarded to our own stdout, preserving the old behavior.
@@ -478,7 +548,7 @@ function spawnChild(entry: DaemonEntry): void {
       scheduleRespawn();
     }
   });
-  log(`[desktop] daemon sidecar spawned (pid ${child.pid}, metrics :${DAEMON_METRICS_PORT})`);
+  log(`[desktop] daemon sidecar spawned (pid ${child.pid}, metrics :${activeDaemonPort()})`);
 }
 
 /**
@@ -516,8 +586,8 @@ async function respawn(): Promise<void> {
   // An authenticated daemon on the port (e.g. a launchd install the user
   // started after the crash) counts as recovered — spawning on top of it
   // would just crash-loop on the busy port.
-  if (sidecar.token !== null && (await healthOnce(DAEMON_METRICS_PORT, sidecar.token))) {
-    log(`[desktop] daemon already healthy again on :${DAEMON_METRICS_PORT} — no respawn needed`);
+  if (sidecar.token !== null && (await healthOnce(activeDaemonPort(), sidecar.token))) {
+    log(`[desktop] daemon already healthy again on :${activeDaemonPort()} — no respawn needed`);
     sidecar.child = null;
     sidecar.spawned = false;
     sidecar.reused = true;
@@ -570,7 +640,7 @@ export function reconnectState(): { reconnecting: boolean; attempts: number } {
 function startReconnectWatchdog(): void {
   if (watchdogArmed) return;
   watchdogArmed = true;
-  log(`[desktop] adopted daemon watchdog armed on :${DAEMON_METRICS_PORT} (infinite reconnect)`);
+  log(`[desktop] adopted daemon watchdog armed on :${activeDaemonPort()} (infinite reconnect)`);
   scheduleReconnectProbe(0);
 }
 
@@ -601,18 +671,18 @@ function scheduleReconnectProbe(afterMs: number): void {
 
 async function reconnectProbe(): Promise<void> {
   if (!watchdogArmed) return;
-  const healthy = await healthOnce(DAEMON_METRICS_PORT, sidecar.token ?? readApiToken());
+  const healthy = await healthOnce(activeDaemonPort(), sidecar.token ?? readApiToken());
   // An intentional stop/fresh spawn may have happened during the probe.
   if (!watchdogArmed) return;
   if (healthy) {
     if (reconnectActive) {
-      log(`[desktop] adopted daemon healthy again on :${DAEMON_METRICS_PORT} — reconnected after ${reconnectAttempts} attempt(s)`);
+      log(`[desktop] adopted daemon healthy again on :${activeDaemonPort()} — reconnected after ${reconnectAttempts} attempt(s)`);
     }
     reconnectActive = false;
     reconnectAttempts = 0;
   } else {
     if (!reconnectActive) {
-      log(`[desktop] adopted daemon lost on :${DAEMON_METRICS_PORT} — reconnecting with infinite backoff (no spawn, no give-up)`);
+      log(`[desktop] adopted daemon lost on :${activeDaemonPort()} — reconnecting with infinite backoff (no spawn, no give-up)`);
     }
     reconnectActive = true;
     reconnectAttempts += 1;
@@ -685,8 +755,8 @@ export async function restartDaemon(): Promise<boolean> {
     sidecar.token = readApiToken();
     // Our own child is gone; an adopted/launchd daemon may still own the port.
     // Reuse it instead of crash-looping a fresh spawn against the busy port.
-    if (sidecar.token !== null && (await healthOnce(DAEMON_METRICS_PORT, sidecar.token))) {
-      log(`[desktop] restart daemon: daemon healthy on :${DAEMON_METRICS_PORT} — reusing it`);
+    if (sidecar.token !== null && (await healthOnce(activeDaemonPort(), sidecar.token))) {
+      log(`[desktop] restart daemon: daemon healthy on :${activeDaemonPort()} — reusing it`);
       sidecar.reused = true;
       // Adopted again → re-arm the infinite reconnect watchdog (P1-053).
       startReconnectWatchdog();

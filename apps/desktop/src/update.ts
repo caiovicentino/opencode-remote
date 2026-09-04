@@ -24,6 +24,7 @@
 // Everything here stays fail-open: a dead feed, a bad feed or a failed
 // download is logged and swallowed — it must never block or crash the shell.
 import { app, autoUpdater } from "electron";
+import { activeDaemonPort } from "./daemon";
 
 /** Shape of the subset of Electron's autoUpdater we need (tests inject fakes). */
 export interface UpdaterLike {
@@ -101,7 +102,9 @@ export function resolvedFeedUrl(env: NodeJS.ProcessEnv = process.env, packaged =
   const explicit = feedUrlFromEnv(env);
   if (explicit) return explicit;
   if (!packaged) return null;
-  const port = Number(env.OCR_DAEMON_METRICS_PORT) || Number(env.OCR_METRICS_PORT) || 8792;
+  // P2-143: the packaged default follows the RESOLVED daemon port (the
+  // fallback-aware getter), not the fixed 8792 — env overrides keep priority.
+  const port = Number(env.OCR_DAEMON_METRICS_PORT) || Number(env.OCR_METRICS_PORT) || activeDaemonPort();
   return `http://127.0.0.1:${port}/__ocr/updates/feed.json`;
 }
 
