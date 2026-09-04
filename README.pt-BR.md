@@ -207,10 +207,23 @@ recuperados do plist, nunca descartados sem querença).
 
 Todo release do GitHub traz o instalador macOS de verdade,
 `OpenCode Remote-<version>-arm64.dmg` (alvo `dmg` do electron-builder, janela
-com a marca do projeto). Releases são **assinados e notarizados** somente
-quando o runner tem um certificado Developer ID Application configurado (além
-das credenciais Apple de notarização); sem identidade de assinatura o build é
-ad-hoc e basta right-click → **Open** uma vez para passar pelo Gatekeeper.
+com a marca do projeto). Um preflight de assinatura
+(`apps/desktop/scripts/signing-profile.mjs`) roda antes do empacotamento e
+escolhe um de dois modos:
+
+- **Developer ID + notarizado** — quando o runner tem um certificado
+  Developer ID Application (`CSC_LINK` ou `CSC_NAME`, com
+  `CSC_IDENTITY_AUTO_DISCOVERY` ausente ou `true`) além das credenciais
+  Apple de notarização (`APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`,
+  `APPLE_TEAM_ID`). O bundle é assinado com hardened runtime e as
+  entitlements de `build/entitlements.mac.plist` e depois notarizado.
+- **Ad-hoc (padrão)** — sem esses secrets o DMG sai ad-hoc e basta
+  right-click → **Open** uma vez para passar pelo Gatekeeper. O preflight só
+  liga a notarização quando o certificado é realmente utilizável: certificado
+  configurado com `CSC_IDENTITY_AUTO_DISCOVERY=false` (que o electron-builder
+  ignoraria em silêncio) ou credenciais de notarização sem certificado são
+  reportados como problema e o build volta para ad-hoc em vez de falhar.
+
 Quem prefere Homebrew usa o `Formula/opencode-remote.rb` (AGPL-3.0-only,
 checksum fixado automaticamente pelo pipeline de release a cada tag).
 
@@ -317,9 +330,12 @@ bundle do daemon) antes de empacotar, então funciona também num checkout limpo
 **Empacotamento (P1-050)**: `npm run dist --workspace @ocr/desktop` agora
 também produz um **`OpenCode Remote-<versão>.dmg`** distribuível (janela de
 instalação com branding, versão semântica no About e no nome do arquivo).
-Builds são assinados ad-hoc — no primeiro abre, clique direito → **Abrir**
-para passar pelo Gatekeeper; depois o app se comporta como qualquer app
-instalado.
+Builds locais são assinados ad-hoc com hardened runtime e as entitlements
+compartilhadas (`build/entitlements.mac.plist`) — no primeiro abre, clique
+direito → **Abrir** para passar pelo Gatekeeper; depois o app se comporta
+como qualquer app instalado. No release, o preflight de assinatura só liga a
+notarização quando há certificado Developer ID e credenciais Apple de fato
+configurados (veja *Instalador do app desktop*).
 
 **Auto-update com consentimento (P1-050)**: o shell empacotado checa a pasta
 versionada de updates do daemon (`http://127.0.0.1:8792/__ocr/updates/`

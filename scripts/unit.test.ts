@@ -267,6 +267,7 @@ import {
   type ViewState,
 } from "../apps/web/src/lib/viewState";
 import { ALLOWED_EXTS, extOf, pickConverter, validateExt } from "../tools/doc2pdf.mjs";
+import { signingProfile } from "../apps/desktop/scripts/signing-profile.mjs";
 import {
   avgDoneDuration,
   buildCards,
@@ -7057,6 +7058,85 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   }
   check("P2-133: real repo — every test file is executed by a runner or declared in test-registry.json", orphans.length === 0);
   check("P2-133: registry covers the known live/daemon and Electron tests", (Array.isArray(registry) ? registry : registry.entries ?? []).length >= 9);
+}
+
+// --- P2-136: signing profile — mac notarization preflight ----------------------
+
+{
+  const APPLE = { APPLE_ID: "ops@example.com", APPLE_APP_SPECIFIC_PASSWORD: "abcd-efgh-ijkl-mnop", APPLE_TEAM_ID: "TEAM1234" };
+  const pEmpty = signingProfile({});
+  check("P2-136: empty env → ad-hoc, no notarization, no problems", pEmpty.mode === "adhoc" && pEmpty.notarizes === false && pEmpty.problems.length === 0);
+
+  const pNotaryOnly = signingProfile({ ...APPLE });
+  check(
+    "P2-136: Apple credentials without a signing certificate → problem, stays ad-hoc",
+    pNotaryOnly.mode === "adhoc" && pNotaryOnly.notarizes === false && pNotaryOnly.problems.length === 1,
+  );
+
+  const pCertOnly = signingProfile({ CSC_LINK: "/tmp/dev-id.p12" });
+  check(
+    "P2-136: certificate without Apple credentials → Developer ID signing, no notarization",
+    pCertOnly.mode === "developer-id" && pCertOnly.notarizes === false && pCertOnly.problems.length === 0,
+  );
+
+  const full = { CSC_LINK: "/tmp/dev-id.p12", ...APPLE };
+  const pFullDiscoveryOn = signingProfile({ ...full });
+  check(
+    "P2-136: everything present, auto discovery on (unset) → Developer ID + notarization",
+    pFullDiscoveryOn.mode === "developer-id" && pFullDiscoveryOn.notarizes === true && pFullDiscoveryOn.problems.length === 0,
+  );
+
+  const pFullDiscoveryOff = signingProfile({ ...full, CSC_IDENTITY_AUTO_DISCOVERY: "false" });
+  check(
+    "P2-136: everything present but auto discovery off → problem, stays ad-hoc (cert would be ignored)",
+    pFullDiscoveryOff.mode === "adhoc" && pFullDiscoveryOff.notarizes === false && pFullDiscoveryOff.problems.length === 1,
+  );
+
+  const pExplicitTrue = signingProfile({ ...full, CSC_IDENTITY_AUTO_DISCOVERY: "true" });
+  check("P2-136: explicit CSC_IDENTITY_AUTO_DISCOVERY=true behaves like unset", pExplicitTrue.notarizes === true && pExplicitTrue.problems.length === 0);
+
+  const pCscName = signingProfile({ CSC_NAME: "Developer ID Application: Example (TEAM1234)" });
+  check("P2-136: CSC_NAME alone counts as a signing credential", pCscName.mode === "developer-id" && pCscName.problems.length === 0);
+
+  const pPartialApple = signingProfile({ ...full, APPLE_TEAM_ID: "" });
+  check(
+    "P2-136: partial Apple credentials → signing without notarization (same all-three rule as the workflow)",
+    pPartialApple.mode === "developer-id" && pPartialApple.notarizes === false && pPartialApple.problems.length === 0,
+  );
+
+  check(
+    "P2-136: problems cite the exact env vars to fix (dist-smoke problem format)",
+    (pNotaryOnly.problems[0] ?? "").includes("CSC_LINK") &&
+      (pFullDiscoveryOff.problems[0] ?? "").includes("CSC_IDENTITY_AUTO_DISCOVERY"),
+  );
+}
+
+// --- P2-136: real-repo assertion — builder config stays wired to the plist -----
+
+{
+  const root = join(import.meta.dirname, "..");
+  const plist = readFileSync(join(root, "apps", "desktop", "build", "entitlements.mac.plist"), "utf8");
+  const builderYml = readFileSync(join(root, "apps", "desktop", "electron-builder.yml"), "utf8");
+  const releaseYml = readFileSync(join(root, ".github", "workflows", "release.yml"), "utf8");
+  const entitlementKeys = [
+    "com.apple.security.cs.allow-jit",
+    "com.apple.security.cs.allow-unsigned-executable-memory",
+    "com.apple.security.cs.disable-library-validation",
+    "com.apple.security.cs.allow-dyld-environment-variables",
+  ];
+  check("P2-136: entitlements plist carries the Electron + node-sidecar keys", entitlementKeys.every((k) => plist.includes(k)));
+  check(
+    "P2-136: mac block wires hardened runtime + entitlements/entitlementsInherit",
+    builderYml.includes("hardenedRuntime: true") &&
+      builderYml.includes("gatekeeperAssess: false") &&
+      builderYml.includes("entitlements: build/entitlements.mac.plist") &&
+      builderYml.includes("entitlementsInherit: build/entitlements.mac.plist"),
+  );
+  check("P2-136: plist is shipped in the files list", builderYml.includes("- build/entitlements.mac.plist"));
+  check(
+    "P2-136: release.yml runs the preflight and only notarizes on its developer-id/no-problems verdict",
+    releaseYml.includes("signing-profile.mjs") && releaseYml.includes("steps.signing.outputs.notarize"),
+  );
 }
 
 if (failures > 0) {
