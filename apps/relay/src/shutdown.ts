@@ -1,4 +1,5 @@
 import type { Server } from "node:http";
+import type { Duplex } from "node:stream";
 import type { WebSocket } from "ws";
 
 /** hard drain window: the process is gone ≤DRAIN_MS after the first signal */
@@ -16,6 +17,14 @@ export interface ShutdownDeps {
   uptimeMs: () => number;
   /** stop accepting new work: server.close + ws.close(1001) on every client */
   stopListeners: () => Promise<void>;
+  /**
+   * P2-145: window between "marked draining" (/healthz 503) and closing
+   * the sockets, so the load balancer can notice the 503 and stop routing
+   * NEW peers here before their sockets would be killed. 0 (default)
+   * reproduces the pre-P2-145 sequence exactly; relayLimits caps the env
+   * value at 2000 so grace+settle stays inside the DRAIN_MS hard window.
+   */
+  graceMs?: number;
   /** injectable JSONL sink (the relay's ev()) so the module stays pure */
   log: RelayLog;
   /** injectable so tests can observe exit without killing the runner */
@@ -28,8 +37,10 @@ export interface ShutdownDeps {
  * Idempotent shutdown routine for SIGTERM/SIGINT (P2-023, mirrors the
  * daemon's P2-020):
  * 1. log state ("relay shutting down", active connections, uptime)
- * 2. stop listeners (http(s) close; every ws client closed with code 1001)
- * 3. short settle so close frames flush, log the final line, exit 0
+ * 2. wait the injected grace (P2-145: /healthz now answers 503 while this
+ *    window runs, so the LB routes new peers elsewhere)
+ * 3. stop listeners (http(s) close; every ws client closed with code 1001)
+ * 4. short settle so close frames flush, log the final line, exit 0
  * A hard timer caps the drain at DRAIN_MS; a second signal exits immediately.
  */
 export function createShutdown(deps: ShutdownDeps): {
@@ -49,9 +60,16 @@ export function createShutdown(deps: ShutdownDeps): {
       signal,
       activeConnections: closing,
       uptimeS: Math.round(deps.uptimeMs() / 1000),
+      drainGraceMs: deps.graceMs ?? 0,
     });
     const hard = deps.setTimeout(() => deps.exit(0), DRAIN_MS);
+    const graceMs = deps.graceMs ?? 0;
     try {
+      // grace > 0 only: an empty env must keep the exact pre-P2-145 timer
+      // sequence (hard timer + settle), so no grace timer is queued at 0
+      if (graceMs > 0) {
+        await new Promise<void>((r) => deps.setTimeout(r, graceMs));
+      }
       await deps.stopListeners();
       await new Promise<void>((r) => deps.setTimeout(r, SETTLE_MS));
     } catch (err) {
@@ -65,6 +83,23 @@ export function createShutdown(deps: ShutdownDeps): {
     deps.exit(0);
   };
   return { shutdown, isShuttingDown: () => started };
+}
+
+/**
+ * P2-145: refuse a WebSocket upgrade during the drain with a plain-HTTP 503
+ * and destroy the socket, instead of letting ws admit a room that dies
+ * milliseconds later with close 1001. Mirrors ws's own abortHandshake: end()
+ * flushes the status line, and the socket is destroyed once it flushes.
+ */
+export function refuseUpgrade(socket: Duplex): void {
+  socket.resume();
+  socket.once("finish", socket.destroy);
+  socket.end(
+    "HTTP/1.1 503 Service Unavailable\r\n" +
+      "Connection: close\r\n" +
+      "Content-Length: 0\r\n" +
+      "\r\n",
+  );
 }
 
 /**
