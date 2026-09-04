@@ -488,6 +488,18 @@ export async function deploy(
   const headNow = exec("git rev-parse HEAD", { cwd: cfg.repo, allowFail: true }).output.trim();
   if (shouldSelfReload(prev, headNow)) {
     const moved = `HEAD moved ${prev.slice(0, 7)} → ${headNow.slice(0, 7)}`;
+    // Frota Cognitiva: the drain+reload exists to put new PILOT code under the
+    // running process. When the deployed diff doesn't touch apps/pilot/** the
+    // process stays current — daemon/web services were already restarted by
+    // this deploy — so the fleet keeps flying at its configured level instead
+    // of draining on every product merge. The stale-boot self-heal (idle exit,
+    // P1-034) still adopts a future pilot-infra change at the next all-idle
+    // moment, and refreshFleet hot-reloads config the same way it always did.
+    if (!pilotInfra) {
+      log("info", "deployed without pilot-infra changes — fleet keeps running", { sha: sha.slice(0, 7) });
+      emitEvent("deploy", { phase: "no-reload", ok: true, detail: "fleet undisturbed — no apps/pilot diff" });
+      return { ok: true, rolledBack: false, detail: `deployed ${sha.slice(0, 7)} (prev ${prev.slice(0, 7)})` };
+    }
     // P1-104: never exit mid-pipeline — hold new picks and wait for the
     // running slots to drain; KeepAlive then restarts on the new code.
     const slotsRunning = opts?.slotsRunning ?? (() => 0);
