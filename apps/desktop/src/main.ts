@@ -282,6 +282,16 @@ const updateDialogSinks: UpdateDialogSinks = {
 function runUpdateCheck(source: string): void {
   void checkForUpdatesOnBoot({
     dialog: updateDialogSinks,
+    // P2-131 (round-2 review): yml feeds have no download engine — the manual
+    // flow hands the user the release page — but only for an explicit tray
+    // re-check. The boot check never auto-opens a browser tab, and update.ts
+    // dedupes so each version opens at most once per session.
+    openReleasePage:
+      source === "tray"
+        ? (url) => {
+            void shell.openExternal(url).catch((err) => logError("[desktop] opening release page failed:", err));
+          }
+        : undefined,
     onStatus: (status, version) => {
       lastUpdateStatus = status;
       refreshTrayMenu();
