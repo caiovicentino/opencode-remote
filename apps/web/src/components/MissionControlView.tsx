@@ -97,6 +97,23 @@ export default function MissionControlView({
   const [taken, setTaken] = useState<string | null>(null);
   const [liveShot, setLiveShot] = useState<string | null>(null);
   const [liveBusy, setLiveBusy] = useState(false);
+  // P2-123 follow-up: the pane's main surface is the LIVE orbital dashboard
+  // (the same /dashboard/v3 the browser shows), embedded with self-auth via
+  // the desktop bridge's local link. The forensic timeline stays one toggle away.
+  const [view, setView] = useState<"dash" | "forensic">("dash");
+  const [dashUrl, setDashUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const bridge = (window as unknown as { ocrDesktop?: { getLocalLink?: () => Promise<{ port: number; token: string } | null> } }).ocrDesktop;
+    bridge?.getLocalLink?.().then((link) => {
+      if (alive && link?.port && link?.token) {
+        setDashUrl(`http://127.0.0.1:${link.port}/dashboard/v3?token=${encodeURIComponent(link.token)}`);
+      }
+    }).catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const loadCards = useCallback(async () => {
     if (!daemonApi) return;
@@ -195,6 +212,16 @@ export default function MissionControlView({
         <h1 style={{ fontSize: "1rem", margin: 0, flex: 1 }}>
           <IconRadar size={16} /> Mission Control
         </h1>
+        <button className={view === "dash" ? "on" : ""} onClick={() => setView("dash")} aria-label={t("missionDash")}>
+          {t("missionDash")}
+        </button>
+        <button
+          className={view === "forensic" ? "on" : ""}
+          onClick={() => setView("forensic")}
+          aria-label={t("missionForensic")}
+        >
+          {t("missionForensic")}
+        </button>
         {browse && (
           <button onClick={() => void liveShotNow()} disabled={liveBusy} aria-label="live dashboard shot">
             {liveBusy ? "…" : t("missionLive")}
@@ -202,6 +229,14 @@ export default function MissionControlView({
         )}
       </header>
       {error && <p className="mission-error">{error}</p>}
+      {view === "dash" && dashUrl && (
+        <iframe
+          src={dashUrl}
+          title="Mission Control"
+          style={{ flex: 1, width: "100%", border: "0", background: "var(--bg)" }}
+        />
+      )}
+      {view === "forensic" && (
       <div className="mission-grid">
         <div className="mission-cards" role="list">
           {cards === null && <p className="muted" style={{ padding: 12 }}>{t("missionLoading")}</p>}
@@ -302,6 +337,7 @@ export default function MissionControlView({
           )}
         </div>
       </div>
+      )}
     </div>
   );
 }

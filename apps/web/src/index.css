@@ -2507,6 +2507,10 @@ select {
   max-width: none;
   padding: 0;
 }
+.mission header button.on {
+  color: var(--accent);
+  border-color: var(--accent);
+}
 .mission-grid {
   flex: 1;
   min-height: 0;

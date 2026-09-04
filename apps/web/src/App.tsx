@@ -40,6 +40,7 @@ import BrowserView, { type BrowseFn } from "./components/BrowserView";
 import { previewFromEvent } from "./lib/preview";
 import type { ArtifactMeta } from "./lib/artifacts";
 import MissionControlView, { type DaemonApiFn } from "./components/MissionControlView";
+import ErrorBoundary from "./components/ErrorBoundary";
 import CommandPalette from "./components/CommandPalette";
 import DegradedView from "./components/DegradedView";
 import ReconnectButton from "./components/ReconnectButton";
@@ -876,7 +877,7 @@ export default function App() {
   const filesNode = <FilesView request={request} onBack={goBack} />;
   const artifactsNode = <ArtifactsView request={request} onBack={goBack} onOpenInChat={openArtifactInChat} />;
   const browseNode = <BrowserView browse={browseFn} onBack={goBack} />;
-  const missionNode = <MissionControlView daemonApi={daemonApi} browse={browseFn} onBack={goBack} />;
+  const missionNode = <ErrorBoundary><MissionControlView daemonApi={daemonApi} browse={browseFn} onBack={goBack} /></ErrorBoundary>;
   const shareNode = share ? (
     <SendToAgentView
       request={request}
