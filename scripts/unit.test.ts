@@ -257,6 +257,7 @@ import { classifySidecarExit } from "../apps/desktop/src/sidecarexit";
 import { candidatePorts, pickDaemonPort } from "../apps/desktop/src/daemonport";
 import { versionMismatch } from "../apps/desktop/src/versions";
 import { daemonTooltip, loginItemSupported, logsDirPath, openLogsFolder, trayIconSource } from "../apps/desktop/src/tray";
+import { badgePlan } from "../apps/desktop/src/badge";
 import { updateMenuLabel } from "../apps/desktop/src/update";
 import { appIdForPlatform, applyAppUserModelId, daemonNotify, NOTIFY_BACK_BODY, NOTIFY_DOWN_BODY, WINDOWS_APP_ID } from "../apps/desktop/src/notify";
 import { DEEP_LINK_QUERY_MAX, deepLinkFromArgv, parseDeepLink } from "../apps/desktop/src/deeplink";
@@ -4723,6 +4724,40 @@ check(
   check("tray: template asset committed at 16px with 2x variant", pngSize(tray16)?.w === 16 && pngSize(tray16)?.h === 16 && pngSize(tray32)?.w === 32 && pngSize(tray32)?.h === 32);
   const builderYml = readFileSync(join(desktopRoot, "electron-builder.yml"), "utf8");
   check("tray: template assets packaged via electron-builder files", builderYml.includes("build/trayTemplate.png") && builderYml.includes("build/trayTemplate@2x.png"));
+}
+
+// --- desktop badge: unread badge plan (P2-150) ----------------------------------
+{
+  const plan = (platform: string, n: unknown) => badgePlan(platform, n);
+  // Surface selection: darwin/linux keep the P3-053 dock count, win32 uses the
+  // taskbar overlay (setBadgeCount is a no-op there), anything else has none.
+  check("badge: darwin maps to the dock surface", plan("darwin", 12).kind === "dock");
+  check("badge: linux maps to the dock surface", plan("linux", 12).kind === "dock");
+  check("badge: win32 maps to the taskbar overlay surface", plan("win32", 12).kind === "overlay");
+  check("badge: unknown platform has no badge surface", plan("sunos", 12).kind === "none");
+  // Zero: empty description/label everywhere — a cleared badge never announces.
+  const zero = plan("darwin", 0);
+  check("badge: zero count stays silent (darwin)", zero.count === 0 && zero.description === "" && zero.label === "");
+  const zeroWin = plan("win32", 0);
+  check("badge: win32 zero is an overlay clear (null icon path)", zeroWin.kind === "overlay" && zeroWin.count === 0 && zeroWin.description === "");
+  // Counts the OS surfaces actually receive.
+  const one = plan("darwin", 1);
+  check("badge: one is singular in pt-BR", one.count === 1 && one.description === "1 mensagem não lida" && one.label === "1");
+  const twelve = plan("win32", 12);
+  check("badge: twelve carries the real count for the screen reader", twelve.count === 12 && twelve.description === "12 mensagens não lidas");
+  check("badge: above nine caps the display label at 9+", twelve.label === "9+" && plan("darwin", 9).label === "9" && plan("darwin", 10).label === "9+");
+  // P3-053 rule: a malformed push never writes garbage.
+  const neg = plan("win32", -3);
+  check("badge: negative sanitizes to zero", neg.count === 0 && neg.description === "" && neg.label === "");
+  check("badge: fractional floors to the integer count", plan("darwin", 2.7).count === 2 && plan("darwin", 0.5).count === 0);
+  check("badge: non-numeric sanitizes to zero", plan("darwin", "5").count === 0 && plan("win32", Number.NaN).count === 0 && plan("linux", Number.POSITIVE_INFINITY).count === 0);
+  // Packaging: the overlay disk ships next to the tray templates — committed
+  // asset (32px PNG the overlay loads through the asar) + builder files entry.
+  const desktopRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "apps", "desktop");
+  const overlay = join(desktopRoot, "build", "overlayBadge.png");
+  check("badge: overlay disk committed as a 32px PNG", pngSize(overlay)?.w === 32 && pngSize(overlay)?.h === 32);
+  const builderYml = readFileSync(join(desktopRoot, "electron-builder.yml"), "utf8");
+  check("badge: overlay packaged via electron-builder files", builderYml.includes("build/overlayBadge.png"));
 }
 
 // --- desktop tray: update status item label (P3-019) ----------------------------

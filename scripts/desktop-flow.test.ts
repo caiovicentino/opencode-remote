@@ -145,7 +145,9 @@ delete cliEnv.OCR_USER_DATA_DIR;
 // (camera-blocked boot + fake-camera boot: unavailable/preview states,
 // 390px preview, NO SIGNAL fallback, paste CTA) inside the same budget;
 // P2-148 added the welcome beats (the three-step first-run onboarding walk
-// plus a second same-userData boot proving the flag persists), 270s.
+// plus a second same-userData boot proving the flag persists), 270s;
+// P2-150 added the taskbar-overlay badge beat (push 12 → bridge round-trip,
+// one-window aliveness probe, 1440x900 shot) inside the same budget.
 const startedAt = Date.now();
 const DEADLINE_MS = 270_000;
 const shotPath = join(tmpdir(), "ocr-desktop-flow", `flow-${process.pid}.png`);
@@ -687,6 +689,31 @@ try {
   run("P3-053: clear the badge (unread=0)", ["ipc", "window.ocrDesktop.sendUnread(0)"], 15_000);
   const badge0 = run("P3-053: read app:unreadBadge after clear", ["ipc", "window.ocrDesktop.getUnreadBadge()"], 15_000);
   if (badge0.ok) check("P3-053: badge clears to 0", badge0.stdout.trim() === "0");
+
+  // --- P2-150: taskbar overlay badge beat ---------------------------------------
+  // The push now routes through badgePlan (badge.ts): darwin/linux dock count,
+  // win32 taskbar overlay. The wiring must survive a real push of a 9+ count —
+  // getUnreadBadge round-trips (preload.ts bridge) AND the shell stays alive
+  // with exactly one window afterwards (a throwing overlay path must never
+  // take the app down). Evidence shot at 1440x900 per the spec.
+  run("P2-150: push unread=12 over ocr:unread", ["ipc", "window.ocrDesktop.sendUnread(12)"], 15_000);
+  const badge12 = run("P2-150: read app:unreadBadge after push", ["ipc", "window.ocrDesktop.getUnreadBadge()"], 15_000);
+  if (badge12.ok) check("P2-150: main received the pushed count (12)", badge12.stdout.trim() === "12");
+  const winsBadge = run("P2-150: wins probe after the push", ["wins"], 15_000);
+  if (winsBadge.ok) {
+    try {
+      const arr = JSON.parse(winsBadge.stdout) as unknown[];
+      check("P2-150: app alive with exactly one window after the push", Array.isArray(arr) && arr.length === 1, winsBadge.stdout);
+    } catch (err) {
+      check("P2-150: app alive with exactly one window after the push", false, String(err));
+    }
+  }
+  const badgeShot = join(shotsDir, "P2-150-overlay-badge.png");
+  const bs = run("P2-150: 1440x900 badge shot", ["shot", badgeShot, "1440", "900"], 15_000);
+  if (bs.ok) check("P2-150: 1440x900 shot is a real PNG", pngSize(badgeShot).join("x") === "1440x900");
+  run("P2-150: clear the badge (unread=0)", ["ipc", "window.ocrDesktop.sendUnread(0)"], 15_000);
+  const badgeCleared = run("P2-150: read app:unreadBadge after clear", ["ipc", "window.ocrDesktop.getUnreadBadge()"], 15_000);
+  if (badgeCleared.ok) check("P2-150: badge clears to 0", badgeCleared.stdout.trim() === "0");
 
   // --- P1-072: the shell must expose the real <webview> tag --------------------
   await testWebviewPane();
