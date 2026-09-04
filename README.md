@@ -301,7 +301,13 @@ lists the published assets with `gh release view --json assets` and runs
 `scripts/release-assets.ts` against that list: the release is only considered
 complete when that job passes — a missing installer or update feed fails the
 workflow (every missing artifact listed at once) instead of surfacing later as
-a 404 on the in-app update check.
+a 404 on the in-app update check. The release is also only considered complete
+when the feeds point at artifacts of the same tag (P2-157): a `release-feeds`
+job downloads `update-mac.json` and `latest.yml`, checks that the Squirrel
+`name`/`url` and the yml `version`/`path` reference this tag's version and
+published files via `scripts/feed-consistency.ts`, and fails the workflow —
+otherwise a stale feed ships green and every installed app silently fails its
+auto-update.
 
 ## Hosted relay (Docker)
 
