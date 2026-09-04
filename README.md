@@ -234,11 +234,23 @@ Node never trusts the macOS keychain.
 
 Every GitHub release ships a real macOS installer,
 `OpenCode Remote-<version>-arm64.dmg` (electron-builder `dmg` target, branded
-window). Releases are **signed and notarized** only when the release runner
-has a Developer ID Application certificate configured (plus the Apple
-notarization credentials); without a signing identity the build is ad-hoc
-signed and you right-click → **Open** once to pass Gatekeeper. Homebrew users
-get the same code via the `Formula/opencode-remote.rb` formula
+window). A signing preflight (`apps/desktop/scripts/signing-profile.mjs`) runs
+before packaging and picks one of two modes:
+
+- **Developer ID + notarized** — when the runner has a Developer ID
+  Application certificate (`CSC_LINK` or `CSC_NAME` secret, with
+  `CSC_IDENTITY_AUTO_DISCOVERY` unset or `true`) plus the Apple notarization
+  credentials (`APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`,
+  `APPLE_TEAM_ID`). The bundle is signed with hardened runtime and the
+  `build/entitlements.mac.plist` entitlements, then notarized.
+- **Ad-hoc (default)** — without those secrets the DMG ships ad-hoc signed and
+  you right-click → **Open** once to pass Gatekeeper. The preflight only turns
+  notarization on when the certificate is actually usable: a certificate
+  configured while `CSC_IDENTITY_AUTO_DISCOVERY=false` (electron-builder would
+  silently ignore it) or notarization credentials without a certificate are
+  reported as problems and the build falls back to ad-hoc instead of failing.
+
+Homebrew users get the same code via the `Formula/opencode-remote.rb` formula
 (AGPL-3.0-only, checksum pinned automatically by the release pipeline at tag
 time).
 
@@ -406,11 +418,13 @@ clean checkout.
 produces a distributable **`OpenCode Remote-<version>-arm64.dmg`** (branded
 installer window, semantic version in the About panel and in the DMG file
 name) — and `npm run dist:smoke --workspace @ocr/desktop` verifies the
-bundle **and** the DMG artifact. Builds are ad-hoc signed — on first launch,
-right-click → **Open** once to pass Gatekeeper; afterwards the app behaves
-like any installed app. Tag releases ship that DMG + `latest-mac.yml` on
-GitHub (`.github/workflows/release.yml`), signed and notarized only when the
-runner also has a Developer ID certificate + Apple credentials configured.
+bundle **and** the DMG artifact. Local builds are ad-hoc signed with hardened
+runtime and the shared entitlements (`build/entitlements.mac.plist`) — on
+first launch, right-click → **Open** once to pass Gatekeeper; afterwards the
+app behaves like any installed app. Tag releases ship that DMG +
+`latest-mac.yml` on GitHub (`.github/workflows/release.yml`); the release's
+signing preflight notarizes only when a Developer ID certificate and the
+Apple credentials are actually configured (see *Desktop app installer*).
 
 **Auto-updates with consent (P1-050)**: the packaged shell checks the daemon's
 loopback updates folder (`http://127.0.0.1:8792/__ocr/updates/` — a versioned
