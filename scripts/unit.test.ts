@@ -178,7 +178,7 @@ import { EXPLORER_MAX_FINDINGS, EXPLORER_MAX_STEPS, EXPLORER_TIMEOUT_MIN, EXPLOR
 import { noteTierBOutcome, resetTierBSpawnStreak, runAgent, API_PREFLIGHT, apiHealthy, TIERB_SPAWN_ALERT_EVERY, shouldAlertTierBSpawn, claudeArgs, idScanner, mergeAgentIds, OPENCODE_URL_DEFAULT, scanIds, shouldFallbackTierB, waitForApi } from "../apps/pilot/src/runner";
 import { GUARD_ALERT_THRESHOLD, clearGuardRejections, guardAlertDetail, noteGuardRejection, raiseGuardAlert, resetGuardAlerts } from "../apps/pilot/src/guardalert";
 import { mkdtempSync, mkdirSync, readdirSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync, utimesSync, copyFileSync } from "node:fs";
-import { execSync, spawn } from "node:child_process";
+import { execSync, execFileSync, spawn } from "node:child_process";
 import { createServer, get } from "node:http";
 import { AddressInfo } from "node:net";
 import { connect as netConnect } from "node:net";
@@ -307,6 +307,7 @@ import {
 import { findWindowsInstaller, listProblems, smokeFlags, windowsInstallerProblems } from "../apps/desktop/scripts/dist-smoke.mjs";
 import { touchesDesktop } from "./ci-scope";
 import { imageTags } from "./relay-image";
+import { expectedAssets, missingAssets, tagProblems } from "./release-assets";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -8367,6 +8368,118 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P2-151: ghcr login uses the built-in GITHUB_TOKEN and push steps declare shell: bash",
     block.includes("ghcr.io") && block.includes("${{ github.token }}") && block.includes("shell: bash"),
+  );
+}
+
+// --- P2-153: release-assets — expected/missing download assets ---------------
+{
+  const TAG = "v0.3.0";
+  const complete = [
+    "opencode-remote-v0.3.0.tar.gz", // source tarball never satisfies a platform slot
+    "OpenCode Remote-0.3.0-arm64.dmg",
+    "OpenCode Remote-0.3.0-mac.zip",
+    "OpenCode Remote Setup 0.3.0.exe",
+    "latest-mac.yml",
+    "update-mac.json",
+    "latest.yml",
+  ];
+  check(
+    "P2-153: complete release has no missing assets",
+    missingAssets(expectedAssets(TAG), complete).length === 0,
+  );
+  check(
+    "P2-153: expected assets are exactly 6 (dmg, zip, exe, 3 metadata files)",
+    expectedAssets(TAG).length === 6,
+  );
+  check(
+    "P2-153: missing dmg is reported by label",
+    JSON.stringify(missingAssets(expectedAssets(TAG), complete.filter((n) => !n.endsWith(".dmg")))) ===
+      JSON.stringify(["macOS DMG installer (*.dmg carrying 0.3.0)"]),
+  );
+  check(
+    "P2-153: missing latest.yml is reported by label",
+    JSON.stringify(missingAssets(expectedAssets(TAG), complete.filter((n) => n !== "latest.yml"))) ===
+      JSON.stringify(["Windows update metadata (latest.yml)"]),
+  );
+  check(
+    "P2-153: dmg named after a different version counts as missing (no substring leak: 9.9.9 ≠ 0.3.0)",
+    JSON.stringify(missingAssets(expectedAssets(TAG), complete.map((n) => n.replace("0.3.0-arm64.dmg", "9.9.9-arm64.dmg")))) ===
+      JSON.stringify(["macOS DMG installer (*.dmg carrying 0.3.0)"]),
+  );
+  check(
+    "P2-153: version boundaries hold (10.3.0 does not satisfy a 0.3.0 slot)",
+    missingAssets(expectedAssets(TAG), complete.map((n) => n.replaceAll("0.3.0", "10.3.0"))).length === 3,
+  );
+  check(
+    "P2-153: tag without the leading v is accepted (P2-151 style)",
+    tagProblems("0.3.0").length === 0 && missingAssets(expectedAssets("0.3.0"), complete).length === 0,
+  );
+  check(
+    "P2-153: non-semver tag is a problem",
+    tagProblems("banana").length === 1 && tagProblems("banana")[0]!.includes("semver"),
+  );
+  check(
+    "P2-153: empty tag is its own problem",
+    tagProblems("").length === 1 && tagProblems("")[0]!.includes("empty"),
+  );
+}
+
+// --- P2-153: release-assets CLI — stdin names, exit codes, fail-closed -------
+{
+  const repoRoot = join(import.meta.dirname, "..");
+  const tsxEntry = join(repoRoot, "node_modules", "tsx", "dist", "cli.mjs");
+  const script = join(repoRoot, "scripts", "release-assets.ts");
+  const run = (tag: string, input: string): { code: number; out: string } => {
+    try {
+      const out = execFileSync(process.execPath, [tsxEntry, script, tag], { input, encoding: "utf8" });
+      return { code: 0, out };
+    } catch (err) {
+      const e = err as { status?: number; stdout?: Buffer; stderr?: Buffer };
+      return { code: e.status ?? -1, out: `${e.stdout ?? ""}${e.stderr ?? ""}` };
+    }
+  };
+  const names = [
+    "OpenCode Remote-0.3.0-arm64.dmg",
+    "OpenCode Remote-0.3.0-mac.zip",
+    "OpenCode Remote Setup 0.3.0.exe",
+    "latest-mac.yml",
+    "update-mac.json",
+    "latest.yml",
+  ].join("\n");
+  const ok = run("v0.3.0", `${names}\n`);
+  check("P2-153: cli exits 0 listing every asset on a complete release", ok.code === 0 && ok.out.includes("release-assets: OK v0.3.0"), ok.out);
+  const fail = run("v0.3.0", "");
+  check(
+    "P2-153: cli exits 1 printing ALL missing labels at once (fail-closed)",
+    fail.code === 1 && fail.out.includes("release-assets: FAIL v0.3.0") && (fail.out.match(/  - missing: /g) ?? []).length === 6 && fail.out.includes("6 problem(s) found"),
+    fail.out,
+  );
+  const badTag = run("nope", names);
+  check("P2-153: cli rejects a non-semver tag with exit 1", badTag.code === 1 && badTag.out.includes("semver"), badTag.out);
+}
+
+// --- P2-153: real-repo assertion — release.yml wires the release-verify job ---
+{
+  const root = join(import.meta.dirname, "..");
+  const release = readFileSync(join(root, ".github", "workflows", "release.yml"), "utf8");
+  const start = release.indexOf("\n  release-verify:");
+  const end = release.indexOf("\n  relay-image:");
+  const block = start === -1 || end === -1 || end < start ? "" : release.slice(start, end);
+  check(
+    "P2-153: release.yml has a release-verify job on ubuntu-latest needing BOTH packaging jobs",
+    block.includes("runs-on: ubuntu-latest") && block.includes("needs: [desktop-dmg, desktop-win]"),
+  );
+  check(
+    "P2-153: release-verify deliberately does not need relay-image (opt-in publish, no download asset)",
+    !block.includes("relay-image"),
+  );
+  check(
+    "P2-153: release-verify feeds `gh release view --json assets` names into scripts/release-assets.ts",
+    block.includes("gh release view") && block.includes("--json assets") && block.includes("scripts/release-assets.ts"),
+  );
+  check(
+    "P2-153: release-verify declares shell: bash (P2-126 lesson)",
+    block.includes("shell: bash"),
   );
 }
 

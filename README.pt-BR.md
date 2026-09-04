@@ -261,6 +261,18 @@ dois arquivos junto com a tag. PRs que tocam o shell desktop, a web UI ou
 `dist:smoke --no-installer`; os instaladores assinados completos seguem
 saindo só na tag.
 
+**O que cada release precisa ter** (P2-153): o tarball de fonte
+(`opencode-remote-<tag>.tar.gz`) do job `release`; o lado macOS do
+`desktop-dmg` — o DMG, o zip do Squirrel.Mac (`<nome>-<versão>-mac.zip`),
+`latest-mac.yml` e `update-mac.json`; e o lado Windows do `desktop-win` — o
+setup exe do NSIS e o `latest.yml` (a imagem do relay é publicada no GHCR e
+não é asset de download). Um job final `release-verify` lista os assets
+publicados com `gh release view --json assets` e roda
+`scripts/release-assets.ts` sobre essa lista: o release só é considerado
+completo quando esse job passa — instalador ou feed de update faltando derruba
+o workflow (todos os faltantes listados de uma vez) em vez de virar um 404
+silencioso no cheque de update do app.
+
 ## Relay hospedado (Docker)
 
 Não quer hospedar o relay no seu Mac? `deploy/relay/Dockerfile` gera uma imagem
