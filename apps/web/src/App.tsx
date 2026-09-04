@@ -27,6 +27,7 @@ import {
 import PairingView from "./components/PairingView";
 import PairingOverlay from "./components/PairingOverlay";
 import SessionsView from "./components/SessionsView";
+import SidebarAccount from "./components/SidebarAccount";
 import ChatView from "./components/ChatView";
 import SettingsView, { applyTheme } from "./components/SettingsView";
 import FilesView from "./components/FilesView";
@@ -887,12 +888,12 @@ export default function App() {
                 : null;
 
   const railButtons: { slot: Slot; label: string; icon: ReactNode }[] = [
-    { slot: "chat", label: "Conversas", icon: <IconChat /> },
-    { slot: "artifacts", label: "Artifacts", icon: <IconLayers /> },
-    { slot: "browser", label: "Browser", icon: <IconGlobe /> },
-    { slot: "files", label: "Arquivos", icon: <IconFolder /> },
-    { slot: "mission", label: "Mission Control", icon: <IconRadar /> },
-    { slot: "settings", label: "Configurações", icon: <IconSettings /> },
+    { slot: "chat", label: t("navConversations"), icon: <IconChat /> },
+    { slot: "artifacts", label: t("navArtifacts"), icon: <IconLayers /> },
+    { slot: "browser", label: t("navBrowser"), icon: <IconGlobe /> },
+    { slot: "files", label: t("navFiles"), icon: <IconFolder /> },
+    { slot: "mission", label: t("navMission"), icon: <IconRadar /> },
+    { slot: "settings", label: t("navSettings"), icon: <IconSettings /> },
   ];
 
   return (
@@ -910,21 +911,38 @@ export default function App() {
       {isDesktop ? (
         <div className="desk">
           <aside className="desk-side">
+            {/* P2-124: Claude-style shell — primary action + section nav up
+                top, conversations in the middle, account footer pinned down. */}
+            <div className="desk-side-top">
+              <button className="primary desk-new" disabled={creating} onClick={() => void createSession()}>
+                {creating ? t("creating") : t("newShort")}
+              </button>
+              <nav className="desk-nav">
+                {railButtons.map((b) => (
+                  <button
+                    key={b.slot}
+                    className={slots.has(b.slot) ? "active" : ""}
+                    onClick={() => (b.slot === "chat" ? goChat() : openPane(b.slot))}
+                    data-pane={b.slot}
+                    title={b.label}
+                  >
+                    {b.icon}
+                    <span>{b.label}</span>
+                  </button>
+                ))}
+              </nav>
+            </div>
             <div className="desk-side-scroll">{sessionsNode}</div>
-            <nav className="desk-nav">
-              {railButtons.map((b) => (
-                <button
-                  key={b.slot}
-                  className={slots.has(b.slot) ? "active" : ""}
-                  onClick={() => (b.slot === "chat" ? goChat() : openPane(b.slot))}
-                  data-pane={b.slot}
-                  title={b.label}
-                >
-                  {b.icon}
-                  <span>{b.label}</span>
-                </button>
-              ))}
-            </nav>
+            <SidebarAccount
+              localMode={pairingState?.mode === "local"}
+              machineName={machineName}
+              connStatus={connStatus}
+              machines={machines}
+              activeRoom={getActiveRoom()}
+              onSwitch={(p) => void switchMachine(p)}
+              onForget={(p) => forgetMachine(p)}
+              onAddMachine={() => setAddingMachine(true)}
+            />
           </aside>
           <main className="desk-chat">
             {/* P1-046: the chat is persistent — opening Artifacts/Browser/

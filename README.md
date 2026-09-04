@@ -307,6 +307,15 @@ the list (hidden on the phone board too, with a restore action in the group).
 The `Cmd+K` switcher now shows the **last known message line** under each
 conversation in the search results.
 
+**Claude-level sidebar shell (P2-124)**: the desktop sidebar is a 280px
+navigation shell — a full-width **"+ New"** primary button and the section nav
+(Conversations, Artifacts, Browser, Files, Mission Control, Settings —
+consistent SVG icons, zero emoji) pinned to the top, the grouped conversation
+list (search + badge filters + Today/Yesterday/Earlier) in the middle, and a
+fixed **account footer** at the bottom showing the machine avatar/initial,
+name and connection mode ("Local · this machine" / "Remote · paired"). The
+footer opens the machine picker, the same overlay as the mobile header.
+
 **Degraded first boot (P2-112)**: when the local daemon is unreachable on
 first launch, the app no longer dead-ends on the pairing screen. A calm status
 card — "Connecting for the first time…" for a daemon this machine has never

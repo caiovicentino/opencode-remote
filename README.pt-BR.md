@@ -258,6 +258,15 @@ teclado (também no menu **Go**): `Cmd+T` nova conversa, `Cmd+K` command
 palette (busca conversas e ações), `Cmd+1..6` troca para chat / Artifacts /
 Browser / Arquivos / Configurações / Mission Control.
 
+**Sidebar nível Claude (P2-124)**: a sidebar desktop é um shell de navegação
+de 280px — botão primário **"+ Novo"** e a nav de seções (Conversas,
+Artifacts, Browser, Arquivos, Mission Control, Configurações — ícones SVG
+consistentes, zero emoji) no topo, a lista de conversas agrupada (busca +
+filtros de badge + Hoje/Ontem/Anteriores) no meio e um **footer de conta**
+fixo embaixo com avatar/inicial da máquina, nome e modo de conexão ("Local ·
+esta máquina" / "Remoto · pareado"). O footer abre o seletor de máquina, o
+mesmo overlay do header mobile.
+
 **Auto-preview (P1-072)**: quando o agent sobe um site local (http.server,
 vite, dev server…) e menciona `http://localhost:<porta>` na resposta, o pane
 Browser abre sozinho ao lado do chat apontando pra URL, renderizado como um
