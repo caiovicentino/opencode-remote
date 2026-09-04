@@ -58,7 +58,7 @@ import { ArtifactWatcher } from "./artifactwatch.js";
 import { createShutdown, stopAccepting } from "./shutdown.js";
 import { localUpgradeAllowed } from "./localws.js";
 import { createRelayRetry } from "./relayretry.js";
-import { parseRelayUrl } from "./relayurl.js";
+import { parseRelayUrl, redactRelayUrl } from "./relayurl.js";
 import {
   classifyUpstream,
   UPSTREAM_PROBE_TIMEOUT_MS,
@@ -1822,9 +1822,9 @@ function connectRelay() {
   const ws = new WebSocket(RELAY_URL);
   relaySocket = ws;
 
-  ws.on("open", () => {
-    relayRetry.reset();
-    log("info", "connected to relay", { relay: RELAY_URL, room: daemon.room });
+    ws.on("open", () => {
+      relayRetry.reset();
+      log("info", "connected to relay", { relay: redactRelayUrl(RELAY_URL), room: daemon.room });
     metrics.gauge("ocr_relay_connected", 1);
     metrics.inc("ocr_relay_connects_total");
     ws.send(JSON.stringify({ room: daemon.room, from: daemon.room, payload: "" }));
@@ -2159,9 +2159,10 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
         relayConnected,
         relayRetry: relayConnected ? null : relayRetry.snapshot(),
         // P2-139: additive boot-validation verdict of RELAY_URL; relayConnected
-        // and relayRetry above keep their exact shape.
+        // and relayRetry above keep their exact shape. Userinfo (if any) is
+        // redacted before the URL reaches the API surface.
         relay: {
-          url: RELAY_URL,
+          url: redactRelayUrl(RELAY_URL),
           ok: !relayDisabled,
           reason: relayDisabled ? relayUrl.problems.join(" ") : null,
         },
@@ -2627,7 +2628,7 @@ async function main() {
   log("info", "daemon starting (protocol v2)", {
     machine: machineName,
     opencode: OPENCODE_URL,
-    relay: RELAY_URL,
+    relay: redactRelayUrl(RELAY_URL),
     pairedClients: readAllowlist().length,
   });
 
@@ -2635,7 +2636,7 @@ async function main() {
   // logging would just repeat the same static config error forever.
   if (relayDisabled) {
     log("error", "RELAY_URL is invalid — relay connection disabled (fail-closed)", {
-      relay: RELAY_URL,
+      relay: redactRelayUrl(RELAY_URL),
       problems: relayUrl.problems,
     });
   }
@@ -2685,7 +2686,7 @@ async function main() {
     console.log(`\n  opencode remote daemon (protocol v2)`);
     console.log(`  machine:  ${machineName}`);
     console.log(`  opencode: ${OPENCODE_URL}`);
-    console.log(`  relay:    ${RELAY_URL} (invalid — relay disabled, see log)`);
+    console.log(`  relay:    ${redactRelayUrl(RELAY_URL)} (invalid — relay disabled, see log)`);
     console.log(`  clients:  ${readAllowlist().length} paired`);
     console.log(`\n  Pairing QR withheld: fix RELAY_URL and restart the daemon.\n`);
   } else {
@@ -2700,7 +2701,7 @@ async function main() {
     console.log(`\n  opencode remote daemon (protocol v2)`);
     console.log(`  machine:  ${machineName}`);
     console.log(`  opencode: ${OPENCODE_URL}`);
-    console.log(`  relay:    ${RELAY_URL}`);
+    console.log(`  relay:    ${redactRelayUrl(RELAY_URL)}`);
     console.log(`  clients:  ${readAllowlist().length} paired`);
     console.log(`\n  Pair with the PWA by scanning this QR code:\n`);
     console.log(await QRCode.toString(pairingUri, { type: "terminal", small: true }));

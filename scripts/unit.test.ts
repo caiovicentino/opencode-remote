@@ -8,7 +8,7 @@ process.env.PILOT_EVENTS_FILE = "/tmp/pilot-unit-events.jsonl";
 import { b64, fromB64, seal, openSealed, seqAad } from "@ocr/protocol";
 import { parsePairingUri, localWsUrl, shouldFailoverToRelay } from "../apps/web/src/lib/client";
 import { isLoopbackAddr, localOriginAllowed, localUpgradeAllowed } from "../apps/daemon/src/localws";
-import { parseRelayUrl } from "../apps/daemon/src/relayurl";
+import { parseRelayUrl, redactRelayUrl } from "../apps/daemon/src/relayurl";
 import { classifyUpstream, UPSTREAM_PROBE_TIMEOUT_MS } from "../apps/daemon/src/upstream";
 import { copyText, hasClipboardApi, legacyCopy } from "../apps/web/src/lib/clipboard";
 import { mimeFor } from "../apps/web/src/lib/files";
@@ -7418,6 +7418,18 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "P2-139: problem mentions the env var so the operator knows what to fix",
     parseRelayUrl("http://x.example").problems.every((p) => p.includes("RELAY_URL")),
   );
+  // round 2: strict dotted-quad loopback — nip.io-style wildcards must NOT pass
+  check("P2-139: 127.0.0.1.evil.com is NOT loopback over ws", parseRelayUrl("ws://127.0.0.1.evil.com:8787").problems.length > 0);
+  check("P2-139: 127.attacker.com is NOT loopback over ws", parseRelayUrl("ws://127.attacker.com").problems.length > 0);
+  check("P2-139: real 127.0.0.1 still loopback over ws", parseRelayUrl("ws://127.0.0.1:8787").problems.length === 0);
+  check("P2-139: 127.0.0.255 (full octet) is loopback over ws", parseRelayUrl("ws://127.0.0.255").problems.length === 0);
+  check("P2-139: 127.0.0.256 is rejected outright by the URL parser", parseRelayUrl("ws://127.0.0.256").problems.length > 0);
+  // round 2: userinfo redaction for display surfaces (logs + /api/health)
+  check("P2-139: redactRelayUrl strips user:pass@", redactRelayUrl("wss://user:token@relay.example.com:8788") === "wss://relay.example.com:8788");
+  check("P2-139: redactRelayUrl keeps plain URLs", redactRelayUrl("ws://127.0.0.1:8787") === "ws://127.0.0.1:8787");
+  check("P2-139: redactRelayUrl ignores @ inside path", redactRelayUrl("ws://host:8788/pa@th") === "ws://host:8788/pa@th");
+  check("P2-139: redactRelayUrl tolerates unparseable strings", redactRelayUrl("not a url") === "not a url");
+  check("P2-139: redactRelayUrl handles no-authority strings", redactRelayUrl("nonsense") === "nonsense");
 }
 
 if (failures > 0) {

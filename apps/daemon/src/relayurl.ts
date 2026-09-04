@@ -22,14 +22,42 @@ export interface RelayUrl {
 }
 
 /**
- * True only for provably loopback hosts. Unknown hostnames are treated as
- * non-loopback — fail-closed beats accidentally shipping clear-text pairing
- * traffic across the network.
+ * True only for provably loopback hosts: "localhost", IPv6 ::1, or the
+ * 127.0.0.0/8 block matched as a STRICT dotted-quad — a prefix test would
+ * classify DNS names like 127.0.0.1.evil.com (nip.io-style wildcards) as
+ * loopback, letting plain ws:// reach a public, attacker-resolvable host.
+ * Unknown hostnames are treated as non-loopback — fail-closed beats
+ * accidentally shipping clear-text pairing traffic across the network.
  */
 export function isLoopbackHost(host: string): boolean {
   // non-special schemes (ws/wss) keep the IPv6 brackets in URL.hostname
   const h = host.toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
-  return h === "localhost" || h === "::1" || h.startsWith("127.");
+  if (h === "localhost" || h === "::1") return true;
+  const quad = /^127\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
+  if (!quad) return false;
+  return quad.slice(1).every((octet) => Number(octet) <= 255);
+}
+
+/**
+ * Same URL with any userinfo (user:pass@) stripped, for logs and /api/health.
+ * Pure string surgery: the URL is not required to parse (an invalid RELAY_URL
+ * must still be displayable), and an "@" inside a path/query never counts.
+ * The dial itself keeps using the configured string unchanged.
+ */
+export function redactRelayUrl(raw: string): string {
+  const authority = raw.indexOf("//");
+  if (authority === -1) return raw;
+  const start = authority + 2;
+  let end = raw.length;
+  for (let i = start; i < raw.length; i++) {
+    if (raw[i] === "/" || raw[i] === "?" || raw[i] === "#") {
+      end = i;
+      break;
+    }
+  }
+  const at = raw.lastIndexOf("@", end);
+  if (at < start) return raw;
+  return raw.slice(0, start) + raw.slice(at + 1);
 }
 
 /**
@@ -49,7 +77,7 @@ export function parseRelayUrl(raw: string): RelayUrl {
       host: "",
       secure: false,
       problems: [
-        `RELAY_URL=${JSON.stringify(raw)} is not a valid URL: refusing to dial the relay (fail-closed)`,
+        `RELAY_URL=${JSON.stringify(redactRelayUrl(raw))} is not a valid URL: refusing to dial the relay (fail-closed)`,
       ],
     };
   }
