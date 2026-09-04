@@ -1579,7 +1579,8 @@ function ghMergingIo(realIo: { exec: (cmd: string) => { ok: boolean; output: str
   check("pickTasks: respects free slot count", pickTasks(queue, 1, new Set()).length === 1);
   check("pickTasks: zero free slots picks nothing", pickTasks(queue, 0, new Set()).length === 0);
   const untaggedPair = [byId("T-103"), { ...byId("T-103"), id: "T-106" }];
-  check("pickTasks: untagged tasks never run in parallel (safe default)", pickTasks(untaggedPair, 2, new Set()).map((t) => t.id).join(",") === "T-103");
+  check("pickTasks: untagged tasks are independent — full parallelism across slots", pickTasks(untaggedPair, 2, new Set()).map((t) => t.id).join(",") === "T-103,T-106");
+  check("pickTasks: explicit same-area tasks still dedupe (affinity rules)", pickTasks([byId("T-101"), { ...byId("T-101"), id: "T-107" }], 2, new Set()).length === 1);
   check("pickTasks: queue order (priority) respected", pickTasks(queue, 3, new Set())[0].id === "T-101");
 
   check("pickBatch: remaining budget caps the batch (in-flight counted)", pickBatch(queue, 2, new Set(), 1).length === 1);
