@@ -572,10 +572,14 @@ select {
   align-self: flex-end;
   background: var(--user-bubble);
 }
+/* P2-107: assistant answers paint straight on the canvas — no bubble chrome.
+   The bubble is reserved for the user's own words (benchmark chat pattern). */
 .msg.assistant {
-  align-self: flex-start;
-  background: var(--surface);
-  border: 1px solid var(--border);
+  align-self: stretch;
+  max-width: 100%;
+  background: transparent;
+  border: none;
+  padding: 4px 0;
 }
 
 /* ── Composer (P3-086): one raised card — attachments, auto-grow input,
@@ -751,6 +755,41 @@ select {
 }
 .composer-btn:active:not(:disabled) {
   transform: none;
+}
+/* P2-107: chat header actions share the composer's ghost chrome — quiet
+   icon buttons, no bordered boxes fighting the title (Linear/Raycast bar). */
+.chat-btn {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  padding: 7px;
+  border-radius: 9px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.chat-btn:hover:not(:disabled) {
+  background: var(--bg2);
+  color: var(--text);
+}
+.chat-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.chat-btn:active:not(:disabled) {
+  transform: none;
+}
+.chat-btn[data-active] {
+  color: var(--accent);
+  background: var(--bg2);
+}
+/* inline SVGs inside banner strips align with the text baseline */
+.daemon-down svg,
+.daemon-reconnecting svg,
+.msg-older svg {
+  vertical-align: -3px;
 }
 /* recording state: pulsing dot inside the mic button */
 .composer-mic-rec {
@@ -1265,7 +1304,7 @@ select {
   letter-spacing: -0.01em;
 }
 .desk-greet-mark {
-  font-size: 2.6rem;
+  display: inline-flex;
   color: var(--accent);
   margin-bottom: 10px;
 }
@@ -1783,6 +1822,9 @@ select {
   box-shadow: 0 2px 10px rgb(0 0 0 / 0.22);
   font-size: 1rem;
   line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 /* P2-049: connection dropped — slim in-flow banner with the attempt counter

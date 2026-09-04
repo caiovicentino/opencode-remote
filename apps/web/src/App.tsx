@@ -42,12 +42,15 @@ import DegradedView from "./components/DegradedView";
 import ReconnectButton from "./components/ReconnectButton";
 import { degradedKind, sawHealthyDaemon } from "./lib/degraded";
 import {
+  IconAlert,
   IconChat,
   IconFolder,
   IconGlobe,
   IconLayers,
   IconRadar,
+  IconRefresh,
   IconSettings,
+  IconSpark,
 } from "./components/icons";
 
 type Phase = "unpaired" | "connecting" | "paired" | "error";
@@ -708,11 +711,12 @@ export default function App() {
   const banner =
     kind === "reconnecting" ? (
       <div className="daemon-reconnecting" role="status">
-        ⟳ {t("reconnecting", { n: pairingState?.reconnectAttempts ?? 0 })}
+        <IconRefresh size={14} className="conn-banner-spin" aria-hidden />{" "}
+        {t("reconnecting", { n: pairingState?.reconnectAttempts ?? 0 })}
       </div>
     ) : kind === "down" ? (
       <div className="daemon-down" role="alert">
-        ⚠︎ {t("daemonDown")}{" "}
+        <IconAlert size={14} aria-hidden /> {t("daemonDown")}{" "}
         {reconnectBtn && <ReconnectButton reconnect={reconnectBtn} />}
       </div>
     ) : (
@@ -950,7 +954,7 @@ export default function App() {
             {session ? chatNode : (
               <div className="desk-empty">
                 <div>
-                  <div className="desk-greet-mark">✻</div>
+                  <div className="desk-greet-mark"><IconSpark size={40} /></div>
                   {/* P2-118: copy via the dict — this shell also renders the
                       daemon banners, so hardcoded text mixes locales. */}
                   <h2>{t("deskGreeting", { machine: machineName ? `, ${machineName.toLowerCase()}` : "" })}</h2>

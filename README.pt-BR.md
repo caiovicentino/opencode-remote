@@ -28,8 +28,12 @@ remoto, zero confiança**.
 
 - **Chat completo** com streaming, markdown, imagens e histórico de ferramentas;
   o header do chat mostra o título da conversa (o genérico "session" enquanto
-  a sessão ainda não tem título); conversa nova mostra um empty state de
-  boas-vindas com dicas rápidas (áudio, foto ou texto). A conversa só acompanha
+  a sessão ainda não tem título) e tem botões de ação ghost (handoff, exportar,
+  atividade de tools) no mesmo chrome de ícones do composer; conversa nova
+  mostra um empty state de
+  boas-vindas com dicas rápidas (áudio, foto ou texto). A resposta do agente
+  pinta direto no canvas — a bolha é reservada pra SUA mensagem. A conversa só
+  acompanha
   a mensagem nova automaticamente quando você já está no fim — ao rolar pra
   cima, um botão ↓ aparece pra voltar ao fim sem roubar a leitura; se a conexão
   cair, um banner fino com o contador de tentativas de reconexão substitui o
@@ -62,7 +66,7 @@ remoto, zero confiança**.
 - **Arquivos** — envie do celular, dê preview de tudo, exporte a conversa
   em markdown; todo card de arquivo tem um botão ⧉ que copia o caminho
   completo do arquivo (Clipboard API com fallback execCommand)
-- **Handoff** — continue a sessão exata no Mac (botão 💻)
+- **Handoff** — continue a sessão exata no Mac (ícone de laptop no header do chat)
 - **Painel ao vivo** — estado de cada sessão: trabalhando, esperando aprovação,
   fez pergunta, pronto, erro; cards mostram o tempo relativo da última
   atividade (`5m`, `2h`, `3d`); sessões ficam ordenadas da mais recente

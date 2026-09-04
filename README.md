@@ -27,8 +27,12 @@ private. That is the product: **local power, remote control, zero trust**.
 
 - **Full chat** with streaming, markdown, images and tool-activity history;
   the chat header shows the conversation's title (generic "session" while the
-  session has no title yet); a fresh conversation shows a welcome empty state
-  with quick tips (audio, photo or text). The view only auto-follows the
+  session has no title yet) and carries quiet ghost action buttons (handoff,
+  export, tool activity) matching the composer's icon chrome; a fresh
+  conversation shows a welcome empty state
+  with quick tips (audio, photo or text). Assistant replies paint straight
+  onto the canvas — the bubble is reserved for your own messages. The view
+  only auto-follows the
   newest message while you are already at the bottom — scroll up to read and
   a small ↓ pill appears to jump back to the tail; when the connection drops
   a slim banner with the reconnection attempt count replaces the old header dot.
@@ -62,7 +66,8 @@ private. That is the product: **local power, remote control, zero trust**.
 - **Files** — upload from the phone, preview anything, export a conversation
   as markdown with one tap; every file card has a ⧉ button that copies the
   file's full path (Clipboard API with an execCommand fallback)
-- **Handoff** — continue the exact session on your Mac (💻 button)
+- **Handoff** — continue the exact session on your Mac (laptop icon in the
+  chat header)
 - **Live board** — every session's state at a glance: working, waiting for
   your approval, asked a question, done, errored; cards show relative
   last-activity time (`5m`, `2h`, `3d`); sessions are sorted by most recent
