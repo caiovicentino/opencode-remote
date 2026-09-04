@@ -48,6 +48,46 @@ const HEX_GROUP_RE = /^[0-9A-Fa-f]{1,4}$/;
 const V4_TAIL_RE = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
 
 /**
+ * Cap key for a connection, proxy-aware (P2-128).
+ *
+ * `forwardedFor` is the raw `x-forwarded-for` header; `trustHops` is how many
+ * trusted proxy layers sit in front of the relay (RELAY_TRUST_PROXY_HOPS).
+ *
+ * - trustHops <= 0 (the default): the header is ignored entirely — any client
+ *   can forge `x-forwarded-for`, so it carries zero weight without an
+ *   operator-configured chain. The key is the normalized remoteAddress.
+ * - trustHops N > 0: the N-th entry counting from the right is the address
+ *   the Nth-from-last proxy saw (XFF appends one hop per layer). A chain
+ *   shorter than N, an absent header, or a malformed entry falls back to the
+ *   normalized remoteAddress — a degraded chain must not mint a bogus key.
+ *
+ * The return value is always normalizeIp()-ed, so admit() and release() key
+ * on the same rotation-immune bucket no matter which path produced it. No
+ * plaintext frame or key material ever flows through here: this is envelope
+ * metadata only, the relay stays blind.
+ */
+export function clientIp(remoteAddress: string, forwardedFor: string | undefined, trustHops: number): string {
+  const fallback = normalizeIp(remoteAddress);
+  const hops = Math.floor(trustHops);
+  if (!forwardedFor || hops <= 0) return fallback;
+  const entries = forwardedFor
+    .split(",")
+    .map((e) => e.trim())
+    .filter((e) => e !== "");
+  const chosen = entries[entries.length - hops];
+  if (chosen === undefined || !isValidAddress(chosen)) return fallback;
+  return normalizeIp(chosen);
+}
+
+/** IPv4 dotted quad or IPv6 literal — nothing else is a cap key (P2-128). */
+function isValidAddress(entry: string): boolean {
+  if (entry.includes(":")) return ipv6Hextets(entry) !== null;
+  const m = V4_TAIL_RE.exec(entry);
+  if (!m) return false;
+  return m.slice(1).every((octet) => Number(octet) <= 255);
+}
+
+/**
  * Canonical cap key for a `req.socket.remoteAddress` value (P2-026).
  *
  * - IPv4 and IPv6 loopback pass through unchanged.
