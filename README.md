@@ -293,7 +293,16 @@ signed installers still ship only at tag time.
 Prefer not to host the relay on your own Mac? `deploy/relay/Dockerfile` builds
 a small multi-stage image (node 22 slim, tsc-compiled, non-root, `HEALTHCHECK`
 on `/healthz`) for any container platform — point your provider's TLS at it,
-set `RELAY_URL` on the daemon and re-pair the phone. The relay stays a blind
+set `RELAY_URL` on the daemon and re-pair the phone. Release tags build that
+image in CI and publish it to GHCR (opt-in: only when the repository variable
+`PUBLISH_RELAY_IMAGE` is `true`; without it the tag just proves the image
+builds):
+
+```bash
+docker pull ghcr.io/caiovicentino/opencode-remote:0.2.0   # pin the version, not latest
+```
+
+The image carries no secrets and the relay stays a blind
 router: it never sees plaintext or keys. The optional metrics endpoint
 (`RELAY_METRICS_PORT`) binds loopback by default; setting
 `RELAY_METRICS_BIND` to a network address requires `RELAY_METRICS_TOKEN`

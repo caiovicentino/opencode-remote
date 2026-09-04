@@ -295,6 +295,7 @@ import {
 } from "../apps/daemon/src/pilotforensic";
 import { findWindowsInstaller, listProblems, smokeFlags, windowsInstallerProblems } from "../apps/desktop/scripts/dist-smoke.mjs";
 import { touchesDesktop } from "./ci-scope";
+import { imageTags } from "./relay-image";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -8245,6 +8246,73 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P2-147: release workflow keeps the flagless dist:smoke invocation byte for byte",
     release.includes("run: npm run dist:smoke --workspace @ocr/desktop\n") && !release.includes("--no-installer"),
+  );
+}
+
+// --- P2-151: relay-image — GHCR references for the release workflow ----------
+{
+  const ok = imageTags("v0.2.0", "caiovicentino/opencode-remote");
+  check(
+    "P2-151: valid vX.Y.Z tag → bare-semver version ref + latest ref",
+    ok.problems.length === 0 &&
+      ok.versionRef === "ghcr.io/caiovicentino/opencode-remote:0.2.0" &&
+      ok.latestRef === "ghcr.io/caiovicentino/opencode-remote:latest",
+  );
+  const noV = imageTags("0.2.0", "caiovicentino/opencode-remote");
+  check(
+    "P2-151: tag without the leading v is accepted and agrees with the v form",
+    noV.problems.length === 0 && noV.versionRef === ok.versionRef && noV.latestRef === ok.latestRef,
+  );
+  const upper = imageTags("v0.2.0", "CaioVicentino/OpenCode-Remote");
+  check(
+    "P2-151: uppercase owner/name normalized to the lowercase GHCR canonical form",
+    upper.problems.length === 0 && upper.versionRef === "ghcr.io/caiovicentino/opencode-remote:0.2.0",
+  );
+  const pre = imageTags("v1.2.3-rc.1", "caiovicentino/opencode-remote");
+  check(
+    "P2-151: prerelease semver accepted as-is in the docker tag",
+    pre.problems.length === 0 && pre.versionRef === "ghcr.io/caiovicentino/opencode-remote:1.2.3-rc.1",
+  );
+  const notSemver = imageTags("nightly", "caiovicentino/opencode-remote");
+  check(
+    "P2-151: non-semver tag is a problem (fail-closed, empty refs)",
+    notSemver.problems.length > 0 && notSemver.versionRef === "" && notSemver.latestRef === "",
+  );
+  const emptyTag = imageTags("", "caiovicentino/opencode-remote");
+  check(
+    "P2-151: empty tag is its own problem, not a semver complaint",
+    emptyTag.problems.length === 1 && emptyTag.problems[0]!.includes("empty"),
+  );
+  const noSlash = imageTags("v0.2.0", "caiovicentino-opencode-remote");
+  check(
+    "P2-151: slug without a slash is a problem citing the owner/repo shape",
+    noSlash.problems.length > 0 && noSlash.problems[0]!.includes("owner/repo"),
+  );
+  const both = imageTags("", "no-slash");
+  check("P2-151: every problem is reported at once (tag + slug)", both.problems.length === 2);
+}
+
+// --- P2-151: real-repo assertion — release.yml wires the relay-image job -----
+{
+  const root = join(import.meta.dirname, "..");
+  const release = readFileSync(join(root, ".github", "workflows", "release.yml"), "utf8");
+  const start = release.indexOf("\n  relay-image:");
+  const block = start === -1 ? "" : release.slice(start);
+  check(
+    "P2-151: release.yml has a relay-image job needing release with packages: write",
+    block.includes("runs-on: ubuntu-latest") && block.includes("needs: release") && block.includes("packages: write"),
+  );
+  check(
+    "P2-151: relay-image computes refs via scripts/relay-image.ts and builds deploy/relay/Dockerfile",
+    block.includes("scripts/relay-image.ts") && block.includes("deploy/relay/Dockerfile"),
+  );
+  check(
+    "P2-151: publish is opt-in fail-closed on the PUBLISH_RELAY_IMAGE repo variable",
+    block.includes("if: vars.PUBLISH_RELAY_IMAGE == 'true'"),
+  );
+  check(
+    "P2-151: ghcr login uses the built-in GITHUB_TOKEN and push steps declare shell: bash",
+    block.includes("ghcr.io") && block.includes("${{ github.token }}") && block.includes("shell: bash"),
   );
 }
 
