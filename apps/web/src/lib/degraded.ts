@@ -36,3 +36,48 @@ export function degradedKind(state: DegradedState | null, everSeen: boolean): De
   if (state?.daemonDown) return everSeen ? "down" : "first-contact";
   return "none";
 }
+
+/** P2-138: tolerant view of the daemon's /api/health `opencode` object (the
+ * P2-135 classifier verdict). Fields are validated, never trusted — a legacy
+ * daemon omits the object entirely. */
+export interface UpstreamHealth {
+  state?: unknown;
+  reason?: unknown;
+  hint?: unknown;
+  checkedAt?: unknown;
+}
+
+export type UpstreamNoticeTone = "warn" | "info";
+
+/** One upstream notice: tone (drives the accent of the single in-card block),
+ * i18n keys for headline + suggested action, and the daemon's own reason/hint
+ * as SECONDARY detail — plain strings rendered by React as text, never HTML. */
+export interface UpstreamNotice {
+  tone: UpstreamNoticeTone;
+  titleKey: string;
+  actionKey: string;
+  reason: string;
+  hint: string;
+}
+
+/** Map the P2-135 classifier state to a user-facing notice. Returns null for
+ * `ok` (nothing to say), `unknown` (first probe pending), an absent object
+ * (legacy daemon) and any malformed payload — silence is always safe. The
+ * classifier has exactly five states; the four non-ok ones map to notices. */
+export function upstreamNotice(health: UpstreamHealth | null | undefined): UpstreamNotice | null {
+  const state = typeof health?.state === "string" ? health.state : "";
+  const reason = typeof health?.reason === "string" ? health.reason : "";
+  const hint = typeof health?.hint === "string" ? health.hint : "";
+  switch (state) {
+    case "unauthorized":
+      return { tone: "warn", titleKey: "upstreamUnauthorizedTitle", actionKey: "upstreamUnauthorizedAction", reason, hint };
+    case "unreachable":
+      return { tone: "info", titleKey: "upstreamUnreachableTitle", actionKey: "upstreamUnreachableAction", reason, hint };
+    case "timeout":
+      return { tone: "warn", titleKey: "upstreamTimeoutTitle", actionKey: "upstreamTimeoutAction", reason, hint };
+    case "unhealthy":
+      return { tone: "warn", titleKey: "upstreamUnhealthyTitle", actionKey: "upstreamUnhealthyAction", reason, hint };
+    default:
+      return null;
+  }
+}

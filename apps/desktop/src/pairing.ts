@@ -40,6 +40,10 @@ export interface PairingState {
   /** P3-054: versionMismatch(appVersion, daemonVersion) — computed in the
    * main process (pure comparator in versions.ts); the renderer only renders. */
   versionMismatch?: boolean;
+  /** P2-138: upstream (agent server / opencode) health detail from the
+   * daemon's /api/health — additive; absent on legacy daemons. reason/hint
+   * are static daemon strings the renderer only ever shows as text. */
+  opencode?: { state: string; reason: string; hint: string; checkedAt: string | null };
 }
 
 /**

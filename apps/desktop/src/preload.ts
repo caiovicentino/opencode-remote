@@ -18,6 +18,16 @@ export interface LocalLink {
   ecdhPub?: string;
 }
 
+/** P2-138: upstream (agent server / opencode) health detail from the daemon's
+ * /api/health — the P2-135 classifier verdict, passed through verbatim.
+ * reason/hint are static daemon strings and are rendered as text only. */
+export interface DaemonUpstreamDetail {
+  state: string;
+  reason: string;
+  hint: string;
+  checkedAt: string | null;
+}
+
 /** First-run pairing state pushed/pulled from the main process (P2-007). */
 export interface PairingState {
   /** P1-070: "local" (auto-connected to the daemon on this machine, uri/qr
@@ -37,6 +47,9 @@ export interface PairingState {
   appVersion?: string | null;
   daemonVersion?: string | null;
   versionMismatch?: boolean;
+  /** P2-138: upstream opencode health detail — optional and additive so a
+   * legacy daemon (no field) still renders every existing surface. */
+  opencode?: DaemonUpstreamDetail;
 }
 
 contextBridge.exposeInMainWorld("ocrDesktop", {
