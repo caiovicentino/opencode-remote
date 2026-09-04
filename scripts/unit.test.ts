@@ -10,6 +10,7 @@ import { mergeConflictBlock } from "../apps/pilot/src/pipeline";
 import { parsePairingUri, localWsUrl, shouldFailoverToRelay } from "../apps/web/src/lib/client";
 import { isLoopbackAddr, localOriginAllowed, localUpgradeAllowed } from "../apps/daemon/src/localws";
 import { classifyRelayClose, effectiveRetryDelayMs } from "../apps/daemon/src/relayclose";
+import { rewriteFeedPort } from "../apps/daemon/src/feedport";
 import { createRelayRetry } from "../apps/daemon/src/relayretry";
 import { parseRelayUrl, redactRelayUrl } from "../apps/daemon/src/relayurl";
 import { classifyUpstream, UPSTREAM_PROBE_TIMEOUT_MS } from "../apps/daemon/src/upstream";
@@ -8902,6 +8903,64 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P2-157: release-feeds declares shell: bash (P2-126 lesson)",
     block.includes("shell: bash"),
+  );
+}
+
+// --- P2-161: staged feed.json port resolved at serve time ---------------------
+{
+  const feed = (port: number) =>
+    JSON.stringify({ version: "0.2.1", url: `http://127.0.0.1:${port}/__ocr/updates/0.2.1/OpenCode Remote-0.2.1-mac.zip`, name: "0.2.1", notes: "n", pub_date: "2026-01-01T00:00:00Z" });
+  const stale = rewriteFeedPort(feed(8792), 8794);
+  check(
+    "P2-161: stale feed port rewritten to the actually-bound port",
+    stale.rewritten === true && stale.body.includes("127.0.0.1:8794/__ocr/updates/0.2.1/OpenCode Remote-0.2.1-mac.zip") && !stale.body.includes(":8792/"),
+    stale.body,
+  );
+  const raw = `{\n  "url": "http://127.0.0.1:8792/__ocr/updates/0.2.1/x.zip",\n  "name": "0.2.1"\n}`;
+  const surg = rewriteFeedPort(raw, 8793);
+  check(
+    "P2-161: rewrite is surgical — rest of the document byte-for-byte",
+    surg.rewritten === true && surg.body === raw.replace("8792", "8793"),
+    surg.body,
+  );
+  const current = rewriteFeedPort(feed(8794), 8794);
+  check(
+    "P2-161: feed already on the bound port → not rewritten, body untouched",
+    current.rewritten === false && current.body === feed(8794) && current.reason === "port-current",
+  );
+  const badJson = rewriteFeedPort("{not json", 8794);
+  check(
+    "P2-161: invalid JSON returned byte-for-byte (fail-closed)",
+    badJson.rewritten === false && badJson.body === "{not json" && badJson.reason === "invalid-json",
+  );
+  const external = rewriteFeedPort(
+    JSON.stringify({ url: "https://example.com/__ocr/updates/0.2.1/x.zip" }),
+    8794,
+  );
+  check(
+    "P2-161: external-host url preserved",
+    external.rewritten === false && external.reason === "non-loopback" && external.body.includes("example.com"),
+  );
+  const otherRoute = rewriteFeedPort(
+    JSON.stringify({ url: "http://127.0.0.1:8792/api/health" }),
+    8794,
+  );
+  check(
+    "P2-161: loopback url outside the updates route preserved",
+    otherRoute.rewritten === false && otherRoute.reason === "foreign-path" && otherRoute.body.includes(":8792/api/health"),
+  );
+  const noUrl = rewriteFeedPort('{"version":"0.2.1"}', 8794);
+  check(
+    "P2-161: feed without url field preserved",
+    noUrl.rewritten === false && noUrl.reason === "no-url" && noUrl.body === '{"version":"0.2.1"}',
+  );
+  const zero = rewriteFeedPort(feed(8792), 0);
+  const negative = rewriteFeedPort(feed(8792), -1);
+  const nan = rewriteFeedPort(feed(8792), Number.NaN);
+  const huge = rewriteFeedPort(feed(8792), 65536);
+  check(
+    "P2-161: zero/invalid bound port → no rewrite",
+    zero.rewritten === false && negative.rewritten === false && nan.rewritten === false && huge.rewritten === false && zero.reason === "invalid-port" && zero.body === feed(8792),
   );
 }
 

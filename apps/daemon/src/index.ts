@@ -5,7 +5,7 @@ import { promisify } from "node:util";
 import type { IncomingMessage, ServerResponse, Server as HttpServer } from "node:http";
 import type { Socket as NetSocket } from "node:net";
 import { homedir } from "node:os";
-import { join, resolve, dirname } from "node:path";
+import { basename, join, resolve, dirname } from "node:path";
 import JSON5 from "json5";
 import { randomBytes, randomUUID } from "node:crypto";
 import QRCode from "qrcode";
@@ -75,6 +75,7 @@ import {
 } from "./sessionctx.js";
 import { previewsFromEvent, PreviewDedupe } from "./preview.js";
 import { UPDATE_CONTENT_TYPES, resolveUpdatePath, updatesDir } from "./updates.js";
+import { rewriteFeedPort } from "./feedport.js";
 // P2-075: PWA origin watchdog — pure helpers in their own module (P1-072 lesson)
 import {
   defaultPwaPlistPath,
@@ -1832,6 +1833,11 @@ const relayRetry = createRelayRetry();
 let relayLastClose: { code: number | null; kind: RelayCloseKind } | null = null;
 // handle to the loopback API/metrics server (shutdown calls .close())
 let apiServer: HttpServer | null = null;
+// P2-161: the port the loopback API server actually bound (set in main()).
+// The staged feed.json embeds absolute artifact URLs recorded at publish
+// time; after a fallback boot (P2-143) that recorded port is stale, so the
+// feed route resolves it against THIS port when serving.
+let boundMetricsPort = 0;
 
 // P2-020: SIGTERM/SIGINT graceful shutdown — drain ≤3s, then exit 0.
 const bootTime = Date.now();
@@ -2097,6 +2103,38 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     if (!file) {
       res.writeHead(404, { "content-type": "text/plain" });
       res.end("not found");
+      return true;
+    }
+    // P2-161: feed.json is a small pointer document whose `url` field embeds
+    // the port recorded at publish time — after a fallback boot (P2-143) that
+    // port is stale and the desktop would announce a new version, then fail
+    // the download on a dead address with no signal to the user. The port is
+    // resolved at SERVE time instead: rewriteFeedPort (pure, fail-closed)
+    // retargets the loopback URL at the actually-bound port, and the response
+    // carries the resulting body's content-length. Artifacts (zip, dmg, exe,
+    // yml, blockmap — multi-MB) keep the streaming path below untouched;
+    // latest.yml stays verbatim too, its `path` field is relative to the
+    // feed's own address.
+    if (basename(file) === "feed.json") {
+      try {
+        const raw = readFileSync(file, "utf8");
+        const feed = rewriteFeedPort(raw, boundMetricsPort);
+        const body = Buffer.from(feed.body, "utf8");
+        log("info", "update feed served", {
+          file: basename(file),
+          feedRewritten: feed.rewritten,
+          feedPort: boundMetricsPort,
+        });
+        res.writeHead(200, {
+          "content-type": UPDATE_CONTENT_TYPES[".json"],
+          "content-length": String(body.byteLength),
+          "cache-control": "no-store",
+        });
+        res.end(body);
+      } catch {
+        res.writeHead(404, { "content-type": "text/plain" });
+        res.end("not found");
+      }
       return true;
     }
     try {
@@ -2700,6 +2738,7 @@ async function main() {
   const metricsPort = Number(process.env.OCR_METRICS_PORT);
   if (metricsPort) {
     apiServer = startMetricsServer(metricsPort, handleApi);
+    boundMetricsPort = metricsPort;
     // P1-061: direct loopback WS for same-machine clients (desktop shell).
     attachLocalWs(apiServer);
   }
