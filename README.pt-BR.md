@@ -368,7 +368,16 @@ sob demanda pelo tray (**Check for updates**). Achando um `feed.json` mais
 novo, o release baixa em segundo plano e um diálogo de consentimento oferece
 **Reiniciar agora / Depois** — nada instala sem clique explícito, versão
 adiada não é re-oferecida na sessão, e checagens repetidas nunca empilham
-ofertas velhas. Publicar um release é copiar arquivos: solte `<versão>/` com
+ofertas velhas. Desde a P2-146, todo release do GitHub também publica
+`update-mac.json` — o feed JSON do Squirrel.Mac, gerado por
+`apps/desktop/scripts/update-feed.mjs` a partir do `latest-mac.yml` + do zip
+de macOS que o empacotamento agora produz — e é nele que o fallback público
+do macOS resolve: o app instalado por DMG passa a se atualizar sozinho. O
+download só completa em build **assinada com Developer ID** (P2-136): o
+Squirrel.Mac recusa update cuja assinatura não confere com a do app
+instalado, então build ad-hoc (padrão sem os segredos de assinatura) segue
+manual, pela página de releases. Publicar um release é copiar arquivos:
+solte `<versão>/` com
 o artefato em `~/.opencode-remote/updates/` e reescreva `feed.json` (ver
 `docs/troubleshooting.md`). Em dev, o update segue opt-in via `OCR_UPDATE_FEED`.
 

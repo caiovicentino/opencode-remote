@@ -121,12 +121,23 @@ jobs:
       - name: Smoke-check the packaged bundle
         run: npm run dist:smoke --workspace @ocr/desktop
 
+      # P2-146: build the Squirrel.Mac JSON feed from the packed dist root —
+      # the zip the mac target now produces + latest-mac.yml become the
+      # update-mac.json the packaged shell auto-consumes on darwin. Exits 1
+      # (all problems listed) when the zip is missing or the yml version
+      # drifted from the tag, blocking the upload below.
+      - name: Build the Squirrel.Mac JSON feed
+        run: node apps/desktop/scripts/update-feed.mjs
+
+      # P2-126 lesson: shell: bash so the dist/*.dmg glob expands (pwsh would
+      # pass it through verbatim).
       - name: Attach DMG + update metadata to the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
           gh release upload "$GITHUB_REF_NAME" \
-            apps/desktop/dist/*.dmg apps/desktop/dist/latest-mac.yml \
+            apps/desktop/dist/*.dmg apps/desktop/dist/latest-mac.yml apps/desktop/dist/update-mac.json \
             --clobber
 
   # P2-126: stage 5 is half Windows — the release also ships the NSIS setup

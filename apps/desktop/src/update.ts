@@ -113,13 +113,14 @@ export function resolvedFeedUrl(env: NodeJS.ProcessEnv = process.env, packaged =
  * feed above only exists on a machine that actively stages releases
  * (~/.opencode-remote/updates); a plain DMG install has no daemon staged
  * files, so the packaged default would always end "feed unreachable". The
- * release workflow publishes an electron-builder yml feed on every GitHub
- * release — that is the public fallback (parsed for the decision; the download
- * step still needs a Squirrel JSON feed, see the spike note). The file name is
- * platform-specific (P2-131): `latest-mac.yml` on macOS, `latest.yml` on
- * Windows, and no default at all elsewhere — until a platform has a download
- * engine there is no feed to advertise. OCR_PUBLIC_UPDATE_FEED overrides it
- * for forks/staging and, being an absolute override, ignores the platform.
+ * release workflow publishes an update feed on every GitHub release — that is
+ * the public fallback. The file name is platform-specific (P2-131, P2-146):
+ * `update-mac.json` on macOS — the Squirrel.Mac JSON feed the built-in
+ * autoUpdater downloads in the background (yml feeds have no download engine,
+ * see the spike note) — `latest.yml` on Windows, and no default at all
+ * elsewhere — until a platform has a download engine there is no feed to
+ * advertise. OCR_PUBLIC_UPDATE_FEED overrides it for forks/staging and, being
+ * an absolute override, ignores the platform.
  */
 export function publicFeedUrl(
   env: NodeJS.ProcessEnv = process.env,
@@ -129,7 +130,12 @@ export function publicFeedUrl(
   if (!packaged) return null;
   const override = env.OCR_PUBLIC_UPDATE_FEED?.trim();
   if (override) return override;
-  const asset = platform === "darwin" ? "latest-mac.yml" : platform === "win32" ? "latest.yml" : null;
+  // P2-146: darwin consumes the Squirrel.Mac JSON feed (built by
+  // apps/desktop/scripts/update-feed.mjs in the release workflow) so the
+  // public fallback downloads in the background instead of stopping at the
+  // manual release page. Windows keeps the yml manual flow; other platforms
+  // have no download engine → no feed.
+  const asset = platform === "darwin" ? "update-mac.json" : platform === "win32" ? "latest.yml" : null;
   if (!asset) return null;
   return `https://github.com/caiovicentino/opencode-remote/releases/latest/download/${asset}`;
 }
