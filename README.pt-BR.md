@@ -349,6 +349,11 @@ verdade. A barra de URL é editável, `↻` recarrega, `⤢` alterna o pane para
 ~80% da largura e volta, e `←` retorna pro chat. Falha de carregamento mostra
 o erro e o botão de reload, nunca um pane em branco.
 
+**Indicador de não lidas (P3-053/P2-150)**: quando chega mensagem na conversa
+aberta com a janela em segundo plano, o ícone do app mostra o indicador —
+contagem no dock do macOS/Linux e um disco verde sobreposto ao ícone na
+barra de tarefas do Windows. Focar a janela limpa o indicador.
+
 O **Mission Control** (Cmd+6) é o pós-mortem navegável das runs autônomas do
 pilot: um card por tarefa de agente (objetivo, progresso, esforço em minuto,
 ETA enquanto roda) lido do `pilot.log`/`events.jsonl` real, mais a timeline

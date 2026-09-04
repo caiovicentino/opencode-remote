@@ -469,12 +469,11 @@ failure (with output tail) and deploy navigable, the post-deploy screenshots,
 a live dashboard shot via the browse surface, and a **Take over** button that
 attaches Terminal to the agent's own opencode session for human handoff.
 
-**Unread dock badge (P3-053)**: when a message lands in the open conversation
+**Unread badge (P3-053/P2-150)**: when a message lands in the open conversation
 while the window is in the background — or while you are scrolled away from
-the tail — the app icon shows a count badge (macOS dock / Linux). Focusing the
-window or jumping back to the tail clears it. Windows is a deliberate no-op
-for now: `app.setBadgeCount` has no effect there and an overlay icon is
-future work.
+the tail — the app icon shows the indicator: a count on the macOS dock / Linux
+and a green overlay disk on the Windows taskbar icon. Focusing the window or
+jumping back to the tail clears it.
 
 ```bash
 npm run build --workspace @ocr/web       # build the UI once

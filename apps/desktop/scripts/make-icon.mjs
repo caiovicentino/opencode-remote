@@ -161,3 +161,37 @@ for (const [size, name] of TRAY_SIZES) {
   writeFileSync(path, buf);
   console.log(`wrote ${path} (${size}x${size}, ${buf.length} bytes)`);
 }
+
+// --- Windows taskbar overlay (P2-150) ------------------------------------------
+// Small solid brand-green disk: the glyph win.setOverlayIcon() composites onto
+// the taskbar icon when unread messages arrive (app.setBadgeCount is a no-op
+// on Windows). 32x32 stays crisp at 125–200% taskbar DPI and Windows downscales
+// to the 16-DIP overlay slot; the edge is anti-aliased by the same SDF
+// coverage helper as the tray template. Solid fill — the count itself is never
+// drawn (the OS slot is too small); screen readers get it via the overlay
+// description (badge.ts).
+const OVERLAY_SIZE = 32;
+const OVERLAY_RADIUS = 13;
+const OVERLAY_GREEN = [34, 197, 94]; // #22c55e — the app icon's glyph green
+
+function overlayBadgePng() {
+  const out = Buffer.alloc(OVERLAY_SIZE * OVERLAY_SIZE * 4);
+  const c = OVERLAY_SIZE / 2;
+  for (let y = 0; y < OVERLAY_SIZE; y++) {
+    for (let x = 0; x < OVERLAY_SIZE; x++) {
+      const d = Math.hypot(x + 0.5 - c, y + 0.5 - c) - OVERLAY_RADIUS;
+      const cov = coverage(d);
+      const i = (y * OVERLAY_SIZE + x) * 4;
+      out[i] = OVERLAY_GREEN[0];
+      out[i + 1] = OVERLAY_GREEN[1];
+      out[i + 2] = OVERLAY_GREEN[2];
+      out[i + 3] = Math.round(cov * 255);
+    }
+  }
+  return pngEncode(OVERLAY_SIZE, out);
+}
+
+const overlayPath = join(dirname(OUT), "overlayBadge.png");
+const overlayBuf = overlayBadgePng();
+writeFileSync(overlayPath, overlayBuf);
+console.log(`wrote ${overlayPath} (${OVERLAY_SIZE}x${OVERLAY_SIZE}, ${overlayBuf.length} bytes)`);
