@@ -1933,6 +1933,84 @@ try {
             await waitProbe("P3-084: artifact session chat rendered again", "!!document.querySelector('.messages')", (v) => /true/.test(v), localEnv2);
           }
 
+          // --- P2-124: Claude-level sidebar shell --------------------------------
+          // "+ New" pinned to the top of a 280px column, section nav above the
+          // list (SVG icons only — zero emoji/glyphs), temporal groups intact
+          // and a fixed account footer that opens the machine picker. Runs at
+          // 1440x900 right after the P3-084 beat, then drops to 390 for the
+          // narrow evidence shot.
+          phase("P2-124: sidebar shell (new + nav + account footer)");
+          // the beat opens right after P3-084's narrow shot — resize back up
+          const p124Wide = run("P2-124: resize to desktop width", ["shot", join(shotsDir, "P2-124-resize.png"), "1440", "900"], 15_000, localEnv2);
+          if (p124Wide.ok) {
+            await waitProbe("P2-124: desktop shell mounted", "!!document.querySelector('.desk-side')", (v) => /true/.test(v), localEnv2);
+            const sideW = run("P2-124: sidebar column width", ["ipc", "document.querySelector('.desk-side')?.getBoundingClientRect().width ?? 0"], 15_000, localEnv2);
+            if (sideW.ok) check("P2-124: sidebar is 280px wide", Math.round(parseFloat(sideW.stdout)) === 280, sideW.stdout);
+            const navProbe = run(
+              "P2-124: section nav shape",
+              ["ipc", "(() => { const btns = [...document.querySelectorAll('.desk-nav button[data-pane]')]; return btns.length === 6 && btns.every((b) => b.querySelector(':scope > svg')); })()"],
+              15_000,
+              localEnv2,
+            );
+            if (navProbe.ok) check("P2-124: 6 nav buttons, each with an SVG icon", /true/.test(navProbe.stdout), navProbe.stdout);
+            const emojiProbe = run(
+              "P2-124: zero emoji/glyphs in the sidebar",
+              ["ipc", "!(/\\p{Extended_Pictographic}|[▾⌄✎↩✕]/u.test(document.querySelector('.desk-side').textContent))"],
+              15_000,
+              localEnv2,
+            );
+            if (emojiProbe.ok) check("P2-124: sidebar copy is glyph-free", /true/.test(emojiProbe.stdout), emojiProbe.stdout);
+            const orderProbe = run(
+              "P2-124: new button → nav → list order",
+              ["ipc", "(() => { const a = document.querySelector('.desk-new'), b = document.querySelector('.desk-nav'), c = document.querySelector('.sess-rows'); if (!a || !b || !c) return 'missing'; const after = (x, y) => (x.compareDocumentPosition(y) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0; return after(a, b) && after(b, c); })()"],
+              15_000,
+              localEnv2,
+            );
+            if (orderProbe.ok) check("P2-124: .desk-new precedes .desk-nav precedes .sess-rows", /true/.test(orderProbe.stdout), orderProbe.stdout);
+            const fillProbe = run(
+              "P2-124: + New spans the column",
+              ["ipc", "(() => { const top = document.querySelector('.desk-side-top'); const nw = document.querySelector('.desk-new').getBoundingClientRect().width; const cs = getComputedStyle(top); const inner = top.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight); return nw >= inner - 2; })()"],
+              15_000,
+              localEnv2,
+            );
+            if (fillProbe.ok) check("P2-124: .desk-new fills the column (±2px)", /true/.test(fillProbe.stdout), fillProbe.stdout);
+            const accountProbe = run(
+              "P2-124: account footer contents",
+              ["ipc", "(() => { const f = document.querySelector('.desk-account'); if (!f) return null; const name = f.querySelector('.desk-account-name')?.textContent ?? ''; const plan = f.querySelector('.desk-account-plan')?.textContent ?? ''; return { name, plan }; })()"],
+              15_000,
+              localEnv2,
+            );
+            if (accountProbe.ok) {
+              let acct: { name?: string; plan?: string } | null = null;
+              try {
+                acct = JSON.parse(accountProbe.stdout) as { name?: string; plan?: string };
+              } catch {}
+              check("P2-124: footer name matches the machine name", acct?.name === "local", accountProbe.stdout);
+              check("P2-124: footer plan names the connection mode", /Local|Remoto|Remote/.test(acct?.plan ?? ""), accountProbe.stdout);
+            }
+            run("P2-124: open the machine picker from the footer", ["click", ".desk-account-btn"], 15_000, localEnv2);
+            const pickerUp = await waitProbe("P2-124: machine picker rendered", "!!document.querySelector('.machine-picker')", (v) => /true/.test(v), localEnv2);
+            if (pickerUp) {
+              run("P2-124: close the machine picker", ["click", '.machine-picker button[aria-label="Close machine picker"]'], 15_000, localEnv2);
+              await waitProbe("P2-124: machine picker closed", "!!document.querySelector('.machine-picker')", (v) => /false/.test(v), localEnv2);
+            }
+            const groupsSurvive = run(
+              "P2-124: list + temporal groups intact after the picker",
+              ["ipc", "[...document.querySelectorAll('.sess-group-head[data-group]')].map((el) => el.getAttribute('data-group')).join(',')"],
+              15_000,
+              localEnv2,
+            );
+            if (groupsSurvive.ok) {
+              let g = groupsSurvive.stdout.trim();
+              try {
+                g = JSON.parse(g) as string;
+              } catch {}
+              check("P2-124: today,yesterday,earlier heads survive", g === "today,yesterday,earlier", groupsSurvive.stdout);
+            }
+            run("P2-124: sidebar shell evidence shot", ["shot", join(shotsDir, "P2-124-sidebar-1440.png")], 15_000, localEnv2);
+            run("P2-124: narrow evidence shot", ["shot", join(shotsDir, "P2-124-sidebar-390.png"), "390", "844"], 15_000, localEnv2);
+          }
+
           // --- P3-085: collapsible thinking block + streaming polish -----------
           // Simulated long response over the fake backend: reasoning parts
           // stream into the "Pensou por Xs" block (expanded while thinking,

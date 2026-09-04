@@ -883,6 +883,8 @@ select {
 
 /* ── Desktop two-pane shell (≥1024px): Claude-style sidebar + main pane ── */
 .desk {
+  /* P2-124: benchmark column width — 280px, one token for the whole shell */
+  --sidebar-w: 280px;
   display: flex;
   height: 100%;
   width: 100%;
@@ -892,11 +894,24 @@ select {
 .desk-side {
   display: flex;
   flex-direction: column;
-  width: 340px;
-  min-width: 340px;
+  width: var(--sidebar-w);
+  min-width: var(--sidebar-w);
   height: 100%;
   border-right: 1px solid var(--border);
   background: var(--panel);
+}
+/* P2-124: fixed top zone — primary action + section nav */
+.desk-side-top {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--border);
+}
+.desk-new {
+  width: 100%;
+  flex-shrink: 0;
 }
 .desk-side-scroll {
   flex: 1;
@@ -905,6 +920,10 @@ select {
 }
 /* the sessions list was built as a mobile "screen" — flatten it inside the sidebar */
 .desk-side .screen {
+  /* P2-124: fill the column edge-to-edge — width + margin 0 keep all four
+     zones (top, nav, list, footer) on one right edge, no ragged centering */
+  width: 100%;
+  margin: 0;
   max-width: none;
   padding: 10px;
   height: auto;
@@ -913,9 +932,7 @@ select {
 .desk-nav {
   display: flex;
   gap: 6px;
-  padding: 8px 10px;
-  border-top: 1px solid var(--border);
-  background: var(--panel);
+  padding: 0;
 }
 .desk-nav button {
   flex: 1;
@@ -1159,11 +1176,12 @@ select {
   border-color: var(--fg);
 }
 /* nav: Claude-like text rows instead of icon squares (merged with the
-   .desk-nav base above — vertical stack of left-aligned rows) */
+   .desk-nav base above — vertical stack of left-aligned rows; padding comes
+   from .desk-side-top, the nav itself is flush) */
 .desk-nav {
   flex-direction: column;
   gap: 1px;
-  padding: var(--space-2);
+  padding: 0;
 }
 .desk-nav button {
   display: flex;
@@ -1185,6 +1203,59 @@ select {
 .desk-nav button.active {
   color: var(--fg);
   background: var(--bg2);
+}
+/* P2-124: account footer — pinned bottom row, one shared right edge with the
+   rest of the column; opens the machine picker */
+.desk-account {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+  padding: var(--space-2);
+}
+.desk-account-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease-out);
+}
+.desk-account-btn:hover {
+  background: var(--bg2);
+}
+.desk-account-avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-sm);
+  background: var(--bg2);
+  color: var(--fg);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.desk-account-name {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.desk-account-plan {
+  font-size: var(--font-size-xs);
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.desk-account-btn .status-dot {
+  margin-left: auto;
 }
 /* greeting like the reference: serif, centered, warm mark */
 .desk-empty h2 {
@@ -1287,16 +1358,11 @@ select {
   background: var(--border);
 }
 
-/* desktop-only chrome: hide mobile-only controls, style sidebar top action */
+/* desktop-only chrome: hide mobile-only controls */
 @media (min-width: 1024px) {
   .chat-back,
   .chat-handoff {
     display: none;
-  }
-  .sess-new {
-    width: 100%;
-    flex-shrink: 0;
-    margin: 0 0 10px;
   }
   .desk-side .list {
     display: flex;

@@ -18,6 +18,7 @@ import { permissionPreview } from "../apps/web/src/lib/permission";
 import { applySessionFilters, isPilotTitle, splitPilotSessions } from "../apps/web/src/lib/sessionFilter";
 import { initialUnreadState, reduceUnread } from "../apps/web/src/lib/unread";
 import { recencyGroup, groupByRecency, startOfLocalDay } from "../apps/web/src/lib/recency";
+import { accountInitial, accountPlanKey } from "../apps/web/src/lib/account";
 import { toggleArchived, ARCHIVED_MAX } from "../apps/web/src/lib/archive";
 import { previewFromEvents, clipPreview } from "../apps/web/src/lib/sessionPreview";
 import {
@@ -6701,6 +6702,37 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   ].join("\n");
   check("hotfix: inline VERDICT mention passes spec guard", validateSpec(inline) === true);
   check("hotfix: line-leading fake output still rejected", validateSpec(faked) === false);
+}
+
+// ── P2-124: sidebar account footer (accountInitial/accountPlanKey + i18n) ────
+{
+  check("p2-124 accountInitial: simple name → first letter uppercase", accountInitial("caio-mbp") === "C");
+  check("p2-124 accountInitial: whitespace only → empty", accountInitial("  ") === "");
+  check("p2-124 accountInitial: leading digits count", accountInitial("42-node") === "4");
+  check("p2-124 accountInitial: accented letter uppercases", accountInitial("émile") === "É");
+  check("p2-124 accountInitial: no letter/digit → empty (avatar glyph)", accountInitial("—") === "");
+  check("p2-124 accountPlanKey: local daemon → planLocal", accountPlanKey(true) === "planLocal");
+  check("p2-124 accountPlanKey: anything else → planRemote", accountPlanKey(false) === "planRemote");
+  for (const lang of ["en", "pt"] as const) {
+    const d = dict[lang] as Record<string, string>;
+    const keys = [
+      "newShort",
+      "navConversations",
+      "navArtifacts",
+      "navBrowser",
+      "navFiles",
+      "navMission",
+      "navSettings",
+      "planLocal",
+      "planRemote",
+      "accountSwitch",
+    ];
+    check(
+      `p2-124 i18n ${lang}: all 10 sidebar keys exist and are non-empty`,
+      keys.every((k) => typeof d[k] === "string" && d[k].trim() !== ""),
+    );
+    check(`p2-124 i18n ${lang}: planLocal reads as local`, /local/i.test(translate(lang, "planLocal")));
+  }
 }
 
 if (failures > 0) {

@@ -246,6 +246,16 @@ export function IconUndo(p: IconProps) {
   );
 }
 
+/** P2-124: close/dismiss glyph (machine picker, mobile card actions). */
+export function IconX(p: IconProps) {
+  return (
+    <Icon {...p}>
+      <path d="M18 6 6 18" />
+      <path d="m6 6 12 12" />
+    </Icon>
+  );
+}
+
 export function IconBookOpen(p: IconProps) {
   return (
     <Icon {...p}>
