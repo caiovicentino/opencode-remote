@@ -1312,6 +1312,27 @@ select {
   margin-top: 8px;
   font-size: 0.95rem;
 }
+/* P2-108: the empty state ends in an action — a composer-styled CTA that
+   starts a conversation, same surface language as the search input. */
+.desk-empty-compose {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 20px;
+  padding: 9px 18px;
+  font-size: 0.9rem;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+}
+.desk-empty-compose:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+.desk-empty-compose:disabled {
+  opacity: 0.6;
+}
 
 /* desktop flat session rows (variant="rows") */
 .sess-rows {
@@ -1395,6 +1416,128 @@ select {
 .row-actions button:hover {
   color: var(--fg);
   background: var(--border);
+}
+
+/* P2-108: mobile sessions chrome demoted to an overline — the machine name
+   is a label (0.72rem, tracked, muted), not a page title; the header actions
+   stay reachable as quiet ghost icons. */
+.sess-mobile-head {
+  padding: 2px 2px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.sess-machine-overline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  padding: 4px 2px;
+  cursor: pointer;
+  color: var(--muted);
+}
+.sess-machine-overline:active {
+  transform: none;
+}
+.sess-overline {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+.sess-head-actions {
+  display: flex;
+  gap: 2px;
+}
+.sess-head-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: var(--muted);
+  padding: 7px;
+  border-radius: var(--radius-sm);
+}
+.sess-head-actions button:hover {
+  color: var(--fg);
+  background: var(--bg2);
+}
+.sess-head-actions button.danger:hover {
+  color: var(--danger);
+}
+
+/* P2-108: badge filters live in a menu attached to the search — one quiet
+   affordance instead of a chip row above the list. */
+.sess-search-row {
+  position: relative;
+  display: flex;
+  gap: 6px;
+}
+.sess-search-row input {
+  flex: 1;
+  min-width: 0;
+}
+.sess-filter-btn {
+  position: relative;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 10px;
+  color: var(--muted);
+}
+.sess-filter-dot {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+}
+.sess-menu-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+}
+.sess-filter-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 31;
+  min-width: 170px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+.sess-filter-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  padding: 8px 10px;
+  font-size: 0.85rem;
+  text-align: left;
+  color: var(--fg);
+  border-radius: var(--radius-sm);
+}
+.sess-filter-item:hover {
+  background: var(--bg2);
+}
+.sess-filter-item[aria-checked="true"] {
+  color: var(--accent);
+}
+.sess-filter-check {
+  width: 14px;
+  display: inline-flex;
+  justify-content: center;
+  flex-shrink: 0;
 }
 
 /* desktop-only chrome: hide mobile-only controls */

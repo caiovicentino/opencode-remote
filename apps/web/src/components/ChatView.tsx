@@ -69,6 +69,10 @@ interface Props {
   paneArtifact?: ArtifactMeta | null;
   /** Called after paneArtifact is adopted so the source can clear its pending state. */
   onPaneArtifactConsumed?: () => void;
+  /** P2-108: the shell already shows .daemon-reconnecting/.daemon-down — the
+   * in-chat .conn-banner must not duplicate the same sentence (one banner
+   * only). The mobile PWA has no shell banner and keeps it. */
+  shellBannerVisible?: boolean;
 }
 
 interface QuestionInfo {
@@ -266,6 +270,7 @@ export default function ChatView({
   onBack,
   paneArtifact,
   onPaneArtifactConsumed,
+  shellBannerVisible = false,
 }: Props) {
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
@@ -1986,7 +1991,9 @@ export default function ChatView({
         </button>
       </header>
 
-      {connStatus !== "paired" && (
+      {/* P2-108: one reconnect banner only — when the shell strip is already
+          showing, this in-chat banner stays silent. */}
+      {connStatus !== "paired" && !shellBannerVisible && (
         <div className="conn-banner" role="status" title={t("connTitle", { status: connStatus })}>
           <IconRefresh size={14} className="conn-banner-spin" aria-hidden />{" "}
           {t("reconnecting", { n: Math.max(connAttempts, 1) })}

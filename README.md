@@ -160,6 +160,13 @@ private. That is the product: **local power, remote control, zero trust**.
   banners, the QR scanner and the desktop empty state resolve their copy from
   the same dictionary as the actions next to them — no pt-BR/English mix on a
   single screen
+- **Quiet chrome, one status surface** — the mobile sessions header reads as a
+  0.72rem overline (machine name + connection dot) instead of a page title, the
+  badge filters fold into a menu attached to the search field (active filter
+  marked with a dot on the funnel icon), the desktop empty state ends in a
+  composer-styled "New conversation" action, and the daemon status is stated
+  once: the shell's reconnecting/down strip replaces — never duplicates — the
+  in-chat connection banner
 
 ## Quick Start (Mac → iPhone, ~5 min)
 

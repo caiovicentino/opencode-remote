@@ -907,8 +907,37 @@ try {
           );
         }
 
+        // --- P2-108: the desktop empty state ends in an action ------------------
+        // Paired shell, no conversation open: the greeting carries a
+        // composer-styled "New conversation" CTA (dict copy, plus glyph from
+        // the shared icon set) so first boot never dead-ends in a greeting.
+        const composeProbe = run(
+          "P2-108: empty-state composer CTA probe",
+          ["ipc", "(() => { const b = document.querySelector('.desk-empty-compose'); return !!b && b.textContent.trim().length > 0 && !!b.querySelector('svg'); })()"],
+          15_000,
+          localEnv,
+        );
+        if (composeProbe.ok) check("P2-108: desk-empty gains a composer CTA", /true/.test(composeProbe.stdout), composeProbe.stdout);
+        run("P2-108: empty-state evidence shot", ["shot", join(shotsDir, "P2-108-empty-1440.png"), "1440", "900"], 15_000, localEnv);
+
         const s2 = run("local: 390 evidence shot", ["shot", localShot390, "390", "844"], 15_000, localEnv);
         if (s2.ok) check("local: 390 shot is a real PNG", pngSize(localShot390)[0] === 390);
+
+        // --- P2-108: mobile chrome demoted to an overline -----------------------
+        // The 390 shot above left the shell on Settings — go back to Chats so
+        // the sessions board (and its demoted header) is the visible surface,
+        // then probe the 0.72rem overline (≤ 12px at the default root).
+        const chatsTab = run("P2-108: back to the Chats tab", ["click", '.tabbar button[aria-label="Chats"]'], 15_000, localEnv);
+        if (chatsTab.ok) {
+          const overlineProbe = run(
+            "P2-108: mobile overline chrome probe",
+            ["ipc", "(() => { const h = document.querySelector('.sess-mobile-head .sess-overline'); return !!h && parseFloat(getComputedStyle(h).fontSize) <= 12; })()"],
+            15_000,
+            localEnv,
+          );
+          if (overlineProbe.ok) check("P2-108: mobile machine name renders as a 0.72rem overline", /true/.test(overlineProbe.stdout), overlineProbe.stdout);
+          run("P2-108: mobile overline evidence shot", ["shot", join(shotsDir, "P2-108-overline-390.png"), "390", "844"], 15_000, localEnv);
+        }
 
         // --- P1-080: the operator's overflow repro (narrow window, long diff) ---
         // The hermetic daemon has no opencode backend, so no real message can
@@ -1566,6 +1595,10 @@ try {
         if (degraded) {
           const banner = run("local: degradation banner rendered", ["ipc", "!!(document.querySelector('.daemon-reconnecting') || document.querySelector('.daemon-down'))"], 15_000, localEnv);
           if (banner.ok) check("local: reconnecting/down banner present", /true/.test(banner.stdout));
+          // P2-108: exactly ONE degradation banner — the shell strip must not
+          // be doubled by the in-chat .conn-banner.
+          const bannerCount = run("local: banner count probe", ["ipc", "String(document.querySelectorAll('.daemon-reconnecting, .daemon-down, .conn-banner').length)"], 15_000, localEnv);
+          if (bannerCount.ok) check("P2-108: daemon falling renders a single banner", bannerCount.stdout.replace(/"/g, "").trim() === "1", bannerCount.stdout);
         }
 
         // --- P1-089: queue→flush→reentrada across a SECOND hermetic boot ----
@@ -2180,6 +2213,25 @@ try {
             }
             run("P2-124: sidebar shell evidence shot", ["shot", join(shotsDir, "P2-124-sidebar-1440.png")], 15_000, localEnv2);
             run("P2-124: narrow evidence shot", ["shot", join(shotsDir, "P2-124-sidebar-390.png"), "390", "844"], 15_000, localEnv2);
+
+            // --- P2-108: quiet chrome — filter menu at desktop width ------------
+            // The narrow shot above dropped the window to 390 (sidebar unmounted);
+            // resize back up so the sidebar search row is mounted again.
+            const p108Wide = run("P2-108: sidebar with search row evidence shot", ["shot", join(shotsDir, "P2-108-sidebar-1440.png"), "1440", "900"], 15_000, localEnv2);
+            if (p108Wide.ok) {
+              const filterOpen = run("P2-108: open the search filter menu", ["click", ".sess-filter-btn"], 15_000, localEnv2);
+              if (filterOpen.ok) {
+                const menuProbe = run(
+                  "P2-108: filter menu shape",
+                  ["ipc", "(() => { const items = [...document.querySelectorAll('.sess-filter-menu [data-filter]')]; return items.length === 3 && items.every((b) => b.textContent.trim().length > 0); })()"],
+                  15_000,
+                  localEnv2,
+                );
+                if (menuProbe.ok) check("P2-108: filter menu carries 3 options", /true/.test(menuProbe.stdout), menuProbe.stdout);
+                run("P2-108: filter menu evidence shot", ["shot", join(shotsDir, "P2-108-filter-1440.png")], 15_000, localEnv2);
+                run("P2-108: close the filter menu", ["click", ".sess-menu-scrim"], 15_000, localEnv2);
+              }
+            }
           }
 
           // --- P3-085: collapsible thinking block + streaming polish -----------
