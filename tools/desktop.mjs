@@ -36,6 +36,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { checkPng } from "./pngcheck.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(HERE, "..");
@@ -111,6 +112,8 @@ async function clientMain() {
       }
     }
     if (shotOut) {
+      // P2-144: the keeper's shot() validates the freshly written PNG before
+      // answering, so this optional evidence shot uses the same checked path.
       const shot = await send({ cmd: "shot", out: shotOut, w, h });
       fail(shot);
       console.log(JSON.stringify({ ...shot, reused, session: SESSION }));
@@ -523,9 +526,22 @@ async function shot(page, electronApp, msg) {
     await page.waitForTimeout(300);
   }
   mkdirSync(dirname(out), { recursive: true });
-  await page.screenshot({ path: out, scale: "css", timeout: 10_000 });
-  const buf = readFileSync(out);
-  return { ok: true, path: out, width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+  // P2-144: validate the freshly written file instead of trusting unchecked
+  // readUInt32BE bytes — a truncated PNG must never pose as evidence with
+  // garbage dimensions (P2-117 burned four attempts that way). On an invalid
+  // file: delete the partial, retry the screenshot exactly once, then fail
+  // with the exact reason so no partial file is left on disk.
+  let reason = "unreachable";
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await page.screenshot({ path: out, scale: "css", timeout: 10_000 });
+    const check = checkPng(readFileSync(out));
+    if (check.ok) return { ok: true, path: out, width: check.width, height: check.height };
+    reason = check.reason;
+    try {
+      unlinkSync(out);
+    } catch {}
+  }
+  return { ok: false, error: `invalid screenshot PNG after 2 attempts: ${reason}` };
 }
 
 async function quit(electronApp) {

@@ -275,6 +275,7 @@ import {
   type ViewState,
 } from "../apps/web/src/lib/viewState";
 import { ALLOWED_EXTS, extOf, pickConverter, validateExt } from "../tools/doc2pdf.mjs";
+import { checkPng } from "../tools/pngcheck.mjs";
 import { signingProfile } from "../apps/desktop/scripts/signing-profile.mjs";
 import {
   avgDoneDuration,
@@ -7737,6 +7738,77 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check("P2-139: redactRelayUrl ignores @ inside path", redactRelayUrl("ws://host:8788/pa@th") === "ws://host:8788/pa@th");
   check("P2-139: redactRelayUrl tolerates unparseable strings", redactRelayUrl("not a url") === "not a url");
   check("P2-139: redactRelayUrl handles no-authority strings", redactRelayUrl("nonsense") === "nonsense");
+}
+
+// --- P2-144: tools/pngcheck.mjs — evidence PNG sanity at capture time --------
+{
+  const CRC_TABLE = Array.from({ length: 256 }, (_, n) => {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    return c;
+  });
+  const crc32 = (data: Buffer) => {
+    let c = 0xffffffff;
+    for (const b of data) c = CRC_TABLE[(c ^ b) & 0xff]! ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type: string, data: Buffer) => {
+    const head = Buffer.alloc(4);
+    head.writeUInt32BE(data.length);
+    const body = Buffer.concat([Buffer.from(type, "latin1"), data]);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(body));
+    return Buffer.concat([head, body, crc]);
+  };
+  const ihdr = (w: number, h: number) => {
+    const d = Buffer.alloc(13);
+    d.writeUInt32BE(w, 0);
+    d.writeUInt32BE(h, 4);
+    return chunk("IHDR", d);
+  };
+  const SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const iend = chunk("IEND", Buffer.alloc(0));
+  const valid = Buffer.concat([SIG, ihdr(1440, 900), iend]);
+
+  const ok = checkPng(valid);
+  check(
+    "P2-144: valid minimal PNG passes with real dimensions",
+    ok.ok === true && ok.width === 1440 && ok.height === 900 && ok.reason === null,
+  );
+  const badSig = Buffer.from([...valid]);
+  badSig[1] = 0x00;
+  const badSigCheck = checkPng(badSig);
+  check(
+    "P2-144: wrong signature rejected with reason",
+    badSigCheck.ok === false && /signature/.test(badSigCheck.reason),
+  );
+  const shortBuf = Buffer.concat([SIG, Buffer.alloc(8)]);
+  check(
+    "P2-144: buffer shorter than the header rejected",
+    checkPng(shortBuf).ok === false && checkPng(Buffer.alloc(0)).ok === false,
+  );
+  const zero = checkPng(Buffer.concat([SIG, ihdr(0, 900), iend]));
+  check("P2-144: IHDR zero dimension rejected with reason", zero.ok === false && /zero/.test(zero.reason));
+  const noIend = checkPng(Buffer.concat([SIG, ihdr(1440, 900)]));
+  check("P2-144: file without IEND rejected", noIend.ok === false && /IEND/.test(noIend.reason));
+  const noIhdr = checkPng(Buffer.concat([SIG, iend]));
+  check("P2-144: missing IHDR rejected", noIhdr.ok === false && /IHDR/.test(noIhdr.reason));
+  const truncated = checkPng(Buffer.concat([SIG, ihdr(1440, 900).subarray(0, 8)]));
+  check(
+    "P2-144: chunk running past end of file rejected",
+    truncated.ok === false && /truncated/.test(truncated.reason),
+  );
+
+  // cross-check: the gate's own PNG reader agrees on the validated dimensions
+  const dir = mkdtempSync(join(tmpdir(), "pilot-pngcheck-"));
+  try {
+    const p = join(dir, "shot.png");
+    writeFileSync(p, valid);
+    const gate = pngSize(p);
+    check("P2-144: pngcheck agrees with the gate's pngSize", gate?.w === ok.width && gate?.h === ok.height);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 if (failures > 0) {
