@@ -176,9 +176,12 @@ function main() {
     if (explicit) dir = resolve(explicit.slice("--dir=".length));
   }
 
-  // --dir-less runs target the default dist root: the bundle must ALSO have a
-  // DMG sibling (P2-098 — the mac release artifact third parties install).
-  const requireDmg = dir === null;
+  // --dir-less runs target the default dist root ("default run"): they must
+  // carry the platform-specific release artifacts — the mac DMG (P2-098)
+  // always, and the Windows pair (P2-126) whenever a win-unpacked bundle
+  // exists next to it. Named after the invocation, not the artifact: on a
+  // Windows/Linux dist root only the Windows side can apply.
+  const defaultRun = dir === null;
   if (!dir) {
     dir = resolveBundleDir(join(desktopDir, "dist"));
     if (!dir) {
@@ -207,7 +210,7 @@ function main() {
   console.log("  web-dist/index.html present");
   console.log("  daemon/index.js present");
   console.log("  app binary present");
-  if (requireDmg) {
+  if (defaultRun) {
     const dmg = findDmg(join(desktopDir, "dist"));
     if (!dmg) {
       console.error(
@@ -223,7 +226,7 @@ function main() {
   // (win-unpacked), the NSIS setup exe + latest.yml are release artifacts too
   // — same treatment as the DMG above. Skipped when no win-unpacked exists so
   // mac-only dev machines keep passing; pure fs checks, no Windows required.
-  if (requireDmg && existsSync(join(desktopDir, "dist", "win-unpacked"))) {
+  if (defaultRun && existsSync(join(desktopDir, "dist", "win-unpacked"))) {
     const distRoot = join(desktopDir, "dist");
     const winProblems = windowsInstallerProblems(distRoot);
     if (winProblems.length > 0) {
