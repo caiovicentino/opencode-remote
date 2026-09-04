@@ -318,6 +318,7 @@ import { findWindowsInstaller, listProblems, smokeFlags, windowsInstallerProblem
 import { touchesDesktop } from "./ci-scope";
 import { imageTags } from "./relay-image";
 import { expectedAssets, missingAssets, tagProblems } from "./release-assets";
+import { feedProblems } from "./feed-consistency";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -8726,6 +8727,182 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     identical &&= effectiveRetryDelayMs(withFloor.schedule(), transientVerdict) === pure.schedule();
   }
   check("P2-156: 10 retries under transient match the bare P2-129 curve", identical);
+}
+
+// --- P2-157: feed-consistency — update feeds point at this release's artifacts
+{
+  const TAG = "v0.3.0";
+  const published = [
+    "OpenCode Remote-0.3.0-arm64.dmg",
+    "OpenCode Remote-0.3.0-mac.zip",
+    "OpenCode Remote Setup 0.3.0.exe",
+    "latest-mac.yml",
+    "update-mac.json",
+    "latest.yml",
+  ];
+  const goodZip = "OpenCode Remote-0.3.0-mac.zip";
+  const goodExe = "OpenCode Remote Setup 0.3.0.exe";
+  const json = (name: string, zip: string): string =>
+    JSON.stringify({
+      url: `https://github.com/caiovicentino/opencode-remote/releases/download/v0.3.0/${encodeURIComponent(zip)}`,
+      name,
+      notes: "release notes",
+      pub_date: "2026-09-01T12:00:00.000Z",
+    });
+  const yml = (version: string, path: string): string =>
+    `version: ${version}\nfiles:\n  - url: ${path}\n    sha512: abcd\n    size: 123\npath: '${path}'\nsha512: abcd\nreleaseName: ${version}\nreleaseDate: '2026-09-01'\n`;
+  const goodJson = json("0.3.0", goodZip);
+  const goodYml = yml("0.3.0", goodExe);
+
+  check(
+    "P2-157: coherent feed pair (json + yml pointing at this tag's artifacts) has no problems",
+    feedProblems(TAG, goodJson, goodYml, published).length === 0,
+  );
+  check(
+    "P2-157: tag without the leading v is accepted (P2-151 style)",
+    feedProblems("0.3.0", goodJson, goodYml, published).length === 0,
+  );
+
+  const oldName = feedProblems(TAG, json("0.2.9", goodZip), goodYml, published);
+  check(
+    "P2-157: json \"name\" carrying an old version is a problem",
+    oldName.length === 1 && oldName[0]!.includes("0.2.9"),
+    JSON.stringify(oldName),
+  );
+  const missingZip = feedProblems(TAG, json("0.3.0", "OpenCode Remote-0.2.9-mac.zip"), goodYml, published);
+  check(
+    "P2-157: json \"url\" pointing at a file absent from the published list is a problem",
+    missingZip.length === 1 && missingZip[0]!.includes("not published"),
+    JSON.stringify(missingZip),
+  );
+  const ymlVersion = feedProblems(TAG, goodJson, yml("0.2.9", goodExe), published);
+  check(
+    "P2-157: yml \"version\" diverging from the tag is a problem",
+    ymlVersion.length === 1 && ymlVersion[0]!.includes("0.2.9"),
+    JSON.stringify(ymlVersion),
+  );
+  const ymlPath = feedProblems(TAG, goodJson, yml("0.3.0", "OpenCode Remote Setup 0.2.9.exe"), published);
+  check(
+    "P2-157: yml \"path\" absent from the published list is a problem",
+    ymlPath.length === 1 && ymlPath[0]!.includes("not published"),
+    JSON.stringify(ymlPath),
+  );
+  const malformed = feedProblems(TAG, "{not json", goodYml, published);
+  check(
+    "P2-157: malformed update-mac.json is a problem",
+    malformed.length === 1 && malformed[0]!.includes("invalid JSON"),
+    JSON.stringify(malformed),
+  );
+  const noVersion = feedProblems(TAG, goodJson, goodYml.replace(/^version: 0\.3\.0\n/, ""), published);
+  check(
+    "P2-157: latest.yml without a version field is a problem",
+    noVersion.length === 1 && noVersion[0]!.includes("version"),
+    JSON.stringify(noVersion),
+  );
+  const badTag = feedProblems("banana", goodJson, goodYml, published);
+  check(
+    "P2-157: non-semver tag is a problem",
+    badTag.length === 1 && badTag[0]!.includes("semver"),
+    JSON.stringify(badTag),
+  );
+  const emptyTag = feedProblems("", goodJson, goodYml, published);
+  check(
+    "P2-157: empty tag is its own problem",
+    emptyTag.length === 1 && emptyTag[0]!.includes("empty"),
+    JSON.stringify(emptyTag),
+  );
+
+  // P2-146 lesson: fail closed — ALL problems reported at once, not just the
+  // first, so one CI round fixes everything.
+  const all = feedProblems(
+    TAG,
+    json("0.2.9", "OpenCode Remote-0.2.9-mac.zip"),
+    yml("0.2.9", "OpenCode Remote Setup 0.2.9.exe"),
+    published,
+  );
+  check(
+    "P2-157: every problem is reported at once (json name+url, yml version+path)",
+    all.length === 4,
+    JSON.stringify(all),
+  );
+}
+
+// --- P2-157: feed-consistency CLI — feed files by path, names via stdin ------
+{
+  const repoRoot = join(import.meta.dirname, "..");
+  const tsxEntry = join(repoRoot, "node_modules", "tsx", "dist", "cli.mjs");
+  const script = join(repoRoot, "scripts", "feed-consistency.ts");
+  const dir = mkdtempSync(join(tmpdir(), "feed-consistency-"));
+  const jsonPath = join(dir, "update-mac.json");
+  const ymlPath = join(dir, "latest.yml");
+  writeFileSync(
+    jsonPath,
+    JSON.stringify({
+      url: "https://github.com/caiovicentino/opencode-remote/releases/download/v0.3.0/" +
+        encodeURIComponent("OpenCode Remote-0.3.0-mac.zip"),
+      name: "0.3.0",
+      notes: "",
+      pub_date: "2026-09-01T12:00:00.000Z",
+    }),
+  );
+  writeFileSync(ymlPath, "version: 0.3.0\npath: 'OpenCode Remote Setup 0.3.0.exe'\n");
+  const names = [
+    "OpenCode Remote-0.3.0-arm64.dmg",
+    "OpenCode Remote-0.3.0-mac.zip",
+    "OpenCode Remote Setup 0.3.0.exe",
+    "latest-mac.yml",
+    "update-mac.json",
+    "latest.yml",
+  ].join("\n");
+  const run = (tag: string, input: string): { code: number; out: string } => {
+    try {
+      const out = execFileSync(process.execPath, [tsxEntry, script, tag, jsonPath, ymlPath], {
+        input,
+        encoding: "utf8",
+      });
+      return { code: 0, out };
+    } catch (err) {
+      const e = err as { status?: number; stdout?: Buffer; stderr?: Buffer };
+      return { code: e.status ?? -1, out: `${e.stdout ?? ""}${e.stderr ?? ""}` };
+    }
+  };
+  const ok = run("v0.3.0", `${names}\n`);
+  check(
+    "P2-157: cli exits 0 when both feeds point at the release's artifacts",
+    ok.code === 0 && ok.out.includes("feed-consistency: OK v0.3.0"),
+    ok.out,
+  );
+  const stale = run("v0.3.0", names.replace("0.3.0-mac.zip", "0.2.9-mac.zip"));
+  check(
+    "P2-157: cli exits 1 printing the stale-feed problem (fail-closed)",
+    stale.code === 1 && stale.out.includes("feed-consistency: FAIL v0.3.0") && stale.out.includes("not published"),
+    stale.out,
+  );
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// --- P2-157: real-repo assertion — release.yml wires the release-feeds job ---
+{
+  const root = join(import.meta.dirname, "..");
+  const release = readFileSync(join(root, ".github", "workflows", "release.yml"), "utf8");
+  const start = release.indexOf("\n  release-feeds:");
+  const block = start === -1 ? "" : release.slice(start);
+  check(
+    "P2-157: release.yml has a release-feeds job on ubuntu-latest needing BOTH packaging jobs",
+    block.includes("runs-on: ubuntu-latest") && block.includes("needs: [desktop-dmg, desktop-win]"),
+  );
+  check(
+    "P2-157: release-feeds downloads both feeds with gh release download",
+    block.includes("gh release download") && block.includes("--pattern update-mac.json") && block.includes("--pattern latest.yml"),
+  );
+  check(
+    "P2-157: release-feeds feeds `gh release view --json assets` names into scripts/feed-consistency.ts",
+    block.includes("gh release view") && block.includes("--json assets") && block.includes("scripts/feed-consistency.ts"),
+  );
+  check(
+    "P2-157: release-feeds declares shell: bash (P2-126 lesson)",
+    block.includes("shell: bash"),
+  );
 }
 
 if (failures > 0) {

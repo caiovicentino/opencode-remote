@@ -274,7 +274,13 @@ publicados com `gh release view --json assets` e roda
 `scripts/release-assets.ts` sobre essa lista: o release só é considerado
 completo quando esse job passa — instalador ou feed de update faltando derruba
 o workflow (todos os faltantes listados de uma vez) em vez de virar um 404
-silencioso no cheque de update do app.
+silencioso no cheque de update do app. O release também só é considerado
+completo quando os feeds apontam para artefatos da mesma tag (P2-157): um job
+`release-feeds` baixa `update-mac.json` e `latest.yml`, confere via
+`scripts/feed-consistency.ts` que o `name`/`url` do Squirrel e o
+`version`/`path` do yml citam a versão da tag e arquivos realmente publicados,
+e derruba o workflow — sem isso um feed defasado sai verde e cada app
+instalado falha o auto-update em silêncio.
 
 ## Relay hospedado (Docker)
 
