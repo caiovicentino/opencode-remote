@@ -103,6 +103,18 @@ node cli.mjs setup --relay=wss://relay.example.com
 Re-install / re-run setup with the new `RELAY_URL` and restart the daemon
 service. The URL the daemon prints is the one embedded in pairing codes.
 
+The daemon validates `RELAY_URL` at boot, fail-closed: only `ws://` and
+`wss://` URLs are accepted, and plain `ws://` pointing at a non-loopback host
+is refused — room metadata and pairing traffic would cross the network without
+TLS. Loopback `ws://` (the `ws://127.0.0.1:8787` default) keeps working for
+local installs. When validation fails the daemon does not dial the relay at
+all: it logs the reason **once** at boot (no per-retry noise), `GET /api/health`
+gains an additive `relay` field — `{ url, ok, reason }` while `relayConnected`
+and `relayRetry` keep their shape — and the pairing QR is withheld (not
+printed, and `/__ocr/pairing-uri` serves `null`), because a QR the phone can
+never use is worse than none. The desktop app's local mode does not depend on
+the relay and keeps working while the relay URL is invalid.
+
 ## Pointing the PWA at the hosted relay
 
 The PWA is relay-only and gets the relay URL from the pairing code — there is

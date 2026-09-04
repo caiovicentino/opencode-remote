@@ -271,7 +271,13 @@ router: it never sees plaintext or keys. The optional metrics endpoint
 (`RELAY_METRICS_PORT`) binds loopback by default; setting
 `RELAY_METRICS_BIND` to a network address requires `RELAY_METRICS_TOKEN`
 (`Authorization: Bearer <token>`) — the relay refuses to boot an
-unauthenticated metrics endpoint exposed to the network. Runbook:
+unauthenticated metrics endpoint exposed to the network. The daemon validates
+`RELAY_URL` at boot and fails closed: only `ws://`/`wss://` URLs dial, and
+plain `ws://` at a non-loopback host is refused — an invalid URL disables the
+relay connection (reason logged once at boot and surfaced in `/api/health` as
+an additive `relay` field) and withholds the pairing QR instead of serving one
+the phone can never use; the desktop app's local mode doesn't depend on the
+relay and keeps working. Runbook:
 [docs/RELAY-HOSTING.md](docs/RELAY-HOSTING.md).
 
 ## CLI
