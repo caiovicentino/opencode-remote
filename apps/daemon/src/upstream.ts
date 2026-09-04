@@ -36,6 +36,10 @@ export interface UpstreamProbe {
   error?: unknown;
   /** true when the caller gave up waiting for the response */
   timedOut?: boolean;
+  /** P2-149: whether an executable opencode binary was found on this machine
+   * (resolved by the daemon from PATH + known install locations). Only the
+   * connection-refused branch reads it; absent keeps the legacy verdict. */
+  binaryFound?: boolean;
 }
 
 /** Cap for a single upstream probe — slow-but-alive servers must surface as
@@ -80,9 +84,17 @@ export function classifyUpstream(probe: UpstreamProbe = {}): UpstreamVerdict {
   const err = probe.error ? errText(probe.error) : "";
 
   if (probe.error || probe.timedOut) {
-    // refused can never be a timeout, so it is checked first — this is the
-    // "server not installed / wrong port" case the UI must distinguish
+    // refused can never be a timeout, so it is checked first — P2-149 splits it
+    // by whether an opencode binary even exists on this machine: present means
+    // "start the server", absent means "install it first". Same state for both.
     if (!isTimeout(probe, err) && err.includes("econnrefused")) {
+      if (probe.binaryFound === false) {
+        return {
+          state: "unreachable",
+          reason: "conexão recusada e o opencode não foi encontrado nesta máquina",
+          hint: "o servidor do agente não foi instalado nesta máquina — instale o opencode primeiro e inicie-o",
+        };
+      }
       return {
         state: "unreachable",
         reason: "conexão recusada",
