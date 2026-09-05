@@ -341,6 +341,40 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # P2-186: make every download verifiable. The job downloads the release's
+      # own assets back, hashes each file with node (sha256), builds the
+      # canonical coreutils-format manifest via the CLI and attaches it to the
+      # DRAFT — so the manifest can only ever describe the bytes that were
+      # actually published. This runs BEFORE the publish step below on
+      # purpose: a failure here (bad hash shape, unexpected name, missing
+      # asset) leaves the release a draft under the P2-179 contract instead of
+      # going public with unverifiable downloads. The skip-list keeps a re-run
+      # idempotent (a previously uploaded manifest is downloaded again but
+      # never hashed into itself). shell: bash (P2-126 lesson): pwsh does not
+      # expand globs.
+      - name: Attach the SHA-256 checksum manifest to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          mkdir -p checksums
+          gh release download "$GITHUB_REF_NAME" --dir checksums
+          node -e '
+            const { readdirSync, statSync, readFileSync, writeFileSync } = require("node:fs");
+            const { createHash } = require("node:crypto");
+            const { join } = require("node:path");
+            const SKIP = new Set(["checksums.txt", "entries.json"]);
+            const entries = [];
+            for (const name of readdirSync("checksums").sort()) {
+              const path = join("checksums", name);
+              if (!statSync(path).isFile() || SKIP.has(name)) continue;
+              entries.push({ name, hash: createHash("sha256").update(readFileSync(path)).digest("hex") });
+            }
+            writeFileSync("entries.json", JSON.stringify(entries));
+          '
+          npx --yes tsx@4.23.12 scripts/release-checksums.ts "$GITHUB_REF_NAME" entries.json checksums.txt
+          gh release upload "$GITHUB_REF_NAME" checksums.txt --clobber
+
       - name: Publish the draft release only when every required asset is attached
         env:
           GH_TOKEN: ${{ github.token }}

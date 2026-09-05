@@ -377,6 +377,30 @@ published release — or delete the draft with
 `gh release delete vX.Y.Z --yes` (the tag stays; delete it too with
 `--cleanup-tag` if you want a clean re-tag).
 
+**Verify your download** (P2-186): every release also carries
+`checksums.txt`, a SHA-256 manifest in the standard coreutils format (one
+`<hash>  <name>` line per download asset, sorted by name, two spaces between
+hash and name). It is built by the release pipeline itself: the
+`release-publish` job downloads the finished assets back from the draft,
+hashes each file and attaches the manifest **before** the release goes public,
+so the checksums can only ever describe the bytes that were actually
+published. After downloading an installer (and the `checksums.txt` next to it),
+check it with your system's standard tool:
+
+    # macOS / Linux — inside the folder with the downloaded files:
+    shasum -a 256 -c checksums.txt     # macOS
+    sha256sum -c checksums.txt         # Linux
+
+    # Windows (PowerShell) — compare with the line in checksums.txt:
+    Get-FileHash ".\OpenCode Remote Setup 0.3.0.exe" -Algorithm SHA256
+
+The tool prints `OK` for every file whose hash matches. A mismatch means the
+file on disk is not what CI produced: **do not open or run it**. The most
+common cause is a truncated or proxied download — download again and re-check;
+if the hash still does not match, do not distribute the file and report it on
+the releases page (the Homebrew formula is an alternative install path that
+pins its own sha256 at tag time).
+
 ## Hosted relay (Docker)
 
 Prefer not to host the relay on your own Mac? `deploy/relay/Dockerfile` builds

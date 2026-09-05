@@ -467,6 +467,8 @@ import { gatekeeperProblems } from "./gatekeeper-verify";
 
 import { authenticodeProblems } from "./authenticode-verify";
 
+import { checksumLines, checksumProblems, MANIFEST_NAME } from "./release-checksums";
+
 import { feedProblems } from "./feed-consistency";
 
 import { BUNDLE_BUDGETS, budgetProblems, type BundleEntry } from "./bundle-budget";
@@ -11266,6 +11268,193 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       authenticodeBlock.includes("scripts/authenticode-verify.ts") &&
       authenticodeBlock.includes("steps.win-signing.outputs.mode"),
     JSON.stringify(authenticodeBlock),
+  );
+}
+
+// --- P2-186: release-checksums — every download asset ships its sha256 ------
+{
+  const TAG = "v0.3.0";
+  const hA = "aa".repeat(32);
+  const hB = "bb".repeat(32);
+  const hC = "cc".repeat(32);
+  const hD = "dd".repeat(32);
+  const hE = "ee".repeat(32);
+  const hF = "12".repeat(32);
+  const hG = "34".repeat(32);
+  // Complete, valid list — space-free names, lowercase 64-hex digests, one
+  // entry per download asset (tarball included; the P2-153 required slots all
+  // match by extension+version or exact name).
+  const complete = [
+    { name: "opencode-remote-v0.3.0.tar.gz", hash: hF },
+    { name: "OpenCode-Remote-0.3.0.dmg", hash: hB },
+    { name: "OpenCode-Remote-0.3.0-mac.zip", hash: hA },
+    { name: "OpenCode-Remote-Setup-0.3.0.exe", hash: hC },
+    { name: "latest-mac.yml", hash: hD },
+    { name: "update-mac.json", hash: hG },
+    { name: "latest.yml", hash: hE },
+  ];
+  // Canonical order, written out by hand (not computed) so a sorting bug in
+  // checksumLines shows: byte-wise name order, and every line ends with the
+  // two-space separator.
+  const canonical = [
+    `${hA}  OpenCode-Remote-0.3.0-mac.zip`,
+    `${hB}  OpenCode-Remote-0.3.0.dmg`,
+    `${hC}  OpenCode-Remote-Setup-0.3.0.exe`,
+    `${hD}  latest-mac.yml`,
+    `${hE}  latest.yml`,
+    `${hF}  opencode-remote-v0.3.0.tar.gz`,
+    `${hG}  update-mac.json`,
+  ].join("\n");
+
+  check(
+    "P2-186: complete list → canonical sorted coreutils manifest, no problems",
+    checksumProblems(complete, TAG).length === 0 && checksumLines(complete) === `${canonical}\n`,
+    JSON.stringify(checksumProblems(complete, TAG)),
+  );
+
+  const shuffled = [complete[4], complete[0], complete[6], complete[2], complete[5], complete[1], complete[3]];
+  check(
+    "P2-186: different input order → byte-identical manifest",
+    checksumLines(shuffled) === checksumLines(complete) && checksumLines(complete).endsWith("\n") && !checksumLines(complete).includes("\r"),
+  );
+
+  const upper = complete.map((e) => (e.name === "latest.yml" ? { ...e, hash: hE.toUpperCase() } : e));
+  check(
+    "P2-186: uppercase hash → problem",
+    checksumProblems(upper, TAG).length === 1 && checksumProblems(upper, TAG)[0]!.includes("latest.yml"),
+    JSON.stringify(checksumProblems(upper, TAG)),
+  );
+
+  const short = complete.map((e) => (e.name === "latest.yml" ? { ...e, hash: hE.slice(0, 63) } : e));
+  const long = complete.map((e) => (e.name === "latest.yml" ? { ...e, hash: `${hE}0` } : e));
+  check(
+    "P2-186: short and long hash → problem",
+    checksumProblems(short, TAG).length === 1 && checksumProblems(long, TAG).length === 1,
+    `${JSON.stringify(checksumProblems(short, TAG))} | ${JSON.stringify(checksumProblems(long, TAG))}`,
+  );
+
+  const dup = [...complete, { name: "latest.yml", hash: hD }];
+  check(
+    "P2-186: repeated name → problem",
+    checksumProblems(dup, TAG).length === 1 && checksumProblems(dup, TAG)[0]!.includes("repeated"),
+    JSON.stringify(checksumProblems(dup, TAG)),
+  );
+
+  const spaced = complete.map((e) => (e.name === "OpenCode-Remote-0.3.0.dmg" ? { ...e, name: "OpenCode Remote-0.3.0.dmg" } : e));
+  check(
+    "P2-186: name with space → problem",
+    checksumProblems(spaced, TAG).length === 1 && checksumProblems(spaced, TAG)[0]!.includes("space"),
+    JSON.stringify(checksumProblems(spaced, TAG)),
+  );
+
+  const separator = complete.map((e) => (e.name === "opencode-remote-v0.3.0.tar.gz" ? { ...e, name: `sub/dir/${e.name}` } : e));
+  check(
+    "P2-186: name with path separator → problem",
+    checksumProblems(separator, TAG).length === 1 && checksumProblems(separator, TAG)[0]!.includes("path separator"),
+    JSON.stringify(checksumProblems(separator, TAG)),
+  );
+
+  const self = [...complete, { name: MANIFEST_NAME, hash: hD }];
+  check(
+    "P2-186: name equal to the manifest itself → problem",
+    checksumProblems(self, TAG).length === 1 && checksumProblems(self, TAG)[0]!.includes(MANIFEST_NAME),
+    JSON.stringify(checksumProblems(self, TAG)),
+  );
+
+  const noExe = complete.filter((e) => e.name !== "OpenCode-Remote-Setup-0.3.0.exe");
+  check(
+    "P2-186: required download asset absent → problem (P2-153 contract by import)",
+    checksumProblems(noExe, TAG).length === 1 && checksumProblems(noExe, TAG)[0]!.includes("Windows NSIS setup"),
+    JSON.stringify(checksumProblems(noExe, TAG)),
+  );
+
+  const empty = checksumProblems([], TAG);
+  check(
+    "P2-186: empty list → problem (plus every required slot missing)",
+    empty.length === 7 && empty[0]!.includes("empty"),
+    JSON.stringify(empty),
+  );
+
+  const notList = checksumProblems("opencode-remote-v0.3.0.tar.gz", TAG);
+  check(
+    "P2-186: non-list input → problem",
+    notList.length === 1 && notList[0]!.includes("not a list"),
+    JSON.stringify(notList),
+  );
+
+  // --- CLI: tag + entries JSON path + manifest out path, fail-closed ---------
+  const repoRoot = join(import.meta.dirname, "..");
+  const tsxEntry = join(repoRoot, "node_modules", "tsx", "dist", "cli.mjs");
+  const script = join(repoRoot, "scripts", "release-checksums.ts");
+  const dir = mkdtempSync(join(tmpdir(), "release-checksums-"));
+  const entriesPath = join(dir, "entries.json");
+  const outPath = join(dir, MANIFEST_NAME);
+  const runCli = (args: string[]): { code: number; out: string } => {
+    try {
+      const out = execFileSync(process.execPath, [tsxEntry, script, ...args], { cwd: repoRoot, encoding: "utf8" });
+      return { code: 0, out };
+    } catch (err) {
+      const e = err as { status?: number; stdout?: Buffer; stderr?: Buffer };
+      return { code: e.status ?? -1, out: `${e.stdout ?? ""}${e.stderr ?? ""}` };
+    }
+  };
+  writeFileSync(entriesPath, JSON.stringify(complete));
+  const cliOk = runCli([TAG, entriesPath, outPath]);
+  const written = readFileSync(outPath, "utf8");
+  check(
+    "P2-186: cli exits 0 and writes the canonical manifest to the requested path",
+    cliOk.code === 0 && cliOk.out.includes(`release-checksums: OK ${TAG}`) && written === `${canonical}\n`,
+    `${cliOk.out}${written}`,
+  );
+  writeFileSync(entriesPath, JSON.stringify(spaced));
+  const cliFail = runCli([TAG, entriesPath, join(dir, "never.txt")]);
+  check(
+    "P2-186: cli exits 1 printing every problem at once and writes no manifest",
+    cliFail.code === 1 &&
+      cliFail.out.includes(`release-checksums: FAIL ${TAG}`) &&
+      (cliFail.out.match(/  - /g) ?? []).length === 1 &&
+      cliFail.out.includes("1 problem(s) found") &&
+      !existsSync(join(dir, "never.txt")),
+    cliFail.out,
+  );
+  const cliUsage = runCli([]);
+  check(
+    "P2-186: cli without tag/entries/out prints usage and exits 1",
+    cliUsage.code === 1 && cliUsage.out.includes("usage: tsx scripts/release-checksums.ts"),
+    cliUsage.out,
+  );
+  rmSync(dir, { recursive: true, force: true });
+
+  // --- real-repo assertion: release.yml wires the manifest step into the job
+  const release = readFileSync(join(repoRoot, ".github", "workflows", "release.yml"), "utf8");
+  const jobAt = release.indexOf("\n  release-publish:");
+  const publishJob = jobAt > -1 ? release.slice(jobAt) : "";
+  check(
+    "P2-186: release.yml still has the release-publish job needing release-verify AND release-feeds",
+    publishJob.includes("needs: [release-verify, release-feeds]"),
+  );
+  const checksumAt = publishJob.indexOf("- name: Attach the SHA-256 checksum manifest to the release");
+  const publishAt = publishJob.indexOf("- name: Publish the draft release only when every required asset is attached");
+  check(
+    "P2-186: the checksum step sits inside release-publish, before the step that flips the draft public",
+    checksumAt > -1 && publishAt > checksumAt,
+    `checksum=${checksumAt} publish=${publishAt}`,
+  );
+  const block = checksumAt > -1 && publishAt > checksumAt ? publishJob.slice(checksumAt, publishAt) : "";
+  check(
+    "P2-186: checksum step declares shell: bash (P2-126 lesson)",
+    /^\s*shell:\s*bash\s*$/m.test(block),
+    JSON.stringify(block),
+  );
+  check(
+    "P2-186: checksum step downloads the assets, hashes with node, feeds the CLI and uploads the manifest",
+    block.includes("gh release download") &&
+      block.includes("node -e") &&
+      block.includes("sha256") &&
+      block.includes("scripts/release-checksums.ts") &&
+      block.includes("gh release upload") &&
+      block.includes(MANIFEST_NAME),
+    JSON.stringify(block),
   );
 }
 
