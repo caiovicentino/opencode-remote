@@ -525,6 +525,16 @@ ceiling 2000): staged bytes per id, at most 8 concurrent ids, chunk index up to
 or `429` — see
 [docs/api.md](docs/api.md#chunked-upload-staging-limits-p2-181).
 
+The first pairing on a virgin daemon is only accepted while the **bootstrap
+pairing window** is open: 15 minutes by default (`OCR_PAIR_WINDOW_MS`, positive
+whole milliseconds, ceiling 24 h; an invalid value makes the daemon refuse to
+boot). The window opens at boot and re-arms on every authenticated read of the
+pairing screen, so the QR staying on screen keeps pairing available. Once the
+window closed, unknown clients are rejected (audit event
+`client.bootstrap-expired`) — reopen the pairing screen in the desktop app or
+restart the daemon to pair a new device — see
+[docs/security.md](docs/security.md).
+
 ## Architecture & security
 
 - [docs/architecture.md](docs/architecture.md) — tunnel, chunking, services

@@ -19,9 +19,18 @@ identity servers, no accounts.
    or recombine frames without breaking authentication.
 5. **Blind relay.** Ciphertext plus room id. Host it anywhere — VPS, a
    friend's box — the E2E guarantees are unaffected.
-6. **Allowlist.** First pairing bootstraps it; afterwards only listed client
-   keys connect. Revocation is instant (state file re-read per handshake) and
-   available from the app or `manage.ts revoke-all`.
+6. **Allowlist.** First pairing bootstraps it — but only while the bootstrap
+   pairing window is open: 15 minutes by default (`OCR_PAIR_WINDOW_MS`,
+   positive whole milliseconds, ceiling 24 h; a non-numeric, negative, zero,
+   fractional or above-ceiling value makes the daemon refuse to boot). The
+   window opens at daemon boot and re-arms on every authenticated read of the
+   pairing screen, so the QR staying on screen keeps pairing available. Once
+   the window closed, an unknown client is rejected on the regular refusal
+   path and an audit event `client.bootstrap-expired` is recorded: reopen the
+   pairing screen in the desktop app or restart the daemon to pair a new
+   device. Afterwards only listed client keys connect. Revocation is instant
+   (state file re-read per handshake) and available from the app or
+   `manage.ts revoke-all`.
 7. **Least-privilege file delivery.** Downloads are restricted to explicit
    roots (`~/.opencode-remote/uploads`, Desktop, Downloads, Documents, repo
    cwd) and resolved against real paths before serving.

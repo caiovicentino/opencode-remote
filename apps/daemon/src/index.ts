@@ -67,6 +67,7 @@ import { createRelayRetry } from "./relayretry.js";
 import { classifyRelayClose, effectiveRetryDelayMs, type RelayCloseKind } from "./relayclose.js";
 import { parseRelayUrl, redactRelayUrl } from "./relayurl.js";
 import { bodyLimit, isBodyLimitError, readLimitedBody, type BodyLimitError } from "./bodylimit.js";
+import { pairWindow, bootstrapDecision } from "./pairwindow.js";
 import {
   admitNewUpload,
   chunkIndexProblem,
@@ -119,6 +120,11 @@ const bodyLimitResolution = bodyLimit(process.env);
 // P2-181: the chunk-staging ceilings are resolved exactly once at boot too —
 // same fail-closed contract: any problem means exit 1 with no listener.
 const chunkLimits = chunkStoreLimits(process.env);
+// P2-190: the bootstrap pairing window is resolved exactly once at boot —
+// same fail-closed contract: an invalid OCR_PAIR_WINDOW_MS never falls back
+// to the default; main() logs one line per problem and exits 1 with no
+// listener.
+const pairWindowCfg = pairWindow(process.env);
 const OPENCODE_URL = process.env.OPENCODE_URL ?? "http://127.0.0.1:4096";
 const OPENCODE_USER = process.env.OPENCODE_SERVER_USERNAME ?? "opencode";
 const OPENCODE_PASS = process.env.OPENCODE_SERVER_PASSWORD ?? "";
@@ -239,6 +245,11 @@ let daemon: DaemonIdentity;
 // GET /__ocr/pairing-uri so the desktop shell can render the first-run QR
 // without scraping stdout. Null until main() finishes building it.
 let pairingUri: string | null = null;
+
+// P2-190: instant the current bootstrap pairing window opened. 0 = epoch =
+// closed, fail-closed before main() opens it. Re-armed on every authenticated
+// read of the pairing screen — exactly the period the QR is on screen.
+let pairWindowOpenedAt = 0;
 
 // user-editable settings (name, notifications) persisted in the state file
 let appSettings: AppSettings;
@@ -1903,11 +1914,24 @@ async function handleMessage(data: WebSocket.RawData, ws: WebSocket) {
 
       // ---- client authorization ------------------------------------------
       // fresh read per handshake: `manage.ts revoke` takes effect instantly.
-      // bootstrap: the first QR pairing on a virgin daemon auto-persists;
+      // bootstrap: the first QR pairing on a virgin daemon auto-persists —
+      // but only while the P2-190 bootstrap pairing window is open (opened at
+      // boot, re-armed on every authenticated pairing-screen read);
       // afterwards only clients in the allowlist may connect.
       const allowlist = readAllowlist();
       let client = allowlist.find((c) => c.pub === accepted.clientPub);
-      if (!client && allowlist.length === 0) {
+      const decision = client
+        ? "allow"
+        : bootstrapDecision(allowlist.length, pairWindowOpenedAt, Date.now(), pairWindowCfg.windowMs);
+      if (decision === "reject-expired") {
+        audit("client.bootstrap-expired", { pub: accepted.clientPub.slice(0, 16) });
+        log(
+          "warn",
+          "bootstrap pairing window closed: reopen the pairing screen in the desktop app or restart the daemon",
+          { pub: accepted.clientPub.slice(0, 16) },
+        );
+      }
+      if (decision === "allow" && !client) {
         client = { pub: accepted.clientPub, addedAt: new Date().toISOString(), label: "first" };
         allowlist.push(client);
         saveAllowlist(allowlist);
@@ -2364,6 +2388,12 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     }
     res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
     if (url.pathname === "/__ocr/pairing-uri") {
+      // P2-190: every authenticated read of the pairing screen re-arms the
+      // bootstrap window — this is exactly the period the desktop app shows
+      // the QR. Silent on purpose: the overlay polls this route, so one log
+      // line per read would flood. When the QR is withheld (invalid relay,
+      // pairingUri === null) there is no re-arm.
+      if (pairingUri !== null) pairWindowOpenedAt = Date.now();
       res.end(JSON.stringify({ uri: pairingUri }));
     } else {
       let devices: PairedClient[] = [];
@@ -2433,6 +2463,12 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
           ok: !relayDisabled,
           reason: relayDisabled ? relayUrl.problems.join(" ") : null,
         },
+        // P2-190: additive bootstrap pairing-window verdict — true while a
+        // virgin daemon (empty allowlist) would still auto-pair the first
+        // client completing the handshake. `pairWindowOpenedAt = 0` (never
+        // opened) reads as closed. No existing field is removed or renamed.
+        pairingWindowOpen:
+          bootstrapDecision(0, pairWindowOpenedAt, Date.now(), pairWindowCfg.windowMs) === "allow",
       });
       return true;
     }
@@ -2905,6 +2941,13 @@ async function main() {
     process.exit(1);
     return;
   }
+  // P2-190: same fail-closed contract for the bootstrap pairing window — an
+  // invalid OCR_PAIR_WINDOW_MS never falls back to the default silently.
+  if (pairWindowCfg.problems.length > 0) {
+    for (const problem of pairWindowCfg.problems) log("error", problem);
+    process.exit(1);
+    return;
+  }
 
   // Async module state first (see note at the declarations): identity, settings
   // and whisper detection must be ready before anything is served or sent.
@@ -3015,6 +3058,9 @@ async function main() {
     console.log(`  or paste: ${pairingUri}\n`);
   }
 
+  // P2-190: the bootstrap window opens at boot; pairing right after the
+  // daemon starts keeps working (the localws e2e depends on this).
+  pairWindowOpenedAt = Date.now();
   connectRelay();
   void forwardEvents();
 }

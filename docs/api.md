@@ -89,6 +89,15 @@ it, and `binaryFound`/`binarySource` expose only the boolean and the origin,
 so no secrets, tokens, passwords or absolute binary paths ever appear in the
 health payload.
 
+### `/api/health` — bootstrap pairing window (P2-190)
+
+`GET /api/health` adds an additive `pairingWindowOpen` boolean (no existing
+field is removed or renamed): `true` while a virgin daemon (empty allowlist)
+would still auto-pair the first client that completes the handshake — the
+bootstrap pairing window from docs/security.md. `false` once the window
+closed (or was never opened); reopen the pairing screen in the desktop app
+or restart the daemon to pair.
+
 ### Pairing state (P2-007)
 
 Two read-only routes serve the desktop shell's first-run QR overlay; they are
