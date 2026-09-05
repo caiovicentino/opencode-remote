@@ -282,7 +282,14 @@ dois arquivos junto com a tag. PRs que tocam o shell desktop, a web UI ou
 `package-lock.json` rodam ainda um job de empacotamento escopado
 (`desktop-package`, alvo mac `dir` apenas, sem DMG/assinatura) validado com
 `dist:smoke --no-installer`; os instaladores assinados completos seguem
-saindo só na tag.
+saindo só na tag. Antes de empacotar, esse job também garante os orçamentos de
+tamanho de `scripts/bundle-budget.ts` (P2-162): o payload somado de
+`apps/web/dist` e o bundle sidecar `apps/desktop/dist-daemon/index.js` precisam
+ficar sob os tetos, ou o job falha antes de empacotar qualquer coisa — uma
+dependência gorda não vira mais um download lento em silêncio. Meça localmente
+após o build com `npx tsx scripts/bundle-budget.ts`; suba um teto de propósito,
+atualizando `BUNDLE_BUDGETS` com a justificativa na mensagem do
+commit.
 
 **O que cada release precisa ter** (P2-153): o tarball de fonte
 (`opencode-remote-<tag>.tar.gz`) do job `release`; o lado macOS do

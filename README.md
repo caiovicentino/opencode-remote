@@ -298,7 +298,14 @@ hand:
     npx tsx scripts/sync-version.ts vX.Y.Z && git add -A && git commit -m "release: vX.Y.Z" && git tag vX.Y.Z && git push --follow-tags PRs that touch the desktop shell, the web UI or `package-lock.json`
 additionally run a scoped packaging job (`desktop-package`, mac `dir` target
 only, no DMG/signing) smoke-checked with `dist:smoke --no-installer`; the full
-signed installers still ship only at tag time.
+signed installers still ship only at tag time. Before packaging, that job also
+enforces the bundle size budgets of `scripts/bundle-budget.ts` (P2-162): the
+summed `apps/web/dist` payload and the `apps/desktop/dist-daemon/index.js`
+sidecar bundle must stay under their ceilings or the job fails before anything
+is packaged — a fat dependency can no longer turn into a silent slow download.
+Measure locally after a build with `npx tsx scripts/bundle-budget.ts`; raise a
+ceiling only on purpose, bumping `BUNDLE_BUDGETS` with the justification in the
+commit message.
 
 **What each release must carry** (P2-153): the source tarball
 (`opencode-remote-<tag>.tar.gz`) from the `release` job; the macOS side from
