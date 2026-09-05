@@ -9,7 +9,7 @@ import {
 } from "react";
 import type { EventEnvelope } from "@ocr/protocol";
 import { WavRecorder, encodeWav } from "../lib/recorder";
-import { transcribeBlob } from "../lib/transcribe";
+import { transcribeBlob, useSttStatus } from "../lib/transcribe";
 import { useModelSelector } from "../lib/models";
 import ModelMenuItems from "./ModelMenuItems";
 import { saveFile } from "../lib/files";
@@ -313,6 +313,10 @@ export default function ChatView({
     return () => clearTimeout(t);
   }, [error]);
   const [recState, setRecState] = useState<"idle" | "rec" | "busy">("idle");
+  // P2-201: host speech-to-text verdict. Unknown (probe silent) stays null —
+  // the mic fails open; a known non-ready state disables it with the phrase.
+  const stt = useSttStatus(request);
+  const sttBlocked = !!stt && stt.state !== "ready";
   // P2-125 voice replies: toggle + playback state. Availability comes from the
   // daemon (edge-tts installed on the host); the full answer stays in the chat.
   const [ttsOn, setTtsOn] = useState(() => localStorage.getItem("ocr-tts-on") === "1");
@@ -2548,7 +2552,7 @@ export default function ChatView({
               className="composer-btn composer-mic"
               onPointerDown={(e) => {
                 e.preventDefault();
-                if (recState === "idle") void micDown();
+                if (recState === "idle" && !sttBlocked) void micDown();
               }}
               onPointerUp={() => {
                 if (recState !== "rec") return;
@@ -2559,9 +2563,17 @@ export default function ChatView({
                   setTapToggle(true);
                 }
               }}
-              disabled={!voice || recState === "busy"}
+              disabled={!voice || recState === "busy" || sttBlocked}
               aria-label={recState === "rec" ? t("stopRecording") : t("recordVoice")}
-              title={!voice ? t("micNeedsPermission") : recState === "rec" ? t("stopRecording") : t("recordVoice")}
+              title={
+                sttBlocked
+                  ? stt.message
+                  : !voice
+                    ? t("micNeedsPermission")
+                    : recState === "rec"
+                      ? t("stopRecording")
+                      : t("recordVoice")
+              }
             >
               {recState === "busy" ? (
                 "…"
@@ -2637,6 +2649,11 @@ export default function ChatView({
               {(liveText || liveThinking) ? "…" : <IconArrowUp size={16} />}
             </button>
           </div>
+          {sttBlocked && (
+            <p className="composer-hint" role="status">
+              {stt.message}
+            </p>
+          )}
         </div>
 
         {recap && (

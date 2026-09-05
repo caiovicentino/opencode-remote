@@ -40,18 +40,33 @@ function which(bin: string): string | null {
   }
 }
 
-function buildCppTool(bin: string): WhisperTool | null {
+function buildCppTool(bin: string): { tool: WhisperTool | null; modelPresent: boolean } {
   const model = resolveModel();
   if (!model) {
     log("warn", "whisper.cpp found but no ggml model found; run scripts/setup-whisper.sh", {
       expected: MODEL_PATH(),
     });
-    return null;
+    return { tool: null, modelPresent: false };
   }
-  return { kind: "whisper-cpp", bin, model };
+  return { tool: { kind: "whisper-cpp", bin, model }, modelPresent: true };
 }
 
-export async function detectWhisper(): Promise<WhisperTool | null> {
+export interface WhisperDetection {
+  /** Usable transcription tool, or null when the host has none ready. */
+  tool: WhisperTool | null;
+  /** Raw engine type found on the host — survives even when no usable tool
+   * could be built (binary present, model missing). */
+  toolType: WhisperKind | null;
+  /** Whether the engine's model file was found (whisper-cpp only needs one). */
+  modelPresent: boolean;
+}
+
+/**
+ * P2-201: full detection facts. detectWhisper() collapses a binary-without-
+ * model host into null, which hides the real reason from the capability
+ * status; this shape keeps it intact so the verdict can say what to fix.
+ */
+export async function detectWhisperDetail(): Promise<WhisperDetection> {
   // launchd/CI environments have a minimal PATH — probe common absolute
   // locations before falling back to PATH lookup
   const abs = ["/opt/homebrew/bin", "/usr/local/bin"];
@@ -59,21 +74,27 @@ export async function detectWhisper(): Promise<WhisperTool | null> {
     for (const dir of abs) {
       const candidate = join(dir, bin);
       if (existsSync(candidate)) {
-        return buildCppTool(candidate);
+        const cpp = buildCppTool(candidate);
+        return { tool: cpp.tool, toolType: "whisper-cpp", modelPresent: cpp.modelPresent };
       }
     }
   }
   for (const bin of ["whisper-cli", "whisper-cpp"]) {
     const p = which(bin);
     if (p) {
-      return buildCppTool(p);
+      const cpp = buildCppTool(p);
+      return { tool: cpp.tool, toolType: "whisper-cpp", modelPresent: cpp.modelPresent };
     }
   }
   const mlx = which("mlx_whisper");
-  if (mlx) return { kind: "mlx", bin: mlx };
+  if (mlx) return { tool: { kind: "mlx", bin: mlx }, toolType: "mlx", modelPresent: true };
   const oa = which("whisper");
-  if (oa) return { kind: "openai", bin: oa };
-  return null;
+  if (oa) return { tool: { kind: "openai", bin: oa }, toolType: "openai", modelPresent: true };
+  return { tool: null, toolType: null, modelPresent: false };
+}
+
+export async function detectWhisper(): Promise<WhisperTool | null> {
+  return (await detectWhisperDetail()).tool;
 }
 
 function run(

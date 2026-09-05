@@ -62,7 +62,16 @@ private. That is the product: **local power, remote control, zero trust**.
 - **Pinned recap** — a one-line strip under the composer shows where the
   conversation left off: the first sentence of the agent's last reply (or the
   session summary when the backend provides one)
-- **Voice** — hold to talk, local whisper transcription, no cloud
+- **Voice** — hold to talk, local whisper transcription, no cloud. Transcription
+  is an **optional** host capability: when the machine has no whisper engine
+  (or the engine's model file is missing) the mic button renders disabled with
+  a short actionable sentence from the daemon instead of recording into a dead
+  end — and the daemon serves the same verdict on
+  `GET /__ocr/voice/stt-status` (`{ available, state, message }`, mirroring the
+  tts-status route). Install it on the host with `./scripts/setup-whisper.sh`.
+  `OCR_STT_BLOCK=1` on the daemon is a test hatch that forces the
+  missing-binary verdict so the disabled-mic UI can be evidenced
+  deterministically even on hosts that do have whisper installed
 - **Files** — upload from the phone, preview anything, export a conversation
   as markdown with one tap; every file card has a ⧉ button that copies the
   file's full path (Clipboard API with an execCommand fallback)
@@ -94,7 +103,10 @@ private. That is the product: **local power, remote control, zero trust**.
   button attaches files with an inline preview chip (thumbnail, name, one-tap
   remove), a mic button sits next to it (functional placeholder — disabled,
   with an explanatory tooltip, until the daemon reports transcription
-  capability), an inline **agent · model** dropdown replaces the old header
+  capability; since P2-201 the tooltip and the quiet line under the composer
+  carry the daemon's actionable verdict phrase — missing engine vs missing
+  model — and an unknown verdict keeps the mic usable, failing open on
+  purpose), an inline **agent · model** dropdown replaces the old header
   select and the full-width model list, the textarea auto-grows up to ~6 lines
   and then scrolls internally, Enter sends / Shift+Enter breaks the line
 - **Routines** — real cron: daily, specific weekdays, or interval loop

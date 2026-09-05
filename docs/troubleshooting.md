@@ -7,7 +7,7 @@ Run `opencode-remote doctor` first — it checks everything below in one shot.
 | `client rejected: not in allowlist` | device not paired. Scan the QR again, or `npm run manage --workspace apps/daemon -- revoke-all` |
 | `relay connection lost; retrying` | relay down or tailscale dropped — check the relay terminal/service |
 | `502` on chat | `opencode serve` not running on :4096. Watchdog pushes `opencode is DOWN` when this happens |
-| `transcription unavailable` | install whisper: `./scripts/setup-whisper.sh` |
+| `transcription unavailable` | transcription is an **optional** host capability. The phone shows a short actionable sentence (engine missing vs model missing) and the mic stays disabled — install whisper on the host: `./scripts/setup-whisper.sh` (re-run it to add a missing model). The daemon logs the same verdict at boot; `GET /__ocr/voice/stt-status` returns `{ available, state, message }`. `OCR_STT_BLOCK=1` on the daemon forces the missing-binary verdict for deterministic screenshots |
 | push never arrives on iPhone | must be installed via Add to Home Screen (iOS 16.4+) with permission granted; Settings → Push → Send test shows per-endpoint HTTP errors |
 | `GET messages -> 413` | daemon older than the chunked-response feature — restart it |
 | `attachment expired` | daemon restarted between attach and send (uploads are in-memory). The PWA auto-re-uploads when it still holds the image; attach again otherwise |

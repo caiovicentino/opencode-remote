@@ -783,6 +783,13 @@ body.dragging-files::after {
 .composer-btn:active:not(:disabled) {
   transform: none;
 }
+/* P2-201: one quiet line under the composer explaining why the mic is off —
+   the daemon's actionable verdict phrase, never a terminal command. */
+.composer-hint {
+  color: var(--muted);
+  font-size: 0.72rem;
+  margin: 4px 2px 0;
+}
 /* P2-107: chat header actions share the composer's ghost chrome — quiet
    icon buttons, no bordered boxes fighting the title (Linear/Raycast bar). */
 .chat-btn {

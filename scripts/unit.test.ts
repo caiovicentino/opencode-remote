@@ -15,6 +15,7 @@ import { parsePairingUri, localWsUrl, shouldFailoverToRelay } from "../apps/web/
 import { isLoopbackAddr, localOriginAllowed, localUpgradeAllowed } from "../apps/daemon/src/localws";
 
 import { classifyRelayClose, effectiveRetryDelayMs } from "../apps/daemon/src/relayclose";
+import { sttVerdict } from "../apps/daemon/src/voicecap";
 import { rewriteFeedPort } from "../apps/daemon/src/feedport";
 import { createRelayRetry } from "../apps/daemon/src/relayretry";
 import { nodeStateFileFs, writeStateAtomic, type StateFileFs } from "../apps/daemon/src/statefile";
@@ -13408,6 +13409,115 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
         typeof (dict.en as Record<string, string>)[k] === "string" &&
         typeof (dict.pt as Record<string, string>)[k] === "string",
     ),
+  );
+}
+
+// --- P2-201: speech-to-text capability verdict (voicecap.ts) + wiring ----------
+
+{
+  const src = (rel: string[]) => readFileSync(join(import.meta.dirname, "..", ...rel), "utf8");
+  const indexSrc = src(["apps", "daemon", "src", "index.ts"]);
+  const whisperSrc = src(["apps", "daemon", "src", "whisper.ts"]);
+  const voicecapSrc = src(["apps", "daemon", "src", "voicecap.ts"]);
+  const chatViewSrc = src(["apps", "web", "src", "components", "ChatView.tsx"]);
+  const homeViewSrc = src(["apps", "web", "src", "components", "HomeView.tsx"]);
+
+  // sttVerdict matrix
+  check("P2-201: whisper-cpp with a model present is ready", sttVerdict("whisper-cpp", true).state === "ready");
+  check(
+    "P2-201: whisper-cpp without a model is missing-model (the case that used to collapse to null)",
+    sttVerdict("whisper-cpp", false).state === "missing-model",
+  );
+  check(
+    "P2-201: no tool at all is missing-binary (model presence is irrelevant)",
+    sttVerdict(null, false).state === "missing-binary" && sttVerdict(null, true).state === "missing-binary",
+  );
+  check(
+    "P2-201: mlx and openai are ready without requiring a model",
+    sttVerdict("mlx", false).state === "ready" && sttVerdict("openai", false).state === "ready",
+  );
+  check(
+    "P2-201: unknown tool type is missing-binary",
+    sttVerdict("pocketsphinx", true).state === "missing-binary" &&
+      sttVerdict("pocketsphinx", false).state === "missing-binary",
+  );
+
+  // message hygiene: short, actionable, no paths / script names / URL schemes
+  const verdicts = [
+    sttVerdict("whisper-cpp", true),
+    sttVerdict("whisper-cpp", false),
+    sttVerdict(null, false),
+    sttVerdict("mlx", false),
+    sttVerdict("openai", false),
+  ];
+  check(
+    "P2-201: every verdict message is non-empty and free of paths, scripts and URL schemes",
+    verdicts.every(
+      (v) =>
+        v.message.trim().length > 0 &&
+        !/[\\/]/.test(v.message) &&
+        !/https?:/i.test(v.message) &&
+        !/script|setup|terminal|bash|\.bin\b|\.sh\b/i.test(v.message),
+    ),
+  );
+  check(
+    "P2-201: missing-model says the engine exists; missing-binary says nothing is installed",
+    sttVerdict("whisper-cpp", false).message !== sttVerdict(null, false).message &&
+      /modelo/i.test(sttVerdict("whisper-cpp", false).message) &&
+      /instal/i.test(sttVerdict(null, false).message),
+  );
+
+  // voicecap stays pure: unit tests must never boot a daemon on import
+  // (strip line comments first — the header prose names the banned modules)
+  const voicecapCode = voicecapSrc.replace(/\/\/.*$/gm, "");
+  check(
+    "P2-201: voicecap.ts is pure (no node:fs/child_process/http/ws imports)",
+    !/node:(fs|child_process|http|os|path)/.test(voicecapCode) && !/"ws"/.test(voicecapCode),
+  );
+
+  // real-repo assertion: the 501 body carries the verdict phrase, the English
+  // script-path hint is gone, and a lost staged upload gets its own accurate
+  // message instead of a capability claim
+  check(
+    "P2-201: the transcribe 501 body uses the verdict message and drops the English script hint",
+    /status: 501, body: \{ error: sttStatus\(\)\.message \}/.test(indexSrc) &&
+      !indexSrc.includes("setup-whisper.sh on the host"),
+  );
+  check(
+    "P2-201: a missing staged upload no longer masquerades as a capability problem",
+    /body: \{ error: "transcription upload not found" \}/.test(indexSrc),
+  );
+  check(
+    "P2-201: GET /__ocr/voice/stt-status mirrors the tts-status route shape via sttStatus()",
+    indexSrc.includes('/__ocr/voice/stt-status" && req.method === "GET"') &&
+      /body: sttStatus\(\) \}/.test(indexSrc) &&
+      /available: verdict\.state === "ready", state: verdict\.state, message: verdict\.message/.test(indexSrc),
+  );
+  check(
+    "P2-201: OCR_STT_BLOCK=1 is the documented test hatch forcing missing-binary",
+    indexSrc.includes('process.env.OCR_STT_BLOCK === "1"') &&
+      /OCR_STT_BLOCK/.test(src(["README.md"])) &&
+      /OCR_STT_BLOCK/.test(src(["README.pt-BR.md"])) &&
+      /OCR_STT_BLOCK/.test(src(["docs", "troubleshooting.md"])),
+  );
+
+  // whisper.ts: raw detection exposed additively, detectWhisper signature intact
+  check(
+    "P2-201: whisper.ts exposes the raw detection (toolType + modelPresent) next to the usable tool",
+    whisperSrc.includes("export interface WhisperDetection") &&
+      whisperSrc.includes("toolType: WhisperKind | null") &&
+      whisperSrc.includes("export async function detectWhisper(): Promise<WhisperTool | null>") &&
+      whisperSrc.includes("export async function detectWhisperDetail(): Promise<WhisperDetection>"),
+  );
+
+  // both mics consult the verdict, fail open while unknown, and surface the phrase
+  check(
+    "P2-201: ChatView and HomeView probe stt-status and disable the mic only on a known non-ready verdict",
+    chatViewSrc.includes("const stt = useSttStatus(request)") &&
+      homeViewSrc.includes("const stt = useSttStatus(request)") &&
+      (chatViewSrc.match(/sttBlocked/g) ?? []).length >= 3 &&
+      (homeViewSrc.match(/sttBlocked/g) ?? []).length >= 3 &&
+      src(["apps", "web", "src", "lib", "transcribe.ts"]).includes('request("GET", "/__ocr/voice/stt-status")'),
   );
 }
 
