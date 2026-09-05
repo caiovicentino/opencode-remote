@@ -194,8 +194,37 @@ or blank value keeps the 1 MB default. **The boot is fail-closed:** a
 non-numeric, negative, zero, fractional or above-ceiling value does NOT fall
 back to the default — the daemon logs one error line per problem and exits
 with code 1 without opening any listener. Fix the variable and start again.
-(File uploads are unaffected: `/__ocr/upload/*` streams with its own separate
-`OCR_UPLOAD_MAX_MB` cap and never reads through the JSON body path.)
+(File uploads are unaffected by that JSON body path: `/__ocr/upload/*` has its
+own staging ceilings below.)
+
+## Chunked upload staging limits (P2-181)
+
+Chunked uploads ride the E2E tunnel as frames (`/__ocr/upload/chunk`,
+`/__ocr/transcribe/chunk`), so they never pass through the JSON body reader
+above. Their staging area is bounded up front instead of only at completion:
+
+- **Staging cap per id** — derived from the decoded ceiling
+  `OCR_UPLOAD_MAX_MB` (default **200 MB**, whole megabytes, documented maximum
+  **2000**): staged base64 bytes per id are capped at the decoded ceiling plus
+  the one-third base64 expansion and a fixed 1 MiB margin, so a legitimate
+  max-size upload still passes chunk by chunk. Crossing the cap answers
+  **413** and drops the whole staged entry — a truncated body must never
+  complete as a silently corrupt audio/file.
+- **Concurrent ids** — at most **8** upload ids staged at once; a new id
+  beyond that answers **429** (`too many concurrent uploads`).
+- **Chunk index** — must be a whole number between 0 and **100,000**;
+  anything else answers **400**.
+- **Expiration** — an upload id untouched for **5 minutes** is swept on the
+  next chunk arrival (before admitting new work), so abandoned uploads cannot
+  linger in memory forever.
+
+All three refusals use the daemon's standard `{ "error": ... }` body. The
+completion route (`/__ocr/upload/complete`) keeps its decoded
+`OCR_UPLOAD_MAX_MB` check unchanged. An invalid `OCR_UPLOAD_MAX_MB` (non-numeric,
+negative, zero, fractional or above the 2000 MB ceiling) is fail-closed at
+boot: one error line per problem, exit code 1, no listener. Refusal log lines
+carry only the route and the refused size — never chunk content, full ids,
+tokens or session ids.
 
 ## SDK (TypeScript/JS)
 
