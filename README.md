@@ -467,6 +467,12 @@ JSON request bodies are capped at 1 MB by default (`OCR_MAX_BODY_BYTES`, up to
 refuse to boot instead of silently using the default — see
 [docs/api.md](docs/api.md#request-body-limit-p2-180).
 
+Chunked uploads are bounded the same way (`OCR_UPLOAD_MAX_MB`, default 200 MB,
+ceiling 2000): staged bytes per id, at most 8 concurrent ids, chunk index up to
+100,000, staged ids expire after 5 minutes, and violations answer `400`, `413`
+or `429` — see
+[docs/api.md](docs/api.md#chunked-upload-staging-limits-p2-181).
+
 ## Architecture & security
 
 - [docs/architecture.md](docs/architecture.md) — tunnel, chunking, services

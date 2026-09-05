@@ -68,6 +68,13 @@ import { classifyRelayClose, effectiveRetryDelayMs, type RelayCloseKind } from "
 import { parseRelayUrl, redactRelayUrl } from "./relayurl.js";
 import { bodyLimit, isBodyLimitError, readLimitedBody, type BodyLimitError } from "./bodylimit.js";
 import {
+  admitNewUpload,
+  chunkIndexProblem,
+  chunkStoreLimits,
+  expiredKeys,
+  stagedOverLimit,
+} from "./chunkstore.js";
+import {
   classifyUpstream,
   UPSTREAM_PROBE_TIMEOUT_MS,
   type UpstreamDetail,
@@ -109,6 +116,9 @@ const relayDisabled = relayUrl.problems.length > 0;
 // falls back to the default — main() logs one line per problem and exits 1
 // without opening any listener.
 const bodyLimitResolution = bodyLimit(process.env);
+// P2-181: the chunk-staging ceilings are resolved exactly once at boot too —
+// same fail-closed contract: any problem means exit 1 with no listener.
+const chunkLimits = chunkStoreLimits(process.env);
 const OPENCODE_URL = process.env.OPENCODE_URL ?? "http://127.0.0.1:4096";
 const OPENCODE_USER = process.env.OPENCODE_SERVER_USERNAME ?? "opencode";
 const OPENCODE_PASS = process.env.OPENCODE_SERVER_PASSWORD ?? "";
@@ -242,9 +252,66 @@ const TTS_PT_VOICE = process.env.OCR_TTS_VOICE;
 interface UploadEntry {
   parts: string[];
   at: number;
+  // P2-181: base64 bytes currently staged across parts, summed per chunk —
+  // enforced against the staging ceiling BEFORE the part is kept.
+  bytes: number;
 }
 const uploadChunks = new Map<string, UploadEntry>();
 const uploads = new Map<string, { buf: Buffer; mime: string; filename: string; at: number }>();
+
+// P2-181: shared staging path for the two chunk routes (upload + transcribe).
+// These requests arrive as E2E tunnel frames — not HTTP bodies — so the
+// P2-180 readBody ceiling never sees them. Every dimension is bounded here,
+// before anything is kept: stale ids are swept first, then the index is
+// validated (400), then the staging byte cap (413, whole entry dropped so a
+// truncated body can never silently complete as corrupt audio/file) and the
+// concurrent-id admission (429). Refusal log lines carry only the route and
+// the refused size — never chunk content, a full id, a token or a session id.
+function stageChunk(
+  req: OpRequest,
+  route: "/__ocr/upload/chunk" | "/__ocr/transcribe/chunk",
+): OpResponse {
+  const { id, idx, data } = req.body as { id?: string; idx?: number; data?: string };
+  if (!id || idx === undefined || typeof data !== "string") {
+    return { id: req.id, status: 400, body: { error: "invalid chunk" } };
+  }
+  const now = Date.now();
+  for (const key of expiredKeys(
+    Array.from(uploadChunks, ([key, v]) => ({ key, at: v.at })),
+    now,
+    chunkLimits.expirationMs,
+  )) {
+    uploadChunks.delete(key);
+  }
+  const idxProblem = chunkIndexProblem(idx, chunkLimits.maxChunkIndex);
+  if (idxProblem) {
+    return { id: req.id, status: 400, body: { error: idxProblem } };
+  }
+  const existing = uploadChunks.get(id);
+  const incoming = Buffer.byteLength(data, "utf8");
+  // a retry replacing an existing index must not double-count the old copy
+  const prev = existing?.parts[idx];
+  const staged = (existing?.bytes ?? 0) - (typeof prev === "string" ? Buffer.byteLength(prev, "utf8") : 0);
+  if (stagedOverLimit(staged, incoming, chunkLimits.stagingBytesPerId)) {
+    uploadChunks.delete(id);
+    log("warn", "staged chunk refused: over the byte cap", { route, bytes: staged + incoming });
+    return {
+      id: req.id,
+      status: 413,
+      body: { error: `staged upload too large (${chunkLimits.stagingBytesPerId} byte staging cap per id)` },
+    };
+  }
+  if (!existing && !admitNewUpload(uploadChunks.size, chunkLimits.maxStagedIds)) {
+    log("warn", "staged chunk refused: too many concurrent uploads", { route, bytes: staged + incoming });
+    return { id: req.id, status: 429, body: { error: "too many concurrent uploads; try again soon" } };
+  }
+  const entry: UploadEntry = existing ?? { parts: [], at: 0, bytes: 0 };
+  entry.parts[idx] = data;
+  entry.bytes = staged + incoming;
+  entry.at = now;
+  uploadChunks.set(id, entry);
+  return { id: req.id, status: 200, body: { ok: true } };
+}
 
 // ---------------------------------------------------------------------------
 // tunnel to the local opencode server
@@ -726,17 +793,7 @@ end tell`;
     }
   }
   if (req.path === "/__ocr/transcribe/chunk" && req.method === "POST") {
-    const { id, idx, data } = req.body as { id?: string; idx?: number; data?: string };
-    if (!id || idx === undefined || typeof data !== "string") {
-      return { id: req.id, status: 400, body: { error: "invalid chunk" } };
-    }
-    const entry = uploadChunks.get(id) ?? { parts: [], at: 0 };
-    entry.parts[idx] = data;
-    entry.at = Date.now();
-    uploadChunks.set(id, entry);
-    for (const [k, v] of uploadChunks) {
-      if (Date.now() - v.at > 5 * 60_000) uploadChunks.delete(k);
-    }    return { id: req.id, status: 200, body: { ok: true } };
+    return stageChunk(req, "/__ocr/transcribe/chunk");
   }
   if (req.path === "/__ocr/transcribe" && req.method === "POST") {
     const { id } = req.body as { id?: string };
@@ -797,15 +854,7 @@ end tell`;
     }
   }
   if (req.path === "/__ocr/upload/chunk" && req.method === "POST") {
-    const { id, idx, data } = req.body as { id?: string; idx?: number; data?: string };
-    if (!id || idx === undefined || typeof data !== "string") {
-      return { id: req.id, status: 400, body: { error: "invalid chunk" } };
-    }
-    const entry = uploadChunks.get(id) ?? { parts: [], at: 0 };
-    entry.parts[idx] = data;
-    entry.at = Date.now();
-    uploadChunks.set(id, entry);
-    return { id: req.id, status: 200, body: { ok: true } };
+    return stageChunk(req, "/__ocr/upload/chunk");
   }
   if (req.path === "/__ocr/upload/complete" && req.method === "POST") {
     const { id, mime, filename, kind } = req.body as {
@@ -2846,6 +2895,13 @@ async function main() {
   // never runs with a ceiling the operator did not ask for.
   if (bodyLimitResolution.problems.length > 0) {
     for (const problem of bodyLimitResolution.problems) log("error", problem);
+    process.exit(1);
+    return;
+  }
+  // P2-181: same fail-closed contract for the chunk-staging ceilings — an
+  // invalid OCR_UPLOAD_MAX_MB never falls back to the default silently.
+  if (chunkLimits.problems.length > 0) {
+    for (const problem of chunkLimits.problems) log("error", problem);
     process.exit(1);
     return;
   }

@@ -31,6 +31,21 @@ import {
   type LimitedBodyReader,
 } from "../apps/daemon/src/bodylimit";
 
+import {
+  admitNewUpload,
+  chunkIndexProblem,
+  chunkStoreLimits,
+  expiredKeys,
+  stagingCapBytes,
+  stagedOverLimit,
+  DEFAULT_EXPIRATION_MS,
+  DEFAULT_MAX_CHUNK_INDEX,
+  DEFAULT_MAX_STAGED_IDS,
+  DEFAULT_UPLOAD_MAX_MB,
+  STAGING_MARGIN_BYTES,
+  UPLOAD_MAX_MB_CEILING,
+} from "../apps/daemon/src/chunkstore";
+
 import { classifyUpstream, UPSTREAM_PROBE_TIMEOUT_MS } from "../apps/daemon/src/upstream";
 
 import { opencodeCandidates, pickOpencodeBinary } from "../apps/daemon/src/opencodebin";
@@ -9551,6 +9566,156 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "P2-180: boot is fail-closed — logs each problem and exits 1 before opening listeners",
     /for \(const problem of bodyLimitResolution\.problems\) log\("error", problem\)/.test(daemonSrc) &&
       /bodyLimitResolution\.problems\.length > 0[\s\S]{0,400}process\.exit\(1\)/.test(daemonSrc),
+  );
+}
+
+// --- P2-181: chunk-staging ceilings (chunkstore.ts) -----------------------------
+{
+  // -- chunkStoreLimits: env matrix ---------------------------------------------
+  const defaults = chunkStoreLimits({});
+  check(
+    "P2-181: missing env keeps today's defaults (200MB decoded, 8 ids, 100k index, 5min) with no problem",
+    defaults.problems.length === 0 &&
+      defaults.decodedBytes === DEFAULT_UPLOAD_MAX_MB * 1_000_000 &&
+      DEFAULT_UPLOAD_MAX_MB === 200 &&
+      defaults.maxStagedIds === DEFAULT_MAX_STAGED_IDS &&
+      DEFAULT_MAX_STAGED_IDS === 8 &&
+      defaults.maxChunkIndex === DEFAULT_MAX_CHUNK_INDEX &&
+      DEFAULT_MAX_CHUNK_INDEX === 100_000 &&
+      defaults.expirationMs === DEFAULT_EXPIRATION_MS &&
+      DEFAULT_EXPIRATION_MS === 300_000,
+  );
+  const blank = chunkStoreLimits({ OCR_UPLOAD_MAX_MB: "   " });
+  check(
+    "P2-181: blank env keeps the defaults with no problem",
+    blank.problems.length === 0 && blank.decodedBytes === DEFAULT_UPLOAD_MAX_MB * 1_000_000,
+  );
+  const valid = chunkStoreLimits({ OCR_UPLOAD_MAX_MB: "500" });
+  check(
+    "P2-181: valid value resolves the decoded ceiling and derives staging with the base64 slack + fixed margin",
+    valid.problems.length === 0 &&
+      valid.decodedBytes === 500_000_000 &&
+      valid.stagingBytesPerId === stagingCapBytes(500_000_000) &&
+      stagingCapBytes(500_000_000) === Math.ceil((500_000_000 * 4) / 3) + STAGING_MARGIN_BYTES,
+  );
+  check(
+    "P2-181: default staging cap fits a legitimate 200MB upload's full base64 wire size",
+    stagingCapBytes(200_000_000) >= 4 * Math.ceil(200_000_000 / 3),
+  );
+  const nonNumeric = chunkStoreLimits({ OCR_UPLOAD_MAX_MB: "abc" });
+  check(
+    "P2-181: non-numeric value is a problem",
+    nonNumeric.problems.length === 1 && nonNumeric.problems[0]!.includes("OCR_UPLOAD_MAX_MB"),
+  );
+  const negative = chunkStoreLimits({ OCR_UPLOAD_MAX_MB: "-1" });
+  check("P2-181: negative value is a problem", negative.problems.length === 1);
+  const zeroVal = chunkStoreLimits({ OCR_UPLOAD_MAX_MB: "0" });
+  check("P2-181: zero is a problem", zeroVal.problems.length === 1);
+  const fractional = chunkStoreLimits({ OCR_UPLOAD_MAX_MB: "1.5" });
+  check("P2-181: fractional value is a problem", fractional.problems.length === 1);
+  const aboveCeiling = chunkStoreLimits({ OCR_UPLOAD_MAX_MB: String(UPLOAD_MAX_MB_CEILING + 1) });
+  check("P2-181: above the documented ceiling is a problem", aboveCeiling.problems.length === 1);
+  const atCeiling = chunkStoreLimits({ OCR_UPLOAD_MAX_MB: String(UPLOAD_MAX_MB_CEILING) });
+  check(
+    "P2-181: exactly at the documented ceiling is accepted",
+    atCeiling.problems.length === 0 && atCeiling.decodedBytes === UPLOAD_MAX_MB_CEILING * 1_000_000,
+  );
+
+  // -- chunkIndexProblem matrix -------------------------------------------------
+  check(
+    "P2-181: chunkIndexProblem accepts 0 and the maximum index",
+    chunkIndexProblem(0, DEFAULT_MAX_CHUNK_INDEX) === null &&
+      chunkIndexProblem(DEFAULT_MAX_CHUNK_INDEX, DEFAULT_MAX_CHUNK_INDEX) === null,
+  );
+  check(
+    "P2-181: chunkIndexProblem refuses negative, fractional, non-numeric and above-max indices",
+    chunkIndexProblem(-1, DEFAULT_MAX_CHUNK_INDEX) !== null &&
+      chunkIndexProblem(1.5, DEFAULT_MAX_CHUNK_INDEX) !== null &&
+      chunkIndexProblem(Number.NaN, DEFAULT_MAX_CHUNK_INDEX) !== null &&
+      chunkIndexProblem(Number.POSITIVE_INFINITY, DEFAULT_MAX_CHUNK_INDEX) !== null &&
+      chunkIndexProblem("2", DEFAULT_MAX_CHUNK_INDEX) !== null &&
+      chunkIndexProblem(DEFAULT_MAX_CHUNK_INDEX + 1, DEFAULT_MAX_CHUNK_INDEX) !== null,
+  );
+
+  // -- stagedOverLimit: strictly above, exactly at the cap still fits ------------
+  check(
+    "P2-181: stagedOverLimit is strict — exactly at the staging cap fits, one byte over refuses",
+    stagedOverLimit(0, 10, 10) === false &&
+      stagedOverLimit(5, 5, 10) === false &&
+      stagedOverLimit(5, 6, 10) === true &&
+      stagedOverLimit(0, 11, 10) === true,
+  );
+
+  // -- expiredKeys: only stale keys, never fresh ones, nothing mutated ----------
+  {
+    const now = 1_000_000;
+    const entries = [
+      { key: "stale", at: now - DEFAULT_EXPIRATION_MS - 1 },
+      { key: "fresh", at: now - DEFAULT_EXPIRATION_MS + 1 },
+      { key: "just-touched", at: now },
+    ];
+    const snapshot = JSON.stringify(entries);
+    const keys = expiredKeys(entries, now, DEFAULT_EXPIRATION_MS);
+    check(
+      "P2-181: expiredKeys returns only the expired entries, never the recent ones, without mutating",
+      keys.length === 1 &&
+        keys[0] === "stale" &&
+        !keys.includes("fresh") &&
+        !keys.includes("just-touched") &&
+        JSON.stringify(entries) === snapshot,
+    );
+    check("P2-181: expiredKeys over an empty map returns an empty list", expiredKeys([], now, DEFAULT_EXPIRATION_MS).length === 0);
+  }
+
+  // -- admitNewUpload: at the ceiling no new id fits ------------------------------
+  check(
+    "P2-181: admitNewUpload admits below the ceiling and refuses exactly at/above it",
+    admitNewUpload(0, DEFAULT_MAX_STAGED_IDS) === true &&
+      admitNewUpload(DEFAULT_MAX_STAGED_IDS - 1, DEFAULT_MAX_STAGED_IDS) === true &&
+      admitNewUpload(DEFAULT_MAX_STAGED_IDS, DEFAULT_MAX_STAGED_IDS) === false &&
+      admitNewUpload(DEFAULT_MAX_STAGED_IDS + 1, DEFAULT_MAX_STAGED_IDS) === false,
+  );
+
+  // -- the real index.ts: both chunk routes bounded, completion cap untouched ----
+  const daemonSrc181 = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  const stagerStart = daemonSrc181.indexOf("function stageChunk");
+  const firstHandler = daemonSrc181.indexOf('"/__ocr/transcribe/chunk" && req.method === "POST"', stagerStart);
+  const stager = stagerStart >= 0 && firstHandler > stagerStart ? daemonSrc181.slice(stagerStart, firstHandler) : "";
+  const warnLogs = stager.match(/log\("warn", [^\n]+/g) ?? [];
+  check(
+    "P2-181: the shared stager validates the index and runs the expiration sweep before admitting",
+    stager.includes("chunkIndexProblem(") &&
+      stager.includes("expiredKeys(") &&
+      stager.includes("stagedOverLimit(") &&
+      stager.includes("admitNewUpload(") &&
+      stager.indexOf("expiredKeys(") < stager.indexOf("admitNewUpload(") &&
+      stager.indexOf("chunkIndexProblem(") < stager.indexOf("stagedOverLimit("),
+  );
+  check(
+    "P2-181: stager refusal logs carry only the route and the refused size (never content or ids)",
+    warnLogs.length === 2 &&
+      warnLogs.every((line) => line.includes("{ route, bytes:") && !line.includes("id") && !line.includes("data")),
+  );
+  const transcribeChunkAt = daemonSrc181.indexOf('/__ocr/transcribe/chunk" && req.method === "POST"');
+  const uploadChunkAt = daemonSrc181.indexOf('/__ocr/upload/chunk" && req.method === "POST"');
+  check(
+    "P2-181: BOTH chunk routes delegate to the bounded stager",
+    transcribeChunkAt >= 0 &&
+      uploadChunkAt > transcribeChunkAt &&
+      daemonSrc181.includes('stageChunk(req, "/__ocr/transcribe/chunk")') &&
+      daemonSrc181.includes('stageChunk(req, "/__ocr/upload/chunk")'),
+  );
+  const completeAt = daemonSrc181.indexOf("/__ocr/upload/complete");
+  const completeEnd = daemonSrc181.indexOf("resolve image attachments", completeAt);
+  const completeSlice = completeAt >= 0 && completeEnd > completeAt ? daemonSrc181.slice(completeAt, completeEnd) : "";
+  check(
+    "P2-181: the completion route keeps its own decoded OCR_UPLOAD_MAX_MB cap and 413",
+    completeSlice.includes("OCR_UPLOAD_MAX_MB") && completeSlice.includes("413"),
+  );
+  check(
+    "P2-181: boot is fail-closed for the chunk limits — logs each problem and exits 1",
+    /for \(const problem of chunkLimits\.problems\) log\("error", problem\)/.test(daemonSrc181) &&
+      /chunkLimits\.problems\.length > 0[\s\S]{0,400}process\.exit\(1\)/.test(daemonSrc181),
   );
 }
 
