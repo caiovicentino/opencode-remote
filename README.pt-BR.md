@@ -441,6 +441,16 @@ const reply = await ocr.sendAndWait(id, "explique o módulo de autenticação");
 
 Veja [docs/api.md](docs/api.md).
 
+O primeiro pareamento num daemon recém-instalado só é aceito enquanto a
+**janela de pareamento do bootstrap** está aberta: 15 minutos por padrão
+(`OCR_PAIR_WINDOW_MS`, milissegundos inteiros positivos, teto de 24 h; um valor
+inválido faz o daemon se recusar a subir). A janela abre no boot e é rearmada
+a cada leitura autenticada da tela de pareamento — o QR na tela mantém o
+pareamento disponível. Depois que a janela fechou, clientes desconhecidos são
+rejeitados (evento de auditoria `client.bootstrap-expired`) — reabra a tela de
+pareamento no app desktop ou reinicie o daemon para parear um novo dispositivo —
+veja [docs/security.md](docs/security.md).
+
 ## Arquitetura & segurança
 
 - [docs/architecture.md](docs/architecture.md)
