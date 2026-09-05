@@ -4,7 +4,7 @@
  * for non-probe traffic, and that no room ids or secrets leak.
  * Run: npx tsx scripts/relay-healthz.test.ts
  */
-import { createServer, get, type Server } from "node:http";
+import { createServer, get, type IncomingMessage, type Server } from "node:http";
 import net from "node:net";
 import { createReadStream, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -23,6 +23,17 @@ import {
   webRootPlan,
 } from "../apps/relay/src/webroot";
 import { securityHeaders, resolveWebCsp, WEB_CSP_DEFAULT, WEB_CSP_MAX_LENGTH } from "../apps/relay/src/webheaders";
+import { makeIpTagger } from "../apps/relay/src/iptag";
+import {
+  resolveWebBudget,
+  WebBudgets,
+  webBudgetDecision,
+  webBudgetIdentity,
+  WEB_BURST_CEILING,
+  WEB_BURST_DEFAULT,
+  WEB_RATE_PER_MIN_CEILING,
+  WEB_RATE_PER_MIN_DEFAULT,
+} from "../apps/relay/src/webbudget";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -876,6 +887,173 @@ check("webcsp: case-insensitive default-src detection", (() => {
     const srcs = [...html.matchAll(/<script[^>]*\bsrc="([^"]+)"/gi)].map((m) => m[1] ?? "");
     check("dist-csp: every script src is same-origin (relative), covered by script-src 'self'", srcs.length > 0 && srcs.every((s) => s.startsWith("./") || s.startsWith("/")));
   }
+}
+
+// --- 19. static-route budget resolver (P2-195, problems format) -----------------
+check("webbudget: absent variables keep the documented defaults with zero problems", (() => {
+  const p = resolveWebBudget({});
+  return p.ratePerMin === WEB_RATE_PER_MIN_DEFAULT && p.burst === WEB_BURST_DEFAULT && p.problems.length === 0;
+})());
+check("webbudget: blank variables keep the defaults with zero problems too", (() => {
+  const p = resolveWebBudget({ RELAY_WEB_RATE_PER_MIN: "  ", RELAY_WEB_BURST: "" });
+  return p.ratePerMin === WEB_RATE_PER_MIN_DEFAULT && p.burst === WEB_BURST_DEFAULT && p.problems.length === 0;
+})());
+check("webbudget: valid overrides are honored with no problems", (() => {
+  const p = resolveWebBudget({ RELAY_WEB_RATE_PER_MIN: "240", RELAY_WEB_BURST: "30" });
+  return p.ratePerMin === 240 && p.burst === 30 && p.problems.length === 0;
+})());
+check("webbudget: values at the documented ceilings are fine", (() => {
+  const p = resolveWebBudget({
+    RELAY_WEB_RATE_PER_MIN: String(WEB_RATE_PER_MIN_CEILING),
+    RELAY_WEB_BURST: String(WEB_BURST_CEILING),
+  });
+  return p.ratePerMin === WEB_RATE_PER_MIN_CEILING && p.burst === WEB_BURST_CEILING && p.problems.length === 0;
+})());
+for (const [name, raw] of [
+    ["non-numeric", "abc"],
+    ["negative", "-1"],
+    ["zero", "0"],
+    ["fractional", "1.5"],
+    ["above-ceiling", "999999"],
+  ] as const) {
+  check(`webbudget: ${name} RELAY_WEB_RATE_PER_MIN is a problem`, (() => {
+    const p = resolveWebBudget({ RELAY_WEB_RATE_PER_MIN: raw });
+    return p.problems.length === 1 && p.problems[0].includes("RELAY_WEB_RATE_PER_MIN");
+  })());
+  check(`webbudget: ${name} RELAY_WEB_BURST is a problem`, (() => {
+    const p = resolveWebBudget({ RELAY_WEB_BURST: raw });
+    return p.problems.length === 1 && p.problems[0].includes("RELAY_WEB_BURST");
+  })());
+}
+check("webbudget: two bad variables yield two problems, each naming its variable", (() => {
+  const p = resolveWebBudget({ RELAY_WEB_RATE_PER_MIN: "soon", RELAY_WEB_BURST: "-2" });
+  return p.problems.length === 2 && p.problems.some((x) => x.includes("RELAY_WEB_RATE_PER_MIN")) && p.problems.some((x) => x.includes("RELAY_WEB_BURST"));
+})());
+
+// --- 20. budget bucket decision (P2-195, pure) -----------------------------------
+check("budget: a fresh identity starts with the full burst and spends one token", (() => {
+  const v = webBudgetDecision(undefined, 1000, 120, 3);
+  return v.allow === true && v.retryAfterS === 0 && v.state.tokens === 2 && v.state.lastMs === 1000;
+})());
+check("budget: an empty bucket rejects with a suggested retry-after of at least 1s", (() => {
+  const v = webBudgetDecision({ tokens: 0, lastMs: 1000, lastSeenMs: 1000 }, 1000, 60, 2);
+  return v.allow === false && v.retryAfterS >= 1 && Number.isFinite(v.retryAfterS);
+})());
+check("budget: the bucket refills continuously with elapsed time", (() => {
+  // 60/min = 1 token per second: 30s elapsed re-grants the whole burst of 2
+  const v = webBudgetDecision({ tokens: 0, lastMs: 1000, lastSeenMs: 1000 }, 31_000, 60, 2);
+  return v.allow === true && v.state.tokens === 1;
+})());
+check("budget: a previous instant in the future counts as no refill (clock skew)", (() => {
+  const v = webBudgetDecision({ tokens: 0, lastMs: 50_000, lastSeenMs: 50_000 }, 1000, 60, 2);
+  return v.allow === false && v.state.tokens === 0;
+})());
+check("budget: a near-miss rejection suggests a 1s wait, not 0", (() => {
+  const v = webBudgetDecision({ tokens: 0.99, lastMs: 1000, lastSeenMs: 1000 }, 1000, 60, 2);
+  return v.allow === false && v.retryAfterS === 1;
+})());
+
+// --- 21. WebBudgets map: independence, entry cap, inactivity prune (P2-195) ------
+check("budget map: distinct identities never share a bucket", (() => {
+  const b = new WebBudgets(0, 1, 100);
+  return b.take("a", 1000).allow === true && b.take("b", 1000).allow === true;
+})());
+check("budget map: the same exhausted identity is rejected", (() => {
+  const b = new WebBudgets(0, 1, 100);
+  b.take("a", 1000);
+  return b.take("a", 2000).allow === false;
+})());
+check("budget map: the entry cap is respected discarding the least-recently-seen entry", (() => {
+  const b = new WebBudgets(0, 1, 2);
+  const first = b.take("a", 1000); // a: spent (burst of 1)
+  b.take("b", 2000); // b: spent
+  const capped = b.take("c", 3000); // over the cap → oldest entry (a) discarded
+  const cappedOk = capped.allow === true && b.size === 2;
+  const survivorKeepsSpentBucket = b.take("c", 4000).allow === false; // c survived with its spent state
+  const evictedReminted = b.take("a", 5000).allow === true; // a was discarded: fresh bucket, not the spent one
+  return first.allow === true && cappedOk && survivorKeepsSpentBucket && evictedReminted;
+})());
+check("budget map: prune drops entries idle beyond the window and keeps fresh ones", (() => {
+  const b = new WebBudgets(0, 2, 100);
+  b.take("old", 1000);
+  b.take("fresh", 9000);
+  const removed = b.prune(10_000, 5_000);
+  return removed === 1 && b.size === 1 && b.take("fresh", 10_001).allow === true;
+})());
+check("budget map: identity derivation follows TRUST_PROXY_HOPS exactly like the upgrade path", (() => {
+  const tag = makeIpTagger(new Uint8Array(32).fill(7));
+  const direct = { socket: { remoteAddress: "127.0.0.1" }, headers: {} };
+  const forged = { socket: { remoteAddress: "127.0.0.1" }, headers: { "x-forwarded-for": "9.9.9.9" } };
+  const sameDirect = { socket: { remoteAddress: "127.0.0.1" }, headers: {} };
+  const keyedByPeer = webBudgetIdentity(direct, 0, tag) === webBudgetIdentity(sameDirect, 0, tag);
+  const ignoresForgedHeader = webBudgetIdentity(direct, 0, tag) === webBudgetIdentity(forged, 0, tag);
+  const trustsChain = webBudgetIdentity(forged, 1, tag) !== webBudgetIdentity(direct, 1, tag);
+  const stable = webBudgetIdentity(forged, 1, tag) === webBudgetIdentity(forged, 1, tag);
+  return keyedByPeer && ignoresForgedHeader && trustsChain && stable;
+})());
+
+// --- 22. budgeted static route over real HTTP (P2-195) ----------------------------
+{
+  const root = mkdtempSync(join(tmpdir(), "relay-webbudget-"));
+  writeFileSync(join(root, "index.html"), "<html>budget</html>");
+  // wired exactly like apps/relay/src/index.ts: identity = clientIp() honoring
+  // the trusted hops, tagged by the P2-174 ipTagger, buckets in WebBudgets
+  const tag = makeIpTagger(new Uint8Array(32).fill(9));
+  const budgets = new WebBudgets(60, 2); // 1 token/s refill, burst of 2
+  const gate = {
+    take: (req: IncomingMessage, nowMs: number) =>
+      budgets.take(webBudgetIdentity(req, 1, tag), nowMs),
+  };
+  const budgetServer: Server = createServer(
+    healthzHandler(state, () => false, {
+      root,
+      isFile: (abs) => {
+        try {
+          return statSync(abs).isFile();
+        } catch {
+          return false;
+        }
+      },
+      send: (abs, req, res) => createReadStream(abs).pipe(res),
+      csp: WEB_CSP_DEFAULT,
+      isTls: () => false,
+    }, gate),
+  );
+  await new Promise<void>((r) => budgetServer.listen(0, "127.0.0.1", r));
+  const bPort = (budgetServer.address() as { port: number }).port;
+  const budgetRequest = (path: string, headers: Record<string, string> = {}) =>
+    new Promise<{ status: number; headers: Record<string, string | string[] | undefined>; body: string }>((resolve) => {
+      const req = get(`http://127.0.0.1:${bPort}${path}`, { headers }, (res) => {
+        let body = "";
+        res.on("data", (c) => (body += c));
+        res.on("end", () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body }));
+      });
+      req.end();
+    });
+
+  check("budget http: burst inside the burst is answered 200", (await budgetRequest("/")).status === 200);
+  check("budget http: the last burst token is answered 200", (await budgetRequest("/")).status === 200);
+  const rejected = await budgetRequest("/");
+  check("budget http: the next request is 429", rejected.status === 429);
+  check("budget http: the 429 carries retry-after", Number(rejected.headers["retry-after"]) >= 1);
+  check("budget http: the 429 body is short and plain", rejected.body.length < 32 && String(rejected.headers["content-type"]).startsWith("text/plain"));
+  check(
+    "budget http: the 429 carries the P2-192 security headers",
+    ALWAYS_ON_SECURITY_HEADERS.every((k) => rejected.headers[k] !== undefined) &&
+      rejected.headers["strict-transport-security"] === undefined,
+  );
+  check("budget http: the probe answers 200 even with that identity's bucket empty", (await budgetRequest("/healthz")).status === 200);
+  await new Promise((r) => setTimeout(r, 1100));
+  check("budget http: the bucket refills with time and answers 200 again", (await budgetRequest("/")).status === 200);
+  check("budget http: a distinct x-forwarded-for identity has its own bucket (1/2)", (await budgetRequest("/", { "x-forwarded-for": "9.9.9.1" })).status === 200);
+  check("budget http: a distinct x-forwarded-for identity has its own bucket (2/2)", (await budgetRequest("/", { "x-forwarded-for": "9.9.9.1" })).status === 200);
+  check("budget http: the second identity exhausts its own budget, not the first's", (await budgetRequest("/", { "x-forwarded-for": "9.9.9.1" })).status === 429);
+  check("budget http: a third identity is independent of both", (await budgetRequest("/", { "x-forwarded-for": "9.9.9.2" })).status === 200);
+  check("budget http: the probe of the exhausted identity still answers 200", (await budgetRequest("/healthz", { "x-forwarded-for": "9.9.9.1" })).status === 200);
+  check("budget http: the probe consumes no budget (bucket stays empty)", (await budgetRequest("/", { "x-forwarded-for": "9.9.9.1" })).status === 429);
+
+  budgetServer.close();
+  rmSync(root, { recursive: true, force: true });
 }
 
 if (failures) process.exit(1);
