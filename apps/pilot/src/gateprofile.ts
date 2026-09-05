@@ -11,42 +11,48 @@
  *   - "pilot":  the workspace IS a pilot checkout (package name or the
  *     pipeline source tree) — the full, unchanged battery runs, invariants
  *     and golden-corpus checks included.
- *   - "node":   a foreign Node/TS repo — ONLY the conventional script names
- *     (typecheck, build, test:unit) that actually exist in its package.json
- *     run, plus lock-sync when a package-lock.json is present. Nothing else
- *     from the foreign package.json is ever executed.
+ *   - "generic": a foreign repo (self-serve mission, mission.json repoUrl) —
+ *     ONLY the conventional script names typecheck|build|test|lint that
+ *     actually exist in its package.json run, from the target repo, each
+ *     capped at GENERIC_STEP_TIMEOUT_MIN. Nothing else from the foreign
+ *     package.json is ever executed; constitution invariants never run there.
  *   - "unknown": no detectable battery — the gate fails closed.
  *
  * Every step runs with cwd = the repo's own worktree sandbox (the slot
  * workspace), so a foreign target is exercised in its own checkout, never in
  * the production tree. Pure: all fs access is injectable, so the unit battery
  * pins every branch without touching a real repo.
+ *
+ * NOTE: this is the in-repo mirror of the judge's gateprofile.ts
+ * (~/.opencode-remote/judge/src) — the judge decides the gate; this copy only
+ * feeds the pilot's preflight typecheck decision and the unit battery.
  */
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-export type GateProfileKind = "pilot" | "node" | "unknown";
+export type GateProfileKind = "pilot" | "generic" | "unknown";
 
 export interface GateProfile {
   kind: GateProfileKind;
   /** Battery steps as [name, command]; each command runs with cwd = the
    * repo's own worktree sandbox. Empty only for kind "unknown" (fail closed)
-   * or a "node" repo with no allowlisted script. */
+   * or a "generic" repo with no allowlisted script (also fails closed). */
   steps: Array<[string, string]>;
+  /** Per-step wall-clock cap (minutes); absent = the gate's default. */
+  stepTimeoutMin?: number;
 }
 
 /**
  * The only npm script names the gate may run in a foreign repo. The foreign
  * package.json is untrusted input (P1-056): scripts outside this allowlist —
- * however tempting (`prepare`, `preinstall`, `lint`) — are never executed.
+ * however tempting (`prepare`, `preinstall`, `postinstall`) — are never
+ * executed. The step name IS the script name.
  */
-export const GATE_SCRIPT_ALLOWLIST: readonly string[] = ["typecheck", "build", "test:unit"];
+export const GENERIC_GATE_SCRIPTS: readonly string[] = ["typecheck", "build", "test", "lint"];
 
-/** Step name for an allowlisted script (`test:unit` → the "unit" step). */
-function stepName(script: string): string {
-  return script === "test:unit" ? "unit" : script;
-}
+/** Wall-clock cap per generic step — a foreign test suite cannot hold a slot. */
+export const GENERIC_STEP_TIMEOUT_MIN = 10;
 
 /**
  * npm script names reach `npm run <name> --silent` unquoted — restrict them
@@ -55,6 +61,27 @@ function stepName(script: string): string {
  */
 export function isSafeScriptName(name: unknown): name is string {
   return typeof name === "string" && /^[A-Za-z0-9:._-]+$/.test(name);
+}
+
+/**
+ * Generic battery for a foreign repo, derived from its own package.json
+ * `scripts` table: one step per allowlisted name that exists with a non-empty
+ * command, in allowlist order. The KEY is what reaches the shell (always one
+ * of GENERIC_GATE_SCRIPTS, charset-checked); the VALUE is the repo's own
+ * command, run by npm inside the sandbox — never parsed, never trusted.
+ */
+export function buildGenericProfile(scripts: unknown): GateProfile {
+  const table = (typeof scripts === "object" && scripts !== null && !Array.isArray(scripts) ? scripts : {}) as Record<
+    string,
+    unknown
+  >;
+  const steps: Array<[string, string]> = [];
+  for (const name of GENERIC_GATE_SCRIPTS) {
+    if (!isSafeScriptName(name)) continue;
+    const cmd = table[name];
+    if (typeof cmd === "string" && cmd.trim()) steps.push([name, `npm run ${name} --silent`]);
+  }
+  return { kind: "generic", steps, stepTimeoutMin: GENERIC_STEP_TIMEOUT_MIN };
 }
 
 /** The pilot repo's own battery — pinned here so the gate's baseline is one
@@ -108,19 +135,7 @@ export function detectGateProfile(ws: string, deps: GateProfileDeps = {}): GateP
   if (pkg.name === PILOT_PACKAGE_NAME || exists(join(ws, PILOT_PIPELINE_FILE))) {
     return { kind: "pilot", steps: PILOT_GATE_STEPS.map(([n, c]) => [n, c]) };
   }
-  const scripts = (typeof pkg.scripts === "object" && pkg.scripts !== null ? pkg.scripts : {}) as Record<
-    string,
-    unknown
-  >;
-  const steps: Array<[string, string]> = [];
-  // The KEY is the allowlisted name (never shell-interpreted, always one of
-  // GATE_SCRIPT_ALLOWLIST); the VALUE is the repo's own command — npm runs it
-  // inside the sandbox, so it is only sanity-checked, never parsed.
-  for (const script of GATE_SCRIPT_ALLOWLIST) {
-    if (typeof scripts[script] === "string") steps.push([stepName(script), `npm run ${script} --silent`]);
-  }
-  if (exists(join(ws, "package-lock.json"))) {
-    steps.push(["lock-sync", "npm ci --dry-run --no-audit --no-fund --loglevel=error"]);
-  }
-  return { kind: "node", steps };
+  // foreign repo (self-serve mission): the generic battery from its own
+  // package.json scripts — nothing outside GENERIC_GATE_SCRIPTS ever runs
+  return buildGenericProfile(pkg.scripts);
 }

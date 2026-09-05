@@ -125,17 +125,54 @@ expande glob), de modo que bundle quebrado aborte o job antes do upload.
 próprio pilot; apontar o pipeline para um repo externo quebraria o gate (os
 `scripts/*.ts` não existem lá) ou — pior — executaria scripts arbitrários do
 `package.json` alheio (superfície P1-056). O gate resolve um **perfil por
-workspace** (`apps/pilot/src/gateprofile.ts`), por detecção de stack, sem
+workspace** (`gateprofile.ts` no judge assinado, espelhado em
+`apps/pilot/src/gateprofile.ts` para o preflight), por detecção de stack, sem
 executar nada do alvo: um checkout do pilot (nome `opencode-remote` ou a
 própria árvore `apps/pilot/src/`) roda a bateria completa de sempre; um repo
-Node/TS externo roda **apenas** os scripts convencionais (`typecheck`, `build`,
-`test:unit`) que existirem no `package.json` dele, mais `lock-sync`
-(`npm ci --dry-run`) só quando houver `package-lock.json` — nada fora dessa
-allowlist é executado, e os steps pilot-only (smokes de desktop, corpus,
-invariants) nunca vazam para o repo externo. Repo sem bateria detectável
- reprova em fail-closed no step `profile`, antes mesmo do evidence. Cada step
-roda com cwd no **worktree sandbox do próprio repo alvo** (o clone do slot),
-nunca na árvore de produção.
+externo (missão self-serve, abaixo) roda o **perfil genérico**: apenas os
+scripts `typecheck`, `build`, `test` e `lint` que existirem no `package.json`
+dele (`buildGenericProfile`), rodando do próprio repo alvo, cada step com
+teto de **10 min** — nada fora dessa allowlist é executado (`prepare`,
+`postinstall` e afins nunca), e os steps pilot-only (smokes de desktop,
+corpus, **invariants da constituição**) nunca vazam para o repo externo.
+Repo sem bateria detectável — sem `package.json` ou sem nenhum script da
+allowlist — reprova em fail-closed no step `profile`, antes mesmo do
+evidence. Veredito assinado (ed25519, fail-closed) e checks de
+evidence/anti-fabricação são idênticos nos dois perfis. Cada step roda com
+cwd no **worktree sandbox do próprio repo alvo** (o clone do slot), nunca na
+árvore de produção.
+
+### Missão self-serve (definida no chat)
+
+O usuário define a missão da frota **digitando no chat** — texto livre e/ou
+link de repo do GitHub. Nenhum formulário: as instruções injetadas nas
+sessões do daemon (`sessionctx.ts`, marker `ocr-mission-protocol`; para este
+repo, o `AGENTS.md`) ensinam o agente a gravar ele mesmo
+`~/.opencode-remote/mission.json`:
+
+```json
+{ "v": 1, "prompt": "o que o usuário quer", "repoUrl": "https://github.com/<org>/<repo>.git", "setAt": "<ISO>" }
+```
+
+`prompt` e `repoUrl` são opcionais (pelo menos um); `repoUrl` só vale no
+formato `https://github.com/<org>/<repo>(.git)?`. Escrita atômica 0600
+(tmp + `chmod 600` + `mv`, o mesmo contrato do `daemon.json`). O pilot
+(`apps/pilot/src/mission.ts`) lê o arquivo no boot e guarda o **SHA-256 do
+texto**; a cada ciclo do loop o hash é relido e uma mudança (arquivo novo,
+alterado ou removido) entra no **mesmo caminho de self-reload** do drift de
+HEAD (P3-101/P1-056): exit imediato quando ocioso, drenagem + reload forçado
+após 15 min quando ocupado. É assim que a missão vinda do chat é aplicada
+sem nenhuma ação do operador. Efeitos: `prompt` substitui o texto da missão
+nos prompts do strategist e do researcher; `repoUrl` clona o repo em
+`pilot/mission/<org>--<repo>/repo`, deriva os worktrees dos slots dele
+(`repo-N` sob o mesmo diretório — nunca reaproveita os slots deste repo), lê
+a fila do `origin/main` **dele** e roda builders/reviewers/judge lá (perfil
+genérico acima). Um repo externo **nunca dispara deploy**: nada de produção
+roda a partir dele, então reset/build/kickstart dos nossos serviços seria só
+uma queda. O Mission Control (aba Linha do tempo) mostra a missão ativa
+(texto + origem prompt/repo + quando foi definida), somente leitura; o
+`GET /api/pilot-mission` devolve `spec` e usa o `prompt` dela como `mission`
+do dashboard quando presente.
 
 O gate também roda a invariant **anti module-shadowing** (P2-014): o diff de
 merge (`origin/main...HEAD`) não pode introduzir na **raiz do workspace**

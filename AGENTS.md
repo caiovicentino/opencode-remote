@@ -146,6 +146,20 @@ sua resposta** — o app desktop lista esses arquivos no pane "Artifacts"
 um card anexado na mensagem que cita o artifact. Use `uploads/` (método acima)
 quando o objetivo for o usuário baixar o arquivo no celular.
 
+## Missão da frota (self-serve, só pelo chat)
+
+Quando o usuário definir ou mudar a missão da frota autônoma (Pilot) — em
+palavras e/ou com um link de repo do GitHub — grave você mesmo
+`~/.opencode-remote/mission.json` com exatamente este JSON:
+`{"v":1,"prompt":"<o que o usuário quer>","repoUrl":"https://github.com/<org>/<repo>.git","setAt":"<ISO 8601>"}`.
+`repoUrl` é opcional e só vale no formato `https://github.com/<org>/<repo>(.git)?`
+(valide antes; sem link válido, omita o campo); `prompt` é opcional quando há
+`repoUrl`. Nunca grave tokens, chaves ou segredos. Escrita atômica e privada:
+grave em `mission.json.tmp`, `chmod 600`, depois `mv` por cima de
+`mission.json`. Confirme em uma frase curta que a frota pega a missão no
+próximo boot (o pilot detecta a mudança de hash e se reinicia sozinho — idle
+primeiro, forçado após 15 min). Não existe formulário: o chat é o único caminho.
+
 ## Auto-preview (site local abre sozinho no app)
 
 Quando você subir um servidor/site local (http.server, vite, dev server…),

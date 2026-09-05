@@ -91,6 +91,7 @@ import {
 // P2-045: dashboard v2 metrics — aggregations shared with the pilot's eval battery
 import { avgPhaseDurations, burnDown, countFailSteps, rollbackHealthAlert, type HistoryEntry } from "../../pilot/src/metrics";
 import { PRICE_SOURCE_LABEL } from "../../pilot/src/pricing";
+import { readMission } from "../../pilot/src/mission";
 import { emit } from "../../pilot/src/events";
 import type { PilotEvent } from "../../pilot/src/events";
 
@@ -2497,12 +2498,16 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
         }
         return true;
       }
+      // Self-serve mission (mission.json, set from the chat) is the ACTIVE one
+      // when present: its prompt wins over the legacy pilot.json statement and
+      // the read-only spec (prompt/repoUrl/setAt — never anything else) feeds
+      // the Mission Control sidebar.
+      const spec = readMission().spec;
+      let legacy = "";
       try {
-        const cfg = JSON.parse(readFileSync(file, "utf8")) as { mission?: string };
-        send(200, { mission: cfg.mission ?? "" });
-      } catch {
-        send(200, { mission: "" });
-      }
+        legacy = (JSON.parse(readFileSync(file, "utf8")) as { mission?: string }).mission ?? "";
+      } catch {}
+      send(200, { mission: spec?.prompt ?? legacy, spec });
       return true;
     }
     // GET /api/pilot-events — dashboard feed: state, heartbeat freshness, event tail

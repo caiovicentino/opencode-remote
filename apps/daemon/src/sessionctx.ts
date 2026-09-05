@@ -29,6 +29,28 @@ export function buildArtifactsPrompt(): string {
   ].join("\n");
 }
 
+/** Unique string that dedupes the self-serve mission convention across turns. */
+export const MISSION_MARKER = "ocr-mission-protocol";
+
+/** Where the chat agent writes the fleet mission (see apps/pilot/src/mission.ts). */
+export const MISSION_FILE_HINT = "~/.opencode-remote/mission.json";
+
+/**
+ * Self-serve mission convention: the user defines the fleet's mission by
+ * typing in the chat (plain words and/or a GitHub repo link) and the agent
+ * itself writes mission.json — no form, no separate pane. Constant bytes like
+ * the artifacts block (P1-096): no per-session datum.
+ */
+export function buildMissionPrompt(): string {
+  return [
+    `[${MISSION_MARKER}] Missão da frota autônoma (vale para toda a sessão):`,
+    `- Quando o usuário definir ou mudar a missão da frota (em palavras e/ou com um link de repo do GitHub), grave você mesmo ${MISSION_FILE_HINT} com exatamente este JSON: {"v":1,"prompt":"<o que o usuário quer, nas palavras dele>","repoUrl":"https://github.com/<org>/<repo>.git","setAt":"<data-hora ISO 8601 de agora>"}.`,
+    `- repoUrl é opcional e só vale no formato https://github.com/<org>/<repo>(.git)? — valide antes de gravar; sem link válido, omita o campo. prompt é opcional quando há repoUrl. Nunca grave tokens, chaves ou segredos.`,
+    `- Escrita atômica e privada: grave em ${MISSION_FILE_HINT}.tmp, rode chmod 600 nele e depois mv por cima de ${MISSION_FILE_HINT}.`,
+    `- Confirme ao usuário em uma frase curta que a frota pega a missão no próximo boot.`,
+  ].join("\n");
+}
+
 /** The single per-session line of the protocol: the concrete artifacts dir. */
 export function buildArtifactsPathLine(sessionId: string): string {
   const dir = join(homedir(), ".opencode-remote", "artifacts", sessionId);
@@ -61,13 +83,17 @@ export function workspaceCoversArtifacts(directory: string): boolean {
  * POST /session/<id>/message body (SessionPromptData in the opencode SDK).
  * Appends after any client-provided system prompt — never overwrites — and a
  * second call on the same body is a no-op (marker dedupe). Mutates and
- * returns the body; `parts`/`model`/`agent` are left untouched.
+ * returns the body; `parts`/`model`/`agent` are left untouched. The self-serve
+ * mission convention rides the same injection (own marker, own dedupe).
  */
 export function injectArtifactsSystem<T extends { system?: string }>(body: T): T {
   if (!body || typeof body !== "object") return body;
   const existing = typeof body.system === "string" ? body.system.trim() : "";
-  if (existing.includes(ARTIFACTS_MARKER)) return body;
-  body.system = [existing, buildArtifactsPrompt()].filter(Boolean).join("\n\n");
+  const blocks = [existing];
+  if (!existing.includes(ARTIFACTS_MARKER)) blocks.push(buildArtifactsPrompt());
+  if (!existing.includes(MISSION_MARKER)) blocks.push(buildMissionPrompt());
+  if (blocks.length === 1) return body;
+  body.system = blocks.filter(Boolean).join("\n\n");
   return body;
 }
 

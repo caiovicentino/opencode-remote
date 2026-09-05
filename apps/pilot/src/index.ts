@@ -1,6 +1,7 @@
-import { existsSync, readFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { homedir } from "node:os";
+import { missionDrifted, missionWorkspaceKey, readMission, type MissionSpec } from "./mission";
 import { emit } from "./events";
 import { agentStream, exec, runAgent, runAgentForRole } from "./runner";
 import { nowLocalISO } from "./log";
@@ -54,6 +55,14 @@ let deployBusy = false;
  * (otherwise the eager-fill would instantly refill the slots and the reload
  * would never fire). */
 let drainNewPicks = false;
+/** Self-serve mission loaded at boot (~/.opencode-remote/mission.json, written
+ * by the chat agent) — null keeps the default mission (this repo). A changed
+ * file is applied by the loop's drift self-reload, never hot-swapped. */
+let activeMission: MissionSpec | null = null;
+/** True when the mission targets a foreign repo (repoUrl): builders/reviewers/
+ * gate run there, but no production service is served from it — the staged
+ * deploy (reset + build + launchctl kickstart of OUR services) is skipped. */
+let foreignMission = false;
 /** Shared runtime counters — mutated by the dispatcher and by slot workers.
  * The single-threaded event loop keeps mutations atomic; the dispatcher only
  * reloads from disk while no slot is running (so in-flight counters are never
@@ -70,6 +79,31 @@ const log = (level: string, msg: string, data?: unknown) =>
 async function main() {
   await ensureSingleton();
   const cfg = loadConfig();
+  // Self-serve mission: read once at boot and hash-tracked — the loop's drift
+  // self-heal below re-boots this process whenever mission.json changes, so a
+  // mission set from the chat is applied without any operator action.
+  const missionBoot = readMission();
+  const bootMissionHash = missionBoot.hash;
+  activeMission = missionBoot.spec;
+  if (missionBoot.raw !== null && !activeMission) {
+    log("warn", "mission.json present but invalid — default mission kept (expects {v:1, prompt and/or repoUrl, setAt})");
+  }
+  if (activeMission) {
+    log("info", "mission loaded", { repoUrl: activeMission.repoUrl, prompt: activeMission.prompt?.slice(0, 160), setAt: activeMission.setAt });
+    emit("phase", { task: "mission", phase: "loaded", ok: true, detail: missionDetail(activeMission) });
+  }
+  const missionKey = missionWorkspaceKey(activeMission);
+  if (activeMission?.repoUrl && missionKey) {
+    // foreign repo: its clone is the working repo for this run — slot
+    // worktrees derive from it and the queue is read from ITS origin/main
+    cfg.repo = ensureMissionRepo(activeMission.repoUrl, missionKey);
+    foreignMission = true;
+  }
+  // slot worktrees live under pilot/ for this repo, under pilot/mission/<key>/
+  // for a foreign mission — a foreign clone never reuses repo-N of this repo
+  const slotRoot = missionKey
+    ? join(homedir(), ".opencode-remote", "pilot", "mission", missionKey)
+    : join(homedir(), ".opencode-remote", "pilot");
   // P3-101: the sha this process booted on — the loop's stale-process self-heal
   // exits whenever the production repo's HEAD moves past it (idle + no deploy).
   const bootHead = exec("git rev-parse HEAD", { cwd: cfg.repo, allowFail: true }).output.trim() || undefined;
@@ -82,7 +116,7 @@ async function main() {
   // behavior; slot-1 is also the aux-agent (strategist/researcher) workspace.
   let slotNumbers = Array.from({ length: cfg.slots }, (_, i) => i + 1);
   const slotCfg = new Map<number, PilotConfig>();
-  for (const s of slotNumbers) slotCfg.set(s, ensureSlotWorkspace(cfg, s));
+  for (const s of slotNumbers) slotCfg.set(s, ensureSlotWorkspace(cfg, s, slotRoot));
   // Frota Cognitiva: re-read pilot.json on every fill — dashboard edits to
   // slots / models.tierB land without a restart. Grow spawns slot worktrees
   // on the fly (ensureSlotWorkspace is idempotent); shrink only stops NEW
@@ -99,7 +133,7 @@ async function main() {
     const before = cfg.slots;
     cfg.slots = fresh.slots;
     cfg.models = fresh.models;
-    for (let s = 1; s <= cfg.slots; s++) if (!slotCfg.has(s)) slotCfg.set(s, ensureSlotWorkspace(cfg, s));
+    for (let s = 1; s <= cfg.slots; s++) if (!slotCfg.has(s)) slotCfg.set(s, ensureSlotWorkspace(cfg, s, slotRoot));
     for (const [, c] of slotCfg) c.models = cfg.models;
     slotNumbers = Array.from({ length: cfg.slots }, (_, i) => i + 1);
     const coord = cfg.models?.tierB?.planner ?? "default";
@@ -118,6 +152,7 @@ async function main() {
     repo: cfg.repo,
     slots: cfg.slots,
     workspaces: slotNumbers.map((s) => slotCfg.get(s)!.workspace),
+    mission: activeMission ? missionDetail(activeMission) : "default",
   });
 
   /**
@@ -286,24 +321,31 @@ async function main() {
     // DRIFT_FORCE_RELOAD_MS of continuous drift, hold new picks, drain the
     // slots, exit — the queue-fed loop can no longer deadlock on a stale
     // in-memory battery.
+    // Self-serve mission: a changed mission.json (hash vs boot) rides the SAME
+    // fail-safe path — idle-first exit, then the bounded forced reload — so
+    // a mission set from the chat is applied without any operator action.
     const headNow = exec("git rev-parse HEAD", { cwd: cfg.repo, allowFail: true }).output.trim();
-    if (!deployBusy && headDrifted(bootHead, headNow)) {
+    const missionNow = readMission().hash;
+    const drift = headDrifted(bootHead, headNow) ? "head" : missionDrifted(bootMissionHash, missionNow) ? "mission" : null;
+    if (!deployBusy && drift) {
       driftSince ??= Date.now();
       if (running.size === 0) {
-        log("warn", "prod repo HEAD moved since boot — self-reloading onto new code", {
+        log("warn", drift === "head" ? "prod repo HEAD moved since boot — self-reloading onto new code" : "mission.json changed since boot — self-reloading onto the new mission", {
           bootHead,
           headNow,
+          drift,
         });
-        emit("deploy", { phase: "self-reload", ok: true, detail: "boot HEAD drift (stale process)" });
+        emit("deploy", { phase: "self-reload", ok: true, detail: drift === "head" ? "boot HEAD drift (stale process)" : "mission drift (mission.json changed)" });
         process.exit(0); // pidfile singleton + KeepAlive cover the restart
       }
       if (shouldForceReload(Date.now() - driftSince, deployBusy)) {
-        log("warn", "HEAD drift persisted while busy — draining slots for forced self-reload", {
+        log("warn", `${drift} drift persisted while busy — draining slots for forced self-reload`, {
           bootHead,
           headNow,
+          drift,
           driftedMs: Date.now() - driftSince,
         });
-        emit("deploy", { phase: "self-reload", ok: true, detail: "drift persistente — drenando slots" });
+        emit("deploy", { phase: "self-reload", ok: true, detail: `${drift} drift persistente — drenando slots` });
         await drainForReload({ slotsRunning: () => running.size, holdNewPicks: (hold) => { drainNewPicks = hold; } });
         process.exit(0);
       }
@@ -335,8 +377,9 @@ async function main() {
 
     // pending deploy: production is behind a gate-verified merge on origin/main
     // (e.g. after a rollback). Serial by construction: only checked while slots
-    // are idle and no fire-and-forget deploy is in flight.
-    if (running.size === 0 && !deployBusy && state.deploys < cfg.maxDeploysPerDay) {
+    // are idle and no fire-and-forget deploy is in flight. A foreign mission
+    // repo serves no production service here — never deployed.
+    if (running.size === 0 && !deployBusy && !foreignMission && state.deploys < cfg.maxDeploysPerDay) {
       const prodSha = exec("git rev-parse HEAD", { cwd: cfg.repo, allowFail: true }).output.trim();
       // P2-058: the target is the newest gate-verified, non-quarantined merge
       // sha on origin/main — a direct push to main (bookkeeping or hostile) is
@@ -390,7 +433,7 @@ async function main() {
       }
       const today = nowLocalISO().slice(0, 10);
       if (state.researchLast !== today) {
-        await runResearcher(aux, state);
+        await runResearcher(aux, state, activeMission?.prompt);
         saveState(state);
       }
     }
@@ -568,6 +611,12 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
  * newest gate-verified, non-quarantined sha; without one, nothing deploys.
  */
 function launchDeploy(cfg: PilotConfig, task: Task, sha: string, touchedUi: boolean) {
+  if (foreignMission) {
+    // the merge landed in the mission repo; nothing here runs from it, so a
+    // reset + build + kickstart of OUR services would only cause an outage
+    log("info", "deploy skipped — foreign mission repo serves no production service here", { task: task.id, sha: sha.slice(0, 7) });
+    return;
+  }
   if (deployBusy) {
     log("info", "deploy in flight — merge queued on main, next deploy will pick it up", { task: task.id });
     return;
@@ -745,9 +794,12 @@ async function runStrategist(cfg: PilotConfig, ready: Task[] = []) {
   // P1-057: the strategist drafts new tasks from repo content — run it with
   // the aux sandbox (bash/edit denied) and land its proposals deterministically.
   writeAuxSandboxConfig(cfg.workspace);
+  // Self-serve mission: the chat-defined prompt replaces the built-in mission
+  // text for the strategist (and the researcher — see the loop).
+  const mission = activeMission?.prompt ?? STRATEGIST_MISSION;
   // P1-007: top-5 lessons keyword-matched against the mission + the queue it
   // is about to refill, so drafted tasks don't repeat past mistakes
-  const context = [STRATEGIST_MISSION, ...ready.map((t) => `${t.title} ${t.spec}`)].join("\n");
+  const context = [mission, ...ready.map((t) => `${t.title} ${t.spec}`)].join("\n");
   const lessons = pickRelevantLessons(readExperienceFile(cfg.workspace), "draft next backlog tasks", context);
   // P2-031: the 10 most recent failure lessons — drafted/refined tasks must not
   // repeat patterns that already burned their attempt budget
@@ -756,7 +808,7 @@ async function runStrategist(cfg: PilotConfig, ready: Task[] = []) {
   // prompt prefix stays byte-identical between runs for the provider cache.
   const r = await runAgentForRole(
     "strategist",
-    strategistPrompt(STRATEGIST_MISSION, lessons, failureBlock),
+    strategistPrompt(mission, lessons, failureBlock),
     { cwd: cfg.workspace, timeoutMin: 25, label: "strategist", onStdout: agentStream("strategist"), models: cfg.models, marker: STRATEGIST_MARKER },
   );
   writeSandboxConfig(cfg.workspace);
@@ -875,16 +927,51 @@ function shq(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
+/** One-line mission summary for logs/events — prompt truncated, never secrets. */
+function missionDetail(spec: MissionSpec): string {
+  const target = spec.repoUrl ?? "this repo";
+  return spec.prompt ? `${target} — ${spec.prompt.slice(0, 120)}` : target;
+}
+
 /**
- * P1-006: the slot workspace lives at pilot/repo-<slot> and is created once
- * via `git clone --shared` from the production checkout (shared objects, cheap).
+ * Self-serve mission on a foreign repo: clone it once under
+ * pilot/mission/<org--repo>/repo (a plain clone of the GitHub URL — nothing is
+ * shared with the production checkout) and refresh it on every boot. Slot
+ * worktrees are then derived from this clone exactly like they are from the
+ * production checkout (ensureSlotWorkspace), so the whole pipeline — builders,
+ * reviewers, judge — runs against the target repo. The URL was validated by
+ * the mission parser (GitHub https shape, safe charset) and is shell-quoted.
+ */
+function ensureMissionRepo(repoUrl: string, key: string): string {
+  const dir = join(homedir(), ".opencode-remote", "pilot", "mission", key, "repo");
+  if (!existsSync(join(dir, ".git"))) {
+    mkdirSync(dirname(dir), { recursive: true });
+    const clone = exec(`git clone ${shq(repoUrl)} ${shq(dir)}`, { cwd: dirname(dir), timeoutMin: 10, allowFail: true });
+    if (!clone.ok) {
+      rmSync(dir, { recursive: true, force: true }); // partial clone would block the retry
+      throw new Error(`mission repo clone failed (${repoUrl}): ${clone.output.slice(-300)}`);
+    }
+    log("info", "mission repo cloned", { repoUrl, dir });
+  } else {
+    exec("git fetch -q origin", { cwd: dir, allowFail: true });
+    exec("git checkout -q -B main origin/main", { cwd: dir, allowFail: true });
+  }
+  return dir;
+}
+
+/**
+ * P1-006: the slot workspace lives at <root>/repo-<slot> (root = pilot/ for
+ * this repo, pilot/mission/<key>/ for a foreign mission) and is created once
+ * via `git clone --shared` from the working checkout (shared objects, cheap).
  * The origin remote is restored to the real origin so fetches/pushes do not
  * depend on the prod checkout's state, and dependencies are bootstrapped
- * (npm ci) before the slot is usable — a half-ready slot must never exist.
+ * (npm ci; npm install when the repo ships no lockfile) before the slot is
+ * usable — a half-ready slot must never exist.
  */
-function ensureSlotWorkspace(base: PilotConfig, slot: number): PilotConfig {
-  const ws = join(homedir(), ".opencode-remote", "pilot", `repo-${slot}`);
+function ensureSlotWorkspace(base: PilotConfig, slot: number, root = join(homedir(), ".opencode-remote", "pilot")): PilotConfig {
+  const ws = join(root, `repo-${slot}`);
   if (!existsSync(join(ws, ".git"))) {
+    mkdirSync(root, { recursive: true });
     const originUrl = exec("git remote get-url origin", { cwd: base.repo, allowFail: true }).output.trim();
     // without the real origin, pushes would target the prod checkout (non-bare) — refuse
     if (!originUrl) throw new Error(`slot workspace: prod checkout ${base.repo} has no origin remote`);
@@ -905,7 +992,10 @@ function ensureSlotWorkspace(base: PilotConfig, slot: number): PilotConfig {
     exec("git fetch -q origin", { cwd: ws, allowFail: true });
     exec("git checkout -q -B main origin/main", { cwd: ws, allowFail: true });
     // fresh clone has no node_modules — the gate cannot run without deps
-    const ci = exec("npm ci --no-audit --no-fund --loglevel=error", { cwd: ws, timeoutMin: 15, allowFail: true });
+    const installCmd = existsSync(join(ws, "package-lock.json"))
+      ? "npm ci --no-audit --no-fund --loglevel=error"
+      : "npm install --no-audit --no-fund --loglevel=error";
+    const ci = exec(installCmd, { cwd: ws, timeoutMin: 15, allowFail: true });
     if (!ci.ok) {
       rmSync(ws, { recursive: true, force: true });
       throw new Error(`slot workspace npm ci failed (${ws}): ${ci.output.slice(-300)}`);

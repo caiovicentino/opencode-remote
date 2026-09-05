@@ -45,6 +45,13 @@ interface TimelineEntry {
   tail?: string;
 }
 
+/** Read-only view of ~/.opencode-remote/mission.json (set from the chat only). */
+interface MissionSpecView {
+  prompt?: string;
+  repoUrl?: string;
+  setAt?: string;
+}
+
 type KindFilter = "all" | "decision" | "gate" | "deploy" | "review";
 
 const KIND_FILTERS: KindFilter[] = ["all", "decision", "gate", "review", "deploy"];
@@ -62,6 +69,13 @@ function fmtClock(ts: string | undefined): string {
   const d = new Date(ts);
   if (Number.isNaN(d.getTime())) return "—";
   return d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+}
+
+function fmtDateTime(ts: string | undefined): string {
+  if (!ts) return "";
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
 async function decode(
@@ -102,6 +116,8 @@ export default function MissionControlView({
   // the desktop bridge's local link. The forensic timeline stays one toggle away.
   const [view, setView] = useState<"dash" | "forensic">("dash");
   const [dashUrl, setDashUrl] = useState<string | null>(null);
+  // Self-serve mission: undefined = not loaded yet, null = none set.
+  const [mission, setMission] = useState<MissionSpecView | null | undefined>(undefined);
   useEffect(() => {
     let alive = true;
     const bridge = (window as unknown as { ocrDesktop?: { getLocalLink?: () => Promise<{ port: number; token: string } | null> } }).ocrDesktop;
@@ -128,6 +144,17 @@ export default function MissionControlView({
     }
   }, [daemonApi]);
 
+  const loadMission = useCallback(async () => {
+    if (!daemonApi) return;
+    try {
+      const { json } = await decode(await daemonApi({ path: "/api/pilot-mission" }));
+      const spec = json?.spec as MissionSpecView | null | undefined;
+      setMission(spec && typeof spec === "object" ? spec : null);
+    } catch {
+      // best-effort: the cards error surface already reports a dead daemon
+    }
+  }, [daemonApi]);
+
   const loadTimeline = useCallback(async (task: string) => {
     if (!daemonApi) return;
     try {
@@ -145,9 +172,13 @@ export default function MissionControlView({
   useEffect(() => {
     if (!daemonApi) return;
     void loadCards();
-    const iv = setInterval(() => void loadCards(), 6_000);
+    void loadMission();
+    const iv = setInterval(() => {
+      void loadCards();
+      void loadMission();
+    }, 6_000);
     return () => clearInterval(iv);
-  }, [daemonApi, loadCards]);
+  }, [daemonApi, loadCards, loadMission]);
 
   useEffect(() => {
     if (selected) void loadTimeline(selected);
@@ -239,6 +270,28 @@ export default function MissionControlView({
       {view === "forensic" && (
       <div className="mission-grid">
         <div className="mission-cards" role="list">
+          <div className="mission-active" data-mission={mission ? "set" : "none"}>
+            <span className="mission-active-label">{t("missionActive")}</span>
+            {mission ? (
+              <>
+                {mission.prompt && <p className="mission-active-text">{mission.prompt}</p>}
+                {mission.repoUrl && (
+                  <p className="mission-active-src">
+                    {t("missionSourceRepo")}: {mission.repoUrl}
+                  </p>
+                )}
+                <p className="mission-active-src">
+                  {t("missionSource")}:{" "}
+                  {[mission.prompt ? t("missionSourcePrompt") : "", mission.repoUrl ? t("missionSourceRepo") : ""]
+                    .filter(Boolean)
+                    .join(" + ")}
+                  {fmtDateTime(mission.setAt) ? ` · ${t("missionSetAt")} ${fmtDateTime(mission.setAt)}` : ""}
+                </p>
+              </>
+            ) : (
+              <p className="mission-active-src">{mission === null ? t("missionActiveNone") : "…"}</p>
+            )}
+          </div>
           {cards === null && <p className="muted" style={{ padding: 12 }}>{t("missionLoading")}</p>}
           {cards !== null && cards.length === 0 && (
             <p className="muted" style={{ padding: 12 }}>{t("missionEmpty")}</p>

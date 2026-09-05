@@ -2851,6 +2851,36 @@ button.desk-new:hover:not(:disabled) {
   font-size: 0.75rem;
   color: var(--status-ok);
 }
+/* Self-serve mission: read-only card at the top of the forensic sidebar —
+   static (no motion), the chat is the only way to set it. */
+.mission-active {
+  margin: var(--space-2) var(--space-2) var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.75rem;
+}
+.mission-active-label {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.mission-active-text {
+  margin: 0 0 var(--space-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.mission-active-src {
+  margin: 0;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  overflow-wrap: anywhere;
+}
 .mission-timeline {
   padding-top: var(--space-2);
 }

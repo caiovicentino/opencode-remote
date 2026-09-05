@@ -208,10 +208,36 @@ import {
   ARTIFACTS_MARKER,
   buildArtifactsPathLine,
   buildArtifactsPrompt,
+  buildMissionPrompt,
   injectArtifactsPathPart,
   injectArtifactsSystem,
+  MISSION_FILE_HINT,
+  MISSION_MARKER,
   workspaceCoversArtifacts,
 } from "../apps/daemon/src/sessionctx";
+
+import {
+  GITHUB_REPO_URL_RE,
+  MISSION_PROMPT_MAX,
+  missionDrifted,
+  missionHash,
+  missionWorkspaceKey,
+  normalizeRepoUrl,
+  parseMissionSpec,
+  readMission,
+  repoSlug,
+  validRepoUrl,
+  writeMissionSpec,
+  type MissionFileIo,
+} from "../apps/pilot/src/mission";
+
+import {
+  buildGenericProfile,
+  detectGateProfile,
+  GENERIC_GATE_SCRIPTS,
+  GENERIC_STEP_TIMEOUT_MIN,
+  PILOT_GATE_STEPS,
+} from "../apps/pilot/src/gateprofile";
 
 import { browseTarget, clickPoint, validSession, viewportFromParams } from "../apps/daemon/src/browse";
 
@@ -9560,6 +9586,227 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       realBuilder.includes(`${CAMERA_KEY}:`) &&
       privacyProblems(realPlist, realBuilder).length === 0,
   );
+// --- self-serve mission: mission.json spec, hash drift, generic gate profile ---
+{
+  const GH = "https://github.com/acme/widgets.git";
+  // parsing / validation
+  const both = parseMissionSpec(JSON.stringify({ v: 1, prompt: "  build a CLI  ", repoUrl: "https://github.com/acme/widgets", setAt: "2026-09-05T10:00:00Z" }));
+  check(
+    "mission: prompt + repoUrl parse, prompt trimmed, url normalized to .git",
+    both?.v === 1 && both.prompt === "build a CLI" && both.repoUrl === GH && both.setAt === "2026-09-05T10:00:00Z",
+    JSON.stringify(both),
+  );
+  const promptOnly = parseMissionSpec(JSON.stringify({ v: 1, prompt: "ship dark mode", setAt: "2026-09-05T10:00:00Z" }));
+  check("mission: prompt-only spec is valid (repoUrl absent)", promptOnly?.prompt === "ship dark mode" && promptOnly.repoUrl === undefined);
+  const repoOnly = parseMissionSpec(JSON.stringify({ v: 1, repoUrl: "https://github.com/acme/widgets.git/", setAt: "x" }));
+  check("mission: repo-only spec is valid, trailing slash dropped, garbage setAt → empty", repoOnly?.repoUrl === GH && repoOnly.prompt === undefined && repoOnly.setAt === "");
+  check("mission: empty repoUrl string is treated as absent", parseMissionSpec(JSON.stringify({ v: 1, prompt: "x", repoUrl: "" }))?.repoUrl === undefined);
+  check(
+    "mission: neither prompt nor repoUrl → null",
+    parseMissionSpec(JSON.stringify({ v: 1, prompt: "   ", setAt: "2026-09-05T10:00:00Z" })) === null &&
+      parseMissionSpec(JSON.stringify({ v: 1, setAt: "2026-09-05T10:00:00Z" })) === null,
+  );
+  check(
+    "mission: wrong/missing version → null",
+    parseMissionSpec(JSON.stringify({ v: 2, prompt: "x" })) === null && parseMissionSpec(JSON.stringify({ prompt: "x" })) === null,
+  );
+  check(
+    "mission: invalid repoUrl rejects the whole spec (never silently dropped)",
+    ["http://github.com/acme/widgets", "https://gitlab.com/acme/widgets", "https://github.com/acme", "https://github.com/acme/widgets/tree/main", "https://github.com/../etc", "git@github.com:acme/widgets.git", "https://github.com/acme/wid gets"].every(
+      (u) => parseMissionSpec(JSON.stringify({ v: 1, prompt: "x", repoUrl: u })) === null,
+    ),
+  );
+  check(
+    "mission: garbage never throws → null",
+    parseMissionSpec("{not json") === null && parseMissionSpec("[1,2]") === null && parseMissionSpec("") === null && parseMissionSpec(null) === null && parseMissionSpec("42") === null,
+  );
+  check("mission: over-long prompt → null", parseMissionSpec(JSON.stringify({ v: 1, prompt: "a".repeat(MISSION_PROMPT_MAX + 1) })) === null);
+  check("mission: prompt at the cap is accepted", parseMissionSpec(JSON.stringify({ v: 1, prompt: "a".repeat(MISSION_PROMPT_MAX) }))?.prompt?.length === MISSION_PROMPT_MAX);
+
+  // repo url shape
+  check(
+    "mission: repoSlug/validRepoUrl accept the documented shape only",
+    JSON.stringify(repoSlug("https://github.com/acme/widgets")) === JSON.stringify({ org: "acme", repo: "widgets" }) &&
+      JSON.stringify(repoSlug("https://github.com/acme/widgets.git")) === JSON.stringify({ org: "acme", repo: "widgets" }) &&
+      validRepoUrl("https://github.com/a-b_c.d/e.f-g") &&
+      !validRepoUrl("https://github.com/../x") &&
+      !validRepoUrl("https://github.com/x/..") &&
+      !validRepoUrl("https://github.com/x/.") &&
+      !validRepoUrl(42) &&
+      GITHUB_REPO_URL_RE.test("https://github.com/acme/widgets.git"),
+  );
+  check("mission: normalizeRepoUrl adds .git, null for invalid", normalizeRepoUrl("https://github.com/acme/widgets") === GH && normalizeRepoUrl("nope") === null);
+  check("mission: workspace key is org--repo, null for this repo", missionWorkspaceKey(both) === "acme--widgets" && missionWorkspaceKey(promptOnly) === null && missionWorkspaceKey(null) === null);
+
+  // hash tracking + drift (the self-reload trigger)
+  const h1 = missionHash('{"v":1,"prompt":"a"}');
+  const h2 = missionHash('{"v":1,"prompt":"b"}');
+  check("mission hash: sha256 hex, stable, content-sensitive", /^[0-9a-f]{64}$/.test(h1!) && h1 === missionHash('{"v":1,"prompt":"a"}') && h1 !== h2);
+  check("mission hash: absent file → undefined", missionHash(null) === undefined && missionHash(undefined) === undefined);
+  check(
+    "mission drift: absent→absent and same hash never drift; appear/vanish/change do",
+    missionDrifted(undefined, undefined) === false &&
+      missionDrifted(h1, h1) === false &&
+      missionDrifted(undefined, h1) === true &&
+      missionDrifted(h1, undefined) === true &&
+      missionDrifted(h1, h2) === true,
+  );
+
+  // readMission: injectable reader, never throws
+  const missing = readMission("/nope/mission.json", () => {
+    throw new Error("ENOENT");
+  });
+  check("readMission: absent file → raw null, spec null, hash undefined", missing.raw === null && missing.spec === null && missing.hash === undefined);
+  const rawOk = JSON.stringify({ v: 1, prompt: "go", setAt: "2026-09-05T10:00:00Z" });
+  const present = readMission("/x/mission.json", () => rawOk);
+  check("readMission: present file → parsed spec + hash of the raw text", present.spec?.prompt === "go" && present.hash === missionHash(rawOk));
+  const invalid = readMission("/x/mission.json", () => "garbage");
+  check("readMission: invalid file → spec null but hash still tracked (a fix later drifts)", invalid.spec === null && invalid.raw === "garbage" && invalid.hash === missionHash("garbage"));
+
+  // atomic 0600 write (daemon.json contract) against a fake fs
+  const fakeIo = () => {
+    const files = new Map<string, string>();
+    const modes: number[] = [];
+    const renames: string[] = [];
+    const unlinks: string[] = [];
+    const io: MissionFileIo = {
+      writeFileSync: (f, d, o) => {
+        files.set(f, d);
+        modes.push(o.mode);
+      },
+      renameSync: (a, b) => {
+        renames.push(`${a}->${b}`);
+        files.set(b, files.get(a)!);
+        files.delete(a);
+      },
+      unlinkSync: (f) => {
+        unlinks.push(f);
+        files.delete(f);
+      },
+    };
+    return { io, files, modes, renames, unlinks };
+  };
+  const dest = "/m/mission.json";
+  const okIo = fakeIo();
+  const written = writeMissionSpec({ v: 1, prompt: "go", repoUrl: GH, setAt: "2026-09-05T10:00:00Z" }, dest, okIo.io);
+  check(
+    "writeMissionSpec: tmp created 0600, renamed over the destination, no tmp survives",
+    okIo.modes.join() === String(0o600) && okIo.renames.join() === `${dest}.tmp->${dest}` && okIo.files.get(dest) === written && !okIo.files.has(`${dest}.tmp`),
+  );
+  check("writeMissionSpec: what lands parses back to the same spec", parseMissionSpec(written)?.repoUrl === GH && parseMissionSpec(written)?.prompt === "go");
+  const badIo = fakeIo();
+  badIo.io.renameSync = () => {
+    throw new Error("EXDEV");
+  };
+  badIo.files.set(dest, "previous");
+  let threw = false;
+  try {
+    writeMissionSpec({ v: 1, prompt: "go", setAt: "" }, dest, badIo.io);
+  } catch {
+    threw = true;
+  }
+  check("writeMissionSpec: failed rename rethrows, removes the tmp, keeps the old file", threw && badIo.files.get(dest) === "previous" && badIo.unlinks.join() === `${dest}.tmp`);
+  const noneIo = fakeIo();
+  let refused = false;
+  try {
+    writeMissionSpec({ v: 1, setAt: "" }, dest, noneIo.io);
+  } catch {
+    refused = true;
+  }
+  check("writeMissionSpec: invalid spec (no prompt, no repo) refused before any write", refused && noneIo.modes.length === 0);
+  const mdir = mkdtempSync(join(tmpdir(), "ocr-mission-"));
+  try {
+    const mfile = join(mdir, "mission.json");
+    writeMissionSpec({ v: 1, prompt: "real fs", setAt: "2026-09-05T10:00:00Z" }, mfile);
+    check("writeMissionSpec: real fs lands 0600, round-trips, leaves no .tmp", (statSync(mfile).mode & 0o777) === 0o600 && readMission(mfile).spec?.prompt === "real fs" && readdirSync(mdir).join() === "mission.json");
+  } finally {
+    rmSync(mdir, { recursive: true, force: true });
+  }
+
+  // generic gate profile (in-repo mirror of the judge's builder)
+  const gp = buildGenericProfile({ typecheck: "tsc", build: "vite build", test: "vitest", lint: "eslint .", "test:unit": "x", prepare: "evil", postinstall: "evil" });
+  check(
+    "generic profile: typecheck|build|test|lint only, allowlist order, npm run <name> --silent, 10min cap",
+    gp.kind === "generic" &&
+      gp.steps.map(([n]) => n).join(",") === "typecheck,build,test,lint" &&
+      gp.steps.every(([n, c]) => c === `npm run ${n} --silent`) &&
+      gp.stepTimeoutMin === GENERIC_STEP_TIMEOUT_MIN &&
+      GENERIC_STEP_TIMEOUT_MIN === 10 &&
+      GENERIC_GATE_SCRIPTS.join(",") === "typecheck,build,test,lint",
+  );
+  check("generic profile: absent/empty/non-string scripts skipped; garbage table → no steps", buildGenericProfile({ test: "", build: 3, lint: "eslint" }).steps.map(([n]) => n).join() === "lint" && buildGenericProfile(null).steps.length === 0 && buildGenericProfile("x").steps.length === 0);
+  check("generic profile: never a pilot-only step (invariants/desktop/corpus)", !gp.steps.some(([n]) => ["invariants", "desktop-render", "desktop-flow", "corpus", "reconnect", "integration"].includes(n)));
+  const foreign = detectGateProfile("/ws/foreign", { exists: () => false, readPackageJson: () => ({ name: "someone", scripts: { test: "jest", lint: "eslint", start: "node ." } }) });
+  check("detectGateProfile: foreign package.json → generic with only its allowlisted scripts", foreign.kind === "generic" && foreign.steps.map(([n]) => n).join(",") === "test,lint");
+  const pilotByName = detectGateProfile("/ws/pilot", { exists: () => false, readPackageJson: () => ({ name: "opencode-remote", scripts: { typecheck: "x" } }) });
+  const pilotByTree = detectGateProfile("/ws/pilot2", { exists: (p) => p.endsWith("apps/pilot/src/pipeline.ts"), readPackageJson: () => ({ name: "renamed", scripts: {} }) });
+  check("detectGateProfile: pilot checkout keeps the full battery (by name or by tree)", pilotByName.kind === "pilot" && pilotByTree.kind === "pilot" && pilotByName.steps.length === PILOT_GATE_STEPS.length);
+  check("detectGateProfile: no package.json → unknown (fail closed)", detectGateProfile("/ws/none", { exists: () => false, readPackageJson: () => null }).kind === "unknown");
+
+  // chat-side convention injected into daemon sessions
+  const mblock = buildMissionPrompt();
+  check(
+    "mission prompt: marker, file hint, schema fields, url shape, atomic 0600 write, one-sentence confirmation — no per-session datum",
+    mblock.includes(`[${MISSION_MARKER}]`) &&
+      mblock.includes(MISSION_FILE_HINT) &&
+      mblock.includes('"v":1') &&
+      mblock.includes('"repoUrl"') &&
+      mblock.includes('"setAt"') &&
+      mblock.includes("https://github.com/<org>/<repo>(.git)?") &&
+      mblock.includes("chmod 600") &&
+      mblock.includes(".tmp") &&
+      mblock.includes("próximo boot") &&
+      !mblock.includes("ses_"),
+  );
+  const s1: { system?: string } = {};
+  const s2: { system?: string } = { system: "SYS" };
+  injectArtifactsSystem(s1);
+  injectArtifactsSystem(s2);
+  injectArtifactsSystem(s2);
+  check(
+    "mission prompt: rides the session injection once (dedupe), after the client prompt, byte-identical block across sessions",
+    s1.system!.includes(mblock) &&
+      s2.system!.startsWith("SYS") &&
+      s2.system!.split(MISSION_MARKER).length - 1 === 1 &&
+      s1.system === injectArtifactsSystem({} as { system?: string }).system,
+  );
+  const partial: { system?: string } = { system: `[${ARTIFACTS_MARKER}] já ensinado` };
+  injectArtifactsSystem(partial);
+  check("mission prompt: a system that only has the artifacts block gains the mission block (and not a second artifacts one)", partial.system!.includes(MISSION_MARKER) && partial.system!.split(ARTIFACTS_MARKER).length - 1 === 1);
+  const agentsMd = readFileSync(join(import.meta.dirname, "..", "AGENTS.md"), "utf8");
+  check("mission convention: this repo's AGENTS.md (which skips the injection) teaches the same file + shape", agentsMd.includes("mission.json") && agentsMd.includes('"v":1') && agentsMd.includes("chmod 600"));
+
+  // researcher prompt: stable prefix intact, mission appended as the tail
+  const base = researcherPrompt();
+  const withMission = researcherPrompt("build the best CLI");
+  check(
+    "researcherPrompt: default unchanged (no override block); mission rides the tail before the done marker",
+    !base.includes("MISSION OVERRIDE") &&
+      withMission.includes("MISSION OVERRIDE") &&
+      withMission.includes("build the best CLI") &&
+      withMission.startsWith(base.slice(0, base.indexOf("Your LAST line"))) &&
+      withMission.trimEnd().endsWith("RESEARCHER:DONE"),
+  );
+
+  // i18n: en + pt for every new user-visible string
+  for (const k of ["missionActive", "missionActiveNone", "missionSource", "missionSourcePrompt", "missionSourceRepo", "missionSetAt"]) {
+    check(`i18n: ${k} in en and pt`, typeof (dict.en as Record<string, string>)[k] === "string" && typeof (dict.pt as Record<string, string>)[k] === "string");
+  }
+
+  // source pins: the loop routes mission drift through the pure seam, the
+  // boot hash is captured once, and a foreign mission never deploys
+  const pilotIndexSrc = readFileSync(join(import.meta.dirname, "..", "apps", "pilot", "src", "index.ts"), "utf8");
+  check(
+    "mission: loop self-reload routed through missionDrifted(bootMissionHash, missionNow) on the same drift path",
+    pilotIndexSrc.includes("missionDrifted(bootMissionHash, missionNow)") &&
+      pilotIndexSrc.includes("const bootMissionHash = missionBoot.hash") &&
+      pilotIndexSrc.includes("headDrifted(bootHead, headNow) ? \"head\" : missionDrifted(bootMissionHash, missionNow)"),
+  );
+  check(
+    "mission: foreign repo gates both deploy paths (pending deploy + post-merge launch)",
+    pilotIndexSrc.includes("!deployBusy && !foreignMission && state.deploys") && pilotIndexSrc.includes("if (foreignMission) {"),
+  );
+  check("mission: strategist/researcher take the chat-defined prompt", pilotIndexSrc.includes("activeMission?.prompt ?? STRATEGIST_MISSION") && pilotIndexSrc.includes("runResearcher(aux, state, activeMission?.prompt)"));
 }
 
 if (failures > 0) {
