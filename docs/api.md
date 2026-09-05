@@ -30,7 +30,7 @@ opencode-remote token
 | DELETE | `/api/session/:id` | delete session |
 | GET | `/api/session/:id/messages?limit=200` | message history (oldest→newest) |
 | POST | `/api/session/:id/message` | send a prompt `{ text }` → `202` |
-| GET | `/api/artifacts?session=<id>` | list agent artifacts (all sessions, or one); the global listing also carries `titles: { sessionId: conversationTitle }` |
+| GET | `/api/artifacts?session=<id>` | list agent artifacts (all sessions, or one), newest first, capped at the 500 most recent (P2-173); carries `total` (real count before the cap), `truncated` and — on the global listing — `titles: { sessionId: conversationTitle }` |
 | GET | `/api/artifacts/file?session=<id>&name=<file>` | raw artifact bytes |
 | GET | `/api/browse` | list live browser sessions |
 | POST | `/api/browse/open` | navigate `{ url, session?, width?, height? }` |
@@ -144,6 +144,14 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 ```
 
 Paths are strictly validated (no traversal); unknown/invalid names answer 404.
+
+Both listing routes (`/api/artifacts` and the tunnel's `/__ocr/artifacts`) return
+artifacts sorted newest → oldest, capped at the **500 most recent**
+(`MAX_ARTIFACTS_LISTED`): the body carries the trimmed `artifacts` array plus
+additive `total` (real number of artifacts found) and `truncated` flags. Clients
+that ignore unknown fields keep working unchanged; the conversation-title map is
+resolved only for the sessions present in the trimmed list.
+
 The phone/desktop UI consumes the same data over the E2E tunnel
 (`/__ocr/artifacts`) — the desktop app shows them in the **Artifacts pane**,
 and chat messages that mention an artifact file name render an attached card.

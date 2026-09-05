@@ -202,7 +202,7 @@ import { fileURLToPath } from "node:url";
 
 import { dirname, join } from "node:path";
 
-import { MAX_ARTIFACT_BYTES, artifactMime, kindFor, listArtifacts, readArtifact, validSegment } from "../apps/daemon/src/artifacts";
+import { MAX_ARTIFACT_BYTES, MAX_ARTIFACTS_LISTED, artifactMime, capArtifacts, kindFor, listArtifacts, readArtifact, validSegment, type ArtifactMeta } from "../apps/daemon/src/artifacts";
 
 import {
   ARTIFACTS_MARKER,
@@ -2459,6 +2459,78 @@ try {
   );
 } finally {
   rmSync(aroot, { recursive: true, force: true });
+}
+
+
+// --- P2-173: the listing cap — capArtifacts cuts the tail, never reorders ----
+{
+  const meta = (i: number): ArtifactMeta => ({
+    sessionId: `ses_${i % 3}`,
+    name: `f-${i}.md`,
+    size: i,
+    mtime: 1_000_000 - i, // already sorted newest-first (i=0 is the newest)
+    kind: "md",
+  });
+
+  check("capArtifacts: list under the cap — truncated false, total real, order kept", (() => {
+    const list = [0, 1, 2].map(meta);
+    const r = capArtifacts(list, MAX_ARTIFACTS_LISTED);
+    return (
+      r.items.length === 3 &&
+      r.total === 3 &&
+      r.truncated === false &&
+      r.items[0].name === "f-0.md" && r.items[2].name === "f-2.md" // order preserved
+    );
+  })());
+
+  check("capArtifacts: list exactly at the cap — truncated false", (() => {
+    const list = Array.from({ length: MAX_ARTIFACTS_LISTED }, (_, i) => meta(i));
+    const r = capArtifacts(list, MAX_ARTIFACTS_LISTED);
+    return r.items.length === MAX_ARTIFACTS_LISTED && r.total === MAX_ARTIFACTS_LISTED && r.truncated === false;
+  })());
+
+  check(
+    "capArtifacts: list over the cap — exactly the cap of items starting at the newest, truncated true, real total",
+    (() => {
+      const list = Array.from({ length: 620 }, (_, i) => meta(i));
+      const r = capArtifacts(list, MAX_ARTIFACTS_LISTED);
+      return (
+        MAX_ARTIFACTS_LISTED === 500 &&
+        r.items.length === 500 &&
+        r.items[0].name === "f-0.md" && // newest first
+        r.items[499]?.name === "f-499.md" &&
+        r.items[500] === undefined &&
+        r.total === 620 &&
+        r.truncated === true
+      );
+    })(),
+  );
+
+  check("capArtifacts: empty list — nothing, not truncated", (() => {
+    const r = capArtifacts([], MAX_ARTIFACTS_LISTED);
+    return r.items.length === 0 && r.total === 0 && r.truncated === false;
+  })());
+
+  check(
+    "capArtifacts: missing/zero/negative/fractional/non-numeric cap falls back to the default (fail-closed, never uncapped)",
+    (() => {
+      const list = Array.from({ length: MAX_ARTIFACTS_LISTED + 1 }, (_, i) => meta(i));
+      const fallback = (cap: unknown) => {
+        const r = capArtifacts(list, cap as never);
+        return r.items.length === MAX_ARTIFACTS_LISTED && r.truncated === true && r.total === MAX_ARTIFACTS_LISTED + 1;
+      };
+      return (
+        MAX_ARTIFACTS_LISTED === 500 &&
+        fallback(undefined) && // missing
+        fallback(0) && // zero must NOT disable the cap
+        fallback(-1) &&
+        fallback(2.5) && // fractional
+        fallback(Number.NaN) &&
+        fallback("50") && // non-numeric
+        fallback(null)
+      );
+    })(),
+  );
 }
 
 
@@ -9586,6 +9658,8 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       realBuilder.includes(`${CAMERA_KEY}:`) &&
       privacyProblems(realPlist, realBuilder).length === 0,
   );
+}
+
 // --- self-serve mission: mission.json spec, hash drift, generic gate profile ---
 {
   const GH = "https://github.com/acme/widgets.git";
