@@ -308,6 +308,22 @@ right-click → **Open**, então o caminho de release sem secrets continua verde
 Quem prefere Homebrew usa o `Formula/opencode-remote.rb` (AGPL-3.0-only,
 checksum fixado automaticamente pelo pipeline de release a cada tag).
 
+**Instale uma vez a partir do DMG (P2-211).** O atualizador só consegue trocar
+um bundle que vive na pasta **Aplicativos** — um app aberto direto do DMG
+montado (ou da pasta de downloads) roda somente leitura num caminho aleatório
+que o atualizador jamais substitui, ou seja, nunca atualiza. O app agora avisa
+isso no primeiro boot: uma linha calma embaixo do QR de pareamento pede para
+arrastar o app para a pasta Aplicativos, ejetar o disco e reabrir por lá. A
+linha descreve a máquina que hospeda o daemon, **nunca bloqueia o pareamento**
+(o QR continua visível — arraste e reabra depois de parear) e **nunca bloqueia
+nenhum outro uso do app**; quando o local não pode ser confirmado, ela fica
+silenciosa. Com o local errado, um update já baixado **não é oferecido como
+reinício** (uma linha no `desktop.log` no lugar), porque o reinício não
+conseguiria aplicá-lo de qualquer forma. O Copy diagnostic em Configurações
+reporta o estado do veredito (nunca o caminho). Somente macOS; as outras
+plataformas não mudam. `OCR_DESKTOP_FORCE_DMG_VOLUME=1` no shell desktop força
+o aviso para screenshots determinísticos (hatch de teste, nunca em produção).
+
 ### Instalador do app desktop (Windows)
 
 Os releases também trazem o instalador Windows, `OpenCode-Remote-Setup-<versão>.exe`

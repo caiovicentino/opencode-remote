@@ -334,6 +334,22 @@ refuses an update whose code signature does not match the installed app, so
 ad-hoc signed builds (the default without signing secrets) keep the manual
 flow via the release page.
 
+**Install it once from the DMG (P2-211).** The updater can only replace a
+bundle living in **Applications** — an app opened straight from the mounted
+DMG (or from the Downloads folder) runs read-only from a random path the
+updater can never swap, so it would silently never update. The app now says
+so at the first boot: a calm line under the pairing QR asks you to drag the
+app to the Applications folder, eject the disk and reopen it from there. The
+line describes the machine hosting the daemon, **never blocks pairing** (the
+QR stays visible — drag the app and reopen after pairing) and **never blocks
+any other use of the app**; when the location cannot be confirmed it stays
+quiet. With the location wrong, an update that finished downloading is **not
+offered as a restart** (one `desktop.log` line instead) because the restart
+could not apply it anyway. Diagnostics → Copy diagnostic reports the verdict
+state (never the path). macOS only; other platforms are unaffected.
+`OCR_DESKTOP_FORCE_DMG_VOLUME=1` on the desktop shell forces the warning for
+deterministic screenshots (test-only hatch, never set in production).
+
 ### Desktop app installer (Windows)
 
 Releases also ship a Windows installer, `OpenCode-Remote-Setup-<version>.exe`

@@ -51,6 +51,8 @@ import {
 import { buildPairLink, PAIR_LINK_HASH_ROUTE, PAIR_LINK_MAX_LEN } from "../apps/desktop/src/pairlink";
 import { hasAppMarker, probeVerdict, WEB_REACH_TIMEOUT_MS } from "../apps/desktop/src/webreach";
 import { linkVerdict, type RelayLinkFacts } from "../apps/desktop/src/relaylink";
+import { installMessage, installVerdict } from "../apps/desktop/src/installloc";
+import { installBlocksUpdate } from "../apps/desktop/src/update";
 import {
   isWakeEventType,
   RESPAWN_WAIT_CEILING_MS,
@@ -14233,6 +14235,165 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P2-209: the respawn schedule and attempt ceiling are untouched",
     daemonSrc.includes('?? "5000,15000,45000"') && daemonSrc.includes("RESPAWN_MAX_ATTEMPTS = 3"),
+  );
+}
+
+// --- P2-211: install-location verdict (installloc.ts) + wiring -----------------
+
+{
+  // full truth table, rules applied in the documented order
+  const v = (platform: string, path: string, inApps: boolean | null, packaged: boolean) =>
+    installVerdict(platform, path, inApps, packaged);
+
+  // 1. dev build always ok — even under a mounted volume
+  check(
+    "P2-211: dev build → ok even under a mounted volume",
+    v("darwin", "/Volumes/Setup/App.app/Contents/MacOS/App", false, false).state === "ok",
+  );
+  // 2. non-macOS always ok (this task covers macOS only, documented in-module)
+  check("P2-211: Windows packaged → ok", v("win32", "C:\\Users\\u\\Downloads\\App.exe", false, true).state === "ok");
+  // 3. path under the volume mount point → dmg-volume
+  check(
+    "P2-211: path under the volume mount point → dmg-volume",
+    v("darwin", "/Volumes/MeuDisco/App.app/Contents/MacOS/App", false, true).state === "dmg-volume",
+  );
+  // 4. quarantine translocation segment → translocated, beating the signal
+  check(
+    "P2-211: AppTranslocation segment → translocated (beats the apps-folder signal)",
+    v("darwin", "/private/var/folders/x/T/AppTranslocation/abc/d/App.app/Contents/MacOS/App", false, true).state ===
+      "translocated",
+  );
+  // 5. downloads ancestor with a false signal → downloads
+  check(
+    "P2-211: downloads ancestor + false apps-folder signal → downloads",
+    v("darwin", "/Users/u/Downloads/App.app/Contents/MacOS/App", false, true).state === "downloads",
+  );
+  // 6. null signal → unknown; false signal with no other evidence → unknown too
+  const unk = v("darwin", "/Applications/App.app/Contents/MacOS/App", null, true);
+  check("P2-211: null apps-folder signal → unknown", unk.state === "unknown");
+  check(
+    "P2-211: false signal with no other evidence → unknown too",
+    v("darwin", "/Applications/App.app/Contents/MacOS/App", false, true).state === "unknown",
+  );
+  // 7. true signal → ok
+  check(
+    "P2-211: true apps-folder signal → ok",
+    v("darwin", "/Applications/App.app/Contents/MacOS/App", true, true).state === "ok",
+  );
+  check(
+    "P2-211: the neutral unknown wording never accuses failure",
+    !/falha|erro|quebrad|inválid/i.test(unk.message),
+  );
+
+  // every generated message: non-empty, no file path, no URL scheme
+  const verdicts = [
+    installVerdict("darwin", "/Volumes/D/App.app/x", false, true),
+    installVerdict("darwin", "/private/var/folders/T/AppTranslocation/g/d/App.app/x", false, true),
+    installVerdict("darwin", "/Users/u/Downloads/App.app/x", false, true),
+    unk,
+    installVerdict("darwin", "/Applications/App.app/x", true, true),
+    installVerdict("darwin", "/Applications/App.app/x", false, false),
+    installVerdict("win32", "C:\\x\\App.exe", false, true),
+  ];
+  check(
+    "P2-211: every message is non-empty, path-free and scheme-free",
+    verdicts.every(
+      (x) =>
+        x.message.length > 0 &&
+        !x.message.includes("/") &&
+        !x.message.includes("\\") &&
+        !x.message.includes("http:") &&
+        !x.message.includes("https:") &&
+        !x.message.includes("file:"),
+    ),
+  );
+  check(
+    "P2-211: installMessage replays the same copy installVerdict ships",
+    installMessage("dmg-volume") === installVerdict("darwin", "/Volumes/D/App.app/x", false, true).message,
+  );
+
+  // real-source assertions over the REAL main.ts
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  check(
+    "P2-211: the verdict is computed exactly once (single installVerdict call site) in the real main.ts",
+    (mainSrc.match(/installVerdict\(/g) ?? []).length === 1,
+  );
+  check(
+    "P2-211: the verdict is computed at boot, before the first update check",
+    mainSrc.indexOf("bootInstallLocation = ") < mainSrc.indexOf('runUpdateCheck("boot")'),
+  );
+  const bootAt = mainSrc.indexOf("bootInstallLocation = ");
+  const bootBlock = bootAt >= 0 ? mainSrc.slice(bootAt, mainSrc.indexOf("log(`[desktop] install location:", bootAt)) : "";
+  check(
+    "P2-211: the boot computation introduces no timer and no request",
+    bootBlock.length > 0 &&
+      !bootBlock.includes("setInterval") &&
+      !bootBlock.includes("setTimeout") &&
+      !bootBlock.includes("fetch("),
+  );
+  check(
+    "P2-211: the applications-folder signal is availability-guarded so signal-less platforms keep today's behavior",
+    /typeof app\.isInApplicationsFolder === "function"/.test(mainSrc),
+  );
+  check(
+    "P2-211: the documented test hatch forces dmg-volume",
+    mainSrc.includes('process.env.OCR_DESKTOP_FORCE_DMG_VOLUME === "1"'),
+  );
+  check(
+    "P2-211: the additive installLocation field rides AFTER relayLink in the pairing payload",
+    (() => {
+      const at = mainSrc.indexOf("setPairingState({");
+      const pay = mainSrc.slice(at, mainSrc.indexOf("});", at));
+      return pay.indexOf("installLocation: bootInstallLocation") > pay.indexOf("relayLink,");
+    })(),
+  );
+
+  // real-source assertions over the REAL update.ts: the consent dialog is only
+  // reachable after the verdict consultation
+  const updateSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "update.ts"), "utf8");
+  const offerAt = updateSrc.indexOf("async function offerInstall");
+  const offerBlock = offerAt >= 0 ? updateSrc.slice(offerAt, updateSrc.indexOf("async", offerAt + 10)) : "";
+  check(
+    "P2-211: offerInstall consults the verdict before the consent dialog is reachable",
+    offerBlock.includes("installBlocksUpdate(hooks.installLocation)") &&
+      offerBlock.indexOf("installBlocksUpdate(hooks.installLocation)") < offerBlock.indexOf("askInstall"),
+  );
+  check(
+    "P2-211: the skipped offer logs ONE line carrying the state and the verdict phrase",
+    offerBlock.includes("hooks.log(`update install not offered (${verdict.state}): ${verdict.message}`)"),
+  );
+  check(
+    "P2-211: the block is fail-open — only dmg-volume/translocated ever block",
+    !installBlocksUpdate(null) &&
+      !installBlocksUpdate(undefined) &&
+      !installBlocksUpdate({ state: "unknown", message: "x" }) &&
+      !installBlocksUpdate({ state: "ok", message: "x" }) &&
+      !installBlocksUpdate({ state: "downloads", message: "x" }) &&
+      installBlocksUpdate({ state: "dmg-volume", message: "x" }) &&
+      installBlocksUpdate({ state: "translocated", message: "x" }),
+  );
+
+  // overlay renders the calm line below the relay-link line, never hides the QR
+  const overlaySrc = readFileSync(
+    join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingOverlay.tsx"),
+    "utf8",
+  );
+  check(
+    "P2-211: the overlay renders the install line below the relay-link line",
+    overlaySrc.indexOf("{installLocation &&") > overlaySrc.indexOf("{relayLink && ("),
+  );
+  check(
+    "P2-211: ok and unknown render nothing; the comment states the QR is NEVER hidden",
+    overlaySrc.includes('installLocation.state !== "ok"') &&
+      overlaySrc.includes('installLocation.state !== "unknown"') &&
+      overlaySrc.includes("NEVER hidden"),
+  );
+
+  // diagnostics: one additive line, state only, never the path
+  const diagSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "diagnostics.ts"), "utf8");
+  check(
+    "P2-211: the diagnostics bundle gains exactly one install-location line carrying the state only",
+    (diagSrc.match(/install location:/g) ?? []).length === 1 && diagSrc.includes('d.installLocation ?? "unknown"'),
   );
 }
 

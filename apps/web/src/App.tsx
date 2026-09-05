@@ -108,6 +108,9 @@ interface PairingState {
    * absent only when the health call failed or the overlay cannot be needed;
    * a legacy daemon travels as the discreet unknown line instead. */
   relayLink?: { state: string; message: string };
+  /** P2-211: install-location verdict (desktop shell only, additive) —
+   * absent = unknown, which renders nothing. Never blocks pairing. */
+  installLocation?: { state: string; message: string };
 }
 
 /** Electron bridge from apps/desktop/src/preload.ts (absent in the browser). */
@@ -773,6 +776,7 @@ export default function App() {
         pairLink={pairingState?.pairLink ?? null}
         reach={pairingState?.reach ?? null}
         relayLink={pairingState?.relayLink ?? null}
+        installLocation={pairingState?.installLocation ?? null}
         onReachRetry={() => {
           // Optional chaining: in a plain browser there is no desktop bridge.
           void desktopBridge()?.recheckWebApp?.();

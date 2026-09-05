@@ -46,6 +46,9 @@ interface Props {
   /** P2-199: daemon↔relay link verdict from the machine hosting the daemon
    * (null/absent = unknown → no line). */
   relayLink?: { state: string; message: string } | null;
+  /** P2-211: install-location verdict from the machine hosting the daemon
+   * (null/absent = unknown → no line). */
+  installLocation?: { state: string; message: string } | null;
 }
 
 /**
@@ -60,7 +63,7 @@ interface Props {
  * (open this address) — with the pairing QR demoted to step two. The two
  * steps carry visible labels so two QR codes never appear unlabeled.
  */
-export default function PairingOverlay({ qrDataUrl, onDismiss, deviceList, webApp, pairLink, reach, onReachRetry, relayLink }: Props) {
+export default function PairingOverlay({ qrDataUrl, onDismiss, deviceList, webApp, pairLink, reach, onReachRetry, relayLink, installLocation }: Props) {
   const t = useT();
   // P2-189: copy feedback — brief, quiet, and never steals the QR's spotlight.
   const [copied, setCopied] = useState(false);
@@ -207,6 +210,18 @@ export default function PairingOverlay({ qrDataUrl, onDismiss, deviceList, webAp
                 ? t("pairRelayLinkLocal")
                 : relayLink.message}
           </p>
+        )}
+
+        {/* P2-211: calm install-location line right below the relay-link line,
+            same P2-112 vocabulary. Invisible for ok AND for the neutral
+            unknown (an unconfirmed location is never an accusation); when the
+            app runs from the DMG volume, a translocated copy or the downloads
+            folder, the line explains the drag-to-Applications action. The QR
+            is NEVER hidden or dimmed on purpose: the wrong install location
+            does not block pairing NOW — hiding the QR would kill the journey
+            while the fix (drag + reopen) happens after it. */}
+        {installLocation && installLocation.state !== "ok" && installLocation.state !== "unknown" && (
+          <p className="pair-install pair-install-warn">{installLocation.message}</p>
         )}
 
         {deviceList && deviceList.length > 0 && (

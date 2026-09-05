@@ -46,6 +46,10 @@ export interface DiagnosticsInput {
   crashFiles: string[];
   /** Last update-check decision, when one resolved. */
   updateStatus: string | null;
+  /** P2-211: install-location verdict STATE only ("ok" | "dmg-volume" |
+   * "translocated" | "downloads" | "unknown") — never the bundle path, per
+   * the privacy contract in this header. Optional/additive. */
+  installLocation?: string | null;
 }
 
 /** Lines of the diagnostic bundle, in display order. */
@@ -57,6 +61,9 @@ export function buildDiagnosticReport(d: DiagnosticsInput): string {
     `userData: ${d.userData}`,
     `daemon: ${d.daemon.healthy ? "healthy" : d.daemon.down ? "down (sidecar gave up)" : d.daemon.reconnecting ? `reconnecting (attempt ${d.daemon.attempts})` : "unhealthy"} — porta ${d.daemon.port}${d.daemon.portReason ? ` (${d.daemon.portReason})` : ""}`,
     `last update check: ${d.updateStatus ?? "none"}`,
+    // P2-211: one additive line, state only — the bundle path never enters
+    // the bundle (header privacy contract).
+    `install location: ${d.installLocation ?? "unknown"}`,
     `crash files: ${d.crashFiles.length === 0 ? "none" : d.crashFiles.join(", ")}`,
     "--- desktop.log (last lines) ---",
     ...d.logTail.slice(-DIAG_LOG_TAIL),

@@ -82,6 +82,11 @@ export interface PairingState {
    * unknown state instead, rendered as a discreet line that never blocks
    * pairing. */
   relayLink?: { state: string; message: string };
+  /** P2-211: install-location verdict (state ok | dmg-volume | translocated |
+   * downloads | unknown plus a static pt-BR message), computed once at boot.
+   * Optional and additive: absent means legacy shell — the renderer treats it
+   * as the unknown state and renders nothing. Never blocks pairing. */
+  installLocation?: { state: string; message: string };
 }
 
 /** P2-187: the phone relay address resolution (Settings → "Relay do celular").
