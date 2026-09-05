@@ -27,7 +27,10 @@ identity servers, no accounts.
    cwd) and resolved against real paths before serving.
 8. **Audit trail.** Pairing, rejection, connection, revocation and expiry
    events land in `~/.opencode-remote/audit.log` and surface in
-   Settings → Security log.
+   Settings → Security log. The file is created 0600 and capped at ~1 MB:
+   once it reaches the cap it rotates to `audit.log.1` (one previous file
+   kept, ever), and the Security log reads across both files so rotation
+   never wipes the visible history.
 9. **Local direct mode (P1-061).** The desktop shell reads the `apiToken`
    from the 0600 state file in the (privileged) main process and hands it to
    the sandboxed renderer so it can dial the daemon's loopback WS

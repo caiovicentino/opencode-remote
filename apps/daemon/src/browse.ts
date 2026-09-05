@@ -5,11 +5,11 @@
 // Browsers are only launched on demand; everything is torn down after a short
 // idle time so the daemon never keeps a fleet of chromium processes alive.
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { log } from "./log.js";
 import { metrics } from "./metrics.js";
+import { appendAudit } from "./auditlog.js";
 
 const MAX_SESSIONS = 3;
 const IDLE_CLOSE_MS = 5 * 60_000;
@@ -70,7 +70,8 @@ export function viewportFromParams(
 /** Security-relevant actions land in the same audit.log the app reviews. */
 function audit(event: string, data?: Record<string, unknown>) {
   try {
-    appendFileSync(
+    // P2-167: 0600-from-creation, capped with rotation to audit.log.1, never throws.
+    appendAudit(
       join(homedir(), ".opencode-remote", "audit.log"),
       JSON.stringify({ ts: new Date().toISOString(), event, ...(data ? { data } : {}) }) + "\n",
     );
