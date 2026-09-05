@@ -511,6 +511,19 @@ cabeçalho de credencial. Um aviso nunca bloqueia o pareamento nem esconde o QR:
 o Mac não alcançar o relay não prova que o celular também não alcança (outra
 rede, outro DNS).
 
+**Elo do relay (P2-199)**: a sonda de alcance diz se o endereço do app
+responde, mas a conversa em si viaja por outro elo — o WebSocket entre o
+daemon desta máquina e o relay escrito dentro do QR. Enquanto a tela de
+pareamento está aberta, o shell lê o veredito desse elo na mesma resposta de
+`/api/health` que já busca a cada tick e mostra uma linha calma logo abaixo da
+linha de alcance: **conectado**, **modo local** (sem relay), **conectando /
+reconectando** (discagem em curso ou backoff), **recusado** (relay lotado ou
+limitando o ritmo) ou **mal configurado** (o endereço de relay do daemon foi
+recusado na partida). A linha descreve a máquina que hospeda o daemon — não o
+celular, não a câmera. Como todo aviso desta tela, ela nunca bloqueia o
+pareamento nem esconde o QR: o elo pode voltar antes de o celular terminar de
+escanear.
+
 **Reconexão guiada pelo código de fechamento (P2-156)**: quando o socket do
 relay fecha, o daemon classifica o código em vez de tratar qualquer queda como
 problema de rede. `1013` (server busy / too many connections / room full) o

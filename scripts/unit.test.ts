@@ -48,6 +48,7 @@ import {
 } from "../apps/desktop/src/webappurl";
 import { buildPairLink, PAIR_LINK_HASH_ROUTE, PAIR_LINK_MAX_LEN } from "../apps/desktop/src/pairlink";
 import { hasAppMarker, probeVerdict, WEB_REACH_TIMEOUT_MS } from "../apps/desktop/src/webreach";
+import { linkVerdict, type RelayLinkFacts } from "../apps/desktop/src/relaylink";
 import {
   bodyLimit,
   isBodyLimitError,
@@ -13285,6 +13286,124 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P2-197: pairReachOk/pairReachRetry/pairReachTesting exist in en and pt",
     ["pairReachOk", "pairReachRetry", "pairReachTesting"].every(
+      (k) =>
+        typeof (dict.en as Record<string, string>)[k] === "string" &&
+        typeof (dict.pt as Record<string, string>)[k] === "string",
+    ),
+  );
+}
+
+// --- P2-199: daemon↔relay link verdict (relaylink.ts) -------------------------
+
+{
+  const facts = (over: Partial<RelayLinkFacts> = {}): RelayLinkFacts => ({
+    relayConnected: true,
+    relayOk: true,
+    relayReason: null,
+    attempt: 0,
+    nextDelayMs: 0,
+    lastCloseKind: null,
+    localMode: false,
+    ...over,
+  });
+
+  // one check per state
+  const connected = linkVerdict(facts());
+  check("P2-199: healthy relay link → connected", connected.state === "connected" && connected.message.length > 0);
+  check(
+    "P2-199: connected even with relayRetry null (the real connected shape)",
+    linkVerdict(facts({ attempt: null, nextDelayMs: null, lastCloseKind: null })).state === "connected",
+  );
+  const local = linkVerdict(
+    facts({ relayConnected: false, relayOk: false, relayReason: "recusado", attempt: 3, lastCloseKind: "capacity", localMode: true }),
+  );
+  check("P2-199: local mode wins over every other signal", local.state === "local");
+  const dialing = linkVerdict(facts({ relayConnected: false, attempt: 2, nextDelayMs: 4_000, lastCloseKind: "transient" }));
+  check("P2-199: backoff in progress (attempt >= 1) → dialing", dialing.state === "dialing" && dialing.message.length > 0);
+  const firstDial = linkVerdict(facts({ relayConnected: false }));
+  const refusedCapacity = linkVerdict(facts({ relayConnected: false, lastCloseKind: "capacity" }));
+  const refusedRateLimited = linkVerdict(facts({ relayConnected: false, lastCloseKind: "rate-limited" }));
+  check(
+    "P2-199: first dial (no attempt yet) → dialing too",
+    firstDial.state === "dialing",
+  );
+  check(
+    "P2-199: refusal close capacity → refused",
+    refusedCapacity.state === "refused",
+  );
+  check(
+    "P2-199: refusal close rate-limited → refused",
+    refusedRateLimited.state === "refused",
+  );
+  check(
+    "P2-199: unknown/new close kind → dialing (never explodes, never accuses)",
+    linkVerdict(facts({ relayConnected: false, lastCloseKind: "something-new" })).state === "dialing",
+  );
+  const misWithReason = linkVerdict(facts({ relayOk: false, relayReason: "prefiro não ecoar" }));
+  const misNoReason = linkVerdict(facts({ relayOk: false, relayReason: null }));
+  check(
+    "P2-199: relayOk false → misconfigured, with or without a reason",
+    misWithReason.state === "misconfigured" && misNoReason.state === "misconfigured",
+  );
+  check(
+    "P2-199: relayOk false beats a refusal close (root cause first)",
+    linkVerdict(facts({ relayOk: false, relayConnected: false, lastCloseKind: "capacity" })).state === "misconfigured",
+  );
+  const legacy = linkVerdict(
+    facts({ relayConnected: null, relayOk: null, relayReason: null, attempt: null, nextDelayMs: null, lastCloseKind: null }),
+  );
+  check("P2-199: legacy payload (all null) → unknown", legacy.state === "unknown");
+  check(
+    "P2-199: the unknown wording is neutral — it never accuses failure",
+    !/falha|erro|recus|inválid|quebrad/i.test(legacy.message),
+  );
+
+  // every generated message: non-empty, no path separators, no URL scheme
+  const verdicts = [connected, local, dialing, firstDial, refusedCapacity, refusedRateLimited, misWithReason, misNoReason, legacy];
+  check(
+    "P2-199: every message is non-empty, path-free and scheme-free",
+    verdicts.every(
+      (v) =>
+        v.message.length > 0 &&
+        !v.message.includes("/") &&
+        !v.message.includes("\\") &&
+        !v.message.includes("http:") &&
+        !v.message.includes("https:"),
+    ),
+  );
+
+  // real-source assertions over the REAL main.ts
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  check(
+    "P2-199: exactly ONE health call per tick in the real main.ts",
+    (mainSrc.match(/fetchDaemonHealth\(/g) ?? []).length === 1,
+  );
+  check(
+    "P2-199: relayLink is computed under the same overlay guard as the reach probe",
+    /if \(!quietLocal && \(!paired \|\| remotePairingRequested\) && relay\) \{/.test(mainSrc) &&
+      /relayLink = linkVerdict\(\{ \.\.\.relay, localMode: quietLocal \}\)/.test(mainSrc),
+  );
+  const setPairingAt = mainSrc.indexOf("setPairingState({");
+  const payload = mainSrc.slice(setPairingAt, mainSrc.indexOf("});", setPairingAt));
+  check(
+    "P2-199: the additive relayLink field rides AFTER reach, which rides AFTER webApp",
+    payload.indexOf("relayLink,") > payload.indexOf("reach,") && payload.indexOf("reach,") > payload.indexOf("webApp,"),
+  );
+  const overlaySrc = readFileSync(
+    join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingOverlay.tsx"),
+    "utf8",
+  );
+  check(
+    "P2-199: the overlay renders the relay-link line and its comment states the QR is NEVER hidden",
+    overlaySrc.includes("{relayLink && (") && overlaySrc.includes("NEVER hidden"),
+  );
+  check(
+    "P2-199: the neutral unknown state renders discreet (same class as connected/local)",
+    /relayLink\.state === "connected" \|\| relayLink\.state === "local" \|\| relayLink\.state === "unknown"/.test(overlaySrc),
+  );
+  check(
+    "P2-199: pairRelayLinkOk/pairRelayLinkLocal exist in en and pt",
+    ["pairRelayLinkOk", "pairRelayLinkLocal"].every(
       (k) =>
         typeof (dict.en as Record<string, string>)[k] === "string" &&
         typeof (dict.pt as Record<string, string>)[k] === "string",

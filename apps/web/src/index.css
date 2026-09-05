@@ -2024,6 +2024,22 @@ button.desk-new:hover:not(:disabled) {
   padding: 0;
 }
 
+/* P2-199: daemon↔relay link status — one quiet line right below the reach
+   line, same calm register as the P2-112 degraded card. Muted when
+   connected/local and for the neutral unknown (a legacy payload missing data
+   is never an accusation), warn-toned (no red, no banner) otherwise. Existing
+   tokens only: no gradient, no glass, no new radius. The QR is never hidden. */
+.pair-relaylink {
+  margin: 2px 0 0;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--muted);
+  max-width: 40ch;
+}
+.pair-relaylink-warn {
+  color: var(--warn);
+}
+
 /* QR scanner state machine (P2-117): looking → preview → unavailable.
    The stage keeps a 4:3 box at every width so a 390px phone never collapses
    to just the caption, and the unavailable state replaces the black void

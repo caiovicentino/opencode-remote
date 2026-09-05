@@ -43,6 +43,9 @@ interface Props {
   reach?: ReachInfo | null;
   /** P2-197: re-run the reach probe now ("test again" action). */
   onReachRetry?: () => void;
+  /** P2-199: daemon↔relay link verdict from the machine hosting the daemon
+   * (null/absent = unknown → no line). */
+  relayLink?: { state: string; message: string } | null;
 }
 
 /**
@@ -57,7 +60,7 @@ interface Props {
  * (open this address) — with the pairing QR demoted to step two. The two
  * steps carry visible labels so two QR codes never appear unlabeled.
  */
-export default function PairingOverlay({ qrDataUrl, onDismiss, deviceList, webApp, pairLink, reach, onReachRetry }: Props) {
+export default function PairingOverlay({ qrDataUrl, onDismiss, deviceList, webApp, pairLink, reach, onReachRetry, relayLink }: Props) {
   const t = useT();
   // P2-189: copy feedback — brief, quiet, and never steals the QR's spotlight.
   const [copied, setCopied] = useState(false);
@@ -182,6 +185,27 @@ export default function PairingOverlay({ qrDataUrl, onDismiss, deviceList, webAp
                 {retesting ? t("pairReachTesting") : t("pairReachRetry")}
               </button>
             )}
+          </p>
+        )}
+
+        {/* P2-199: calm daemon↔relay link status right below the reach line,
+            same P2-112 vocabulary. The QR is NEVER hidden or dimmed when the
+            link is down on purpose: the daemon↔relay link can come back up
+            before the phone finishes pairing, and hiding the QR would kill
+            the journey mid-flight. */}
+        {relayLink && (
+          <p
+            className={
+              relayLink.state === "connected" || relayLink.state === "local" || relayLink.state === "unknown"
+                ? "pair-relaylink"
+                : "pair-relaylink pair-relaylink-warn"
+            }
+          >
+            {relayLink.state === "connected"
+              ? t("pairRelayLinkOk")
+              : relayLink.state === "local"
+                ? t("pairRelayLinkLocal")
+                : relayLink.message}
           </p>
         )}
 

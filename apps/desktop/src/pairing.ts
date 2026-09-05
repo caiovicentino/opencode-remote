@@ -73,6 +73,16 @@ export interface PairingState {
    * A failed probe never blocks pairing and never hides the QR.
    */
   reach?: { state: string; message: string };
+  /**
+   * P2-199: verdict of the daemon↔relay link (relaylink.ts classifier),
+   * computed from the same /api/health answer the tick already fetches and
+   * only while the overlay may still be needed. Additive; absent only when
+   * the health call itself failed or the overlay cannot be needed — a 200
+   * answer without relay fields (legacy daemon) travels as the discreet
+   * unknown state instead. A down link never blocks pairing and never hides
+   * the QR.
+   */
+  relayLink?: { state: string; message: string };
 }
 
 /**

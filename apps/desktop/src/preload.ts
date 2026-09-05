@@ -74,6 +74,14 @@ export interface PairingState {
    * probe has not run (or the shell is legacy) — an unknown state renders
    * nothing and never blocks pairing. */
   reach?: { state: string; message: string };
+  /** P2-199: how the daemon↔relay link is doing (state connected | local |
+   * dialing | refused | misconfigured | unknown plus a static pt-BR message).
+   * Optional and additive: absent only when the health call itself failed or
+   * the overlay cannot be needed (quiet local / already paired) — a 200
+   * health answer without relay fields (legacy daemon) travels as the
+   * unknown state instead, rendered as a discreet line that never blocks
+   * pairing. */
+  relayLink?: { state: string; message: string };
 }
 
 /** P2-187: the phone relay address resolution (Settings → "Relay do celular").

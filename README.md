@@ -478,6 +478,19 @@ credential header. A warning never blocks pairing and never hides the QR: the
 Mac failing to reach the relay does not prove the phone will (different
 network, different DNS).
 
+**Relay link (P2-199)**: the reach probe says whether the app address answers,
+but the conversation itself rides a second link — the WebSocket between the
+daemon on this machine and the relay written inside the QR. While the pairing
+screen is up, the shell reads that link's verdict from the same `/api/health`
+answer it already fetches every tick and shows one calm line right below the
+reach line: **connected**, **local mode** (no relay needed), **connecting /
+reconnecting** (dial in progress or backoff), **refused** (relay at capacity
+or rate-limiting) or **misconfigured** (the daemon's relay address was refused
+at boot). The line describes the machine hosting the daemon — not the phone,
+not the camera. Like every warning on this screen it never blocks pairing and
+never hides the QR: the link can come back up before the phone finishes
+scanning.
+
 The image carries no secrets and the relay stays a blind
 router: it never sees plaintext or keys. The optional metrics endpoint
 (`RELAY_METRICS_PORT`) binds loopback by default; setting
