@@ -13107,6 +13107,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   const mproto = buildMissionPrompt();
   check("mission protocol: discloses PR-based work (squash merges) with this machine's gh credentials", /PRs/.test(mproto) && /squash/.test(mproto) && /credenciais do gh/.test(mproto) && /nada é commitado direto em main/.test(mproto));
   check("mission protocol: points the chat at modelSubstitutions for \"which model is running\"", mproto.includes("modelSubstitutions") && mproto.includes("/api/pilot-mission"));
+}
 // --- P2-194: device labels + last-seen touch (devicetouch.ts) -----------------
 
 {
