@@ -179,6 +179,9 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
   const [nsPrompt, setNsPrompt] = useState("");
   const [auditEntries, setAuditEntries] = useState<{ ts: string; event: string; data?: Record<string, unknown> }[]>([]);
   const [daemonVersion, setDaemonVersion] = useState("");
+  // P2-213: version readiness of the opencode on the machine hosting the
+  // daemon — rides the existing /__ocr/settings read (additive field).
+  const [opencodeVersion, setOpencodeVersion] = useState<{ state?: string; message?: string } | null>(null);
   const [nrMode, setNrMode] = useState<"daily" | "days" | "interval">("daily");
   const [nrDays, setNrDays] = useState<number[]>([1, 2, 3, 4, 5]);
   const [nrInterval, setNrInterval] = useState(60);
@@ -231,6 +234,7 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
         setNotify((s.body as { notify?: { permission: boolean; idle: boolean } }).notify ?? { permission: true, idle: true });
         setAutoMode((s.body as { autoMode?: boolean }).autoMode === true);
         setDaemonVersion((s.body as { version?: string }).version ?? "");
+        setOpencodeVersion((s.body as { opencodeVersion?: { state?: string; message?: string } }).opencodeVersion ?? null);
       }
       const cs = await request("GET", "/__ocr/clip-style");
       if (cs.status === 200) setStyle((cs.body as Record<string, unknown>) ?? {});
@@ -532,6 +536,16 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
           <p className="muted" style={{ marginBottom: 0 }}>
             Notifications
           </p>
+          {/* P2-213: version readiness is advice about the machine hosting the
+              daemon, never a gate — a probe that can flip must not lock the
+              conversation, so this deliberately fails open: only too-old says
+              anything (ok/unknown stay silent) and no control is ever disabled
+              or hidden here. */}
+          {opencodeVersion?.state === "too-old" && (
+            <p className="muted opencode-version-hint" style={{ margin: "8px 0 0", color: "var(--warn)" }}>
+              {opencodeVersion.message ?? ""}
+            </p>
+          )}
           <label style={{ display: "block" }}>
             <input
               type="checkbox"

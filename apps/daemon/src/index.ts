@@ -56,6 +56,7 @@ import {
 import { detectWhisperDetail, transcribeAudio, type WhisperTool } from "./whisper.js";
 import { sttVerdict } from "./voicecap.js";
 import { modelReadyVerdict, providerSummary, type ProviderSummary } from "./modelready.js";
+import { MIN_OPENCODE_VERSION, versionVerdict, type OpencodeVersionVerdict } from "./opencodever.js";
 import { cachedSpeech, detectEdgeTts, prewarmSpeech, putSpeech, resolveVoice, synthesizeSpeech, TTS_VOICES } from "./edgetts.js";
 import { spokenNumbers, SPEECH_LANGS } from "./spoken.js";
 import { metrics, startMetricsServer, VERSION } from "./metrics.js";
@@ -728,7 +729,15 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
     return { id: req.id, status: 200, body: { ok: true } };
   }
   if (req.path === "/__ocr/settings" && req.method === "GET") {
-    return { id: req.id, status: 200, body: { ...readSettings(), version: VERSION } };
+    // P2-213: additive mirror of the health opencode.version* verdict on the
+    // existing settings read — the only daemon→app channel the Settings
+    // machine section can reach without a new route (the desktop bridge
+    // forwards only the known health fields, apps/desktop stays untouched).
+    return {
+      id: req.id,
+      status: 200,
+      body: { ...readSettings(), version: VERSION, opencodeVersion: opencodeVersion },
+    };
   }
   if (req.path === "/__ocr/settings" && req.method === "PATCH") {
     const b = req.body as { name?: string; notify?: Partial<NotifySettings>; autoMode?: boolean };
@@ -1520,6 +1529,27 @@ function refreshOpencodeBinary(force = false): void {
     } catch {
       return false;
     }
+  });
+}
+
+// P2-213: opencode version readiness. Probed EXACTLY ONCE at boot, on the
+// already-resolved binary — never per request, never periodic, no retries.
+// The whole spawn is capped at VERSION_PROBE_TIMEOUT_MS and stdout is
+// truncated to VERSION_PROBE_MAX_BYTES before the verdict; spawn errors,
+// stderr output and timeouts all land in the neutral unknown.
+const VERSION_PROBE_TIMEOUT_MS = 3_000;
+const VERSION_PROBE_MAX_BYTES = 200;
+
+let opencodeVersion: OpencodeVersionVerdict = versionVerdict(null, MIN_OPENCODE_VERSION);
+
+/** One fire-and-forget `--version` probe against the resolved binary. The
+ * callback only ever sets the module state above — boot never awaits it. */
+function probeOpencodeVersion(binPath: string): void {
+  execFile(binPath, ["--version"], { timeout: VERSION_PROBE_TIMEOUT_MS }, (err, stdout, stderr) => {
+    const raw = typeof stdout === "string" ? stdout.slice(0, VERSION_PROBE_MAX_BYTES) : "";
+    opencodeVersion =
+      !err && !stderr && raw ? versionVerdict(raw, MIN_OPENCODE_VERSION) : versionVerdict(null, MIN_OPENCODE_VERSION);
+    log("info", "opencode version probed", { state: opencodeVersion.state });
   });
 }
 
@@ -2609,6 +2639,11 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
           ...opencodeDetail,
           binaryFound: binaryPick.path !== null,
           binarySource: binaryPick.source,
+          // P2-213: additive version-readiness verdict — probed once at boot
+          // (state + short pt-BR phrase). No absolute path and no raw probe
+          // output ever reach the payload.
+          versionState: opencodeVersion.state,
+          versionMessage: opencodeVersion.message,
         },
         relayConnected,
         // P2-156: additive lastClose inside relayRetry — the close code and
@@ -3184,6 +3219,16 @@ async function main() {
   // P2-149: resolve the opencode binary once up front so even the boot verdict
   // distinguishes "server stopped" from "server never installed".
   refreshOpencodeBinary(true);
+  // P2-213: version readiness — the documented OCR_OPENCODE_OLD=1 test hatch
+  // forces too-old for deterministic visual evidence; otherwise probe once,
+  // only when a binary was resolved, on the path already picked above.
+  // Fire-and-forget: the probe never blocks or delays boot, has no retry and
+  // no periodic re-probe — the verdict describes the binary that booted.
+  if (process.env.OCR_OPENCODE_OLD === "1") {
+    opencodeVersion = versionVerdict("v0.0.1", MIN_OPENCODE_VERSION);
+  } else if (binaryPick.path !== null) {
+    probeOpencodeVersion(binaryPick.path);
+  }
   const signal = AbortSignal.timeout(UPSTREAM_PROBE_TIMEOUT_MS);
   try {
     const res = await fetch(new URL("/global/health", OPENCODE_URL), {

@@ -81,6 +81,21 @@ remoto, zero confiança**.
   `GET /__ocr/model/status` (`{ available, state, message }`, espelhando a
   rota de stt-status). `OCR_MODEL_BLOCK=1` no daemon é um hatch de teste que
   força o veredito no-provider para evidência visual determinística
+- **Prontidão de versão do opencode** — a seção de máquina do Settings avisa
+  quando o opencode instalado na máquina que hospeda o daemon é mais velho do
+  que o mínimo que a API do daemon espera (`1.18.0`): uma linha calma diz que
+  o servidor de agentes da máquina deve ser atualizado e reiniciado. O
+  indicador descreve a máquina que hospeda o daemon — nunca o celular — é
+  sondado uma única vez no boot sobre o binário resolvido e **nunca impede
+  nada**: envio, voz e todos os controles continuam habilitados mesmo com o
+  veredito too-old, e vereditos ok/unknown ficam em silêncio. O mesmo veredito
+  viaja em `GET /api/health` (`opencode.versionState` /
+  `opencode.versionMessage`) e em `GET /__ocr/settings`
+  (`opencodeVersion`). Para atualizar a máquina, instale o opencode mais
+  recente (ex.: `curl -fsSL https://opencode.ai/install | bash` ou
+  `brew upgrade opencode`) e reinicie o daemon; `OCR_OPENCODE_OLD=1` no daemon
+  é um hatch de teste que força o veredito too-old para evidência visual
+  determinística
 - **Arquivos** — envie do celular, dê preview de tudo, exporte a conversa
   em markdown; todo card de arquivo tem um botão ⧉ que copia o caminho
   completo do arquivo (Clipboard API com fallback execCommand)

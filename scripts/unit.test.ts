@@ -17,6 +17,7 @@ import { isLoopbackAddr, localOriginAllowed, localUpgradeAllowed } from "../apps
 import { classifyRelayClose, effectiveRetryDelayMs } from "../apps/daemon/src/relayclose";
 import { sttVerdict } from "../apps/daemon/src/voicecap";
 import { modelReadyVerdict, providerSummary } from "../apps/daemon/src/modelready";
+import { MIN_OPENCODE_VERSION, parseVersion, versionVerdict } from "../apps/daemon/src/opencodever";
 import { rewriteFeedPort } from "../apps/daemon/src/feedport";
 import { createRelayRetry } from "../apps/daemon/src/relayretry";
 import { nodeStateFileFs, writeStateAtomic, type StateFileFs } from "../apps/daemon/src/statefile";
@@ -13883,6 +13884,137 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P2-210: the fail-open reason is written in the code comment",
     /DELIBERATELY fail-open/.test(chatViewSrc) && /DELIBERATELY fail-open/.test(homeViewSrc),
+  );
+}
+
+// --- P2-213: opencode version-readiness verdict (opencodever.ts) + wiring ------
+
+{
+  const src = (rel: string[]) => readFileSync(join(import.meta.dirname, "..", ...rel), "utf8");
+  const opencodeverSrc = src(["apps", "daemon", "src", "opencodever.ts"]);
+  const indexSrc = src(["apps", "daemon", "src", "index.ts"]);
+  const settingsSrc = src(["apps", "web", "src", "components", "SettingsView.tsx"]);
+
+  // verdict matrix: equal → ok, greater → ok
+  check(
+    "P2-213: version equal to the minimum is ok and a greater version is ok",
+    versionVerdict(MIN_OPENCODE_VERSION, MIN_OPENCODE_VERSION).state === "ok" &&
+      versionVerdict("1.18.25", MIN_OPENCODE_VERSION).state === "ok" &&
+      versionVerdict("2.0.0", MIN_OPENCODE_VERSION).state === "ok",
+  );
+  // each smaller significant segment is too-old
+  check(
+    "P2-213: a smaller patch, minor or major is too-old",
+    versionVerdict("1.18.4", "1.18.5").state === "too-old" &&
+      versionVerdict("1.17.9", MIN_OPENCODE_VERSION).state === "too-old" &&
+      versionVerdict("0.99.99", MIN_OPENCODE_VERSION).state === "too-old",
+  );
+  // tolerance: letter-v prefix, pre-release suffix, extra segment, noise
+  check(
+    "P2-213: v prefix, pre-release suffix and extra segments are tolerated",
+    versionVerdict(`v${MIN_OPENCODE_VERSION}`, MIN_OPENCODE_VERSION).state === "ok" &&
+      versionVerdict("1.18.0-beta.1", MIN_OPENCODE_VERSION).state === "ok" &&
+      versionVerdict("1.18.0.7", MIN_OPENCODE_VERSION).state === "ok" &&
+      versionVerdict("v1.17.0-rc.2+build", MIN_OPENCODE_VERSION).state === "too-old",
+  );
+  check(
+    "P2-213: noisy text around the version is still recognized",
+    versionVerdict("opencode version v1.19.2 (build 8837)", MIN_OPENCODE_VERSION).state === "ok" &&
+      versionVerdict("built on 2024 1.18.0 sha abc", MIN_OPENCODE_VERSION).state === "ok",
+  );
+  // missing / empty / unrecognizable → neutral unknown
+  check(
+    "P2-213: null, empty and number-free text all land in unknown",
+    versionVerdict(null, MIN_OPENCODE_VERSION).state === "unknown" &&
+      versionVerdict("", MIN_OPENCODE_VERSION).state === "unknown" &&
+      versionVerdict("sem numeros aqui", MIN_OPENCODE_VERSION).state === "unknown" &&
+      versionVerdict("42", MIN_OPENCODE_VERSION).state === "unknown",
+  );
+  check(
+    "P2-213: parseVersion needs two or more dot-separated segments",
+    JSON.stringify(parseVersion("v1.18.0-beta.2")) === JSON.stringify([1, 18, 0]) &&
+      parseVersion("1") === null &&
+      parseVersion(null) === null,
+  );
+
+  // message hygiene: no paths, no URL schemes, no command names, no secrets
+  const verdicts = [
+    versionVerdict(MIN_OPENCODE_VERSION, MIN_OPENCODE_VERSION),
+    versionVerdict("0.0.1", MIN_OPENCODE_VERSION),
+    versionVerdict(null, MIN_OPENCODE_VERSION),
+  ];
+  check(
+    "P2-213: every verdict message is non-empty, free of paths/URLs/command names and distinct",
+    verdicts.every(
+      (v) =>
+        v.message.trim().length > 0 &&
+        !/[\\/]/.test(v.message) &&
+        !/https?:/i.test(v.message) &&
+        !/\b(npm|npx|brew|curl|wget|git|serve|install|upgrade|update|opencode)\b/i.test(v.message),
+    ) && new Set(verdicts.map((v) => v.message)).size === verdicts.length,
+  );
+  check(
+    "P2-213: the unknown phrase is neutral — it never accuses a failure",
+    !/falh|erro|inválid|antigo/i.test(versionVerdict(null, MIN_OPENCODE_VERSION).message),
+  );
+
+  // opencodever.ts stays pure: unit tests must never boot a daemon on import
+  // (strip line comments first — the header prose names the banned modules)
+  const code = opencodeverSrc.replace(/\/\/.*$/gm, "");
+  check(
+    "P2-213: opencodever.ts is pure (no node:fs/child_process/http/os/path imports)",
+    !/node:(fs|child_process|http|os|path)/.test(code) && !/"ws"/.test(code),
+  );
+
+  // real-repo assertion: the probe runs EXACTLY ONCE at boot, under the
+  // binary-found guard, and no per-request call was introduced anywhere
+  const probeCalls = indexSrc.match(/probeOpencodeVersion\(/g) ?? [];
+  const bootAt = indexSrc.indexOf("refreshOpencodeBinary(true)");
+  const hatchAt = indexSrc.indexOf('process.env.OCR_OPENCODE_OLD === "1"');
+  check(
+    "P2-213: the version probe is fired once at boot, guarded by a resolved binary",
+    probeCalls.length === 2 &&
+      bootAt >= 0 &&
+      hatchAt > bootAt &&
+      /else if \(binaryPick\.path !== null\) \{\s*\n\s*probeOpencodeVersion\(binaryPick\.path\);/.test(indexSrc),
+  );
+  check(
+    "P2-213: the probe has a documented timeout, truncates output before the verdict and fails into unknown",
+    /execFile\(binPath, \["--version"\], \{ timeout: VERSION_PROBE_TIMEOUT_MS \}/.test(indexSrc) &&
+      /stdout\.slice\(0, VERSION_PROBE_MAX_BYTES\)/.test(indexSrc) &&
+      /!err && !stderr && raw \? versionVerdict\(raw, MIN_OPENCODE_VERSION\) : versionVerdict\(null, MIN_OPENCODE_VERSION\)/.test(
+        indexSrc,
+      ),
+  );
+
+  // additive surfaces: the health opencode object and the existing settings read
+  check(
+    "P2-213: the health opencode object gains additive versionState/versionMessage",
+    indexSrc.includes("versionState: opencodeVersion.state") &&
+      indexSrc.includes("versionMessage: opencodeVersion.message"),
+  );
+  check(
+    "P2-213: the existing /__ocr/settings read mirrors the verdict — no new route",
+    /body: \{ \.\.\.readSettings\(\), version: VERSION, opencodeVersion: opencodeVersion \}/.test(indexSrc),
+  );
+
+  // the Settings machine section shows the phrase only for too-old and NEVER
+  // gates any control on it (fail open on purpose)
+  check(
+    "P2-213: SettingsView renders the phrase only for too-old and never disables a control with it",
+    settingsSrc.includes('opencodeVersion?.state === "too-old"') &&
+      settingsSrc.includes("opencode-version-hint") &&
+      !/disabled=\{[^}]*opencodeVersion/.test(settingsSrc) &&
+      /deliberately fails open/i.test(settingsSrc),
+  );
+
+  // documented test hatch forcing too-old for deterministic visual evidence
+  check(
+    "P2-213: OCR_OPENCODE_OLD=1 is the documented test hatch forcing too-old",
+    hatchAt >= 0 &&
+      /OCR_OPENCODE_OLD/.test(src(["README.md"])) &&
+      /OCR_OPENCODE_OLD/.test(src(["README.pt-BR.md"])) &&
+      /OCR_OPENCODE_OLD/.test(src(["docs", "troubleshooting.md"])),
   );
 }
 
