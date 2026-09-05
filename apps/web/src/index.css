@@ -2078,6 +2078,19 @@ button.desk-new:hover:not(:disabled) {
   color: var(--warn);
 }
 
+/* P2-218: login-item announce — one quiet line right below the clock line,
+   same calm register as the P2-112 degraded card. Renders only on the boot
+   whose verdict was enable (leave and the neutral unknown stay invisible);
+   muted tone only — no warn, no badge, existing tokens only. The QR is
+   never hidden. */
+.pair-startup {
+  margin: 2px 0 0;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--muted);
+  max-width: 40ch;
+}
+
 /* QR scanner state machine (P2-117): looking → preview → unavailable.
    The stage keeps a 4:3 box at every width so a 390px phone never collapses
    to just the caption, and the unavailable state replaces the black void

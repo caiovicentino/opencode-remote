@@ -25,6 +25,7 @@ Run `opencode-remote doctor` first — it checks everything below in one shot.
 | watch the desktop app logs | tray → **Open logs folder** (or the app menu: **Ajuda → Abrir pasta de logs**), then `tail -f ~/Library/Application\ Support/OpenCode\ Remote/logs/desktop.log` (`userData/logs/desktop.log`, ~1MB cap, rotates to `desktop.log.1`) — the packaged app writes here instead of the console |
 | watch the daemon sidecar's own output | same folder, `userData/logs/daemon-sidecar.log` (JSONL; rotates to `daemon-sidecar.log.1`, ~1MB cap) — the desktop shell tees the spawned daemon's stdout/stderr there; the tray's **Open logs folder** click cites both files in `desktop.log` |
 | desktop app crashed or the window went white | crash reports land in `~/.opencode-remote/pilot/client-logs/` (newest 20 kept, one `.txt` per event: `uncaught` = main process, `renderer` = renderer crash). Copy one when filing an issue |
+| the app stopped opening when the machine boots (P2-218) | **Start at login** was turned off in the tray — that choice is definitive by design (no boot re-enables it). Reopen the app, tray → **Start at login** to turn it back on. See the section below |
 | opened the app twice and nothing new appeared | that is the single-instance lock (P2-069): the second launch quits and focuses the running window, logging `another instance already owns this userData` in `desktop.log` |
 | `possible zombie instance` in desktop.log | a previous copy of the app on this same userData is still alive from an earlier start (crash, SIGKILL, killed test run). Quit it from the tray (or `kill <pid>` — the line names the pid) and relaunch |
 | desktop says the daemon is down — and names a cause | the status card explains WHY it died (P2-140): "another app took the daemon's port" → close that program or restart the machine; "daemon files are missing" → reinstall the app; "shut down by the system"/"exited unexpectedly" → reopen the app (it reconnects by itself). The same verdict is logged in `desktop.log`; the copy never contains paths or tokens |
@@ -202,6 +203,28 @@ action and the reason. Pairing is never touched by a wake: no re-pairing, no
 allowlist or state-file writes, no new routes. If the desktop.log has no wake
 lines after a wake, the platform did not expose `powerMonitor` and the shell
 keeps its previous behavior (the existing backoff/reconnect still applies).
+
+## Start at login (P2-218)
+
+The installed app now opens at login by default: on the **first boot of a
+packaged build** (macOS/Windows) the shell turns on **Start at login** by
+itself and announces it with one calm line on the pairing screen — the QR is
+never hidden and pairing is never blocked. This is what lets the phone keep
+finding the machine after the first reboot, power cut or logout: an app that
+is not running is the one failure neither the wake reaction (P2-209) nor the
+sidecar respawn can fix, and from the phone it looks like the machine simply
+vanished.
+
+- Turning **Start at login** off in the tray menu is **definitive** — the
+  owner's decision is recorded and no future boot turns it back on. Turn it
+  back on the same way if you change your mind.
+- Dev builds (`npm start`) never touch the OS setting; platforms other than
+  macOS/Windows keep the previous behavior (the tray item stays hidden).
+- The decision rides the boot log (`[desktop] login item: …`), the pairing
+  payload (`startup`) and the diagnostics bundle (`login item:`) — never with
+  paths or tokens. `OCR_DESKTOP_FORCE_LOGIN_ITEM=1` on the desktop shell
+  forces the announce for deterministic screenshots (test-only hatch; the
+  machine's setting is never touched under it).
 
 ## Service control (macOS launchd)
 

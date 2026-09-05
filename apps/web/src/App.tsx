@@ -114,6 +114,9 @@ interface PairingState {
   /** P2-214: clock-skew verdict (desktop shell only, additive) —
    * absent = unknown, which renders nothing. Never blocks pairing. */
   clock?: { state: string; message: string };
+  /** P2-218: login-item verdict (desktop shell only, additive) —
+   * absent = unknown, which renders nothing. Never blocks pairing. */
+  startup?: { state: string; message: string };
 }
 
 /** Electron bridge from apps/desktop/src/preload.ts (absent in the browser). */
@@ -781,6 +784,7 @@ export default function App() {
         relayLink={pairingState?.relayLink ?? null}
         installLocation={pairingState?.installLocation ?? null}
         clock={pairingState?.clock ?? null}
+        startup={pairingState?.startup ?? null}
         onReachRetry={() => {
           // Optional chaining: in a plain browser there is no desktop bridge.
           void desktopBridge()?.recheckWebApp?.();

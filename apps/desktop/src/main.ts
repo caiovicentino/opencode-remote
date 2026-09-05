@@ -30,6 +30,8 @@ import { hasAppMarker, probeVerdict, rawDateHeader, type ReachProbeOutcome, type
 import { clockSkewMessage, skewVerdict, type ClockSkewVerdict } from "./clockskew";
 import { linkVerdict, type RelayLinkVerdict } from "./relaylink";
 import { installMessage, installVerdict, type InstallLocationVerdict } from "./installloc";
+import { loginItemMessage, loginItemPlan, type LoginItemVerdict } from "./loginitem";
+import { readStartupDecided, startupSettingFile, writeStartupDecided } from "./startupstore";
 import { WAKE_EVENT_TYPES, wakePlan } from "./wakeplan";
 import { initDesktopLog, log, logError } from "./desktop-log";
 import { initSidecarLog } from "./sidecar-log";
@@ -98,6 +100,13 @@ let updateFeedFailures = 0;
 // No periodic re-probe on purpose — the bundle location cannot change while
 // the process runs.
 let bootInstallLocation: InstallLocationVerdict | null = null;
+
+// P2-218: login-item verdict, computed EXACTLY ONCE at boot (in onReady,
+// after the install-location verdict and before the first update check) and
+// reused by every surface: the pairing-state payload and the diagnostics
+// bundle. No periodic re-probe on purpose — the owner's decision is recorded
+// the moment it is made and never re-derived while the process runs.
+let bootStartup: LoginItemVerdict | null = null;
 
 // P3-012: file logging installed before anything can log — console.* in the
 // packaged app is invisible to the stage-5 user (no terminal), so every
@@ -198,6 +207,9 @@ function buildDiagnostics(): string {
           skewSeconds: lastClockSkew.skewMs === null ? null : Math.round(lastClockSkew.skewMs / 1000),
         }
       : null,
+    // P2-218: the login-item action and its short reason only — never a path,
+    // never the decision-file location (privacy contract in this header).
+    startup: bootStartup ? { state: bootStartup.action, reason: bootStartup.reason } : null,
   });
 }
 
@@ -406,6 +418,21 @@ function scheduleNextUpdateCheck(status: UpdateStatus): void {
   updateRecheckTimer.unref?.();
 }
 
+// P2-218: the ONLY caller of app.setLoginItemSettings — the tray checkbox and
+// the boot plan both go through it, and both record the owner's decision, so
+// turning the toggle off in the tray is definitive: no future boot turns it
+// back on. Best-effort: a failed apply/write is log-only and never takes the
+// shell down (the decision file may still record the intent, which is safe —
+// the OS setting itself is re-read from app.getLoginItemSettings each boot).
+function setLoginItemEnabled(enabled: boolean): void {
+  try {
+    app.setLoginItemSettings({ openAtLogin: enabled });
+  } catch (err) {
+    logError("[desktop] login item apply failed:", err);
+  }
+  writeStartupDecided(startupSettingFile(app.getPath("userData")), true);
+}
+
 async function onReady(): Promise<void> {
   logInstanceBoot();
   buildMenu();
@@ -441,6 +468,31 @@ async function onReady(): Promise<void> {
     bootInstallLocation = installVerdict(process.platform, process.execPath, inApplicationsFolder, app.isPackaged);
   }
   log(`[desktop] install location: ${bootInstallLocation.state}`);
+
+  // P2-218: the login-item verdict is computed ONCE at boot, from the packaged
+  // flag, the platform, the OS toggle and the recorded owner decision — no new
+  // periodic probe, no new request, no existing timer touched. On "enable" it
+  // goes through the SAME path the tray checkbox uses (setLoginItemEnabled),
+  // which also records the decision, so the owner can still turn it off
+  // definitively in the tray afterwards.
+  // P2-218 test hatch (builder shots, same test-only OCR_* policy as
+  // OCR_DESKTOP_FORCE_DMG_VOLUME): OCR_DESKTOP_FORCE_LOGIN_ITEM=1 forces the
+  // enable verdict into the payload/diagnostics for deterministic screenshots
+  // WITHOUT touching the machine — no setLoginItemEnabled call and no
+  // decision recorded on purpose. Never set in production.
+  bootStartup = loginItemPlan({
+    packaged: app.isPackaged,
+    platform: process.platform,
+    alreadyEnabled: app.getLoginItemSettings().openAtLogin,
+    ownerDecided: readStartupDecided(startupSettingFile(app.getPath("userData"))),
+  });
+  if (process.env.OCR_DESKTOP_FORCE_LOGIN_ITEM === "1") {
+    bootStartup = { action: "enable", reason: "veredito forçado pelo hatch de teste" };
+  }
+  if (bootStartup.action === "enable" && process.env.OCR_DESKTOP_FORCE_LOGIN_ITEM !== "1") {
+    setLoginItemEnabled(true);
+  }
+  log(`[desktop] login item: ${bootStartup.action} (${bootStartup.reason})`);
 
   // P1-050: real update flow — boot check, background download, then a
   // consent dialog before anything restarts. Fire-and-forget: a slow or dead
@@ -1286,6 +1338,13 @@ async function refreshPairingState(): Promise<void> {
       // matching; absent = unknown to the renderer (renders nothing). A wrong
       // clock never blocks pairing and never hides the QR.
       clock: clock ? { state: clock.state, message: clock.message } : undefined,
+      // P2-218: additive login-item verdict, AFTER clock so the
+      // P2-189/P2-193/P2-197/P2-199/P2-211/P2-214 real-source assertions keep
+      // matching; absent = unknown to the renderer (renders nothing). The
+      // announce never blocks pairing and never hides the QR.
+      startup: bootStartup
+        ? { state: bootStartup.action, message: loginItemMessage(bootStartup.action) }
+        : undefined,
     });
   } catch (err) {
     // Daemon down, token rotated or state file wiped: drop the cached state so
@@ -1717,9 +1776,11 @@ function trayMenuItems(): Electron.MenuItemConstructorOptions[] {
       type: "checkbox",
       checked: app.getLoginItemSettings().openAtLogin,
       // For checkbox items `item.checked` is the state after the user toggled,
-      // which is exactly what setLoginItemSettings must persist (macOS launch
+      // which is exactly what the OS-backed setting must persist (macOS launch
       // services / Windows registry) — so the choice survives app restarts.
-      click: (item) => app.setLoginItemSettings({ openAtLogin: item.checked }),
+      // P2-218: the shared helper also records the owner's decision, making a
+      // tray "off" definitive — no future boot turns it back on.
+      click: (item) => setLoginItemEnabled(item.checked),
     });
   }
   // P3-016: the persistent desktop.log (P3-012) is useless to a lay user if
