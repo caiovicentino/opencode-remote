@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, screen, session, Tray, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, Notification, screen, session, Tray, shell } from "electron";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -29,6 +29,7 @@ import { daemonTooltip, loginItemSupported, logsDirPath, openLogsFolder, trayIco
 import { badgePlan, type BadgePlan } from "./badge";
 import { CLOSE_HINT_LOG, closeHintPlan, hintFlagPath, readHintFlag, writeHintFlag } from "./closehint";
 import { checkForUpdatesOnBoot, updatesEnabled, updateMenuLabel, type UpdateDialogSinks, type UpdateStatus } from "./update";
+import { menuSpec, type MenuItemSpec } from "./menu";
 import { nextCheckDelayMs } from "./updateschedule";
 import { loadWindowBounds, saveWindowBounds, WINDOW_MIN, windowStateFile } from "./window-state";
 import { installFatalErrorHandlers, onRendererGone, ReloadGuard } from "./crash";
@@ -325,6 +326,9 @@ function runUpdateCheck(source: string): void {
     onStatus: (status, version) => {
       lastUpdateStatus = status;
       refreshTrayMenu();
+      // P2-176: the Help menu carries the same status label — rebuild it at
+      // the same trigger point so the label never goes stale.
+      buildMenu();
       log(`[desktop] update status (${source}): ${status}${version ? ` ${version}` : ""}`);
     },
     // P2-155: the resolved status drives the next scheduled recheck (covers
@@ -1149,52 +1153,49 @@ function sendMenuAction(id: string): void {
   }
 }
 
+// P2-176: the menu lives as pure data in menu.ts (unit-tested, no electron
+// imports) and is translated here with no other logic — no labels, ids or
+// accelerators are written inline anymore. The go-* ids, renderer actions and
+// accelerators are byte-a-byte the P1-046 contract, so sendMenuAction keeps
+// receiving exactly the same identifiers.
+
+// P2-176: Help-submenu wiring, by id — each entry is the exact handler the
+// corresponding tray item runs (no new IPC, no preload change).
+const menuShellHandlers: Record<string, () => void> = {
+  // Same fire-and-forget, log-only check as the tray item (P3-019).
+  "help-updates": () => checkForUpdates(),
+  // Same mkdir+reveal path as the tray item (P3-016).
+  "help-logs": () => revealLogsFolder(),
+  // Same diagnostics bundle the app:diagnostics handler serves the renderer,
+  // written straight to the clipboard from the menu item.
+  "help-diagnostics": () => clipboard.writeText(buildDiagnostics()),
+};
+
+function toElectronItems(items: MenuItemSpec[]): Electron.MenuItemConstructorOptions[] {
+  return items.map((item) => {
+    const entry: Electron.MenuItemConstructorOptions = {};
+    if (item.id) entry.id = item.id;
+    if (item.label !== undefined) entry.label = item.label;
+    if (item.role) entry.role = item.role;
+    if (item.accelerator) entry.accelerator = item.accelerator;
+    if (item.enabled !== undefined) entry.enabled = item.enabled;
+    if (item.type) entry.type = item.type;
+    const action = item.action;
+    if (action) entry.click = () => sendMenuAction(action);
+    else if (item.id && menuShellHandlers[item.id]) entry.click = menuShellHandlers[item.id];
+    if (item.submenu) entry.submenu = toElectronItems(item.submenu);
+    return entry;
+  });
+}
+
+/** The tray's update-status label, shared with the menu so both surfaces can
+ * never drift apart on what the last check decided (P2-176). */
+function currentUpdateLabel(): string | null {
+  return lastUpdateStatus === null ? null : updateMenuLabel(lastUpdateStatus);
+}
+
 function buildMenu(): void {
-  const template: Electron.MenuItemConstructorOptions[] = [
-    ...(process.platform === "darwin"
-      ? [
-          {
-            label: app.name,
-            submenu: [
-              { role: "about" as const },
-              { type: "separator" as const },
-              { role: "hide" as const },
-              { role: "quit" as const, label: "Quit OpenCode Remote" },
-            ],
-          },
-        ]
-      : []),
-    { role: "editMenu" },
-    {
-      label: "Go",
-      submenu: [
-        { id: "go-new-chat", label: "New conversation", accelerator: "CmdOrCtrl+T", click: () => sendMenuAction("newChat") },
-        { id: "go-palette", label: "Command palette", accelerator: "CmdOrCtrl+K", click: () => sendMenuAction("palette") },
-        { type: "separator" },
-        { id: "go-pane-chat", label: "Chat", accelerator: "CmdOrCtrl+1", click: () => sendMenuAction("pane:chat") },
-        { id: "go-pane-artifacts", label: "Artifacts", accelerator: "CmdOrCtrl+2", click: () => sendMenuAction("pane:artifacts") },
-        { id: "go-pane-browser", label: "Browser", accelerator: "CmdOrCtrl+3", click: () => sendMenuAction("pane:browser") },
-        { id: "go-pane-files", label: "Files", accelerator: "CmdOrCtrl+4", click: () => sendMenuAction("pane:files") },
-        { id: "go-pane-settings", label: "Settings", accelerator: "CmdOrCtrl+5", click: () => sendMenuAction("pane:settings") },
-        { id: "go-pane-mission", label: "Mission Control", accelerator: "CmdOrCtrl+6", click: () => sendMenuAction("pane:mission") },
-      ],
-    },
-    {
-      label: "View",
-      submenu: [
-        { role: "reload" },
-        { role: "forceReload" },
-        { type: "separator" },
-        { role: "resetZoom" },
-        { role: "zoomIn" },
-        { role: "zoomOut" },
-        { type: "separator" },
-        { role: "toggleDevTools" },
-      ],
-    },
-    { role: "windowMenu" },
-  ];
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+  Menu.setApplicationMenu(Menu.buildFromTemplate(toElectronItems(menuSpec(process.platform, currentUpdateLabel(), updatesEnabled()))));
 }
 
 // P3-015: prefer the monochrome template asset (build/trayTemplate.png;
@@ -1229,6 +1230,34 @@ function refreshTrayMenu(): void {
   tray?.setContextMenu(Menu.buildFromTemplate(trayMenuItems()));
 }
 
+// P3-019/P2-176: the fire-and-forget update re-check shared by the tray item
+// and the Help menu. Log-only by design and never throws — re-checks are
+// safe, listeners are attached once per updater instance and deferred
+// versions are not re-offered (update.ts).
+function checkForUpdates(): void {
+  runUpdateCheck("tray");
+}
+
+// P3-016/P2-176: the tray's "Open logs folder" handler, now shared with the
+// Help menu item — the persistent desktop.log (P3-012) is useless to a lay
+// user if nothing in the app points at it. This item creates the folder on
+// demand and reveals it in the OS file manager. Best-effort: openLogsFolder
+// resolves false instead of rejecting, so the failure stays log-only and
+// can never take the shell down.
+function revealLogsFolder(): void {
+  const dir = logsDirPath(app.getPath("userData"));
+  // P3-018: cite the concrete files in the message this item produces —
+  // a user landing in the folder sees which file holds what (the shell
+  // log vs. the daemon sidecar's stdout/stderr JSONL).
+  log("[desktop] logs folder: desktop.log (shell), daemon-sidecar.log (daemon sidecar stdout/stderr)");
+  void openLogsFolder(dir, {
+    mkdir: (d, opts) => mkdirSync(d, opts),
+    openPath: (p) => shell.openPath(p),
+  }).then((ok) => {
+    if (!ok) logError("[desktop] open logs folder failed:", dir);
+  });
+}
+
 function trayMenuItems(): Electron.MenuItemConstructorOptions[] {
   const items: Electron.MenuItemConstructorOptions[] = [
     { label: "Open OpenCode Remote", click: showMainWindow },
@@ -1238,7 +1267,7 @@ function trayMenuItems(): Electron.MenuItemConstructorOptions[] {
   // identical to the pre-P3-019 menu. Packaged builds always have a feed: the
   // daemon's loopback updates folder (updatesEnabled()).
   if (updatesEnabled()) {
-    const statusLabel = lastUpdateStatus === null ? null : updateMenuLabel(lastUpdateStatus);
+    const statusLabel = currentUpdateLabel();
     if (statusLabel) {
       // Informational-only state line; the install itself needs the consent
       // dialog (updateDialogSinks), never a tray mis-click.
@@ -1246,13 +1275,7 @@ function trayMenuItems(): Electron.MenuItemConstructorOptions[] {
     }
     items.push({
       label: "Check for updates",
-      click: () => {
-        // Same fire-and-forget shape as "Restart daemon" (P3-017): the check
-        // is log-only by design and never throws. Re-checks are safe —
-        // listeners are attached once per updater instance and deferred
-        // versions are not re-offered (update.ts).
-        runUpdateCheck("tray");
-      },
+      click: checkForUpdates,
     });
   }
   items.push({
@@ -1279,24 +1302,13 @@ function trayMenuItems(): Electron.MenuItemConstructorOptions[] {
   }
   // P3-016: the persistent desktop.log (P3-012) is useless to a lay user if
   // nothing in the app points at it — this item creates the folder on demand
-  // and reveals it in the OS file manager. Best-effort: openLogsFolder
+  // and reveals it in the OS file manager (the same handler the Help menu's
+  // "Abrir pasta de logs" item runs since P2-176). Best-effort: openLogsFolder
   // resolves false instead of rejecting, so the failure stays log-only and
   // can never take the shell down.
   items.push({
     label: "Open logs folder",
-    click: () => {
-      const dir = logsDirPath(app.getPath("userData"));
-      // P3-018: cite the concrete files in the message this item produces —
-      // a user landing in the folder sees which file holds what (the shell
-      // log vs. the daemon sidecar's stdout/stderr JSONL).
-      log("[desktop] logs folder: desktop.log (shell), daemon-sidecar.log (daemon sidecar stdout/stderr)");
-      void openLogsFolder(dir, {
-        mkdir: (d, opts) => mkdirSync(d, opts),
-        openPath: (p) => shell.openPath(p),
-      }).then((ok) => {
-        if (!ok) logError("[desktop] open logs folder failed:", dir);
-      });
-    },
+    click: revealLogsFolder,
   });
   items.push(
     { type: "separator" },

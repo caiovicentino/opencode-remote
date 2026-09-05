@@ -658,17 +658,18 @@ try {
   // The paired two-column layout can't render hermetically (needs real E2E
   // keys, see the P1-051 note above), but the shortcut WIRING is fully
   // observable: the preload bridge must expose onMenuAction and the app menu
-  // must carry the Go items whose click handlers broadcast ocr:menu-action.
+  // must carry the Go (Ir, pt-BR since P2-176) items whose click handlers
+  // broadcast ocr:menu-action.
   const bridge = run("P1-046: preload exposes onMenuAction", ["ipc", "typeof window.ocrDesktop.onMenuAction"], 15_000);
   if (bridge.ok) check("P1-046: onMenuAction is a function", /function/.test(bridge.stdout));
   const menuIds: [string, string][] = [
-    ["go-new-chat", "New conversation"],
-    ["go-palette", "Command palette"],
-    ["go-pane-chat", "Chat"],
+    ["go-new-chat", "Nova conversa"],
+    ["go-palette", "Paleta de comandos"],
+    ["go-pane-chat", "Conversas"],
     ["go-pane-artifacts", "Artifacts"],
     ["go-pane-browser", "Browser"],
-    ["go-pane-files", "Files"],
-    ["go-pane-settings", "Settings"],
+    ["go-pane-files", "Arquivos"],
+    ["go-pane-settings", "Configurações"],
   ];
   for (const [id, label] of menuIds) {
     const res = run(`P1-046: Go menu item ${id}`, ["menu", id], 15_000);

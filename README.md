@@ -471,9 +471,14 @@ Since P1-046 the window is a real two-column cockpit: the conversation stays
 open in the left column while Artifacts, Browser, Files or Settings open in a
 contextual pane on the right (switching panes never destroys the chat), and
 the whole navigation lives behind a single view stack. Keyboard shortcuts
-(also in the **Go** menu): `Cmd+T` new conversation, `Cmd+K` command palette
-(search conversations and actions), `Cmd+1..6` switch to chat / Artifacts /
-Browser / Files / Settings / Mission Control.
+(also in the **Ir** menu): `Cmd+T` new conversation (**Nova conversa**),
+`Cmd+K` command palette (**Paleta de comandos** — searches conversations and
+actions), `Cmd+1..6` switch to chat / Artifacts / Browser / Files / Settings /
+Mission Control. The native menu is Portuguese since P2-176 (matching the UI
+copy), including a **Ajuda** menu with **Verificar atualizações**, **Abrir
+pasta de logs** and **Copiar diagnóstico** — the tray's support actions,
+reachable from the menu bar too (the update items appear only when an update
+feed is configured).
 
 **Living home (P2-123)**: with no conversation selected the cockpit shows a
 real home instead of a dead end — a serif greeting ("Back in action, &lt;machine&gt;",
@@ -908,7 +913,9 @@ Whenever a feed is configured, the tray menu also gains two items (P3-019): a
 disabled status line reflecting the latest check ("Update available — check for
 updates", "Update available — open release page", "Update ready — restart to
 install", "Up to date", or the failure reason) and a clickable "Check for
-updates" item that re-runs the check and refreshes the menu in place. Applying
+updates" item that re-runs the check and refreshes the menu in place. Since
+P2-176 the app menu's **Ajuda** submenu mirrors both items (rebuilt on every
+status change, so its label never goes stale). Applying
 a release always goes through the consent dialog (P1-050): the updater asks
 "Restart now / Later" once the download finishes — a deferred version is not
 re-offered in the same session. On macOS the packaged shell updates itself

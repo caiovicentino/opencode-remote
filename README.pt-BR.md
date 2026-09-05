@@ -391,9 +391,13 @@ Desde o P1-046 a janela é um cockpit de duas colunas de verdade: a conversa
 fica aberta na coluna da esquerda enquanto Artifacts, Browser, Arquivos ou
 Configurações abrem num pane contextual à direita (trocar de pane nunca
 destrói o chat), e toda a navegação vive numa única view stack. Atalhos de
-teclado (também no menu **Go**): `Cmd+T` nova conversa, `Cmd+K` command
-palette (busca conversas e ações), `Cmd+1..6` troca para chat / Artifacts /
-Browser / Arquivos / Configurações / Mission Control.
+teclado (também no menu **Ir**): `Cmd+T` nova conversa, `Cmd+K` paleta de
+comandos (busca conversas e ações), `Cmd+1..6` troca para chat / Artifacts /
+Browser / Arquivos / Configurações / Mission Control. O menu nativo fala
+português desde a P2-176 (mesmo idioma da UI) e ganhou o menu **Ajuda** com
+**Verificar atualizações**, **Abrir pasta de logs** e **Copiar diagnóstico** —
+as ações de suporte do tray, agora também na barra de menus (os itens de
+update só aparecem quando há feed configurado).
 
 **Home viva (P2-123)**: sem conversa selecionada, o cockpit mostra uma home de
 verdade no lugar do beco antigo — greeting serifado ("De volta à ação, &lt;máquina&gt;",
