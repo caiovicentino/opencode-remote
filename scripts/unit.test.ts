@@ -433,6 +433,7 @@ import { touchesDesktop } from "./ci-scope";
 import { imageTags } from "./relay-image";
 
 import { expectedAssets, missingAssets, tagProblems } from "./release-assets";
+import { publishDecision } from "./release-publish";
 
 import { gatekeeperProblems } from "./gatekeeper-verify";
 
@@ -10434,6 +10435,152 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     evPayloads.some((p) => p.includes("ipTag: tagIp(ip)")) &&
       evPayloads.filter((p) => /\bip\b/.test(p)).every((p) => p.includes("ipTag")) &&
       !relayIndexSrc.includes("{ ip }"),
+  );
+}
+
+
+// --- P2-179: release-publish — a draft only goes public when complete --------
+{
+  const TAG = "v0.3.0";
+  const complete = [
+    "opencode-remote-v0.3.0.tar.gz",
+    "OpenCode Remote-0.3.0-arm64.dmg",
+    "OpenCode Remote-0.3.0-mac.zip",
+    "OpenCode Remote Setup 0.3.0.exe",
+    "latest-mac.yml",
+    "update-mac.json",
+    "latest.yml",
+  ];
+  const ok = publishDecision(true, complete, TAG);
+  check(
+    "P2-179: draft with the complete asset list → publish true with no problems",
+    ok.publish === true && ok.problems.length === 0,
+    JSON.stringify(ok),
+  );
+
+  const noDmg = publishDecision(true, complete.filter((n) => !n.endsWith(".dmg")), TAG);
+  check(
+    "P2-179: draft without the DMG → problem",
+    noDmg.publish === false && noDmg.problems.length === 1 && noDmg.problems[0]!.includes("macOS DMG installer"),
+    JSON.stringify(noDmg),
+  );
+
+  const noExe = publishDecision(true, complete.filter((n) => !n.endsWith(".exe")), TAG);
+  check(
+    "P2-179: draft without the Windows installer → problem",
+    noExe.publish === false && noExe.problems.length === 1 && noExe.problems[0]!.includes("Windows NSIS setup"),
+    JSON.stringify(noExe),
+  );
+
+  const feedNames = ["latest-mac.yml", "update-mac.json", "latest.yml"];
+  const noFeeds = publishDecision(true, complete.filter((n) => !feedNames.includes(n)), TAG);
+  check(
+    "P2-179: draft without the feed files → one problem per missing feed",
+    noFeeds.publish === false && noFeeds.problems.length === 3,
+    JSON.stringify(noFeeds),
+  );
+
+  const published = publishDecision(false, [], TAG);
+  check(
+    "P2-179: already-published release → publish false with NO problems (idempotent re-run)",
+    published.publish === false && published.problems.length === 0,
+    JSON.stringify(published),
+  );
+
+  const empty = publishDecision(true, [], TAG);
+  check(
+    "P2-179: draft with an empty asset list → every required slot is a problem",
+    empty.publish === false && empty.problems.length === 6,
+    JSON.stringify(empty),
+  );
+
+  const notList = publishDecision(true, "opencode-remote-v0.3.0.tar.gz", TAG);
+  check(
+    "P2-179: non-list asset input → problem, publish false",
+    notList.publish === false && notList.problems.length === 1 && notList.problems[0]!.includes("not a list"),
+    JSON.stringify(notList),
+  );
+
+  // --- CLI: reads the gh release view JSON from a file path, all problems at once
+  const repoRoot = join(import.meta.dirname, "..");
+  const tsxEntry = join(repoRoot, "node_modules", "tsx", "dist", "cli.mjs");
+  const script = join(repoRoot, "scripts", "release-publish.ts");
+  const dir = mkdtempSync(join(tmpdir(), "release-publish-"));
+  const viewPath = join(dir, "view.json");
+  const runCli = (p: string): { code: number; out: string } => {
+    try {
+      const out = execFileSync(process.execPath, [tsxEntry, script, p], { cwd: repoRoot, encoding: "utf8" });
+      return { code: 0, out };
+    } catch (err) {
+      const e = err as { status?: number; stdout?: Buffer; stderr?: Buffer };
+      return { code: e.status ?? -1, out: `${e.stdout ?? ""}${e.stderr ?? ""}` };
+    }
+  };
+  writeFileSync(viewPath, JSON.stringify({ isDraft: true, tagName: TAG, assets: complete.map((name) => ({ name })) }));
+  const cliOk = runCli(viewPath);
+  check(
+    "P2-179: cli exits 0 on a complete draft and orders the publish edit",
+    cliOk.code === 0 && cliOk.out.includes("release-publish: OK v0.3.0"),
+    cliOk.out,
+  );
+  writeFileSync(viewPath, JSON.stringify({ isDraft: true, tagName: TAG, assets: [{ name: complete[0] }] }));
+  const cliFail = runCli(viewPath);
+  check(
+    "P2-179: cli exits 1 printing ALL missing labels at once (release stays draft)",
+    cliFail.code === 1 &&
+      cliFail.out.includes("release-publish: FAIL v0.3.0") &&
+      (cliFail.out.match(/  - missing: /g) ?? []).length === 6 &&
+      cliFail.out.includes("6 problem(s) found"),
+    cliFail.out,
+  );
+  writeFileSync(viewPath, JSON.stringify({ isDraft: false, tagName: TAG, assets: [] }));
+  const cliPublished = runCli(viewPath);
+  check(
+    "P2-179: cli skips an already-published release with exit 0 (idempotent)",
+    cliPublished.code === 0 && cliPublished.out.includes("release-publish: SKIP v0.3.0"),
+    cliPublished.out,
+  );
+  rmSync(dir, { recursive: true, force: true });
+
+  // --- real-repo assertion: release.yml creates a draft, publishes via the
+  // release-publish job, and the Formula pin no longer runs in the release job
+  const release = readFileSync(join(repoRoot, ".github", "workflows", "release.yml"), "utf8");
+  check(
+    "P2-179: gh release create runs with --draft",
+    /gh release create[^\n]*--draft/.test(release),
+  );
+  const relStart = release.indexOf("\n  release:");
+  const relEnd = release.indexOf("\n  desktop-dmg:");
+  const releaseJob = relStart > -1 && relEnd > relStart ? release.slice(relStart, relEnd) : "";
+  check(
+    "P2-179: the Formula pin no longer runs in the release job",
+    releaseJob.length > 0 && !releaseJob.includes("Formula/opencode-remote.rb"),
+  );
+  const pubStart = release.indexOf("\n  release-publish:");
+  const publishJob = pubStart === -1 ? "" : release.slice(pubStart);
+  check(
+    "P2-179: release.yml has a release-publish job needing release-verify AND release-feeds",
+    publishJob.includes("needs: [release-verify, release-feeds]"),
+  );
+  check(
+    "P2-179: release-publish declares shell: bash (P2-126 lesson)",
+    publishJob.includes("shell: bash"),
+  );
+  check(
+    "P2-179: release-publish feeds the gh release view draft+assets JSON into scripts/release-publish.ts",
+    publishJob.includes("gh release view") &&
+      publishJob.includes("--json isDraft,tagName,assets") &&
+      publishJob.includes("scripts/release-publish.ts"),
+  );
+  const cliAt = publishJob.indexOf("scripts/release-publish.ts");
+  const editAt = publishJob.indexOf("gh release edit");
+  const pinAt = publishJob.indexOf("Formula/opencode-remote.rb");
+  check(
+    "P2-179: the unpublish edit runs after the CLI verdict, and the Formula pin (sha256 from the downloaded tarball) after publication",
+    editAt > cliAt &&
+      pinAt > editAt &&
+      publishJob.includes("gh release download") &&
+      publishJob.includes("shasum -a 256"),
   );
 }
 

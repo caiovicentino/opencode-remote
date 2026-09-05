@@ -322,6 +322,26 @@ completo quando os feeds apontam para artefatos da mesma tag (P2-157): um job
 e derruba o workflow — sem isso um feed defasado sai verde e cada app
 instalado falha o auto-update em silêncio.
 
+**Releases nascem como rascunho** (P2-179): o `gh release create` roda com
+`--draft`, então nada fica visível para a base instalada enquanto os jobs de
+empacotamento ainda rodam. Um job final `release-publish` — depois do
+`release-verify` e do `release-feeds` passando — lê a flag de rascunho + a
+lista de assets com `gh release view --json isDraft,tagName,assets`, roda
+`scripts/release-publish.ts` (só publica um rascunho carregando todos os
+assets obrigatórios; release já publicada é um no-op idempotente) e só então
+torna o release público com `gh release edit --draft=false`. Release com
+falha de assinatura, notarização ou empacotamento termina o run como
+**rascunho**, nunca como página de download quebrada. O pin do Formula do
+Homebrew também mudou para o `release-publish`, depois da publicação: o sha256
+é calculado a partir do tarball baixado de volta do release, então a `main`
+nunca aponta para um release que não é público ainda (o push do pin segue
+fail-open — push recusado só avisa). Para inspecionar ou descartar o rascunho
+de um run que falhou: abra o run no Actions para ver qual job falhou (o passo
+que falhou lista todos os assets faltantes) e depois ou conserte a causa e
+re rode o workflow — um re-run passa direto por release já publicada — ou
+apague o rascunho com `gh release delete vX.Y.Z --yes` (a tag fica; apague
+também com `--cleanup-tag` se quiser retaggear limpo).
+
 ## Relay hospedado (Docker)
 
 Não quer hospedar o relay no seu Mac? `deploy/relay/Dockerfile` gera uma imagem

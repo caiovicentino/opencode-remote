@@ -24,39 +24,16 @@ jobs:
           VERSION=${GITHUB_REF_NAME}
           git archive --format=tar.gz --prefix="opencode-remote-${VERSION}/" -o "opencode-remote-${VERSION}.tar.gz" "$GITHUB_REF_NAME"
 
-      - name: Create GitHub release
+      # P2-179: the release is born a DRAFT — nothing is visible to the
+      # installed base while the packaging jobs below are still running.
+      # Attaching assets to a draft works the same, so the desktop-dmg and
+      # desktop-win uploads are unchanged; the draft only goes public in the
+      # release-publish job after every verification passed.
+      - name: Create GitHub release (draft)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" opencode-remote-*.tar.gz --generate-notes --title "$GITHUB_REF_NAME"
-
-      # P2-098 (round 3): the formula must never carry a checksum that was not
-      # computed from the published artifact — pin url/version/sha256 to the
-      # release that was just created and push to main. Direct pushes to main
-      # never deploy (P2-058), so this is inert for the runtime; fail-open:
-      # a refused push must not fail the release itself.
-      - name: Pin the Homebrew formula checksum to the published asset
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          VERSION="${GITHUB_REF_NAME}"
-          SHA=$(shasum -a 256 "opencode-remote-${VERSION}.tar.gz" | awk '{print $1}')
-          URL_RE='https://github\.com/caiovicentino/opencode-remote/releases/download/v[0-9.]+/opencode-remote-v[0-9.]+\.tar\.gz'
-          NEW_URL="https://github.com/caiovicentino/opencode-remote/releases/download/${VERSION}/opencode-remote-${VERSION}.tar.gz"
-          sed -i -E \
-            -e "s|$URL_RE|$NEW_URL|" \
-            -e "s|version \"[0-9]+.[0-9]+.[0-9]+\"|version \"${VERSION#v}\"|" \
-            -e 's|sha256 "[a-f0-9]{64}"|sha256 "'"${SHA}"'"|' \
-            Formula/opencode-remote.rb
-          git config user.name "ocr-release-bot"
-          git config user.email "noreply@users.noreply.github.com"
-          git add Formula/opencode-remote.rb
-          if git diff --cached --quiet; then
-            echo "Formula already pinned to ${VERSION} — nothing to commit"
-          else
-            git commit -m "pilot(release): pin Formula checksum for ${VERSION}"
-            git push origin HEAD:main || echo "::warning::could not push the Formula pin — patch it manually from this run's log"
-          fi
+          gh release create "$GITHUB_REF_NAME" opencode-remote-*.tar.gz --draft --generate-notes --title "$GITHUB_REF_NAME"
 
   # P2-098: third-party installability — a release ships a real macOS installer
   # (DMG), not just the source tarball. P2-136: a signing preflight decides the
@@ -319,3 +296,58 @@ jobs:
           gh release download "$GITHUB_REF_NAME" --pattern update-mac.json --pattern latest.yml --dir feeds
           gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' \
             | npx --yes tsx@4.23.12 scripts/feed-consistency.ts "$GITHUB_REF_NAME" feeds/update-mac.json feeds/latest.yml
+
+  # P2-179: the draft only goes public here, after release-verify AND
+  # release-feeds passed. scripts/release-publish.ts reads the draft flag +
+  # asset list from `gh release view` and refuses (exit 1, every problem at
+  # once) unless the draft carries every required asset — a release without
+  # installers now ends the run as a draft, never as a broken public download.
+  # Already-published releases are an idempotent no-op (publish=false, zero
+  # problems), so a re-run walks straight past this job. The Homebrew formula
+  # pin moved here from the release job (P2-098) so main never points at a
+  # release that is not public yet: the sha256 is computed from the tarball
+  # downloaded back from the (now public) release, not from the local build
+  # file. Fail-open as before: a refused push only warns, it never fails the
+  # release. P2-126 lesson: shell: bash on every run step.
+  release-publish:
+    runs-on: ubuntu-latest
+    needs: [release-verify, release-feeds]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Publish the draft release only when every required asset is attached
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release view "$GITHUB_REF_NAME" --json isDraft,tagName,assets > release-view.json
+          npx --yes tsx@4.23.12 scripts/release-publish.ts release-view.json
+          gh release edit "$GITHUB_REF_NAME" --draft=false
+
+      - name: Pin the Homebrew formula checksum to the published asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          rm -rf formula-pin && mkdir -p formula-pin
+          gh release download "$GITHUB_REF_NAME" --pattern "opencode-remote-${VERSION}.tar.gz" --dir formula-pin
+          SHA=$(shasum -a 256 "formula-pin/opencode-remote-${VERSION}.tar.gz" | awk '{print $1}')
+          URL_RE='https://github\.com/caiovicentino/opencode-remote/releases/download/v[0-9.]+/opencode-remote-v[0-9.]+\.tar\.gz'
+          NEW_URL="https://github.com/caiovicentino/opencode-remote/releases/download/${VERSION}/opencode-remote-${VERSION}.tar.gz"
+          sed -i -E \
+            -e "s|$URL_RE|$NEW_URL|" \
+            -e "s|version \"[0-9]+.[0-9]+.[0-9]+\"|version \"${VERSION#v}\"|" \
+            -e 's|sha256 "[a-f0-9]{64}"|sha256 "'"${SHA}"'"|' \
+            Formula/opencode-remote.rb
+          git config user.name "ocr-release-bot"
+          git config user.email "noreply@users.noreply.github.com"
+          git add Formula/opencode-remote.rb
+          if git diff --cached --quiet; then
+            echo "Formula already pinned to ${VERSION} — nothing to commit"
+          else
+            git commit -m "pilot(release): pin Formula checksum for ${VERSION}"
+            git push origin HEAD:main || echo "::warning::could not push the Formula pin — patch it manually from this run's log"
+          fi

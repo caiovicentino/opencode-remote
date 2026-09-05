@@ -341,6 +341,26 @@ published files via `scripts/feed-consistency.ts`, and fails the workflow —
 otherwise a stale feed ships green and every installed app silently fails its
 auto-update.
 
+**Releases are born as drafts** (P2-179): `gh release create` runs with
+`--draft`, so nothing is visible to the installed base while the packaging
+jobs are still running. A final `release-publish` job — after `release-verify`
+and `release-feeds` both passed — reads the draft flag + asset list with
+`gh release view --json isDraft,tagName,assets`, runs
+`scripts/release-publish.ts` (publish only a draft carrying every required
+asset; an already-published release is an idempotent no-op) and only then
+flips the release public with `gh release edit --draft=false`. A release whose
+signing, notarization or packaging failed therefore ends the run as a **draft**
+instead of a public download page with no installers. The Homebrew formula pin
+also moved into `release-publish`, after publication: the sha256 is computed
+from the tarball downloaded back from the release, so `main` never points at a
+release that is not public yet (the pin push stays fail-open — a refused push
+only warns). To inspect or discard a failed run's draft: open the Actions run
+to see which job failed (the failing step lists every missing asset), then
+either fix the cause and re-run the workflow — a re-run walks past an already
+published release — or delete the draft with
+`gh release delete vX.Y.Z --yes` (the tag stays; delete it too with
+`--cleanup-tag` if you want a clean re-tag).
+
 ## Hosted relay (Docker)
 
 Prefer not to host the relay on your own Mac? `deploy/relay/Dockerfile` builds
