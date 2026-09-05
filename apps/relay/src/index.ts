@@ -26,6 +26,12 @@ import {
   webBudgetIdentity,
   WEB_BUDGET_IDLE_MS,
 } from "./webbudget.js";
+import {
+  parseBufferCap,
+  sendVerdict,
+  SLOW_CONSUMER_CLOSE_CODE,
+  SLOW_CONSUMER_CLOSE_REASON,
+} from "./backpressure.js";
 
 /**
  * Relay: a blind router.
@@ -159,6 +165,21 @@ if (WEB_BUDGET.problems.length > 0) {
   }
   process.exit(1);
 }
+// P2-217: the per-socket backpressure cap (RELAY_BUFFER_CAP_BYTES) resolves
+// fail-closed like every knob above — a non-numeric, zero, negative,
+// fractional or above-ceiling value refuses the boot (one log line per
+// reason, exit 1, no listener) instead of serving with an unvalidated cap.
+// Absent or blank keeps the documented 4 MiB default; the cap gates only the
+// forwarding loop below — admission, rate limits and the frame-size cap are
+// untouched.
+const BUFFER_CAP = parseBufferCap(process.env);
+if (BUFFER_CAP.problems.length > 0) {
+  for (const reason of BUFFER_CAP.problems) {
+    ev("warn", "invalid relay buffer cap, refusing to start (fail-closed)", { reason });
+  }
+  process.exit(1);
+}
+const bufferCapBytes = BUFFER_CAP.cap;
 // The only fs touches of the static route: existence/file checks per request
 // and a streamed body (empty for HEAD). isFile canonicalizes the target with
 // realpath before the containment comparison — with a separator boundary, so
@@ -258,6 +279,7 @@ const m = {
   rateLimited: 0,
   roomsRejected: 0,
   staleTerminated: 0,
+  slowConsumers: 0,
   startedAt: Date.now(),
 };
 if (METRICS.port && METRICS.problems.length === 0) {
@@ -285,6 +307,8 @@ if (METRICS.port && METRICS.problems.length === 0) {
           `relay_rooms_rejected ${m.roomsRejected}`,
           "# TYPE relay_stale_terminated counter",
           `relay_stale_terminated ${m.staleTerminated}`,
+          "# TYPE relay_slow_consumers_total counter",
+          `relay_slow_consumers_total ${m.slowConsumers}`,
           "# TYPE relay_rooms_active gauge",
           `relay_rooms_active ${rooms.size}`,
         ];
@@ -305,6 +329,7 @@ if (METRICS.port && METRICS.problems.length === 0) {
             rate_limited_total: m.rateLimited,
             rooms_rejected: m.roomsRejected,
             stale_terminated: m.staleTerminated,
+            slow_consumers_total: m.slowConsumers,
             rooms_active: rooms.size,
           },
           null,
@@ -432,6 +457,9 @@ server.listen(PORT, () => {
     ratePerMin: RATE_PER_MIN,
     rateBurst: RATE_BURST,
     pingIntervalS: PING_INTERVAL_S,
+    // P2-217: additive provenance field — the resolved per-socket backpressure
+    // cap in bytes. No pre-existing field changed name or meaning.
+    bufferCapBytes,
     // P2-177: additive provenance field — the resolved log level this
     // process writes at. No pre-existing field changed name or meaning.
     logLevel: LOG.level,
@@ -574,7 +602,20 @@ wss.on("connection", (socket: Socket, req) => {
       payload: frame.payload,
     });
     for (const t of targets) {
-      if (t !== socket && t.readyState === t.OPEN) t.send(out);
+      if (t === socket || t.readyState !== t.OPEN) continue;
+      // P2-217: backpressure gate — consult the target's own accumulated
+      // outgoing bytes BEFORE every send. Only two outcomes exist: queue the
+      // frame, or close the slow socket (never a silent drop — the relay is
+      // blind and could not re-send it). The close touches only this target;
+      // the sender and every other peer of the room keep routing.
+      const verdict = sendVerdict(t.bufferedAmount, out.length, bufferCapBytes);
+      if (verdict.action === "close-slow") {
+        m.slowConsumers++;
+        ev("warn", "slow consumer closed", { count: m.slowConsumers, reason: verdict.reason });
+        t.close(SLOW_CONSUMER_CLOSE_CODE, SLOW_CONSUMER_CLOSE_REASON);
+        continue;
+      }
+      t.send(out);
     }
   });
 
