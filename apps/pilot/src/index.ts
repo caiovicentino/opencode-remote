@@ -8,7 +8,7 @@ import { notifySupervisor } from "./notify";
 import { runResearcher } from "./researcher";
 import { runExplorer } from "./explorer";
 import { runPipeline, TASK_ID_RE, writeSandboxConfig, writeAuxSandboxConfig, budgetsFor, isOverCap, strategistPrompt, STRATEGIST_MARKER } from "./pipeline";
-import { deploy, latestDeployableSha, shouldSelfHealReload } from "./deploy";
+import { deploy, drainForReload, headDrifted, latestDeployableSha, shouldForceReload, shouldSelfHealReload } from "./deploy";
 import { digest } from "./push";
 import { addTask, appendCommitAndPush, auxPushIo, blockTask, nextId, parseAuxTaskLines, parseBacklog, type Task } from "./backlog";
 import { landMetaCommit, metaIo } from "./metapush";
@@ -73,6 +73,9 @@ async function main() {
   // P3-101: the sha this process booted on — the loop's stale-process self-heal
   // exits whenever the production repo's HEAD moves past it (idle + no deploy).
   const bootHead = exec("git rev-parse HEAD", { cwd: cfg.repo, allowFail: true }).output.trim() || undefined;
+  // P1-056 (round 2): when the drift FIRST appeared this tick — bounded
+  // patience for the forced busy-reload (see DRIFT_FORCE_RELOAD_MS).
+  let driftSince: number | undefined;
 
   // P1-006: one workspace clone per slot (pilot/repo-1, repo-2…), created via
   // `git clone --shared` the first time. All other slots inherit slot 1's
@@ -277,9 +280,16 @@ async function main() {
     // never kill pipelines or an in-flight deploy (gates pinned by the battery
     // via shouldSelfHealReload). The outer guard is the cheap short-circuit
     // that skips the git probe while slots are busy.
-    if (running.size === 0 && !deployBusy) {
-      const headNow = exec("git rev-parse HEAD", { cwd: cfg.repo, allowFail: true }).output.trim();
-      if (shouldSelfHealReload(running.size, deployBusy, bootHead, headNow)) {
+    // P1-056 (round 2): the drift probe now runs EVERY tick (not only when
+    // idle) and tracks how long the drift has persisted. Idle → immediate
+    // heal (P3-101 unchanged). Busy → bounded patience: after
+    // DRIFT_FORCE_RELOAD_MS of continuous drift, hold new picks, drain the
+    // slots, exit — the queue-fed loop can no longer deadlock on a stale
+    // in-memory battery.
+    const headNow = exec("git rev-parse HEAD", { cwd: cfg.repo, allowFail: true }).output.trim();
+    if (!deployBusy && headDrifted(bootHead, headNow)) {
+      driftSince ??= Date.now();
+      if (running.size === 0) {
         log("warn", "prod repo HEAD moved since boot — self-reloading onto new code", {
           bootHead,
           headNow,
@@ -287,6 +297,18 @@ async function main() {
         emit("deploy", { phase: "self-reload", ok: true, detail: "boot HEAD drift (stale process)" });
         process.exit(0); // pidfile singleton + KeepAlive cover the restart
       }
+      if (shouldForceReload(Date.now() - driftSince, deployBusy)) {
+        log("warn", "HEAD drift persisted while busy — draining slots for forced self-reload", {
+          bootHead,
+          headNow,
+          driftedMs: Date.now() - driftSince,
+        });
+        emit("deploy", { phase: "self-reload", ok: true, detail: "drift persistente — drenando slots" });
+        await drainForReload({ slotsRunning: () => running.size, holdNewPicks: (hold) => { drainNewPicks = hold; } });
+        process.exit(0);
+      }
+    } else {
+      driftSince = undefined;
     }
 
     // nightly redteam + weekly maintenance — best effort, slots idle. P1-095:

@@ -163,6 +163,28 @@ export async function drainForReload(o: DrainOpts): Promise<number> {
   return waitedMs;
 }
 
+/**
+ * P1-056 (round 2): how long a HEAD drift may persist while slots stay busy
+ * before the reload becomes mandatory anyway. The P3-101 heal only fires at a
+ * FULLY idle moment — with a fed queue the idle window never comes, and a
+ * stale in-memory battery can fail every task (the Sep-4 deadlock: the old
+ * battery referenced a file the new tree no longer has, so merges never
+ * landed and no deploy ever reset the tree). Bounded staleness: after this
+ * much continuous drift, hold picks, drain, exit — launchd KeepAlive boots
+ * the new code. 15 min costs at most one builder round per slot.
+ */
+export const DRIFT_FORCE_RELOAD_MS = 15 * 60_000;
+
+/** Pure seam for the battery: forced reload on persistent drift. Never kills
+ * an in-flight deploy (deployBusy gates it — the deploy's own self-reload
+ * covers that case); running slots are fine, drainForReload waits for them. */
+export function shouldForceReload(
+  driftMs: number | undefined,
+  deployBusy: boolean,
+): boolean {
+  return driftMs !== undefined && driftMs >= DRIFT_FORCE_RELOAD_MS && !deployBusy;
+}
+
 /** P1-044: interval between soak health checks (the soak loop's clock). */
 export const SOAK_INTERVAL_SEC = 60;
 export const SOAK_INTERVAL_MS = SOAK_INTERVAL_SEC * 1000;
