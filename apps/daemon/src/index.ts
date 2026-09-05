@@ -68,6 +68,7 @@ import { classifyRelayClose, effectiveRetryDelayMs, type RelayCloseKind } from "
 import { parseRelayUrl, redactRelayUrl } from "./relayurl.js";
 import { bodyLimit, isBodyLimitError, readLimitedBody, type BodyLimitError } from "./bodylimit.js";
 import { pairWindow, bootstrapDecision } from "./pairwindow.js";
+import { DEVICE_TOUCH_INTERVAL_MS, nextDeviceLabel, touchDecision } from "./devicetouch.js";
 import {
   admitNewUpload,
   chunkIndexProblem,
@@ -144,6 +145,12 @@ export interface PairedClient {
   pub: string; // client ECDH SPKI base64
   label?: string;
   addedAt: string;
+  // P2-194: approximate last successful handshake, throttled to one write per
+  // client per DEVICE_TOUCH_INTERVAL_MS (touchDecision). Optional + additive:
+  // an allowlist without the field reads back as "never seen" and keeps every
+  // pre-existing field byte-for-byte (saveAllowlist only mutates the parsed
+  // object in place — unknown fields survive the round trip).
+  lastSeenAt?: string;
 }
 
 interface DaemonIdentity {
@@ -1932,7 +1939,16 @@ async function handleMessage(data: WebSocket.RawData, ws: WebSocket) {
         );
       }
       if (decision === "allow" && !client) {
-        client = { pub: accepted.clientPub, addedAt: new Date().toISOString(), label: "first" };
+        // P2-194: stable, personal-data-free label ("Telefone 1", ...) instead
+        // of the hardcoded "first" — two phones must be distinguishable in
+        // Settings without comparing public-key prefixes. First handshake
+        // already counts as seen (we are writing the entry anyway).
+        client = {
+          pub: accepted.clientPub,
+          addedAt: new Date().toISOString(),
+          label: nextDeviceLabel(allowlist.map((c) => c.label ?? "")),
+          lastSeenAt: new Date().toISOString(),
+        };
         allowlist.push(client);
         saveAllowlist(allowlist);
         audit("client.paired", { pub: accepted.clientPub.slice(0, 16), bootstrap: true });
@@ -1953,6 +1969,13 @@ async function handleMessage(data: WebSocket.RawData, ws: WebSocket) {
         );
         setTimeout(() => ws.close(), 500);
         return;
+      }
+
+      // P2-194: throttled last-seen stamp — at most one daemon.json rewrite
+      // per client per interval, never per frame. Approximate on purpose.
+      if (touchDecision(client.lastSeenAt, Date.now(), DEVICE_TOUCH_INTERVAL_MS) === "write") {
+        client.lastSeenAt = new Date().toISOString();
+        saveAllowlist(allowlist);
       }
 
       sessions.set(frame.from, {

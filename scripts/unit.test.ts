@@ -62,6 +62,11 @@ import {
   PAIR_WINDOW_CEILING_MS,
   pairWindow,
 } from "../apps/daemon/src/pairwindow";
+import {
+  DEVICE_TOUCH_INTERVAL_MS,
+  nextDeviceLabel,
+  touchDecision,
+} from "../apps/daemon/src/devicetouch";
 
 import {
   admitNewUpload,
@@ -12820,6 +12825,94 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
         typeof (dict.en as Record<string, string>)[k] === "string" &&
         typeof (dict.pt as Record<string, string>)[k] === "string",
     ),
+  );
+}
+
+// --- P2-194: device labels + last-seen touch (devicetouch.ts) -----------------
+
+{
+  const base = 1_700_000_000_000; // arbitrary fixed "now" anchor (pure: no clock reads)
+  const iso = (t: number) => new Date(t).toISOString();
+
+  // touchDecision matrix
+  check(
+    "P2-194: missing stamp (undefined/null/empty/blank) → write",
+    touchDecision(undefined, base, DEVICE_TOUCH_INTERVAL_MS) === "write" &&
+      touchDecision(null, base, DEVICE_TOUCH_INTERVAL_MS) === "write" &&
+      touchDecision("", base, DEVICE_TOUCH_INTERVAL_MS) === "write" &&
+      touchDecision("   ", base, DEVICE_TOUCH_INTERVAL_MS) === "write",
+  );
+  check(
+    "P2-194: stamp inside the interval → skip (no daemon.json rewrite per frame)",
+    touchDecision(iso(base - DEVICE_TOUCH_INTERVAL_MS + 1), base, DEVICE_TOUCH_INTERVAL_MS) === "skip" &&
+      touchDecision(iso(base - 60_000), base, DEVICE_TOUCH_INTERVAL_MS) === "skip" &&
+      touchDecision(iso(base), base, DEVICE_TOUCH_INTERVAL_MS) === "skip",
+  );
+  check(
+    "P2-194: stamp at/after the interval → write",
+    touchDecision(iso(base - DEVICE_TOUCH_INTERVAL_MS), base, DEVICE_TOUCH_INTERVAL_MS) === "write" &&
+      touchDecision(iso(base - DEVICE_TOUCH_INTERVAL_MS - 5_000), base, DEVICE_TOUCH_INTERVAL_MS) ===
+        "write",
+  );
+  check(
+    "P2-194: future stamp (clock ahead) → skip, never a write loop",
+    touchDecision(iso(base + 1), base, DEVICE_TOUCH_INTERVAL_MS) === "skip" &&
+      touchDecision(iso(base + DEVICE_TOUCH_INTERVAL_MS * 10), base, DEVICE_TOUCH_INTERVAL_MS) === "skip",
+  );
+  check(
+    "P2-194: non-string stamp (number/object/garbage string) → write (unreadable converges)",
+    touchDecision(123, base, DEVICE_TOUCH_INTERVAL_MS) === "write" &&
+      touchDecision({ t: base }, base, DEVICE_TOUCH_INTERVAL_MS) === "write" &&
+      touchDecision("not-a-date", base, DEVICE_TOUCH_INTERVAL_MS) === "write",
+  );
+
+  // nextDeviceLabel
+  check("P2-194: label for an empty list → Telefone 1", nextDeviceLabel([]) === "Telefone 1");
+  check(
+    "P2-194: label for a one-item list → next number",
+    nextDeviceLabel(["Telefone 1"]) === "Telefone 2" && nextDeviceLabel(["first"]) === "Telefone 1",
+  );
+  check(
+    "P2-194: label skips numbers already in use",
+    nextDeviceLabel(["Telefone 1", "Telefone 2"]) === "Telefone 3" &&
+      nextDeviceLabel(["Telefone 1", "Telefone 3"]) === "Telefone 2" &&
+      nextDeviceLabel(["Telefone 1", "Telefone 2", "Telefone 3"]) === "Telefone 4",
+  );
+  check(
+    "P2-194: label for a nine-item list → Telefone 10 (two digits)",
+    nextDeviceLabel(["Telefone 1", "Telefone 2", "Telefone 3", "Telefone 4", "Telefone 5", "Telefone 6", "Telefone 7", "Telefone 8", "Telefone 9"]) ===
+      "Telefone 10",
+  );
+
+  // old allowlist round trip: read without lastSeenAt, mutate in place the way
+  // saveAllowlist does (raw.clients = parsed objects, only the field added),
+  // re-serialize — no existing or unknown field may be lost.
+  const oldJson = `{"room":"r","ecdhPub":"p","ecdhPriv":"k","vapid":{"publicKey":"a","privateKey":"b"},
+    "clients":[{"pub":"PUB1","label":"first","addedAt":"2025-01-01T00:00:00.000Z","customUnknown":"keep-me"}]}`;
+  const parsed = JSON.parse(oldJson);
+  const client = (parsed.clients as Array<Record<string, unknown>>)[0];
+  // legacy client has no lastSeenAt → touchDecision(undefined) === "write"
+  check("P2-194: legacy client without lastSeenAt reads as never-seen → write", touchDecision(client.lastSeenAt, base, DEVICE_TOUCH_INTERVAL_MS) === "write");
+  client.lastSeenAt = iso(base);
+  const roundTripped = JSON.parse(JSON.stringify(parsed)).clients[0];
+  check(
+    "P2-194: old allowlist re-written with lastSeenAt loses no field (incl. unknown)",
+    roundTripped.pub === "PUB1" &&
+      roundTripped.label === "first" &&
+      roundTripped.addedAt === "2025-01-01T00:00:00.000Z" &&
+      roundTripped.customUnknown === "keep-me" &&
+      roundTripped.lastSeenAt === iso(base),
+  );
+
+  // real-source assertion: the bootstrap branch in the REAL index.ts must label
+  // through nextDeviceLabel( and never resurrect the fixed "first" string.
+  const daemonIndexSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  const bootstrapLabelAt = daemonIndexSrc.indexOf("decision === \"allow\" && !client");
+  check(
+    "P2-194: the real bootstrap branch labels via nextDeviceLabel( and the fixed \"first\" is gone",
+    bootstrapLabelAt > -1 &&
+      daemonIndexSrc.slice(bootstrapLabelAt, bootstrapLabelAt + 600).includes("nextDeviceLabel(") &&
+      !daemonIndexSrc.includes('label: "first"'),
   );
 }
 
