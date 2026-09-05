@@ -172,6 +172,29 @@ address that cannot work is worse than no address. The same discipline holds
 for a `ws://`-only relay: the derived `http://` address carries a warning and
 no QR is generated for it.
 
+## After sleep and wake (P2-209)
+
+A laptop that sleeps overnight used to wake with the daemon sidecar either out
+of respawn attempts or with its next retry minutes away — the phone then found
+no machine until someone walked up to the computer. Now, when the OS reports
+the return from sleep or the session unlock (macOS/Windows `powerMonitor`
+events), the shell reacts at most once per event; repeats inside a 10 s
+debounce window are dropped silently, so a wake never becomes a log flood.
+
+- **Daemon healthy at the last poll** → an immediate health probe confirms it
+  (the same probe the 3 s pairing tick already runs — no new periodic probe,
+  no extra request per tick).
+- **Respawn budget exhausted, or the scheduled retry more than 30 s away** →
+  the daemon is restarted on the spot, through the same path as the tray's
+  **Restart daemon** action.
+- **Anything else** → an immediate health probe.
+
+Each handled event logs exactly one `[desktop] wake event (…)` line with the
+action and the reason. Pairing is never touched by a wake: no re-pairing, no
+allowlist or state-file writes, no new routes. If the desktop.log has no wake
+lines after a wake, the platform did not expose `powerMonitor` and the shell
+keeps its previous behavior (the existing backoff/reconnect still applies).
+
 ## Service control (macOS launchd)
 
 ```

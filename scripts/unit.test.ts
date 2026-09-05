@@ -51,6 +51,15 @@ import { buildPairLink, PAIR_LINK_HASH_ROUTE, PAIR_LINK_MAX_LEN } from "../apps/
 import { hasAppMarker, probeVerdict, WEB_REACH_TIMEOUT_MS } from "../apps/desktop/src/webreach";
 import { linkVerdict, type RelayLinkFacts } from "../apps/desktop/src/relaylink";
 import {
+  isWakeEventType,
+  RESPAWN_WAIT_CEILING_MS,
+  WAKE_DEBOUNCE_MS,
+  WAKE_EVENT_TYPES,
+  wakePlan,
+  type WakePlanInput,
+  type WakePlanVerdict,
+} from "../apps/desktop/src/wakeplan";
+import {
   bodyLimit,
   isBodyLimitError,
   MAX_JSON_BODY_BYTES,
@@ -13826,6 +13835,163 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     scanBody.includes("readdirSync(ARTIFACTS_ROOT") &&
       !scanBody.includes("uploads") &&
       !scanBody.includes("clips"),
+  );
+}
+
+// --- P2-209: wake-from-sleep reaction plan (wakeplan.ts) ------------------------
+
+{
+  const plan = (over: Partial<WakePlanInput> = {}): WakePlanVerdict =>
+    wakePlan({
+      eventType: "resume",
+      gaveUp: false,
+      failures: 0,
+      msUntilNextRespawn: null,
+      daemonHealthy: false,
+      msSinceLastHandled: null,
+      ...over,
+    });
+
+  // rule 1 — a repeat inside the debounce window is ignored even when the
+  // respawn budget is exhausted (the first event already acted)
+  check(
+    "P2-209: repeat inside the debounce window → ignore even with exhausted budget",
+    plan({ msSinceLastHandled: WAKE_DEBOUNCE_MS - 1, gaveUp: true, failures: 5 }).action === "ignore",
+  );
+  check(
+    "P2-209: exactly one ms past the debounce window is a new event again",
+    plan({ msSinceLastHandled: WAKE_DEBOUNCE_MS, gaveUp: true }).action === "reset-and-respawn",
+  );
+  // rule 2 — event types outside the documented vocabulary
+  check(
+    "P2-209: unknown event type → ignore (suspend/lock-screen/empty)",
+    plan({ eventType: "lock-screen" }).action === "ignore" &&
+      plan({ eventType: "suspend" }).action === "ignore" &&
+      plan({ eventType: "" }).action === "ignore",
+  );
+  check(
+    "P2-209: unknown event type loses even against an exhausted budget",
+    plan({ eventType: "on-battery", gaveUp: true }).action === "ignore",
+  );
+  // rule 3 — a daemon healthy at the last tick only needs confirmation
+  check(
+    "P2-209: daemon healthy at last tick → probe-now (confirmation only)",
+    plan({ daemonHealthy: true }).action === "probe-now",
+  );
+  check(
+    "P2-209: healthy beats an exhausted budget (rule order)",
+    plan({ daemonHealthy: true, gaveUp: true, failures: 4, msUntilNextRespawn: 120_000 }).action === "probe-now",
+  );
+  // rule 4 — exhausted respawn budget
+  check(
+    "P2-209: exhausted budget → reset-and-respawn",
+    plan({ gaveUp: true, failures: 4 }).action === "reset-and-respawn",
+  );
+  // rule 5 — respawn scheduled farther away than the documented ceiling
+  check(
+    "P2-209: long wait until the next respawn → reset-and-respawn (anticipate)",
+    plan({ failures: 1, msUntilNextRespawn: RESPAWN_WAIT_CEILING_MS + 1 }).action === "reset-and-respawn",
+  );
+  check(
+    "P2-209: a retry minutes away is anticipated too",
+    plan({ failures: 2, msUntilNextRespawn: 20 * 60_000 }).action === "reset-and-respawn",
+  );
+  // rule 6 — everything else probes now
+  check(
+    "P2-209: short wait until the next respawn → probe-now (backoff covers it)",
+    plan({ failures: 1, msUntilNextRespawn: RESPAWN_WAIT_CEILING_MS - 1 }).action === "probe-now",
+  );
+  check(
+    "P2-209: exactly at the ceiling is still a probe-now (only beyond is anticipated)",
+    plan({ failures: 1, msUntilNextRespawn: RESPAWN_WAIT_CEILING_MS }).action === "probe-now",
+  );
+  check(
+    "P2-209: default case (unhealthy daemon, nothing pending) → probe-now",
+    plan({}).action === "probe-now",
+  );
+  check(
+    "P2-209: unlock-screen is part of the vocabulary and reaches the plan",
+    plan({ eventType: "unlock-screen", daemonHealthy: true }).action === "probe-now",
+  );
+  check(
+    "P2-209: isWakeEventType narrows exactly the documented vocabulary",
+    WAKE_EVENT_TYPES.length === 2 &&
+      isWakeEventType("resume") &&
+      isWakeEventType("unlock-screen") &&
+      !isWakeEventType("lock-screen") &&
+      !isWakeEventType(""),
+  );
+
+  // every generated reason: non-empty, no file path, no URL scheme, no secrets
+  const verdicts = [
+    plan({ msSinceLastHandled: WAKE_DEBOUNCE_MS - 1, gaveUp: true }),
+    plan({ eventType: "lock-screen" }),
+    plan({ daemonHealthy: true }),
+    plan({ gaveUp: true }),
+    plan({ msUntilNextRespawn: RESPAWN_WAIT_CEILING_MS + 1, failures: 1 }),
+    plan({ msUntilNextRespawn: 1_000, failures: 1 }),
+    plan({}),
+  ];
+  check(
+    "P2-209: every reason is non-empty, path-free and scheme-free",
+    verdicts.every(
+      (v) =>
+        v.reason.length > 0 &&
+        !v.reason.includes("/") &&
+        !v.reason.includes("\\") &&
+        !v.reason.includes("http:") &&
+        !v.reason.includes("https:") &&
+        !v.reason.includes("file:") &&
+        !v.reason.includes(":~"),
+    ),
+  );
+
+  // real-source assertions over the REAL main.ts
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  check(
+    "P2-209: the real main.ts registers the OS wake events through wakePlan",
+    mainSrc.includes("powerMonitor.on(") &&
+      mainSrc.includes("WAKE_EVENT_TYPES") &&
+      /wakePlan\(\{[\s\S]*?gaveUp: isDaemonDown\(\)/.test(mainSrc),
+  );
+  check(
+    "P2-209: the registration is availability-guarded so signal-less platforms keep today's behavior",
+    /typeof powerMonitor\?\.on !== "function"/.test(mainSrc),
+  );
+  const wakeAt = mainSrc.indexOf("// --- wake-from-sleep reaction");
+  const wakeBlock = wakeAt >= 0 ? mainSrc.slice(wakeAt, mainSrc.indexOf("function appIcon", wakeAt)) : "";
+  check(
+    "P2-209: the wake block found in the real main.ts",
+    wakeBlock.includes("function handleWakeEvent") && wakeBlock.includes("function registerWakeReaction"),
+  );
+  check(
+    "P2-209: the wake reaction introduces no new periodic interval and no timer",
+    !wakeBlock.includes("setInterval") && !wakeBlock.includes("setTimeout"),
+  );
+  check(
+    "P2-209: the wake reaction only reuses existing paths (pairing probe + restart)",
+    wakeBlock.includes("void refreshPairingState()") &&
+      wakeBlock.includes("restartDaemon()") &&
+      !wakeBlock.includes("fetch(") &&
+      !wakeBlock.includes("healthOnce"),
+  );
+  const ignoreAt = mainSrc.indexOf('plan.action === "ignore"');
+  const ignoreEnd = ignoreAt >= 0 ? mainSrc.indexOf("return;", ignoreAt) + "return;".length : -1;
+  const ignoreBranch = ignoreAt >= 0 && ignoreEnd > ignoreAt ? mainSrc.slice(ignoreAt, ignoreEnd) : "";
+  check(
+    "P2-209: events dropped by the debounce write no log line",
+    ignoreBranch.length > 0 && !ignoreBranch.includes("log(") && !ignoreBranch.includes("logError("),
+  );
+
+  // additive diagnostic in the REAL daemon.ts (backoff untouched)
+  const daemonSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "daemon.ts"), "utf8");
+  check(
+    "P2-209: daemon.ts exports the additive ms-until-next-respawn diagnostic",
+    daemonSrc.includes("export function nextRespawnInMs"),
+  );
+  check(
+    "P2-209: the respawn schedule and attempt ceiling are untouched",
+    daemonSrc.includes('?? "5000,15000,45000"') && daemonSrc.includes("RESPAWN_MAX_ATTEMPTS = 3"),
   );
 }
 

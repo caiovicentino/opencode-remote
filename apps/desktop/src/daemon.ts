@@ -183,6 +183,9 @@ const sidecar: SidecarState = {
 
 /** Pending respawn backoff timer, if any. */
 let respawnTimer: NodeJS.Timeout | null = null;
+/** P2-209: wall-clock deadline of the pending respawn timer (0 when none) —
+ * bookkeeping only; the backoff schedule itself is untouched. */
+let nextRespawnDeadline = 0;
 
 // --- adopted-daemon reconnect watchdog (P1-053) -------------------------------
 // When the shell reuses an external daemon (launchd/CLI on :8792) there is no
@@ -651,8 +654,10 @@ function scheduleRespawn(): void {
     `[desktop] daemon sidecar respawn in ${Math.round(delay / 1000)}s (attempt ${sidecar.failures}/${RESPAWN_MAX_ATTEMPTS})`,
   );
   if (respawnTimer) clearTimeout(respawnTimer);
+  nextRespawnDeadline = Date.now() + delay;
   respawnTimer = setTimeout(() => {
     respawnTimer = null;
+    nextRespawnDeadline = 0;
     void respawn();
   }, delay);
 }
@@ -696,6 +701,18 @@ export function isDaemonDown(): boolean {
 /** Diagnostic view into the respawn bookkeeping (eval battery asserts on it). */
 export function respawnState(): { failures: number; gaveUp: boolean } {
   return { failures: sidecar.failures, gaveUp: sidecar.gaveUp };
+}
+
+/**
+ * P2-209: additive diagnostic — how far the pending respawn timer still is
+ * (ms; null when nothing is scheduled). Read by the wake reaction to decide
+ * whether the backoff's own retry is soon enough after the machine returns
+ * from sleep. Pure bookkeeping read: it never mutates the backoff, the
+ * attempt ceiling or any spawn rule.
+ */
+export function nextRespawnInMs(): number | null {
+  if (respawnTimer === null || nextRespawnDeadline <= 0) return null;
+  return Math.max(0, nextRespawnDeadline - Date.now());
 }
 
 /** P2-140: why the sidecar died last (classifier verdict), or null while no
@@ -778,8 +795,8 @@ export async function stopDaemonSidecar(): Promise<void> {
     clearTimeout(respawnTimer);
     respawnTimer = null;
   }
-  stopReconnectWatchdog();
-  sidecar.failures = 0;
+  nextRespawnDeadline = 0;
+  stopReconnectWatchdog();  sidecar.failures = 0;
   sidecar.gaveUp = false;
   sidecar.exit = null; // an intentional stop is not a crash to explain
   const child = sidecar.child;
@@ -828,6 +845,7 @@ export async function restartDaemon(): Promise<boolean> {
       clearTimeout(respawnTimer);
       respawnTimer = null;
     }
+    nextRespawnDeadline = 0;
     // Fresh crash budget: the user explicitly asked for another recovery round.
     sidecar.failures = 0;
     sidecar.gaveUp = false;

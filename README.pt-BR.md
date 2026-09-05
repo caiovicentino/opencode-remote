@@ -786,6 +786,20 @@ hosted) e ganhou um botão **Reconectar agora** que dispara o mesmo restart do
 tray — um `kickstart` no daemon a cada deploy não deixa mais o app preso na
 tela de pareamento.
 
+**Reação ao voltar da suspensão**: quando a máquina volta do sleep e quando a
+sessão é desbloqueada (eventos de `powerMonitor` no macOS/Windows), o shell
+reage em vez de esperar um backoff que já pode ter se esgotado: se o daemon
+respondeu saudável no último tick, uma sonda imediata confirma a saúde; se o
+orçamento de respawn se esgotou — ou se o retry agendado está a mais de 30s de
+distância — o daemon é reiniciado na hora (o mesmo reinício do item do tray);
+nos demais casos, só confere a saúde. Cada evento é tratado no máximo uma vez
+por janela de 10s — repetições dentro da janela são descartadas em silêncio, a
+volta da suspensão nunca vira enxurrada de log — e cada evento tratado escreve
+exatamente uma linha `[desktop] wake event (…)` com a ação e o motivo.
+Plataformas sem o sinal do sistema seguem como antes, nenhuma sonda periódica
+nova é criada e o pareamento nunca é alterado por um wake: sem re-pareamento,
+sem escrita em allowlist ou no arquivo de estado.
+
 **Zero pairing na máquina host**: o shell do desktop trata o daemon da mesma
 máquina como um único domínio de confiança (loopback, mesmo usuário,
 `daemon.json` 0600). Se esse daemon prova saúde no boot — desafio 401
