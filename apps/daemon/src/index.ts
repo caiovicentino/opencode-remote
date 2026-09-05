@@ -53,7 +53,8 @@ import {
   validateTakeoverDirectory,
   validateTakeoverSessionId,
 } from "./pilotforensic.js";
-import { detectWhisper, transcribeAudio, type WhisperTool } from "./whisper.js";
+import { detectWhisperDetail, transcribeAudio, type WhisperTool } from "./whisper.js";
+import { sttVerdict } from "./voicecap.js";
 import { cachedSpeech, detectEdgeTts, prewarmSpeech, putSpeech, resolveVoice, synthesizeSpeech, TTS_VOICES } from "./edgetts.js";
 import { spokenNumbers, SPEECH_LANGS } from "./spoken.js";
 import { metrics, startMetricsServer, VERSION } from "./metrics.js";
@@ -264,6 +265,22 @@ let appSettings: AppSettings;
 
 // local whisper transcription (optional; scripts/setup-whisper.sh installs it)
 let whisperTool: WhisperTool | null = null;
+// P2-201: raw detection facts kept beside the usable tool — a host with the
+// whisper binary but no model still has a toolType, and the capability status
+// must say "model missing" instead of pretending nothing exists.
+let sttToolType: string | null = null;
+let sttModelPresent = false;
+
+/**
+ * P2-201: speech-to-text capability verdict for the status route and the 501
+ * body. OCR_STT_BLOCK=1 is a documented test hatch (same spirit as the
+ * desktop camera block): it forces a missing-binary verdict so the disabled
+ * mic UI can be evidenced deterministically on hosts that DO have whisper.
+ */
+function sttStatus(): { available: boolean; state: string; message: string } {
+  const verdict = process.env.OCR_STT_BLOCK === "1" ? sttVerdict(null, false) : sttVerdict(sttToolType, sttModelPresent);
+  return { available: verdict.state === "ready", state: verdict.state, message: verdict.message };
+}
 // local TTS replies (optional; edge-tts CLI) — P2-125 voice mode
 let edgeTtsBin: string | null = null;
 const TTS_PT_VOICE = process.env.OCR_TTS_VOICE;
@@ -818,12 +835,13 @@ end tell`;
     const { id } = req.body as { id?: string };
     const entry = id ? uploadChunks.get(id) : undefined;
     uploadChunks.delete(id ?? "");
-    if (!entry || !whisperTool) {
-      return {
-        id: req.id,
-        status: 501,
-        body: { error: "transcription unavailable; run scripts/setup-whisper.sh on the host" },
-      };
+    if (!entry) {
+      return { id: req.id, status: 501, body: { error: "transcription upload not found" } };
+    }
+    if (!whisperTool) {
+      // P2-201: the actionable capability phrase (pt-BR, no script paths) from
+      // the same verdict the status route serves — never the raw English hint.
+      return { id: req.id, status: 501, body: { error: sttStatus().message } };
     }
     try {
       const parts = entry.parts.filter(Boolean);
@@ -843,6 +861,12 @@ end tell`;
   // text stays in the chat.
   if (req.path === "/__ocr/voice/tts-status" && req.method === "GET") {
     return { id: req.id, status: 200, body: { available: !!edgeTtsBin, voice: resolveVoice("pt-BR", TTS_PT_VOICE).voice, voices: TTS_VOICES, langs: SPEECH_LANGS } };
+  }
+  // P2-201: speech-to-text capability status, mirroring the tts-status shape
+  // (available boolean + verdict state and actionable pt-BR message). Same
+  // auth, same tunnel — no new network surface.
+  if (req.path === "/__ocr/voice/stt-status" && req.method === "GET") {
+    return { id: req.id, status: 200, body: sttStatus() };
   }
   if (req.path === "/__ocr/voice/tts" && req.method === "POST") {
     const { text, lang } = req.body as { text?: string; lang?: string };
@@ -3005,9 +3029,12 @@ async function main() {
   appSettings = readSettings();
   machineName = appSettings.name || MACHINE_NAME;
 
-  whisperTool = await detectWhisper();
+  const whisperDetected = await detectWhisperDetail();
+  whisperTool = whisperDetected.tool;
+  sttToolType = whisperDetected.toolType;
+  sttModelPresent = whisperDetected.modelPresent;
   if (whisperTool) log("info", "voice transcription available", { kind: whisperTool.kind });
-  else log("info", "voice transcription unavailable (optional feature)");
+  else log("info", "voice transcription unavailable (optional feature)", { state: sttStatus().state });
 
   edgeTtsBin = detectEdgeTts();
   if (edgeTtsBin) log("info", "voice replies available", { voice: resolveVoice("pt-BR", TTS_PT_VOICE).voice, voices: TTS_VOICES });

@@ -62,7 +62,15 @@ remoto, zero confiança**.
 - **Recap fixado** — uma linha embaixo do composer mostra onde a conversa
   parou: a primeira sentença da última resposta do agente (ou o summary da
   sessão, quando existir)
-- **Voz** — segure e fale, transcrição local com whisper, sem nuvem
+- **Voz** — segure e fale, transcrição local com whisper, sem nuvem. A
+  transcrição é um recurso **opcional** do host: quando a máquina não tem o
+  motor whisper (ou falta o arquivo de modelo), o botão de microfone nasce
+  desabilitado com uma frase curta e acionável do daemon em vez de gravar para
+  falhar depois — e o daemon expõe o mesmo veredito em
+  `GET /__ocr/voice/stt-status` (`{ available, state, message }`, espelhando a
+  rota de tts-status). Instale no host com `./scripts/setup-whisper.sh`.
+  `OCR_STT_BLOCK=1` no daemon é um hatch de teste que força o veredito
+  missing-binary para evidência visual determinística
 - **Arquivos** — envie do celular, dê preview de tudo, exporte a conversa
   em markdown; todo card de arquivo tem um botão ⧉ que copia o caminho
   completo do arquivo (Clipboard API com fallback execCommand)
