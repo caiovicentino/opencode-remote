@@ -269,6 +269,51 @@ start`) and the process exits `1` before any listener opens. Absent or blank
 keeps the defaults. The `relay listening` line carries the resolved values as
 an additive `webBudget` field when the web root is enabled.
 
+### The static route compresses with gzip (P2-198)
+
+A phone opening the app over the relay's own URL used to download every asset
+uncompressed: the raw bytes a vite build reports are several times the gzip
+size, on first load and on every cache miss, through the same process that
+routes everyone's sealed E2E frames. The static route now negotiates content
+encoding — decided by the pure `webencoding.ts` module, no new dependency —
+and answers `content-encoding: gzip` whenever the client's `accept-encoding`
+header allows it:
+
+- **Only text-like assets are compressible**: html, js, css, map, json, svg,
+  txt and webmanifest. `png`, `jpg`, `webp`, `ico` and `woff2` are already
+  compressed formats and are **never** compressed, whatever the header says;
+  anything outside the static allowlist is never served anyway.
+- **Two documented size thresholds bound the decision.** Bodies below
+  **1024 bytes** gain nothing from gzip (the gzip framing overhead can exceed
+  the savings) and stay `identity`; bodies above **8 MiB** are refused
+  compression for a single request, so no request ever pins a large
+  input+output buffer pair. In between, the header decides.
+- **The header is parsed leniently but strictly on quality.** `gzip` and
+  `GZIP` are the same, whitespace is ignored, the `*` wildcard counts as
+  accepting gzip, an explicit `gzip` element beats the wildcard, and
+  `gzip;q=0` — or any malformed header (a q value that is not a number or
+  outside 0..1) — means `identity`.
+- **Both variants carry `vary: accept-encoding`** — gzip and identity alike
+  — so a shared intermediate cache never mixes the two variants of a
+  compressible asset. A resource that can never vary (already-compressed
+  format, size out of range) carries no vary at all.
+- **Compressed bytes are memoized in memory**, keyed by absolute path +
+  size + mtime (a redeployed file never answers with a previous build's
+  bytes), capped at **64 entries / 32 MiB total**; the entry inserted longest
+  ago is discarded when either cap is reached. The same bundle is therefore
+  compressed at most once per process, and a burst inside the request budget
+  above never becomes a CPU amplifier.
+- **The 404, 405 and `/healthz` answers are byte-for-byte what they were**:
+  no compression, no vary, no changed behavior for a load balancer reading
+  the probe. The identity variant of a 200 document streams through the same
+  sender as before, plus the vary header.
+
+The relay stays a blind router: this path only ever touches public static
+assets from the allowlisted web root — no sealed frame, key material or
+plaintext flows through it. The WebSocket path gains no compression on
+purpose: sealed frames are incompressible, and per-message deflate would only
+add CPU and memory per peer.
+
 ## Behind a proxy: `x-forwarded-for` and the per-IP cap
 
 `x-forwarded-for` is forgeable by any client, so the relay ignores it by
