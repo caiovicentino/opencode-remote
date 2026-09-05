@@ -57,7 +57,7 @@ const SPCTL_REJECTED = /:\s*rejected\b/i;
 const STAPLER_WORKED = /validate action worked/i;
 /** stapler validate failure phrasing (no ticket, invalid staple, refused). */
 const STAPLER_FAILED =
-  /validate action failed|doesn't verify|does not verify|ticket not found|invalid staple|not stapled|refused|failed|error/i;
+  /validate action failed|does not have a ticket stapled|doesn't verify|does not verify|ticket not found|invalid staple|not stapled|refused|failed|error/i;
 
 /** First line of a tool output, for quoting evidence inside a problem. */
 function evidence(output: string): string {

@@ -133,6 +133,7 @@ jobs:
         shell: bash
         run: |
           APP="$(find apps/desktop/dist -maxdepth 3 -type d -name '*.app' | head -1)"
+          [ -n "$APP" ] || { echo "gatekeeper-verify: no .app found under apps/desktop/dist — nothing to verify"; exit 1; }
           codesign --verify --deep --strict --verbose=2 "$APP" > codesign.txt 2>&1 || true
           spctl -a -vv -t exec "$APP" > spctl.txt 2>&1 || true
           xcrun stapler validate "$APP" > stapler.txt 2>&1 || true

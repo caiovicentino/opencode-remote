@@ -9854,6 +9854,18 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     JSON.stringify(unstapled),
   );
 
+  // stapler's real unstapled wording (captured: `xcrun stapler validate` on a
+  // real app prints "<path> does not have a ticket stapled to it.", exit 65)
+  const noTicket = gatekeeperProblems({
+    ...healthy,
+    stapler: "apps/desktop/dist/mac-arm64/OpenCode Remote.app does not have a ticket stapled to it.\n",
+  });
+  check(
+    "P2-170: stapler's real 'does not have a ticket stapled to it.' while notarization was requested → problem",
+    noTicket.some((p) => p.includes("stapler") && p.includes("ticket")),
+    JSON.stringify(noTicket),
+  );
+
   // Broken signature
   const invalid = gatekeeperProblems({
     ...healthy,
@@ -9884,13 +9896,14 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 
   // The documented no-secrets path: ad-hoc build, no notarization. spctl
-  // rejecting and a missing staple are EXPECTED there (right-click → Open).
+  // rejecting (bare verdict, no reason in parens) and stapler's real
+  // unstapled wording are EXPECTED there (right-click → Open).
   const adhoc = gatekeeperProblems({
     mode: "adhoc",
     notarizeRequested: false,
     codesign: healthy.codesign,
-    spctl: "apps/desktop/dist/mac-arm64/OpenCode Remote.app: rejected (the code is valid but does not seem to be an applet)\n",
-    stapler: "The validate action failed for apps/desktop/dist/mac-arm64/OpenCode Remote.app (Ticket Not Found)\n",
+    spctl: "apps/desktop/dist/mac-arm64/OpenCode Remote.app: rejected\n",
+    stapler: "apps/desktop/dist/mac-arm64/OpenCode Remote.app does not have a ticket stapled to it.\n",
   });
   check(
     "P2-170: ad-hoc mode without notarization → no problem at all",
