@@ -477,8 +477,9 @@ crashes do renderer viram arquivos com timestamp em
 `~/.opencode-remote/pilot/client-logs/` (20 mais recentes mantidos). O
 Settings ganha o card **Diagnóstico → Copiar diagnóstico**, que põe no
 clipboard um bundle de suporte — versões app/electron, plataforma, estado do
-daemon, últimas linhas do desktop.log e nomes dos arquivos de crash. Sem
-segredos: apiToken, allowlist e URI de pareamento nunca são incluídos.
+daemon, últimas linhas do desktop.log e do daemon-sidecar.log (20, P2-163) e
+nomes dos arquivos de crash. Sem segredos: apiToken, allowlist e URI de
+pareamento nunca são incluídos (o log do sidecar já é redigido em disco).
 
 O shell desktop sobe o daemon como **sidecar**: ao abrir, ele faz spawn do
 daemon — em apps empacotados, um bundle CJS single-file embarcado em

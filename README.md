@@ -611,8 +611,9 @@ renderer crashes land as timestamped files under
 `~/.opencode-remote/pilot/client-logs/` (newest 20 kept). Settings gains a
 **Diagnostics → Copy diagnostic** card that puts a support bundle on the
 clipboard — app/electron versions, platform, daemon state, the last desktop.log
-lines and the crash-file names. No secrets: the apiToken, allowlist and
-pairing URI are never included.
+and daemon-sidecar.log lines (20, P2-163) and the crash-file names. No
+secrets: the apiToken, allowlist and pairing URI are never included (the
+sidecar log is already redacted on disk).
 
 **One shell per userData (P2-069)**: launching the app while an instance is
 already running simply focuses the existing window — a second copy never
