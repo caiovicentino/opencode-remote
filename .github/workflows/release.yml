@@ -245,6 +245,24 @@ jobs:
           npx --yes tsx@4.23.12 scripts/authenticode-verify.ts \
             "${{ steps.win-signing.outputs.mode }}" authenticode.txt
 
+      # P2-208: dist-smoke only INSPECTS the package and Authenticode only
+      # reads the signature — a regression that only shows up at runtime (asar
+      # missing an asset the renderer asks for, main throwing at boot, the
+      # process dying in the first second) used to sail past this job and
+      # surface on the stage-5 user's machine through the installer. Boot the
+      # real packaged exe hermetically (temp userData, no sidecar, hidden
+      # window) and fail BEFORE the upload below — same shape as the P2-204
+      # mac boot smoke. Playwright missing fails closed (exit 1). shell: bash
+      # (P2-126/P2-164 lessons): pwsh does not expand globs.
+      - name: Smoke-boot the packaged app
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          DIR="$(find apps/desktop/dist -maxdepth 2 -type d -name 'win-unpacked' | head -1)"
+          [ -n "$DIR" ] || { echo "packaged-boot: no win-unpacked dir under apps/desktop/dist — nothing to boot"; exit 1; }
+          echo "packaged-boot: booting $DIR"
+          node apps/desktop/scripts/packaged-boot.mjs "$DIR"
+
       - name: Attach setup exe + update metadata to the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

@@ -17,17 +17,19 @@
  * closes the app and exits 0/1 by bootVerdict(). Playwright missing fails
  * closed (exit 1) — the step must never pass because the driver could not run.
  *
- * macOS .app bundles only by design; the NSIS layout (desktop-win) is an
- * explicit follow-up.
+ * macOS .app bundles and Windows unpacked dirs (win-unpacked, NSIS) both work:
+ * the per-platform executable candidates come from packaged-boot-layout.mjs
+ * (pure) and resolveExecutable() below stays the only disk-touching point.
  *
- * Usage: node scripts/packaged-boot.mjs <path to .app bundle>
+ * Usage: node scripts/packaged-boot.mjs <path to .app bundle | win-unpacked dir>
  */
 import { existsSync, mkdtempSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { bootVerdict, CANARY } from "./packaged-boot-verdict.mjs";
+import { candidatePaths } from "./packaged-boot-layout.mjs";
 
 const BOOT_TIMEOUT_MS = 120_000;
 const LOAD_TIMEOUT_MS = 45_000;
@@ -46,23 +48,28 @@ function isFile(path) {
 }
 
 /**
- * Resolve the runnable binary inside <bundle>/Contents/MacOS: the entry named
- * after the bundle (electron-builder's default) or any executable file there.
- * Returns an absolute path or null (→ binary-missing).
+ * Resolve the runnable binary inside the package, disk access confined to this
+ * function (P2-208): the ordered candidates from packaged-boot-layout.mjs
+ * first — <bundle>/Contents/MacOS/<bundle name> on macOS, the .exe passthrough
+ * or same-name executable on Windows — then the pre-existing fallback of
+ * picking any executable file from the package directory (Contents/MacOS on
+ * macOS, the unpacked dir itself on Windows). Returns an absolute path or null
+ * (→ binary-missing).
  */
 export function resolveExecutable(appPath) {
-  const macos = join(appPath, "Contents", "MacOS");
-  if (!isFile(macos) && !existsSync(macos)) return null;
+  for (const candidate of candidatePaths(appPath, process.platform)) {
+    if (isFile(candidate)) return candidate;
+  }
+  const scanDir = process.platform === "win32" ? appPath : join(appPath, "Contents", "MacOS");
+  if (!isFile(scanDir) && !existsSync(scanDir)) return null;
   let entries;
   try {
-    entries = readdirSync(macos).sort();
+    entries = readdirSync(scanDir).sort();
   } catch {
     return null;
   }
-  const expected = basename(appPath).replace(/\.app$/i, "");
-  if (entries.includes(expected) && isFile(join(macos, expected))) return join(macos, expected);
   for (const name of entries) {
-    const path = join(macos, name);
+    const path = join(scanDir, name);
     if (isFile(path) && statSync(path).mode & 0o111) return path;
   }
   return null;
@@ -138,7 +145,7 @@ async function closeApp(electronApp) {
 async function main() {
   const raw = process.argv[2];
   if (!raw) {
-    console.error("packaged-boot: usage — node scripts/packaged-boot.mjs <path to .app bundle>");
+    console.error("packaged-boot: usage — node scripts/packaged-boot.mjs <path to .app bundle | win-unpacked dir>");
     process.exitCode = 1;
     return;
   }

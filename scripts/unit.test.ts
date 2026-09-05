@@ -524,6 +524,7 @@ import {
 import { findWindowsInstaller, listProblems, smokeFlags, windowsInstallerProblems } from "../apps/desktop/scripts/dist-smoke.mjs";
 
 import { bootVerdict } from "../apps/desktop/scripts/packaged-boot-verdict.mjs";
+import { candidatePaths } from "../apps/desktop/scripts/packaged-boot-layout.mjs";
 
 import {
   AUDIO_ENTITLEMENT,
@@ -13643,8 +13644,109 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     stepSlice.includes("find apps/desktop/dist") && stepSlice.includes("node apps/desktop/scripts/packaged-boot.mjs"),
   );
   check(
-    "P2-204: desktop-win does not get the boot smoke (explicit out of scope)",
-    !win.includes("packaged-boot"),
+    "P2-208: desktop-win gets the boot smoke too (explicit out of scope only until P2-204)",
+    win.includes("Smoke-boot the packaged app"),
+  );
+}
+
+// --- P2-208: packaged boot layout — candidatePaths + desktop-win wiring -------
+
+{
+  const src = (rel: string[]) => readFileSync(join(import.meta.dirname, "..", ...rel), "utf8");
+  const layoutSrc = src(["apps", "desktop", "scripts", "packaged-boot-layout.mjs"]);
+  const bootSrc = src(["apps", "desktop", "scripts", "packaged-boot.mjs"]);
+
+  // full candidatePaths table
+  check(
+    "P2-208: classic macOS .app bundle → Contents/MacOS/<bundle name without .app>",
+    JSON.stringify(candidatePaths("/tmp/dist/mac-arm64/OpenCode Remote.app", "darwin")) ===
+      JSON.stringify(["/tmp/dist/mac-arm64/OpenCode Remote.app/Contents/MacOS/OpenCode Remote"]),
+  );
+  check(
+    "P2-208: macOS bundle name keeps spaces and strips the .app suffix case-insensitively",
+    JSON.stringify(candidatePaths("/dist/My App.APP", "darwin")) ===
+      JSON.stringify(["/dist/My App.APP/Contents/MacOS/My App"]),
+  );
+  check(
+    "P2-208: Windows path that already points at the executable passes through unchanged",
+    JSON.stringify(candidatePaths("C:\\dist\\win-unpacked\\OpenCode Remote.exe", "win32")) ===
+      JSON.stringify(["C:\\dist\\win-unpacked\\OpenCode Remote.exe"]),
+  );
+  check(
+    "P2-208: Windows packaging output dir → same-name executable inside it",
+    JSON.stringify(candidatePaths("C:\\dist\\win-unpacked", "win32")) ===
+      JSON.stringify(["C:\\dist\\win-unpacked\\win-unpacked.exe"]),
+  );
+  check(
+    "P2-208: Windows dir input keeps the caller's separator style (forward-slash paths stay forward-slash)",
+    JSON.stringify(candidatePaths("/tmp/dist/win-unpacked", "win32")) ===
+      JSON.stringify(["/tmp/dist/win-unpacked/win-unpacked.exe"]),
+  );
+  check(
+    "P2-208: unknown platform → empty candidate list",
+    candidatePaths("/dist/OpenCode Remote.app", "linux").length === 0 &&
+      candidatePaths("/dist/OpenCode Remote.app", "").length === 0 &&
+      candidatePaths("/dist/OpenCode Remote.app", undefined as unknown as string).length === 0,
+  );
+  check(
+    "P2-208: traversal stems are refused — no candidate ever climbs out of the received root",
+    candidatePaths("/dist/..", "win32").length === 0 &&
+      candidatePaths("/dist/.", "win32").length === 0 &&
+      candidatePaths("/dist/.app", "darwin").length === 0 &&
+      candidatePaths("/dist/..app", "darwin").length === 0 &&
+      candidatePaths("  ", "win32").length === 0,
+  );
+  {
+    const table: Array<[string, string]> = [
+      ["/tmp/dist/mac-arm64/OpenCode Remote.app", "darwin"],
+      ["C:\\dist\\win-unpacked\\OpenCode Remote.exe", "win32"],
+      ["C:\\dist\\win-unpacked", "win32"],
+      ["win-unpacked", "win32"],
+    ];
+    check(
+      "P2-208: every candidate descends from the received path — never a parent traversal",
+      table.every(([p, plat]) =>
+        candidatePaths(p, plat).every(
+          (c) => c === p || (c.startsWith(p) && !/(^|[/\\])\.\.([/\\]|$)/.test(c.slice(p.length)))),
+      ),
+    );
+  }
+
+  // the layout module stays pure (P2-194/P2-204 lesson): importing it must
+  // never boot I/O, and the driver consumes it with the disk fallback intact
+  check(
+    "P2-208: packaged-boot-layout.mjs is pure (no node: fs/os/path/net/http imports)",
+    !/node:(fs|os|path|net|http)/.test(layoutSrc.replace(/\/\/.*$/gm, "")),
+  );
+  check(
+    "P2-208: resolveExecutable consumes candidatePaths and keeps the executable-file fallback as the only disk point",
+    bootSrc.includes("candidatePaths(appPath, process.platform)") &&
+      bootSrc.includes('join(appPath, "Contents", "MacOS")') &&
+      bootSrc.includes("readdirSync(scanDir)"),
+  );
+
+  // real-repo assertion: release.yml boots the bundle in desktop-win, after
+  // packaging + signature verification and before the artifact upload
+  const release = src([".github", "workflows", "release.yml"]);
+  const winStart = release.indexOf("\n  desktop-win:");
+  const winEnd = release.indexOf("\n  release-verify:");
+  const win = winStart > -1 && winEnd > winStart ? release.slice(winStart, winEnd) : "";
+  const pkgAt = win.indexOf("Build + package NSIS installer");
+  const signAt = win.indexOf("Authenticode verification of the packaged installer");
+  const bootAt = win.indexOf("Smoke-boot the packaged app");
+  const uploadAt = win.indexOf("Attach setup exe + update metadata");
+  const stepSlice = bootAt > -1 ? win.slice(bootAt, win.indexOf("\n      - name:", bootAt)) : "";
+  check(
+    "P2-208: release.yml desktop-win runs the boot smoke after packaging + signature verification, before upload",
+    pkgAt > -1 && signAt > pkgAt && bootAt > signAt && uploadAt > bootAt,
+  );
+  check(
+    "P2-208: the desktop-win boot smoke declares shell: bash and its own timeout (P2-126/P2-164 lessons)",
+    stepSlice.includes("shell: bash") && /timeout-minutes:/.test(stepSlice),
+  );
+  check(
+    "P2-208: the desktop-win boot smoke resolves the win-unpacked dir and runs packaged-boot.mjs",
+    stepSlice.includes("win-unpacked") && stepSlice.includes("node apps/desktop/scripts/packaged-boot.mjs"),
   );
 }
 

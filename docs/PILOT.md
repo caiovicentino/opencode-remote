@@ -127,12 +127,17 @@ dentro de `Contents/MacOS` (userData temporário, `OCR_DESKTOP_SESSION`
 próprio da execução, nenhum sidecar — `OCR_DAEMON_ENTRY` inexistente — e
 `OCR_DAEMON_FORCE_DOWN` para o pareamento ficar determinístico), espera o
 load terminar, injeta o canário de console do render smoke e exige `#root`
-com conteúdo antes de fechar o app. O veredito vive numa função pura
-(`bootVerdict`) com motivos `binary-missing`, `load-failed`, `blank-window`,
-`console-capture-broken` e `console-error`; Playwright ausente falha fechado.
-O smoke de boot também fica **fora do gate por design** — é etapa de
-distribuição: roda no workflow de release e localmente contra um pacote já
-construído (README).
+com conteúdo antes de fechar o app. Desde a P2-208 o mesmo smoke cobre os
+**dois** jobs de empacotamento: o desktop-win abre o executável real do
+diretório `win-unpacked` (mesmo contrato hermético) depois do empacotamento
+e da verificação Authenticode, antes de anexar o instalador NSIS — as
+candidatas de layout vêm do módulo puro `packaged-boot-layout.mjs` e
+`resolveExecutable` segue sendo o único ponto do script que toca disco. O
+veredito vive numa função pura (`bootVerdict`) com motivos `binary-missing`,
+`load-failed`, `blank-window`, `console-capture-broken` e `console-error`;
+Playwright ausente falha fechado. O smoke de boot também fica **fora do gate
+por design** — é etapa de distribuição: roda no workflow de release (nos dois
+jobs de empacotamento) e localmente contra um pacote já construído (README).
 
 **Perfil de gate por repo (P2-116).** A bateria acima pressupõe um checkout do
 próprio pilot; apontar o pipeline para um repo externo quebraria o gate (os
