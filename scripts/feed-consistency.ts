@@ -119,19 +119,27 @@ function tagShapeProblems(tag: string): string[] {
  * Squirrel.Mac JSON feed shape check, shared by the legacy alias (no arch
  * expectation) and the P2-212 per-arch feeds (expectedArch set). Appends to
  * `problems` — one entry per defect, never short-circuiting between fields.
+ * `text === null` means the file could not be read (the CLI already reported
+ * the "cannot read" problem — nothing to compare); empty text is itself an
+ * explicit problem, never a silent skip.
  */
 function jsonFeedProblems(
   problems: string[],
   label: string,
-  text: string,
+  text: string | null,
   version: string,
   tag: string,
   published: readonly string[],
   expectedArch: string | null = null,
 ): void {
+  if (text === null) return;
+  if (text.trim().length === 0) {
+    problems.push(`${label}: feed is empty — a missing or unreadable feed is a problem, never a silent skip`);
+    return;
+  }
   let feed: { url?: unknown; name?: unknown } | null = null;
   try {
-    const parsed: unknown = JSON.parse(text ?? "");
+    const parsed: unknown = JSON.parse(text);
     if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
       feed = parsed as { url?: unknown; name?: unknown };
     } else {
@@ -173,12 +181,14 @@ function jsonFeedProblems(
  * published in the release. Empty list means both feeds point at this tag's
  * artifacts. Tag shape problems (empty / non-semver, P2-151: leading v
  * optional) short-circuit — comparing versions against them would only
- * produce noise, exactly like scripts/release-preflight.ts.
+ * produce noise, exactly like scripts/release-preflight.ts. A `null` feed
+ * text means the file could not be read (the CLI reports that itself) and
+ * its checks are skipped; empty text is an explicit problem.
  */
 export function feedProblems(
   tag: string,
-  jsonText: string,
-  ymlText: string,
+  jsonText: string | null,
+  ymlText: string | null,
   published: readonly string[],
 ): string[] {
   const shape = tagShapeProblems(tag);
@@ -192,19 +202,23 @@ export function feedProblems(
   jsonFeedProblems(problems, JSON_LABEL, jsonText, version, tag, published);
 
   // 2. electron-builder Windows feed (latest.yml).
-  const ymlVersion = parseYmlField(ymlText ?? "", "version");
-  if (!ymlVersion) {
-    problems.push(`${YML_LABEL}: has no "version" field`);
-  } else if (ymlVersion !== version) {
-    problems.push(
-      `${YML_LABEL}: version ${ymlVersion} does not match release tag ${tag} (expected ${version})`,
-    );
-  }
-  const ymlPath = parseYmlField(ymlText ?? "", "path");
-  if (!ymlPath) {
-    problems.push(`${YML_LABEL}: has no "path" field`);
-  } else if (!published.includes(ymlPath)) {
-    problems.push(`${YML_LABEL}: "path" points to "${ymlPath}" which is not published in this release`);
+  if (ymlText !== null && ymlText.trim().length === 0) {
+    problems.push(`${YML_LABEL}: feed is empty — a missing or unreadable feed is a problem, never a silent skip`);
+  } else {
+    const ymlVersion = parseYmlField(ymlText ?? "", "version");
+    if (!ymlVersion) {
+      problems.push(`${YML_LABEL}: has no "version" field`);
+    } else if (ymlVersion !== version) {
+      problems.push(
+        `${YML_LABEL}: version ${ymlVersion} does not match release tag ${tag} (expected ${version})`,
+      );
+    }
+    const ymlPath = parseYmlField(ymlText ?? "", "path");
+    if (!ymlPath) {
+      problems.push(`${YML_LABEL}: has no "path" field`);
+    } else if (!published.includes(ymlPath)) {
+      problems.push(`${YML_LABEL}: "path" points to "${ymlPath}" which is not published in this release`);
+    }
   }
 
   return problems;
@@ -220,15 +234,16 @@ export function feedProblems(
  * update that does not run on it. The legacy update-mac.json alias must stay
  * identical to the arm64 document — it exists only for the pre-P2-191
  * installed base, and a drifted alias is a stale feed under an old name.
- * Empty or whitespace-only feed text is itself an explicit problem: a missing
- * or unreadable feed is never silently skipped (fail-closed). Tag shape
- * problems short-circuit exactly like feedProblems.
+ * A `null` feed text means the file could not be read (the CLI reports that
+ * itself) and its checks are skipped; empty or whitespace-only text is an
+ * explicit problem — a missing or unreadable feed is never silently skipped
+ * (fail-closed). Tag shape problems short-circuit exactly like feedProblems.
  */
 export function archFeedProblems(
   tag: string,
-  aliasText: string,
-  arm64Text: string,
-  x64Text: string,
+  aliasText: string | null,
+  arm64Text: string | null,
+  x64Text: string | null,
   published: readonly string[],
 ): string[] {
   const shape = tagShapeProblems(tag);
@@ -236,13 +251,14 @@ export function archFeedProblems(
   const version = bareVersion(tag);
 
   const problems: string[] = [];
-  const empty = (text: string): boolean => !text || text.trim().length === 0;
+  const empty = (text: string | null): boolean => text === null || text.trim().length === 0;
 
-  const perArch: ReadonlyArray<readonly [string, string, string]> = [
+  const perArch: ReadonlyArray<readonly [string, string | null, string]> = [
     [ARM64_LABEL, arm64Text, "arm64"],
     [X64_LABEL, x64Text, "x64"],
   ];
   for (const [label, text, arch] of perArch) {
+    if (text === null) continue; // "cannot read" already reported by the caller
     if (empty(text)) {
       problems.push(`${label}: feed is empty — a missing or unreadable feed is a problem, never a silent skip`);
       continue;
@@ -255,11 +271,11 @@ export function archFeedProblems(
   // trimmed so a trailing newline never fails an otherwise identical alias;
   // skipped when the arm64 document itself is empty — that problem is
   // already reported above and comparing against it would only add noise.
-  if (empty(arm64Text)) {
-    // arm64 problem already reported; alias comparison would be noise.
+  if (aliasText === null) {
+    // "cannot read" already reported by the caller.
   } else if (empty(aliasText)) {
     problems.push(`${JSON_LABEL}: feed is empty — a missing or unreadable feed is a problem, never a silent skip`);
-  } else if (aliasText.trim() !== arm64Text.trim()) {
+  } else if (!empty(arm64Text) && aliasText.trim() !== arm64Text.trim()) {
     problems.push(
       `${JSON_LABEL}: alias content differs from ${ARM64_LABEL} — the legacy alias exists only for the installed base and must stay identical to the arm64 document (P2-191)`,
     );
@@ -299,37 +315,36 @@ function cli(argv: readonly string[]): void {
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
 
-  // Fail-closed: an unreadable feed is itself a problem, and is reported
-  // before any content check — the release cannot be verified without the
-  // files, so comparing whatever else against empty text would only be noise.
-  const readProblems: string[] = [];
-  const read = (path: string): string => {
+  // Fail-closed: an unreadable feed is itself an explicit problem, and the
+  // readable feeds are still content-checked — no short-circuit between
+  // feeds, so the operator sees the whole list in a single run. A `null`
+  // text tells the pure checks to skip that feed (its "cannot read" problem
+  // is already on the list).
+  const problems: string[] = [];
+  const read = (path: string): string | null => {
     try {
       return readFileSync(path, "utf8");
     } catch (err) {
-      readProblems.push(`cannot read ${path} — ${(err as Error).message}`);
-      return "";
+      problems.push(`cannot read ${path} — ${(err as Error).message}`);
+      return null;
     }
   };
-  const jsonText = read(jsonPath);
-  const ymlText = read(ymlPath);
-  const arm64Text = read(arm64Path);
-  const x64Text = read(x64Path);
 
-  // Tag shape problems short-circuit exactly as before (comparing a version
-  // against an invalid tag would only produce noise); unreadable feeds fail
-  // closed before any content check. Everything else — every feed, every
-  // defect — is collected and printed in one pass.
+  // Tag shape problems short-circuit exactly as before — comparing a version
+  // against an invalid tag would only produce noise.
   const shape = tagShapeProblems(tag);
-  const problems =
-    readProblems.length > 0
-      ? readProblems
-      : shape.length > 0
-        ? shape
-        : [
-            ...feedProblems(tag, jsonText, ymlText, published),
-            ...archFeedProblems(tag, jsonText, arm64Text, x64Text, published),
-          ];
+  if (shape.length > 0) {
+    problems.push(...shape);
+  } else {
+    const jsonText = read(jsonPath);
+    const ymlText = read(ymlPath);
+    const arm64Text = read(arm64Path);
+    const x64Text = read(x64Path);
+    problems.push(
+      ...feedProblems(tag, jsonText, ymlText, published),
+      ...archFeedProblems(tag, jsonText, arm64Text, x64Text, published),
+    );
+  }
 
   if (problems.length > 0) {
     console.error(`feed-consistency: FAIL ${tag}`);

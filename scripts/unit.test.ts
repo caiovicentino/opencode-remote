@@ -10035,6 +10035,29 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     stale.code === 1 && stale.out.includes("feed-consistency: FAIL v0.3.0") && stale.out.includes("not published"),
     stale.out,
   );
+  // P2-212: an unreadable feed never hides the other feeds' problems — every
+  // problem prints in a single run (no short-circuit between feeds).
+  let mixed: { code: number; out: string };
+  try {
+    const out = execFileSync(
+      process.execPath,
+      [tsxEntry, script, "v0.3.0", jsonPath, ymlPath, arm64Path, join(dir, "missing.json")],
+      { input: names.replace("OpenCode Remote Setup 0.3.0.exe\n", ""), encoding: "utf8" },
+    );
+    mixed = { code: 0, out };
+  } catch (err) {
+    const e = err as { status?: number; stdout?: Buffer; stderr?: Buffer };
+    mixed = { code: e.status ?? -1, out: `${e.stdout ?? ""}${e.stderr ?? ""}` };
+  }
+  check(
+    "P2-212: unreadable feed and the other feeds' problems all print at once",
+    mixed.code === 1 &&
+      mixed.out.includes("cannot read") &&
+      mixed.out.includes("latest.yml") &&
+      mixed.out.includes("not published") &&
+      !mixed.out.includes("feed is empty"),
+    mixed.out,
+  );
   rmSync(dir, { recursive: true, force: true });
 }
 
@@ -10148,6 +10171,18 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "P2-212: missing (empty) per-arch feed is an explicit problem, never a silent skip",
     missing.length === 1 && missing[0]!.includes("update-mac-arm64.json") && missing[0]!.includes("empty"),
     JSON.stringify(missing),
+  );
+  const emptyYml = feedProblems(TAG, goodArm64, "", published);
+  check(
+    "P2-212: empty latest.yml is an explicit problem, never a silent skip",
+    emptyYml.length === 1 && emptyYml[0]!.includes("latest.yml") && emptyYml[0]!.includes("empty"),
+    JSON.stringify(emptyYml),
+  );
+  const emptyAlias = archFeedProblems(TAG, "", goodArm64, goodX64, published);
+  check(
+    "P2-212: empty alias feed is an explicit problem, never a silent skip",
+    emptyAlias.length === 1 && emptyAlias[0]!.includes("update-mac.json") && emptyAlias[0]!.includes("empty"),
+    JSON.stringify(emptyAlias),
   );
   const aliasDrift = archFeedProblems(TAG, goodX64, goodArm64, goodX64, published);
   check(
