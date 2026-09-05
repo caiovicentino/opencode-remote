@@ -404,11 +404,18 @@ feed de update faltando derruba
 o workflow (todos os faltantes listados de uma vez) em vez de virar um 404
 silencioso no cheque de update do app. O release também só é considerado
 completo quando os feeds apontam para artefatos da mesma tag (P2-157): um job
-`release-feeds` baixa `update-mac.json` e `latest.yml`, confere via
-`scripts/feed-consistency.ts` que o `name`/`url` do Squirrel e o
-`version`/`path` do yml citam a versão da tag e arquivos realmente publicados,
-e derruba o workflow — sem isso um feed defasado sai verde e cada app
-instalado falha o auto-update em silêncio.
+`release-feeds` baixa `update-mac.json`, `latest.yml` e os dois feeds
+por-arquitetura, confere via `scripts/feed-consistency.ts` que o `name`/`url`
+do Squirrel e o `version`/`path` do yml citam a versão da tag e arquivos
+realmente publicados, e derruba o workflow — sem isso um feed defasado sai
+verde e cada app instalado falha o auto-update em silêncio. Desde a P2-212 o
+gate cobre também a arquitetura: `update-mac-arm64.json` precisa apontar para
+um zip publicado com o token `arm64` e `update-mac-x64.json` para um com
+`x64` (um Mac Intel jamais pode receber o zip arm64 — os feeds que máquinas
+reais consultam são exatamente os conferidos), e o apelido `update-mac.json`,
+que só existe para a base pré-P2-191, precisa continuar idêntico ao documento
+arm64. A publicação segue bloqueada enquanto qualquer feed apontar para
+artefato ausente ou da arquitetura errada.
 
 **Releases nascem como rascunho** (P2-179): o `gh release create` roda com
 `--draft`, então nada fica visível para a base instalada enquanto os jobs de

@@ -375,7 +375,12 @@ jobs:
   # an installer that was never uploaded, used to ship green and then break
   # auto-update (P2-146/P2-131) for every installed app with no signal. This
   # job downloads both feeds and checks their contents against the tag and the
-  # published asset names. P2-126 lesson: shell: bash on every run step.
+  # published asset names. P2-212: the per-architecture feeds
+  # (update-mac-arm64.json / update-mac-x64.json) are the ones real machines
+  # consult since P2-191, so they are downloaded and content-checked too —
+  # each must point at a published zip carrying its own architecture, and the
+  # legacy update-mac.json alias must stay identical to the arm64 document.
+  # P2-126 lesson: shell: bash on every run step.
   release-feeds:
     runs-on: ubuntu-latest
     needs: [desktop-dmg, desktop-win]
@@ -390,9 +395,14 @@ jobs:
         shell: bash
         run: |
           mkdir -p feeds
-          gh release download "$GITHUB_REF_NAME" --pattern update-mac.json --pattern latest.yml --dir feeds
+          gh release download "$GITHUB_REF_NAME" \
+            --pattern update-mac.json --pattern latest.yml \
+            --pattern update-mac-arm64.json --pattern update-mac-x64.json \
+            --dir feeds
           gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' \
-            | npx --yes tsx@4.23.12 scripts/feed-consistency.ts "$GITHUB_REF_NAME" feeds/update-mac.json feeds/latest.yml
+            | npx --yes tsx@4.23.12 scripts/feed-consistency.ts "$GITHUB_REF_NAME" \
+                feeds/update-mac.json feeds/latest.yml \
+                feeds/update-mac-arm64.json feeds/update-mac-x64.json
 
   # P2-179: the draft only goes public here, after release-verify AND
   # release-feeds passed. scripts/release-publish.ts reads the draft flag +

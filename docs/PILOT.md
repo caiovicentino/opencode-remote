@@ -138,6 +138,16 @@ veredito vive numa função pura (`bootVerdict`) com motivos `binary-missing`,
 Playwright ausente falha fechado. O smoke de boot também fica **fora do gate
 por design** — é etapa de distribuição: roda no workflow de release (nos dois
 jobs de empacotamento) e localmente contra um pacote já construído (README).
+Na mesma ponta de distribuição, o job `release-feeds` do workflow confere o
+CONTEÚDO dos quatro feeds de update antes da publicação (P2-157, estendido
+pela P2-212): `update-mac-arm64.json` e `update-mac-x64.json` — os dois que
+máquinas reais consultam desde a P2-191 — precisam apontar para um zip
+publicado da própria arquitetura, o apelido `update-mac.json` (que só existe
+para a base já instalada) precisa continuar idêntico ao documento arm64, e o
+`latest.yml` do Windows mantém a checagem de sempre. Qualquer feed apontando
+para artefato ausente da release ou para a arquitetura errada falha o job e
+mantém o release rascunho pelo contrato da P2-179 — falha fechado, com todos
+os problems listados numa única execução.
 
 **Perfil de gate por repo (P2-116).** A bateria acima pressupõe um checkout do
 próprio pilot; apontar o pipeline para um repo externo quebraria o gate (os
