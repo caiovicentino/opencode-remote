@@ -98,6 +98,25 @@ jobs:
       - name: Smoke-check the packaged bundle
         run: npm run dist:smoke --workspace @ocr/desktop
 
+      # P2-204: dist-smoke only INSPECTS the package; a regression that only
+      # shows up at runtime — main throwing at boot, an asar missing an asset
+      # the renderer asks for, an entitlement killing the process — used to
+      # sail past the packaging jobs and surface on the user's Mac. Boot the
+      # real .app hermetically (temp userData, no sidecar, hidden window),
+      # fail BEFORE the upload below — same shape as the P2-196 relay image
+      # smoke. Playwright missing fails closed (exit 1). shell: bash
+      # (P2-126 lesson).
+      - name: Smoke-boot the packaged app
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          ARCH_DIR="$(uname -m | sed 's/x86_64/x64/')"
+          APP="$(find apps/desktop/dist -maxdepth 3 -type d -name '*.app' | grep -F "$ARCH_DIR" | head -1)"
+          [ -n "$APP" ] || APP="$(find apps/desktop/dist -maxdepth 3 -type d -name '*.app' | head -1)"
+          [ -n "$APP" ] || { echo "packaged-boot: no .app under apps/desktop/dist — nothing to boot"; exit 1; }
+          echo "packaged-boot: booting $APP"
+          node apps/desktop/scripts/packaged-boot.mjs "$APP"
+
       # P2-170: a DMG whose notarization ticket never got stapled, whose
       # identity expired, or whose profile silently fell back to ad-hoc used
       # to be published as if signed — users opened it and got "app is
