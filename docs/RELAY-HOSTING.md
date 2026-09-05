@@ -61,16 +61,35 @@ builds this same image (the `caddy` profile adds TLS termination on top).
 | `RELAY_METRICS_PORT` | unset (off) | Leave unset in containers unless a scraper needs it. When set, the endpoint serves counters on `/metrics` (JSON, or Prometheus text with `?format=prom`). |
 | `RELAY_METRICS_BIND` | `127.0.0.1` | Keep the loopback default unless your scraper sits outside the container (k8s sidecars share the network namespace and don't need it). Any non-loopback address **requires** `RELAY_METRICS_TOKEN` — the relay refuses to boot the metrics endpoint on a network-exposed interface without one (fail-closed) and logs the reason instead. |
 | `RELAY_METRICS_TOKEN` | unset (no auth) | Required whenever `RELAY_METRICS_BIND` leaves loopback. Scrapers must send `Authorization: Bearer <token>`; every other request gets an empty `401`. The endpoint exposes envelope counters only — no plaintext, no key material, no room ids. |
-| `RELAY_MAX_PER_IP` | `20` | Keep the default. Raise it only when many devices legitimately share one egress IP (office NAT, corporate VPN). `0` disables the cap. |
-| `RELAY_TRUST_PROXY_HOPS` | `0` | Leave `0` on direct exposure. Set it **only** to the exact number of trusted proxy layers in front of the relay (e.g. `1` for a single provider load balancer doing TLS termination) — see the section below. |
+| `RELAY_MAX_PER_IP` | `20` | Keep the default. Raise it only when many devices legitimately share one egress IP (office NAT, corporate VPN). Ceiling `1000`; a zero, negative, fractional or above-ceiling value refuses the boot (fail-closed) instead of disabling the cap. |
+| `RELAY_TRUST_PROXY_HOPS` | `0` | Leave `0` on direct exposure. Set it **only** to the exact number of trusted proxy layers in front of the relay (e.g. `1` for a single provider load balancer doing TLS termination) — see the section below. Ceiling `8`; a non-numeric, negative, fractional or above-ceiling value refuses the boot (fail-closed). |
 | `RELAY_DRAIN_GRACE_MS` | `0` | Extra window between the moment a `SIGTERM` marks the instance as draining (`/healthz` flips to `503`) and the moment the live sockets are closed. Default `0` keeps the historical behavior; raise it (max `2000`) when your load balancer polls `/healthz` too rarely to notice the 503 before `docker stop` proceeds. See the sections below. |
 | `RELAY_TLS_CERT` | unset | Leave unset for provider TLS in front (the default layout). Set **only together with `RELAY_TLS_KEY`** — the two form a mandatory pair — when the relay terminates TLS itself; both files must be readable by the `node` user and the relay serves `wss://` directly. |
 | `RELAY_TLS_KEY` | unset | See `RELAY_TLS_CERT`. Either variable alone, a set-but-blank value, or an unreadable file **refuses the boot** (fail-closed) — the relay never silently downgrades a public host to plain HTTP. |
 
-The relay also accepts `RELAY_RATE_PER_MIN`, `RELAY_RATE_BURST` (per-connection
-token bucket) and `RELAY_PING_INTERVAL_S` (stale-socket sweep). The defaults
-are already sized to pass the daemon's worst-case chunked transfer — leave them
-alone unless you have a specific abuse pattern.
+The relay also accepts `RELAY_RATE_PER_MIN` and `RELAY_RATE_BURST`
+(per-connection token bucket, defaults `600` and `1000`, ceilings `60000` and
+`100000`) and `RELAY_PING_INTERVAL_S` (stale-socket sweep, default `30`,
+ceiling `3600`). The defaults are already sized to pass the daemon's
+worst-case chunked transfer — leave them alone unless you have a specific
+abuse pattern.
+
+### Tuning knobs are fail-closed too (P2-171)
+
+The five tuning knobs — `RELAY_RATE_PER_MIN`, `RELAY_RATE_BURST`,
+`RELAY_MAX_PER_IP`, `RELAY_TRUST_PROXY_HOPS` and `RELAY_PING_INTERVAL_S` —
+are validated at boot exactly like the admission ceilings above: a
+non-numeric, negative, fractional or zero value (zero remains legitimate
+**only** for `RELAY_TRUST_PROXY_HOPS`, the documented direct-exposure
+default), or a value above the knob's ceiling, is a boot **problem**. If any
+problem exists the relay never opens its listener — every reason is logged
+once at boot (JSONL, `invalid relay knob, refusing to start`) and the process
+exits with code `1`. An absent or blank variable keeps the documented
+default, so an empty env reproduces the historical values exactly: a typo can
+no longer silently re-cap a public relay's rate ceiling, per-IP budget or
+proxy-hop count. The `relay listening` line carries the resolved values
+(`ratePerMin`, `rateBurst`, `maxPerIp`, `trustProxyHops`, `pingIntervalS`)
+and never echoes the raw env.
 
 ### Limit validation is fail-closed
 

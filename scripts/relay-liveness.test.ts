@@ -3,7 +3,8 @@
  * against a real relay subprocess — a peer that never pongs is reaped and
  * frees its room and per-IP slot, a heartbeating peer survives the same
  * sweeps, the stale_terminated counter climbs on /metrics, and
- * RELAY_PING_INTERVAL_S=0 disables the whole sweep.
+ * (P2-171) a RELAY_PING_INTERVAL_S=0 relay refuses to boot instead of
+ * silently disabling the sweep.
  * Run: npx tsx scripts/relay-liveness.test.ts
  */
 import { spawn, type ChildProcess } from "node:child_process";
@@ -162,19 +163,13 @@ third?.close();
 live.close();
 strict.proc.kill("SIGTERM");
 
-// --- 4. RELAY_PING_INTERVAL_S=0: sweep fully disabled --------------------------
+// --- 4. RELAY_PING_INTERVAL_S=0: fail-closed boot refusal (P2-171) --------------
+// Zero used to disable the sweep; since P2-171 a zero knob refuses the boot
+// instead of silently serving a public relay without liveness reaping.
 const off = startRelay({ RELAY_PING_INTERVAL_S: "0" });
-await waitReady(off.port);
-const silent = await open(`ws://127.0.0.1:${off.port}`, { autoPong: false });
-let silentDied = false;
-silent.on("close", () => {
-  silentDied = true;
-});
-await sleep(3_500); // longer than the 2s budget of the strict relay above
-check("liveness: interval 0 keeps silent peers connected", !silentDied);
-const offJson = JSON.parse(await fetchMetrics(off.port + 1)) as { stale_terminated?: number };
-check("liveness: interval 0 never increments the reaper counter", (offJson.stale_terminated ?? 0) === 0);
-silent.close();
+const offExit = new Promise<number | null>((r) => off.proc.on("exit", (c) => r(c)));
+check("liveness: zero RELAY_PING_INTERVAL_S refuses the boot with exit 1 (fail-closed)", (await offExit) === 1);
+check("liveness: refused boot never opens the listener", (await tryOpen(`ws://127.0.0.1:${off.port}`)) === null);
 off.proc.kill("SIGTERM");
 
 if (failures) process.exit(1);

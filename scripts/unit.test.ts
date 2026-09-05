@@ -226,6 +226,15 @@ import {
 
 import { tlsPlan } from "../apps/relay/src/tlsconfig";
 
+import {
+  relayKnobs,
+  RATE_PER_MIN_CEILING,
+  RATE_BURST_CEILING,
+  MAX_PER_IP_CEILING,
+  TRUST_PROXY_HOPS_CEILING,
+  PING_INTERVAL_S_CEILING,
+} from "../apps/relay/src/knobs";
+
 import { touchedUiFromDiff, needsEscalation, parseFindings, verifyFindings, isTaskMergeSha, parseVerdict, reviewerOk, tagUnverified, isBlockingFinding, findingsRepeat, writeAuxSandboxConfig , CONSTITUTION, PR_MERGE_CONFIRM_DELAY_MS, PR_MERGE_CONFIRM_POLLS, PrMergeIo, RESUME_MAX_TASK_IDS, TASK_ID_RE, builderPrompt, codeChanges, commitSpec, commitSpecWithReason, crashRoundDecision, lessonsBlock, mergeBlockReason, mergePrForTask, needsPlanner, parseScribeLessons, plannerPrompt, plannerRetryPolicy, rebaseOutcome, resumeBlock, reviewerPrompt, setupTaskBranch, specPathFor, specRejectReason, updateResumeState, validateSpec } from "../apps/pilot/src/pipeline";
 
 
@@ -9306,6 +9315,159 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "P2-164: desktop-win smoke step declares shell: bash (P2-126 lesson)",
     /^\s*shell:\s*bash\s*$/m.test(smokeBlock),
     JSON.stringify(smokeBlock),
+  );
+}
+
+// --- P2-171: relay tuning knobs resolve fail-closed ----------------------------
+{
+  const KNOB_NAMES = [
+    "RELAY_RATE_PER_MIN",
+    "RELAY_RATE_BURST",
+    "RELAY_MAX_PER_IP",
+    "RELAY_TRUST_PROXY_HOPS",
+    "RELAY_PING_INTERVAL_S",
+  ] as const;
+
+  const empty = relayKnobs({});
+  check(
+    "P2-171: empty env → exactly the historical defaults (600/1000/20/0/30) with zero problems",
+    empty.ratePerMin === 600 &&
+      empty.rateBurst === 1000 &&
+      empty.maxPerIp === 20 &&
+      empty.trustProxyHops === 0 &&
+      empty.pingIntervalS === 30 &&
+      empty.problems.length === 0,
+  );
+
+  const blank = relayKnobs({
+    RELAY_RATE_PER_MIN: "  ",
+    RELAY_RATE_BURST: "",
+    RELAY_MAX_PER_IP: " ",
+    RELAY_TRUST_PROXY_HOPS: "",
+    RELAY_PING_INTERVAL_S: "  ",
+  });
+  check(
+    "P2-171: blank values are the only present-case that keeps the default without a problem",
+    blank.problems.length === 0 &&
+      blank.ratePerMin === 600 &&
+      blank.rateBurst === 1000 &&
+      blank.maxPerIp === 20 &&
+      blank.trustProxyHops === 0 &&
+      blank.pingIntervalS === 30,
+  );
+
+  const valid = relayKnobs({
+    RELAY_RATE_PER_MIN: "120",
+    RELAY_RATE_BURST: "500",
+    RELAY_MAX_PER_IP: "50",
+    RELAY_TRUST_PROXY_HOPS: "2",
+    RELAY_PING_INTERVAL_S: "10",
+  });
+  check(
+    "P2-171: valid values resolve verbatim with zero problems",
+    valid.ratePerMin === 120 &&
+      valid.rateBurst === 500 &&
+      valid.maxPerIp === 50 &&
+      valid.trustProxyHops === 2 &&
+      valid.pingIntervalS === 10 &&
+      valid.problems.length === 0,
+  );
+
+  // non-numeric: every knob refuses garbage (including Infinity via "1e400")
+  for (const [name, value] of [
+    ["RELAY_RATE_PER_MIN", "six hundred"],
+    ["RELAY_RATE_BURST", "abc"],
+    ["RELAY_MAX_PER_IP", "1e400"],
+    ["RELAY_TRUST_PROXY_HOPS", "two"],
+    ["RELAY_PING_INTERVAL_S", "soon"],
+  ] as const) {
+    const r = relayKnobs({ [name]: value } as Record<string, string>);
+    check(
+      `P2-171: non-numeric ${name} is a problem citing the variable`,
+      r.problems.length === 1 && r.problems[0]!.includes(name),
+      JSON.stringify(r.problems),
+    );
+  }
+
+  // negative: every knob refuses it
+  for (const name of KNOB_NAMES) {
+    const r = relayKnobs({ [name]: "-1" } as Record<string, string>);
+    check(
+      `P2-171: negative ${name} is a problem citing the variable`,
+      r.problems.length === 1 && r.problems[0]!.includes(name),
+      JSON.stringify(r.problems),
+    );
+  }
+
+  // zero: a problem in the four guard knobs (they can no longer be silently
+  // disabled), the legitimate direct-exposure default in the proxy hops
+  for (const name of KNOB_NAMES.filter((n) => n !== "RELAY_TRUST_PROXY_HOPS")) {
+    const r = relayKnobs({ [name]: "0" } as Record<string, string>);
+    check(
+      `P2-171: zero ${name} is a problem citing the variable`,
+      r.problems.length === 1 && r.problems[0]!.includes(name),
+      JSON.stringify(r.problems),
+    );
+  }
+  const hopsZero = relayKnobs({ RELAY_TRUST_PROXY_HOPS: "0" });
+  check(
+    "P2-171: zero RELAY_TRUST_PROXY_HOPS stays valid (direct exposure is the documented default)",
+    hopsZero.trustProxyHops === 0 && hopsZero.problems.length === 0,
+  );
+
+  // fractional: every knob refuses it, hops included (a hop must be a whole entry)
+  for (const name of KNOB_NAMES) {
+    const r = relayKnobs({ [name]: "1.5" } as Record<string, string>);
+    check(
+      `P2-171: fractional ${name} is a problem citing the variable`,
+      r.problems.length === 1 && r.problems[0]!.includes(name),
+      JSON.stringify(r.problems),
+    );
+  }
+
+  // above ceiling: refused; exactly at the ceiling: accepted
+  const ceilings: Array<[string, number]> = [
+    ["RELAY_RATE_PER_MIN", RATE_PER_MIN_CEILING],
+    ["RELAY_RATE_BURST", RATE_BURST_CEILING],
+    ["RELAY_MAX_PER_IP", MAX_PER_IP_CEILING],
+    ["RELAY_TRUST_PROXY_HOPS", TRUST_PROXY_HOPS_CEILING],
+    ["RELAY_PING_INTERVAL_S", PING_INTERVAL_S_CEILING],
+  ];
+  for (const [name, ceiling] of ceilings) {
+    const over = relayKnobs({ [name]: String(ceiling + 1) } as Record<string, string>);
+    check(
+      `P2-171: ${name} above its ${ceiling} ceiling is a problem citing the variable`,
+      over.problems.length === 1 && over.problems[0]!.includes(name),
+      JSON.stringify(over.problems),
+    );
+    const at = relayKnobs({ [name]: String(ceiling) } as Record<string, string>);
+    check(
+      `P2-171: ${name} exactly at its ${ceiling} ceiling is accepted`,
+      at.problems.length === 0,
+      JSON.stringify(at.problems),
+    );
+  }
+
+  // several bad knobs at once: every reason is collected in one list
+  const many = relayKnobs({
+    RELAY_RATE_PER_MIN: "abc",
+    RELAY_RATE_BURST: "-5",
+    RELAY_MAX_PER_IP: "0",
+    RELAY_TRUST_PROXY_HOPS: "1.5",
+    RELAY_PING_INTERVAL_S: String(PING_INTERVAL_S_CEILING + 1),
+  });
+  check(
+    "P2-171: five invalid knobs at once produce five problems citing each variable",
+    many.problems.length === 5 &&
+      KNOB_NAMES.every((n) => many.problems.some((p) => p.includes(n))),
+    JSON.stringify(many.problems),
+  );
+
+  // a problem never serves the raw value: the resolved knob falls back to the default
+  const fallback = relayKnobs({ RELAY_RATE_PER_MIN: "abc" });
+  check(
+    "P2-171: a problem knob resolves to the documented default (the boot refuses anyway)",
+    fallback.ratePerMin === 600,
   );
 }
 
