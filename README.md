@@ -478,6 +478,17 @@ the phone can never use; the desktop app's local mode doesn't depend on the
 relay and keeps working. Runbook:
 [docs/RELAY-HOSTING.md](docs/RELAY-HOSTING.md).
 
+The image also serves the phone PWA itself (P2-188): it sets
+`RELAY_WEB_DIR=/app/apps/web/dist`, so the URL you point a browser at the
+relay delivers the app — the first step of the journey needs no dev server,
+TLS origin or tailscale. Only static files are served (extension allowlist,
+no traversal, no dotfiles, symlink-safe containment, SPA fallback to
+`index.html`), the WebSocket routing and `/healthz` body are untouched, and
+the static route answers `503` during the drain. A configured
+`RELAY_WEB_DIR` whose directory is missing, not a directory, unreadable or
+without a readable `index.html` refuses the boot — reasons logged once,
+exit 1, no listener; unset keeps the old 404-for-everything behavior.
+
 **Close-code-aware relay retries (P2-156)**: when the relay socket closes, the
 daemon classifies the close code instead of treating every drop as a network
 outage. `1013` (server busy / too many connections / room full) means the

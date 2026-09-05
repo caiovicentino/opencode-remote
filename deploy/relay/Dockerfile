@@ -20,6 +20,25 @@ RUN npm ci --workspace apps/relay --workspace packages/protocol
 COPY apps/relay/src apps/relay/src
 RUN npm run build --workspace apps/relay
 
+# P2-188: the web bundle the relay serves to phones (RELAY_WEB_DIR). Built
+# from the same lockfile; static assets only — the relay itself stays a
+# blind router and gains no new runtime dependency.
+FROM node:22-slim AS web
+WORKDIR /app
+COPY package.json package-lock.json ./
+COPY tsconfig.base.json ./
+COPY scripts/gen-version.mjs scripts/gen-version.mjs
+COPY apps/web/package.json apps/web/package.json
+COPY packages/protocol/package.json packages/protocol/package.json
+RUN npm ci --workspace apps/web --workspace packages/protocol
+COPY packages/protocol packages/protocol
+COPY apps/web/src apps/web/src
+COPY apps/web/public apps/web/public
+COPY apps/web/index.html apps/web/index.html
+COPY apps/web/vite.config.ts apps/web/vite.config.ts
+COPY apps/web/tsconfig.json apps/web/tsconfig.json
+RUN npm run build --workspace apps/web
+
 FROM node:22-slim
 WORKDIR /app
 ENV NODE_ENV=production
@@ -29,6 +48,10 @@ COPY packages/protocol/package.json packages/protocol/package.json
 RUN npm ci --omit=dev --workspace apps/relay --workspace packages/protocol \
   && npm cache clean --force
 COPY --from=build /app/apps/relay/dist ./apps/relay/dist
+# P2-188: serve the phone PWA from the relay itself; validated fail-closed
+# at boot (missing dir or missing index.html refuses to start).
+COPY --from=web /app/apps/web/dist ./apps/web/dist
+ENV RELAY_WEB_DIR=/app/apps/web/dist
 # ship as a non-root user; the relay needs no writes and no privileged ports
 USER node
 # RELAY_PORT (default 8787); provider TLS terminates in front and forwards here
