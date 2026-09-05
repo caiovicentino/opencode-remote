@@ -36,7 +36,7 @@
  * Usage: npm run dist:smoke --workspace @ocr/desktop [-- --dir <path>] [-- --no-installer]
  * Run:   node scripts/dist-smoke.mjs [--dir <bundle>] [--no-installer]
  */
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -190,6 +190,41 @@ export function smokeFlags(argv) {
   return { dir, noInstaller: argv.includes("--no-installer") };
 }
 
+/**
+ * P2-169: the packaged macOS bundle must carry non-empty mic/camera usage
+ * strings in its Info.plist — under hardened runtime the OS denies/kills
+ * processes that touch those devices without them (voice recording, QR
+ * pairing scan), which only ever happened on the signed build. Returns []
+ * when the bundle is NOT a macOS .app (win-unpacked/linux-unpacked — e.g. the
+ * desktop-win job — skip with no checks); a binary (non-XML) Info.plist also
+ * degrades to no checks, printing a line, never failing. Deliberately NOT
+ * folded into listProblems: the mac fixtures of dist-smoke.test.ts do not
+ * write an Info.plist and would all start failing.
+ */
+export function macPrivacyProblems(bundleDir) {
+  const isMacBundle = basename(bundleDir).endsWith(".app") && existsSync(join(bundleDir, "Contents"));
+  if (!isMacBundle) return [];
+  const infoPlist = join(bundleDir, "Contents", "Info.plist");
+  let xml;
+  try {
+    xml = readFileSync(infoPlist, "utf8");
+  } catch {
+    return ["missing file: Contents/Info.plist — no mic/camera usage descriptions"];
+  }
+  if (!xml.trimStart().startsWith("<?xml")) {
+    console.log("  Info.plist is binary — mac privacy check skipped");
+    return [];
+  }
+  const problems = [];
+  for (const key of ["NSMicrophoneUsageDescription", "NSCameraUsageDescription"]) {
+    const match = xml.match(new RegExp(`<key>${key}</key>\\s*<string>([^<]*)</string>`));
+    if (!match) problems.push(`missing ${key} in Contents/Info.plist — voice/QR would die on the signed build`);
+    else if (match[1].trim().length === 0) problems.push(`${key} in Contents/Info.plist is empty`);
+  }
+  if (problems.length === 0) console.log("  Info.plist usage descriptions present");
+  return problems;
+}
+
 function main() {
   const { dir: flagDir, noInstaller } = smokeFlags(process.argv.slice(2));
   let dir = flagDir; // re-assigned when the bundle is auto-resolved below
@@ -230,6 +265,16 @@ function main() {
   console.log("  web-dist/index.html present");
   console.log("  daemon/index.js present");
   console.log("  app binary present");
+  // P2-169: packaged macOS bundles must carry the mic/camera usage strings
+  // (same error format as the listProblems block above; no-op on win/linux).
+  const privacyProblems = macPrivacyProblems(dir);
+  if (privacyProblems.length > 0) {
+    console.error(`dist-smoke: FAIL ${dir}`);
+    for (const problem of privacyProblems) console.error(`  - ${problem}`);
+    console.error(`dist-smoke: ${privacyProblems.length} privacy problem(s) found`);
+    process.exitCode = 1;
+    return;
+  }
   if (defaultRun) {
     const dmg = findDmg(join(desktopDir, "dist"));
     if (!dmg) {

@@ -438,7 +438,11 @@ instalação com branding, versão semântica no About e no nome do arquivo).
 Builds locais são assinados ad-hoc com hardened runtime e as entitlements
 compartilhadas (`build/entitlements.mac.plist`) — no primeiro abre, clique
 direito → **Abrir** para passar pelo Gatekeeper; depois o app se comporta
-como qualquer app instalado. No release, o preflight de assinatura só liga a
+como qualquer app instalado. P2-169: na primeira vez que você gravar uma
+mensagem de voz ou ler o QR de pareamento, o macOS pede permissão de
+**microfone** e **câmera** — conceda as duas; se negar por engano, o caminho
+é Ajustes do Sistema → Privacidade e Segurança → Microfone / Câmera → ligar
+**OpenCode Remote** e reabrir o app. No release, o preflight de assinatura só liga a
 notarização quando há certificado Developer ID e credenciais Apple de fato
 configurados (veja *Instalador do app desktop*).
 

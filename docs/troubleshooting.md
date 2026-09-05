@@ -26,6 +26,7 @@ Run `opencode-remote doctor` first — it checks everything below in one shot.
 | desktop says the daemon is down — and names a cause | the status card explains WHY it died (P2-140): "another app took the daemon's port" → close that program or restart the machine; "daemon files are missing" → reinstall the app; "shut down by the system"/"exited unexpectedly" → reopen the app (it reconnects by itself). The same verdict is logged in `desktop.log`; the copy never contains paths or tokens |
 | report a problem with everything attached | desktop → Settings → **Diagnostics → Copy diagnostic**: versions, platform, daemon state, last 40 `desktop.log` + 20 `daemon-sidecar.log` lines and the crash-file names, on your clipboard. No secrets (apiToken/allowlist/pairing URI never included) |
 | update didn't install | the consent dialog only appears after a **background download** finished; check `desktop.log` for `update status`, then tray → **Check for updates**. A version you deferred ("Later") is not re-offered until the next manual check or app restart |
+| no mic/camera in the packaged app (P2-169) | the first voice recording or QR scan triggers a macOS permission prompt — grant it. Denied by mistake: System Settings → Privacy & Security → Microphone / Camera → enable **OpenCode Remote**, then reopen the app (the signed build blocks the device without the grant; dev builds only fail the same way without the P2-169 entitlements/usage strings) |
 
 ## Staging a desktop update release (P1-050)
 

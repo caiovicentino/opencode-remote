@@ -564,7 +564,11 @@ name) — and `npm run dist:smoke --workspace @ocr/desktop` verifies the
 bundle **and** the DMG artifact. Local builds are ad-hoc signed with hardened
 runtime and the shared entitlements (`build/entitlements.mac.plist`) — on
 first launch, right-click → **Open** once to pass Gatekeeper; afterwards the
-app behaves like any installed app. Tag releases ship that DMG +
+app behaves like any installed app. P2-169: the first time you record a voice
+message or scan the pairing QR, macOS asks for **microphone** and **camera**
+permission — grant both, or the signed build silently blocks those features
+(denied by mistake? System Settings → Privacy & Security → Microphone /
+Camera → enable **OpenCode Remote**, then reopen the app). Tag releases ship that DMG +
 `latest-mac.yml` on GitHub (`.github/workflows/release.yml`); the release's
 signing preflight notarizes only when a Developer ID certificate and the
 Apple credentials are actually configured (see *Desktop app installer*). The
