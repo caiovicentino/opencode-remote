@@ -110,6 +110,9 @@ private. That is the product: **local power, remote control, zero trust**.
   preview in a **side-by-side pane** next to the chat (draggable divider, chat
   stays visible and navigable — Claude/Codex style), while narrower screens
   keep the full-screen overlay; also listed programmatically via `GET /api/artifacts`.
+  The listing comes newest-first and is capped at the **500 most recent**
+  artifacts (`total`/`truncated` fields report the real count), so a long-lived
+  install never pays a multi-megabyte payload per pane open over the E2E tunnel.
   The global Artifacts list groups by **conversation title** (the daemon resolves
   session ids against the opencode session list; unknown ids fall back to the raw
   id) and, on wide viewports, clicking a list item jumps back to Conversas with
@@ -380,7 +383,13 @@ and WebSocket upgrades are refused while the drain runs, so the balancer
 stops routing new peers to the closing instance — the container
 `HEALTHCHECK` therefore reports unhealthy during the drain on purpose.
 `RELAY_DRAIN_GRACE_MS` (default `0`, max `2000`) delays the socket close
-after the 503 so coarse-polling balancers have time to notice. The daemon
+after the 503 so coarse-polling balancers have time to notice. The relay log
+never records client addresses: the per-IP-cap rejection line carries
+`ipTag`, an identifier derived per process (first 12 hex digits of
+`sha256(salt || address)` with a random salt minted at boot) — two
+rejections with the same tag inside one process come from the same origin,
+the tag changes at every restart, and it cannot be reversed to the address
+(P2-174). The daemon
 validates
 `RELAY_URL` at boot and fails closed: only `ws://`/`wss://` URLs dial, and
 plain `ws://` at a non-loopback host is refused — an invalid URL disables the

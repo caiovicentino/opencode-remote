@@ -120,6 +120,37 @@ export function sessionTitleMap(rows: unknown, ids: string[]): Record<string, st
 }
 
 /**
+ * P2-173: the listing itself is capped — months of use accumulate thousands of
+ * artifact files and the routes below used to ship all of them (plus a title
+ * resolution per distinct session) on every pane open. The list stays sorted
+ * newest-first; only the tail is cut.
+ */
+export const MAX_ARTIFACTS_LISTED = 500;
+
+export interface CappedArtifacts {
+  items: ArtifactMeta[];
+  /** real number of artifacts found, before the cap */
+  total: number;
+  /** true when items was cut down to the cap */
+  truncated: boolean;
+}
+
+/**
+ * Caps a newest-first artifact list without reordering it. Fail-closed on the
+ * cap itself: a missing, non-numeric, fractional, zero or negative ceiling
+ * falls back to MAX_ARTIFACTS_LISTED — never to "no cap" (this ceiling exists
+ * to bound the payload, so an invalid one must not disable it).
+ */
+export function capArtifacts(sorted: ArtifactMeta[], cap: unknown = MAX_ARTIFACTS_LISTED): CappedArtifacts {
+  const limit = typeof cap === "number" && Number.isInteger(cap) && cap > 0 ? cap : MAX_ARTIFACTS_LISTED;
+  return {
+    items: sorted.slice(0, limit),
+    total: sorted.length,
+    truncated: sorted.length > limit,
+  };
+}
+
+/**
  * P2-097: artifact content is served base64-in-RAM over the tunnel (a 4/3
  * size bloat on top of the buffer itself) — anything above this cap is
  * refused with a distinct reason so clients can show an actionable error
