@@ -995,7 +995,8 @@ function createWindow(): BrowserWindow {
   // runs after app.whenReady().
   const stateFile = windowStateFile(app.getPath("userData"));
   const restored = loadWindowBounds(stateFile, screen.getAllDisplays());
-  // P2-172: bounds feed the constructor; maximized is applied right after it.
+  // P2-172: bounds feed the constructor; the maximized flag is applied in the
+  // ready-to-show handler below.
   const { maximized, ...bounds } = restored;
   const win = new BrowserWindow({
     ...bounds,
@@ -1018,15 +1019,16 @@ function createWindow(): BrowserWindow {
       webviewTag: true,
     },
   });
-  // P2-172: reopen maximized when the user quit maximized — before the show,
-  // so the window never flashes at restored size. maximize() does not make a
-  // hidden window visible, so the P1-081 hermetic path (window never shows)
-  // stays intact.
-  if (maximized) win.maximize();
   win.once("ready-to-show", () => {
     // P1-081: under the hermetic e2e marker the window stays hidden — the
     // gate interacts via webContents and the operator's screen is left alone.
     if (HERMETIC_E2E) return;
+    // P2-172: reopen maximized when the user quit maximized. maximize() must
+    // run here, right before show(), and never in the hermetic path: Electron's
+    // maximize() also SHOWS a hidden window (electron.d.ts), so calling it on
+    // construction would both break the hermetic guarantee and flash an
+    // unpainted window; before show() it opens directly at the maximized size.
+    if (maximized) win.maximize();
     win.show();
   });
   // P3-053: focusing the window always clears the badge, even when the

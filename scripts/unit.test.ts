@@ -410,6 +410,16 @@ import {
 
 import { findWindowsInstaller, listProblems, smokeFlags, windowsInstallerProblems } from "../apps/desktop/scripts/dist-smoke.mjs";
 
+import {
+  AUDIO_ENTITLEMENT,
+  BUILDER_LABEL,
+  CAMERA_ENTITLEMENT,
+  CAMERA_KEY,
+  MIC_KEY,
+  PLIST_LABEL,
+  privacyProblems,
+} from "./mac-privacy";
+
 import { touchesDesktop } from "./ci-scope";
 
 import { imageTags } from "./relay-image";
@@ -9802,12 +9812,92 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check("mission: strategist/researcher take the chat-defined prompt", pilotIndexSrc.includes("activeMission?.prompt ?? STRATEGIST_MISSION") && pilotIndexSrc.includes("runResearcher(aux, state, activeMission?.prompt)"));
 }
 
+// --- P2-169: mac privacy preflight — mic/camera strings + device entitlements --
+
+{
+  const fullBuilder = `${BUILDER_LABEL} pair:\n  ${MIC_KEY}: "O OpenCode Remote usa o microfone para gravar e transcrever mensagens de voz no chat."\n  ${CAMERA_KEY}: "O OpenCode Remote usa a câmera para ler o QR code de pareamento."`;
+  const fullPlist = `<plist><dict>\n    <key>com.apple.security.cs.allow-jit</key>\n    <true/>\n    <key>${AUDIO_ENTITLEMENT}</key>\n    <true/>\n    <key>${CAMERA_ENTITLEMENT}</key>\n    <true/>\n  </dict></plist>`;
+
+  check(
+    "P2-169: complete mic/camera pair → no problems",
+    privacyProblems(fullPlist, fullBuilder).length === 0,
+  );
+
+  const micMissing = privacyProblems(fullPlist, `  ${CAMERA_KEY}: "câmera"`);
+  check(
+    "P2-169: missing microphone usage description → one problem citing the key",
+    micMissing.length === 1 && micMissing[0].includes(MIC_KEY),
+    JSON.stringify(micMissing),
+  );
+
+  const cameraMissing = privacyProblems(fullPlist, `  ${MIC_KEY}: "microfone"`);
+  check(
+    "P2-169: missing camera usage description → one problem citing the key",
+    cameraMissing.length === 1 && cameraMissing[0].includes(CAMERA_KEY),
+    JSON.stringify(cameraMissing),
+  );
+
+  const audioMissing = privacyProblems(fullPlist.replace(AUDIO_ENTITLEMENT, "com.apple.security.cs.allow-dyld-environment-variables"), fullBuilder);
+  check(
+    "P2-169: missing audio-input entitlement → one problem citing the entitlement",
+    audioMissing.length === 1 && audioMissing[0].includes(AUDIO_ENTITLEMENT),
+    JSON.stringify(audioMissing),
+  );
+
+  const cameraEntMissing = privacyProblems(fullPlist.replace(CAMERA_ENTITLEMENT, "com.apple.security.cs.other"), fullBuilder);
+  check(
+    "P2-169: missing camera entitlement → one problem citing the entitlement",
+    cameraEntMissing.length === 1 && cameraEntMissing[0].includes(CAMERA_ENTITLEMENT),
+    JSON.stringify(cameraEntMissing),
+  );
+
+  const blank = privacyProblems(fullPlist, fullBuilder.replace(`"O OpenCode Remote usa a câmera para ler o QR code de pareamento."`, '""'));
+  check(
+    "P2-169: present-but-empty usage description → problem citing the key and 'empty'",
+    blank.length === 1 && blank[0].includes(CAMERA_KEY) && blank[0].includes("empty"),
+    JSON.stringify(blank),
+  );
+
+  // every problem at once, never just the first (5 = 2 missing descriptions + 2 missing entitlements + 1 blank)
+  const all = privacyProblems("<plist><dict/></plist>", "builder: yml");
+  check(
+    "P2-169: an empty pair reports all four problems at once",
+    all.length === 4 && all.some((p) => p.includes(MIC_KEY)) && all.some((p) => p.includes(CAMERA_KEY)) && all.some((p) => p.includes(AUDIO_ENTITLEMENT)) && all.some((p) => p.includes(CAMERA_ENTITLEMENT)),
+    JSON.stringify(all),
+  );
+
+  // commented-out keys in the yml count as absent; <false/> counts as absent
+  const commented = privacyProblems(fullPlist, `# ${MIC_KEY}: "nada"\n  ${CAMERA_KEY}: "câmera"`);
+  check(
+    "P2-169: a usage description only inside a # comment counts as missing",
+    commented.length === 1 && commented[0].includes(MIC_KEY),
+    JSON.stringify(commented),
+  );
+  const falseEnt = fullPlist.replace(`<key>${CAMERA_ENTITLEMENT}</key>\n    <true/>`, `<key>${CAMERA_ENTITLEMENT}</key>\n    <false/>`);
+  check(
+    "P2-169: camera entitlement set to <false/> counts as missing",
+    privacyProblems(falseEnt, fullBuilder).length === 1,
+  );
+
+  // real-repo assertion: the shipped pair is complete and carries the 4 new keys
+  const root = join(import.meta.dirname, "..");
+  const realPlist = readFileSync(join(root, "apps", "desktop", "build", "entitlements.mac.plist"), "utf8");
+  const realBuilder = readFileSync(join(root, "apps", "desktop", "electron-builder.yml"), "utf8");
+  check(
+    "P2-169: real repo — plist has both device entitlements, yml has both usage descriptions, pair is complete",
+    realPlist.includes(AUDIO_ENTITLEMENT) &&
+      realPlist.includes(CAMERA_ENTITLEMENT) &&
+      realBuilder.includes(`${MIC_KEY}:`) &&
+      realBuilder.includes(`${CAMERA_KEY}:`) &&
+      privacyProblems(realPlist, realBuilder).length === 0,
+  );
+}
+
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);
   process.exit(1);
 }
 
-// --- P2-169: mac privacy preflight — mic/camera strings + device entitlements --{  const fullBuilder = `${BUILDER_LABEL} pair:\n  ${MIC_KEY}: "O OpenCode Remote usa o microfone para gravar e transcrever mensagens de voz no chat."\n  ${CAMERA_KEY}: "O OpenCode Remote usa a câmera para ler o QR code de pareamento."`;  const fullPlist = `<plist><dict>\n    <key>com.apple.security.cs.allow-jit</key>\n    <true/>\n    <key>${AUDIO_ENTITLEMENT}</key>\n    <true/>\n    <key>${CAMERA_ENTITLEMENT}</key>\n    <true/>\n  </dict></plist>`;  check(    "P2-169: complete mic/camera pair → no problems",    privacyProblems(fullPlist, fullBuilder).length === 0,  );  const micMissing = privacyProblems(fullPlist, `  ${CAMERA_KEY}: "câmera"`);  check(    "P2-169: missing microphone usage description → one problem citing the key",    micMissing.length === 1 && micMissing[0].includes(MIC_KEY),    JSON.stringify(micMissing),  );  const cameraMissing = privacyProblems(fullPlist, `  ${MIC_KEY}: "microfone"`);  check(    "P2-169: missing camera usage description → one problem citing the key",    cameraMissing.length === 1 && cameraMissing[0].includes(CAMERA_KEY),    JSON.stringify(cameraMissing),  );  const audioMissing = privacyProblems(fullPlist.replace(AUDIO_ENTITLEMENT, "com.apple.security.cs.allow-dyld-environment-variables"), fullBuilder);  check(    "P2-169: missing audio-input entitlement → one problem citing the entitlement",    audioMissing.length === 1 && audioMissing[0].includes(AUDIO_ENTITLEMENT),    JSON.stringify(audioMissing),  );  const cameraEntMissing = privacyProblems(fullPlist.replace(CAMERA_ENTITLEMENT, "com.apple.security.cs.other"), fullBuilder);  check(    "P2-169: missing camera entitlement → one problem citing the entitlement",    cameraEntMissing.length === 1 && cameraEntMissing[0].includes(CAMERA_ENTITLEMENT),    JSON.stringify(cameraEntMissing),  );  const blank = privacyProblems(fullPlist, fullBuilder.replace(`"O OpenCode Remote usa a câmera para ler o QR code de pareamento."`, '""'));  check(    "P2-169: present-but-empty usage description → problem citing the key and 'empty'",    blank.length === 1 && blank[0].includes(CAMERA_KEY) && blank[0].includes("empty"),    JSON.stringify(blank),  );  // every problem at once, never just the first (5 = 2 missing descriptions + 2 missing entitlements + 1 blank)  const all = privacyProblems("<plist><dict/></plist>", "builder: yml");  check(    "P2-169: an empty pair reports all four problems at once",    all.length === 4 && all.some((p) => p.includes(MIC_KEY)) && all.some((p) => p.includes(CAMERA_KEY)) && all.some((p) => p.includes(AUDIO_ENTITLEMENT)) && all.some((p) => p.includes(CAMERA_ENTITLEMENT)),    JSON.stringify(all),  );  // commented-out keys in the yml count as absent; <false/> counts as absent  const commented = privacyProblems(fullPlist, `# ${MIC_KEY}: "nada"\n  ${CAMERA_KEY}: "câmera"`);  check(    "P2-169: a usage description only inside a # comment counts as missing",    commented.length === 1 && commented[0].includes(MIC_KEY),    JSON.stringify(commented),  );  const falseEnt = fullPlist.replace(`<key>${CAMERA_ENTITLEMENT}</key>\n    <true/>`, `<key>${CAMERA_ENTITLEMENT}</key>\n    <false/>`);  check(    "P2-169: camera entitlement set to <false/> counts as missing",    privacyProblems(falseEnt, fullBuilder).length === 1,  );  // real-repo assertion: the shipped pair is complete and carries the 4 new keys  const root = join(import.meta.dirname, "..");  const realPlist = readFileSync(join(root, "apps", "desktop", "build", "entitlements.mac.plist"), "utf8");  const realBuilder = readFileSync(join(root, "apps", "desktop", "electron-builder.yml"), "utf8");  check(    "P2-169: real repo — plist has both device entitlements, yml has both usage descriptions, pair is complete",    realPlist.includes(AUDIO_ENTITLEMENT) &&      realPlist.includes(CAMERA_ENTITLEMENT) &&      realBuilder.includes(`${MIC_KEY}:`) &&      realBuilder.includes(`${CAMERA_KEY}:`) &&      privacyProblems(realPlist, realBuilder).length === 0,  );}if (failures > 0) {  console.error(`UNIT TESTS FAILED: ${failures}`);  process.exit(1);}
 console.log("UNIT TESTS PASSED");
 
 process.exit(0);
