@@ -487,6 +487,11 @@ Tailscale. It loads the same `@ocr/web` build as the phone.
 The shell runs on **Electron 44** (Chromium 152, V8 15.2, Node 24.18.1),
 which requires **macOS 13 (Ventura) or later**.
 
+Since P2-178 every external open goes through a single gate: only `http`,
+`https` and `mailto` links are handed to the OS browser/app handler.
+`file`, `javascript`, `data`, `blob` and any other scheme are refused on
+purpose (the refusal is logged as scheme + reason only, never the URL).
+
 Since P1-046 the window is a real two-column cockpit: the conversation stays
 open in the left column while Artifacts, Browser, Files or Settings open in a
 contextual pane on the right (switching panes never destroys the chat), and

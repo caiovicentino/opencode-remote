@@ -376,6 +376,8 @@ import { appIdForPlatform, applyAppUserModelId, daemonNotify, NOTIFY_BACK_BODY, 
 
 import { DEEP_LINK_QUERY_MAX, deepLinkFromArgv, parseDeepLink } from "../apps/desktop/src/deeplink";
 
+import { externalOpenDecision } from "../apps/desktop/src/extlink";
+
 import {
   DEFAULT_WINDOW_BOUNDS,
   loadWindowBounds,
@@ -545,6 +547,58 @@ check("deepLinkFromArgv rejects invalid link in argv", deepLinkFromArgv(["C:\\ap
 check("deepLinkFromArgv no link", deepLinkFromArgv(["C:\\app.exe", "--flag"]) === null);
 
 check("deepLinkFromArgv rejects non-array", deepLinkFromArgv("opencode-remote://pair?v=2") === null);
+
+
+
+// --- external open decision (P2-178) ----------------------------------------
+const extAllowed = externalOpenDecision("https://example.com/docs");
+
+check("externalOpenDecision allows http", externalOpenDecision("http://example.com/").allow);
+
+check("externalOpenDecision allows https", externalOpenDecision("https://example.com/docs").allow);
+
+check("externalOpenDecision allows mailto", externalOpenDecision("mailto:support@example.com").allow);
+
+check("externalOpenDecision treats uppercase scheme like lowercase (allowed)", externalOpenDecision("HTTPS://example.com/docs").allow);
+
+check("externalOpenDecision echoes normalized href when allowed", extAllowed.allow && extAllowed.href === "https://example.com/docs");
+
+check("externalOpenDecision normalizes uppercase scheme in href", externalOpenDecision("HTTPS://example.com/docs").href === "https://example.com/docs");
+
+check("externalOpenDecision allows href non-empty", !extAllowed.allow || extAllowed.href.length > 0);
+
+const extRefusals: Array<[string, unknown, string]> = [
+  ["file", "file:///etc/passwd", "file-scheme-denied"],
+  ["javascript", "javascript:alert(1)", "javascript-scheme-denied"],
+  ["data", "data:text/html,hello", "data-scheme-denied"],
+  ["blob", "blob:https://example.com/uuid", "blob-scheme-denied"],
+  ["unknown scheme", "smb://server/share", "scheme-not-allowed:smb"],
+  ["uppercase file", "FILE:///etc/passwd", "file-scheme-denied"],
+  ["empty string", "", "empty"],
+  ["non-string", 42, "not-a-string"],
+  ["malformed url", "http://exa mple.com/<>", "unparseable-url"],
+];
+
+for (const [name, input, expectedReason] of extRefusals) {
+  const decision = externalOpenDecision(input);
+  check(`externalOpenDecision refuses ${name}`, !decision.allow);
+  check(`externalOpenDecision refuses ${name} with non-empty reason`, !decision.allow && decision.reason.length > 0);
+  check(`externalOpenDecision refuses ${name} with expected reason`, !decision.allow && decision.reason === expectedReason);
+  check(`externalOpenDecision refuses ${name} with empty href`, !decision.allow && decision.href === "");
+}
+
+// The gate in main.ts: every shell.openExternal call site must sit behind the
+// externalOpenDecision decision (only decision.href may reach the shell).
+const mainTsSource = readFileSync(new URL("../apps/desktop/src/main.ts", import.meta.url), "utf8");
+const openExternalLines = mainTsSource.split("\n").filter((line) => line.includes("shell.openExternal("));
+
+check("main.ts has shell.openExternal call sites", openExternalLines.length >= 2);
+
+check("main.ts routes every shell.openExternal through the extlink decision", openExternalLines.every((line) => line.includes("decision.href")));
+
+check("main.ts imports externalOpenDecision", mainTsSource.includes('from "./extlink"'));
+
+check("main.ts consults externalOpenDecision twice (window-open + release page)", (mainTsSource.match(/externalOpenDecision\(/g) ?? []).length === 2);
 
 
 

@@ -25,6 +25,7 @@ import { phonePaired, type PairingState } from "./pairing";
 import { versionMismatch } from "./versions";
 import { applyAppUserModelId, daemonNotify, NOTIFY_BACK_BODY, NOTIFY_DOWN_BODY, NOTIFY_TITLE, type DaemonHealth } from "./notify";
 import { deepLinkFromArgv, parseDeepLink } from "./deeplink";
+import { externalOpenDecision } from "./extlink";
 import { daemonTooltip, loginItemSupported, logsDirPath, openLogsFolder, trayIconSource } from "./tray";
 import { badgePlan, type BadgePlan } from "./badge";
 import { CLOSE_HINT_LOG, closeHintPlan, hintFlagPath, readHintFlag, writeHintFlag } from "./closehint";
@@ -320,7 +321,14 @@ function runUpdateCheck(source: string): void {
     openReleasePage:
       source === "tray"
         ? (url) => {
-            void shell.openExternal(url).catch((err) => logError("[desktop] opening release page failed:", err));
+            // P2-178: the release page goes through the same extlink gate as
+            // window.open — one external-open path in the whole shell.
+            const decision = externalOpenDecision(url);
+            if (!decision.allow) {
+              logError(`[desktop] release page open refused (reason=${decision.reason})`);
+              return;
+            }
+            void shell.openExternal(decision.href).catch((err) => logError("[desktop] opening release page failed:", err));
           }
         : undefined,
     onStatus: (status, version) => {
@@ -1080,8 +1088,15 @@ function createWindow(): BrowserWindow {
     if (mainWindow === win) mainWindow = null;
   });
   // Open external links (docs, GitHub) in the browser, never in-app.
+  // P2-178: only http/https/mailto may reach the OS — the decision reason is
+  // scheme-safe to log, the raw URL (conversation content) never is.
   win.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url);
+    const decision = externalOpenDecision(url);
+    if (decision.allow) {
+      void shell.openExternal(decision.href);
+    } else {
+      logError(`[desktop] external open refused (reason=${decision.reason})`);
+    }
     return { action: "deny" };
   });
   // P3-011: a dead renderer used to leave a white, unrecoverable window.
