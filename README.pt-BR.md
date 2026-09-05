@@ -445,6 +445,16 @@ não serve, salve um endereço explícito em Config → **Endereço do app
 shell mostra uma explicação calma no lugar de um endereço que o celular nunca
 alcançaria.
 
+**Pareamento com um QR só (P2-193)**: quando o endereço do app está utilizável,
+o shell funde os dois passos num único QR — a credencial de pareamento viaja no
+**fragmento** da URL do app (`…/#/pair?v=2&…`), e a câmera do celular sozinha
+abre o app já pareado. Nenhum navegador envia fragmento a servidor, então o
+relay hospedado continua cego; o app web apaga o fragmento da barra de endereço
+e do histórico (`history.replaceState`) assim que consome o link; e link com
+problema nunca vira QR — os dois QRs rotulados de cima seguem como fallback. A
+janela limitada de pareamento (P2-190) continua sendo o que restringe a
+validade da credencial.
+
 **Reconexão guiada pelo código de fechamento (P2-156)**: quando o socket do
 relay fecha, o daemon classifica o código em vez de tratar qualquer queda como
 problema de rede. `1013` (server busy / too many connections / room full) o

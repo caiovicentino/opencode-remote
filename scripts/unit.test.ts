@@ -46,6 +46,7 @@ import {
   webAppUrlProblems,
   WEB_APP_URL_MAX_LEN,
 } from "../apps/desktop/src/webappurl";
+import { buildPairLink, PAIR_LINK_HASH_ROUTE, PAIR_LINK_MAX_LEN } from "../apps/desktop/src/pairlink";
 import {
   bodyLimit,
   isBodyLimitError,
@@ -12303,6 +12304,108 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P2-190: the real bootstrap branch decides through bootstrapDecision(",
     bootstrapAt > -1 && daemonIndexSrc.slice(bootstrapAt, bootstrapAt + 800).includes("bootstrapDecision("),
+  );
+}
+
+// --- P2-193: combined pair link (pairlink.ts) --------------------------------
+
+{
+  const okApp = { url: "https://relay.example.com", origin: "stored", problems: [] as string[] };
+  const okUri = "opencode-remote://pair?v=2&relay=wss%3A%2F%2Frelay.example.com%3A8788&room=ab%2Bc%3D&k=de%2FAd%2B%3D%3D";
+  const link = buildPairLink(okApp, okUri);
+  const okQuery = okUri.slice(okUri.indexOf("?") + 1);
+
+  check(
+    "P2-193: the whole query moves into the #/pair fragment byte a byte",
+    link.problems.length === 0 &&
+      link.url === `https://relay.example.com${PAIR_LINK_HASH_ROUTE}${okQuery}` &&
+      link.url.split("#")[1] === `/pair?${okQuery}`,
+  );
+  check(
+    "P2-193: percent-encoding and + survive untouched (no URLSearchParams re-encoding)",
+    buildPairLink(okApp, "opencode-remote://pair?v=2&k=de%2FAd%2B%3D%3D&r=a%20b").url.endsWith(
+      "#/pair?v=2&k=de%2FAd%2B%3D%3D&r=a%20b",
+    ),
+  );
+  check(
+    "P2-193: origin unavailable → problem and fail-closed empty url",
+    buildPairLink({ url: "", origin: "unavailable", problems: ["loopback relay"] }, okUri).problems.join(" ").includes("unavailable") &&
+      buildPairLink({ url: "", origin: "unavailable", problems: [] }, okUri).problems.length > 0 &&
+      buildPairLink({ url: "", origin: "unavailable", problems: [] }, okUri).url === "",
+  );
+  check(
+    "P2-193: origin stored-invalid → problem and fail-closed empty url",
+    buildPairLink({ url: "", origin: "stored-invalid", problems: ["bad stored value"] }, okUri).problems.length > 0 &&
+      buildPairLink({ url: "", origin: "stored-invalid", problems: [] }, okUri).url === "" &&
+      buildPairLink({ url: "", origin: "stored-invalid", problems: [] }, okUri).problems.length > 0,
+  );
+  check(
+    "P2-193: app problems propagate (fail-closed even with a usable origin)",
+    buildPairLink({ url: "https://relay.example.com", origin: "stored", problems: ["insecure"] }, okUri).problems.includes("insecure") &&
+      buildPairLink({ url: "https://relay.example.com", origin: "stored", problems: ["insecure"] }, okUri).url === "",
+  );
+  check(
+    "P2-193: OPENCODE-REMOTE://PAIR (uppercase scheme/host) is the same scheme — no problem",
+    buildPairLink(okApp, "OPENCODE-REMOTE://PAIR?v=2&room=x&k=y").problems.length === 0,
+  );
+  check(
+    "P2-193: URI without protocol version 2 → problem (missing and v=1)",
+    buildPairLink(okApp, "opencode-remote://pair?room=x&k=y").problems.some((p) => p.includes("version 2")) &&
+      buildPairLink(okApp, "opencode-remote://pair?v=1&room=x&k=y").url === "",
+  );
+  check(
+    "P2-193: URI with its own fragment → problem (the query is never re-mounted over a fragment)",
+    buildPairLink(okApp, "opencode-remote://pair?v=2&room=x#z").problems.some((p) => p.includes("fragment")) &&
+      buildPairLink(okApp, "opencode-remote://pair?v=2&room=x#z").url === "",
+  );
+  check(
+    "P2-193: URI that is not opencode-remote://pair → problem",
+    buildPairLink(okApp, "opencode-remote://admin?v=2").problems.length > 0 &&
+      buildPairLink(okApp, "https://evil.example.com/pair?v=2").url === "",
+  );
+  {
+    const longQuery = `v=2&pad=${"x".repeat(5000)}`;
+    const res = buildPairLink(okApp, `opencode-remote://pair?${longQuery}`);
+    check(
+      "P2-193: query above the documented 4KB ceiling → problem",
+      res.problems.some((p) => p.includes("4096")) && res.url === "",
+    );
+    const padLen = PAIR_LINK_MAX_LEN - okApp.url.length - PAIR_LINK_HASH_ROUTE.length + 1;
+    const overLink = buildPairLink(okApp, `opencode-remote://pair?v=2&pad=${"x".repeat(padLen)}`);
+    check(
+      "P2-193: final link above PAIR_LINK_MAX_LEN → problem (query still under 4KB)",
+      overLink.problems.some((p) => p.includes(String(PAIR_LINK_MAX_LEN))) && overLink.url === "",
+    );
+  }
+  check(
+    "P2-193: non-string URI (null) → problem, empty url",
+    buildPairLink(okApp, null).problems.length > 0 && buildPairLink(okApp, null).url === "",
+  );
+
+  // Real-source assertions: the combined QR may only exist when the link is
+  // problem-free, and the hash route must consume itself via replaceState.
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  const pairLinkAt = mainSrc.indexOf("const pairLink = {");
+  check(
+    "P2-193: the real main.ts mints the combined QR only with zero problems",
+    pairLinkAt > -1 &&
+      /pairLinkRes\.problems\.length === 0 && pairLinkRes\.url !== ""\s*\?\s*await QRCode\.toDataURL\(pairLinkRes\.url/.test(
+        mainSrc.slice(pairLinkAt, pairLinkAt + 400),
+      ),
+  );
+  const appSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "App.tsx"), "utf8");
+  const pairRouteAt = appSrc.indexOf('h.startsWith("#/pair")');
+  check(
+    "P2-193: the real App.tsx #/pair branch consumes the fragment with history.replaceState(",
+    pairRouteAt > -1 && appSrc.slice(pairRouteAt, pairRouteAt + 900).includes("history.replaceState("),
+  );
+  check(
+    "P2-193: pairLinkTitle/pairLinkHint exist in en and pt",
+    ["pairLinkTitle", "pairLinkHint"].every(
+      (k) =>
+        typeof (dict.en as Record<string, string>)[k] === "string" &&
+        typeof (dict.pt as Record<string, string>)[k] === "string",
+    ),
   );
 }
 

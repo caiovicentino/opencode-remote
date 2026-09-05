@@ -212,6 +212,10 @@ export const dict = {
     pairWebAppCopied: "Copied",
     pairWebAppUnavailable:
       "The local relay only serves this machine, so there is no address the phone can reach yet. Point the app at a hosted relay in Settings → Phone relay, then come back here.",
+    // combined pair link (desktop, P2-193): one QR, credential in the fragment
+    pairLinkTitle: "Scan with your phone's camera",
+    pairLinkHint:
+      "One code is all it takes — the camera opens the app on your phone already paired. The pairing credential rides in the URL fragment, which no browser sends to any server.",
     webAppTitle: "App address (phone)",
     webAppHint:
       "Where the phone opens the app — derived from the phone relay (wss:// becomes https://, same host and port) unless you save one here.",
@@ -600,6 +604,10 @@ export const dict = {
     pairWebAppCopied: "Copiado",
     pairWebAppUnavailable:
       "O relay local só atende esta máquina, então ainda não existe endereço que o celular alcance. Aponte o app para um relay hospedado em Config → Relay do celular e volte aqui.",
+    // link de pareamento combinado (desktop, P2-193): um QR só, credencial no fragmento
+    pairLinkTitle: "Escaneie com a câmera do celular",
+    pairLinkHint:
+      "Um código só — a câmera abre o app no celular já pareado. A credencial de pareamento viaja no fragmento da URL, que nenhum navegador envia a servidor.",
     webAppTitle: "Endereço do app (celular)",
     webAppHint:
       "Onde o celular abre o app — derivado do relay do celular (wss:// vira https://, mesmo host e porta), a menos que você salve um aqui.",

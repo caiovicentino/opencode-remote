@@ -438,6 +438,16 @@ explicit address in Settings → **App address (phone)** — a stored value beat
 the derived one. With the loopback local relay the shell shows a calm
 explanation instead of an address the phone could never reach.
 
+**One-QR pairing (P2-193)**: when the app address is usable, the shell fuses
+both steps into a single QR — the pairing credential travels in the URL
+**fragment** of the app address (`…/#/pair?v=2&…`), so the phone's camera
+alone opens the app already paired. No browser ever sends a fragment to a
+server, so the hosted relay stays a blind router; the web app wipes the
+fragment from the address bar and history (`history.replaceState`) the moment
+it consumes the link; and a problem-bearing link is never rendered as a QR —
+the two labeled QRs above remain the fallback. The limited pairing window
+(P2-190) is still what bounds the credential's validity.
+
 The image carries no secrets and the relay stays a blind
 router: it never sees plaintext or keys. The optional metrics endpoint
 (`RELAY_METRICS_PORT`) binds loopback by default; setting

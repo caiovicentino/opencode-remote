@@ -63,6 +63,11 @@ export interface PairingState {
    * legacy shell payload still renders every existing surface. qrDataUrl is
    * null whenever reason is non-empty (no QR for a problem-bearing address). */
   webApp?: { url: string; origin: "stored" | "derived" | "unavailable"; reason: string; qrDataUrl: string | null };
+  /** P2-193: the combined pair link — the app address with the pairing
+   * credential moved into the URL fragment (never sent to any server).
+   * Optional and additive; qrDataUrl is null whenever problems is non-empty
+   * (no QR for a problem-bearing link — the two-QR fallback stays). */
+  pairLink?: { url: string; qrDataUrl: string | null; problems: string[] };
 }
 
 /** P2-187: the phone relay address resolution (Settings → "Relay do celular").
