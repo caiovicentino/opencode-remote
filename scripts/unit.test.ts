@@ -239,7 +239,7 @@ import { GUARD_ALERT_THRESHOLD, clearGuardRejections, guardAlertDetail, noteGuar
 
 import { mkdtempSync, mkdirSync, readdirSync, rmSync, existsSync, readFileSync, writeFileSync, statSync, symlinkSync, utimesSync, copyFileSync } from "node:fs";
 
-import { execSync, execFileSync, spawn } from "node:child_process";
+import { execSync, execFileSync, spawn, spawnSync } from "node:child_process";
 
 import { createServer, get } from "node:http";
 
@@ -431,7 +431,7 @@ import {
   writeHintFlag,
 } from "../apps/desktop/src/closehint";
 
-import { updateMenuLabel } from "../apps/desktop/src/update";
+import { publicFeedUrl, updateMenuLabel } from "../apps/desktop/src/update";
 
 import { permissionDecision, requestingScheme, SHELL_PERMISSIONS } from "../apps/desktop/src/permissions";
 
@@ -478,6 +478,7 @@ import { checkPng } from "../tools/pngcheck.mjs";
 
 import { signingProfile } from "../apps/desktop/scripts/signing-profile.mjs";
 import { signingProfileWin } from "../apps/desktop/scripts/signing-profile-win.mjs";
+import { archOfFileName, macFeedPlan } from "../apps/desktop/scripts/update-feed.mjs";
 
 import {
   avgDoneDuration,
@@ -9101,10 +9102,14 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   const complete = [
     "opencode-remote-v0.3.0.tar.gz", // source tarball never satisfies a platform slot
     "OpenCode Remote-0.3.0-arm64.dmg",
-    "OpenCode Remote-0.3.0-mac.zip",
+    "OpenCode Remote-0.3.0-x64.dmg",
+    "OpenCode Remote-0.3.0-arm64.zip",
+    "OpenCode Remote-0.3.0-x64.zip",
     "OpenCode Remote Setup 0.3.0.exe",
     "latest-mac.yml",
     "update-mac.json",
+    "update-mac-arm64.json",
+    "update-mac-x64.json",
     "latest.yml",
   ];
   check(
@@ -9112,13 +9117,16 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     missingAssets(expectedAssets(TAG), complete).length === 0,
   );
   check(
-    "P2-153: expected assets are exactly 6 (dmg, zip, exe, 3 metadata files)",
-    expectedAssets(TAG).length === 6,
+    "P2-153: expected assets are exactly 10 (per-arch dmg+zip, exe, 5 metadata files) — P2-191",
+    expectedAssets(TAG).length === 10,
   );
   check(
-    "P2-153: missing dmg is reported by label",
+    "P2-153: missing dmg is reported by label (both architectures since P2-191)",
     JSON.stringify(missingAssets(expectedAssets(TAG), complete.filter((n) => !n.endsWith(".dmg")))) ===
-      JSON.stringify(["macOS DMG installer (*.dmg carrying 0.3.0)"]),
+      JSON.stringify([
+        "macOS DMG installer for Apple Silicon (*.dmg carrying 0.3.0 and arm64)",
+        "macOS DMG installer for Intel (*.dmg carrying 0.3.0 and x64)",
+      ]),
   );
   check(
     "P2-153: missing latest.yml is reported by label",
@@ -9128,11 +9136,11 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P2-153: dmg named after a different version counts as missing (no substring leak: 9.9.9 ≠ 0.3.0)",
     JSON.stringify(missingAssets(expectedAssets(TAG), complete.map((n) => n.replace("0.3.0-arm64.dmg", "9.9.9-arm64.dmg")))) ===
-      JSON.stringify(["macOS DMG installer (*.dmg carrying 0.3.0)"]),
+      JSON.stringify(["macOS DMG installer for Apple Silicon (*.dmg carrying 0.3.0 and arm64)"]),
   );
   check(
     "P2-153: version boundaries hold (10.3.0 does not satisfy a 0.3.0 slot)",
-    missingAssets(expectedAssets(TAG), complete.map((n) => n.replaceAll("0.3.0", "10.3.0"))).length === 3,
+    missingAssets(expectedAssets(TAG), complete.map((n) => n.replaceAll("0.3.0", "10.3.0"))).length === 5,
   );
   check(
     "P2-153: tag without the leading v is accepted (P2-151 style)",
@@ -9165,10 +9173,14 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   };
   const names = [
     "OpenCode Remote-0.3.0-arm64.dmg",
-    "OpenCode Remote-0.3.0-mac.zip",
+    "OpenCode Remote-0.3.0-x64.dmg",
+    "OpenCode Remote-0.3.0-arm64.zip",
+    "OpenCode Remote-0.3.0-x64.zip",
     "OpenCode Remote Setup 0.3.0.exe",
     "latest-mac.yml",
     "update-mac.json",
+    "update-mac-arm64.json",
+    "update-mac-x64.json",
     "latest.yml",
   ].join("\n");
   const ok = run("v0.3.0", `${names}\n`);
@@ -9176,7 +9188,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   const fail = run("v0.3.0", "");
   check(
     "P2-153: cli exits 1 printing ALL missing labels at once (fail-closed)",
-    fail.code === 1 && fail.out.includes("release-assets: FAIL v0.3.0") && (fail.out.match(/  - missing: /g) ?? []).length === 6 && fail.out.includes("6 problem(s) found"),
+    fail.code === 1 && fail.out.includes("release-assets: FAIL v0.3.0") && (fail.out.match(/  - missing: /g) ?? []).length === 10 && fail.out.includes("10 problem(s) found"),
     fail.out,
   );
   const badTag = run("nope", names);
@@ -9206,6 +9218,246 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P2-153: release-verify declares shell: bash (P2-126 lesson)",
     block.includes("shell: bash"),
+  );
+}
+
+
+// --- P2-191: macFeedPlan — one Squirrel.Mac feed per architecture ------------
+{
+  const SLUG = "caiovicentino/opencode-remote";
+  const ARM64_ZIP = "OpenCode-Remote-0.3.0-arm64.zip";
+  const X64_ZIP = "OpenCode-Remote-0.3.0-x64.zip";
+  const META = { notes: "release notes", pubDate: "2026-09-01T12:00:00.000Z" };
+
+  const both = macFeedPlan([ARM64_ZIP, X64_ZIP, "OpenCode-Remote-0.3.0-arm64.dmg", "latest-mac.yml"], "v0.3.0", SLUG, META);
+  check(
+    "P2-191: both zips present → two feed documents, each pointing at its own architecture's zip",
+    both.problems.length === 0 &&
+      both.feeds !== null &&
+      both.feeds.arm64.url === `https://github.com/${SLUG}/releases/download/v0.3.0/${encodeURIComponent(ARM64_ZIP)}` &&
+      both.feeds.x64.url === `https://github.com/${SLUG}/releases/download/v0.3.0/${encodeURIComponent(X64_ZIP)}`,
+    JSON.stringify(both),
+  );
+  check(
+    "P2-191: feed documents carry the Squirrel shape (name = bare tag version, notes/pub_date from meta)",
+    both.feeds !== null &&
+      both.feeds.arm64.name === "0.3.0" &&
+      both.feeds.arm64.notes === "release notes" &&
+      both.feeds.arm64.pub_date === "2026-09-01T12:00:00.000Z",
+    JSON.stringify(both.feeds),
+  );
+  check(
+    "P2-191: 3-argument call works (meta optional, defaults filled)",
+    (() => {
+      const plan = macFeedPlan([ARM64_ZIP, X64_ZIP], "v0.3.0", SLUG);
+      return plan.feeds !== null && plan.feeds.arm64.notes === "" && plan.feeds.arm64.pub_date.length > 0;
+    })(),
+  );
+
+  const noX64 = macFeedPlan([ARM64_ZIP], "v0.3.0", SLUG, META);
+  check(
+    "P2-191: x64 zip absent → problem, no feeds (fail-closed)",
+    noX64.feeds === null && noX64.problems.length === 1 && noX64.problems[0]!.includes("x64"),
+    JSON.stringify(noX64),
+  );
+  const noArm64 = macFeedPlan([X64_ZIP], "v0.3.0", SLUG, META);
+  check(
+    "P2-191: arm64 zip absent → problem, no feeds (fail-closed)",
+    noArm64.feeds === null && noArm64.problems.length === 1 && noArm64.problems[0]!.includes("arm64"),
+    JSON.stringify(noArm64),
+  );
+  const ambiguous = macFeedPlan([ARM64_ZIP, "OpenCode-Remote-0.3.0-arm64-2.zip", X64_ZIP], "v0.3.0", SLUG, META);
+  check(
+    "P2-191: two arm64 zips → ambiguous problem listing both names, no feeds",
+    ambiguous.feeds === null &&
+      ambiguous.problems.length === 1 &&
+      ambiguous.problems[0]!.includes("ambiguous") &&
+      ambiguous.problems[0]!.includes(ARM64_ZIP),
+    JSON.stringify(ambiguous),
+  );
+  const emptyList = macFeedPlan([], "v0.3.0", SLUG, META);
+  check(
+    "P2-191: empty file list → problem, no feeds",
+    emptyList.feeds === null && emptyList.problems.length === 1 && emptyList.problems[0]!.includes("*.zip"),
+    JSON.stringify(emptyList),
+  );
+  const legacy = macFeedPlan(["OpenCode-Remote-0.3.0-mac.zip"], "v0.3.0", SLUG, META);
+  check(
+    "P2-191: a name without any architecture satisfies nothing — both arches reported missing",
+    legacy.feeds === null &&
+      legacy.problems.length === 2 &&
+      legacy.problems.every((p) => p.includes("carrying")),
+    JSON.stringify(legacy),
+  );
+  const emptyTag = macFeedPlan([ARM64_ZIP, X64_ZIP], "  ", SLUG, META);
+  check(
+    "P2-191: empty tag → problem, no feeds",
+    emptyTag.feeds === null && emptyTag.problems.length === 1 && emptyTag.problems[0]!.includes("tag is empty"),
+    JSON.stringify(emptyTag),
+  );
+
+  // Token-boundary discipline: an arch token must sit on a [-_.] boundary.
+  check(
+    "P2-191: archOfFileName boundaries — x86_64/arm64e/arch-less names match nothing",
+    archOfFileName("toolchain-x86_64.zip") === null &&
+      archOfFileName("OpenCode-Remote-0.3.0-arm64e.zip") === null &&
+      archOfFileName("OpenCode-Remote-0.3.0-mac.zip") === null,
+  );
+  check(
+    "P2-191: archOfFileName hits the real artifact names",
+    archOfFileName(ARM64_ZIP) === "arm64" && archOfFileName(X64_ZIP) === "x64",
+  );
+
+  // The alias contract, exercised through the real CLI (what the release
+  // workflow runs): update-mac.json must be a byte-a-byte alias of the arm64
+  // document, and all three files must exist.
+  const repoRoot = join(import.meta.dirname, "..");
+  const tsxEntry = join(repoRoot, "node_modules", "tsx", "dist", "cli.mjs");
+  const script = join(repoRoot, "apps", "desktop", "scripts", "update-feed.mjs");
+  const dir = mkdtempSync(join(tmpdir(), "update-feed-"));
+  try {
+    writeFileSync(join(dir, ARM64_ZIP), "zip");
+    writeFileSync(join(dir, X64_ZIP), "zip");
+    writeFileSync(join(dir, "latest-mac.yml"), "version: 0.3.0\nreleaseDate: '2026-09-01'\n");
+    const cli = spawnSync(process.execPath, [script, "--dist", dir, "--tag", "v0.3.0"], { encoding: "utf8" });
+    check(
+      "P2-191: CLI writes update-mac-arm64.json, update-mac-x64.json and the update-mac.json alias",
+      cli.status === 0 &&
+        existsSync(join(dir, "update-mac-arm64.json")) &&
+        existsSync(join(dir, "update-mac-x64.json")) &&
+        existsSync(join(dir, "update-mac.json")),
+      cli.stdout + cli.stderr,
+    );
+    const arm64Doc = readFileSync(join(dir, "update-mac-arm64.json"), "utf8");
+    check(
+      "P2-191: the legacy update-mac.json is a byte-a-byte alias of the arm64 document",
+      arm64Doc === readFileSync(join(dir, "update-mac.json"), "utf8") && arm64Doc.endsWith("\n"),
+    );
+    check(
+      "P2-191: CLI alias points at the arm64 zip, x64 file at the x64 zip",
+      JSON.parse(arm64Doc).url.endsWith(`/${encodeURIComponent(ARM64_ZIP)}`) &&
+        JSON.parse(readFileSync(join(dir, "update-mac-x64.json"), "utf8")).url.endsWith(`/${encodeURIComponent(X64_ZIP)}`),
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+
+// --- P2-191: publicFeedUrl — the darwin feed follows the process architecture -
+{
+  const BASE = "https://github.com/caiovicentino/opencode-remote/releases/latest/download";
+  check(
+    "P2-191: darwin arm64 → update-mac-arm64.json",
+    publicFeedUrl({}, true, "darwin", "arm64") === `${BASE}/update-mac-arm64.json`,
+  );
+  check(
+    "P2-191: darwin x64 → update-mac-x64.json",
+    publicFeedUrl({}, true, "darwin", "x64") === `${BASE}/update-mac-x64.json`,
+  );
+  check(
+    "P2-191: darwin unknown architecture → legacy update-mac.json",
+    publicFeedUrl({}, true, "darwin", "ppc64") === `${BASE}/update-mac.json`,
+  );
+  check(
+    "P2-191: win32 → latest.yml regardless of architecture; linux → null",
+    publicFeedUrl({}, true, "win32", "x64") === `${BASE}/latest.yml` &&
+      publicFeedUrl({}, true, "win32", "arm64") === `${BASE}/latest.yml` &&
+      publicFeedUrl({}, true, "linux", "x64") === null,
+  );
+  check(
+    "P2-191: OCR_PUBLIC_UPDATE_FEED is an absolute override — wins over platform AND architecture",
+    publicFeedUrl({ OCR_PUBLIC_UPDATE_FEED: "https://fork.dev/feed.json" }, true, "darwin", "arm64") === "https://fork.dev/feed.json" &&
+      publicFeedUrl({ OCR_PUBLIC_UPDATE_FEED: "https://fork.dev/feed.json" }, true, "darwin", "x64") === "https://fork.dev/feed.json" &&
+      publicFeedUrl({ OCR_PUBLIC_UPDATE_FEED: "https://fork.dev/feed.json" }, true, "win32", "arm64") === "https://fork.dev/feed.json" &&
+      publicFeedUrl({ OCR_PUBLIC_UPDATE_FEED: "https://fork.dev/feed.json" }, true, "linux", "x64") === "https://fork.dev/feed.json",
+  );
+  check(
+    "P2-191: unpackaged builds keep no public feed at all",
+    publicFeedUrl({}, false, "darwin", "arm64") === null,
+  );
+}
+
+
+// --- P2-191: release-assets — the Intel slots are mandatory ------------------
+{
+  const TAG = "v0.3.0";
+  const complete = [
+    "OpenCode-Remote-0.3.0-arm64.dmg",
+    "OpenCode-Remote-0.3.0-x64.dmg",
+    "OpenCode-Remote-0.3.0-arm64.zip",
+    "OpenCode-Remote-0.3.0-x64.zip",
+    "OpenCode-Remote-Setup-0.3.0.exe",
+    "latest-mac.yml",
+    "update-mac.json",
+    "update-mac-arm64.json",
+    "update-mac-x64.json",
+    "latest.yml",
+  ];
+  check(
+    "P2-191: complete two-arch release (real electron-builder names) → no problems",
+    missingAssets(expectedAssets(TAG), complete).length === 0,
+    JSON.stringify(missingAssets(expectedAssets(TAG), complete)),
+  );
+  const noIntelDmg = missingAssets(expectedAssets(TAG), complete.filter((n) => !n.includes("x64.dmg")));
+  check(
+    "P2-191: release without the Intel dmg → exactly the Intel dmg slot missing",
+    noIntelDmg.length === 1 && noIntelDmg[0]!.includes("Intel") && noIntelDmg[0]!.includes("x64"),
+    JSON.stringify(noIntelDmg),
+  );
+  const noIntelZip = missingAssets(expectedAssets(TAG), complete.filter((n) => !n.includes("x64.zip")));
+  check(
+    "P2-191: release without the Intel zip → exactly the Intel zip slot missing",
+    noIntelZip.length === 1 && noIntelZip[0]!.includes("Intel") && noIntelZip[0]!.includes("x64"),
+    JSON.stringify(noIntelZip),
+  );
+  check(
+    "P2-191: release without update-mac-arm64.json → problem",
+    (() => {
+      const missing = missingAssets(expectedAssets(TAG), complete.filter((n) => n !== "update-mac-arm64.json"));
+      return missing.length === 1 && missing[0]!.includes("update-mac-arm64.json");
+    })(),
+  );
+  check(
+    "P2-191: release without update-mac-x64.json → problem",
+    (() => {
+      const missing = missingAssets(expectedAssets(TAG), complete.filter((n) => n !== "update-mac-x64.json"));
+      return missing.length === 1 && missing[0]!.includes("update-mac-x64.json");
+    })(),
+  );
+  check(
+    "P2-191: the legacy arch-less zip satisfies nothing (Intel download can never be faked)",
+    missingAssets(expectedAssets(TAG), complete.map((n) => n.replace("-x64.zip", "-mac.zip"))).length === 1,
+  );
+}
+
+
+// --- P2-191: real-repo assertion — the builder yml declares both arches -------
+{
+  const root = join(import.meta.dirname, "..");
+  const ebYml = readFileSync(join(root, "apps", "desktop", "electron-builder.yml"), "utf8");
+  const macBlock = ebYml.slice(ebYml.indexOf("\nmac:"), ebYml.indexOf("\ndmg:"));
+  check(
+    "P2-191: electron-builder.yml declares dmg with arch [arm64, x64]",
+    /- target: dmg\s*\n\s*arch: \[arm64, x64\]/.test(macBlock),
+    macBlock,
+  );
+  check(
+    "P2-191: electron-builder.yml declares zip with arch [arm64, x64]",
+    /- target: zip\s*\n\s*arch: \[arm64, x64\]/.test(macBlock),
+    macBlock,
+  );
+  check(
+    "P2-191: the dir target keeps no arch (dist:smoke stays host-arch and fast)",
+    macBlock.includes("- target: dir") && !/- target: dir\s*\n\s*arch:/.test(macBlock),
+    macBlock,
+  );
+  // The workflow must upload every feed file the CLI now writes, or the two
+  // new release-verify slots could never be satisfied by a real release.
+  const release = readFileSync(join(root, ".github", "workflows", "release.yml"), "utf8");
+  check(
+    "P2-191: release.yml desktop-dmg uploads the per-arch feed files (update-mac*.json)",
+    release.includes("apps/desktop/dist/update-mac*.json"),
   );
 }
 
@@ -11332,10 +11584,14 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   const complete = [
     "opencode-remote-v0.3.0.tar.gz",
     "OpenCode Remote-0.3.0-arm64.dmg",
-    "OpenCode Remote-0.3.0-mac.zip",
+    "OpenCode Remote-0.3.0-x64.dmg",
+    "OpenCode Remote-0.3.0-arm64.zip",
+    "OpenCode Remote-0.3.0-x64.zip",
     "OpenCode Remote Setup 0.3.0.exe",
     "latest-mac.yml",
     "update-mac.json",
+    "update-mac-arm64.json",
+    "update-mac-x64.json",
     "latest.yml",
   ];
   const ok = publishDecision(true, complete, TAG);
@@ -11347,9 +11603,20 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
 
   const noDmg = publishDecision(true, complete.filter((n) => !n.endsWith(".dmg")), TAG);
   check(
-    "P2-179: draft without the DMG → problem",
-    noDmg.publish === false && noDmg.problems.length === 1 && noDmg.problems[0]!.includes("macOS DMG installer"),
+    "P2-179: draft without the DMG → one problem per architecture (P2-191)",
+    noDmg.publish === false &&
+      noDmg.problems.length === 2 &&
+      noDmg.problems.every((p) => p.includes("macOS DMG installer")),
     JSON.stringify(noDmg),
+  );
+
+  const noIntelDmg = publishDecision(true, complete.filter((n) => !n.includes("x64.dmg")), TAG);
+  check(
+    "P2-179: draft without the Intel DMG → problem (a release without the x64 installer stays draft, P2-191)",
+    noIntelDmg.publish === false &&
+      noIntelDmg.problems.length === 1 &&
+      noIntelDmg.problems[0]!.includes("Intel"),
+    JSON.stringify(noIntelDmg),
   );
 
   const noExe = publishDecision(true, complete.filter((n) => !n.endsWith(".exe")), TAG);
@@ -11359,11 +11626,11 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     JSON.stringify(noExe),
   );
 
-  const feedNames = ["latest-mac.yml", "update-mac.json", "latest.yml"];
+  const feedNames = ["latest-mac.yml", "update-mac.json", "update-mac-arm64.json", "update-mac-x64.json", "latest.yml"];
   const noFeeds = publishDecision(true, complete.filter((n) => !feedNames.includes(n)), TAG);
   check(
     "P2-179: draft without the feed files → one problem per missing feed",
-    noFeeds.publish === false && noFeeds.problems.length === 3,
+    noFeeds.publish === false && noFeeds.problems.length === 5,
     JSON.stringify(noFeeds),
   );
 
@@ -11377,7 +11644,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   const empty = publishDecision(true, [], TAG);
   check(
     "P2-179: draft with an empty asset list → every required slot is a problem",
-    empty.publish === false && empty.problems.length === 6,
+    empty.publish === false && empty.problems.length === 10,
     JSON.stringify(empty),
   );
 
@@ -11416,8 +11683,8 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "P2-179: cli exits 1 printing ALL missing labels at once (release stays draft)",
     cliFail.code === 1 &&
       cliFail.out.includes("release-publish: FAIL v0.3.0") &&
-      (cliFail.out.match(/  - missing: /g) ?? []).length === 6 &&
-      cliFail.out.includes("6 problem(s) found"),
+      (cliFail.out.match(/  - missing: /g) ?? []).length === 10 &&
+      cliFail.out.includes("10 problem(s) found"),
     cliFail.out,
   );
   writeFileSync(viewPath, JSON.stringify({ isDraft: false, tagName: TAG, assets: [] }));
@@ -11642,12 +11909,16 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   const ebYml = readFileSync(join(repoRoot, "apps", "desktop", "electron-builder.yml"), "utf8");
   const macBlock = ebYml.slice(ebYml.indexOf("\nmac:"), ebYml.indexOf("\ndmg:"));
   const nsisBlock = ebYml.slice(ebYml.indexOf("\nnsis:"), ebYml.indexOf("\nlinux:"));
-  const renderArtifact = (tpl: string, ext: string) =>
-    tpl.replaceAll("${version}", "0.3.0").replaceAll("${arch}", "arm64").replaceAll("${ext}", ext);
+  const renderArtifact = (tpl: string, ext: string, arch = "arm64") =>
+    tpl.replaceAll("${version}", "0.3.0").replaceAll("${arch}", arch).replaceAll("${ext}", ext);
   const macTpl = /^\s*artifactName: (.+)$/m.exec(macBlock)?.[1]?.trim() ?? "";
   const nsisTpl = /^\s*artifactName: (.+)$/m.exec(nsisBlock)?.[1]?.trim() ?? "";
   const REAL_DMG = renderArtifact(macTpl, "dmg");
   const REAL_ZIP = renderArtifact(macTpl, "zip");
+  // P2-191: the release carries BOTH architectures — the Intel artifacts are
+  // the same template rendered with ${arch} = x64.
+  const REAL_DMG_X64 = renderArtifact(macTpl, "dmg", "x64");
+  const REAL_ZIP_X64 = renderArtifact(macTpl, "zip", "x64");
   const REAL_EXE = renderArtifact(nsisTpl, "exe"); // nsis template ends in a literal .exe
   check(
     "P2-186: electron-builder.yml pins space-free dmg/zip/exe artifact names (manifest step cannot deadlock at tag time)",
@@ -11662,14 +11933,18 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
   // Complete, valid list — the REAL asset names, lowercase 64-hex digests, one
   // entry per download asset (tarball included; the P2-153 required slots all
-  // match by extension+version or exact name).
+  // match by extension+version(+arch) or exact name).
   const complete = [
     { name: "opencode-remote-v0.3.0.tar.gz", hash: hF },
     { name: REAL_DMG, hash: hB },
     { name: REAL_ZIP, hash: hA },
+    { name: REAL_DMG_X64, hash: hE },
+    { name: REAL_ZIP_X64, hash: hD },
     { name: REAL_EXE, hash: hC },
     { name: "latest-mac.yml", hash: hD },
     { name: "update-mac.json", hash: hG },
+    { name: "update-mac-arm64.json", hash: hB },
+    { name: "update-mac-x64.json", hash: hA },
     { name: "latest.yml", hash: hE },
   ];
   // Canonical order, written out by hand (not computed) so a sorting bug in
@@ -11678,10 +11953,14 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   const canonical = [
     `${hB}  ${REAL_DMG}`,
     `${hA}  ${REAL_ZIP}`,
+    `${hE}  ${REAL_DMG_X64}`,
+    `${hD}  ${REAL_ZIP_X64}`,
     `${hC}  ${REAL_EXE}`,
     `${hD}  latest-mac.yml`,
     `${hE}  latest.yml`,
     `${hF}  opencode-remote-v0.3.0.tar.gz`,
+    `${hB}  update-mac-arm64.json`,
+    `${hA}  update-mac-x64.json`,
     `${hG}  update-mac.json`,
   ].join("\n");
 
@@ -11691,7 +11970,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     JSON.stringify(checksumProblems(complete, TAG)),
   );
 
-  const shuffled = [complete[4], complete[0], complete[6], complete[2], complete[5], complete[1], complete[3]];
+  const shuffled = complete.slice(5).concat(complete.slice(0, 5));
   check(
     "P2-186: different input order → byte-identical manifest",
     checksumLines(shuffled) === checksumLines(complete) && checksumLines(complete).endsWith("\n") && !checksumLines(complete).includes("\r"),
@@ -11750,7 +12029,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   const empty = checksumProblems([], TAG);
   check(
     "P2-186: empty list → problem (plus every required slot missing)",
-    empty.length === 7 && empty[0]!.includes("empty"),
+    empty.length === 11 && empty[0]!.includes("empty"),
     JSON.stringify(empty),
   );
 

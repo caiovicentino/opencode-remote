@@ -114,18 +114,22 @@ export function resolvedFeedUrl(env: NodeJS.ProcessEnv = process.env, packaged =
  * (~/.opencode-remote/updates); a plain DMG install has no daemon staged
  * files, so the packaged default would always end "feed unreachable". The
  * release workflow publishes an update feed on every GitHub release — that is
- * the public fallback. The file name is platform-specific (P2-131, P2-146):
- * `update-mac.json` on macOS — the Squirrel.Mac JSON feed the built-in
- * autoUpdater downloads in the background (yml feeds have no download engine,
- * see the spike note) — `latest.yml` on Windows, and no default at all
- * elsewhere — until a platform has a download engine there is no feed to
- * advertise. OCR_PUBLIC_UPDATE_FEED overrides it for forks/staging and, being
- * an absolute override, ignores the platform.
+ * the public fallback. The file name is platform- and architecture-specific
+ * (P2-131, P2-146, P2-191): on darwin the release carries one Squirrel.Mac
+ * JSON feed per architecture, so the arm64 build downloads
+ * `update-mac-arm64.json`, the Intel build `update-mac-x64.json`, and any
+ * other architecture keeps the pre-P2-191 `update-mac.json` (the alias file,
+ * arm64 content). Windows keeps `latest.yml`; platforms with no download
+ * engine get no default at all — until a platform has a download engine there
+ * is no feed to advertise. OCR_PUBLIC_UPDATE_FEED overrides it for
+ * forks/staging and, being an absolute override, ignores both the platform
+ * and the architecture.
  */
 export function publicFeedUrl(
   env: NodeJS.ProcessEnv = process.env,
   packaged = app?.isPackaged ?? false,
   platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch,
 ): string | null {
   if (!packaged) return null;
   const override = env.OCR_PUBLIC_UPDATE_FEED?.trim();
@@ -133,9 +137,19 @@ export function publicFeedUrl(
   // P2-146: darwin consumes the Squirrel.Mac JSON feed (built by
   // apps/desktop/scripts/update-feed.mjs in the release workflow) so the
   // public fallback downloads in the background instead of stopping at the
-  // manual release page. Windows keeps the yml manual flow; other platforms
-  // have no download engine → no feed.
-  const asset = platform === "darwin" ? "update-mac.json" : platform === "win32" ? "latest.yml" : null;
+  // manual release page. P2-191: the feed name follows process.arch so an
+  // Intel Mac never receives the arm64 zip. Windows keeps the yml manual
+  // flow; other platforms have no download engine → no feed.
+  const asset =
+    platform === "darwin"
+      ? arch === "arm64"
+        ? "update-mac-arm64.json"
+        : arch === "x64"
+          ? "update-mac-x64.json"
+          : "update-mac.json"
+      : platform === "win32"
+        ? "latest.yml"
+        : null;
   if (!asset) return null;
   return `https://github.com/caiovicentino/opencode-remote/releases/latest/download/${asset}`;
 }

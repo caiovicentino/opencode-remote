@@ -423,9 +423,12 @@ check(
 check("resolvedFeedUrl: dev unpackaged stays disabled", resolvedFeedUrl({}, false) === null);
 
 // --- P2-098: public fallback feed for third-party installs --------------------
+// P2-191: the darwin feed is per-architecture (arm64/x64), other arches keep
+// the legacy update-mac.json alias.
 check(
-  "publicFeedUrl: packaged default on darwin = GitHub releases update-mac.json (Squirrel JSON, P2-146)",
-  publicFeedUrl({}, true, "darwin") === "https://github.com/caiovicentino/opencode-remote/releases/latest/download/update-mac.json",
+  "publicFeedUrl: packaged default on darwin follows the architecture (P2-191)",
+  publicFeedUrl({}, true, "darwin", "arm64") === "https://github.com/caiovicentino/opencode-remote/releases/latest/download/update-mac-arm64.json" &&
+    publicFeedUrl({}, true, "darwin", "x64") === "https://github.com/caiovicentino/opencode-remote/releases/latest/download/update-mac-x64.json",
 );
 check(
   "publicFeedUrl: OCR_PUBLIC_UPDATE_FEED overrides (forks/staging)",
@@ -570,9 +573,13 @@ check(
   // CLI mode (what the release workflow runs): writes dist/update-mac.json on
   // success; exit 1 listing ALL problems at once on a broken dist — same UX
   // as dist:smoke. --dist keeps the run hermetic (no apps/desktop/dist needed).
+  // P2-191: the dist fixture carries one zip per architecture and the CLI
+  // writes update-mac-arm64.json + update-mac-x64.json, with the legacy
+  // update-mac.json a byte-identical alias of the arm64 document.
   const cliRoot = mkdtempSync(join(tmpdir(), "ocr-update-feed-"));
   try {
-    writeFileSync(join(cliRoot, "OpenCode Remote-0.2.1-mac.zip"), "zip");
+    writeFileSync(join(cliRoot, "OpenCode Remote-0.2.1-arm64.zip"), "zip");
+    writeFileSync(join(cliRoot, "OpenCode Remote-0.2.1-x64.zip"), "zip");
     writeFileSync(join(cliRoot, "latest-mac.yml"), YML);
     const cli = spawnSync(
       process.execPath,
@@ -580,18 +587,31 @@ check(
       { encoding: "utf8" },
     );
     check(
-      "P2-146: CLI exits 0 and writes update-mac.json into the dist root",
-      cli.status === 0 && existsSync(join(cliRoot, "update-mac.json")),
+      "P2-146/P2-191: CLI exits 0 and writes update-mac-arm64/x64.json + the update-mac.json alias",
+      cli.status === 0 &&
+        existsSync(join(cliRoot, "update-mac-arm64.json")) &&
+        existsSync(join(cliRoot, "update-mac-x64.json")) &&
+        existsSync(join(cliRoot, "update-mac.json")),
     );
     const written = JSON.parse(readFileSync(join(cliRoot, "update-mac.json"), "utf8"));
     check(
       "P2-146: CLI-written feed carries url/name/notes/pub_date",
       typeof written.url === "string" && written.name === "0.2.1" && typeof written.pub_date === "string",
     );
+    check(
+      "P2-191: the alias file is byte-identical to the arm64 document, x64 points at its own zip",
+      readFileSync(join(cliRoot, "update-mac.json"), "utf8") === readFileSync(join(cliRoot, "update-mac-arm64.json"), "utf8") &&
+        JSON.parse(readFileSync(join(cliRoot, "update-mac-x64.json"), "utf8")).url.endsWith(
+          encodeURIComponent("OpenCode Remote-0.2.1-x64.zip"),
+        ),
+    );
 
     rmSync(join(cliRoot, "update-mac.json"));
+    rmSync(join(cliRoot, "update-mac-arm64.json"));
+    rmSync(join(cliRoot, "update-mac-x64.json"));
     writeFileSync(join(cliRoot, "latest-mac.yml"), YML_030); // version 0.3.0 ≠ tag v0.2.1
-    rmSync(join(cliRoot, "OpenCode Remote-0.2.1-mac.zip"));
+    rmSync(join(cliRoot, "OpenCode Remote-0.2.1-arm64.zip"));
+    rmSync(join(cliRoot, "OpenCode Remote-0.2.1-x64.zip"));
     const bad = spawnSync(
       process.execPath,
       [join(repoRoot, "apps", "desktop", "scripts", "update-feed.mjs"), "--dist", cliRoot, "--tag", "v0.2.1"],
@@ -603,7 +623,8 @@ check(
         bad.stderr.includes("0.3.0") &&
         bad.stderr.includes("*.zip") &&
         bad.stderr.includes("problem(s)") &&
-        !existsSync(join(cliRoot, "update-mac.json")),
+        !existsSync(join(cliRoot, "update-mac.json")) &&
+        !existsSync(join(cliRoot, "update-mac-arm64.json")),
     );
   } finally {
     rmSync(cliRoot, { recursive: true, force: true });

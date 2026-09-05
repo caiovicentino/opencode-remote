@@ -128,13 +128,17 @@ jobs:
 
       # P2-126 lesson: shell: bash so the dist/*.dmg glob expands (pwsh would
       # pass it through verbatim).
+      # P2-191: update-mac*.json covers all three feed files the mac side
+      # writes — update-mac-arm64.json, update-mac-x64.json and the legacy
+      # update-mac.json alias — so release-verify's per-arch feed slots are
+      # satisfiable.
       - name: Attach DMG + update metadata to the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           gh release upload "$GITHUB_REF_NAME" \
-            apps/desktop/dist/*.dmg apps/desktop/dist/latest-mac.yml apps/desktop/dist/update-mac.json \
+            apps/desktop/dist/*.dmg apps/desktop/dist/latest-mac.yml apps/desktop/dist/update-mac*.json \
             --clobber
 
   # P2-126: stage 5 is half Windows — the release also ships the NSIS setup

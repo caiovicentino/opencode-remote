@@ -28,6 +28,7 @@ Run `opencode-remote doctor` first — it checks everything below in one shot.
 | update didn't install | the consent dialog only appears after a **background download** finished; check `desktop.log` for `update status`, then tray → **Check for updates** (or the app menu: **Ajuda → Verificar atualizações**). A version you deferred ("Later") is not re-offered until the next manual check or app restart |
 | no mic/camera in the packaged app (P2-169) | the first voice recording or QR scan triggers a macOS permission prompt — grant it. Denied by mistake: System Settings → Privacy & Security → Microphone / Camera → enable **OpenCode Remote**, then reopen the app (the signed build blocks the device without the grant; dev builds only fail the same way without the P2-169 entitlements/usage strings) |
 | mac download says "damaged and can't be opened" | that is an unsigned/stale DMG, not this project's release path: since P2-170 the desktop-dmg job runs the Gatekeeper verdicts (`codesign` verify, `spctl` assess, `stapler` validate — `scripts/gatekeeper-verify.ts`) on the packaged app before uploading, so a notarized release can never ship without its stapled ticket and a Developer ID release can never ship `spctl: rejected`. A normal **ad-hoc** release (no signing secrets) still shows the standard "unidentified developer" wall instead — right-click → **Open** once, per the README |
+| which macOS download do I pick (P2-191) | every release carries two installers: `OpenCode-Remote-<version>-arm64.dmg` (Apple Silicon) and `OpenCode-Remote-<version>-x64.dmg` (Intel). Check Apple menu → **About This Mac** → **Chip**: "Apple" → `-arm64`, "Intel" → `-x64`. The same split holds for the update feeds (`update-mac-arm64.json` / `update-mac-x64.json`), and the app picks the right one by itself — an app already installed as arm64 keeps updating through the legacy `update-mac.json`, which is a byte-identical alias of the arm64 feed |
 | the release workflow failed and the downloads page shows nothing new | that is the P2-179 draft flow working: releases are created as **drafts** and only go public after `release-verify` and `release-feeds` pass and the `release-publish` job's `scripts/release-publish.ts` confirms every required asset is attached. Open the run in Actions and look at which job has the red ✗ (its failing step lists every missing asset at once); the release stays a private draft, so users were never exposed to a broken download. Fix the cause and re-run the workflow (a re-run treats an already-published release as a no-op), or discard the draft with `gh release delete vX.Y.Z --yes` and re-tag — the draft is invisible to users either way |
 | the desktop-win release job failed at "Authenticode verification of the packaged installer" | since P2-183 the job verifies the packaged setup exe with PowerShell `Get-AuthenticodeSignature` (`scripts/authenticode-verify.ts`) before attaching it to the release, so an installer that would trip SmartScreen never ships: only `Status: Valid` with a certificate subject passes in authenticode mode. The failing step lists every problem at once under `authenticode-verify:` (not signed, hash mismatch, untrusted chain, expired certificate, unknown error, missing subject, or unrecognizable verification output); the raw `Status:`/`StatusMessage:`/`Subject:` lines are in `authenticode.txt` in the workspace — check whether the certificate expired, the WIN_CSC_KEY_PASSWORD was wrong, or electron-builder skipped signing, fix and re-run |
 | the downloaded installer's hash does not match `checksums.txt` (P2-186) | every release ships `checksums.txt` (coreutils format, one `sha256  <file>` line per asset) built from the finished assets right before publication, so a match proves the file is exactly what CI produced. Re-check with the right tool in the download folder: `shasum -a 256 -c checksums.txt` (macOS), `sha256sum -c checksums.txt` (Linux), `Get-FileHash <file> -Algorithm SHA256` compared with the manifest line (Windows PowerShell). A mismatch after a fresh re-download (truncated/proxied downloads are the usual cause) means: do not open or distribute the file — report it on the releases page; the release job itself refuses to publish when any hash or name is off (`release-checksums: FAIL` in the log lists every problem) |
@@ -54,11 +55,15 @@ The route is unauthenticated (autoUpdater cannot send headers) but strictly
 loopback-bound and limited to that folder: only plain filenames with a known
 extension, no traversal. Dev builds stay opt-in via `OCR_UPDATE_FEED`.
 
-Since P2-098, a machine with **no** staged feed falls back to the public
-`latest-mac.yml` attached to the latest GitHub release
-(`OCR_PUBLIC_UPDATE_FEED` overrides it; the tray then reports
-"update available" but the background download still requires a Squirrel JSON
-feed — stage one as above to get the consent flow). The fallback fires for
+Since P2-098, a machine with **no** staged feed falls back to the update feed
+attached to the latest GitHub release (`OCR_PUBLIC_UPDATE_FEED` overrides it;
+the tray then reports "update available" but the background download still
+requires a Squirrel JSON feed — stage one as above to get the consent flow).
+Since P2-191 that public feed is per-architecture on macOS:
+`update-mac-arm64.json` on Apple Silicon, `update-mac-x64.json` on Intel, and
+the legacy `update-mac.json` (arm64 content, byte-identical alias) for any
+other architecture — so an Intel Mac never receives the arm64 zip. The
+fallback fires for
 the packaged loopback default only: a feed explicitly set via
 `OCR_UPDATE_FEED` (dev/staging) fails with "feed unreachable" instead of
 making a surprise outbound request.
