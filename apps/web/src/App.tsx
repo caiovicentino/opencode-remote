@@ -1084,7 +1084,7 @@ export default function App() {
                 />
               </div>
             )}
-            {top !== "browser" && (
+            {top !== "browser" && top !== "mission" && (
               <div className="pane-view" key={top}>
                 {top === "artifacts" && artifactsNode}
                 {top === "files" && filesNode}
