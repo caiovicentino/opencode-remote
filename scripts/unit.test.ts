@@ -62,6 +62,11 @@ import {
   PAIR_WINDOW_CEILING_MS,
   pairWindow,
 } from "../apps/daemon/src/pairwindow";
+import {
+  DEVICE_TOUCH_INTERVAL_MS,
+  nextDeviceLabel,
+  touchDecision,
+} from "../apps/daemon/src/devicetouch";
 
 import {
   admitNewUpload,
@@ -516,6 +521,8 @@ import {
 import { touchesDesktop } from "./ci-scope";
 
 import { imageTags } from "./relay-image";
+
+import { imageSmokeVerdict } from "./relay-image-smoke";
 
 import { expectedAssets, missingAssets, tagProblems } from "./release-assets";
 import { publishDecision } from "./release-publish";
@@ -9105,6 +9112,139 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
 }
 
 
+// --- P2-196: relay-image-smoke — imageSmokeVerdict ---------------------------
+{
+  const okProbes = () => [
+    {
+      name: "healthz",
+      status: 200,
+      body: JSON.stringify({ ok: true, version: "0.2.0", uptimeS: 3, rooms: 1, roomsRejected: 0 }),
+    },
+    {
+      name: "web-root",
+      status: 200,
+      contentType: "text/html; charset=utf-8",
+      headers: {
+        "content-security-policy": "default-src 'self'; script-src 'self'",
+        "referrer-policy": "no-referrer",
+        "permissions-policy": "geolocation=(), payment=()",
+        "x-frame-options": "DENY",
+        "cross-origin-opener-policy": "same-origin",
+        "cross-origin-resource-policy": "same-origin",
+      },
+    },
+    { name: "hashed-asset", status: 200 },
+    { name: "dotfile", status: 404 },
+    { name: "method-not-get", status: 405 },
+    { name: "container-user", user: "node" },
+  ];
+  const failOne = (name: string, patch: Record<string, unknown>) => {
+    const probes = okProbes().map((p) => (p.name === name ? { ...p, ...patch } : p));
+    return imageSmokeVerdict(probes);
+  };
+
+  check("P2-196: every probe passing → zero problems", imageSmokeVerdict(okProbes()).length === 0);
+
+  const healthz = failOne("healthz", { status: 503, body: "draining" });
+  check(
+    "P2-196: healthz failing in isolation → exactly its own problem",
+    healthz.length === 1 && healthz[0]!.includes("healthz") && healthz[0]!.includes("503"),
+    JSON.stringify(healthz),
+  );
+  const webRoot = failOne("web-root", { headers: {} });
+  check(
+    "P2-196: web-root without the P2-192 headers failing in isolation → exactly its own problem",
+    webRoot.length === 1 && webRoot[0]!.includes("web-root") && webRoot[0]!.includes("content-security-policy"),
+    JSON.stringify(webRoot),
+  );
+  const hashed = failOne("hashed-asset", { status: 404 });
+  check(
+    "P2-196: hashed-asset failing in isolation → exactly its own problem",
+    hashed.length === 1 && hashed[0]!.includes("hashed-asset") && hashed[0]!.includes("404"),
+    JSON.stringify(hashed),
+  );
+  const dotfile = failOne("dotfile", { status: 200 });
+  check(
+    "P2-196: dotfile leaking through (200) failing in isolation → exactly its own problem",
+    dotfile.length === 1 && dotfile[0]!.includes("dotfile"),
+    JSON.stringify(dotfile),
+  );
+  const method = failOne("method-not-get", { status: 200 });
+  check(
+    "P2-196: DELETE answered 200 failing in isolation → exactly its own problem",
+    method.length === 1 && method[0]!.includes("method-not-get"),
+    JSON.stringify(method),
+  );
+  const rootUser = failOne("container-user", { user: "root" });
+  check(
+    "P2-196: container running as root → problem",
+    rootUser.length === 1 && rootUser[0]!.includes("container-user") && rootUser[0]!.includes("root"),
+    JSON.stringify(rootUser),
+  );
+  const emptyUser = failOne("container-user", { user: "  " });
+  check(
+    "P2-196: container user unreadable (empty) → problem (fail-closed)",
+    emptyUser.length === 1 && emptyUser[0]!.includes("container-user"),
+    JSON.stringify(emptyUser),
+  );
+
+  const many = imageSmokeVerdict([
+    { name: "healthz", status: 500, body: "boom" },
+    okProbes()[1]!,
+    { name: "dotfile", status: 200 },
+    { name: "container-user", user: "root" },
+  ]);
+  check(
+    "P2-196: several probes failing → ALL problems at once (no short-circuit)",
+    many.length === 3 &&
+      many[0]!.includes("healthz") &&
+      many[1]!.includes("dotfile") &&
+      many[2]!.includes("container-user"),
+    JSON.stringify(many),
+  );
+
+  const unknown = imageSmokeVerdict([...okProbes(), { name: "cpu-affinity", status: 200 }]);
+  check(
+    "P2-196: unknown probe name → problem",
+    unknown.length === 1 && unknown[0]!.includes("unknown probe") && unknown[0]!.includes("cpu-affinity"),
+    JSON.stringify(unknown),
+  );
+  check(
+    "P2-196: empty probe list → problem",
+    imageSmokeVerdict([]).length === 1 && imageSmokeVerdict([])[0]!.includes("no probes"),
+  );
+
+  // --- real-repo assertion: release.yml wires the smoke before the push ------
+  const repoRoot = join(import.meta.dirname, "..");
+  const release = readFileSync(join(repoRoot, ".github", "workflows", "release.yml"), "utf8");
+  const jobStart = release.indexOf("\n  relay-image:");
+  const jobEnd = release.indexOf("\n  release-feeds:");
+  const job = jobStart === -1 || jobEnd === -1 || jobEnd < jobStart ? "" : release.slice(jobStart, jobEnd);
+  const smokeAt = job.indexOf("Smoke the built image");
+  const buildAt = job.indexOf("Build image (both references)");
+  const pushAt = job.indexOf("Push both references");
+  check(
+    "P2-196: release.yml relay-image runs the smoke step between build and push",
+    buildAt > -1 && smokeAt > buildAt && pushAt > smokeAt,
+  );
+  check(
+    "P2-196: smoke step boots the built image detached, reads the container user and runs the smoke CLI",
+    job.includes("docker run -d --name relay-smoke") &&
+      job.includes("docker exec relay-smoke whoami") &&
+      job.includes("scripts/relay-image-smoke.ts"),
+  );
+  check(
+    "P2-196: smoke step declares shell: bash and always removes the container (trap on EXIT)",
+    job.includes("shell: bash") && job.includes("docker rm -f relay-smoke"),
+  );
+  check(
+    "P2-196: push stays opt-in fail-closed on PUBLISH_RELAY_IMAGE after the smoke",
+    /Push both references[\s\S]*?if: vars\.PUBLISH_RELAY_IMAGE == 'true'/.test(job.slice(pushAt)) &&
+      job.includes("if: vars.PUBLISH_RELAY_IMAGE == 'true'"),
+  );
+}
+
+
 // --- P2-153: release-assets — expected/missing download assets ---------------
 {
   const TAG = "v0.3.0";
@@ -12967,6 +13107,92 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   const mproto = buildMissionPrompt();
   check("mission protocol: discloses PR-based work (squash merges) with this machine's gh credentials", /PRs/.test(mproto) && /squash/.test(mproto) && /credenciais do gh/.test(mproto) && /nada é commitado direto em main/.test(mproto));
   check("mission protocol: points the chat at modelSubstitutions for \"which model is running\"", mproto.includes("modelSubstitutions") && mproto.includes("/api/pilot-mission"));
+// --- P2-194: device labels + last-seen touch (devicetouch.ts) -----------------
+
+{
+  const base = 1_700_000_000_000; // arbitrary fixed "now" anchor (pure: no clock reads)
+  const iso = (t: number) => new Date(t).toISOString();
+
+  // touchDecision matrix
+  check(
+    "P2-194: missing stamp (undefined/null/empty/blank) → write",
+    touchDecision(undefined, base, DEVICE_TOUCH_INTERVAL_MS) === "write" &&
+      touchDecision(null, base, DEVICE_TOUCH_INTERVAL_MS) === "write" &&
+      touchDecision("", base, DEVICE_TOUCH_INTERVAL_MS) === "write" &&
+      touchDecision("   ", base, DEVICE_TOUCH_INTERVAL_MS) === "write",
+  );
+  check(
+    "P2-194: stamp inside the interval → skip (no daemon.json rewrite per frame)",
+    touchDecision(iso(base - DEVICE_TOUCH_INTERVAL_MS + 1), base, DEVICE_TOUCH_INTERVAL_MS) === "skip" &&
+      touchDecision(iso(base - 60_000), base, DEVICE_TOUCH_INTERVAL_MS) === "skip" &&
+      touchDecision(iso(base), base, DEVICE_TOUCH_INTERVAL_MS) === "skip",
+  );
+  check(
+    "P2-194: stamp at/after the interval → write",
+    touchDecision(iso(base - DEVICE_TOUCH_INTERVAL_MS), base, DEVICE_TOUCH_INTERVAL_MS) === "write" &&
+      touchDecision(iso(base - DEVICE_TOUCH_INTERVAL_MS - 5_000), base, DEVICE_TOUCH_INTERVAL_MS) ===
+        "write",
+  );
+  check(
+    "P2-194: future stamp (clock ahead) → skip, never a write loop",
+    touchDecision(iso(base + 1), base, DEVICE_TOUCH_INTERVAL_MS) === "skip" &&
+      touchDecision(iso(base + DEVICE_TOUCH_INTERVAL_MS * 10), base, DEVICE_TOUCH_INTERVAL_MS) === "skip",
+  );
+  check(
+    "P2-194: non-string stamp (number/object/garbage string) → write (unreadable converges)",
+    touchDecision(123, base, DEVICE_TOUCH_INTERVAL_MS) === "write" &&
+      touchDecision({ t: base }, base, DEVICE_TOUCH_INTERVAL_MS) === "write" &&
+      touchDecision("not-a-date", base, DEVICE_TOUCH_INTERVAL_MS) === "write",
+  );
+
+  // nextDeviceLabel
+  check("P2-194: label for an empty list → Telefone 1", nextDeviceLabel([]) === "Telefone 1");
+  check(
+    "P2-194: label for a one-item list → next number",
+    nextDeviceLabel(["Telefone 1"]) === "Telefone 2" && nextDeviceLabel(["first"]) === "Telefone 1",
+  );
+  check(
+    "P2-194: label skips numbers already in use",
+    nextDeviceLabel(["Telefone 1", "Telefone 2"]) === "Telefone 3" &&
+      nextDeviceLabel(["Telefone 1", "Telefone 3"]) === "Telefone 2" &&
+      nextDeviceLabel(["Telefone 1", "Telefone 2", "Telefone 3"]) === "Telefone 4",
+  );
+  check(
+    "P2-194: label for a nine-item list → Telefone 10 (two digits)",
+    nextDeviceLabel(["Telefone 1", "Telefone 2", "Telefone 3", "Telefone 4", "Telefone 5", "Telefone 6", "Telefone 7", "Telefone 8", "Telefone 9"]) ===
+      "Telefone 10",
+  );
+
+  // old allowlist round trip: read without lastSeenAt, mutate in place the way
+  // saveAllowlist does (raw.clients = parsed objects, only the field added),
+  // re-serialize — no existing or unknown field may be lost.
+  const oldJson = `{"room":"r","ecdhPub":"p","ecdhPriv":"k","vapid":{"publicKey":"a","privateKey":"b"},
+    "clients":[{"pub":"PUB1","label":"first","addedAt":"2025-01-01T00:00:00.000Z","customUnknown":"keep-me"}]}`;
+  const parsed = JSON.parse(oldJson);
+  const client = (parsed.clients as Array<Record<string, unknown>>)[0];
+  // legacy client has no lastSeenAt → touchDecision(undefined) === "write"
+  check("P2-194: legacy client without lastSeenAt reads as never-seen → write", touchDecision(client.lastSeenAt, base, DEVICE_TOUCH_INTERVAL_MS) === "write");
+  client.lastSeenAt = iso(base);
+  const roundTripped = JSON.parse(JSON.stringify(parsed)).clients[0];
+  check(
+    "P2-194: old allowlist re-written with lastSeenAt loses no field (incl. unknown)",
+    roundTripped.pub === "PUB1" &&
+      roundTripped.label === "first" &&
+      roundTripped.addedAt === "2025-01-01T00:00:00.000Z" &&
+      roundTripped.customUnknown === "keep-me" &&
+      roundTripped.lastSeenAt === iso(base),
+  );
+
+  // real-source assertion: the bootstrap branch in the REAL index.ts must label
+  // through nextDeviceLabel( and never resurrect the fixed "first" string.
+  const daemonIndexSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  const bootstrapLabelAt = daemonIndexSrc.indexOf("decision === \"allow\" && !client");
+  check(
+    "P2-194: the real bootstrap branch labels via nextDeviceLabel( and the fixed \"first\" is gone",
+    bootstrapLabelAt > -1 &&
+      daemonIndexSrc.slice(bootstrapLabelAt, bootstrapLabelAt + 600).includes("nextDeviceLabel(") &&
+      !daemonIndexSrc.includes('label: "first"'),
+  );
 }
 
 if (failures > 0) {

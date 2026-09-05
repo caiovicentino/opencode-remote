@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { copyText } from "../lib/clipboard";
 import { APP_VERSION } from "../version";
 import { useT, setLang, getLang, type Lang } from "../lib/i18n";
+import { timeAgo } from "../lib/time";
 import { getTtsLang, setTtsLang as persistTtsLang, type TtsLang } from "../lib/voice";
 import type { UpstreamNotice } from "../lib/degraded";
 
@@ -61,6 +62,8 @@ interface Device {
   pub: string;
   addedAt: string;
   label?: string;
+  /** P2-194: approximate last handshake — absent for pre-existing entries. */
+  lastSeenAt?: string;
 }
 
 interface Routine {
@@ -994,7 +997,14 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
           {devices.map((d) => (
             <div key={d.pub} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
               <span style={{ flex: 1 }}>
-                {d.label ?? "device"} · …{d.pub.slice(-6)} · {new Date(d.addedAt).toLocaleDateString()}
+                {d.label ?? "device"} · …{d.pub.slice(-6)}
+                <br />
+                <span style={{ opacity: 0.6, fontSize: 12 }}>
+                  {d.lastSeenAt
+                    ? t("lastSeen", { when: timeAgo(d.lastSeenAt, t("justNow")) })
+                    : t("neverSeen")}{" "}
+                  · {new Date(d.addedAt).toLocaleDateString()}
+                </span>
               </span>
               <button className="danger" onClick={() => void revoke(d.pub)}>
                 Revoke

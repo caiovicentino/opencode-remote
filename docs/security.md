@@ -31,6 +31,16 @@ identity servers, no accounts.
    device. Afterwards only listed client keys connect. Revocation is instant
    (state file re-read per handshake) and available from the app or
    `manage.ts revoke-all`.
+   Each entry also carries a **stable label** (`Telefone <n>`, no personal
+   data, assigned at pairing time in place of the old hardcoded `first`) and an
+   **approximate last-seen stamp** (`lastSeenAt`). The stamp is written by the
+   same atomic 0600 save, but throttled by `touchDecision` to at most one write
+   per device per hour (`DEVICE_TOUCH_INTERVAL_MS`) — never per frame. It is
+   deliberately coarse: a missing or unreadable stamp is refreshed on the next
+   handshake, a stamp in the future (clock ahead) is left alone instead of
+   forcing a write loop, and the field is purely informational — admission
+   decisions, E2E crypto and replay protection are untouched. Old allowlists
+   without the field read back as "never seen" and keep every existing field.
 7. **Least-privilege file delivery.** Downloads are restricted to explicit
    roots (`~/.opencode-remote/uploads`, Desktop, Downloads, Documents, repo
    cwd) and resolved against real paths before serving.

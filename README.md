@@ -100,6 +100,14 @@ private. That is the product: **local power, remote control, zero trust**.
 - **Routines** — real cron: daily, specific weekdays, or interval loop
 - **Secure by construction** — passkey (WebAuthn) gate, ECDH P-256 + AES-256-GCM,
   replay protection, device allowlist, audit log, biometric unlock
+- **Distinguishable devices** — every pairing gets a stable, personal-data-free
+  label (`Telefone 1`, `Telefone 2`, …) instead of the old hardcoded `first`, and
+  the Settings device list shows an approximate last-seen stamp (`last seen 5m`,
+  or `never seen` for entries that predate the field) next to the key prefix —
+  so a lost phone can be revoked without guessing between public-key prefixes.
+  The stamp is throttled to one `daemon.json` write per device per hour
+  (`DEVICE_TOUCH_INTERVAL_MS`): deliberately coarse, never per frame, and it
+  never changes admission decisions
 - **BYOM** — opencode supports any provider; pick the model per session
 - **API + SDK** — drive sessions from code (`packages/sdk`)
 - **Artifacts** — the agent writes documents (html, md, csv, pdf) to
@@ -417,9 +425,9 @@ Prefer not to host the relay on your own Mac? `deploy/relay/Dockerfile` builds
 a small multi-stage image (node 22 slim, tsc-compiled, non-root, `HEALTHCHECK`
 on `/healthz`) for any container platform — point your provider's TLS at it,
 set `RELAY_URL` on the daemon and re-pair the phone. Release tags build that
-image in CI and publish it to GHCR (opt-in: only when the repository variable
-`PUBLISH_RELAY_IMAGE` is `true`; without it the tag just proves the image
-builds):
+image in CI, boot and smoke-probe it, and only then publish it to GHCR (opt-in:
+only when the repository variable `PUBLISH_RELAY_IMAGE` is `true`; without it
+the tag still proves the image builds and boots, but publishes nothing):
 
 ```bash
 docker pull ghcr.io/caiovicentino/opencode-remote:0.2.0   # pin the version, not latest
