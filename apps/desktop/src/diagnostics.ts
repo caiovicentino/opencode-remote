@@ -35,10 +35,12 @@ export interface DiagnosticsInput {
     port: number;
     portReason: string | null;
   };
-  /** Last lines of desktop.log (oldest first), already bounded by the caller. */
+  /** Last lines of desktop.log (oldest first). The caller bounds it via
+   * DIAG_LOG_TAIL and the builder re-bounds defensively. */
   logTail: string[];
-  /** P2-163: last lines of daemon-sidecar.log (oldest first), already bounded
-   * by the caller — empty when the file is missing or unreadable. */
+  /** P2-163: last lines of daemon-sidecar.log (oldest first). Same contract
+   * as logTail — caller bounds it via DIAG_SIDECAR_TAIL, the builder re-bounds
+   * defensively; empty when the file is missing or unreadable. */
   sidecarLogTail: string[];
   /** Crash file NAMES in ~/.opencode-remote/pilot/client-logs (newest last). */
   crashFiles: string[];
@@ -57,7 +59,7 @@ export function buildDiagnosticReport(d: DiagnosticsInput): string {
     `last update check: ${d.updateStatus ?? "none"}`,
     `crash files: ${d.crashFiles.length === 0 ? "none" : d.crashFiles.join(", ")}`,
     "--- desktop.log (last lines) ---",
-    ...d.logTail,
+    ...d.logTail.slice(-DIAG_LOG_TAIL),
     // P2-163: the sidecar log is the only daemon JSONL record in the packaged
     // app (P3-018) and is already redacted on disk (P2-160) — no pairing URI
     // or QR block can ride along here. A missing/unreadable file renders as a

@@ -139,7 +139,7 @@ check(
     updateStatus: null,
   }).includes("(sem log do sidecar)"),
 );
-check("diagnostics: sidecar tail truncated to the last 20 lines", (() => {
+check("diagnostics: sidecar tail re-bounded to the last 20 lines by the builder", (() => {
   const lines = Array.from({ length: 25 }, (_, i) => `[s${i + 1}]`);
   const tail =
     buildDiagnosticReport({
@@ -157,6 +157,25 @@ check("diagnostics: sidecar tail truncated to the last 20 lines", (() => {
     })
       .split("--- daemon-sidecar.log (last lines) ---")[1] ?? "";
   return tail.includes("[s25]") && tail.includes("[s6]") && !tail.includes("[s5]") && !tail.includes("[s1]");
+})());
+check("diagnostics: desktop.log tail re-bounded to the last 40 lines by the builder (same contract)", (() => {
+  const lines = Array.from({ length: 45 }, (_, i) => `[d${i + 1}]`);
+  const tail = buildDiagnosticReport({
+    appVersion: "0.2.0",
+    electronVersion: "44.1.1",
+    platform: "darwin arm64",
+    locale: "en",
+    packaged: false,
+    userData: "/u",
+    daemon: { healthy: true, down: false, reconnecting: false, attempts: 0, port: 8792, portReason: null },
+    logTail: lines,
+    sidecarLogTail: [],
+    crashFiles: [],
+    updateStatus: null,
+  });
+  return (
+    tail.includes("[d45]") && tail.includes("[d6]") && !tail.includes("[d1]") && !tail.includes("[d5]")
+  );
 })());
 
 // --- P2-143: resolved daemon port + reason surfaced in the bundle --------------
