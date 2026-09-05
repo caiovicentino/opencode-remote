@@ -17,6 +17,7 @@ import { isLoopbackAddr, localOriginAllowed, localUpgradeAllowed } from "../apps
 import { classifyRelayClose, effectiveRetryDelayMs } from "../apps/daemon/src/relayclose";
 import { rewriteFeedPort } from "../apps/daemon/src/feedport";
 import { createRelayRetry } from "../apps/daemon/src/relayretry";
+import { nodeStateFileFs, writeStateAtomic, type StateFileFs } from "../apps/daemon/src/statefile";
 
 import { parseRelayUrl, redactRelayUrl } from "../apps/daemon/src/relayurl";
 
@@ -180,7 +181,7 @@ import { noteTierBOutcome, resetTierBSpawnStreak, runAgent, API_PREFLIGHT, apiHe
 
 import { GUARD_ALERT_THRESHOLD, clearGuardRejections, guardAlertDetail, noteGuardRejection, raiseGuardAlert, resetGuardAlerts } from "../apps/pilot/src/guardalert";
 
-import { mkdtempSync, mkdirSync, readdirSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync, utimesSync, copyFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, rmSync, existsSync, readFileSync, writeFileSync, statSync, symlinkSync, utimesSync, copyFileSync } from "node:fs";
 
 import { execSync, execFileSync, spawn } from "node:child_process";
 
@@ -1893,6 +1894,99 @@ function ghMergingIo(realIo: { exec: (cmd: string) => { ok: boolean; output: str
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+
+// --- P2-165 writeStateAtomic: daemon.json survives a crash mid-write ------------
+{
+  const makeFs = () => {
+    const files = new Map<string, string>();
+    const createdModes: number[] = [];
+    const renames: string[] = [];
+    const unlinks: string[] = [];
+    let failWrite = false;
+    let failRename = false;
+    const io: StateFileFs = {
+      writeFileSync: (f, d, opts) => {
+        if (failWrite) throw new Error("ENOSPC: disk full");
+        files.set(f, d);
+        createdModes.push(opts.mode);
+      },
+      renameSync: (from, to) => {
+        if (failRename) throw new Error("rename boom");
+        const v = files.get(from);
+        if (v === undefined) throw new Error(`ENOENT: ${from}`);
+        files.delete(from);
+        files.set(to, v);
+        renames.push(`${from}->${to}`);
+      },
+      unlinkSync: (f) => {
+        unlinks.push(f);
+        files.delete(f);
+      },
+    };
+    return {
+      io,
+      files,
+      createdModes,
+      renames,
+      unlinks,
+      breakWrite: () => (failWrite = true),
+      breakRename: () => (failRename = true),
+    };
+  };
+
+  const dest = "/mock/daemon.json";
+  const tmp = `${dest}.tmp`;
+  const payload = JSON.stringify({ room: "r", ecdhPub: "pk", clients: [] }, null, 2);
+
+  // happy path: payload lands in the destination through the temp rename,
+  // temp file always created 0600, no residue
+  const ok = makeFs();
+  writeStateAtomic(dest, payload, ok.io);
+  check("writeStateAtomic: rename swaps the destination", ok.files.get(dest) === payload);
+  check("writeStateAtomic: .tmp never survives on success", ok.files.has(tmp) === false && ok.renames.join() === `${tmp}->${dest}`);
+  check("writeStateAtomic: temp is created 0600", ok.createdModes.length === 1 && ok.createdModes.every((m) => m === 0o600));
+
+  // crash/disk-full mid-write: previous state file stays intact, no rename
+  const badWrite = makeFs();
+  badWrite.files.set(dest, "previous-good-identity");
+  badWrite.breakWrite();
+  let threw = false;
+  try {
+    writeStateAtomic(dest, payload, badWrite.io);
+  } catch {
+    threw = true;
+  }
+  check("writeStateAtomic: failed write keeps the previous file intact", threw && badWrite.files.get(dest) === "previous-good-identity" && badWrite.renames.length === 0);
+  check("writeStateAtomic: failed write removes the .tmp", threw && badWrite.files.has(tmp) === false && badWrite.unlinks.join() === tmp);
+
+  // failed rename: same cleanup contract, destination untouched
+  const badRename = makeFs();
+  badRename.files.set(dest, "previous-good-identity");
+  badRename.breakRename();
+  threw = false;
+  try {
+    writeStateAtomic(dest, payload, badRename.io);
+  } catch {
+    threw = true;
+  }
+  check("writeStateAtomic: failed rename rethrows and cleans the .tmp", threw && badRename.files.has(tmp) === false && badRename.unlinks.join() === tmp);
+  check("writeStateAtomic: failed rename leaves the old destination intact", badRename.files.get(dest) === "previous-good-identity");
+
+  // real fs binding: on-disk destination is private (0600) from creation
+  const dir = mkdtempSync(join(tmpdir(), "daemon-statefile-"));
+  try {
+    const file = join(dir, "daemon.json");
+    writeStateAtomic(file, payload);
+    check("writeStateAtomic: real fs lands 0600 at the destination", (statSync(file).mode & 0o777) === 0o600);
+    check("writeStateAtomic: real fs round-trips and leaves no .tmp", readFileSync(file, "utf8") === payload && readdirSync(dir).join() === "daemon.json");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  // the default binding really is the node one (no accidental test-only io)
+  check("writeStateAtomic: node binding wired", typeof nodeStateFileFs.writeFileSync === "function" && typeof nodeStateFileFs.renameSync === "function" && typeof nodeStateFileFs.unlinkSync === "function");
 }
 
 

@@ -35,6 +35,7 @@ import type {
   RelayFrame,
 } from "@ocr/protocol";
 import { log } from "./log.js";
+import { writeStateAtomic } from "./statefile.js";
 import { capMessagePage, parsePageLimit, shouldPaginateMessages, type HistoryRowLike } from "./paginate.js";
 import { handleBrowse } from "./browse.js";
 import {
@@ -149,8 +150,9 @@ function readAllowlist(): PairedClient[] {
 function saveAllowlist(clients: PairedClient[]) {
   const raw = JSON.parse(readFileSync(STATE_FILE, "utf8")) as IdentityFile;
   raw.clients = clients;
-  writeFileSync(STATE_FILE, JSON.stringify(raw, null, 2));
-  chmodSync(STATE_FILE, 0o600);
+  // P2-165: atomic + 0600-from-creation (tmp + rename) — a crash mid-write
+  // used to truncate daemon.json and lose every pairing.
+  writeStateAtomic(STATE_FILE, JSON.stringify(raw, null, 2));
 }
 
 function assertPrivateMode(file: string) {
@@ -193,8 +195,8 @@ async function loadIdentity(): Promise<DaemonIdentity> {
     };
   }
 
-  writeFileSync(STATE_FILE, JSON.stringify(raw, null, 2));
-  chmodSync(STATE_FILE, 0o600);
+  // P2-165: atomic write — the identity must survive a power loss mid-write.
+  writeStateAtomic(STATE_FILE, JSON.stringify(raw, null, 2));
   assertPrivateMode(STATE_FILE);
 
   const identity = await importPrivateIdentity(raw.ecdhPub!, fromB64(raw.ecdhPriv!));
@@ -264,8 +266,7 @@ function writeSettings(s: AppSettings) {
   raw.name = s.name;
   raw.notify = s.notify;
   raw.autoMode = s.autoMode;
-  writeFileSync(STATE_FILE, JSON.stringify(raw, null, 2));
-  chmodSync(STATE_FILE, 0o600);
+  writeStateAtomic(STATE_FILE, JSON.stringify(raw, null, 2));
 }
 
 // --- file delivery: which paths the phone may download ----------------------
@@ -2083,8 +2084,7 @@ function apiToken(): string {
   if (raw.apiToken) return raw.apiToken;
   const token = randomUUID().replace(/-/g, "") + randomUUID().replace(/-/g, "");
   raw.apiToken = token;
-  writeFileSync(STATE_FILE, JSON.stringify(raw, null, 2));
-  chmodSync(STATE_FILE, 0o600);
+  writeStateAtomic(STATE_FILE, JSON.stringify(raw, null, 2));
   log("info", "api token generated (see apiToken in daemon.json)");
   return token;
 }
