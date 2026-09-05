@@ -74,6 +74,9 @@ function sendDoc(web: WebStatic, abs: string, req: IncomingMessage, res: ServerR
   res.writeHead(200, {
     "content-type": contentTypeFor(abs),
     "cache-control": cacheControlFor(abs),
+    // the route is public and unauthenticated: the allowlist already pins
+    // what may be served, nosniff keeps browsers from second-guessing it
+    "x-content-type-options": "nosniff",
   });
   web.send(abs, req, res);
 }

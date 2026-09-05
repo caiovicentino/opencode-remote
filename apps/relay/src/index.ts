@@ -1,7 +1,7 @@
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import { accessSync, constants as fsConstants, createReadStream, readFileSync, realpathSync, statSync } from "node:fs";
-import { join as joinPath } from "node:path";
+import { join as joinPath, sep } from "node:path";
 import { randomBytes } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
 // relative imports carry .js specifiers so plain `node` can run the tsc emit
@@ -127,14 +127,16 @@ if (WEB.problems.length > 0) {
 }
 // The only fs touches of the static route: existence/file checks per request
 // and a streamed body (empty for HEAD). isFile canonicalizes the target with
-// realpath before the containment comparison, so a symlink planted inside
-// the root that points outside it is rejected (404). Paths are never logged.
+// realpath before the containment comparison — with a separator boundary, so
+// a sibling directory sharing the root's name as a string prefix
+// (<root>-backup) or a symlink planted inside the root pointing outside it
+// is rejected (404). Paths are never logged.
 const WEB_STATIC: WebStatic | undefined = WEB.enabled
   ? {
       root: WEB.root,
       isFile: (abs) => {
         try {
-          return statSync(abs).isFile() && realpathSync(abs).startsWith(realpathSync(WEB.root));
+          return statSync(abs).isFile() && realpathSync(abs).startsWith(realpathSync(WEB.root) + sep);
         } catch {
           return false;
         }

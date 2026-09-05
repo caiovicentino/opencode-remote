@@ -6,9 +6,9 @@
  */
 import { createServer, get, type Server } from "node:http";
 import net from "node:net";
-import { createReadStream, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { createReadStream, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
 import { healthzHandler, healthzPayload } from "../apps/relay/src/healthz";
 import { metricsAuthOk, metricsBinding } from "../apps/relay/src/metricsbind";
@@ -472,7 +472,7 @@ check("webroot: nested path with allowed extension resolves", resolveWebPath(WEB
 check("webroot: .. traversal rejected", resolveWebPath(WEB_ROOT, "/..") === null && resolveWebPath(WEB_ROOT, "/../etc/passwd.js") === null);
 check("webroot: percent-encoded traversal rejected after one decode", resolveWebPath(WEB_ROOT, "/..%2f..%2fetc%2fpasswd.js") === null && resolveWebPath(WEB_ROOT, "/%2e%2e/%2e%2e/etc/x.js") === null);
 check("webroot: encoded absolute path rejected (decoded separator)", resolveWebPath(WEB_ROOT, "/%2Fetc%2Fpasswd") === null);
-check("webroot: absolute system path rejected", resolveWebPath(WEB_ROOT, "/etc/passwd") === null);
+check("webroot: /etc/passwd rejected — extension outside the allowlist", resolveWebPath(WEB_ROOT, "/etc/passwd") === null);
 check("webroot: hidden file rejected", resolveWebPath(WEB_ROOT, "/.env") === null);
 check("webroot: hidden segment rejected", resolveWebPath(WEB_ROOT, "/config/.secret.json") === null);
 check("webroot: extension outside the allowlist rejected", resolveWebPath(WEB_ROOT, "/secret.php") === null && resolveWebPath(WEB_ROOT, "/bundle.exe") === null);
@@ -496,6 +496,21 @@ check("webroot: query-string-free contract — trailing slash is not an asset", 
   );
   rmSync(root, { recursive: true, force: true });
   rmSync(outside, { force: true });
+
+  // sibling directory sharing the root's name as a string prefix: the
+  // containment boundary must be the separator, not the raw prefix
+  const parent = join(tmpdir(), `relay-webroot-sib-${Date.now()}`);
+  const rooted = join(parent, "dist");
+  const sibling = join(parent, "dist-backup");
+  mkdirSync(rooted, { recursive: true });
+  mkdirSync(sibling, { recursive: true });
+  writeFileSync(join(sibling, "secret.js"), "secret");
+  symlinkSync(join(sibling, "secret.js"), join(rooted, "evil.js"));
+  check(
+    "webroot: sibling directory sharing the root's prefix rejected (separator boundary)",
+    resolveWebPath(rooted, "/evil.js", (p) => realpathSync(p)) === null,
+  );
+  rmSync(parent, { recursive: true, force: true });
 }
 
 // --- 11. SPA fallback (P2-188, pure resolver) ----------------------------------
@@ -503,6 +518,7 @@ check("spa: root path falls back to index.html", spaFallbackPath(WEB_ROOT, "/") 
 check("spa: extension-less route falls back to index.html", spaFallbackPath(WEB_ROOT, "/pair") === join(WEB_ROOT, "index.html"));
 check("spa: route with extension never falls back (missing asset ≠ index)", spaFallbackPath(WEB_ROOT, "/assets/missing.js") === null);
 check("spa: probe path is never the document", spaFallbackPath(WEB_ROOT, "/healthz") === null);
+check("spa: trailing-slash probe spelling is never the document either", spaFallbackPath(WEB_ROOT, "/healthz/") === null && spaFallbackPath(WEB_ROOT, "/healthz//") === null);
 check("spa: unsafe path never falls back", spaFallbackPath(WEB_ROOT, "/..%2fetc") === null && spaFallbackPath(WEB_ROOT, "/.env") === null);
 
 // --- 12. content types and cache policy (P2-188, pure maps) --------------------
@@ -569,10 +585,16 @@ check("plan: problem text never cites the configured path", (() => {
   const outside = join(tmpdir(), `relay-webhandler-outside-${Date.now()}.js`);
   writeFileSync(outside, "outside");
   symlinkSync(outside, join(root, "evil.js"));
+  // sibling directory sharing the root's name as a string prefix — the exact
+  // repro that slipped past a startsWith containment without the separator
+  const sibling = join(`${root}-backup`);
+  mkdirSync(sibling);
+  writeFileSync(join(sibling, "secret.js"), "secret");
+  symlinkSync(join(sibling, "secret.js"), join(root, "sibling.js"));
 
   const isFile = (abs: string) => {
     try {
-      return statSync(abs).isFile() && realpathSync(abs).startsWith(realpathSync(root));
+      return statSync(abs).isFile() && realpathSync(abs).startsWith(realpathSync(root) + sep);
     } catch {
       return false;
     }
@@ -593,7 +615,7 @@ check("plan: problem text never cites the configured path", (() => {
   await new Promise<void>((r) => webServer.listen(0, "127.0.0.1", r));
   const webPort = (webServer.address() as { port: number }).port;
   const webRequest = (method: string, path: string) =>
-    new Promise<{ status: number; type: string; cache: string; allow: string; body: string }>((resolve) => {
+    new Promise<{ status: number; type: string; cache: string; allow: string; sniff: string; body: string }>((resolve) => {
       const req = get(`http://127.0.0.1:${webPort}${path}`, { method }, (res) => {
         let body = "";
         res.on("data", (c) => (body += c));
@@ -603,6 +625,7 @@ check("plan: problem text never cites the configured path", (() => {
             type: String(res.headers["content-type"]),
             cache: String(res.headers["cache-control"]),
             allow: String(res.headers.allow ?? ""),
+            sniff: String(res.headers["x-content-type-options"] ?? ""),
             body,
           }),
         );
@@ -613,6 +636,7 @@ check("plan: problem text never cites the configured path", (() => {
   const doc = await webRequest("GET", "/");
   check("web-handler: GET / serves the entry document", doc.status === 200 && doc.body === "<html>app</html>");
   check("web-handler: entry document is text/html + no-store", doc.type.startsWith("text/html") && doc.cache === "no-store");
+  check("web-handler: served documents carry x-content-type-options: nosniff", doc.sniff === "nosniff");
   const spa = await webRequest("GET", "/pair");
   check("web-handler: extension-less route falls back to the entry document", spa.status === 200 && spa.body === "<html>app</html>");
   const asset = await webRequest("GET", "/app.js");
@@ -622,6 +646,7 @@ check("plan: problem text never cites the configured path", (() => {
   check("web-handler: hidden file is 404", (await webRequest("GET", "/.env")).status === 404);
   check("web-handler: traversal is 404", (await webRequest("GET", "/..%2f..%2fetc%2fpasswd.js")).status === 404);
   check("web-handler: symlink escaping the root is 404", (await webRequest("GET", "/evil.js")).status === 404);
+  check("web-handler: symlink into a sibling prefix directory is 404 (separator boundary)", (await webRequest("GET", "/sibling.js")).status === 404);
   check("web-handler: /healthz keeps answering the probe", (await webRequest("GET", "/healthz")).status === 200);
   check("web-handler: /healthz is never the SPA document", (await webRequest("HEAD", "/healthz")).status === 404);
   const head = await webRequest("HEAD", "/");
@@ -657,6 +682,7 @@ check("plan: problem text never cites the configured path", (() => {
   drainWebServer.close();
 
   rmSync(root, { recursive: true, force: true });
+  rmSync(sibling, { recursive: true, force: true });
   rmSync(outside, { force: true });
 }
 

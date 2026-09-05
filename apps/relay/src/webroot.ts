@@ -164,7 +164,10 @@ export function spaFallbackPath(
   pathname: string,
   canonicalize: (path: string) => string = (p) => p,
 ): string | null {
-  if (pathname === "/healthz") return null;
+  // the probe is exact-path: /healthz/ and any other spelling must never
+  // answer the app document where a probe looking for /healthz would read it
+  const probeless = pathname.length > 1 ? pathname.replace(/\/+$/, "") : pathname;
+  if (probeless === "/healthz") return null;
   const segments = safeSegments(pathname);
   if (!segments) return null;
   const last = segments[segments.length - 1];
