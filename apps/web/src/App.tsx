@@ -104,6 +104,9 @@ interface PairingState {
   /** P2-197: reach verdict for the app address (desktop shell only,
    * additive) — absent means unknown, which renders nothing. */
   reach?: { state: string; message: string };
+  /** P2-199: daemon↔relay link verdict (desktop shell only, additive) —
+   * absent means unknown, which renders nothing. */
+  relayLink?: { state: string; message: string };
 }
 
 /** Electron bridge from apps/desktop/src/preload.ts (absent in the browser). */
@@ -768,6 +771,7 @@ export default function App() {
         webApp={pairingState?.webApp ?? null}
         pairLink={pairingState?.pairLink ?? null}
         reach={pairingState?.reach ?? null}
+        relayLink={pairingState?.relayLink ?? null}
         onReachRetry={() => {
           // Optional chaining: in a plain browser there is no desktop bridge.
           void desktopBridge()?.recheckWebApp?.();

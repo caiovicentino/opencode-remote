@@ -222,6 +222,9 @@ export const dict = {
     pairReachOk: "The app address answered — the QR is ready for your phone.",
     pairReachRetry: "Test again",
     pairReachTesting: "Testing again…",
+    // daemon↔relay link (desktop, P2-199): quiet line below the reach line
+    pairRelayLinkOk: "The app is talking to the relay — the room is ready for your phone.",
+    pairRelayLinkLocal: "Local mode — your phone pairs directly on this machine's network, no relay needed.",
     webAppTitle: "App address (phone)",
     webAppHint:
       "Where the phone opens the app — derived from the phone relay (wss:// becomes https://, same host and port) unless you save one here.",
@@ -621,6 +624,9 @@ export const dict = {
     pairReachOk: "O endereço do app respondeu — o QR está pronto para o celular.",
     pairReachRetry: "Testar de novo",
     pairReachTesting: "Testando de novo…",
+    // elo daemon↔relay (desktop, P2-199): linha discreta abaixo da linha de alcance
+    pairRelayLinkOk: "O app está falando com o relay — a sala está pronta para o celular.",
+    pairRelayLinkLocal: "Modo local — o celular pareia direto na rede desta máquina, sem relay.",
     webAppTitle: "Endereço do app (celular)",
     webAppHint:
       "Onde o celular abre o app — derivado do relay do celular (wss:// vira https://, mesmo host e porta), a menos que você salve um aqui.",

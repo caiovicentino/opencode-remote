@@ -25,6 +25,7 @@ import { relayUrlProblems, resolveRelayUrl } from "./relaysetting";
 import { resolveWebAppUrl, webAppUrlProblems } from "./webappurl";
 import { buildPairLink } from "./pairlink";
 import { hasAppMarker, probeVerdict, type ReachVerdict } from "./webreach";
+import { linkVerdict, type RelayLinkVerdict } from "./relaylink";
 import { initDesktopLog, log, logError } from "./desktop-log";
 import { initSidecarLog } from "./sidecar-log";
 import { phonePaired, type PairingState } from "./pairing";
@@ -1072,7 +1073,7 @@ async function refreshPairingState(): Promise<void> {
     // detail (P2-135 classifier verdict) — propagated additively next to the
     // version fields so the renderer can explain WHY the agent is unreachable.
     const appVersion = app.getVersion();
-    const { version: daemonVersion, opencode } = await fetchDaemonHealth(token);
+    const { version: daemonVersion, opencode, relay } = await fetchDaemonHealth(token);
     const mismatch = versionMismatch(appVersion, daemonVersion);
     if (mismatch) {
       log(`[desktop] daemon version mismatch: daemon ${daemonVersion ?? "?"} · app ${appVersion}`);
@@ -1148,6 +1149,21 @@ async function refreshPairingState(): Promise<void> {
       // and desktop.log lives on disk unencrypted.
       log(`[desktop] app reach: ${reach.state}`);
     }
+    // P2-199: the daemon↔relay link — the link that actually delivers the
+    // conversation — judged from the SAME /api/health answer the tick already
+    // fetched, under the SAME overlay guard the P2-197 reach probe uses (the
+    // probe above additionally requires a problem-free address).
+    // localMode receives quietLocal, NOT the raw localMode flag: an explicit
+    // remote-pairing request uses the real relay, so local mode must not
+    // silence the diagnosis. A down link only travels as the additive
+    // `relayLink` field: it never blocks pairing nor hides the QR — the link
+    // can come back up before the phone finishes scanning. Logged without any
+    // URL (desktop.log lives on disk unencrypted).
+    let relayLink: RelayLinkVerdict | undefined;
+    if (!quietLocal && (!paired || remotePairingRequested) && relay) {
+      relayLink = linkVerdict({ ...relay, localMode: quietLocal });
+      log(`[desktop] relay link: ${relayLink.state}`);
+    }
     setPairingState({
       mode: quietLocal ? "local" : remotePairingRequested ? "remote" : undefined,
       uri,
@@ -1166,6 +1182,10 @@ async function refreshPairingState(): Promise<void> {
       // P2-197: additive reach verdict, AFTER webApp so the P2-189/P2-193
       // real-source assertions keep matching; absent = unknown to the renderer.
       reach,
+      // P2-199: additive relay-link verdict, AFTER reach so the
+      // P2-189/P2-193/P2-197 real-source assertions keep matching; absent =
+      // unknown to the renderer.
+      relayLink,
     });
   } catch (err) {
     // Daemon down, token rotated or state file wiped: drop the cached state so

@@ -1162,6 +1162,28 @@ try {
           // restore the P2-193 leftover so later beats see the same state
           run("P2-197: restore the stored app address", ["ipc", "window.ocrDesktop.setWebAppUrl('https://app.example.com')"], 15_000, localEnv);
 
+          // --- P2-199: daemon↔relay link — dead relay warns, QR stays --------
+          // The hermetic daemon dials RELAY_URL ws://127.0.0.1:1 (a dead
+          // port), so its /api/health says relayConnected:false with a retry
+          // attempt in flight while relay.ok stays true. The overlay must say
+          // so calmly — WITHOUT hiding the QR: the link can come back up
+          // before the phone finishes pairing.
+          await waitProbe(
+            "P2-199: relay-link line renders next to the (still visible) QR",
+            "(() => { const line = document.querySelector('.pair-relaylink'); return (line?.textContent ?? '') + '|' + (!!document.querySelector('.pair-overlay-qr')); })()",
+            // ipc stdout is JSON-encoded (trailing quote) — match by inclusion
+            (v) => /relay|Relay/.test(v) && v.includes("true"),
+            localEnv,
+            24,
+            500,
+          );
+          const linkShot1440 = join(shotsDir, "P2-199-relaylink-1440.png");
+          const rl1 = run("P2-199: 1440x900 relay-link shot", ["shot", linkShot1440, "1440", "900"], 15_000, localEnv);
+          if (rl1.ok) check("P2-199: relay-link 1440x900 shot is a real PNG", pngSize(linkShot1440).join("x") === "1440x900");
+          const linkShot390 = join(shotsDir, "P2-199-relaylink-390.png");
+          const rl2 = run("P2-199: 390 relay-link shot", ["shot", linkShot390, "390", "844"], 15_000, localEnv);
+          if (rl2.ok) check("P2-199: relay-link 390 shot is a real PNG", pngSize(linkShot390)[0] === 390);
+
           run("P2-106: dismiss via the quiet link", ["click", ".pair-overlay-later"], 15_000, localEnv);
           await waitProbe(
             "P2-106: overlay dismissed",

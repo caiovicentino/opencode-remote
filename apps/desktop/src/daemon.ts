@@ -10,6 +10,7 @@ import { createServer } from "node:net";
 import { log, logError } from "./desktop-log";
 import { teeSidecarChunk } from "./sidecar-log";
 import { classifySidecarExit, type SidecarExitVerdict } from "./sidecarexit";
+import type { RelayLinkFacts } from "./relaylink";
 import { candidatePorts, pickDaemonPort, type DaemonPortReason } from "./daemonport";
 import { DEFAULT_RELAY_URL } from "./relaysetting";
 
@@ -303,6 +304,13 @@ export interface DaemonHealthInfo {
   version: string | null;
   /** null when absent/malformed (legacy daemon) — additive, never an error. */
   opencode: DaemonUpstreamDetail | null;
+  /** P2-199: daemon↔relay link facts for the linkVerdict classifier, read
+   * from the SAME /api/health body. null only when the health call itself
+   * failed (unreachable/non-200/unparseable); a 200 body without the relay
+   * fields yields an all-null facts object, which linkVerdict maps to a
+   * calm "unknown". localMode is the pairing tick's own signal and is
+   * attached by the caller (quietLocal), never by the daemon. */
+  relay: Omit<RelayLinkFacts, "localMode"> | null;
 }
 
 /** Tolerant read of the P2-135 opencode object: only a well-shaped object
@@ -319,6 +327,38 @@ function toUpstreamDetail(raw: unknown): DaemonUpstreamDetail | null {
   };
 }
 
+/** P2-199: tolerant read of the daemon↔relay link facts from the SAME
+ * /api/health body the tick already fetches — no new request, no new timeout.
+ * Fields degrade independently: anything absent or malformed becomes null,
+ * which linkVerdict maps to "unknown". relay.url is deliberately ignored (the
+ * verdict never needs the address and it must not travel to the renderer). */
+function toRelayFacts(body: {
+  relay?: unknown;
+  relayConnected?: unknown;
+  relayRetry?: unknown;
+}): Omit<RelayLinkFacts, "localMode"> {
+  const retry = (typeof body.relayRetry === "object" && body.relayRetry !== null ? body.relayRetry : {}) as {
+    attempt?: unknown;
+    nextDelayMs?: unknown;
+    lastClose?: { kind?: unknown };
+  };
+  const relay = (typeof body.relay === "object" && body.relay !== null ? body.relay : {}) as {
+    ok?: unknown;
+    reason?: unknown;
+  };
+  const lastClose = (typeof retry.lastClose === "object" && retry.lastClose !== null ? retry.lastClose : {}) as {
+    kind?: unknown;
+  };
+  return {
+    relayConnected: typeof body.relayConnected === "boolean" ? body.relayConnected : null,
+    relayOk: typeof relay.ok === "boolean" ? relay.ok : null,
+    relayReason: typeof relay.reason === "string" ? relay.reason : null,
+    attempt: typeof retry.attempt === "number" ? retry.attempt : null,
+    nextDelayMs: typeof retry.nextDelayMs === "number" ? retry.nextDelayMs : null,
+    lastCloseKind: typeof lastClose.kind === "string" ? lastClose.kind : null,
+  };
+}
+
 /**
  * P3-054: authenticated GET /api/health returning the daemon's own version
  * string (null when unreachable, unauthorized or malformed). The pairing
@@ -327,22 +367,29 @@ function toUpstreamDetail(raw: unknown): DaemonUpstreamDetail | null {
  * user replaced externally while the app stayed open.
  * P2-138: the same response also carries the upstream `opencode` detail
  * object; one loopback call per poll serves both consumers.
+ * P2-199: the same answer now also carries the daemon↔relay link facts —
+ * still one loopback call per poll, no new request and no new timeout.
  */
 export async function fetchDaemonHealth(token: string | null): Promise<DaemonHealthInfo> {
-  if (token === null) return { version: null, opencode: null };
+  const down: DaemonHealthInfo = { version: null, opencode: null, relay: null };
+  if (token === null) return down;
   try {
     const res = await fetch(`http://127.0.0.1:${activeDaemonPort()}/api/health`, {
       headers: { authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
     });
-    if (res.status !== 200) return { version: null, opencode: null };
-    const body = (await res.json().catch(() => ({}))) as { version?: unknown; opencode?: unknown };
+    if (res.status !== 200) return down;
+    const body = (await res.json().catch(() => null)) as
+      | { version?: unknown; opencode?: unknown; relay?: unknown; relayConnected?: unknown; relayRetry?: unknown }
+      | null;
+    if (body === null || typeof body !== "object") return down;
     return {
       version: typeof body.version === "string" ? body.version : null,
       opencode: toUpstreamDetail(body.opencode),
+      relay: toRelayFacts(body),
     };
   } catch {
-    return { version: null, opencode: null };
+    return down;
   }
 }
 
