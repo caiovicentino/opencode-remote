@@ -824,7 +824,11 @@ and reopen — the bounds are restored. They live in
 `userData/window-state.json`, written on close, and are validated against the
 displays currently attached at boot: a window left on a since-disconnected
 screen (or a corrupted state file) falls back to the 1280×820 default instead
-of opening off-screen or crashing.
+of opening off-screen or crashing. Quitting while maximized also reopens
+maximized (P2-172) — the normal rect plus the maximized flag are persisted, so
+a maximized session never comes back as a screen-sized window stuck to the
+desktop. Fullscreen is deliberately not persisted (on macOS it creates its own
+Space; restoring it standalone would be hostile).
 
 **Persistent shell log**: the desktop app appends everything the main process
 logs (`[desktop] …` lines: daemon sidecar lifecycle, pairing polls, renderer
