@@ -388,6 +388,8 @@ import {
 
 import { updateMenuLabel } from "../apps/desktop/src/update";
 
+import { permissionDecision, requestingScheme, SHELL_PERMISSIONS } from "../apps/desktop/src/permissions";
+
 import {
   nextCheckDelayMs,
   UPDATE_RECHECK_BACKOFF_START_MS,
@@ -625,6 +627,132 @@ check("main.ts routes every shell.openExternal through the extlink decision", op
 check("main.ts imports externalOpenDecision", mainTsSource.includes('from "./extlink"'));
 
 check("main.ts consults externalOpenDecision twice (window-open + release page)", (mainTsSource.match(/externalOpenDecision\(/g) ?? []).length === 2);
+
+
+
+// --- shell permission decision (P2-182) -------------------------------------
+
+const bundleCtx = { cameraBlocked: false };
+
+const shellMedia = permissionDecision("media", "file:///Applications/OpenCode%20Remote.app/Contents/Resources/app.asar/index.html", bundleCtx);
+
+check("permissionDecision allows media for the packaged shell origin", shellMedia.allow);
+
+check("permissionDecision allow reason is non-empty", shellMedia.allow && shellMedia.reason.length > 0);
+
+const devCtx = { devUrl: "http://localhost:5173", cameraBlocked: false };
+
+check("permissionDecision allows media for the dev URL origin", permissionDecision("media", "http://localhost:5173/index.html", devCtx).allow);
+
+check("permissionDecision allows clipboard-sanitized-write for the shell", permissionDecision("clipboard-sanitized-write", "file:///app/index.html", bundleCtx).allow);
+
+check("permissionDecision allows fullscreen for the shell", permissionDecision("fullscreen", "file:///app/index.html", bundleCtx).allow);
+
+check("permissionDecision treats uppercase FILE scheme like lowercase (allowed)", permissionDecision("media", "FILE:///app/index.html", bundleCtx).allow);
+
+check("permissionDecision allows every SHELL_PERMISSIONS entry for file origin", SHELL_PERMISSIONS.every((p) => permissionDecision(p, "file:///app/index.html", bundleCtx).allow));
+
+const externalMedia = permissionDecision("media", "https://evil.example.com/page", bundleCtx);
+
+check("permissionDecision denies media for an external site", !externalMedia.allow);
+
+check("permissionDecision denies media for external site with non-empty reason", !externalMedia.allow && externalMedia.reason.length > 0);
+
+check("permissionDecision reason names foreign origin scheme", permissionDecision("media", "https://evil.example.com/page", bundleCtx).reason === "origin-not-shell:https");
+
+check("permissionDecision denies media for dev origin when devUrl is set but requester is another host", !permissionDecision("media", "http://localhost:9999/", devCtx).allow);
+
+const blockedCtx = { cameraBlocked: true };
+
+const blockedMedia = permissionDecision("media", "file:///app/index.html", blockedCtx);
+
+check("permissionDecision denies media for shell origin when cameraBlocked", !blockedMedia.allow);
+
+check("permissionDecision camera-blocked reason", !blockedMedia.allow && blockedMedia.reason === "camera-blocked");
+
+check("permissionDecision cameraBlocked still allows fullscreen", permissionDecision("fullscreen", "file:///app/index.html", blockedCtx).allow);
+
+const deniedEvenForShell: Array<[string, string]> = [
+  ["geolocation", "geolocation-denied"],
+  ["notifications", "notifications-denied"],
+  ["midi", "midi-denied"],
+  ["midiSysex", "midiSysex-denied"],
+  ["usb", "usb-denied"],
+  ["hid", "hid-denied"],
+  ["serial", "serial-denied"],
+  ["openExternal", "openExternal-denied"],
+  ["pointerLock", "pointerLock-denied"],
+  ["idle-detection", "idle-detection-denied"],
+  ["window-management", "window-management-denied"],
+];
+
+for (const [name, expectedReason] of deniedEvenForShell) {
+  const decision = permissionDecision(name, "file:///app/index.html", bundleCtx);
+  check(`permissionDecision refuses ${name} even for shell origin`, !decision.allow);
+  check(`permissionDecision refuses ${name} with expected reason`, !decision.allow && decision.reason === expectedReason);
+  check(`permissionDecision refuses ${name} with non-empty reason`, !decision.allow && decision.reason.length > 0);
+}
+
+const unknownPermission = permissionDecision("future-sensor-api", "file:///app/index.html", bundleCtx);
+
+check("permissionDecision refuses unknown permission name", !unknownPermission.allow);
+
+check("permissionDecision unknown-name reason names the permission", !unknownPermission.allow && unknownPermission.reason === "permission-not-allowed:future-sensor-api");
+
+const permissionInputRefusals: Array<[string, unknown, unknown, string]> = [
+  ["non-string permission", 42, "file:///app/index.html", "permission-not-a-string"],
+  ["empty permission", "", "file:///app/index.html", "empty-permission"],
+  ["non-string url", "media", 42, "not-a-string"],
+  ["empty url", "media", "", "empty"],
+  ["malformed url", "media", "http://exa mple.com/<>", "unparseable-url"],
+  ["missing origin", "media", "blob:file:///", "missing-origin"],
+];
+
+for (const [name, perm, url, expectedReason] of permissionInputRefusals) {
+  const decision = permissionDecision(perm, url, bundleCtx);
+  check(`permissionDecision refuses ${name}`, !decision.allow);
+  check(`permissionDecision refuses ${name} with expected reason`, !decision.allow && decision.reason === expectedReason);
+  check(`permissionDecision refuses ${name} with non-empty reason`, !decision.allow && decision.reason.length > 0);
+}
+
+check("permissionDecision devUrl unparseable still allows file origin", permissionDecision("media", "file:///app/index.html", { devUrl: "not a url", cameraBlocked: false }).allow);
+
+check("permissionDecision devUrl absent denies http origins", !permissionDecision("media", "http://localhost:5173/", bundleCtx).allow);
+
+check("requestingScheme lowercases and strips the protocol", requestingScheme("FILE:///app/index.html") === "file");
+
+check("requestingScheme returns unknown for garbage", requestingScheme("not a url") === "unknown");
+
+// The shell's single permission path: both Electron handlers must be
+// registered unconditionally (never inside the P2-117 test hatch) and must be
+// the only permission callbacks in main.ts.
+check("main.ts imports the permissions module", mainTsSource.includes('from "./permissions"'));
+
+check("main.ts registers setPermissionRequestHandler exactly once", (mainTsSource.match(/setPermissionRequestHandler/g) ?? []).length === 1);
+
+check("main.ts registers setPermissionCheckHandler exactly once", (mainTsSource.match(/setPermissionCheckHandler/g) ?? []).length === 1);
+
+check("main.ts OCR_DESKTOP_CAMERA_BLOCK only feeds cameraBlocked", (mainTsSource.match(/OCR_DESKTOP_CAMERA_BLOCK/g) ?? []).length === 1);
+
+check("main.ts permission callbacks no longer hand-roll the decision", !mainTsSource.includes('permission !== "media"'));
+
+check("main.ts request handler answers with the shared decision", mainTsSource.includes("callback(decision.allow)"));
+
+const refusalLogLines = mainTsSource.split("\n").filter((line) => line.includes("permission denied"));
+
+check("main.ts refusal log carries permission name, requester scheme and reason", refusalLogLines.length === 1 && refusalLogLines[0].includes("${permission}") && refusalLogLines[0].includes("requestingScheme(") && refusalLogLines[0].includes("${decision.reason}"));
+
+check("main.ts refusal log omits the full URL", refusalLogLines.length === 1 && !refusalLogLines[0].includes("requestingUrl}"));
+
+// permissions.ts stays pure: no electron, no node builtins, no fetch — so the
+// unit test always exercises the real decision code.
+const permissionsSource = readFileSync(new URL("../apps/desktop/src/permissions.ts", import.meta.url), "utf8");
+
+check("permissions.ts is pure (no electron import)", !permissionsSource.includes('from "electron"'));
+
+check("permissions.ts is pure (no node builtins)", !permissionsSource.includes("node:fs") && !permissionsSource.includes("node:path") && !permissionsSource.includes("node:os") && !permissionsSource.includes("node:child_process"));
+
+check("permissions.ts is pure (no fetch)", !permissionsSource.includes("fetch("));
 
 
 

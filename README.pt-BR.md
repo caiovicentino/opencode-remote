@@ -500,7 +500,12 @@ como qualquer app instalado. P2-169: na primeira vez que você gravar uma
 mensagem de voz ou ler o QR de pareamento, o macOS pede permissão de
 **microfone** e **câmera** — conceda as duas; se negar por engano, o caminho
 é Ajustes do Sistema → Privacidade e Segurança → Microfone / Câmera → ligar
-**OpenCode Remote** e reabrir o app. No release, o preflight de assinatura só liga a
+**OpenCode Remote** e reabrir o app). P2-182: o shell concede **câmera,
+microfone e tela cheia apenas à própria interface** — qualquer página aberta
+no pane Browser tem **todo pedido de permissão recusado de propósito**
+(câmera, microfone, geolocalização, notificações, MIDI, HID, serial, USB…),
+assim um site de terceiros nunca dispara um prompt de permissão do SO em nome
+do app. No release, o preflight de assinatura só liga a
 notarização quando há certificado Developer ID e credenciais Apple de fato
 configurados (veja *Instalador do app desktop*).
 

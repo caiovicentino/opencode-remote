@@ -654,7 +654,12 @@ app behaves like any installed app. P2-169: the first time you record a voice
 message or scan the pairing QR, macOS asks for **microphone** and **camera**
 permission — grant both, or the signed build silently blocks those features
 (denied by mistake? System Settings → Privacy & Security → Microphone /
-Camera → enable **OpenCode Remote**, then reopen the app). Tag releases ship that DMG +
+Camera → enable **OpenCode Remote**, then reopen the app). P2-182: the shell
+grants **camera, microphone and fullscreen only to its own interface** — any
+page loaded in the Browser pane has every permission request (camera,
+microphone, geolocation, notifications, MIDI, HID, serial, USB…) **denied on
+purpose**, so a third-party site can never trigger an OS permission prompt in
+the app's name. Tag releases ship that DMG +
 `latest-mac.yml` on GitHub (`.github/workflows/release.yml`); the release's
 signing preflight notarizes only when a Developer ID certificate and the
 Apple credentials are actually configured (see *Desktop app installer*). The

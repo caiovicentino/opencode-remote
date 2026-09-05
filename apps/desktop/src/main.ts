@@ -26,6 +26,7 @@ import { versionMismatch } from "./versions";
 import { applyAppUserModelId, daemonNotify, NOTIFY_BACK_BODY, NOTIFY_DOWN_BODY, NOTIFY_TITLE, type DaemonHealth } from "./notify";
 import { deepLinkFromArgv, parseDeepLink } from "./deeplink";
 import { externalOpenDecision } from "./extlink";
+import { permissionDecision, requestingScheme } from "./permissions";
 import { daemonTooltip, loginItemSupported, logsDirPath, openLogsFolder, trayIconSource } from "./tray";
 import { badgePlan, type BadgePlan } from "./badge";
 import { CLOSE_HINT_LOG, closeHintPlan, hintFlagPath, readHintFlag, writeHintFlag } from "./closehint";
@@ -608,16 +609,34 @@ async function onReady(): Promise<void> {
     !reconnectState().reconnecting;
   if (localMode) log("[desktop] local daemon proved healthy — pairing ceremony skipped (P1-070)");
 
-  // P2-117: test-only hatch (scripts/desktop-flow.test.ts) — deny camera access
-  // deterministically so the scanner's unavailable state is provable on hosts
-  // that do have a camera (no macOS TCC prompt in gate runs). Same test-only
-  // policy as OCR_DAEMON_FORCE_* — never set in production.
-  if (process.env.OCR_DESKTOP_CAMERA_BLOCK === "1") {
-    session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
-      callback(permission !== "media");
-    });
-    session.defaultSession.setPermissionCheckHandler((_wc, permission) => permission !== "media");
-  }
+  // P2-182: single permission path for the whole shell, registered
+  // unconditionally — the Electron default grants several permissions
+  // silently, and since the bundle is signed with camera/mic usage
+  // descriptions a third-party page in the Browser pane would make the OS
+  // show the request as our product asking. Both handlers consult the same
+  // pure decision: only media, clipboard-sanitized-write and fullscreen,
+  // only for the shell's own origin. Refusals are logged with the
+  // permission name + requester scheme only, never the full URL, so user
+  // navigation cannot leak into desktop.log.
+  // P2-117 test hatch (scripts/desktop-flow.test.ts): the camera-block env
+  // denies media even for the shell origin so the scanner's unavailable
+  // state is provable on hosts that do have a camera (no macOS TCC prompt in
+  // gate runs). Same test-only policy as OCR_DAEMON_FORCE_* — never set in
+  // production; its only effect is the cameraBlocked flag below.
+  const permissionCtx = {
+    devUrl: process.env.OCR_WEB_URL,
+    cameraBlocked: process.env.OCR_DESKTOP_CAMERA_BLOCK === "1",
+  };
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, callback, details) => {
+    const decision = permissionDecision(permission, details?.requestingUrl, permissionCtx);
+    if (!decision.allow) {
+      logError(`[desktop] permission denied: ${permission} ${requestingScheme(details?.requestingUrl)} — ${decision.reason}`);
+    }
+    callback(decision.allow);
+  });
+  session.defaultSession.setPermissionCheckHandler(
+    (_wc, permission, requestingOrigin) => permissionDecision(permission, requestingOrigin, permissionCtx).allow,
+  );
 
   createWindow();
   startPairingWatcher();
