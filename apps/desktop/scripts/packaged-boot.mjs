@@ -186,19 +186,27 @@ async function main() {
       env: hermeticBootEnv(),
     });
     activeApp = electronApp;
+    // Collect from the earliest moment Playwright offers: the "window" event
+    // fires at page creation, before firstWindow() resolves, so the first
+    // document's early boot errors land in the collector too. The injected
+    // canary below keeps proving the collector actually saw anything.
+    const collected = new Set();
+    const collect = (page) => {
+      if (collected.has(page)) return;
+      collected.add(page);
+      page.on("console", (msg) => {
+        if (msg.type() !== "error") return;
+        if (msg.text().includes(CANARY)) {
+          facts.canarySeen = true;
+          return;
+        }
+        facts.consoleErrors.push(msg.text());
+      });
+      page.on("pageerror", (err) => facts.consoleErrors.push(String(err?.message ?? err)));
+    };
+    electronApp.on("window", collect);
     const page = await electronApp.firstWindow({ timeout: LOAD_TIMEOUT_MS });
-
-    // Collector with self-check: the canary injected below must show up, or
-    // the empty-error signal is void (console-capture-broken).
-    page.on("console", (msg) => {
-      if (msg.type() !== "error") return;
-      if (msg.text().includes(CANARY)) {
-        facts.canarySeen = true;
-        return;
-      }
-      facts.consoleErrors.push(msg.text());
-    });
-    page.on("pageerror", (err) => facts.consoleErrors.push(String(err?.message ?? err)));
+    collect(page); // no-op when the window event already collected it
 
     try {
       await page.waitForLoadState("load", { timeout: LOAD_TIMEOUT_MS });

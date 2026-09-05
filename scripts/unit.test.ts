@@ -13591,6 +13591,10 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     bootSrc.includes("CANARY") && /console\.error\('\$\{CANARY\}'\)/.test(bootSrc),
   );
   check(
+    "P2-204: console collectors attach at window creation, not only after firstWindow resolves",
+    bootSrc.includes('electronApp.on("window", collect)') && bootSrc.includes("const collected = new Set()"),
+  );
+  check(
     "P2-204: the driver fails closed when playwright-core is unavailable (exit 1, never a silent pass)",
     bootSrc.includes("playwright-core is not available") &&
       bootSrc.includes("refusing to pass vacuously") &&

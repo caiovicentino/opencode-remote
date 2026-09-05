@@ -334,8 +334,10 @@ Playwright não está disponível — pacote que não abre aborta o release ante
 do upload. Dá para rodar o smoke de boot localmente contra um pacote já
 construído:
 
-    node apps/desktop/scripts/packaged-boot.mjs "apps/desktop/dist/mac-arm64/OpenCode Remote.app" PRs que tocam o shell desktop, a web UI ou
-`package-lock.json` rodam ainda um job de empacotamento escopado
+    node apps/desktop/scripts/packaged-boot.mjs "apps/desktop/dist/mac-arm64/OpenCode Remote.app"
+
+PRs que tocam o shell desktop, a web UI ou `package-lock.json` rodam ainda um
+job de empacotamento escopado
 (`desktop-package`, alvo mac `dir` apenas, sem DMG/assinatura) validado com
 `dist:smoke --no-installer`; os instaladores assinados completos seguem
 saindo só na tag. Antes de empacotar, esse job também garante os orçamentos de
