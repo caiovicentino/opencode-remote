@@ -415,11 +415,18 @@ P2-191) or update feed fails the
 workflow (every missing artifact listed at once) instead of surfacing later as
 a 404 on the in-app update check. The release is also only considered complete
 when the feeds point at artifacts of the same tag (P2-157): a `release-feeds`
-job downloads `update-mac.json` and `latest.yml`, checks that the Squirrel
+job downloads `update-mac.json`, `latest.yml` and the two per-architecture
+feeds, and checks via `scripts/feed-consistency.ts` that the Squirrel
 `name`/`url` and the yml `version`/`path` reference this tag's version and
-published files via `scripts/feed-consistency.ts`, and fails the workflow —
-otherwise a stale feed ships green and every installed app silently fails its
-auto-update.
+published files, and fails the workflow — otherwise a stale feed ships green
+and every installed app silently fails its auto-update. Since P2-212 the gate
+also covers the architecture: `update-mac-arm64.json` must point at a
+published zip carrying the `arm64` token and `update-mac-x64.json` at one
+carrying `x64` (an Intel Mac must never be handed the arm64 zip — the exact
+feeds real machines consult are the ones checked), and the legacy
+`update-mac.json` — which exists only for the pre-P2-191 installed base — must
+stay identical to the arm64 document. Publication stays blocked until every
+feed points at a present, right-architecture artifact.
 
 **Releases are born as drafts** (P2-179): `gh release create` runs with
 `--draft`, so nothing is visible to the installed base while the packaging

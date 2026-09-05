@@ -561,7 +561,7 @@ import { authenticodeProblems } from "./authenticode-verify";
 
 import { checksumLines, checksumProblems, MANIFEST_NAME } from "./release-checksums";
 
-import { feedProblems } from "./feed-consistency";
+import { archFeedProblems, archOfFileName, feedProblems } from "./feed-consistency";
 
 import { BUNDLE_BUDGETS, budgetProblems, type BundleEntry } from "./bundle-budget";
 
@@ -9984,28 +9984,36 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   const dir = mkdtempSync(join(tmpdir(), "feed-consistency-"));
   const jsonPath = join(dir, "update-mac.json");
   const ymlPath = join(dir, "latest.yml");
-  writeFileSync(
-    jsonPath,
+  const arm64Path = join(dir, "update-mac-arm64.json");
+  const x64Path = join(dir, "update-mac-x64.json");
+  const squirrelDoc = (zip: string): string =>
     JSON.stringify({
       url: "https://github.com/caiovicentino/opencode-remote/releases/download/v0.3.0/" +
-        encodeURIComponent("OpenCode Remote-0.3.0-mac.zip"),
+        encodeURIComponent(zip),
       name: "0.3.0",
       notes: "",
       pub_date: "2026-09-01T12:00:00.000Z",
-    }),
-  );
+    });
+  // P2-191 shape: the alias is a byte-identical copy of the arm64 document.
+  writeFileSync(jsonPath, squirrelDoc("OpenCode Remote-0.3.0-arm64.zip"));
   writeFileSync(ymlPath, "version: 0.3.0\npath: 'OpenCode Remote Setup 0.3.0.exe'\n");
+  writeFileSync(arm64Path, squirrelDoc("OpenCode Remote-0.3.0-arm64.zip"));
+  writeFileSync(x64Path, squirrelDoc("OpenCode Remote-0.3.0-x64.zip"));
   const names = [
     "OpenCode Remote-0.3.0-arm64.dmg",
-    "OpenCode Remote-0.3.0-mac.zip",
+    "OpenCode Remote-0.3.0-x64.dmg",
+    "OpenCode Remote-0.3.0-arm64.zip",
+    "OpenCode Remote-0.3.0-x64.zip",
     "OpenCode Remote Setup 0.3.0.exe",
     "latest-mac.yml",
     "update-mac.json",
+    "update-mac-arm64.json",
+    "update-mac-x64.json",
     "latest.yml",
   ].join("\n");
   const run = (tag: string, input: string): { code: number; out: string } => {
     try {
-      const out = execFileSync(process.execPath, [tsxEntry, script, tag, jsonPath, ymlPath], {
+      const out = execFileSync(process.execPath, [tsxEntry, script, tag, jsonPath, ymlPath, arm64Path, x64Path], {
         input,
         encoding: "utf8",
       });
@@ -10017,11 +10025,11 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   };
   const ok = run("v0.3.0", `${names}\n`);
   check(
-    "P2-157: cli exits 0 when both feeds point at the release's artifacts",
+    "P2-157: cli exits 0 when all four feeds point at the release's artifacts",
     ok.code === 0 && ok.out.includes("feed-consistency: OK v0.3.0"),
     ok.out,
   );
-  const stale = run("v0.3.0", names.replace("0.3.0-mac.zip", "0.2.9-mac.zip"));
+  const stale = run("v0.3.0", names.replace("0.3.0-arm64.zip", "0.2.9-arm64.zip"));
   check(
     "P2-157: cli exits 1 printing the stale-feed problem (fail-closed)",
     stale.code === 1 && stale.out.includes("feed-consistency: FAIL v0.3.0") && stale.out.includes("not published"),
@@ -10051,6 +10059,163 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
   check(
     "P2-157: release-feeds declares shell: bash (P2-126 lesson)",
+    block.includes("shell: bash"),
+  );
+}
+
+// --- P2-212: feed-consistency covers both per-architecture mac feeds ---------
+{
+  const TAG = "v0.3.0";
+  const published = [
+    "OpenCode Remote-0.3.0-arm64.dmg",
+    "OpenCode Remote-0.3.0-x64.dmg",
+    "OpenCode Remote-0.3.0-arm64.zip",
+    "OpenCode Remote-0.3.0-x64.zip",
+    "OpenCode Remote-0.3.0-mac.zip",
+    "OpenCode Remote Setup 0.3.0.exe",
+    "latest-mac.yml",
+    "update-mac.json",
+    "update-mac-arm64.json",
+    "update-mac-x64.json",
+    "latest.yml",
+  ];
+  const doc = (name: string, zip: string): string =>
+    JSON.stringify({
+      url: `https://github.com/caiovicentino/opencode-remote/releases/download/v0.3.0/${encodeURIComponent(zip)}`,
+      name,
+      notes: "release notes",
+      pub_date: "2026-09-01T12:00:00.000Z",
+    });
+  const ARM64_ZIP = "OpenCode Remote-0.3.0-arm64.zip";
+  const X64_ZIP = "OpenCode Remote-0.3.0-x64.zip";
+  const LEGACY_ZIP = "OpenCode Remote-0.3.0-mac.zip";
+  const goodArm64 = doc("0.3.0", ARM64_ZIP);
+  const goodX64 = doc("0.3.0", X64_ZIP);
+
+  check(
+    "P2-212: consistent per-arch feeds with an identical alias return zero problems",
+    archFeedProblems(TAG, goodArm64, goodArm64, goodX64, published).length === 0,
+  );
+  check(
+    "P2-212: arch token detection follows the P2-191 boundary discipline",
+    archOfFileName(ARM64_ZIP) === "arm64" &&
+      archOfFileName("OpenCode-Remote-0.3.0-x64.zip") === "x64" &&
+      archOfFileName(LEGACY_ZIP) === null &&
+      archOfFileName("OpenCode-Remote-0.3.0-arm64e.zip") === null,
+  );
+
+  const swapped = archFeedProblems(TAG, doc("0.3.0", X64_ZIP), doc("0.3.0", X64_ZIP), goodX64, published);
+  check(
+    "P2-212: arm64 feed pointing at the x64 zip is a problem",
+    swapped.length === 1 && swapped[0]!.includes("update-mac-arm64.json") && swapped[0]!.includes("arm64 architecture"),
+    JSON.stringify(swapped),
+  );
+  const swappedIntel = archFeedProblems(TAG, goodArm64, goodArm64, doc("0.3.0", ARM64_ZIP), published);
+  check(
+    "P2-212: x64 feed pointing at the arm64 zip is a problem",
+    swappedIntel.length === 1 && swappedIntel[0]!.includes("update-mac-x64.json") && swappedIntel[0]!.includes("x64 architecture"),
+    JSON.stringify(swappedIntel),
+  );
+  const legacyZip = archFeedProblems(TAG, doc("0.3.0", LEGACY_ZIP), doc("0.3.0", LEGACY_ZIP), goodX64, published);
+  check(
+    "P2-212: per-arch feed pointing at a legacy arch-less zip is a problem",
+    legacyZip.length === 1 && legacyZip[0]!.includes("does not carry the arm64 architecture"),
+    JSON.stringify(legacyZip),
+  );
+
+  const absentDoc = doc("0.3.0", "OpenCode Remote-0.2.9-arm64.zip");
+  const absent = archFeedProblems(TAG, absentDoc, absentDoc, goodX64, published);
+  check(
+    "P2-212: per-arch feed url absent from the published list is a problem",
+    absent.length === 1 && absent[0]!.includes("not published"),
+    JSON.stringify(absent),
+  );
+  const wrongNameDoc = doc("0.2.9", ARM64_ZIP);
+  const wrongName = archFeedProblems(TAG, wrongNameDoc, wrongNameDoc, goodX64, published);
+  check(
+    "P2-212: per-arch feed name diverging from the tag version is a problem",
+    wrongName.length === 1 && wrongName[0]!.includes("0.2.9"),
+    JSON.stringify(wrongName),
+  );
+  const malformed = archFeedProblems(TAG, "{not json", "{not json", goodX64, published);
+  check(
+    "P2-212: malformed per-arch feed is a problem",
+    malformed.length === 1 && malformed[0]!.includes("update-mac-arm64.json") && malformed[0]!.includes("invalid JSON"),
+    JSON.stringify(malformed),
+  );
+  const missing = archFeedProblems(TAG, goodArm64, "", goodX64, published);
+  check(
+    "P2-212: missing (empty) per-arch feed is an explicit problem, never a silent skip",
+    missing.length === 1 && missing[0]!.includes("update-mac-arm64.json") && missing[0]!.includes("empty"),
+    JSON.stringify(missing),
+  );
+  const aliasDrift = archFeedProblems(TAG, goodX64, goodArm64, goodX64, published);
+  check(
+    "P2-212: alias differing from the arm64 document is a problem",
+    aliasDrift.length === 1 && aliasDrift[0]!.includes("update-mac.json") && aliasDrift[0]!.includes("update-mac-arm64.json"),
+    JSON.stringify(aliasDrift),
+  );
+
+  // P2-146 lesson: fail closed — ALL problems reported at once, never just
+  // the first feed's.
+  const bothSwapped = archFeedProblems(
+    TAG,
+    doc("0.3.0", LEGACY_ZIP),
+    doc("0.3.0", X64_ZIP),
+    doc("0.3.0", ARM64_ZIP),
+    published,
+  );
+  check(
+    "P2-212: cross-wired arch feeds and a drifted alias are all reported at once",
+    bothSwapped.length === 3 &&
+      bothSwapped.some((p) => p.includes("update-mac-arm64.json")) &&
+      bothSwapped.some((p) => p.includes("update-mac-x64.json")) &&
+      bothSwapped.some((p) => p.includes("alias content differs")),
+    JSON.stringify(bothSwapped),
+  );
+
+  const emptyPublished = archFeedProblems(TAG, goodArm64, goodArm64, goodX64, []);
+  check(
+    "P2-212: empty published list makes every per-arch feed a problem",
+    emptyPublished.length === 2 && emptyPublished.every((p) => p.includes("not published")),
+    JSON.stringify(emptyPublished),
+  );
+
+  const badTag = archFeedProblems("banana", goodArm64, goodArm64, goodX64, published);
+  check(
+    "P2-212: non-semver tag still short-circuits to a single tag problem",
+    badTag.length === 1 && badTag[0]!.includes("semver"),
+    JSON.stringify(badTag),
+  );
+  const emptyTag = archFeedProblems("", goodArm64, goodArm64, goodX64, published);
+  check(
+    "P2-212: empty tag still short-circuits to a single tag problem",
+    emptyTag.length === 1 && emptyTag[0]!.includes("empty"),
+    JSON.stringify(emptyTag),
+  );
+}
+
+// --- P2-212: real-repo assertion — release-feeds downloads and checks all four
+{
+  const root = join(import.meta.dirname, "..");
+  const release = readFileSync(join(root, ".github", "workflows", "release.yml"), "utf8");
+  const start = release.indexOf("\n  release-feeds:");
+  const next = release.indexOf("\n  release-publish:", start);
+  const block = start === -1 || next === -1 ? "" : release.slice(start, next);
+  check(
+    "P2-212: release-feeds downloads the two per-architecture feed patterns",
+    block.includes("--pattern update-mac-arm64.json") && block.includes("--pattern update-mac-x64.json"),
+  );
+  check(
+    "P2-212: release-feeds passes all four feeds to scripts/feed-consistency.ts",
+    block.includes("feeds/update-mac.json") &&
+      block.includes("feeds/latest.yml") &&
+      block.includes("feeds/update-mac-arm64.json") &&
+      block.includes("feeds/update-mac-x64.json") &&
+      block.includes("scripts/feed-consistency.ts"),
+  );
+  check(
+    "P2-212: release-feeds declares shell: bash explicitly (P2-126/P2-164 lessons)",
     block.includes("shell: bash"),
   );
 }
