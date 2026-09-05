@@ -288,6 +288,14 @@ import { overlayVisible, phonePaired, localPairing } from "../apps/desktop/src/p
 
 import { classifySidecarExit } from "../apps/desktop/src/sidecarexit";
 
+import {
+  createSidecarRedactor,
+  PAIRING_SCHEME,
+  REDACTED_MARKER,
+  SIDECAR_PARTIAL_MAX_BYTES,
+} from "../apps/desktop/src/sidecar-redact";
+import { createSidecarTee, sidecarLogFile } from "../apps/desktop/src/sidecar-log";
+
 import { candidatePorts, pickDaemonPort } from "../apps/desktop/src/daemonport";
 
 import { versionMismatch } from "../apps/desktop/src/versions";
@@ -8698,6 +8706,136 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "P2-161: zero/invalid bound port → no rewrite",
     zero.rewritten === false && negative.rewritten === false && nan.rewritten === false && huge.rewritten === false && zero.reason === "invalid-port" && zero.body === feed(8792),
   );
+}
+
+// --- P2-160: sidecar log redactor — pairing credential never hits disk ----------
+{
+  const PAIR_URI =
+    "opencode-remote://pair?v=2&relay=https%3A%2F%2Frelay.example%2Fwss&room=room-1&k=QUJD&vapid=VERF&name=macbook";
+  const ANNOUNCE = "  Pair with the PWA by scanning this QR code:";
+  const ESC = "\x1b";
+  const QR = "\u2580\u2584\u2588"; // half-block glyphs the terminal QR renderer uses
+  const qrLines = (withAnsi: boolean): string[] => [
+    "",
+    ANNOUNCE,
+    "",
+    withAnsi ? `  ${ESC}[7m ${QR}${QR} ${ESC}[0m` : `  ${QR}${QR} ${QR} `,
+    withAnsi ? `  ${ESC}[7m ${QR}  ${ESC}[0m` : `   ${QR} `,
+    "",
+  ];
+
+  // 1. whole URI in a single chunk
+  {
+    const f = createSidecarRedactor();
+    const out = f(`  or paste: ${PAIR_URI}\n`);
+    check(
+      "P2-160: whole URI in one chunk → marker emitted, scheme gone",
+      out.includes(REDACTED_MARKER) && !out.includes(PAIRING_SCHEME) && out.startsWith("  or paste: ") && out.endsWith("\n"),
+    );
+  }
+
+  // 2. same URI split across two chunks — redacted only when the line closes
+  {
+    const f = createSidecarRedactor();
+    const cut = PAIR_URI.indexOf("&room=");
+    const out = f(`  or paste: ${PAIR_URI.slice(0, cut)}`) + f(`${PAIR_URI.slice(cut)}\n`);
+    check(
+      "P2-160: URI split across two chunks → redacted exactly once",
+      !out.includes(PAIRING_SCHEME) && out.split(REDACTED_MARKER).length - 1 === 1 && out === `  or paste: ${REDACTED_MARKER}\n`,
+    );
+  }
+
+  // 3+4. QR block suppressed whole; first normal line after it preserved+redacted
+  {
+    const f = createSidecarRedactor();
+    const out = f([...qrLines(true), `  or paste: ${PAIR_URI}`, ""].map((l) => `${l}\n`).join(""));
+    check(
+      "P2-160: QR block (ANSI-wrapped) fully suppressed",
+      !out.includes("\u2580") && !out.includes("\u2584") && !out.includes("\u2588") && !out.includes(ESC),
+    );
+    check(
+      "P2-160: announce kept; or-paste line redacted and preserved",
+      out.split("\n").includes(ANNOUNCE) && out.split("\n").includes(`  or paste: ${REDACTED_MARKER}`) && !out.includes(PAIRING_SCHEME),
+    );
+    const f2 = createSidecarRedactor();
+    const out2 = f2([...qrLines(false), `  or paste: ${PAIR_URI}`].map((l) => `${l}\n`).join(""));
+    check(
+      "P2-160: bare QR block (no ANSI) fully suppressed",
+      !out2.includes("\u2580") && out2.includes(`  or paste: ${REDACTED_MARKER}`),
+    );
+  }
+
+  // 5. chunk without trailing newline: held, flushed next chunk, no byte lost
+  {
+    const f = createSidecarRedactor();
+    const head = '{"ts":1,"msg":"half';
+    const tail = ' of the line"}\n';
+    check("P2-160: lineless chunk held in the partial buffer", f(head) === "");
+    check("P2-160: held bytes flushed next chunk byte-identical", f(tail) === head + tail);
+  }
+
+  // 6. partial buffer cap: forced already-redacted flush, then drained
+  {
+    const f = createSidecarRedactor({ maxPartialBytes: 20 });
+    const long = "y".repeat(50);
+    check("P2-160: cap forces the lineless flush", f(long) === long);
+    check("P2-160: buffer drained after the forced flush", f("next\n") === "next\n");
+    const g = createSidecarRedactor({ maxPartialBytes: 10 });
+    check("P2-160: forced flush is redacted too", g(`paste ${PAIR_URI} tail`) === `paste ${REDACTED_MARKER} tail`);
+  }
+
+  // 7. ordinary daemon JSONL passes byte-identical
+  {
+    const f = createSidecarRedactor();
+    const line = '{"ts":1767000000,"level":"info","msg":"relay connected"}\n';
+    check("P2-160: ordinary daemon JSONL passes byte-identical", f(line) === line);
+    const withheld = "  Pairing QR withheld: fix RELAY_URL and restart the daemon.\n";
+    check("P2-160: withheld-QR boot line (P2-139 branch) untouched", f(withheld) === withheld);
+  }
+
+  check("P2-160: default partial cap is bounded and small", SIDECAR_PARTIAL_MAX_BYTES === 4096);
+
+  // tee integration: a boot fixture written through createSidecarTee leaves
+  // zero pairing URIs on disk — the support-request guarantee
+  {
+    const userData = mkdtempSync(join(tmpdir(), "p2-160-tee-"));
+    try {
+      const tee = createSidecarTee(userData);
+      const fixture = [
+        "  opencode remote daemon (protocol v2)",
+        ...qrLines(true),
+        `  or paste: ${PAIR_URI}`,
+        '{"ts":2,"level":"info","msg":"relay connected"}',
+      ]
+        .map((l) => `${l}\n`)
+        .join("");
+      tee(fixture);
+      const raw = readFileSync(sidecarLogFile(userData), "utf8");
+      check(
+        "P2-160: tee'd boot fixture contains zero pairing URIs",
+        !raw.includes(PAIRING_SCHEME) && raw.includes(REDACTED_MARKER),
+      );
+      check(
+        "P2-160: tee'd JSONL after the QR survives",
+        raw.includes('{"ts":2,"level":"info","msg":"relay connected"}\n'),
+      );
+    } finally {
+      rmSync(userData, { recursive: true, force: true });
+    }
+  }
+
+  // the pairing capture path in daemon.ts must stay RAW (auto-pairing, VISION
+  // stage 3.1): no redactor there, tee still called with the untouched chunk
+  {
+    const desktopSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "daemon.ts"), "utf8");
+    check(
+      "P2-160: daemon.ts capture path stays raw (no redactor, raw chunk to tee + PAIR_URL_RE)",
+      !desktopSrc.includes("sidecar-redact") &&
+        !desktopSrc.includes("createSidecarRedactor") &&
+        desktopSrc.includes("teeSidecarChunk(chunk);") &&
+        desktopSrc.includes("PAIR_URL_RE.exec(sidecar.stdoutTail)"),
+    );
+  }
 }
 
 if (failures > 0) {

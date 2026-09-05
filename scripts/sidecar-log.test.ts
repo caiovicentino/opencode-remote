@@ -120,13 +120,19 @@ const realFs: LogFs = {
 }
 
 // --- oversized lineless chunk is flushed, not dropped ----------------------------
+// P2-160: chunks now flow through the line redactor first, so a lineless chunk
+// is held in the partial-line buffer until it exceeds maxPartialBytes — then
+// force-flushed (already redacted). Same original intent: bytes never lost.
 {
   const userData = tempUserData();
   try {
-    const tee = createSidecarTee(userData, { fs: realFs, capBytes: 10 });
-    const big = "x".repeat(100); // larger than the cap, no newline at all
-    tee(big);
-    check("oversized: lineless chunk flushed to disk", readFileSync(sidecarLogFile(userData), "utf8") === big);
+    const tee = createSidecarTee(userData, { fs: realFs, capBytes: 1000, maxPartialBytes: 50 });
+    const big = "x".repeat(100); // larger than the partial cap, no newline at all
+    tee(big); // exceeds maxPartialBytes → forced redacted flush
+    tee("tail\n"); // proves the buffer drained: nothing stuck, nothing lost
+    const raw = readFileSync(sidecarLogFile(userData), "utf8");
+    check("oversized: lineless chunk force-flushed whole", raw.startsWith(big));
+    check("oversized: next chunk appends after the forced flush", raw === `${big}tail\n`);
   } finally {
     rmSync(userData, { recursive: true, force: true });
   }
