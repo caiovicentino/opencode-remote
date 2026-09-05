@@ -1233,8 +1233,7 @@ try {
                 1_000,
               );
             }
-          }
-        } finally {
+          } finally {
           // home never mounts < 1024px — the 390 evidence shows the mobile
           // board unregressed; also restores the width P1-080 expects
           const hs2 = run("P2-123: 390 evidence shot (mobile board)", ["shot", homeShot390, "390", "844"], 15_000, localEnv);

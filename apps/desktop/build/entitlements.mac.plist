@@ -13,6 +13,12 @@
     - allow-dyld-environment-variables: the daemon sidecar is the same Electron
       binary re-spawned with ELECTRON_RUN_AS_NODE=1 (src/daemon.ts) and inherits
       the caller's DYLD_* environment.
+    - device.audio-input (P2-169): voice recording in the chat (getUserMedia
+      audio, apps/web/src/lib/recorder.ts) is denied/killed by the hardened
+      runtime on the signed build without it.
+    - device.camera (P2-169): the pairing QR scanner (getUserMedia video,
+      apps/web/src/components/QrScanner.tsx) needs the camera on the signed
+      build for the same reason.
 -->
 <plist version="1.0">
   <dict>
@@ -23,6 +29,10 @@
     <key>com.apple.security.cs.disable-library-validation</key>
     <true/>
     <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+    <key>com.apple.security.device.camera</key>
     <true/>
   </dict>
 </plist>

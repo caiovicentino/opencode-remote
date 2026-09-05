@@ -71,6 +71,12 @@ mac:
   gatekeeperAssess: false
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
+  # P2-169: usage strings the packaged Info.plist must carry — under hardened
+  # runtime macOS denies/kills processes that touch mic/camera without them,
+  # which only ever happened on the signed/notarized build (stage 5).
+  extendInfo:
+    NSMicrophoneUsageDescription: "O OpenCode Remote usa o microfone para gravar e transcrever mensagens de voz no chat."
+    NSCameraUsageDescription: "O OpenCode Remote usa a câmera para ler o QR code de pareamento."
 dmg:
   # Craft: branded installer window, no license/EULA noise.
   title: OpenCode Remote ${version}
