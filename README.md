@@ -82,6 +82,20 @@ private. That is the product: **local power, remote control, zero trust**.
   `GET /__ocr/model/status` (`{ available, state, message }`, mirroring the
   stt-status route). `OCR_MODEL_BLOCK=1` on the daemon is a test hatch that
   forces the no-provider verdict for deterministic screenshots
+- **opencode version readiness** — the Settings machine section warns when the
+  opencode installed on the machine hosting the daemon is older than the
+  minimum the daemon's API surface expects (`1.18.0`): a single calm line says
+  the machine's agent server should be updated and restarted. The indicator
+  describes the machine hosting the daemon — never the phone — is probed once
+  at boot from the resolved binary, and **never blocks anything**: sending,
+  voice and every control stay enabled even when the verdict is too-old, and
+  ok/unknown verdicts stay silent. The same verdict rides
+  `GET /api/health` (`opencode.versionState` / `opencode.versionMessage`) and
+  `GET /__ocr/settings` (`opencodeVersion`). To update the machine, install the
+  latest opencode (e.g. `curl -fsSL https://opencode.ai/install | bash` or
+  `brew upgrade opencode`) and restart the daemon;
+  `OCR_OPENCODE_OLD=1` on the daemon is a test hatch that forces the too-old
+  verdict for deterministic screenshots
 - **Files** — upload from the phone, preview anything, export a conversation
   as markdown with one tap; every file card has a ⧉ button that copies the
   file's full path (Clipboard API with an execCommand fallback)
