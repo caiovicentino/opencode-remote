@@ -58,7 +58,7 @@ import { cachedSpeech, detectEdgeTts, prewarmSpeech, putSpeech, resolveVoice, sy
 import { spokenNumbers, SPEECH_LANGS } from "./spoken.js";
 import { metrics, startMetricsServer, VERSION } from "./metrics.js";
 import { loadRoutines, saveRoutines, type Routine } from "./routines.js";
-import { ARTIFACTS_ROOT, artifactMime, kindFor, listArtifacts, readArtifact, sessionTitleMap } from "./artifacts.js";
+import { ARTIFACTS_ROOT, artifactMime, capArtifacts, kindFor, listArtifacts, readArtifact, sessionTitleMap } from "./artifacts.js";
 import { WindowCache, contextPct, sessionTokenTotal } from "./contextgauge.js";
 import { ArtifactWatcher } from "./artifactwatch.js";
 import { createShutdown, stopAccepting } from "./shutdown.js";
@@ -451,20 +451,23 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
   // sessionId → conversation-title map resolved against the opencode session
   // list, so the Artifacts pane groups by title instead of the raw
   // ses_… id. Best effort: an unreachable backend degrades to the ids.
+  // P2-173: the payload is capped (MAX_ARTIFACTS_LISTED, newest first) with
+  // additive total/truncated fields, and titles resolve only for the capped
+  // items — a months-old install no longer ships thousands of rows per open.
   if (req.path === "/__ocr/artifacts" && req.method === "GET") {
     const sessionId = req.query?.session || undefined;
     metrics.inc("ocr_artifacts_list_total");
-    const artifacts = listArtifacts(sessionId);
+    const { items, total, truncated } = capArtifacts(listArtifacts(sessionId));
     let titles: Record<string, string> = {};
-    if (artifacts.length > 0 && !sessionId) {
+    if (items.length > 0 && !sessionId) {
       try {
         const r = await proxy({ id: req.id, method: "GET", path: "/session" });
-        titles = sessionTitleMap(r.body, [...new Set(artifacts.map((a) => a.sessionId))]);
+        titles = sessionTitleMap(r.body, [...new Set(items.map((a) => a.sessionId))]);
       } catch {
         // opencode unreachable — the client falls back to the raw session ids
       }
     }
-    return { id: req.id, status: 200, body: { artifacts, titles } };
+    return { id: req.id, status: 200, body: { artifacts: items, titles, total, truncated } };
   }
   // content of a single artifact (base64; the tunnel chunks oversized bodies)
   // P2-097: reads are capped (MAX_ARTIFACT_BYTES) — too-large answers 413 so
@@ -2707,19 +2710,21 @@ end tell`;
     }
     if (seg[1] === "artifacts" && req.method === "GET") {
       metrics.inc("ocr_artifacts_list_total");
-      const artifacts = listArtifacts(url.searchParams.get("session") ?? undefined);
+      // P2-173: capped payload (newest first) + additive total/truncated —
+      // same contract as the tunnel route.
+      const { items, total, truncated } = capArtifacts(listArtifacts(url.searchParams.get("session") ?? undefined));
       // P2-091: resolve sessionId → conversation title for the global listing
       // (same contract as the tunnel route; best effort on backend failures).
       let titles: Record<string, string> = {};
-      if (artifacts.length > 0 && !url.searchParams.get("session")) {
+      if (items.length > 0 && !url.searchParams.get("session")) {
         try {
           const r = await op("GET", "/session");
-          titles = sessionTitleMap(r.body, [...new Set(artifacts.map((a) => a.sessionId))]);
+          titles = sessionTitleMap(r.body, [...new Set(items.map((a) => a.sessionId))]);
         } catch {
           // backend unreachable — clients fall back to the raw session ids
         }
       }
-      send(200, { artifacts, titles });
+      send(200, { artifacts: items, titles, total, truncated });
       return true;
     }
     if (seg[1] !== "session") {

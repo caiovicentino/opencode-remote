@@ -110,6 +110,9 @@ private. That is the product: **local power, remote control, zero trust**.
   preview in a **side-by-side pane** next to the chat (draggable divider, chat
   stays visible and navigable — Claude/Codex style), while narrower screens
   keep the full-screen overlay; also listed programmatically via `GET /api/artifacts`.
+  The listing comes newest-first and is capped at the **500 most recent**
+  artifacts (`total`/`truncated` fields report the real count), so a long-lived
+  install never pays a multi-megabyte payload per pane open over the E2E tunnel.
   The global Artifacts list groups by **conversation title** (the daemon resolves
   session ids against the opencode session list; unknown ids fall back to the raw
   id) and, on wide viewports, clicking a list item jumps back to Conversas with
