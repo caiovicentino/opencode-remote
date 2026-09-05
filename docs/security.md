@@ -45,6 +45,13 @@ identity servers, no accounts.
    The local pairing is re-derived on every boot and never persisted to
    localStorage, and the pairing URI/QR hunt stays disabled unless the user
    explicitly opts into remote pairing.
+10. **Durable, private state writes (P2-165).** `daemon.json` (ECDH identity,
+   VAPID keys, machine name, paired clients, apiToken) is persisted atomically:
+   the payload lands in a sibling temp file created with mode 0600 which is
+   then renamed over the destination. A crash, full disk or power loss
+   mid-write can therefore never truncate the state file — which would break
+   boot and every pairing — and the file is never readable by group/other,
+   not even for an instant.
 
 ## Threat notes
 
