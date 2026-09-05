@@ -416,6 +416,19 @@ the step fails, the job log lists every problem at once under
 verification itself are in `authenticode.txt` (workflow workspace artifact of
 the run).
 
+Windows packaging is no longer release-only: every PR that touches the desktop
+surface also runs the `desktop-package-win` CI job (P2-219), which builds,
+packages the `dir` target only — the unpacked `win-unpacked` bundle, never the
+NSIS installer, nothing signed — and smoke-checks the result, so a broken
+Windows package fails the PR instead of surfacing on publication day.
+Reproduce the same run locally on a Windows machine:
+
+    npm run dist --workspace @ocr/desktop -- --win --dir
+    npm run dist:smoke --workspace @ocr/desktop -- --no-installer
+
+The first command produces `apps/desktop/dist/win-unpacked`; the second
+validates its layout deterministically (web UI, daemon sidecar, executable).
+
 **Releasing**: a tag `vX.Y.Z` must carry the same version in **both**
 `package.json` files (repo root and `apps/desktop`) plus `apps/web/src/version.ts`.
 The release workflow runs `scripts/release-preflight.ts` as its first step and

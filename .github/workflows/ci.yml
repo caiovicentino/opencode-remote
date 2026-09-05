@@ -111,3 +111,46 @@ jobs:
 
       - name: Smoke-check the packaged bundle (installer checks skipped)
         run: npm run dist:smoke --workspace @ocr/desktop -- --no-installer
+
+  # P2-219: the Windows packaging surface (nsis/win config, signing profile,
+  # win-unpacked layout) was only exercised inside the release workflow, so a
+  # packaging regression surfaced as a red job on publication day. This job
+  # mirrors desktop-package on windows-latest: same scope indicator, dir
+  # target only — never the installer, never signing, never notarization —
+  # then the same deterministic bundle smoke with installer checks skipped.
+  # Nothing is uploaded or published; a broken package fails the PR.
+  desktop-package-win:
+    runs-on: windows-latest
+    needs: scope
+    if: needs.scope.outputs.desktop == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # P2-126 lesson: pwsh (the windows-latest default shell) does not expand
+      # globs — every run step below declares shell: bash explicitly.
+      - name: Install dependencies
+        shell: bash
+        timeout-minutes: 15
+        run: npm ci
+
+      - name: Build
+        shell: bash
+        timeout-minutes: 20
+        run: npm run build
+
+      - name: Package Windows bundle (dir target only)
+        shell: bash
+        timeout-minutes: 30
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+        run: npm run dist --workspace @ocr/desktop -- --win --dir
+
+      - name: Smoke-check the packaged bundle (installer checks skipped)
+        shell: bash
+        timeout-minutes: 10
+        run: npm run dist:smoke --workspace @ocr/desktop -- --no-installer

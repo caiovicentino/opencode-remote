@@ -15460,6 +15460,69 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+// --- P2-219: real-repo assertion — ci.yml exercises the Windows dir pack ------
+
+{
+  const ci = readFileSync(join(import.meta.dirname, "..", ".github", "workflows", "ci.yml"), "utf8");
+  const winStart = ci.indexOf("\n  desktop-package-win:");
+  const win = winStart > -1 ? ci.slice(winStart) : "";
+  const macStart = ci.indexOf("\n  desktop-package:");
+  const macEnd = winStart > macStart ? winStart : ci.length;
+  const mac = macStart > -1 ? ci.slice(macStart, macEnd) : "";
+  // Steps are indented with 6 spaces; slice per step for per-step invariants.
+  const winSteps = win.split("\n      - name:");
+
+  check("P2-219: ci.yml has the desktop-package-win job on windows-latest", winStart > -1 && win.includes("runs-on: windows-latest"));
+  check(
+    "P2-219: desktop-package-win needs scope and uses the same desktop indicator as the mac job",
+    win.includes("needs: scope") &&
+      win.includes("if: needs.scope.outputs.desktop == 'true'") &&
+      mac.includes("if: needs.scope.outputs.desktop == 'true'"),
+  );
+  check(
+    "P2-219: checkout, node 22 and npm ci mirror the mac desktop-package job",
+    ["actions/checkout@v4", "node-version: 22", "cache: npm", "run: npm ci"].every((needle) => win.includes(needle) && mac.includes(needle)),
+  );
+  const pkgAt = win.indexOf("Package Windows bundle");
+  const pkgStep = pkgAt > -1 ? win.slice(pkgAt, win.indexOf("\n      - name:", pkgAt)) : "";
+  check(
+    "P2-219: the packaging step requests the Windows dir target, never the NSIS installer",
+    pkgAt > -1 &&
+      pkgStep.includes("npm run dist --workspace @ocr/desktop -- --win --dir") &&
+      !pkgStep.toLowerCase().includes("nsis") &&
+      pkgStep.includes("CSC_IDENTITY_AUTO_DISCOVERY: false"),
+    pkgStep,
+  );
+  const smokeAt = win.indexOf("dist:smoke --workspace @ocr/desktop -- --no-installer");
+  check(
+    "P2-219: the deterministic bundle smoke runs after packaging with installer checks skipped",
+    pkgAt > -1 && smokeAt > pkgAt,
+  );
+  check(
+    "P2-219: no step of the new job uploads artifacts or publishes anything",
+    !win.includes("actions/upload-artifact") &&
+      !win.includes("gh release") &&
+      !win.includes("upload-artifact:") &&
+      !win.includes("ghr"),
+  );
+  check(
+    "P2-219: every run step of the new job declares shell: bash (P2-126 lesson)",
+    winSteps.length > 1 && winSteps.every((step) => !step.includes("run:") || step.includes("shell: bash")),
+  );
+  check(
+    "P2-219: every run step of the new job carries its own timeout",
+    winSteps.every((step) => !step.includes("run:") || step.includes("timeout-minutes:")),
+  );
+  check(
+    "P2-219: the mac desktop-package job is still present and unchanged in its steps",
+    mac.includes("runs-on: macos-14") &&
+      mac.includes("npx tsx scripts/bundle-budget.ts") &&
+      mac.includes("npm run dist --workspace @ocr/desktop -- --mac --dir") &&
+      mac.includes("CSC_IDENTITY_AUTO_DISCOVERY: false") &&
+      mac.includes("dist:smoke --workspace @ocr/desktop -- --no-installer"),
+  );
+}
+
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);
   process.exit(1);
