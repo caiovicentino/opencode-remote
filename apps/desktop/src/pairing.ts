@@ -23,6 +23,8 @@ export interface PairingState {
   qrDataUrl: string | null;
   /** Total allowlist size (fresh read from the daemon). */
   devices: number;
+  /** P1-056: labels of the paired clients — the "Celular" pane lists them. */
+  deviceList?: { label: string; addedAt?: string }[];
   /** True when at least one non-host device is paired (typically the phone). */
   phonePaired: boolean;
   /** P2-017: sidecar respawn budget exhausted — the daemon is not coming

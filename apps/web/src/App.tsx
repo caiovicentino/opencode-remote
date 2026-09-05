@@ -74,6 +74,7 @@ interface PairingState {
   uri: string | null;
   qrDataUrl: string | null;
   devices: number;
+  deviceList?: { label: string; addedAt?: string }[];
   phonePaired: boolean;
   /** P2-017: sidecar respawn budget exhausted (desktop shell only). */
   daemonDown?: boolean;
@@ -219,6 +220,9 @@ export default function App() {
   // phone pairs.
   const [pairingState, setPairingState] = useState<PairingState | null>(null);
   const [pairingDismissed, setPairingDismissed] = useState(false);
+  // P1-056: the "Celular" nav item is an EXPLICIT pairing request — it must
+  // open the QR even if the user once dismissed the boot-time overlay.
+  const [phonePairing, setPhonePairing] = useState(false);
   // P1-070: tryAutoPair reads the latest pairing state synchronously (the
   // effect ref below would still be null on the very first mount run).
   const pairingStateRef = useRef<PairingState | null>(null);
@@ -709,11 +713,13 @@ export default function App() {
   }
 
   const pairingOverlay =
-    !pairingDismissed && pairingState?.qrDataUrl && !pairingState.phonePaired ? (
+    (phonePairing || (!pairingDismissed && !pairingState?.phonePaired)) && pairingState?.qrDataUrl ? (
       <PairingOverlay
         qrDataUrl={pairingState.qrDataUrl}
+        deviceList={phonePairing ? pairingState?.deviceList : undefined}
         onDismiss={() => {
           setPairingDismissed(true);
+          setPhonePairing(false);
           // P1-070: leaving the overlay returns the shell to the quiet local
           // state on the next poll instead of hunting for pairing URIs.
           void desktopBridge()?.setRemotePairing?.(false);
@@ -1039,8 +1045,11 @@ export default function App() {
                 ))}
                 {desktopBridge()?.setRemotePairing && (
                   <button
-                    className=""
-                    onClick={() => void desktopBridge()?.setRemotePairing?.(true)}
+                    onClick={() => {
+                      setPhonePairing(true);
+                      setPairingDismissed(false);
+                      void desktopBridge()?.setRemotePairing?.(true);
+                    }}
                     data-pane="phone"
                     title={t("navPhone")}
                   >

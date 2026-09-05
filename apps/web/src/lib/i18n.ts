@@ -177,6 +177,7 @@ export const dict = {
     splashStep2: "Scan this pairing code",
     splashStep3: "Send your first message — audio, photo or text",
     splashUnder: "First value in under a minute.",
+    pairDevicesCount: "Paired devices ({n}): ",
     // diagnostics (desktop settings, P1-050)
     diagTitle: "Diagnostics",
     diagCopy: "Copy diagnostic",
@@ -529,6 +530,7 @@ export const dict = {
     splashStep2: "Escaneie este código de pareamento",
     splashStep3: "Mande a primeira mensagem — áudio, foto ou texto",
     splashUnder: "Primeiro valor em menos de 1 minuto.",
+    pairDevicesCount: "Celulares pareados ({n}): ",
     // diagnostics (desktop settings, P1-050)
     diagTitle: "Diagnóstico",
     diagCopy: "Copiar diagnóstico",

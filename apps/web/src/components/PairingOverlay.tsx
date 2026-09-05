@@ -4,6 +4,9 @@ interface Props {
   /** PNG data-URL rendered by the desktop main process (P2-007). */
   qrDataUrl: string;
   onDismiss: () => void;
+  /** P1-056: paired devices — present when the user opened "Celular" with a
+   * phone already paired (pair-another-device ceremony). */
+  deviceList?: { label: string; addedAt?: string }[];
 }
 
 /**
@@ -14,7 +17,7 @@ interface Props {
  * state. Desktop-only — App.tsx renders it when the electron bridge reports an
  * unpaired daemon.
  */
-export default function PairingOverlay({ qrDataUrl, onDismiss }: Props) {
+export default function PairingOverlay({ qrDataUrl, onDismiss, deviceList }: Props) {
   const t = useT();
   return (
     <div className="pair-overlay" role="dialog" aria-modal="true" aria-label={t("pairOverlayTitle")}>
@@ -38,6 +41,12 @@ export default function PairingOverlay({ qrDataUrl, onDismiss }: Props) {
           <li>{t("splashStep2")}</li>
           <li>{t("splashStep3")}</li>
         </ol>
+        {deviceList && deviceList.length > 0 && (
+          <p className="splash-under muted">
+            {t("pairDevicesCount", { n: String(deviceList.length) })}
+            {deviceList.map((d) => d.label).join(", ")}
+          </p>
+        )}
         <p className="splash-under">{t("splashUnder")}</p>
         {/* P2-106: the QR is the hero — "pair later" demotes to a quiet text
             link so the only primary action on this screen is scanning it. */}

@@ -488,6 +488,13 @@ async function onReady(): Promise<void> {
   // boots back into local mode.
   ipcMain.handle("app:setRemotePairing", (_e, on: unknown) => {
     remotePairingRequested = on === true;
+    // P1-056 (fable #2): snapshot the paired state AT REQUEST TIME. The poll's
+    // auto-reset ("a phone joining ends the request") must only fire on the
+    // unpaired→paired TRANSITION — otherwise, with devices already paired,
+    // every tick cancelled an explicit re-pair request before the QR existed
+    // (the dead "Celular" pane).
+    if (on === true) remotePairingStartedPaired = pairedNow();
+    if (on !== true) remotePairingStartedPaired = false;
     log(`[desktop] remote pairing requested: ${remotePairingRequested}`);
     void refreshPairingState();
     return true;
@@ -681,6 +688,12 @@ let pairingTimer: NodeJS.Timeout | null = null;
 // remote-pairing request lives in memory only — a restart boots back local.
 let localMode = false;
 let remotePairingRequested = false;
+/** P1-056: paired state when the explicit request landed — the poll's
+ * auto-reset only fires on the unpaired→paired transition. */
+let remotePairingStartedPaired = false;
+function pairedNow(): boolean {
+  return pairingState?.phonePaired ?? false;
+}
 
 /** P1-070: degraded states keep the local marker so a failed poll never
  * resurrects the QR ceremony in local mode — the renderer keeps auto-connecting
@@ -868,15 +881,19 @@ async function refreshPairingState(): Promise<void> {
 
     const paired = phonePaired(devices);
     // P1-070: a phone joining the allowlist ends the explicit remote request —
-    // the next tick returns to the quiet local state.
-    if (paired) remotePairingRequested = false;
+    // the next tick returns to the quiet local state. P1-056: only on the
+    // unpaired→paired transition — with devices already paired the request is
+    // the user's explicit "pair another one" and must survive the tick.
+    if (paired && !remotePairingStartedPaired) remotePairingRequested = false;
     // Local mode never hunts for a pairing URI: uri/qrDataUrl stay null so the
     // QR overlay can never open from it (the boot-ceremony bug this fixes).
     // The explicit remote request (Settings) restores the legacy fetch below.
     const quietLocal = localMode && !remotePairingRequested;
     let uri: string | null = null;
     let qrDataUrl: string | null = null;
-    if (!quietLocal && !paired) {
+    // P1-056: an explicit remote request ("Celular" pane) fetches the QR even
+    // when a phone is already paired — pairing a SECOND device is legitimate.
+    if (!quietLocal && (!paired || remotePairingRequested)) {
       uri = pairingState?.uri ?? null;
       qrDataUrl = pairingState?.qrDataUrl ?? null;
       // Only fetch/refresh while the overlay may still be needed; once a phone
@@ -894,6 +911,7 @@ async function refreshPairingState(): Promise<void> {
       uri,
       qrDataUrl,
       devices: devices.length,
+      deviceList: devices.map((d) => ({ label: d.label ?? "device" })),
       phonePaired: paired,
       appVersion,
       daemonVersion,
