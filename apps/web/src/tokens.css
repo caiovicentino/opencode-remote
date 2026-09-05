@@ -93,6 +93,9 @@
   --panel: #ffffff;
   --bg2: #e4e4e7;
   --fg: #18181b;
+  /* P1-056 (fable): --gray-hover has no light override — the dark #1b1b20
+     leaked into light-theme hovers (black-on-black "+ Novo"). */
+  --gray-hover: #ececee;
   --border-strong: #a1a1aa;
   --status-ok: #16a34a;
   --status-wait: #b45309;
