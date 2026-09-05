@@ -52,6 +52,7 @@ import {
   IconFolder,
   IconGlobe,
   IconLayers,
+  IconPhone,
   IconRadar,
   IconRefresh,
   IconSettings,
@@ -990,12 +991,14 @@ export default function App() {
                 ? shareNode
                 : null;
 
-  const railButtons: { slot: Slot; label: string; icon: ReactNode }[] = [
+  // P1-056: Claude-Desktop-style menu — vertical, quiet, no dead entries.
+  // "files" left the rail (dead weight); "phone" opens the PWA pairing
+  // ceremony (the pocket dispatch).
+  const railButtons: { slot: Slot; label: string; icon: ReactNode; beta?: boolean }[] = [
     { slot: "chat", label: t("navConversations"), icon: <IconChat /> },
     { slot: "artifacts", label: t("navArtifacts"), icon: <IconLayers /> },
     { slot: "browser", label: t("navBrowser"), icon: <IconGlobe /> },
-    { slot: "files", label: t("navFiles"), icon: <IconFolder /> },
-    { slot: "mission", label: t("navMission"), icon: <IconRadar /> },
+    { slot: "mission", label: t("navMission"), icon: <IconRadar />, beta: true },
     { slot: "settings", label: t("navSettings"), icon: <IconSettings /> },
   ];
 
@@ -1031,8 +1034,20 @@ export default function App() {
                   >
                     {b.icon}
                     <span>{b.label}</span>
+                    {b.beta && <span className="beta-pill">Beta</span>}
                   </button>
                 ))}
+                {desktopBridge()?.setRemotePairing && (
+                  <button
+                    className=""
+                    onClick={() => void desktopBridge()?.setRemotePairing?.(true)}
+                    data-pane="phone"
+                    title={t("navPhone")}
+                  >
+                    <IconPhone />
+                    <span>{t("navPhone")}</span>
+                  </button>
+                )}
               </nav>
             </div>
             <div className="desk-side-scroll">{sessionsNode}</div>

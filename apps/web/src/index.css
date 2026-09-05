@@ -975,9 +975,17 @@ body.dragging-files::after {
   padding: var(--space-2);
   border-bottom: 1px solid var(--border);
 }
-.desk-new {
+button.desk-new {
   width: 100%;
   flex-shrink: 0;
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  font-weight: var(--font-weight-medium);
+}
+button.desk-new:hover:not(:disabled) {
+  background: var(--gray-hover);
+  border-color: var(--border-strong);
 }
 .desk-side-scroll {
   flex: 1;
@@ -997,18 +1005,46 @@ body.dragging-files::after {
 }
 .desk-nav {
   display: flex;
-  gap: 6px;
+  flex-direction: column;
+  gap: 2px;
   padding: 0;
 }
 .desk-nav button {
-  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
   background: transparent;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
+  border: none;
+  border-radius: var(--radius-md);
   color: var(--muted);
-  font-size: 0.9rem;
-  padding: 6px 0;
+  font-size: 0.92rem;
+  font-weight: var(--font-weight-medium);
+  padding: 8px 10px;
   cursor: pointer;
+  text-align: left;
+  transition: background var(--motion-fast) var(--ease-out), color var(--motion-fast) var(--ease-out);
+}
+.desk-nav button svg {
+  flex-shrink: 0;
+}
+.desk-nav button:hover {
+  background: var(--gray-hover);
+  color: var(--fg);
+}
+.desk-nav button.active {
+  background: var(--gray-hover);
+  color: var(--fg);
+}
+.beta-pill {
+  margin-left: auto;
+  font-size: 0.68rem;
+  font-weight: var(--font-weight-medium);
+  letter-spacing: 0.02em;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  padding: 1px 7px;
 }
 .desk-nav button svg {
   width: 18px;
