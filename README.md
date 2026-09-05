@@ -96,6 +96,23 @@ private. That is the product: **local power, remote control, zero trust**.
   `brew upgrade opencode`) and restart the daemon;
   `OCR_OPENCODE_OLD=1` on the daemon is a test hatch that forces the too-old
   verdict for deterministic screenshots
+- **Disk-space readiness** — the Settings machine section warns when the
+  volume hosting the daemon's state directory is running out of free space
+  (the daemon writes artifacts, upload staging, the audit log and the state
+  file there): a single calm line asks the machine's owner to free space
+  before writes start failing mid-conversation. Two thresholds are watched,
+  whichever is more severe wins: **warning** below 2 GB free or 10% of the
+  volume free, **critical** below 500 MB free or 5% of the volume free. The
+  indicator describes the machine hosting the daemon — never the phone — is
+  read once at boot and then on the same cycle as the artifacts retention
+  janitor, and **never blocks anything**: sending, voice and every control
+  stay enabled even when the verdict is critical (ok/unknown verdicts stay
+  silent). The same verdict rides `GET /api/health`
+  (`diskState` / `diskMessage`) and `GET /__ocr/settings` (`disk`). To free
+  space on that machine, remove or archive large files (old session
+  artifacts under `~/.opencode-remote/artifacts/` are trimmed automatically
+  by the retention janitor); `OCR_DISK_FULL=1` on the daemon is a test hatch
+  that forces the critical verdict for deterministic screenshots
 - **Files** — upload from the phone, preview anything, export a conversation
   as markdown with one tap; every file card has a ⧉ button that copies the
   file's full path (Clipboard API with an execCommand fallback)

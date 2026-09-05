@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, statSync, readdirSync, openSync, readSync, closeSync, copyFileSync, createReadStream, accessSync, constants, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, statSync, readdirSync, openSync, readSync, closeSync, copyFileSync, createReadStream, accessSync, constants, rmSync, statfs } from "node:fs";
 import { stat } from "node:fs/promises";
 import { execFile, execSync } from "node:child_process";
 import { promisify } from "node:util";
@@ -63,6 +63,7 @@ import { metrics, startMetricsServer, VERSION } from "./metrics.js";
 import { loadRoutines, saveRoutines, type Routine } from "./routines.js";
 import { ARTIFACTS_ROOT, artifactMime, capArtifacts, kindFor, listArtifacts, readArtifact, sessionTitleMap } from "./artifacts.js";
 import { RETENTION_INTERVAL_MS, retentionDisabled, retentionPlan, type RetentionEntry } from "./artifactretention.js";
+import { diskVerdict, type DiskVerdict } from "./diskguard.js";
 import { WindowCache, contextPct, sessionTokenTotal } from "./contextgauge.js";
 import { ArtifactWatcher } from "./artifactwatch.js";
 import { createShutdown, stopAccepting } from "./shutdown.js";
@@ -733,10 +734,11 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
     // existing settings read — the only daemon→app channel the Settings
     // machine section can reach without a new route (the desktop bridge
     // forwards only the known health fields, apps/desktop stays untouched).
+    // P2-215: same channel logic for the disk verdict (`disk`, additive).
     return {
       id: req.id,
       status: 200,
-      body: { ...readSettings(), version: VERSION, opencodeVersion: opencodeVersion },
+      body: { ...readSettings(), version: VERSION, opencodeVersion: opencodeVersion, disk: diskStatus() },
     };
   }
   if (req.path === "/__ocr/settings" && req.method === "PATCH") {
@@ -1698,6 +1700,40 @@ const artifactWatcher = new ArtifactWatcher(ARTIFACTS_ROOT, (a) => {
 });
 artifactWatcher.start();
 
+// --- P2-215: disk-space readiness -------------------------------------------
+// The volume hosting the state dir also carries everything else the daemon
+// writes (artifacts, upload staging, audit log, state file) and a full volume
+// turns every write into a raw error mid-conversation. One reading at boot,
+// then on the SAME interval the P2-207 janitor sweep below already uses —
+// never per request, no new periodic timer, no retry: a failed reading lands
+// in the neutral unknown and the next scheduled sweep cycle reads again.
+// Fire-and-forget async statfs: boot is never blocked or delayed.
+
+let diskSpace: DiskVerdict = diskVerdict(null, null);
+
+function refreshDiskState(): void {
+  statfs(STATE_DIR, (err, stats) => {
+    if (err) {
+      diskSpace = diskVerdict(null, null);
+      log("warn", "disk space probe failed", { error: err.message });
+      return;
+    }
+    diskSpace = diskVerdict(stats.bavail * stats.bsize, stats.blocks * stats.bsize);
+    log("info", "disk space probed", { state: diskSpace.state });
+  });
+}
+
+/**
+ * P2-215: disk verdict for /api/health and the settings mirror. OCR_DISK_FULL=1
+ * is a documented test hatch (same spirit as OCR_OPENCODE_OLD/OCR_MODEL_BLOCK):
+ * it forces the critical verdict so the Settings disk line can be evidenced
+ * deterministically on hosts with plenty of free space.
+ */
+function diskStatus(): DiskVerdict {
+  if (process.env.OCR_DISK_FULL === "1") return diskVerdict(0, 1);
+  return diskSpace;
+}
+
 // --- P2-207: artifact retention janitor -------------------------------------
 // The artifacts root grows forever otherwise: every conversation that produced
 // a report/spreadsheet/pdf keeps its bytes on the user's disk. The janitor
@@ -1750,9 +1786,16 @@ function sweepArtifactRetention(): void {
   }
 }
 
+// P2-215: the disk reading fires once at boot (unconditionally — the verdict
+// must exist even with the janitor disabled) and then rides the SAME
+// RETENTION_INTERVAL_MS interval the sweep already uses; no new timer exists.
+refreshDiskState();
 if (!retentionDisabled(process.env)) {
   sweepArtifactRetention();
-  const retentionTimer = setInterval(sweepArtifactRetention, RETENTION_INTERVAL_MS);
+  const retentionTimer = setInterval(() => {
+    refreshDiskState();
+    sweepArtifactRetention();
+  }, RETENTION_INTERVAL_MS);
   retentionTimer.unref?.();
 }
 
@@ -2625,6 +2668,10 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       // P2-129: additive relayRetry — attempt number + pending delay while the
       // daemon is scheduling its next relay dial, null when connected.
       const relayConnected = metrics.get("ocr_relay_connected") === 1;
+      // P2-215: additive disk verdict for the volume hosting the state dir —
+      // state + short pt-BR phrase only; no absolute path and no raw byte
+      // count of the volume ever reach the payload.
+      const disk = diskStatus();
       send(200, {
         healthy: true,
         version: VERSION,
@@ -2666,6 +2713,10 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
         // opened) reads as closed. No existing field is removed or renamed.
         pairingWindowOpen:
           bootstrapDecision(0, pairWindowOpenedAt, Date.now(), pairWindowCfg.windowMs) === "allow",
+        // P2-215: additive disk-space verdict (see disk above) — existing
+        // fields keep their exact shape.
+        diskState: disk.state,
+        diskMessage: disk.message,
       });
       return true;
     }

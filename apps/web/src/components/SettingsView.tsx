@@ -182,6 +182,9 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
   // P2-213: version readiness of the opencode on the machine hosting the
   // daemon — rides the existing /__ocr/settings read (additive field).
   const [opencodeVersion, setOpencodeVersion] = useState<{ state?: string; message?: string } | null>(null);
+  // P2-215: disk-space verdict for the volume hosting the daemon's state dir —
+  // same channel as above (additive `disk` field on /__ocr/settings).
+  const [disk, setDisk] = useState<{ state?: string; message?: string } | null>(null);
   const [nrMode, setNrMode] = useState<"daily" | "days" | "interval">("daily");
   const [nrDays, setNrDays] = useState<number[]>([1, 2, 3, 4, 5]);
   const [nrInterval, setNrInterval] = useState(60);
@@ -235,6 +238,7 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
         setAutoMode((s.body as { autoMode?: boolean }).autoMode === true);
         setDaemonVersion((s.body as { version?: string }).version ?? "");
         setOpencodeVersion((s.body as { opencodeVersion?: { state?: string; message?: string } }).opencodeVersion ?? null);
+        setDisk((s.body as { disk?: { state?: string; message?: string } }).disk ?? null);
       }
       const cs = await request("GET", "/__ocr/clip-style");
       if (cs.status === 200) setStyle((cs.body as Record<string, unknown>) ?? {});
@@ -544,6 +548,17 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
           {opencodeVersion?.state === "too-old" && (
             <p className="muted opencode-version-hint" style={{ margin: "8px 0 0", color: "var(--warn)" }}>
               {opencodeVersion.message ?? ""}
+            </p>
+          )}
+          {/* P2-215: disk-space readiness is advice about the machine hosting
+              the daemon, never a gate — blocking the conversation because of a
+              disk reading would be worse than the raw failure it warns about,
+              so this deliberately fails open: only low/critical say anything
+              (ok/unknown stay silent) and no control is ever disabled or
+              hidden because of it. */}
+          {(disk?.state === "low" || disk?.state === "critical") && (
+            <p className="muted disk-hint" style={{ margin: "8px 0 0", color: "var(--warn)" }}>
+              {disk?.message ?? ""}
             </p>
           )}
           <label style={{ display: "block" }}>

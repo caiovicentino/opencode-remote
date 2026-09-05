@@ -96,6 +96,24 @@ remoto, zero confiança**.
   `brew upgrade opencode`) e reinicie o daemon; `OCR_OPENCODE_OLD=1` no daemon
   é um hatch de teste que força o veredito too-old para evidência visual
   determinística
+- **Prontidão de espaço em disco** — a seção Maquina das configurações avisa
+  quando o volume que hospeda o diretório de estado do daemon está com pouco
+  espaço livre (o daemon escreve ali artifacts, staging de uploads, o log de
+  auditoria e o arquivo de estado): uma linha calma pede para quem gerencia a
+  máquina liberar espaço antes que as escritas comecem a falhar no meio da
+  conversa. Dois limiares são acompanhados, e o mais severo vence: **aviso**
+  abaixo de 2 GB livres ou 10% do volume livre, **crítico** abaixo de 500 MB
+  livres ou 5% do volume livre. O indicador descreve a máquina que hospeda o
+  daemon — nunca o celular — é lido uma vez no boot e depois no mesmo ciclo
+  do janitor de retenção de artifacts, e **nunca impede nada**: envio, voz e
+  todos os controles continuam habilitados mesmo com o veredito crítico
+  (vereditos ok/unknown ficam em silêncio). O mesmo veredito viaja em
+  `GET /api/health` (`diskState` / `diskMessage`) e em `GET /__ocr/settings`
+  (`disk`). Para liberar espaço nessa máquina, remova ou arquive arquivos
+  grandes (os artifacts de sessões antigas em
+  `~/.opencode-remote/artifacts/` são aparados automaticamente pelo janitor
+  de retenção); `OCR_DISK_FULL=1` no daemon é um hatch de teste que força o
+  veredito crítico para evidência visual determinística
 - **Arquivos** — envie do celular, dê preview de tudo, exporte a conversa
   em markdown; todo card de arquivo tem um botão ⧉ que copia o caminho
   completo do arquivo (Clipboard API com fallback execCommand)
