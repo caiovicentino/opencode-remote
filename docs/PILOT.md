@@ -120,6 +120,19 @@ ele roda como passo "Smoke-check the packaged bundle" nos dois jobs de
 empacotamento, entre empacotar e anexar os artefatos (desktop-dmg desde a
 P2-130; desktop-win desde a P2-164, com `shell: bash` explícito — pwsh não
 expande glob), de modo que bundle quebrado aborte o job antes do upload.
+Desde a P2-204 o desktop-dmg também **abre o app empacotado de verdade**
+antes de anexar o DMG (`apps/desktop/scripts/packaged-boot.mjs`, passo
+"Smoke-boot the packaged app"): launch hermético pelo Playwright do binário
+dentro de `Contents/MacOS` (userData temporário, `OCR_DESKTOP_SESSION`
+próprio da execução, nenhum sidecar — `OCR_DAEMON_ENTRY` inexistente — e
+`OCR_DAEMON_FORCE_DOWN` para o pareamento ficar determinístico), espera o
+load terminar, injeta o canário de console do render smoke e exige `#root`
+com conteúdo antes de fechar o app. O veredito vive numa função pura
+(`bootVerdict`) com motivos `binary-missing`, `load-failed`, `blank-window`,
+`console-capture-broken` e `console-error`; Playwright ausente falha fechado.
+O smoke de boot também fica **fora do gate por design** — é etapa de
+distribuição: roda no workflow de release e localmente contra um pacote já
+construído (README).
 
 **Perfil de gate por repo (P2-116).** A bateria acima pressupõe um checkout do
 próprio pilot; apontar o pipeline para um repo externo quebraria o gate (os

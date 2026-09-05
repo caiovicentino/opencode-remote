@@ -511,6 +511,8 @@ import {
 
 import { findWindowsInstaller, listProblems, smokeFlags, windowsInstallerProblems } from "../apps/desktop/scripts/dist-smoke.mjs";
 
+import { bootVerdict } from "../apps/desktop/scripts/packaged-boot-verdict.mjs";
+
 import {
   AUDIO_ENTITLEMENT,
   BUILDER_LABEL,
@@ -13518,6 +13520,119 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       (chatViewSrc.match(/sttBlocked/g) ?? []).length >= 3 &&
       (homeViewSrc.match(/sttBlocked/g) ?? []).length >= 3 &&
       src(["apps", "web", "src", "lib", "transcribe.ts"]).includes('request("GET", "/__ocr/voice/stt-status")'),
+  );
+}
+
+// --- P2-204: packaged boot smoke — bootVerdict table + release.yml wiring ----
+
+{
+  const src = (rel: string[]) => readFileSync(join(import.meta.dirname, "..", ...rel), "utf8");
+  const verdictSrc = src(["apps", "desktop", "scripts", "packaged-boot-verdict.mjs"]);
+  const bootSrc = src(["apps", "desktop", "scripts", "packaged-boot.mjs"]);
+
+  const OK = { executableFound: true, loadFinished: true, rootEmpty: false, canarySeen: true, consoleErrors: [] as string[] };
+  const v = (over: Partial<typeof OK>) => bootVerdict({ ...OK, ...over });
+
+  // full verdict table
+  check("P2-204: all facts good → ok with no reason", bootVerdict(OK).ok === true && bootVerdict(OK).reason === null);
+  check(
+    "P2-204: executable not found → binary-missing",
+    v({ executableFound: false }).ok === false && v({ executableFound: false }).reason === "binary-missing",
+  );
+  check("P2-204: load not finished → load-failed", v({ loadFinished: false }).reason === "load-failed");
+  check("P2-204: empty root → blank-window", v({ rootEmpty: true }).reason === "blank-window");
+  check(
+    "P2-204: canary not observed with an empty error list → console-capture-broken (never a vacuous pass)",
+    v({ canarySeen: false }).reason === "console-capture-broken",
+  );
+  check("P2-204: captured console errors → console-error", v({ consoleErrors: ["boom"] }).reason === "console-error");
+  check(
+    "P2-204: binary-missing outranks everything else",
+    v({ executableFound: false, loadFinished: false, rootEmpty: true, canarySeen: false, consoleErrors: ["boom"] }).reason ===
+      "binary-missing",
+  );
+  check(
+    "P2-204: blank-window outranks console-capture-broken (the blank window is the stronger, direct observation)",
+    v({ rootEmpty: true, canarySeen: false }).reason === "blank-window",
+  );
+  check(
+    "P2-204: console-capture-broken outranks console-error (an untrusted collector voids the error signal)",
+    v({ canarySeen: false, consoleErrors: ["boom"] }).reason === "console-capture-broken",
+  );
+
+  // message hygiene: short pt-BR, no paths, URL schemes or secrets (P2-201 bar)
+  const all = [bootVerdict(OK), v({ executableFound: false }), v({ loadFinished: false }), v({ rootEmpty: true }), v({ canarySeen: false }), v({ consoleErrors: ["boom"] })];
+  check(
+    "P2-204: every verdict message is non-empty and free of paths, URLs and secrets",
+    all.every((x) => typeof x.message === "string" && x.message.trim().length > 0 && !/[\\/]/.test(x.message) && !/https?:/i.test(x.message)),
+  );
+  check(
+    "P2-204: each failing reason carries a distinct message",
+    new Set(all.map((x) => x.message)).size === all.length,
+  );
+
+  // the verdict module stays pure (P2-194 lesson): importing it must not boot I/O
+  check(
+    "P2-204: packaged-boot-verdict.mjs is pure (no node: fs/os/path/net/http imports)",
+    !/node:(fs|os|path|net|http)/.test(verdictSrc.replace(/\/\/.*$/gm, "")),
+  );
+
+  // the driver script carries the hermetic contract of the P1-051 harness
+  check(
+    "P2-204: packaged-boot.mjs launches hermetically (temp userData, no sidecar, force-down, keeper leash, own session)",
+    bootSrc.includes("OCR_USER_DATA_DIR") &&
+      bootSrc.includes("OCR_DAEMON_ENTRY") &&
+      bootSrc.includes("OCR_DAEMON_FORCE_DOWN") &&
+      bootSrc.includes("OCR_KEEPER_PID") &&
+      /OCR_DESKTOP_SESSION: `packaged-boot-/.test(bootSrc),
+  );
+  check(
+    "P2-204: the driver injects the shared canary as a console.error after load",
+    bootSrc.includes("CANARY") && /console\.error\('\$\{CANARY\}'\)/.test(bootSrc),
+  );
+  check(
+    "P2-204: console collectors attach at window creation, not only after firstWindow resolves",
+    bootSrc.includes('electronApp.on("window", collect)') && bootSrc.includes("const collected = new Set()"),
+  );
+  check(
+    "P2-204: the driver fails closed when playwright-core is unavailable (exit 1, never a silent pass)",
+    bootSrc.includes("playwright-core is not available") &&
+      bootSrc.includes("refusing to pass vacuously") &&
+      bootSrc.includes("process.exitCode = 1"),
+  );
+  check(
+    "P2-204: the driver launches the PACKAGED binary via executablePath, not the electron npm package",
+    bootSrc.includes("executablePath: executable") && bootSrc.includes('join(appPath, "Contents", "MacOS")'),
+  );
+
+  // real-repo assertion: release.yml boots the bundle in desktop-dmg, after
+  // packaging and before the artifact upload, with shell: bash + own timeout
+  const release = src([".github", "workflows", "release.yml"]);
+  const dmgStart = release.indexOf("\n  desktop-dmg:");
+  const dmgEnd = release.indexOf("\n  desktop-win:");
+  const dmg = dmgStart > -1 && dmgEnd > dmgStart ? release.slice(dmgStart, dmgEnd) : "";
+  const winStart = release.indexOf("\n  desktop-win:");
+  const winEnd = release.indexOf("\n  release-verify:");
+  const win = winStart > -1 && winEnd > winStart ? release.slice(winStart, winEnd) : "";
+  const pkgAt = dmg.indexOf("Build + package DMG");
+  const bootAt = dmg.indexOf("Smoke-boot the packaged app");
+  const uploadAt = dmg.indexOf("Attach DMG + update metadata");
+  const stepSlice = bootAt > -1 ? dmg.slice(bootAt, dmg.indexOf("\n      - name:", bootAt)) : "";
+  check(
+    "P2-204: release.yml desktop-dmg runs the boot smoke between packaging and upload",
+    pkgAt > -1 && bootAt > pkgAt && uploadAt > bootAt,
+  );
+  check(
+    "P2-204: the boot smoke step declares shell: bash and its own timeout",
+    stepSlice.includes("shell: bash") && /timeout-minutes:/.test(stepSlice),
+  );
+  check(
+    "P2-204: the step resolves the .app under apps/desktop/dist and runs packaged-boot.mjs",
+    stepSlice.includes("find apps/desktop/dist") && stepSlice.includes("node apps/desktop/scripts/packaged-boot.mjs"),
+  );
+  check(
+    "P2-204: desktop-win does not get the boot smoke (explicit out of scope)",
+    !win.includes("packaged-boot"),
   );
 }
 
