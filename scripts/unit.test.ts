@@ -265,6 +265,8 @@ import {
   PING_INTERVAL_S_CEILING,
 } from "../apps/relay/src/knobs";
 
+import { resolveLogLevel, shouldLog, LOG_LEVELS, LOG_LEVEL_DEFAULT } from "../apps/relay/src/loglevel";
+
 import { touchedUiFromDiff, needsEscalation, parseFindings, verifyFindings, isTaskMergeSha, parseVerdict, reviewerOk, tagUnverified, isBlockingFinding, findingsRepeat, writeAuxSandboxConfig , CONSTITUTION, PR_MERGE_CONFIRM_DELAY_MS, PR_MERGE_CONFIRM_POLLS, PrMergeIo, RESUME_MAX_TASK_IDS, TASK_ID_RE, builderPrompt, codeChanges, commitSpec, commitSpecWithReason, crashRoundDecision, lessonsBlock, mergeBlockReason, mergePrForTask, needsPlanner, parseScribeLessons, plannerPrompt, plannerRetryPolicy, rebaseOutcome, resumeBlock, reviewerPrompt, setupTaskBranch, specPathFor, specRejectReason, updateResumeState, validateSpec } from "../apps/pilot/src/pipeline";
 
 
@@ -9665,6 +9667,111 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "P2-171: a problem knob resolves to the documented default (the boot refuses anyway)",
     fallback.ratePerMin === 600,
   );
+}
+
+// --- P2-177: relay log level resolves fail-closed ------------------------------
+{
+  const empty = resolveLogLevel({});
+  check(
+    "P2-177: empty env → the historical default info with zero problems",
+    empty.level === "info" && empty.level === LOG_LEVEL_DEFAULT && empty.problems.length === 0,
+  );
+
+  const blank = resolveLogLevel({ RELAY_LOG_LEVEL: "  " });
+  const blank2 = resolveLogLevel({ RELAY_LOG_LEVEL: "" });
+  check(
+    "P2-177: blank values are the only present-case that keeps the default without a problem",
+    blank.level === "info" &&
+      blank2.level === "info" &&
+      blank.problems.length === 0 &&
+      blank2.problems.length === 0,
+  );
+
+  for (const level of LOG_LEVELS) {
+    const r = resolveLogLevel({ RELAY_LOG_LEVEL: level });
+    check(
+      `P2-177: valid level "${level}" is accepted verbatim`,
+      r.level === level && r.problems.length === 0,
+      JSON.stringify(r.problems),
+    );
+  }
+
+  for (const level of LOG_LEVELS) {
+    const upper = resolveLogLevel({ RELAY_LOG_LEVEL: level.toUpperCase() });
+    const mixed = resolveLogLevel({ RELAY_LOG_LEVEL: ` ${level[0]!.toUpperCase()}${level.slice(1)} ` });
+    check(
+      `P2-177: "${level.toUpperCase()}" and its padded mixed-case form resolve case-insensitively`,
+      upper.level === level &&
+        mixed.level === level &&
+        upper.problems.length === 0 &&
+        mixed.problems.length === 0,
+      JSON.stringify([upper.problems, mixed.problems]),
+    );
+  }
+
+  const unknown = resolveLogLevel({ RELAY_LOG_LEVEL: "verbose" });
+  check(
+    "P2-177: unknown level is a problem citing the variable (fail-closed, no silent default)",
+    unknown.problems.length === 1 &&
+      unknown.problems[0]!.includes("RELAY_LOG_LEVEL") &&
+      unknown.level === LOG_LEVEL_DEFAULT,
+    JSON.stringify(unknown.problems),
+  );
+
+  const notString = resolveLogLevel({ RELAY_LOG_LEVEL: 123 });
+  const notString2 = resolveLogLevel({ RELAY_LOG_LEVEL: null });
+  check(
+    "P2-177: non-string value is a problem citing the variable",
+    notString.problems.length === 1 &&
+      notString.problems[0]!.includes("RELAY_LOG_LEVEL") &&
+      notString.level === LOG_LEVEL_DEFAULT &&
+      notString2.problems.length === 1 &&
+      notString2.level === LOG_LEVEL_DEFAULT,
+    JSON.stringify([notString.problems, notString2.problems]),
+  );
+
+  // full shouldLog matrix: an entry passes exactly when it is at least as
+  // severe as the configured level (error < warn < info < debug verbosity)
+  let matrixOk = true;
+  for (const configured of LOG_LEVELS) {
+    for (const entry of LOG_LEVELS) {
+      const expected = LOG_LEVELS.indexOf(entry) <= LOG_LEVELS.indexOf(configured);
+      if (shouldLog(configured, entry) !== expected) matrixOk = false;
+    }
+  }
+  check(
+    "P2-177: shouldLog matrix — error passes at any level, debug is suppressed at info, everything passes at debug",
+    matrixOk &&
+      !shouldLog("info", "debug") &&
+      LOG_LEVELS.every((configured) => shouldLog(configured, "error")) &&
+      LOG_LEVELS.every((entry) => shouldLog("debug", entry)),
+  );
+
+  // source pins against the real wiring: the per-frame line is debug-only,
+  // the rejection lines keep their warn level, the listening line carries
+  // the additive logLevel field and ev() gates on the resolved level.
+  const relayIndexSrc = readFileSync(join(import.meta.dirname, "..", "apps", "relay", "src", "index.ts"), "utf8");
+  check(
+    "P2-177: index.ts emits `frame in` at debug (never info) and keeps the rejection lines at warn",
+    relayIndexSrc.includes('ev("debug", "frame in"') &&
+      !relayIndexSrc.includes('ev("info", "frame in"') &&
+        relayIndexSrc.includes('ev("warn", "connection rejected: per-IP cap exceeded"') &&
+        relayIndexSrc.includes('ev("warn", "rate limited, dropping device"') &&
+        relayIndexSrc.includes('ev("warn", "frame dropped: invalid room id"') &&
+        relayIndexSrc.includes('ev("warn", "frame dropped: socket room cap exceeded"') &&
+        relayIndexSrc.includes('ev("warn", "room capacity exceeded"'),
+  );
+  check(
+    "P2-177: index.ts resolves the level at boot fail-closed, gates ev() on it and advertises logLevel on `relay listening`",
+    relayIndexSrc.includes("const LOG = resolveLogLevel(process.env);") &&
+      relayIndexSrc.includes("if (!shouldLog(LOG.level, level)) return;") &&
+      relayIndexSrc.includes("logLevel: LOG.level,"),
+  );
+
+  // purity pin: the decision module imports nothing, so scripts can unit-test
+  // it without any node/http/ws surface (same discipline as knobs.ts)
+  const loglevelSrc = readFileSync(join(import.meta.dirname, "..", "apps", "relay", "src", "loglevel.ts"), "utf8");
+  check("P2-177: loglevel.ts stays pure — zero imports", !/^import /m.test(loglevelSrc));
 }
 
 // --- P2-169: mac privacy preflight — mic/camera strings + device entitlements --

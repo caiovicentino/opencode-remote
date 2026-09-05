@@ -389,7 +389,14 @@ never records client addresses: the per-IP-cap rejection line carries
 `sha256(salt || address)` with a random salt minted at boot) — two
 rejections with the same tag inside one process come from the same origin,
 the tag changes at every restart, and it cannot be reversed to the address
-(P2-174). The daemon
+(P2-174). Log verbosity is env-tunable (`RELAY_LOG_LEVEL`, default `info`,
+values `error`/`warn`/`info`/`debug` case-insensitive): only `debug` writes
+the per-frame `frame in` line — keep it off on any public host, since a line
+per routed message reconstructs who talked to whom and when out of retained
+provider logs — and an unknown or non-string value refuses the boot (exit 1,
+no listener) instead of silently falling back to the default (P2-177); the
+`relay listening` line advertises the resolved level as an additive
+`logLevel` field. The daemon
 validates
 `RELAY_URL` at boot and fails closed: only `ws://`/`wss://` URLs dial, and
 plain `ws://` at a non-loopback host is refused — an invalid URL disables the
