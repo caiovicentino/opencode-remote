@@ -392,6 +392,20 @@ falha, o log do job lista todos os problemas de uma vez em
 `authenticode-verify:`; as linhas `Status:`/`StatusMessage:` da verificação
 ficam em `authenticode.txt` (artefato do workspace do run).
 
+O empacotamento Windows deixou de ser exclusividade do release: todo PR que
+toca a superfície desktop roda também o job `desktop-package-win` no CI
+(P2-219), que builda, empacota somente o alvo `dir` — o bundle `win-unpacked`,
+sem instalador NSIS e sem assinatura — e roda o smoke determinístico, de modo
+que pacote quebrado reprova o PR em vez de estourar no dia da publicação.
+Para reproduzir localmente num Windows:
+
+    npm run dist --workspace @ocr/desktop -- --win --dir
+    npm run dist:smoke --workspace @ocr/desktop -- --no-installer
+
+O primeiro comando gera `apps/desktop/dist/win-unpacked`; o segundo valida o
+layout do bundle de forma determinística (web UI, sidecar do daemon,
+executável).
+
 **Release**: a tag `vX.Y.Z` precisa ter a mesma versão nos **dois**
 `package.json` (raiz e `apps/desktop`). O workflow de release roda
 `scripts/release-preflight.ts` como primeiro passo e bloqueia o release em

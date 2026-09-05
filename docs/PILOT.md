@@ -120,6 +120,13 @@ ele roda como passo "Smoke-check the packaged bundle" nos dois jobs de
 empacotamento, entre empacotar e anexar os artefatos (desktop-dmg desde a
 P2-130; desktop-win desde a P2-164, com `shell: bash` explícito — pwsh não
 expande glob), de modo que bundle quebrado aborte o job antes do upload.
+Desde a P2-219 o empacotamento Windows também é exercitado no CI, além do
+release: todo PR que toca o desktop roda o job `desktop-package-win`
+(windows-latest, mesmo indicador `desktop` do job scope do macOS), que
+empacota somente o alvo `dir` do Windows — sem instalador NSIS, sem
+assinatura — e roda o mesmo smoke `--no-installer`, de modo que regressão
+de empacotamento Windows reprove o PR em vez de estourar no dia da
+publicação.
 Desde a P2-204 o desktop-dmg também **abre o app empacotado de verdade**
 antes de anexar o DMG (`apps/desktop/scripts/packaged-boot.mjs`, passo
 "Smoke-boot the packaged app"): launch hermético pelo Playwright do binário
