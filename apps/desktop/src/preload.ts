@@ -58,6 +58,11 @@ export interface PairingState {
    * static reason/hint), set only on the daemon-down states. Optional and
    * additive: absent before the first unintentional exit. */
   sidecarExit?: { kind: string; reason: string; hint: string };
+  /** P2-189: step one of the pairing journey — the address the phone opens,
+   * derived from the relay address unless stored. Optional and additive so a
+   * legacy shell payload still renders every existing surface. qrDataUrl is
+   * null whenever reason is non-empty (no QR for a problem-bearing address). */
+  webApp?: { url: string; origin: "stored" | "derived" | "unavailable"; reason: string; qrDataUrl: string | null };
 }
 
 /** P2-187: the phone relay address resolution (Settings → "Relay do celular").
@@ -74,6 +79,23 @@ export interface RelaySetting {
  * was persisted; ok=true carries the new resolution (env still wins over a
  * saved value). */
 export interface RelaySettingWriteResult extends RelaySetting {
+  ok: boolean;
+}
+
+/** P2-189: the app address the phone opens (Settings → "Endereço do app").
+ * origin says how the address was reached — "stored" (operator saved it),
+ * "derived" (mapped from the relay address) or "unavailable" (no usable
+ * address: show the reason, never a QR). Mirrors
+ * apps/desktop/src/webappurl.ts. */
+export interface WebAppSetting {
+  url: string;
+  origin: "stored" | "derived" | "unavailable";
+  problems: string[];
+}
+
+/** Result of a write: ok=false carries the validation problems and nothing
+ * was persisted; ok=true carries the new resolution. */
+export interface WebAppSettingWriteResult extends WebAppSetting {
   ok: boolean;
 }
 
@@ -103,6 +125,12 @@ contextBridge.exposeInMainWorld("ocrDesktop", {
   getRelaySetting: (): Promise<RelaySetting> => ipcRenderer.invoke("app:relaySetting"),
   setRelayUrl: (url: string | null): Promise<RelaySettingWriteResult> =>
     ipcRenderer.invoke("app:setRelayUrl", url),
+  // P2-189: the app address the phone opens — same read + validated write
+  // shape as the relay setting (null clears the stored override; validation
+  // happens in the main process).
+  getWebAppUrl: (): Promise<WebAppSetting> => ipcRenderer.invoke("app:webAppUrl"),
+  setWebAppUrl: (url: string | null): Promise<WebAppSettingWriteResult> =>
+    ipcRenderer.invoke("app:setWebAppUrl", url),
   // P3-053: dock unread badge — the web UI derives the count (lib/unread.ts)
   // and pushes it on every change; main maps it to app.setBadgeCount. The
   // getter exists so tests can verify the IPC round-trip via the harness.

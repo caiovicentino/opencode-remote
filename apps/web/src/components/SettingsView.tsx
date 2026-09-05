@@ -17,6 +17,19 @@ export interface RelaySettingWriteResult extends RelaySetting {
   ok: boolean;
 }
 
+/** P2-189: app address resolution from the desktop shell (mirrors
+ * apps/desktop/src/preload.ts). origin says how the address was reached;
+ * problems is non-empty when the UI must show the error instead of a QR. */
+export interface WebAppSetting {
+  url: string;
+  origin: "stored" | "derived" | "unavailable";
+  problems: string[];
+}
+
+export interface WebAppSettingWriteResult extends WebAppSetting {
+  ok: boolean;
+}
+
 interface Props {
   request: (
     method: string,
@@ -35,6 +48,9 @@ interface Props {
   /** P2-187: desktop shell only — phone relay address read + validated write. */
   getRelaySetting?: () => Promise<RelaySetting>;
   setRelayUrl?: (url: string | null) => Promise<RelaySettingWriteResult>;
+  /** P2-189: desktop shell only — app address the phone opens, read + validated write. */
+  getWebAppUrl?: () => Promise<WebAppSetting>;
+  setWebAppUrl?: (url: string | null) => Promise<WebAppSettingWriteResult>;
   /** P2-138: upstream (opencode) notice — renders the help section the calm
    * card's secondary button links to; absent when the agent server is fine. */
   upstream?: UpstreamNotice | null;
@@ -126,7 +142,7 @@ export function applyTheme() {
   document.documentElement.style.fontSize = font === "small" ? "14px" : font === "large" ? "19px" : "16.5px";
 }
 
-export default function SettingsView({ request, onBack, transport, getDiagnostics, onPairRemote, getRelaySetting, setRelayUrl, upstream }: Props) {
+export default function SettingsView({ request, onBack, transport, getDiagnostics, onPairRemote, getRelaySetting, setRelayUrl, getWebAppUrl, setWebAppUrl, upstream }: Props) {
   const [devices, setDevices] = useState<Device[]>([]);
   const [name, setName] = useState("");
   const [notify, setNotify] = useState({ permission: true, idle: true });
@@ -166,6 +182,10 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
   // input; `relay` is the main-process resolution (origin + problems).
   const [relay, setRelay] = useState<RelaySetting | null>(null);
   const [relayDraft, setRelayDraft] = useState("");
+  // P2-189: app address the phone opens (desktop shell only) — same
+  // draft/resolution discipline as the relay setting above.
+  const [webApp, setWebApp] = useState<WebAppSetting | null>(null);
+  const [webAppDraft, setWebAppDraft] = useState("");
 
   useEffect(() => {
     if (!getRelaySetting) return;
@@ -176,6 +196,16 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
       })
       .catch(() => {});
     // Mount-time read only: the bridge is stable for the app's lifetime.
+  }, []);
+
+  useEffect(() => {
+    if (!getWebAppUrl) return;
+    void getWebAppUrl()
+      .then((s) => {
+        setWebApp(s);
+        setWebAppDraft(s.url);
+      })
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -240,6 +270,34 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
       setMsg(t("saved"));
     } catch {
       setMsg(t("relayInvalid"));
+    }
+  }
+
+  /** P2-189: apply the drafted app address in the main process (validated
+   * there) and adopt the returned resolution — never trust local state. */
+  async function saveWebApp() {
+    if (!setWebAppUrl) return;
+    try {
+      const res = await setWebAppUrl(webAppDraft);
+      setWebApp(res);
+      setWebAppDraft(res.url);
+      setMsg(res.ok ? t("saved") : t("webAppInvalid"));
+    } catch {
+      setMsg(t("webAppInvalid"));
+    }
+  }
+
+  /** P2-189: clear the stored app address — the resolution falls back to the
+   * one derived from the relay (or to "unavailable"). */
+  async function resetWebApp() {
+    if (!setWebAppUrl) return;
+    try {
+      const res = await setWebAppUrl(null);
+      setWebApp(res);
+      setWebAppDraft(res.url);
+      setMsg(t("saved"));
+    } catch {
+      setMsg(t("webAppInvalid"));
     }
   }
 
@@ -394,6 +452,47 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
             {(relay.origin === "stored" || relay.origin === "stored-invalid") && (
               <button style={{ marginTop: 6 }} onClick={() => void resetRelay()}>
                 {t("relayReset")}
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* P2-189: app address the phone opens — desktop shell only, rendered
+            right beside the relay card it derives from. */}
+        {getWebAppUrl && setWebAppUrl && webApp && (
+          <div className="card webapp-setting">
+            <h3>{t("webAppTitle")}</h3>
+            <p className="muted" style={{ margin: "0 0 6px" }}>
+              {t("webAppHint")}
+            </p>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input
+                style={{ flex: 1 }}
+                value={webAppDraft}
+                onChange={(e) => setWebAppDraft(e.target.value)}
+                placeholder="https://relay.example.com:8788"
+                aria-label={t("webAppTitle")}
+                spellCheck={false}
+              />
+              <button className="primary" onClick={() => void saveWebApp()}>
+                {t("relaySave")}
+              </button>
+            </div>
+            {webApp.problems.length > 0 && (
+              <p className="muted" style={{ margin: "6px 0 0", color: "var(--danger)" }}>
+                {t("webAppInvalid")}
+              </p>
+            )}
+            <p className="muted" style={{ margin: "6px 0 0" }}>
+              {webApp.origin === "stored"
+                ? t("webAppOriginStored")
+                : webApp.origin === "derived"
+                  ? t("webAppOriginDerived")
+                  : t("webAppOriginUnavailable")}
+            </p>
+            {webApp.origin === "stored" && (
+              <button style={{ marginTop: 6 }} onClick={() => void resetWebApp()}>
+                {t("webAppReset")}
               </button>
             )}
           </div>

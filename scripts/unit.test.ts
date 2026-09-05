@@ -34,9 +34,18 @@ import {
 } from "../apps/desktop/src/relaysetting";
 import {
   readStoredRelayUrl,
+  readStoredWebAppUrl,
   relaySettingFile,
   writeStoredRelayUrl,
+  writeStoredWebAppUrl,
 } from "../apps/desktop/src/relaystore";
+import {
+  deriveWebAppUrl,
+  isLoopbackHost as isLoopbackHostWebApp,
+  resolveWebAppUrl,
+  webAppUrlProblems,
+  WEB_APP_URL_MAX_LEN,
+} from "../apps/desktop/src/webappurl";
 import {
   bodyLimit,
   isBodyLimitError,
@@ -11796,6 +11805,203 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P2-187: spawn paths funnel through setSidecarRelayUrl (exported for main.ts)",
     daemonSrc.includes("export function setSidecarRelayUrl") && daemonSrc.includes("relayUrlForSpawn = url"),
+  );
+}
+
+// --- P2-189: step one of the pairing journey — the address the phone opens ---
+
+{
+  // deriveWebAppUrl: the wss→https / ws→http mapping
+  check(
+    "P2-189: wss relay becomes https app address",
+    deriveWebAppUrl("wss://relay.example.com:8788") === "https://relay.example.com:8788",
+  );
+  check(
+    "P2-189: port is preserved through the mapping",
+    deriveWebAppUrl("wss://relay.example.com:8788") === "https://relay.example.com:8788" &&
+      deriveWebAppUrl("ws://10.0.0.7:9999") === "http://10.0.0.7:9999",
+  );
+  check(
+    "P2-189: path and query are discarded",
+    deriveWebAppUrl("wss://relay.example.com:8788/ws?token=secret") === "https://relay.example.com:8788" &&
+      deriveWebAppUrl("wss://relay.example.com/some/deep/path") === "https://relay.example.com",
+  );
+  check(
+    "P2-189: unparseable or non-ws relay addresses derive nothing",
+    deriveWebAppUrl("not a url") === "" && deriveWebAppUrl("https://relay.example.com") === "",
+  );
+
+  // webAppUrlProblems: the acceptance table
+  check(
+    "P2-189: https on a public host is accepted",
+    webAppUrlProblems("https://relay.example.com:8788").length === 0,
+  );
+  check(
+    "P2-189: http on a loopback host is accepted",
+    ["http://localhost:5173", "http://127.0.0.1:5173", "http://[::1]:5173"].every(
+      (v) => webAppUrlProblems(v).length === 0,
+    ),
+  );
+  check(
+    "P2-189: http on a public host is a problem (plain http over the network)",
+    webAppUrlProblems("http://relay.example.com:8788").length > 0,
+  );
+  check(
+    "P2-189: ws/wss and file schemes are problems (only http/https)",
+    webAppUrlProblems("wss://relay.example.com:8788").length > 0 &&
+      webAppUrlProblems("ws://relay.example.com:8788").length > 0 &&
+      webAppUrlProblems("file:///etc/passwd").length > 0,
+  );
+  check(
+    "P2-189: non-string values are problems",
+    [42, null, {}, [], true, undefined].every((v) => webAppUrlProblems(v).length > 0),
+  );
+  check("P2-189: empty strings are problems", webAppUrlProblems("").length > 0 && webAppUrlProblems("  ").length > 0);
+  check(
+    "P2-189: malformed URLs are problems",
+    webAppUrlProblems("https://").length > 0 && webAppUrlProblems("not a url").length > 0,
+  );
+  check(
+    "P2-189: embedded user/password credentials are a problem",
+    webAppUrlProblems("https://user:pass@relay.example.com:8788").length > 0,
+  );
+  check(
+    "P2-189: above the documented length ceiling is a problem",
+    webAppUrlProblems(`https://relay.example.com/${"a".repeat(WEB_APP_URL_MAX_LEN)}`).length > 0,
+  );
+  check(
+    "P2-189: uppercase scheme is the same scheme (P2-178 lesson)",
+    webAppUrlProblems("HTTPS://Relay.Example.com:8788").length === 0 &&
+      webAppUrlProblems("HTTP://8.8.8.8").length > 0 &&
+      webAppUrlProblems("HttpS://relay.example.com:8788").length === 0,
+  );
+  check(
+    "P2-189: problems never echo the raw value (credentials stay out of logs)",
+    webAppUrlProblems("https://user:secret@relay.example.com").every((p) => !p.includes("secret") && !p.includes("user:")),
+  );
+
+  // resolveWebAppUrl: stored beats derived; invalid stored never falls through
+  const relayOk = { url: "wss://relay.example.com:8788", origin: "stored", problems: [] as string[] };
+  const derived = resolveWebAppUrl(relayOk, null);
+  check(
+    "P2-189: no stored value → derived from the relay",
+    derived.url === "https://relay.example.com:8788" && derived.origin === "derived" && derived.problems.length === 0,
+  );
+  const storedWins = resolveWebAppUrl(relayOk, "  https://app.example.com/app  ");
+  check(
+    "P2-189: stored value wins over the derived one (and is trimmed)",
+    storedWins.url === "https://app.example.com/app" && storedWins.origin === "stored" && storedWins.problems.length === 0,
+  );
+  const storedInvalid = resolveWebAppUrl(relayOk, "wss://relay.example.com");
+  check(
+    "P2-189: invalid stored value returns problems and NEVER the derived url",
+    storedInvalid.origin === "unavailable" &&
+      storedInvalid.url === "" &&
+      storedInvalid.problems.length > 0 &&
+      storedInvalid.url !== derived.url,
+  );
+  const storedNonString = resolveWebAppUrl(relayOk, 42);
+  check(
+    "P2-189: non-string stored value → unavailable, never the derived url",
+    storedNonString.origin === "unavailable" && storedNonString.url === "" && storedNonString.problems.length > 0,
+  );
+  const loopbackRelay = resolveWebAppUrl({ url: "ws://127.0.0.1:8787", origin: "default", problems: [] }, null);
+  check(
+    "P2-189: loopback relay → unavailable with an explicit reason (the phone can never reach it)",
+    loopbackRelay.origin === "unavailable" &&
+      loopbackRelay.url === "" &&
+      loopbackRelay.problems.length > 0 &&
+      loopbackRelay.problems[0].length > 20,
+  );
+  const localhostRelay = resolveWebAppUrl({ url: "ws://localhost:8787", origin: "default", problems: [] }, null);
+  check(
+    "P2-189: localhost relay is loopback too",
+    localhostRelay.origin === "unavailable" && localhostRelay.url === "",
+  );
+  const publicWsRelay = resolveWebAppUrl({ url: "ws://relay.example.com:8788", origin: "stored", problems: [] }, null);
+  check(
+    "P2-189: ws on a public host → http app address WITH a problem (QR withheld by the caller)",
+    publicWsRelay.url === "http://relay.example.com:8788" &&
+      publicWsRelay.origin === "derived" &&
+      publicWsRelay.problems.length > 0,
+  );
+  const brokenRelay = resolveWebAppUrl({ url: "not a url", origin: "stored-invalid", problems: ["x"] }, null);
+  check(
+    "P2-189: unusable relay address → unavailable with a reason, never a garbage url",
+    brokenRelay.origin === "unavailable" && brokenRelay.url === "" && brokenRelay.problems.length > 0,
+  );
+  const emptyRelay = resolveWebAppUrl({ url: "", origin: "stored-invalid", problems: ["x"] }, null);
+  check("P2-189: empty relay address → unavailable", emptyRelay.origin === "unavailable" && emptyRelay.url === "");
+
+  // relaystore round-trip for the webAppUrl field (same 0600 tmp+rename file)
+  const webAppDir = mkdtempSync(join(tmpdir(), "p2-189-webapp-"));
+  try {
+    const waFile = relaySettingFile(webAppDir);
+    check("P2-189: missing relay.json reads the app address as not configured", readStoredWebAppUrl(waFile) === null);
+    check(
+      "P2-189: app address write + read round-trip",
+      writeStoredWebAppUrl(waFile, "https://app.example.com") && readStoredWebAppUrl(waFile) === "https://app.example.com",
+    );
+    check("P2-189: persisted app address keeps the file mode 0600", (statSync(waFile).mode & 0o777) === 0o600);
+    check(
+      "P2-189: saving the relay address preserves the app address (independent fields)",
+      writeStoredRelayUrl(waFile, "wss://relay.example.com:8788") &&
+        readStoredWebAppUrl(waFile) === "https://app.example.com" &&
+        readStoredRelayUrl(waFile) === "wss://relay.example.com:8788",
+    );
+    check(
+      "P2-189: clearing the app address preserves the relay address",
+      writeStoredWebAppUrl(waFile, null) &&
+        readStoredWebAppUrl(waFile) === null &&
+        readStoredRelayUrl(waFile) === "wss://relay.example.com:8788",
+    );
+    writeFileSync(join(webAppDir, "corrupt.json"), "{corrupted", { mode: 0o600 });
+    check(
+      "P2-189: corrupted JSON reads the app address as not configured",
+      readStoredWebAppUrl(join(webAppDir, "corrupt.json")) === null,
+    );
+  } finally {
+    rmSync(webAppDir, { recursive: true, force: true });
+  }
+
+  // real-source assertion: the shell wires step one end to end
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  check(
+    "P2-189: webApp travels in the ocr:pairing-state payload",
+    /setPairingState\(\{[\s\S]*?webApp,\s*\}\);/.test(mainSrc),
+  );
+  check(
+    "P2-189: the web-app QR is minted by QRCode.toDataURL ONLY when the resolution is problem-free",
+    /webAppRes\.url !== "" && webAppRes\.problems\.length === 0\s*\?\s*await QRCode\.toDataURL\(webAppRes\.url/.test(mainSrc),
+  );
+  check(
+    "P2-189: a problem-bearing resolution carries the reason and qrDataUrl null",
+    /reason: webAppRes\.problems\[0\] \?\? ""/.test(mainSrc) && /:\s*null,?\s*\n\s*\};/.test(mainSrc),
+  );
+  check(
+    "P2-189: read/write IPC handlers registered beside the relay setting's",
+    mainSrc.includes('ipcMain.handle("app:webAppUrl"') && mainSrc.includes('ipcMain.handle("app:setWebAppUrl"'),
+  );
+  check(
+    "P2-189: writes are always validated in the main process (webAppUrlProblems)",
+    mainSrc.includes("webAppUrlProblems(payload)"),
+  );
+  check(
+    "P2-189: loopback rule parity with relaysetting.ts on the shared host table",
+    [
+      "localhost",
+      "::1",
+      "[::1]",
+      "127.0.0.1",
+      "127.255.255.254",
+      "127.0.0.0",
+      "127.0.0.1.evil.com",
+      "8.8.8.8",
+      "relay.example.com",
+      "::2",
+      "127.1",
+      "",
+    ].every((h) => isLoopbackHostSetting(h) === isLoopbackHostWebApp(h)),
   );
 }
 

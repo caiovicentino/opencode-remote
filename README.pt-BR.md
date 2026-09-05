@@ -407,6 +407,18 @@ o app roda. O endereço é validado pelo app antes de salvar (apenas ws/wss,
 inválido aparece como erro nos Ajustes, nunca é trocado em silêncio pelo
 padrão.
 
+**Pareamento em dois passos (P2-189)**: o celular precisa de um endereço antes
+de existir QR de pareamento pra escanear, então a tela de pareamento do
+desktop mostra dois passos rotulados. O passo 1 é o **endereço do app** —
+`https://…` derivado do endereço do relay (`wss://` vira `https://` no mesmo
+host e porta, caminho e query descartados) — mostrado como QR e texto
+copiável. O passo 2 é o QR de pareamento de sempre. A convenção de deploy é
+que o host que serve o relay também serve o app web na mesma origem; quando
+não serve, salve um endereço explícito em Config → **Endereço do app
+(celular)** — o valor salvo vence o derivado. Com o relay local loopback, o
+shell mostra uma explicação calma no lugar de um endereço que o celular nunca
+alcançaria.
+
 **Reconexão guiada pelo código de fechamento (P2-156)**: quando o socket do
 relay fecha, o daemon classifica o código em vez de tratar qualquer queda como
 problema de rede. `1013` (server busy / too many connections / room full) o

@@ -206,6 +206,23 @@ export const dict = {
     relayOriginStored: "Saved on this machine.",
     relayOriginDefault: "Local default — only works on this machine.",
     relayOriginInvalid: "The saved address is invalid — fix it or go back to the local relay.",
+    // pairing step one + app address setting (desktop, P2-189)
+    pairStepOne: "Step 1 — open the app on your phone",
+    pairStepTwo: "Step 2 — pair this machine",
+    pairWebAppTitle: "Open this address on your phone",
+    pairWebAppAlt: "App address QR code",
+    pairWebAppCopy: "Copy address",
+    pairWebAppCopied: "Copied",
+    pairWebAppUnavailable:
+      "The local relay only serves this machine, so there is no address the phone can reach yet. Point the app at a hosted relay in Settings → Phone relay, then come back here.",
+    webAppTitle: "App address (phone)",
+    webAppHint:
+      "Where the phone opens the app — derived from the phone relay (wss:// becomes https://, same host and port) unless you save one here.",
+    webAppInvalid: "Invalid app address — use https://relay.example.com:8788 (or http:// only to a host on this machine).",
+    webAppOriginStored: "Saved on this machine.",
+    webAppOriginDerived: "Derived from the phone relay — same host and port, wss:// becomes https://.",
+    webAppOriginUnavailable: "No usable address — the local relay only serves this machine.",
+    webAppReset: "Use the address from the relay",
     localConnecting: "Connecting to the local daemon…",
     // degraded first-boot journey (desktop, P2-112): a dead daemon on first
     // boot is never a dead end — calm status, visible auto-retry, minimal
@@ -575,6 +592,23 @@ export const dict = {
     relayOriginStored: "Salvo nesta máquina.",
     relayOriginDefault: "Padrão local — só funciona nesta máquina.",
     relayOriginInvalid: "O endereço salvo é inválido — corrija-o ou volte ao relay local.",
+    // passo 1 do pareamento + endereço do app (desktop, P2-189)
+    pairStepOne: "Passo 1 — abra o app no celular",
+    pairStepTwo: "Passo 2 — pareie esta máquina",
+    pairWebAppTitle: "Abra este endereço no celular",
+    pairWebAppAlt: "QR code do endereço do app",
+    pairWebAppCopy: "Copiar endereço",
+    pairWebAppCopied: "Copiado",
+    pairWebAppUnavailable:
+      "O relay local só atende esta máquina, então ainda não existe endereço que o celular alcance. Aponte o app para um relay hospedado em Config → Relay do celular e volte aqui.",
+    webAppTitle: "Endereço do app (celular)",
+    webAppHint:
+      "Onde o celular abre o app — derivado do relay do celular (wss:// vira https://, mesmo host e porta), a menos que você salve um aqui.",
+    webAppInvalid: "Endereço de app inválido — use https://relay.exemplo.com:8788 (ou http:// apenas para um host nesta máquina).",
+    webAppOriginStored: "Salvo nesta máquina.",
+    webAppOriginDerived: "Derivado do relay do celular — mesmo host e porta, wss:// vira https://.",
+    webAppOriginUnavailable: "Sem endereço utilizável — o relay local só atende esta máquina.",
+    webAppReset: "Usar o endereço do relay",
     localConnecting: "Conectando ao daemon local…",
     // jornada degradada no primeiro boot (desktop, P2-112): daemon morto no
     // primeiro contato nunca vira beco sem saída — status calmo, retry

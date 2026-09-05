@@ -1928,6 +1928,57 @@ button.desk-new:hover:not(:disabled) {
 .pair-overlay-later:hover {
   color: var(--text);
 }
+/* P2-189: the pairing journey as two labeled steps — step one (app address)
+   above, step two (pairing QR) below. Quiet uppercase micro-labels keep both
+   QRs identified without shouting over the product copy. */
+.pair-step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+.pair-step-label {
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.pair-step-title {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+.pair-webapp-address {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+}
+.pair-webapp-url {
+  font-size: 0.78rem;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pair-webapp-copy {
+  flex: none;
+  font-size: 0.78rem;
+}
+.pair-webapp-unavailable {
+  margin: 0;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: var(--muted);
+  max-width: 36ch;
+}
 
 /* QR scanner state machine (P2-117): looking → preview → unavailable.
    The stage keeps a 4:3 box at every width so a 390px phone never collapses

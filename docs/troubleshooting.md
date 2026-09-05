@@ -33,6 +33,7 @@ Run `opencode-remote doctor` first — it checks everything below in one shot.
 | the downloaded installer's hash does not match `checksums.txt` (P2-186) | every release ships `checksums.txt` (coreutils format, one `sha256  <file>` line per asset) built from the finished assets right before publication, so a match proves the file is exactly what CI produced. Re-check with the right tool in the download folder: `shasum -a 256 -c checksums.txt` (macOS), `sha256sum -c checksums.txt` (Linux), `Get-FileHash <file> -Algorithm SHA256` compared with the manifest line (Windows PowerShell). A mismatch after a fresh re-download (truncated/proxied downloads are the usual cause) means: do not open or distribute the file — report it on the releases page; the release job itself refuses to publish when any hash or name is off (`release-checksums: FAIL` in the log lists every problem) |
 | the release workflow failed at "Attach the SHA-256 checksum manifest to the release" | since P2-186 the `release-publish` job downloads the draft's assets back, hashes each file with node and validates the list via `scripts/release-checksums.ts` BEFORE the release goes public — the failing step lists every problem at once (empty list, repeated name, hash that is not 64 lowercase hex digits, name with a space or path separator, an entry named `checksums.txt`, or a required asset missing). The release stays a draft (P2-179 contract); fix the asset set and re-run |
 | the pairing QR points the phone at `127.0.0.1` and pairing never completes | the QR carries the relay address the daemon dials, and the default is the machine's own loopback (`ws://127.0.0.1:8787`) — it only ever works while the phone runs on the same Mac. Point the app at a hosted relay: Settings → **Phone relay / Relay do celular** → paste `wss://your-relay:8788` → Save (the app restarts its daemon and re-emits the QR). See the section below |
+| the pairing screen has no step-one app address (P2-189) | the app address is derived from the relay address (`wss://` → `https://`, same host and port), and the local default is loopback — a phone can never reach it. Point the app at a hosted relay (Settings → **Phone relay / Relay do celular**) or save an explicit address in Settings → **App address (phone) / Endereço do app (celular)**; the pairing screen picks it up on the next poll |
 
 ## Staging a desktop update release (P1-050)
 
@@ -139,6 +140,29 @@ give the app a hosted relay address (stage-4 setup, `docs/RELAY-HOSTING.md`):
   that process gets its `RELAY_URL` from its own service definition — set it
   in the launchd plist/unit and restart the service; changing the card alone
   has no effect on it.
+
+## The two pairing steps (P2-189)
+
+Pairing has two steps, and the desktop pairing screen labels both:
+
+1. **Open the app on the phone** — the shell shows the app address
+   (`https://…`) as a QR and as copyable text. It is derived from the phone
+   relay address (`wss://` → `https://`, `ws://` → `http://`, same host and
+   port, path and query discarded), because the deployment convention is that
+   the host serving the relay also serves the web app on the same origin
+   (`docs/RELAY-HOSTING.md`). When the derivation does not apply, save an
+   explicit address in Settings → **App address (phone) / Endereço do app
+   (celular)** — a stored value always beats the derived one, and an invalid
+   stored value is shown as an error instead of silently falling back.
+2. **Pair the machine** — the `opencode-remote://pair?v=2…` QR that was
+   always there (unchanged; `apps/daemon/src/relayurl.ts` stays the final
+   authority on the relay the daemon dials).
+
+With the loopback local relay there is no address a phone could reach, so
+step one shows a calm explanation pointing at Settings instead of a QR — an
+address that cannot work is worse than no address. The same discipline holds
+for a `ws://`-only relay: the derived `http://` address carries a warning and
+no QR is generated for it.
 
 ## Service control (macOS launchd)
 

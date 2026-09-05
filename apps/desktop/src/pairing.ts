@@ -50,6 +50,15 @@ export interface PairingState {
    * set only on the daemon-down states. Additive; reason/hint are static
    * shell strings the renderer only ever shows as text. */
   sidecarExit?: { kind: string; reason: string; hint: string };
+  /**
+   * P2-189: step one of the pairing journey — the address the phone opens to
+   * reach the app, derived from the relay address (wss→https, ws→http) unless
+   * the operator stored one. Additive; absent on the daemon-down states.
+   * reason is the first problem ("" when the address is fine) and qrDataUrl
+   * is only ever generated when reason is empty — a QR is NEVER minted for a
+   * problem-bearing address.
+   */
+  webApp?: { url: string; origin: "stored" | "derived" | "unavailable"; reason: string; qrDataUrl: string | null };
 }
 
 /**
