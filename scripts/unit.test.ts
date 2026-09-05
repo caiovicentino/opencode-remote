@@ -386,6 +386,16 @@ import {
 
 import { resolveLogLevel, shouldLog, LOG_LEVELS, LOG_LEVEL_DEFAULT } from "../apps/relay/src/loglevel";
 
+import {
+  parseBufferCap,
+  sendVerdict,
+  BUFFER_CAP_ENV,
+  BUFFER_CAP_DEFAULT,
+  BUFFER_CAP_CEILING,
+  SLOW_CONSUMER_CLOSE_CODE,
+  SLOW_CONSUMER_CLOSE_REASON,
+} from "../apps/relay/src/backpressure";
+
 import { touchedUiFromDiff, needsEscalation, parseFindings, verifyFindings, isTaskMergeSha, parseVerdict, reviewerOk, tagUnverified, isBlockingFinding, findingsRepeat, writeAuxSandboxConfig , CONSTITUTION, PR_MERGE_CONFIRM_DELAY_MS, PR_MERGE_CONFIRM_POLLS, PrMergeIo, RESUME_MAX_TASK_IDS, TASK_ID_RE, builderPrompt, codeChanges, commitSpec, commitSpecWithReason, crashRoundDecision, lessonsBlock, mergeBlockReason, mergePrForTask, needsPlanner, parseScribeLessons, plannerPrompt, plannerRetryPolicy, rebaseOutcome, resumeBlock, reviewerPrompt, setupTaskBranch, specPathFor, specRejectReason, updateResumeState, validateSpec } from "../apps/pilot/src/pipeline";
 
 
@@ -11230,6 +11240,224 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   // it without any node/http/ws surface (same discipline as knobs.ts)
   const loglevelSrc = readFileSync(join(import.meta.dirname, "..", "apps", "relay", "src", "loglevel.ts"), "utf8");
   check("P2-177: loglevel.ts stays pure — zero imports", !/^import /m.test(loglevelSrc));
+}
+
+// --- P2-217: relay backpressure — send verdict + per-socket buffer cap --------
+{
+  const cap = BUFFER_CAP_DEFAULT;
+
+  // -- sendVerdict: the full table -------------------------------------------
+
+  // accumulated far below the cap → send, whatever the frame size
+  const wellBelow: string[] = [];
+  for (const [pending, frame] of [
+    [0, 1],
+    [0, cap],
+    [1, 1],
+    [Math.floor(cap / 2), Math.floor(cap / 2) - 1024],
+    [cap - cap / 4, cap / 4 - 2048],
+  ] as const) {
+    wellBelow.push(sendVerdict(pending, frame, cap).action);
+  }
+  check(
+    "P2-217: accumulated bytes well below the cap always send",
+    wellBelow.every((a) => a === "send"),
+    JSON.stringify(wellBelow),
+  );
+
+  // accumulated + frame landing EXACTLY on the cap is still a send — the
+  // documented limit itself stays serviceable, only strictly above closes
+  const atCap = sendVerdict(cap - 100, 100, cap);
+  const atCapZeroFrame = sendVerdict(cap, 0, cap);
+  check(
+    "P2-217: accumulated + frame exactly at the cap sends (limit documented: pending+frame == cap is a send)",
+    atCap.action === "send" && atCapZeroFrame.action === "send" && cap === BUFFER_CAP_DEFAULT,
+  );
+
+  // one byte over the cap → close-slow, with the documented reason
+  const over = sendVerdict(cap - 99, 100, cap);
+  check(
+    "P2-217: accumulated + frame above the cap → close-slow with the fixed reason",
+    over.action === "close-slow" && over.reason === SLOW_CONSUMER_CLOSE_REASON,
+    JSON.stringify(over),
+  );
+
+  // already over the cap, tiny frame → still close-slow
+  const alreadyOver = sendVerdict(cap + 1, 1, cap);
+  const wayOver = sendVerdict(cap * 10, 0, cap);
+  check(
+    "P2-217: accumulated already above the cap closes even for a tiny frame",
+    alreadyOver.action === "close-slow" && wayOver.action === "close-slow",
+  );
+
+  // fail-open by design: missing, negative and non-finite accumulated bytes
+  // never close a (possibly healthy) connection
+  const absent = sendVerdict(undefined, 100, cap);
+  const negative = sendVerdict(-1, 100, cap);
+  const notANumber = sendVerdict(NaN, 100, cap);
+  const infinite = sendVerdict(Infinity, 100, cap);
+  const nullPending = sendVerdict(null, 100, cap);
+  check(
+    "P2-217: missing, negative or non-finite accumulated bytes fail OPEN (send)",
+    absent.action === "send" &&
+      negative.action === "send" &&
+      notANumber.action === "send" &&
+      infinite.action === "send" &&
+      nullPending.action === "send",
+    JSON.stringify([absent, negative, notANumber, infinite, nullPending]),
+  );
+
+  // the verdict has exactly two outcomes — a blind relay never drops a frame
+  const actions = new Set(
+    [
+      sendVerdict(0, 1, cap),
+      sendVerdict(cap, 0, cap),
+      sendVerdict(cap + 1, 0, cap),
+      sendVerdict(NaN, cap, cap),
+      sendVerdict(-5, 1, cap),
+      sendVerdict(undefined, 1, cap),
+    ].map((v) => v.action),
+  );
+  check(
+    "P2-217: sendVerdict never drops — the only actions are send and close-slow",
+    actions.size === 2 && actions.has("send") && actions.has("close-slow"),
+  );
+
+  // privacy: the generated reason carries no file path, URL scheme, room id
+  // shape or secret material — a short fixed Portuguese sentence
+  check(
+    "P2-217: the close-slow reason has no path, no URL scheme and no room-id shape",
+    !SLOW_CONSUMER_CLOSE_REASON.includes("/") &&
+      !SLOW_CONSUMER_CLOSE_REASON.includes("://") &&
+      !/[0-9a-f]{8}-[0-9a-f]{4}/i.test(SLOW_CONSUMER_CLOSE_REASON) &&
+      SLOW_CONSUMER_CLOSE_REASON.length < 100,
+    SLOW_CONSUMER_CLOSE_REASON,
+  );
+
+  // -- parseBufferCap: the fail-closed table ---------------------------------
+
+  const empty = parseBufferCap({});
+  check(
+    `P2-217: empty env → the documented default ${BUFFER_CAP_DEFAULT} with zero problems`,
+    empty.cap === BUFFER_CAP_DEFAULT && empty.problems.length === 0,
+    JSON.stringify(empty.problems),
+  );
+
+  const blank = parseBufferCap({ [BUFFER_CAP_ENV]: "   " });
+  check(
+    "P2-217: blank value keeps the documented default without a problem (same as knobs.ts)",
+    blank.cap === BUFFER_CAP_DEFAULT && blank.problems.length === 0,
+  );
+
+  const valid = parseBufferCap({ [BUFFER_CAP_ENV]: String(BUFFER_CAP_CEILING) });
+  const valid2 = parseBufferCap({ [BUFFER_CAP_ENV]: "12345678" });
+  check(
+    "P2-217: a valid whole byte count at or below the ceiling is accepted verbatim",
+    valid.cap === BUFFER_CAP_CEILING &&
+      valid.problems.length === 0 &&
+      valid2.cap === 12345678 &&
+      valid2.problems.length === 0,
+  );
+
+  const nonNumeric = parseBufferCap({ [BUFFER_CAP_ENV]: "abc" });
+  check(
+    "P2-217: non-numeric value is a problem citing the variable (fail-closed, no silent default)",
+    nonNumeric.problems.length === 1 &&
+      nonNumeric.problems[0]!.includes(BUFFER_CAP_ENV) &&
+      nonNumeric.cap === BUFFER_CAP_DEFAULT,
+    JSON.stringify(nonNumeric.problems),
+  );
+
+  const zero = parseBufferCap({ [BUFFER_CAP_ENV]: "0" });
+  check(
+    "P2-217: zero is a problem — it would disable the cap outright",
+    zero.problems.length === 1 && zero.problems[0]!.includes(BUFFER_CAP_ENV),
+  );
+
+  const negCap = parseBufferCap({ [BUFFER_CAP_ENV]: "-5" });
+  check(
+    "P2-217: negative value is a problem citing the variable",
+    negCap.problems.length === 1 && negCap.problems[0]!.includes(BUFFER_CAP_ENV),
+  );
+
+  const fractional = parseBufferCap({ [BUFFER_CAP_ENV]: "1.5" });
+  check(
+    "P2-217: fractional value is a problem citing the variable",
+    fractional.problems.length === 1 && fractional.problems[0]!.includes(BUFFER_CAP_ENV),
+  );
+
+  const aboveCeiling = parseBufferCap({ [BUFFER_CAP_ENV]: String(BUFFER_CAP_CEILING + 1) });
+  check(
+    "P2-217: above-ceiling value is a problem citing the variable and the ceiling",
+    aboveCeiling.problems.length === 1 &&
+      aboveCeiling.problems[0]!.includes(BUFFER_CAP_ENV) &&
+      aboveCeiling.problems[0]!.includes(String(BUFFER_CAP_CEILING)),
+  );
+
+  // every rule is checked independently: a value violating several rules
+  // reports ALL its reasons at once, no short-circuit
+  const many = parseBufferCap({ [BUFFER_CAP_ENV]: "-1.5" });
+  check(
+    "P2-217: several problems are returned at once without short-circuit",
+    many.problems.length === 2 &&
+      many.problems.every((p) => p.includes(BUFFER_CAP_ENV)) &&
+      many.cap === BUFFER_CAP_DEFAULT,
+    JSON.stringify(many.problems),
+  );
+
+  // -- purity + real-wiring pins ----------------------------------------------
+
+  const backpressureSrc = readFileSync(
+    join(import.meta.dirname, "..", "apps", "relay", "src", "backpressure.ts"),
+    "utf8",
+  );
+  check(
+    "P2-217: backpressure.ts stays pure — zero imports (no ws, node:net, node:http, node:fs)",
+    !/^import /m.test(backpressureSrc),
+  );
+
+  const relayIndexSrc = readFileSync(join(import.meta.dirname, "..", "apps", "relay", "src", "index.ts"), "utf8");
+  const verdictAt = relayIndexSrc.indexOf("const verdict = sendVerdict(t.bufferedAmount");
+  const sendAt = relayIndexSrc.indexOf("t.send(out)");
+  const loopBody = verdictAt > -1 && sendAt > verdictAt ? relayIndexSrc.slice(verdictAt, sendAt) : "";
+  check(
+    "P2-217: index.ts consults sendVerdict (target's own bufferedAmount) before every send",
+    verdictAt > -1 && sendAt > -1 && verdictAt < sendAt,
+  );
+  check(
+    "P2-217: the only non-send path in the forwarding loop closes the slow socket — no silent frame drop",
+    loopBody.includes('verdict.action === "close-slow"') &&
+      (loopBody.match(/t\.close\(/g) ?? []).length === 1 &&
+      loopBody.includes(`t.close(SLOW_CONSUMER_CLOSE_CODE, SLOW_CONSUMER_CLOSE_REASON)`) &&
+      (relayIndexSrc.match(/t\.send\(/g) ?? []).length === 1,
+    loopBody,
+  );
+
+  // the close is scoped to the slow target only; the counter is additive and
+  // the warn line carries just the counter and the reason
+  check(
+    "P2-217: each slow-consumer close increments one new additive counter and logs one warn line with counter + reason only",
+    (relayIndexSrc.match(/m\.slowConsumers\+\+/g) ?? []).length === 1 &&
+      relayIndexSrc.includes('ev("warn", "slow consumer closed", { count: m.slowConsumers, reason: verdict.reason })'),
+  );
+
+  // both metric formats expose the new counter without renaming anything
+  check(
+    "P2-217: metrics route serves slow_consumers_total in JSON and relay_slow_consumers_total in Prometheus text",
+    relayIndexSrc.includes("slow_consumers_total: m.slowConsumers,") &&
+      relayIndexSrc.includes("# TYPE relay_slow_consumers_total counter") &&
+      relayIndexSrc.includes("`relay_slow_consumers_total ${m.slowConsumers}`") &&
+      relayIndexSrc.includes("relay_rate_limited_total") &&
+      relayIndexSrc.includes("rate_limited_total: m.rateLimited"),
+  );
+
+  // boot resolves the knob fail-closed before anything listens, like every knob
+  check(
+    "P2-217: index.ts resolves the buffer cap fail-closed and advertises it on `relay listening`",
+    relayIndexSrc.includes("const BUFFER_CAP = parseBufferCap(process.env);") &&
+      relayIndexSrc.includes('ev("warn", "invalid relay buffer cap, refusing to start (fail-closed)"') &&
+      relayIndexSrc.includes("bufferCapBytes,"),
+  );
 }
 
 // --- P2-169: mac privacy preflight — mic/camera strings + device entitlements --

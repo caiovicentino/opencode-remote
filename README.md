@@ -545,6 +545,12 @@ the tag still proves the image builds and boots, but publishes nothing):
 docker pull ghcr.io/caiovicentino/opencode-remote:0.2.0   # pin the version, not latest
 ```
 
+Hosted, the relay also protects its own memory (P2-217): a peer that stops
+reading has its outgoing buffer capped by `RELAY_BUFFER_CAP_BYTES` (default
+4 MiB per socket) and is closed alone — with close code `1013` and an
+additive `slow_consumers_total` metric — instead of one frozen 4G phone
+growing the process without bound and dropping every room's conversations.
+
 On the desktop shell you do not need to export `RELAY_URL` by hand: Settings
 has a **Phone relay** card (desktop-only section) where you paste the hosted
 address — e.g. `wss://relay.example.com:8788` — and the app restarts its daemon

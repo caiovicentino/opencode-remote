@@ -91,6 +91,7 @@ builds this same image (the `caddy` profile adds TLS termination on top).
 | `RELAY_MAX_SOCKETS` | `1000` | Total concurrent websocket ceiling. Raise it only on an instance sized for the load (a stage-4 scale-out can grow this without recompiling). |
 | `RELAY_MAX_PER_ROOM` | `10` | Peer ceiling per room. Must not exceed `RELAY_MAX_SOCKETS`. |
 | `RELAY_MAX_FRAME_BYTES` | `1000000` | Largest accepted frame in bytes (ws `maxPayload`). Hard ceiling is `16777216` (16 MiB, the int32 `maxPayload` bound); sealed op payloads are far smaller. |
+| `RELAY_BUFFER_CAP_BYTES` | `4194304` | Per-socket ceiling on accumulated outgoing bytes (P2-217): when a target's own queue plus the next frame passes it, that target is closed with close code `1013` and the reason `consumidor lento: buffer de saida acima do teto` instead of buffering forever. Ceiling `67108864` (64 MiB); a non-numeric, zero, negative, fractional or above-ceiling value refuses the boot (fail-closed). Raise it only on an instance whose peers legitimately buffer multi-megabyte bursts. |
 | `RELAY_METRICS_PORT` | unset (off) | Leave unset in containers unless a scraper needs it. When set, the endpoint serves counters on `/metrics` (JSON, or Prometheus text with `?format=prom`). |
 | `RELAY_METRICS_BIND` | `127.0.0.1` | Keep the loopback default unless your scraper sits outside the container (k8s sidecars share the network namespace and don't need it). Any non-loopback address **requires** `RELAY_METRICS_TOKEN` — the relay refuses to boot the metrics endpoint on a network-exposed interface without one (fail-closed) and logs the reason instead. |
 | `RELAY_METRICS_TOKEN` | unset (no auth) | Required whenever `RELAY_METRICS_BIND` leaves loopback. Scrapers must send `Authorization: Bearer <token>`; every other request gets an empty `401`. The endpoint exposes envelope counters only — no plaintext, no key material, no room ids. |
@@ -141,6 +142,46 @@ An absent or blank variable keeps the documented default, so an empty env
 reproduces the historical limits exactly. Nothing about the blind-router
 property changes with the configured values: the relay still never reads
 plaintext or key material.
+
+### Backpressure: the relay closes who does not read (P2-217)
+
+Before P2-217 the only memory defense on the forwarding path was the
+per-frame size cap: a target that simply stopped reading — a phone whose TCP
+window froze on a bad 4G link, a browser tab suspended by the OS — kept
+accepting frames into its outgoing socket buffer, growing the relay process's
+memory without bound until the process died and took every room's
+conversation down at once, with no log line explaining why. On a hosted
+multi-tenant relay, one dead connection could consume everyone's memory.
+
+The relay now consults a per-socket verdict **before every send**: the
+target's own accumulated outgoing bytes (`bufferedAmount`) plus the next
+frame may not pass `RELAY_BUFFER_CAP_BYTES` (default 4 MiB, ceiling 64 MiB).
+In other words, the relay closes who does not read instead of accumulating
+memory. A peer over the line is closed **alone** — close code `1013` ("try
+again later") with the reason `consumidor lento: buffer de saida acima do
+teto` — while the sender and every other peer of the room keep routing
+uninterrupted. Each such close increments the additive
+`slow_consumers_total` counter (`relay_slow_consumers_total` in the
+Prometheus text format) and writes one `warn` JSONL line carrying only the
+counter and the reason — never a room id, a client address or any payload
+content.
+
+Two properties are deliberate, not incidental:
+
+- **Frames are never dropped or queued out of order.** The relay is blind —
+  it cannot re-send what it discards — so silently swallowing a frame would
+  corrupt the end-to-end stream while both ends still look healthy. Closing
+  the slow socket is the honest signal: daemons and phones already reconnect
+  with backoff and resend their state.
+- **The verdict fails open.** If a socket implementation cannot report its
+  accumulated bytes (missing, negative or non-finite count), the frame is
+  sent: a peer without that accounting must never have a good connection
+  closed because of it.
+
+The knob is validated fail-closed at boot like every other relay knob
+(`invalid relay buffer cap, refusing to start`, exit 1, no listener), and the
+`relay listening` line carries the resolved value as an additive
+`bufferCapBytes` field.
 
 ### The TLS pair is mandatory together and fail-closed (P2-154)
 

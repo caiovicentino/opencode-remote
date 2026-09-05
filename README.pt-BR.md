@@ -521,6 +521,12 @@ host não-loopback é recusado — URL inválida desativa a conexão com o relay
 do relay e segue funcionando. Runbook:
 [docs/RELAY-HOSTING.md](docs/RELAY-HOSTING.md).
 
+Hospedado, o relay também protege a própria memória (P2-217): par que para de
+ler tem o buffer de saída limitado por `RELAY_BUFFER_CAP_BYTES` (padrão
+4 MiB por socket) e é fechado sozinho — close code `1013` e métrica aditiva
+`slow_consumers_total` — em vez de um celular travado no 4G crescer sem teto
+no processo e derrubar as conversas de todo mundo.
+
 A imagem também entrega a PWA do celular (P2-188): ela define
 `RELAY_WEB_DIR=/app/apps/web/dist`, então a URL do relay no navegador do
 telefone já abre o app — o primeiro passo da jornada não exige dev server,
