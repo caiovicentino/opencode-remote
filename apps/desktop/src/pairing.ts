@@ -83,6 +83,14 @@ export interface PairingState {
    * the QR.
    */
   relayLink?: { state: string; message: string };
+  /**
+   * P2-211: verdict of the app's install location (installloc.ts classifier),
+   * computed ONCE at boot in the main process. Additive; absent = unknown to
+   * the renderer (ok/unknown render nothing). A wrong location (DMG volume,
+   * translocated copy, downloads folder) explains the drag-to-Applications
+   * action but NEVER blocks pairing and NEVER hides the QR.
+   */
+  installLocation?: { state: string; message: string };
 }
 
 /**

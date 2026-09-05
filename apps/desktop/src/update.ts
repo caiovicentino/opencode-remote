@@ -288,6 +288,12 @@ export interface UpdateCheckOptions {
   dialog?: UpdateDialogSinks;
   /** Overrides process.platform (tests drive the darwin/win32/other paths). */
   platform?: NodeJS.Platform;
+  /** P2-211: the boot install-location verdict (installloc.ts, computed once
+   * in main.ts). When the bundle cannot be replaced by the updater (DMG
+   * volume / translocated copy) the consent dialog is never opened — offering
+   * a restart the updater has no way to complete would be worse than offering
+   * nothing. Fail-open: an unknown/absent verdict never blocks. */
+  installLocation?: { state: string; message: string } | null;
   /** P2-131: invoked when an update is detected through a yml feed — a format
    * with no download engine — and handed the release page URL. main.ts wires
    * it to shell.openExternal for user-initiated tray re-checks only; the boot
@@ -361,6 +367,19 @@ export function versionFromDownloadedArgs(args: unknown[]): string | null {
 }
 
 /**
+ * P2-211: pure gate for the consent dialog. True ONLY when the boot
+ * install-location verdict proves the bundle is not replaceable — running
+ * from a mounted DMG volume or from Gatekeeper's quarantine translocation
+ * copy — because Squirrel.Mac cannot swap a read-only/random bundle: the
+ * restart would come back as the very same version. Every other state (ok,
+ * downloads, unknown, absent) is fail-open: the dialog flow works exactly as
+ * before, and nothing here blocks any other use of the app.
+ */
+export function installBlocksUpdate(verdict: { state: string; message: string } | null | undefined): boolean {
+  return verdict?.state === "dmg-volume" || verdict?.state === "translocated";
+}
+
+/**
  * Attach the singleton's event listeners EXACTLY ONCE per updater instance.
  * This is the load-bearing fix from the round-1 review: runUpdateCheck() runs
  * at boot and on every tray click, so attaching per call would stack N
@@ -371,7 +390,13 @@ export function versionFromDownloadedArgs(args: unknown[]): string | null {
  */
 export function attachUpdateListeners(
   updater: UpdaterLike,
-  hooks: { log: (line: string) => void; dialog: UpdateDialogSinks; onStatus?: (s: UpdateStatus, v: string | null) => void },
+  hooks: {
+    log: (line: string) => void;
+    dialog: UpdateDialogSinks;
+    onStatus?: (s: UpdateStatus, v: string | null) => void;
+    /** P2-211: boot install-location verdict (see installBlocksUpdate). */
+    installLocation?: { state: string; message: string } | null;
+  },
 ): void {
   const count = typeof updater.listenerCount === "function" ? updater.listenerCount.bind(updater) : () => 0;
   if (count("error") > 0 || count("update-downloaded") > 0) return;
@@ -394,12 +419,27 @@ export function attachUpdateListeners(
 /**
  * Open the consent dialog for a downloaded version — once per version. The
  * dialog sinks are awaited so two rapid downloads can't stack dialogs.
+ * P2-211: the consent dialog is only reachable AFTER consulting the boot
+ * install-location verdict — an un-replaceable bundle (DMG volume /
+ * translocated copy) gets ONE log line (state + the same verdict phrase) and
+ * no dialog, because offering a restart the updater cannot complete would be
+ * worse than offering nothing. Fail-open on unknown/absent, and nothing here
+ * blocks the rest of the module.
  */
 async function offerInstall(
   updater: UpdaterLike,
   version: string,
-  hooks: { log: (line: string) => void; dialog: UpdateDialogSinks },
+  hooks: {
+    log: (line: string) => void;
+    dialog: UpdateDialogSinks;
+    installLocation?: { state: string; message: string } | null;
+  },
 ): Promise<void> {
+  if (installBlocksUpdate(hooks.installLocation)) {
+    const verdict = hooks.installLocation!;
+    hooks.log(`update install not offered (${verdict.state}): ${verdict.message}`);
+    return;
+  }
   const st = stateFor(updater);
   if (!version || !shouldOfferInstall(st, version)) return;
   st.offering = version;
@@ -507,7 +547,7 @@ export async function checkForUpdatesOnBoot(opts: UpdateCheckOptions = {}): Prom
     // handing a latest-*.yml to the built-in autoUpdater fails outright.
     if (updater) {
       const dialog = opts.dialog ?? { askInstall: async () => "later", quitAndInstall: () => {} };
-      attachUpdateListeners(updater, { log, dialog, onStatus: opts.onStatus });
+      attachUpdateListeners(updater, { log, dialog, onStatus: opts.onStatus, installLocation: opts.installLocation });
       stateFor(updater).version = feed.version;
       try {
         updater.setFeedURL({ url: feedUrl, serverType: "json" });

@@ -28,6 +28,7 @@ import { resolveWebAppUrl, webAppUrlProblems } from "./webappurl";
 import { buildPairLink } from "./pairlink";
 import { hasAppMarker, probeVerdict, type ReachVerdict } from "./webreach";
 import { linkVerdict, type RelayLinkVerdict } from "./relaylink";
+import { installMessage, installVerdict, type InstallLocationVerdict } from "./installloc";
 import { WAKE_EVENT_TYPES, wakePlan } from "./wakeplan";
 import { initDesktopLog, log, logError } from "./desktop-log";
 import { initSidecarLog } from "./sidecar-log";
@@ -89,6 +90,13 @@ let lastUnreadBadge = 0;
 // consecutive dead-feed checks and drives the 15 min → 6 h backoff.
 let updateRecheckTimer: NodeJS.Timeout | null = null;
 let updateFeedFailures = 0;
+
+// P2-211: install-location verdict, computed EXACTLY ONCE at boot (in
+// onReady, before the first update check) and reused by every surface: the
+// pairing-state payload, the update consent gate and the diagnostics bundle.
+// No periodic re-probe on purpose — the bundle location cannot change while
+// the process runs.
+let bootInstallLocation: InstallLocationVerdict | null = null;
 
 // P3-012: file logging installed before anything can log — console.* in the
 // packaged app is invisible to the stage-5 user (no terminal), so every
@@ -179,6 +187,8 @@ function buildDiagnostics(): string {
     sidecarLogTail,
     crashFiles,
     updateStatus: lastUpdateStatus,
+    // P2-211: the state only, never the bundle path (privacy contract below).
+    installLocation: bootInstallLocation?.state ?? null,
   });
 }
 
@@ -326,6 +336,11 @@ const updateDialogSinks: UpdateDialogSinks = {
 function runUpdateCheck(source: string): void {
   void checkForUpdatesOnBoot({
     dialog: updateDialogSinks,
+    // P2-211: the boot verdict gates the consent dialog — a bundle the
+    // updater cannot replace (DMG volume / translocated copy) is never
+    // offered a restart it cannot apply. Fail-open: unknown/absent never
+    // blocks (see update.ts).
+    installLocation: bootInstallLocation,
     // P2-131 (round-2 review): yml feeds have no download engine — the manual
     // flow hands the user the release page — but only for an explicit tray
     // re-check. The boot check never auto-opens a browser tab, and update.ts
@@ -397,6 +412,26 @@ async function onReady(): Promise<void> {
     applicationName: "OpenCode Remote",
     applicationVersion: app.getVersion(),
   });
+
+  // P2-211: the install-location verdict is computed ONCE at boot, reading the
+  // running bundle path and the applications-folder signal guarded by method
+  // availability — a platform without the signal keeps today's behavior
+  // exactly (null flows into the classifier, which degrades to a neutral
+  // unknown on macOS and short-circuits to ok elsewhere). No new periodic
+  // probe, no new request, no existing timer touched.
+  // P2-211 test hatch (scripts + builder shots, same test-only OCR_* policy as
+  // OCR_DAEMON_FORCE_*): OCR_DESKTOP_FORCE_DMG_VOLUME=1
+  // forces the dmg-volume verdict so the pairing-overlay line renders
+  // deterministically on hosts that installed the app the right way. Never
+  // set in production.
+  if (process.env.OCR_DESKTOP_FORCE_DMG_VOLUME === "1") {
+    bootInstallLocation = { state: "dmg-volume", message: installMessage("dmg-volume") };
+  } else {
+    const inApplicationsFolder =
+      typeof app.isInApplicationsFolder === "function" ? app.isInApplicationsFolder() : null;
+    bootInstallLocation = installVerdict(process.platform, process.execPath, inApplicationsFolder, app.isPackaged);
+  }
+  log(`[desktop] install location: ${bootInstallLocation.state}`);
 
   // P1-050: real update flow — boot check, background download, then a
   // consent dialog before anything restarts. Fire-and-forget: a slow or dead
@@ -1192,6 +1227,13 @@ async function refreshPairingState(): Promise<void> {
       // P2-189/P2-193/P2-197 real-source assertions keep matching; absent =
       // unknown to the renderer.
       relayLink,
+      // P2-211: additive install-location verdict, AFTER relayLink so the
+      // P2-189/P2-193/P2-197/P2-199 real-source assertions keep matching;
+      // absent = unknown to the renderer (renders nothing). A wrong install
+      // location never blocks pairing and never hides the QR.
+      installLocation: bootInstallLocation
+        ? { state: bootInstallLocation.state, message: bootInstallLocation.message }
+        : undefined,
     });
   } catch (err) {
     // Daemon down, token rotated or state file wiped: drop the cached state so
