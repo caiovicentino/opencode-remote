@@ -426,6 +426,8 @@ import { imageTags } from "./relay-image";
 
 import { expectedAssets, missingAssets, tagProblems } from "./release-assets";
 
+import { gatekeeperProblems } from "./gatekeeper-verify";
+
 import { feedProblems } from "./feed-consistency";
 
 import { BUNDLE_BUDGETS, budgetProblems, type BundleEntry } from "./bundle-budget";
@@ -9586,6 +9588,8 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       realBuilder.includes(`${CAMERA_KEY}:`) &&
       privacyProblems(realPlist, realBuilder).length === 0,
   );
+}
+
 // --- self-serve mission: mission.json spec, hash drift, generic gate profile ---
 {
   const GH = "https://github.com/acme/widgets.git";
@@ -9807,6 +9811,168 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     pilotIndexSrc.includes("!deployBusy && !foreignMission && state.deploys") && pilotIndexSrc.includes("if (foreignMission) {"),
   );
   check("mission: strategist/researcher take the chat-defined prompt", pilotIndexSrc.includes("activeMission?.prompt ?? STRATEGIST_MISSION") && pilotIndexSrc.includes("runResearcher(aux, state, activeMission?.prompt)"));
+}
+
+// --- P2-170: gatekeeper-verify — the packaged app must survive Gatekeeper before upload
+{
+  // Realistic tool outputs of a healthy Developer ID + notarized run on the
+  // packaged app (codesign -v --verbose=2 prints "valid on disk", spctl says
+  // accepted, stapler says the validate action worked).
+  const healthy = {
+    mode: "developer-id",
+    notarizeRequested: true,
+    codesign: "apps/desktop/dist/mac-arm64/OpenCode Remote.app: valid on disk\napps/desktop/dist/mac-arm64/OpenCode Remote.app: satisfies its Designated Requirement\n",
+    spctl: "apps/desktop/dist/mac-arm64/OpenCode Remote.app: accepted\nsource=Developer ID: Application: Example (TEAM1234)\norigin=Developer ID: Application: Example (TEAM1234)\n",
+    stapler: "The validate action worked for apps/desktop/dist/mac-arm64/OpenCode Remote.app\n",
+  };
+
+  check(
+    "P2-170: developer-id + success outputs of all three tools → no problems",
+    gatekeeperProblems(healthy).length === 0,
+    JSON.stringify(gatekeeperProblems(healthy)),
+  );
+
+  // spctl rejecting a Developer ID build = Gatekeeper would block the app
+  const rejected = gatekeeperProblems({
+    ...healthy,
+    spctl: "apps/desktop/dist/mac-arm64/OpenCode Remote.app: rejected (the code is valid but does not seem to be an applet)\n",
+  });
+  check(
+    "P2-170: spctl rejected in developer-id mode → problem",
+    rejected.some((p) => p.includes("spctl") && p.includes("rejected")),
+    JSON.stringify(rejected),
+  );
+
+  // Notarization requested but the ticket never got stapled
+  const unstapled = gatekeeperProblems({
+    ...healthy,
+    stapler: "apps/desktop/dist/mac-arm64/OpenCode Remote.app: The staple doesn't verify\n",
+  });
+  check(
+    "P2-170: stapler without a ticket while notarization was requested → problem",
+    unstapled.some((p) => p.includes("stapler") && p.includes("ticket")),
+    JSON.stringify(unstapled),
+  );
+
+  // Broken signature
+  const invalid = gatekeeperProblems({
+    ...healthy,
+    codesign: "code object is not signed at all\nIn subcomponent: apps/desktop/dist/mac-arm64/OpenCode Remote.app\n",
+  });
+  check(
+    "P2-170: invalid codesign verification → problem",
+    invalid.some((p) => p.startsWith("codesign:")),
+    JSON.stringify(invalid),
+  );
+
+  // Empty output of each tool is fail-closed: the verdict was never produced
+  for (const tool of ["codesign", "spctl", "stapler"] as const) {
+    const problems = gatekeeperProblems({ ...healthy, [tool]: "" });
+    check(
+      `P2-170: empty ${tool} output → problem (fail-closed)`,
+      problems.some((p) => p.startsWith(`${tool}:`) && p.includes("no output")),
+      JSON.stringify(problems),
+    );
+  }
+
+  // Unrecognizable output is fail-closed too (Apple rewording must fail loudly)
+  const gibberish = gatekeeperProblems({ ...healthy, spctl: "computer says no\n" });
+  check(
+    "P2-170: unrecognizable spctl output → problem",
+    gibberish.some((p) => p.startsWith("spctl:") && p.includes("unrecognizable")),
+    JSON.stringify(gibberish),
+  );
+
+  // The documented no-secrets path: ad-hoc build, no notarization. spctl
+  // rejecting and a missing staple are EXPECTED there (right-click → Open).
+  const adhoc = gatekeeperProblems({
+    mode: "adhoc",
+    notarizeRequested: false,
+    codesign: healthy.codesign,
+    spctl: "apps/desktop/dist/mac-arm64/OpenCode Remote.app: rejected (the code is valid but does not seem to be an applet)\n",
+    stapler: "The validate action failed for apps/desktop/dist/mac-arm64/OpenCode Remote.app (Ticket Not Found)\n",
+  });
+  check(
+    "P2-170: ad-hoc mode without notarization → no problem at all",
+    adhoc.length === 0,
+    JSON.stringify(adhoc),
+  );
+
+  // A drifting signing profile must be caught, not guessed
+  const drifted = gatekeeperProblems({ ...healthy, mode: "self-signed" });
+  check(
+    "P2-170: unknown signing-profile mode → problem",
+    drifted.some((p) => p.includes("mode")),
+    JSON.stringify(drifted),
+  );
+
+  // --- CLI: outputs by file path, all problems at once, exit 1 -----------------
+  const repoRoot = join(import.meta.dirname, "..");
+  const tsxEntry = join(repoRoot, "node_modules", "tsx", "dist", "cli.mjs");
+  const script = join(repoRoot, "scripts", "gatekeeper-verify.ts");
+  const tmp = mkdtempSync(join("/tmp", "gatekeeper-verify-"));
+  for (const [name, content] of [
+    ["codesign.txt", healthy.codesign],
+    ["spctl.txt", healthy.spctl],
+    ["stapler.txt", healthy.stapler],
+  ] as const) {
+    writeFileSync(join(tmp, name), content);
+  }
+  const runCli = (args: string[]): { code: number; out: string } => {
+    try {
+      const out = execFileSync(process.execPath, [tsxEntry, script, ...args], { cwd: repoRoot, encoding: "utf8" });
+      return { code: 0, out };
+    } catch (err) {
+      const e = err as { status?: number; stdout?: Buffer; stderr?: Buffer };
+      return { code: e.status ?? -1, out: `${e.stdout ?? ""}${e.stderr ?? ""}` };
+    }
+  };
+  const cliOk = runCli(["developer-id", "true", join(tmp, "codesign.txt"), join(tmp, "spctl.txt"), join(tmp, "stapler.txt")]);
+  check(
+    "P2-170: cli exits 0 on a healthy developer-id run",
+    cliOk.code === 0 && cliOk.out.includes("gatekeeper-verify: OK"),
+    cliOk.out,
+  );
+  const cliFail = runCli(["developer-id", "true", join(tmp, "codesign.txt"), join(tmp, "spctl.txt"), join(tmp, "codesign.txt")]);
+  check(
+    "P2-170: cli exits 1 listing every problem at once (stapler fed codesign's output)",
+    cliFail.code === 1 &&
+      cliFail.out.includes("gatekeeper-verify: FAIL") &&
+      (cliFail.out.match(/  - /g) ?? []).length === 1 &&
+      cliFail.out.includes("1 problem(s) found"),
+    cliFail.out,
+  );
+
+  // --- real-repo assertion: the desktop-dmg job gates the upload on Gatekeeper
+  const release = readFileSync(join(repoRoot, ".github", "workflows", "release.yml"), "utf8");
+  const dmgStart = release.indexOf("\n  desktop-dmg:");
+  const dmgEnd = release.indexOf("\n  desktop-win:");
+  const dmg = dmgStart > -1 && dmgEnd > dmgStart ? release.slice(dmgStart, dmgEnd) : "";
+  check("P2-170: release.yml still has the desktop-dmg job", dmg.length > 0);
+  const smokeStep = dmg.indexOf("- name: Smoke-check the packaged bundle");
+  const gatekeeperStep = dmg.indexOf("- name: Gatekeeper verification of the packaged app");
+  const uploadStep = dmg.indexOf("- name: Attach DMG + update metadata to the GitHub release");
+  check(
+    "P2-170: desktop-dmg runs the Gatekeeper verification between the bundle smoke and the release upload",
+    smokeStep > -1 && gatekeeperStep > smokeStep && uploadStep > gatekeeperStep,
+    `smoke=${smokeStep} gatekeeper=${gatekeeperStep} upload=${uploadStep}`,
+  );
+  const gatekeeperBlock = gatekeeperStep > -1 && uploadStep > gatekeeperStep ? dmg.slice(gatekeeperStep, uploadStep) : "";
+  check(
+    "P2-170: Gatekeeper step declares shell: bash (P2-126 lesson)",
+    /^\s*shell:\s*bash\s*$/m.test(gatekeeperBlock),
+    JSON.stringify(gatekeeperBlock),
+  );
+  check(
+    "P2-170: Gatekeeper step runs the three tools and feeds the CLI with the signing profile verdict",
+    gatekeeperBlock.includes("codesign --verify --deep --strict") &&
+      gatekeeperBlock.includes("spctl -a -vv -t exec") &&
+      gatekeeperBlock.includes("xcrun stapler validate") &&
+      gatekeeperBlock.includes("scripts/gatekeeper-verify.ts") &&
+      gatekeeperBlock.includes("steps.signing.outputs.mode") &&
+      gatekeeperBlock.includes("steps.signing.outputs.notarize"),
+    JSON.stringify(gatekeeperBlock),
+  );
 }
 
 if (failures > 0) {

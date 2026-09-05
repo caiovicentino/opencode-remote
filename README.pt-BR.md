@@ -250,6 +250,19 @@ escolhe um de dois modos:
   ignoraria em silêncio) ou credenciais de notarização sem certificado são
   reportados como problema e o build volta para ad-hoc em vez de falhar.
 
+Os dois modos mudam o que acontece na primeira abertura, e o pipeline de
+release cobra a régua certa de cada um (P2-170). Um release **notarizado** tem
+que abrir sem atrito: o job desktop-dmg roda os três vereditos do Gatekeeper no
+app empacotado (`codesign --verify`, avaliação do `spctl` e `stapler validate`
+via `scripts/gatekeeper-verify.ts`) entre o smoke do bundle e o upload, então um
+DMG cujo ticket de notarização não foi grampeado, cuja identidade expirou no
+meio do release, ou cujo perfil caiu em ad-hoc sem ninguém notar, derruba o job
+antes do `gh release upload` — e não vira surpresa publicada de "app is
+damaged". Um release **ad-hoc** cobra a régua ad-hoc: a assinatura precisa
+verificar e as ferramentas precisam produzir vereditos legíveis, mas o spctl
+rejeitando o build e a ausência de ticket são exatamente o fluxo documentado de
+right-click → **Open**, então o caminho de release sem secrets continua verde.
+
 Quem prefere Homebrew usa o `Formula/opencode-remote.rb` (AGPL-3.0-only,
 checksum fixado automaticamente pelo pipeline de release a cada tag).
 

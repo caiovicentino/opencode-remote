@@ -253,6 +253,19 @@ before packaging and picks one of two modes:
   silently ignore it) or notarization credentials without a certificate are
   reported as problems and the build falls back to ad-hoc instead of failing.
 
+The two modes differ in what first launch looks like, and the release pipeline
+holds each one to its own bar (P2-170). A **notarized** release must open with
+no friction: the desktop-dmg job runs the three Gatekeeper verdicts on the
+packaged app (`codesign --verify`, `spctl` assessment and `stapler validate`
+via `scripts/gatekeeper-verify.ts`) between the bundle smoke-check and the
+upload, so a DMG whose notarization ticket never got stapled, whose identity
+expired mid-release, or whose profile silently dropped to ad-hoc fails the job
+before `gh release upload` — never as a published "app is damaged" surprise. An
+**ad-hoc** release is held to the ad-hoc bar: the signature itself must verify
+and the tools must produce readable verdicts, but spctl rejecting the build and
+an absent staple are exactly the documented right-click → **Open** flow, so the
+no-secrets release path stays green.
+
 Homebrew users get the same code via the `Formula/opencode-remote.rb` formula
 (AGPL-3.0-only, checksum pinned automatically by the release pipeline at tag
 time).
