@@ -458,6 +458,27 @@ jobs:
           npx --yes tsx@4.23.12 scripts/release-checksums.ts "$GITHUB_REF_NAME" entries.json checksums.txt
           gh release upload "$GITHUB_REF_NAME" checksums.txt --clobber
 
+      # P2-216: the auto-generated body is a wall of pilot commit titles — a
+      # stage-5 user cannot tell which file fits their machine. This step
+      # writes a short download guide into the DRAFT body
+      # (scripts/release-notes.ts): one line per audience (Mac Apple Silicon,
+      # Mac Intel, Windows) naming ONLY files taken from the actual asset
+      # list, plus the first-open warning and the checksums.txt how-to. It
+      # runs after the checksum manifest upload (the guide points at it) and
+      # before the publish step: any problem fails the job and the release
+      # stays a draft under the P2-179 contract instead of publishing wrong
+      # guidance. shell: bash (P2-126/P2-164 lessons): the step handles asset
+      # names verbatim, spaces included.
+      - name: Write the download guide into the release body
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' > guide-assets.txt
+          gh release view "$GITHUB_REF_NAME" --json body --jq '.body' > guide-body.md
+          npx --yes tsx@4.23.12 scripts/release-notes.ts "$GITHUB_REF_NAME" guide-assets.txt guide-body.md
+          gh release edit "$GITHUB_REF_NAME" --notes-file guide-body.md
+
       - name: Publish the draft release only when every required asset is attached
         env:
           GH_TOKEN: ${{ github.token }}
