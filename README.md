@@ -303,6 +303,22 @@ profile (link without password, password without link, or a blank value) is
 fail-closed: the release job aborts during the signing preflight and lists
 every problem instead of publishing a broken signature.
 
+The two release paths stay visibly different on purpose. When the profile
+decides mode=authenticode, the `desktop-win` job additionally verifies the
+packaged installer's Authenticode signature (PowerShell
+`Get-AuthenticodeSignature` → `scripts/authenticode-verify.ts`) between the
+bundle smoke check and the release upload: a signature that is not exactly
+`Valid` (file not signed, hash mismatch, untrusted chain, expired/revoked
+certificate, unknown error) or a signature whose certificate carries no
+subject aborts the job BEFORE the setup exe is attached to the release — the
+SmartScreen wall can no longer be the first signal. When the profile decides
+mode=unsigned the verification is skipped by design (the one-time SmartScreen
+warning is the documented flow), exactly like the ad-hoc path on macOS. When
+the step fails, the job log lists every problem at once under
+`authenticode-verify:`; the `Status:`/`StatusMessage:` lines of the
+verification itself are in `authenticode.txt` (workflow workspace artifact of
+the run).
+
 **Releasing**: a tag `vX.Y.Z` must carry the same version in **both**
 `package.json` files (repo root and `apps/desktop`) plus `apps/web/src/version.ts`.
 The release workflow runs `scripts/release-preflight.ts` as its first step and
