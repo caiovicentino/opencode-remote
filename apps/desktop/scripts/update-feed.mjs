@@ -13,9 +13,13 @@
  *   1. electron-builder.yml mac targets gain `zip` (Squirrel.Mac installs
  *      nothing but a zip — the DMG alone can't be applied);
  *   2. this script validates the dist root (zip present, yml version == tag)
- *      and writes `dist/update-mac.json` with the release-download URL;
- *   3. the release workflow uploads update-mac.json next to the DMG, and
- *      `publicFeedUrl()` hands it to Squirrel.Mac on darwin.
+ *      and writes `dist/update-mac-arm64.json`, `dist/update-mac-x64.json`
+ *      and `dist/update-mac.json` — the last one a byte-identical alias of
+ *      the arm64 document so the pre-P2-191 installed base keeps its update
+ *      path (P2-191);
+ *   3. the release workflow uploads update-mac*.json next to the DMG, and
+ *      `publicFeedUrl()` hands the architecture's feed to Squirrel.Mac on
+ *      darwin.
  *
  * Problem reporting mirrors scripts/dist-smoke.mjs: one string per problem,
  * ALL problems printed at once, exit code 1 when any exists (and no feed file
@@ -83,6 +87,83 @@ export function pickZipName(ymlText, fileNames) {
     if (referenced) return referenced;
   }
   return zips[0];
+}
+
+/** Architectures the macOS release must ship, in feed-document order. */
+export const MAC_FEED_ARCHES = ["arm64", "x64"];
+
+/**
+ * Architecture token of a dist file name ("OpenCode-Remote-0.3.0-arm64.zip" →
+ * "arm64"), or null when the name carries no architecture. The token must sit
+ * on a [-_.] boundary so "x64" never matches inside "arm64"/"x86_64" and
+ * "arm64" never matches inside "arm64e"; the extension is stripped first so
+ * the trailing dot never participates. A legacy arch-less name
+ * ("OpenCode-Remote-0.3.0-mac.zip") matches nothing — by design (P2-191): a
+ * feed must never point an architecture at the wrong build.
+ */
+export function archOfFileName(fileName) {
+  const base = String(fileName ?? "").replace(/\.[^.]+$/, "");
+  for (const arch of MAC_FEED_ARCHES) {
+    if (new RegExp(`(^|[-_.])${arch}([-_.]|$)`).test(base)) return arch;
+  }
+  return null;
+}
+
+/**
+ * P2-191: one Squirrel.Mac feed document per architecture. The dist root of a
+ * two-arch release carries two zips; pointing every mac install at the same
+ * JSON (the pre-P2-191 single update-mac.json) would hand an Intel Mac the
+ * arm64 zip — an update that does not run on the machine. This pure core
+ * returns { feeds, problems }: feeds maps arm64/x64 to the document whose url
+ * ends in that architecture's zip, problems are human-readable strings in the
+ * buildSquirrelFeed style (ALL reported at once, and feeds is null whenever
+ * any problem exists — fail closed, a partial feed must not ship).
+ *
+ * @param {string[]} fileNames entries of the dist root
+ * @param {string} tag release tag (e.g. "v0.3.0")
+ * @param {string} repoSlug GitHub "owner/repo" the release was published on
+ * @param {{ notes?: string, pubDate?: string }} [meta] notes/pub_date injected
+ *        by the CLI from latest-mac.yml so the alias file stays byte-identical
+ */
+export function macFeedPlan(fileNames, tag, repoSlug, meta = {}) {
+  const problems = [];
+  const cleanTag = String(tag ?? "").trim();
+  const version = cleanTag.replace(/^v/i, "");
+  if (!version) problems.push("release tag is empty — pass --tag vX.Y.Z or set GITHUB_REF_NAME");
+
+  const zips = [...(fileNames ?? [])].filter((n) => n.toLowerCase().endsWith(".zip")).sort();
+  if (zips.length === 0) {
+    problems.push(
+      "missing file: *.zip under dist root — Squirrel.Mac only installs from a zip (add the `zip` target to the electron-builder.yml mac block)",
+    );
+  }
+
+  const picks = {};
+  for (const arch of MAC_FEED_ARCHES) {
+    const matching = zips.filter((z) => archOfFileName(z) === arch);
+    if (matching.length === 0 && zips.length > 0) {
+      problems.push(`missing file: *.zip carrying ${arch} under dist root — the ${arch} feed has nothing to point at`);
+    } else if (matching.length > 1) {
+      problems.push(`ambiguous: ${matching.length} zips carrying ${arch} under dist root: ${matching.join(", ")}`);
+    } else if (matching.length === 1) {
+      picks[arch] = matching[0];
+    }
+  }
+
+  if (problems.length > 0) return { feeds: null, problems };
+
+  const notes = typeof meta.notes === "string" ? meta.notes : "";
+  const pubDate = typeof meta.pubDate === "string" ? meta.pubDate : new Date().toISOString();
+  const feeds = {};
+  for (const arch of MAC_FEED_ARCHES) {
+    feeds[arch] = {
+      url: `https://github.com/${repoSlug}/releases/download/${cleanTag}/${encodeURIComponent(picks[arch])}`,
+      name: version,
+      notes,
+      pub_date: pubDate,
+    };
+  }
+  return { feeds, problems };
 }
 
 /**
@@ -173,11 +254,38 @@ function main() {
     return;
   }
 
-  const outPath = join(distRoot, "update-mac.json");
-  writeFileSync(outPath, `${JSON.stringify(feed, null, 2)}\n`);
-  console.log(`update-feed: OK ${outPath}`);
-  console.log(`  url: ${feed.url}`);
-  console.log(`  name: ${feed.name}`);
+  // P2-191: one feed per architecture, plus the legacy update-mac.json as a
+  // byte-identical alias of the arm64 document — the installed base already
+  // consults the old name (publicFeedUrl's pre-P2-191 default) and must keep
+  // its update path. All three come from the same macFeedPlan so the pub_date
+  // matches exactly; any problem (missing/ambiguous per-arch zip, empty tag)
+  // writes nothing and fails the job.
+  const plan = macFeedPlan(files, tag, repoSlug, {
+    notes: parseYmlReleaseNotes(ymlText),
+    pubDate: feed.pub_date,
+  });
+  if (plan.problems.length > 0 || !plan.feeds) {
+    console.error(`update-feed: FAIL ${distRoot}`);
+    for (const problem of plan.problems) console.error(`  - ${problem}`);
+    console.error(`update-feed: ${plan.problems.length} problem(s) found`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const arm64Path = join(distRoot, "update-mac-arm64.json");
+  const x64Path = join(distRoot, "update-mac-x64.json");
+  const aliasPath = join(distRoot, "update-mac.json");
+  const arm64Doc = `${JSON.stringify(plan.feeds.arm64, null, 2)}\n`;
+  writeFileSync(arm64Path, arm64Doc);
+  writeFileSync(x64Path, `${JSON.stringify(plan.feeds.x64, null, 2)}\n`);
+  // Byte-a-byte alias of the arm64 document (same text, not just same JSON).
+  writeFileSync(aliasPath, arm64Doc);
+  console.log(`update-feed: OK ${arm64Path}`);
+  console.log(`  url: ${plan.feeds.arm64.url}`);
+  console.log(`  name: ${plan.feeds.arm64.name}`);
+  console.log(`update-feed: OK ${x64Path}`);
+  console.log(`  url: ${plan.feeds.x64.url}`);
+  console.log(`update-feed: OK ${aliasPath} (alias of update-mac-arm64.json)`);
 }
 
 // CLI guard: skip main() when imported by the unit test (same pattern as

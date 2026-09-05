@@ -59,13 +59,23 @@ mac:
   # Release notarization is decided by scripts/signing-profile.mjs, which the
   # release workflow runs before packaging.
   target:
+    # P2-191: both architectures, explicitly. The release runner (macos-14) is
+    # arm64 — without `arch:` declared here `npm run dist` only ever produced
+    # arm64 artifacts and an Intel Mac user had no installer to download. The
+    # artifactName template below renders -arm64/-x64 into dmg and zip names,
+    # which the per-arch update feeds (update-feed.mjs macFeedPlan) and the
+    # release-verify asset contract (scripts/release-assets.ts) key off.
     - target: dmg
+      arch: [arm64, x64]
+    # `dir` stays host-arch only: it exists for the deterministic dist:smoke
+    # check (P3-010), which never ships.
     - target: dir
     # P2-146: Squirrel.Mac only installs from a zip — every release now also
-    # ships the <name>-<version>-mac.zip the autoUpdater applies, and the
-    # release workflow's update-mac.json (scripts/update-feed.mjs) points at
-    # it. Additive: dmg stays the human installer, dir keeps dist:smoke fast.
+    # ships the per-arch zip the autoUpdater applies, and the release
+    # workflow's update-mac*.json feeds (scripts/update-feed.mjs) point at
+    # them. Additive: dmg stays the human installer, dir keeps dist:smoke fast.
     - target: zip
+      arch: [arm64, x64]
   category: public.app-category.developer-tools
   icon: build/icon.png
   hardenedRuntime: true

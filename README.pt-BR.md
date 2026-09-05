@@ -231,9 +231,12 @@ recuperados do plist, nunca descartados sem querença).
 
 ### Instalador do app desktop (DMG)
 
-Todo release do GitHub traz o instalador macOS de verdade,
-`OpenCode-Remote-<version>-arm64.dmg` (alvo `dmg` do electron-builder, janela
-com a marca do projeto). Um preflight de assinatura
+Todo release do GitHub traz o instalador macOS de verdade em **duas**
+arquiteturas (P2-191): `OpenCode-Remote-<version>-arm64.dmg` para Apple
+Silicon e `OpenCode-Remote-<version>-x64.dmg` para Intel (alvo `dmg` do
+electron-builder, janela com a marca do projeto). Baixe o arquivo certo pro
+seu Mac: menu Apple → **Sobre este Mac** → **Chip** diz "Apple" → `-arm64`;
+diz "Intel" → `-x64`. Um preflight de assinatura
 (`apps/desktop/scripts/signing-profile.mjs`) roda antes do empacotamento e
 escolhe um de dois modos:
 
@@ -321,13 +324,16 @@ commit.
 
 **O que cada release precisa ter** (P2-153): o tarball de fonte
 (`opencode-remote-<tag>.tar.gz`) do job `release`; o lado macOS do
-`desktop-dmg` — o DMG, o zip do Squirrel.Mac (`<nome>-<versão>-mac.zip`),
-`latest-mac.yml` e `update-mac.json`; e o lado Windows do `desktop-win` — o
+`desktop-dmg` — o DMG e o zip do Squirrel.Mac **de cada arquitetura** (arm64
+e x64, P2-191), `latest-mac.yml` e os três arquivos de feed (`update-mac.json`
+mais os por-arquitetura `update-mac-arm64.json`/`update-mac-x64.json`); e o
+lado Windows do `desktop-win` — o
 setup exe do NSIS e o `latest.yml` (a imagem do relay é publicada no GHCR e
 não é asset de download). Um job final `release-verify` lista os assets
 publicados com `gh release view --json assets` e roda
 `scripts/release-assets.ts` sobre essa lista: o release só é considerado
-completo quando esse job passa — instalador ou feed de update faltando derruba
+completo quando esse job passa — instalador (inclusive o Intel, P2-191) ou
+feed de update faltando derruba
 o workflow (todos os faltantes listados de uma vez) em vez de virar um 404
 silencioso no cheque de update do app. O release também só é considerado
 completo quando os feeds apontam para artefatos da mesma tag (P2-157): um job
@@ -593,7 +599,9 @@ Durante o desenvolvimento do web, aponte o shell pro dev server do Vite:
 bundle do daemon) antes de empacotar, então funciona também num checkout limpo.
 
 **Empacotamento (P1-050)**: `npm run dist --workspace @ocr/desktop` agora
-também produz um **`OpenCode-Remote-<versão>-<arch>.dmg`** distribuível (janela de
+também produz DMGs distribuíveis nas **duas arquiteturas** (P2-191) —
+**`OpenCode-Remote-<versão>-arm64.dmg`** (Apple Silicon) e
+**`OpenCode-Remote-<versão>-x64.dmg`** (Intel) — (janela de
 instalação com branding, versão semântica no About e no nome do arquivo).
 Builds locais são assinados ad-hoc com hardened runtime e as entitlements
 compartilhadas (`build/entitlements.mac.plist`) — no primeiro abre, clique
@@ -630,11 +638,16 @@ inacessível. Achando um `feed.json` mais
 novo, o release baixa em segundo plano e um diálogo de consentimento oferece
 **Reiniciar agora / Depois** — nada instala sem clique explícito, versão
 adiada não é re-oferecida na sessão, e checagens repetidas nunca empilham
-ofertas velhas. Desde a P2-146, todo release do GitHub também publica
-`update-mac.json` — o feed JSON do Squirrel.Mac, gerado por
-`apps/desktop/scripts/update-feed.mjs` a partir do `latest-mac.yml` + do zip
-de macOS que o empacotamento agora produz — e é nele que o fallback público
-do macOS resolve: o app instalado por DMG passa a se atualizar sozinho. O
+ofertas velhas. Desde a P2-146, todo release do GitHub também publica os
+feeds JSON do Squirrel.Mac, gerados por
+`apps/desktop/scripts/update-feed.mjs` a partir do `latest-mac.yml` + dos
+zips de macOS que o empacotamento agora produz — desde a P2-191, um por
+arquitetura (`update-mac-arm64.json` e `update-mac-x64.json`, mais o
+`update-mac.json` mantido como apelido byte a byte do feed arm64 para a base
+já instalada) — e é neles que o fallback público
+do macOS resolve: o app instalado por DMG passa a se atualizar sozinho,
+sempre pelo feed da própria arquitetura (um Mac Intel nunca recebe o zip
+arm64). O
 download só completa em build **assinada com Developer ID** (P2-136): o
 Squirrel.Mac recusa update cuja assinatura não confere com a do app
 instalado, então build ad-hoc (padrão sem os segredos de assinatura) segue

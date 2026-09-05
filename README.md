@@ -238,9 +238,12 @@ Node never trusts the macOS keychain.
 
 ### Desktop app installer (DMG)
 
-Every GitHub release ships a real macOS installer,
-`OpenCode-Remote-<version>-arm64.dmg` (electron-builder `dmg` target, branded
-window). A signing preflight (`apps/desktop/scripts/signing-profile.mjs`) runs
+Every GitHub release ships a real macOS installer in **two** architectures
+(P2-191): `OpenCode-Remote-<version>-arm64.dmg` for Apple Silicon and
+`OpenCode-Remote-<version>-x64.dmg` for Intel (electron-builder `dmg` target,
+branded window). Pick the file that matches your Mac: Apple menu → **About This Mac**
+→ **Chip** says "Apple" → `-arm64`; it says "Intel" → `-x64`. A signing
+preflight (`apps/desktop/scripts/signing-profile.mjs`) runs
 before packaging and picks one of two modes:
 
 - **Developer ID + notarized** — when the runner has a Developer ID
@@ -273,16 +276,20 @@ Homebrew users get the same code via the `Formula/opencode-remote.rb` formula
 (AGPL-3.0-only, checksum pinned automatically by the release pipeline at tag
 time).
 
-Since P2-146 the macOS packaging also produces the zip artifact Squirrel.Mac
-needs (`<name>-<version>-mac.zip`, additive to the DMG) and the release
-workflow publishes `update-mac.json` — a Squirrel.Mac JSON feed built from
-`latest-mac.yml` by `apps/desktop/scripts/update-feed.mjs`, with the zip's
-release-download URL. **macOS installs update themselves**: the packaged shell
-fetches that feed and applies the release in the background (with the consent
-dialog below) — but only when the running app is **Developer ID signed**
-(P2-136): Squirrel.Mac refuses an update whose code signature does not match
-the installed app, so ad-hoc signed builds (the default without signing
-secrets) keep the manual flow via the release page.
+Since P2-146 the macOS packaging also produces the zip artifacts Squirrel.Mac
+needs (one per architecture, additive to the DMGs) and the release workflow
+publishes the Squirrel.Mac JSON feeds built from `latest-mac.yml` by
+`apps/desktop/scripts/update-feed.mjs`: `update-mac-arm64.json` and
+`update-mac-x64.json` (P2-191), plus `update-mac.json` — kept as a
+byte-identical alias of the arm64 feed so installs predating P2-191 keep their
+update path. Each feed points at the zip of its own architecture, so an Intel
+Mac can never be handed the arm64 build. **macOS installs update themselves**:
+the packaged shell fetches the feed for the architecture it runs as and
+applies the release in the background (with the consent dialog below) — but
+only when the running app is **Developer ID signed** (P2-136): Squirrel.Mac
+refuses an update whose code signature does not match the installed app, so
+ad-hoc signed builds (the default without signing secrets) keep the manual
+flow via the release page.
 
 ### Desktop app installer (Windows)
 
@@ -341,13 +348,16 @@ commit message.
 
 **What each release must carry** (P2-153): the source tarball
 (`opencode-remote-<tag>.tar.gz`) from the `release` job; the macOS side from
-`desktop-dmg` — the DMG, the Squirrel.Mac zip (`<name>-<version>-mac.zip`),
-`latest-mac.yml` and `update-mac.json`; and the Windows side from
+`desktop-dmg` — the DMG and the Squirrel.Mac zip **for each architecture**
+(arm64 and x64, P2-191), `latest-mac.yml` and the three feed files
+(`update-mac.json` plus the per-arch `update-mac-arm64.json` /
+`update-mac-x64.json`); and the Windows side from
 `desktop-win` — the NSIS setup exe and `latest.yml` (the relay image is
 published to GHCR and is not a download asset). A final `release-verify` job
 lists the published assets with `gh release view --json assets` and runs
 `scripts/release-assets.ts` against that list: the release is only considered
-complete when that job passes — a missing installer or update feed fails the
+complete when that job passes — a missing installer (including the Intel one,
+P2-191) or update feed fails the
 workflow (every missing artifact listed at once) instead of surfacing later as
 a 404 on the in-app update check. The release is also only considered complete
 when the feeds point at artifacts of the same tag (P2-157): a `release-feeds`
@@ -753,7 +763,9 @@ During web development, point the shell at the Vite dev server:
 clean checkout.
 
 **Packaging (P1-050)**: `npm run dist --workspace @ocr/desktop` now also
-produces a distributable **`OpenCode-Remote-<version>-arm64.dmg`** (branded
+produces distributable DMGs — **`OpenCode-Remote-<version>-arm64.dmg`** and
+**`OpenCode-Remote-<version>-x64.dmg`** (P2-191: both architectures declared
+in the electron-builder mac targets; the branded
 installer window, semantic version in the About panel and in the DMG file
 name) — and `npm run dist:smoke --workspace @ocr/desktop` verifies the
 bundle **and** the DMG artifact. Local builds are ad-hoc signed with hardened
@@ -768,8 +780,9 @@ grants **camera, microphone and fullscreen only to its own interface** — any
 page loaded in the Browser pane has every permission request (camera,
 microphone, geolocation, notifications, MIDI, HID, serial, USB…) **denied on
 purpose**, so a third-party site can never trigger an OS permission prompt in
-the app's name. Tag releases ship that DMG +
-`latest-mac.yml` on GitHub (`.github/workflows/release.yml`); the release's
+the app's name. Tag releases ship both DMGs, the per-arch zips,
+`latest-mac.yml` and the update feeds on GitHub
+(`.github/workflows/release.yml`); the release's
 signing preflight notarizes only when a Developer ID certificate and the
 Apple credentials are actually configured (see *Desktop app installer*). The
 same release pipeline ships the **Windows NSIS installer**
@@ -788,10 +801,14 @@ the feed is unreachable. P2-098: when that staged feed is
 absent — the normal case on a plain DMG install — the shell falls back to the
 public yml feed attached to the latest GitHub release, so the tray still
 reports "update available" on third-party machines. P2-131: that fallback is
-platform-aware — `update-mac.json` on macOS, `latest.yml` on Windows, and no
-feed at all on other platforms (the whole check stays `disabled` with zero
-network requests there) — and `OCR_PUBLIC_UPDATE_FEED` remains an absolute
-override that ignores the platform. The two platforms update differently: on
+platform-aware — a Squirrel.Mac JSON feed on macOS, `latest.yml` on Windows,
+and no feed at all on other platforms (the whole check stays `disabled` with
+zero network requests there) — and `OCR_PUBLIC_UPDATE_FEED` remains an
+absolute override that ignores both the platform and the architecture.
+P2-191: on macOS the feed file follows the architecture the app runs as —
+`update-mac-arm64.json` on Apple Silicon, `update-mac-x64.json` on Intel, and
+the legacy `update-mac.json` (arm64 content) for anything else — so an Intel
+Mac can never be handed the arm64 zip. The two platforms update differently: on
 **macOS** the public fallback is a real Squirrel.Mac JSON feed (P2-146), so
 the release downloads in the background and the consent dialog applies it —
 the download only completes on a Developer ID signed build (P2-136), while
@@ -1085,9 +1102,11 @@ status change, so its label never goes stale). Applying
 a release always goes through the consent dialog (P1-050): the updater asks
 "Restart now / Later" once the download finishes — a deferred version is not
 re-offered in the same session. On macOS the packaged shell updates itself
-this way, and the same Squirrel JSON feed is published on every GitHub release
-(`update-mac.json`, built by `apps/desktop/scripts/update-feed.mjs` from the
-packaged `latest-mac.yml` + mac zip — P2-146) so third-party installs
+this way, and the same Squirrel JSON feeds are published on every GitHub
+release (per architecture since P2-191: `update-mac-arm64.json` /
+`update-mac-x64.json`, with `update-mac.json` kept as the arm64 alias; built
+by `apps/desktop/scripts/update-feed.mjs` from the packaged `latest-mac.yml`
++ mac zips — P2-146) so third-party installs
 auto-update too, but only when the app is Developer ID signed (P2-136):
 Squirrel.Mac rejects an update whose signature does not match the installed
 app, so ad-hoc builds keep the manual release page. On Windows (no

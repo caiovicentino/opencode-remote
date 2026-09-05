@@ -11,10 +11,12 @@
  *
  *   - expectedAssets(tag)  → every download asset a complete release carries,
  *                            each with a human-readable label and its matching
- *                            rule: extension + bare version for the dmg, the
- *                            Squirrel.Mac zip (P2-146) and the NSIS setup exe
+ *                            rule: extension + bare version + architecture for
+ *                            the per-arch dmg and Squirrel.Mac zip (P2-191),
+ *                            extension + bare version for the NSIS setup exe
  *                            (P2-126); exact name for latest-mac.yml,
- *                            update-mac.json and latest.yml.
+ *                            update-mac.json, update-mac-arm64.json,
+ *                            update-mac-x64.json and latest.yml.
  *   - missingAssets(...)   → the expected labels with no matching published
  *                            name.
  *   - tagProblems(tag)     → tag shape problems, same format as
@@ -39,6 +41,10 @@ export type AssetMatch =
   /** A file whose name ends with `ext` and carries the bare version (a dmg
    * named after a different version does NOT satisfy the slot). */
   | { kind: "extension+version"; ext: string; version: string }
+  /** P2-191: like extension+version, but the name must also carry the
+   * architecture token (arm64/x64 on a [-_.] boundary) — a release whose zip
+   * all carry arm64 no longer satisfies an Intel user's download. */
+  | { kind: "extension+version+arch"; ext: string; version: string; arch: string }
   /** A file with exactly this name. */
   | { kind: "exact"; name: string };
 
@@ -69,17 +75,27 @@ export function tagProblems(tag: string): string[] {
   return problems;
 }
 
-/** Every download asset a complete release for `tag` must carry. */
+/** Every download asset a complete release for `tag` must carry. Since P2-191
+ * the macOS installers and Squirrel zips are architecture slots: an Intel Mac
+ * user must find their own download, so arm64-only releases fail the verify. */
 export function expectedAssets(tag: string): ExpectedAsset[] {
   const version = bareVersion(tag);
   return [
     {
-      label: `macOS DMG installer (*.dmg carrying ${version})`,
-      match: { kind: "extension+version", ext: ".dmg", version },
+      label: `macOS DMG installer for Apple Silicon (*.dmg carrying ${version} and arm64)`,
+      match: { kind: "extension+version+arch", ext: ".dmg", version, arch: "arm64" },
     },
     {
-      label: `macOS Squirrel.Mac zip (*.zip carrying ${version})`,
-      match: { kind: "extension+version", ext: ".zip", version },
+      label: `macOS DMG installer for Intel (*.dmg carrying ${version} and x64)`,
+      match: { kind: "extension+version+arch", ext: ".dmg", version, arch: "x64" },
+    },
+    {
+      label: `macOS Squirrel.Mac zip for Apple Silicon (*.zip carrying ${version} and arm64)`,
+      match: { kind: "extension+version+arch", ext: ".zip", version, arch: "arm64" },
+    },
+    {
+      label: `macOS Squirrel.Mac zip for Intel (*.zip carrying ${version} and x64)`,
+      match: { kind: "extension+version+arch", ext: ".zip", version, arch: "x64" },
     },
     {
       label: `Windows NSIS setup (*.exe carrying ${version})`,
@@ -92,6 +108,14 @@ export function expectedAssets(tag: string): ExpectedAsset[] {
     {
       label: "macOS Squirrel.Mac JSON feed (update-mac.json)",
       match: { kind: "exact", name: "update-mac.json" },
+    },
+    {
+      label: "macOS Squirrel.Mac JSON feed for Apple Silicon (update-mac-arm64.json)",
+      match: { kind: "exact", name: "update-mac-arm64.json" },
+    },
+    {
+      label: "macOS Squirrel.Mac JSON feed for Intel (update-mac-x64.json)",
+      match: { kind: "exact", name: "update-mac-x64.json" },
     },
     {
       label: "Windows update metadata (latest.yml)",
@@ -109,7 +133,15 @@ export function assetMatches(asset: ExpectedAsset, publishedName: string): boole
   // may not continue the version with another digit — "0.2.0.1", "0.2.01" —
   // but the extension dot right after the version is fine.
   const escaped = asset.match.version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(?<![\\d.])${escaped}(?!\\.?\\d)`).test(publishedName);
+  if (!new RegExp(`(?<![\\d.])${escaped}(?!\\.?\\d)`).test(publishedName)) return false;
+  // P2-191: architecture token with the same boundary discipline — "x64"
+  // never matches inside "arm64"/"x86_64", "arm64" never inside "arm64e".
+  // Tested on the name without the extension, mirroring update-feed.mjs.
+  if (asset.match.kind === "extension+version+arch") {
+    const base = publishedName.slice(0, publishedName.length - asset.match.ext.length);
+    if (!new RegExp(`(^|[-_.])${asset.match.arch}([-_.]|$)`, "i").test(base)) return false;
+  }
+  return true;
 }
 
 /** Expected labels with no matching name among the published ones. */
