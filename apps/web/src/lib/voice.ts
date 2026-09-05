@@ -22,32 +22,6 @@ export function setTtsLang(lang: TtsLang): void {
   } catch {}
 }
 
-/** Strip the parts of a markdown answer that read badly aloud: fenced code
- * blocks, inline code, markdown emphasis and link URLs. */
-export function stripForSpeech(text: string): string {
-  return text
-    .replace(/```[\s\S]*?(```|$)/g, " ")
-    .replace(/`([^`]+)`/g, "$1")
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
-    .replace(/(^|\s)[*_~#>]+/g, "$1");
-}
-
-/**
- * Pick the spoken brief of an answer: the first sentences up to maxChars,
- * cutting at a sentence boundary when there is one, else at a word boundary.
- */
-export function speakBrief(text: string, maxChars = 280): string {
-  const clean = stripForSpeech(text).replace(/\s+/g, " ").trim();
-  if (clean.length <= maxChars) return clean;
-  const sentences = clean.match(/[^.!?…]+[.!?…]+["')\]]?/g) ?? [];
-  let brief = "";
-  for (const s of sentences) {
-    const next = brief ? `${brief} ${s.trim()}` : s.trim();
-    if (next.length > maxChars) break;
-    brief = next;
-  }
-  if (brief) return brief;
-  const cut = clean.slice(0, maxChars);
-  const lastSpace = cut.lastIndexOf(" ");
-  return `${(lastSpace > maxChars * 0.6 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
-}
+// Speech-brief selection moved to @ocr/protocol so the daemon warms its mp3
+// cache with the exact same brief the client asks for (latency: P2-125 follow-up).
+export { stripForSpeech, speakBrief } from "@ocr/protocol";

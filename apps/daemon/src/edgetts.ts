@@ -6,8 +6,8 @@ import { spawn, execSync } from "node:child_process";
 import { readFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
-import { normalizeLang, type SpeechLang } from "./spoken.js";
+import { createHash, randomUUID } from "node:crypto";
+import { normalizeLang, spokenNumbers, type SpeechLang } from "./spoken.js";
 
 const TTS_TIMEOUT_MS = 30_000;
 /** Upper bound on a single request: replies are spoken briefly (the client
@@ -75,5 +75,60 @@ export async function synthesizeSpeech(bin: string, text: string, voice: string)
     try {
       unlinkSync(out);
     } catch {}
+  }
+}
+
+// ── mp3 cache + warm-up (voice-reply latency) ─────────────────────────────
+// Synthesis takes 1-3s (edge-tts contacts Microsoft); on the phone that sits
+// on the critical path. forwardEvents() pre-renders the brief at session.idle
+// so the client's later request is usually a cache hit. Keyed by the spoken
+// (normalized) text + resolved voice.
+const TTS_CACHE_TTL_MS = 15 * 60_000;
+const TTS_CACHE_MAX = 24;
+const ttsCache = new Map<string, { audio: Buffer; at: number }>();
+
+function ttsCacheKey(spokenText: string, voice: string): string {
+  return `${voice}|${createHash("sha256").update(spokenText).digest("hex")}`;
+}
+
+function cachePut(key: string, audio: Buffer): void {
+  const now = Date.now();
+  ttsCache.delete(key);
+  ttsCache.set(key, { audio, at: now });
+  for (const [k, v] of ttsCache) if (now - v.at > TTS_CACHE_TTL_MS) ttsCache.delete(k);
+  while (ttsCache.size > TTS_CACHE_MAX) {
+    const oldest = ttsCache.keys().next().value;
+    if (oldest === undefined) break;
+    ttsCache.delete(oldest);
+  }
+}
+
+export function putSpeech(spokenText: string, voice: string, audio: Buffer): void {
+  cachePut(ttsCacheKey(spokenText, voice), audio);
+}
+
+export function cachedSpeech(spokenText: string, voice: string): Buffer | null {
+  const hit = ttsCache.get(ttsCacheKey(spokenText, voice));
+  if (!hit || Date.now() - hit.at > TTS_CACHE_TTL_MS) return null;
+  return hit.audio;
+}
+
+/** Fire-and-forget warm-up: render the spoken brief into the cache. Best
+ * effort — a miss just falls back to on-demand synthesis. */
+export async function prewarmSpeech(
+  bin: string,
+  briefText: string,
+  lang: SpeechLang,
+  ptOverride?: string,
+): Promise<void> {
+  const trimmed = briefText.trim();
+  if (!trimmed) return;
+  const { lang: spokenLang, voice } = resolveVoice(lang, ptOverride);
+  const spoken = spokenNumbers(trimmed, spokenLang);
+  if (cachedSpeech(spoken, voice)) return;
+  try {
+    putSpeech(spoken, voice, await synthesizeSpeech(bin, spoken, voice));
+  } catch {
+    // best effort
   }
 }

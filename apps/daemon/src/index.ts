@@ -25,6 +25,7 @@ import {
   openSealed,
   seqAad,
   type Identity,
+  speakBrief,
 } from "@ocr/protocol";
 import type {
   ClientEnvelope,
@@ -50,7 +51,7 @@ import {
   validateTakeoverSessionId,
 } from "./pilotforensic.js";
 import { detectWhisper, transcribeAudio, type WhisperTool } from "./whisper.js";
-import { detectEdgeTts, resolveVoice, synthesizeSpeech, TTS_VOICES } from "./edgetts.js";
+import { cachedSpeech, detectEdgeTts, prewarmSpeech, putSpeech, resolveVoice, synthesizeSpeech, TTS_VOICES } from "./edgetts.js";
 import { spokenNumbers, SPEECH_LANGS } from "./spoken.js";
 import { metrics, startMetricsServer, VERSION } from "./metrics.js";
 import { loadRoutines, saveRoutines, type Routine } from "./routines.js";
@@ -765,7 +766,13 @@ end tell`;
       const { lang: spoken0, voice } = resolveVoice(lang, TTS_PT_VOICE);
       // numbers/IDs/percentages read as natural words, never raw digits
       const spoken = spokenNumbers(text, spoken0);
+      const cached = cachedSpeech(spoken, voice);
+      if (cached) {
+        metrics.inc("ocr_tts_cache_hits_total");
+        return { id: req.id, status: 200, body: { audioB64: cached.toString("base64"), mime: "audio/mpeg" } };
+      }
       const audio = await synthesizeSpeech(edgeTtsBin, spoken, voice);
+      putSpeech(spoken, voice, audio);
       metrics.inc("ocr_tts_total");
       metrics.inc("ocr_tts_ms_total", Date.now() - t0);
       return { id: req.id, status: 200, body: { audioB64: audio.toString("base64"), mime: "audio/mpeg" } };
@@ -1564,6 +1571,8 @@ async function forwardEvents() {
   // the per-session URL dedupe. Both survive stream reconnects on purpose.
   const messageRoles = new Map<string, string>();
   const previewDedupe = new PreviewDedupe();
+  // voice warm-up: latest assistant text per session, spoken at session.idle
+  const lastAssistantText = new Map<string, string>();
   for (;;) {
     try {
       const url = new URL("/event", OPENCODE_URL);
@@ -1635,6 +1644,13 @@ async function forwardEvents() {
                 void pushToSubscribers("Agent finished", `Session idle on ${machineName}`, {
                   url: sessionID ? `#/session/${sessionID}` : "#/",
                 });
+              // voice warm-up: render the spoken brief now, so the phone's
+              // later /__ocr/voice/tts request is usually an mp3 cache hit
+              const warmText = sessionID ? lastAssistantText.get(sessionID) : undefined;
+              if (warmText && edgeTtsBin) {
+                void prewarmSpeech(edgeTtsBin, speakBrief(warmText), "pt-BR", TTS_PT_VOICE);
+                lastAssistantText.delete(sessionID);
+              }
             }
 
             // P1-072: auto-preview — assistant text mentioning a loopback
@@ -1666,6 +1682,27 @@ async function forwardEvents() {
                     properties: { sessionID: sid, url },
                   },
                 });
+              }
+              // voice warm-up tracking: remember each session's latest
+              // assistant text (same fail-closed role check as previews)
+              const warmPart = ((evt.properties ?? {}) as {
+                part?: { type?: unknown; text?: unknown; messageID?: unknown; sessionID?: unknown };
+              }).part;
+              if (
+                warmPart &&
+                warmPart.type === "text" &&
+                typeof warmPart.text === "string" &&
+                typeof warmPart.messageID === "string" &&
+                messageRoles.get(warmPart.messageID) === "assistant"
+              ) {
+                const sid = typeof warmPart.sessionID === "string" && warmPart.sessionID ? warmPart.sessionID : "";
+                if (sid) {
+                  lastAssistantText.set(sid, warmPart.text);
+                  if (lastAssistantText.size > 100) {
+                    const oldest = lastAssistantText.keys().next().value;
+                    if (oldest !== undefined) lastAssistantText.delete(oldest);
+                  }
+                }
               }
             }
 

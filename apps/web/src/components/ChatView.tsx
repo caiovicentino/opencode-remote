@@ -1857,7 +1857,8 @@ export default function ChatView({
   }, []);
 
   // Speak the newest complete assistant reply while the toggle is on. The
-  // debounce swallows streaming updates: speech fires once the answer settles.
+  // small delay settles the streaming tail; the daemon pre-renders the mp3
+  // at session.idle, so the request below usually hits a warm cache.
   useEffect(() => {
     if (!ttsOn || !ttsReady) return;
     let last: Bubble | undefined;
@@ -1874,7 +1875,7 @@ export default function ChatView({
     const timer = setTimeout(() => {
       spokenRef.current = id;
       void speak(speakBrief(last!.text));
-    }, 1200);
+    }, 300);
     return () => clearTimeout(timer);
   }, [bubbles, ttsOn, ttsReady]);
 

@@ -16,3 +16,4 @@ export {
   type DaemonHello,
   type ServerAccept,
 } from "./crypto.js";
+export { stripForSpeech, speakBrief } from "./voice.js";
