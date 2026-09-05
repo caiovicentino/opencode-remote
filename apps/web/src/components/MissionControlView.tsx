@@ -49,7 +49,18 @@ interface TimelineEntry {
 interface MissionSpecView {
   prompt?: string;
   repoUrl?: string;
+  /** v2: per-role model pins (role -> provider/model). */
+  models?: Record<string, string>;
   setAt?: string;
+}
+
+/** One-line `role=model` rendering of the v2 model pins ("" when none). */
+export function formatMissionModels(models: Record<string, string> | undefined | null): string {
+  if (!models || typeof models !== "object") return "";
+  return Object.entries(models)
+    .filter(([, m]) => typeof m === "string" && m)
+    .map(([r, m]) => `${r}=${m}`)
+    .join(", ");
 }
 
 type KindFilter = "all" | "decision" | "gate" | "deploy" | "review";
@@ -118,6 +129,11 @@ export default function MissionControlView({
   const [dashUrl, setDashUrl] = useState<string | null>(null);
   // Self-serve mission: undefined = not loaded yet, null = none set.
   const [mission, setMission] = useState<MissionSpecView | null | undefined>(undefined);
+  // Mission v2 clear path: two-click confirm ("End mission" → "Confirm") so a
+  // stray click never deletes the mission; the status line reports the result.
+  const [clearArmed, setClearArmed] = useState(false);
+  const [clearBusy, setClearBusy] = useState(false);
+  const [clearStatus, setClearStatus] = useState<string | null>(null);
   useEffect(() => {
     let alive = true;
     const bridge = (window as unknown as { ocrDesktop?: { getLocalLink?: () => Promise<{ port: number; token: string } | null> } }).ocrDesktop;
@@ -197,6 +213,28 @@ export default function MissionControlView({
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setTaking(false);
+    }
+  }
+
+  /** Mission v2: DELETE /api/mission (auth-gated like POST) removes mission.json;
+   * the pilot's drift check then self-restarts back to self-improvement mode. */
+  async function clearMission() {
+    if (!daemonApi) return;
+    if (!clearArmed) {
+      setClearArmed(true);
+      setClearStatus(null);
+      return;
+    }
+    setClearBusy(true);
+    try {
+      await decode(await daemonApi({ path: "/api/mission", method: "DELETE" }));
+      setMission(null);
+      setClearStatus(t("missionCleared"));
+    } catch {
+      setClearStatus(t("missionClearFailed"));
+    } finally {
+      setClearBusy(false);
+      setClearArmed(false);
     }
   }
 
@@ -280,6 +318,11 @@ export default function MissionControlView({
                     {t("missionSourceRepo")}: {mission.repoUrl}
                   </p>
                 )}
+                {formatMissionModels(mission.models) && (
+                  <p className="mission-active-src" data-mission-models>
+                    {t("missionModels")}: {formatMissionModels(mission.models)}
+                  </p>
+                )}
                 <p className="mission-active-src">
                   {t("missionSource")}:{" "}
                   {[mission.prompt ? t("missionSourcePrompt") : "", mission.repoUrl ? t("missionSourceRepo") : ""]
@@ -287,10 +330,21 @@ export default function MissionControlView({
                     .join(" + ")}
                   {fmtDateTime(mission.setAt) ? ` · ${t("missionSetAt")} ${fmtDateTime(mission.setAt)}` : ""}
                 </p>
+                <div className="mission-active-actions">
+                  <button
+                    type="button"
+                    onClick={() => void clearMission()}
+                    disabled={clearBusy}
+                    aria-label={clearArmed ? t("missionClearConfirm") : t("missionClear")}
+                  >
+                    {clearBusy ? "…" : clearArmed ? t("missionClearConfirm") : t("missionClear")}
+                  </button>
+                </div>
               </>
             ) : (
               <p className="mission-active-src">{mission === null ? t("missionActiveNone") : "…"}</p>
             )}
+            {clearStatus && <p className="mission-active-status">{clearStatus}</p>}
           </div>
           {cards === null && <p className="muted" style={{ padding: 12 }}>{t("missionLoading")}</p>}
           {cards !== null && cards.length === 0 && (

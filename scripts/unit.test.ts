@@ -8,7 +8,7 @@ process.env.PILOT_EVENTS_FILE = "/tmp/pilot-unit-events.jsonl";
 
 import { b64, fromB64, seal, openSealed, seqAad } from "@ocr/protocol";
 
-import { mergeConflictBlock } from "../apps/pilot/src/pipeline";
+import { gateFailFile, mergeConflictBlock } from "../apps/pilot/src/pipeline";
 
 import { parsePairingUri, localWsUrl, shouldFailoverToRelay } from "../apps/web/src/lib/client";
 
@@ -181,7 +181,7 @@ import { AtomicWriteIo, clampSlots, ensureSingleton, loadState, normalizeModels,
 
 import type { PilotState } from "../apps/pilot/src/state";
 
-import { clearTaskAttempts, doctorBacklog, doctorBranches, doctorRefs, doctorState, doctorTierB, normalizePilotState, parseAttemptsArgs, runAttemptsCommand, runDoctor, validateBacklog, type AttemptsRequest, type RunFn } from "../apps/pilot/src/doctor";
+import { clearTaskAttempts, doctorBacklog, doctorBranches, doctorRefs, doctorState, doctorTierB, normalizePilotState, parseAttemptsArgs, protectedBranchIds, runAttemptsCommand, runDoctor, validateBacklog, type AttemptsRequest, type RunFn } from "../apps/pilot/src/doctor";
 
 import { avgPhaseDurations, burnDown, countFailSteps, recordLessonImpact, rollbackHealthAlert } from "../apps/pilot/src/metrics";
 
@@ -227,13 +227,13 @@ import {
   type Task,
 } from "../apps/pilot/src/backlog";
 
-import { clearPendingRefill, readPendingRefill, relandDetail, relandPendingRefill, savePendingRefill } from "../apps/pilot/src/refill";
+import { clearPendingRefill, defaultPendingRefillFile, readPendingRefill, relandDetail, relandPendingRefill, savePendingRefill } from "../apps/pilot/src/refill";
 
 import { landMetaCommit, mayPushUnderDir, metaIo, META_BRANCH, type MetaPushIo } from "../apps/pilot/src/metapush";
 
 import { EXPLORER_MAX_FINDINGS, EXPLORER_MAX_STEPS, EXPLORER_TIMEOUT_MIN, EXPLORER_PUSH_RETRIES, EXPLORER_PUSH_WAIT_MS, FABLE_MARKER, FABLE_MAX_FINDINGS, JOURNEY_STEPS, claimExplorerRun, commitAndPushFindings, commitAndPushFableFindings, explorerPrompt, explorerSessionName, explorerSpec, fablePrompt, fableSpec, journeyShotName, parseExplorerFindings, parseFableFindings, type ExplorerFinding, type FableFinding } from "../apps/pilot/src/explorer";
 
-import { noteTierBOutcome, resetTierBSpawnStreak, runAgent, API_PREFLIGHT, apiHealthy, TIERB_SPAWN_ALERT_EVERY, shouldAlertTierBSpawn, claudeArgs, idScanner, mergeAgentIds, OPENCODE_URL_DEFAULT, scanIds, shouldFallbackTierB, waitForApi } from "../apps/pilot/src/runner";
+import { noteTierBOutcome, resetTierBSpawnStreak, runAgent, runAgentForRole, API_PREFLIGHT, apiHealthy, TIERB_SPAWN_ALERT_EVERY, shouldAlertTierBSpawn, claudeArgs, idScanner, mergeAgentIds, OPENCODE_URL_DEFAULT, scanIds, shouldFallbackTierB, waitForApi } from "../apps/pilot/src/runner";
 
 import { GUARD_ALERT_THRESHOLD, clearGuardRejections, guardAlertDetail, noteGuardRejection, raiseGuardAlert, resetGuardAlerts } from "../apps/pilot/src/guardalert";
 
@@ -275,24 +275,38 @@ import {
 
 import {
   GITHUB_REPO_URL_RE,
+  MISSION_MODEL_ROLES,
   MISSION_PROMPT_MAX,
+  attemptsKey,
+  bareTaskId,
   missionDrifted,
   missionHash,
+  missionModelFor,
   missionWorkspaceKey,
   normalizeRepoUrl,
+  parseMissionModels,
   parseMissionSpec,
   readMission,
+  removeMissionFile,
   repoSlug,
+  validModelId,
   validRepoUrl,
   writeMissionSpec,
   type MissionFileIo,
 } from "../apps/pilot/src/mission";
+
+import { CATALOG_TTL_MS, fetchAvailableModels, parseProviderCatalog, pickMissionModel, resetCatalogCache } from "../apps/pilot/src/modelcatalog";
+
+import { INFRA_STREAK_HARD_FAIL, clearTaskInfraStreak, infraStarvationReason, infraStreakExhausted, recordTaskInfraStreak } from "../apps/pilot/src/audit";
+
+import { formatMissionModels } from "../apps/web/src/components/MissionControlView";
 
 import {
   buildGenericProfile,
   detectGateProfile,
   GENERIC_GATE_SCRIPTS,
   GENERIC_STEP_TIMEOUT_MIN,
+  isPilotCheckoutPath,
   PILOT_GATE_STEPS,
 } from "../apps/pilot/src/gateprofile";
 
@@ -10807,12 +10821,30 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
   check("generic profile: absent/empty/non-string scripts skipped; garbage table → no steps", buildGenericProfile({ test: "", build: 3, lint: "eslint" }).steps.map(([n]) => n).join() === "lint" && buildGenericProfile(null).steps.length === 0 && buildGenericProfile("x").steps.length === 0);
   check("generic profile: never a pilot-only step (invariants/desktop/corpus)", !gp.steps.some(([n]) => ["invariants", "desktop-render", "desktop-flow", "corpus", "reconnect", "integration"].includes(n)));
-  const foreign = detectGateProfile("/ws/foreign", { exists: () => false, readPackageJson: () => ({ name: "someone", scripts: { test: "jest", lint: "eslint", start: "node ." } }) });
+  const pin = { prodCheckout: "/prod/opencode-remote", slotRoot: "/home/u/.opencode-remote/pilot" };
+  const foreign = detectGateProfile("/ws/foreign", { ...pin, readPackageJson: () => ({ name: "someone", scripts: { test: "jest", lint: "eslint", start: "node ." } }) });
   check("detectGateProfile: foreign package.json → generic with only its allowlisted scripts", foreign.kind === "generic" && foreign.steps.map(([n]) => n).join(",") === "test,lint");
-  const pilotByName = detectGateProfile("/ws/pilot", { exists: () => false, readPackageJson: () => ({ name: "opencode-remote", scripts: { typecheck: "x" } }) });
-  const pilotByTree = detectGateProfile("/ws/pilot2", { exists: (p) => p.endsWith("apps/pilot/src/pipeline.ts"), readPackageJson: () => ({ name: "renamed", scripts: {} }) });
-  check("detectGateProfile: pilot checkout keeps the full battery (by name or by tree)", pilotByName.kind === "pilot" && pilotByTree.kind === "pilot" && pilotByName.steps.length === PILOT_GATE_STEPS.length);
-  check("detectGateProfile: no package.json → unknown (fail closed)", detectGateProfile("/ws/none", { exists: () => false, readPackageJson: () => null }).kind === "unknown");
+  // mission v2 (hardening a): the pilot profile is pinned to the PRODUCTION
+  // CHECKOUT PATH (+ its slot clones), never to a package.json field
+  const spoofByName = detectGateProfile("/home/u/.opencode-remote/pilot/mission/evil--repo/repo-1", { ...pin, readPackageJson: () => ({ name: "opencode-remote", scripts: { typecheck: "x", test: "evil" } }) });
+  check("detectGateProfile: foreign repo named opencode-remote in a mission clone → generic (profile spoofing closed)", spoofByName.kind === "generic" && spoofByName.steps.map(([n]) => n).join(",") === "typecheck,test");
+  const spoofByTree = detectGateProfile("/ws/spoof", { ...pin, readPackageJson: () => ({ name: "renamed", scripts: { test: "x" } }) });
+  check("detectGateProfile: a foreign tree shipping apps/pilot/src/pipeline.ts does not earn the pilot battery", spoofByTree.kind === "generic");
+  const pilotProd = detectGateProfile("/prod/opencode-remote/", { ...pin, readPackageJson: () => ({ name: "anything", scripts: {} }) });
+  const pilotSlot = detectGateProfile("/home/u/.opencode-remote/pilot/repo-3", { ...pin, readPackageJson: () => null });
+  check("detectGateProfile: production checkout + its slot clones keep the full battery by path (package.json irrelevant)", pilotProd.kind === "pilot" && pilotSlot.kind === "pilot" && pilotProd.steps.length === PILOT_GATE_STEPS.length);
+  check(
+    "isPilotCheckoutPath: prod (normalized), pilot/repo-N yes; mission clones, nested, sibling names, garbage no",
+    isPilotCheckoutPath("/prod/opencode-remote", pin) &&
+      isPilotCheckoutPath("/prod/x/../opencode-remote/", pin) &&
+      isPilotCheckoutPath("/home/u/.opencode-remote/pilot/repo-1", pin) &&
+      !isPilotCheckoutPath("/home/u/.opencode-remote/pilot/mission/acme--widgets/repo-1", pin) &&
+      !isPilotCheckoutPath("/home/u/.opencode-remote/pilot/repo-1/sub", pin) &&
+      !isPilotCheckoutPath("/home/u/.opencode-remote/pilot/repo-x", pin) &&
+      !isPilotCheckoutPath("/home/u/.opencode-remote/pilot", pin) &&
+      !isPilotCheckoutPath("", pin),
+  );
+  check("detectGateProfile: no package.json → unknown (fail closed)", detectGateProfile("/ws/none", { ...pin, readPackageJson: () => null }).kind === "unknown");
 
   // chat-side convention injected into daemon sessions
   const mblock = buildMissionPrompt();
@@ -10828,6 +10860,19 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       mblock.includes(".tmp") &&
       mblock.includes("próximo boot") &&
       !mblock.includes("ses_"),
+  );
+  // v2: generalist intent capture + model pins + clear path, all in the same constant block
+  check(
+    "mission prompt v2: composes the whole file (vague/link-only/rich), deduces repoUrl from any GitHub link, faithful prompt, models roles verified via `opencode models`, rm clear path",
+    mblock.includes('"models"') &&
+      mblock.includes(MISSION_MODEL_ROLES.join("|")) &&
+      mblock.includes("opencode models") &&
+      mblock.includes("provider/modelo") &&
+      mblock.includes("/tree/") &&
+      mblock.includes("Nunca invente") &&
+      mblock.includes(`rm -f ${MISSION_FILE_HINT}`) &&
+      mblock.includes("encerrar missão") &&
+      mblock.includes("quais modelos?"),
   );
   const s1: { system?: string } = {};
   const s2: { system?: string } = { system: "SYS" };
@@ -10846,6 +10891,10 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check("mission prompt: a system that only has the artifacts block gains the mission block (and not a second artifacts one)", partial.system!.includes(MISSION_MARKER) && partial.system!.split(ARTIFACTS_MARKER).length - 1 === 1);
   const agentsMd = readFileSync(join(import.meta.dirname, "..", "AGENTS.md"), "utf8");
   check("mission convention: this repo's AGENTS.md (which skips the injection) teaches the same file + shape", agentsMd.includes("mission.json") && agentsMd.includes('"v":1') && agentsMd.includes("chmod 600"));
+  check(
+    "mission convention v2: AGENTS.md mirrors models roles, `opencode models` verification and the rm clear path",
+    agentsMd.includes('"models"') && agentsMd.includes(MISSION_MODEL_ROLES.join("|")) && agentsMd.includes("opencode models") && agentsMd.includes("rm -f ~/.opencode-remote/mission.json"),
+  );
 
   // researcher prompt: stable prefix intact, mission appended as the tail
   const base = researcherPrompt();
@@ -10860,9 +10909,10 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 
   // i18n: en + pt for every new user-visible string
-  for (const k of ["missionActive", "missionActiveNone", "missionSource", "missionSourcePrompt", "missionSourceRepo", "missionSetAt"]) {
+  for (const k of ["missionActive", "missionActiveNone", "missionSource", "missionSourcePrompt", "missionSourceRepo", "missionSetAt", "missionModels", "missionClear", "missionClearConfirm", "missionCleared", "missionClearFailed"]) {
     check(`i18n: ${k} in en and pt`, typeof (dict.en as Record<string, string>)[k] === "string" && typeof (dict.pt as Record<string, string>)[k] === "string");
   }
+  check("mission card: models line renders role=model pairs, empty when absent", formatMissionModels({ builder: "glm52/glm-5.2", scribe: "opencode/big-pickle" }) === "builder=glm52/glm-5.2, scribe=opencode/big-pickle" && formatMissionModels(undefined) === "" && formatMissionModels({}) === "");
 
   // source pins: the loop routes mission drift through the pure seam, the
   // boot hash is captured once, and a foreign mission never deploys
@@ -10878,6 +10928,166 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     pilotIndexSrc.includes("!deployBusy && !foreignMission && state.deploys") && pilotIndexSrc.includes("if (foreignMission) {"),
   );
   check("mission: strategist/researcher take the chat-defined prompt", pilotIndexSrc.includes("activeMission?.prompt ?? STRATEGIST_MISSION") && pilotIndexSrc.includes("runResearcher(aux, state, activeMission?.prompt)"));
+  check(
+    "mission v2: per-mission state root + key + models are derived before the slot configs are cloned",
+    pilotIndexSrc.indexOf("cfg.stateRoot = slotRoot") < pilotIndexSrc.indexOf("slotCfg.set(s, ensureSlotWorkspace(cfg, s, slotRoot))") &&
+      pilotIndexSrc.includes("cfg.missionModels = activeMission?.models") &&
+      pilotIndexSrc.includes("defaultPendingRefillFile(stateRoot)") &&
+      pilotIndexSrc.includes('gateFailDir: join(stateRoot, "gate-fail")'),
+  );
+  check(
+    "mission v2: infra starvation pins the counter at the cap BEFORE the block landing (dead remote cannot resurrect the task)",
+    pilotIndexSrc.indexOf("state.taskAttempts[taskKey] = Math.max(") < pilotIndexSrc.indexOf("await blockAndPush(taskCfg, state, task, attempts, reason, true)"),
+  );
+  const daemonSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  check(
+    "mission v2: DELETE /api/mission lives behind the shared /api auth gate and calls removeMissionFile",
+    daemonSrc.indexOf('seg[1] === "mission" && !seg[2] && req.method === "DELETE"') > daemonSrc.indexOf("if (!authorized(req)) {\n    send401(res);\n    return true;\n  }\n  const op = ") &&
+      daemonSrc.includes("const r = removeMissionFile();"),
+  );
+  const desktopMain = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  check("mission v2: desktop daemonApi allowlist admits GET pilot-mission and DELETE /api/mission only", desktopMain.includes("shot|mission)$/") && desktopMain.includes("/^\\/api\\/mission$/"));
+}
+
+// --- mission self-serve v2: models schema, dispatch override, catalog, starvation breaker, state namespace ---
+{
+  const GH = "https://github.com/acme/widgets.git";
+  const at = "2026-09-05T10:00:00Z";
+  // schema: optional models block, subset of roles, provider/model ids
+  const withModels = parseMissionSpec(JSON.stringify({ v: 1, prompt: "fix the login bug", repoUrl: GH, models: { builder: "glm52/glm-5.2", reviewer: "anthropic/claude-opus-4-1" }, setAt: at }));
+  check(
+    "mission v2: models subset parses, other roles default (undefined)",
+    withModels?.models?.builder === "glm52/glm-5.2" && withModels.models.reviewer === "anthropic/claude-opus-4-1" && missionModelFor(withModels, "scribe") === undefined && missionModelFor(withModels, "builder") === "glm52/glm-5.2",
+  );
+  check("mission v2: all five roles accepted", parseMissionSpec(JSON.stringify({ v: 1, prompt: "x", models: Object.fromEntries(MISSION_MODEL_ROLES.map((r) => [r, "p/m"])), setAt: at }))?.models !== undefined && MISSION_MODEL_ROLES.join(",") === "strategist,researcher,builder,reviewer,scribe");
+  check("mission v2: unknown role rejects the WHOLE spec (never silently dropped)", parseMissionSpec(JSON.stringify({ v: 1, prompt: "x", models: { planner: "p/m" }, setAt: at })) === null && parseMissionSpec(JSON.stringify({ v: 1, prompt: "x", models: { builder: "p/m", judge: "p/m" }, setAt: at })) === null);
+  check(
+    "mission v2: malformed model id rejects the spec (needs provider/model, safe charset, bounded length)",
+    ["opus", "", " p/m", "p/m x", "p//m", "/m", "p/", "a".repeat(129), "p/$(rm)"].every((id) => parseMissionSpec(JSON.stringify({ v: 1, prompt: "x", models: { builder: id }, setAt: at })) === null) &&
+      validModelId("hpc-ai/deepseek/deepseek-v4-flash") &&
+      validModelId("opencode/big-pickle") &&
+      !validModelId(42),
+  );
+  check("mission v2: models absent/null/empty → no models field; array/string → invalid", parseMissionSpec(JSON.stringify({ v: 1, prompt: "x", setAt: at }))?.models === undefined && parseMissionSpec(JSON.stringify({ v: 1, prompt: "x", models: null, setAt: at }))?.models === undefined && parseMissionSpec(JSON.stringify({ v: 1, prompt: "x", models: {}, setAt: at }))?.models === undefined && parseMissionSpec(JSON.stringify({ v: 1, prompt: "x", models: ["p/m"], setAt: at })) === null && parseMissionSpec(JSON.stringify({ v: 1, prompt: "x", models: "p/m", setAt: at })) === null);
+  const pm = parseMissionModels({ scribe: "p/m", oops: "p/m" });
+  check("parseMissionModels: reason names the offending role and the valid list", !pm.ok && pm.reason.includes('"oops"') && pm.reason.includes(MISSION_MODEL_ROLES.join("|")));
+  check("parseMissionModels: bad id reason names the role", (() => { const r = parseMissionModels({ builder: "nope" }); return !r.ok && r.reason.includes("builder"); })());
+  // write round-trips models; a bad models block is refused before any write
+  const files = new Map<string, string>();
+  const io: MissionFileIo = {
+    writeFileSync: (f, d) => void files.set(f, d),
+    renameSync: (a, b) => { files.set(b, files.get(a)!); files.delete(a); },
+    unlinkSync: (f) => void files.delete(f),
+  };
+  const text = writeMissionSpec({ v: 1, prompt: "go", models: { builder: "p/m" }, setAt: at }, "/m/mission.json", io);
+  check("writeMissionSpec v2: models survive the round-trip", parseMissionSpec(text)?.models?.builder === "p/m" && parseMissionSpec(files.get("/m/mission.json"))?.models?.builder === "p/m");
+  let refused = false;
+  try {
+    writeMissionSpec({ v: 1, prompt: "go", models: { builder: "not-an-id" }, setAt: at }, "/m/mission.json", io);
+  } catch {
+    refused = true;
+  }
+  check("writeMissionSpec v2: invalid models block refused, previous file intact", refused && parseMissionSpec(files.get("/m/mission.json"))?.models?.builder === "p/m");
+  // clear path: unlink is the whole operation; ENOENT is the desired state, other errors surface
+  const unlinked: string[] = [];
+  check("removeMissionFile: removes and reports", removeMissionFile("/m/mission.json", { unlinkSync: (f) => void unlinked.push(f) }).removed === true && unlinked.join() === "/m/mission.json");
+  check("removeMissionFile: absent file → removed:false, no throw", removeMissionFile("/m/none.json", { unlinkSync: () => { throw Object.assign(new Error("ENOENT"), { code: "ENOENT" }); } }).removed === false);
+  let rethrown = false;
+  try {
+    removeMissionFile("/m/x.json", { unlinkSync: () => { throw Object.assign(new Error("EACCES"), { code: "EACCES" }); } });
+  } catch {
+    rethrown = true;
+  }
+  check("removeMissionFile: other fs errors rethrow (route answers 500, never lies)", rethrown);
+  const rdir = mkdtempSync(join(tmpdir(), "ocr-mission-rm-"));
+  try {
+    const f = join(rdir, "mission.json");
+    writeMissionSpec({ v: 1, prompt: "real", setAt: at }, f);
+    check("removeMissionFile: real fs — file gone, hash drifts to undefined (pilot self-restarts to default)", removeMissionFile(f).removed && readMission(f).hash === undefined && !existsSync(f));
+  } finally {
+    rmSync(rdir, { recursive: true, force: true });
+  }
+
+  // catalog: provider/model ids exactly as `opencode models` prints them
+  const catalog = parseProviderCatalog({ all: [{ id: "glm52", models: { "glm-5.2": {} } }, { id: "hpc-ai", models: { "deepseek/deepseek-v4-flash": {} } }, { id: "", models: { x: {} } }, null, { id: "nomodels" }, { id: "opencode", models: "garbage" }] });
+  check("parseProviderCatalog: <provider.id>/<model key>, slashes in keys kept, garbage entries skipped", [...catalog].sort().join() === "glm52/glm-5.2,hpc-ai/deepseek/deepseek-v4-flash");
+  check("parseProviderCatalog: non-catalog input → empty set", parseProviderCatalog(null).size === 0 && parseProviderCatalog({ all: "x" }).size === 0 && parseProviderCatalog("x").size === 0);
+  // pure dispatch decision
+  const models = { builder: "glm52/glm-5.2", scribe: "gone/model" };
+  check("pickMissionModel: configured + available → mission", JSON.stringify(pickMissionModel(models, "builder", catalog)) === JSON.stringify({ model: "glm52/glm-5.2", source: "mission" }));
+  const gone = pickMissionModel(models, "scribe", catalog);
+  check("pickMissionModel: configured but not in the catalog → default + reason + wanted (warn log material)", gone.model === null && gone.source === "default" && gone.wanted === "gone/model" && /not available/.test(gone.reason ?? ""));
+  const noCat = pickMissionModel(models, "builder", null);
+  check("pickMissionModel: catalog unreachable → default with reason (cannot verify → never trust the file alone)", noCat.model === null && /unavailable/.test(noCat.reason ?? "") && noCat.wanted === "glm52/glm-5.2");
+  check("pickMissionModel: role without a pin → default silently (no reason)", JSON.stringify(pickMissionModel(models, "reviewer", catalog)) === JSON.stringify({ model: null, source: "default" }) && pickMissionModel(undefined, "builder", catalog).model === null);
+  // live catalog fetch: cached per TTL, failures never cached
+  resetCatalogCache();
+  let fetches = 0;
+  const okFetch = (async () => {
+    fetches++;
+    return { ok: true, json: async () => ({ all: [{ id: "p", models: { m: {} } }] }) } as unknown as Response;
+  }) as unknown as typeof fetch;
+  const c1 = await fetchAvailableModels({ url: "http://x", fetchImpl: okFetch, now: 1_000 });
+  const c2 = await fetchAvailableModels({ url: "http://x", fetchImpl: okFetch, now: 1_000 + CATALOG_TTL_MS - 1 });
+  const c3 = await fetchAvailableModels({ url: "http://x", fetchImpl: okFetch, now: 1_000 + CATALOG_TTL_MS + 1 });
+  check("fetchAvailableModels: one fetch inside the TTL, refetch after it", c1?.has("p/m") === true && c2 === c1 && c3 !== c1 && fetches === 2);
+  resetCatalogCache();
+  const downFetch = (async () => { throw new Error("ECONNREFUSED"); }) as unknown as typeof fetch;
+  const emptyFetch = (async () => ({ ok: true, json: async () => ({ all: [] }) })) as unknown as typeof fetch;
+  const notOk = (async () => ({ ok: false, json: async () => ({}) })) as unknown as typeof fetch;
+  check("fetchAvailableModels: network error / non-200 / empty catalog → null (cannot verify), nothing cached", (await fetchAvailableModels({ fetchImpl: downFetch })) === null && (await fetchAvailableModels({ fetchImpl: notOk })) === null && (await fetchAvailableModels({ fetchImpl: emptyFetch })) === null);
+  resetCatalogCache();
+
+  // dispatch override path: runAgentForRole → opencode run --model <id> only when the catalog lists it
+  const seen: string[][] = [];
+  const argvSpawn = ((_cmd: string, args: string[]) => {
+    seen.push(args);
+    return spawn(process.execPath, ["-e", "process.exit(0)"]);
+  }) as unknown as typeof spawn;
+  const base = { cwd: tmpdir(), timeoutMin: 1, label: "t", preflight: async () => true, spawnImpl: argvSpawn };
+  await runAgentForRole("builder", "hello", { ...base, missionModels: { builder: "glm52/glm-5.2" }, catalog: async () => new Set(["glm52/glm-5.2"]) });
+  check("runAgentForRole v2: mission model verified in the catalog → `opencode run --model <id> <prompt>` (one argv entry)", JSON.stringify(seen[0]) === JSON.stringify(["run", "--model", "glm52/glm-5.2", "hello"]));
+  await runAgentForRole("builder", "hello", { ...base, missionModels: { builder: "glm52/glm-5.2" }, catalog: async () => new Set(["other/model"]) });
+  check("runAgentForRole v2: mission model NOT in the catalog → tier default argv (no --model), slot alive", JSON.stringify(seen[1]) === JSON.stringify(["run", "hello"]));
+  await runAgentForRole("reviewer", "hello", { ...base, missionModels: { builder: "glm52/glm-5.2" }, catalog: async () => { throw new Error("must not be called for an unpinned role"); } });
+  check("runAgentForRole v2: unpinned role never consults the catalog and runs the default", JSON.stringify(seen[2]) === JSON.stringify(["run", "hello"]));
+  await runAgentForRole("scribe", "hello", { ...base, missionModels: { scribe: "p/m" }, catalog: async () => null });
+  check("runAgentForRole v2: catalog unreachable → default argv (fail closed to the default, never to the unverified id)", JSON.stringify(seen[3]) === JSON.stringify(["run", "hello"]));
+  await runAgentForRole("builder", "hello", { ...base, missionModels: { builder: "p/m" }, models: { tierB: { builder: "opus" } }, catalog: async () => null });
+  check("runAgentForRole v2: execution roles never route to tier B even if pilot.json names them", JSON.stringify(seen[4]) === JSON.stringify(["run", "hello"]));
+  await runAgent("p", { ...base, sessionId: "ses_abc12345", model: "p/m" });
+  check("runAgent: --model argv placement pinned (run [-s ses] --model id prompt)", seen.some((a) => JSON.stringify(a) === JSON.stringify(["run", "-s", "ses_abc12345", "--model", "p/m", "p"])));
+
+  // per-mission state namespace (hardening c)
+  check("attemptsKey: bare id for this repo, <key>/<id> for a foreign mission", attemptsKey(null, "P2-001") === "P2-001" && attemptsKey(undefined, "P2-001") === "P2-001" && attemptsKey("acme--widgets", "P2-001") === "acme--widgets/P2-001");
+  const nsState = loadState("/nope/state.json");
+  recordTaskFailure(nsState, attemptsKey("acme--widgets", "P2-001"), 4);
+  check("state namespace: a foreign P2-001 failure never touches our P2-001 counter", nsState.taskAttempts["acme--widgets/P2-001"] === 1 && nsState.taskAttempts["P2-001"] === undefined);
+  check("bareTaskId: strips the mission namespace, bare ids pass through", bareTaskId("acme--widgets/P2-001") === "P2-001" && bareTaskId("P2-001") === "P2-001");
+  check("doctor: a foreign task under retry still protects its pilot/<id> branch (namespace stripped)", protectedBranchIds(nsState).has("P2-001") && !protectedBranchIds(nsState).has("acme--widgets/P2-001"));
+  check("defaultPendingRefillFile: per-mission root, default unchanged", defaultPendingRefillFile("/r/mission/acme--widgets") === "/r/mission/acme--widgets/pending-refill.json" && defaultPendingRefillFile().endsWith(join(".opencode-remote", "pilot", "pending-refill.json")));
+  check("gateFailFile: per-mission root, id charset still enforced", gateFailFile("/r/mission/k", "P2-001") === "/r/mission/k/gate-fail/P2-001.json" && gateFailFile("/r", "../x") === null);
+
+  // starvation breaker (hardening b)
+  const st = loadState("/nope/state.json");
+  const key = "acme--widgets/P2-009";
+  check("infra streak: same kind accumulates 1,2,3", recordTaskInfraStreak(st, key, "network") === 1 && recordTaskInfraStreak(st, key, "network") === 2 && recordTaskInfraStreak(st, key, "network") === 3 && st.infraStreaks?.[key]?.n === 3);
+  check("infra streak: threshold is 3 consecutive identical failures", INFRA_STREAK_HARD_FAIL === 3 && !infraStreakExhausted(2) && infraStreakExhausted(3) && infraStreakExhausted(4));
+  check("infra streak: a DIFFERENT kind restarts at 1 (signal = identical failure repeating)", recordTaskInfraStreak(st, key, "timeout") === 1 && st.infraStreaks?.[key]?.kind === "timeout");
+  check("infra streak: per task key — another task starts at 1", recordTaskInfraStreak(st, "acme--widgets/P2-010", "network") === 1 && st.infraStreaks?.[key]?.n === 1);
+  clearTaskInfraStreak(st, key);
+  check("infra streak: cleared by a non-infra outcome; clearing an unknown key is a no-op", st.infraStreaks?.[key] === undefined && (clearTaskInfraStreak(st, "nope"), true));
+  check("infra starvation reason: names the kind, the count and the hard-failure decision (no secrets)", /"network" failed 3x in a row/.test(infraStarvationReason("network", 3)) && infraStarvationReason("network", 3).includes("hard failure"));
+  // streaks survive the midnight rollover and garbage is dropped on load
+  const sdir = mkdtempSync(join(tmpdir(), "ocr-streak-"));
+  try {
+    const sf = join(sdir, "state.json");
+    writeFileSync(sf, JSON.stringify({ date: "2000-01-01", tasks: 9, taskAttempts: {}, infraStreaks: { a: { kind: "network", n: 2 }, b: { kind: "", n: 1 }, c: { kind: "spawn", n: 0 }, d: "x", e: { kind: "timeout", n: 1.7 } } }));
+    const loaded = loadState(sf);
+    check("infra streaks: survive the daily rollover, garbage/zero/empty entries dropped, fractional floored", loaded.tasks === 0 && JSON.stringify(loaded.infraStreaks) === JSON.stringify({ a: { kind: "network", n: 2 }, e: { kind: "timeout", n: 1 } }));
+  } finally {
+    rmSync(sdir, { recursive: true, force: true });
+  }
 }
 
 // --- P2-170: gatekeeper-verify — the packaged app must survive Gatekeeper before upload

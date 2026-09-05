@@ -126,9 +126,18 @@ próprio pilot; apontar o pipeline para um repo externo quebraria o gate (os
 `scripts/*.ts` não existem lá) ou — pior — executaria scripts arbitrários do
 `package.json` alheio (superfície P1-056). O gate resolve um **perfil por
 workspace** (`gateprofile.ts` no judge assinado, espelhado em
-`apps/pilot/src/gateprofile.ts` para o preflight), por detecção de stack, sem
-executar nada do alvo: um checkout do pilot (nome `opencode-remote` ou a
-própria árvore `apps/pilot/src/`) roda a bateria completa de sempre; um repo
+`apps/pilot/src/gateprofile.ts` para o preflight), sem executar nada do alvo:
+o **checkout de produção do operador** (`OCR_PILOT_REPO` / caminho padrão) e
+os clones de slot dele (`pilot/repo-N`) rodam a bateria completa de sempre —
+o perfil `pilot` é pinado **pelo caminho do workspace**
+(`isPilotCheckoutPath`), nunca por campo do `package.json` (missão v2,
+achado a: um repo externo chamado `opencode-remote` ganhava a bateria
+completa e os `scripts/*.ts` dele rodavam como nossas invariants — conteúdo
+de repo é do atacante, o caminho é do scheduler; um clone de missão vive em
+`pilot/mission/<key>/repo-N`, cujo pai não é o slot root). **Re-pin do
+judge**: a cópia pinada em `~/.opencode-remote/judge/src/gateprofile.ts`
+ainda usa a detecção por nome/árvore — o operador espelha a regra de caminho
+lá e re-pina (a bateria unit cobre só o espelho in-repo). Um repo
 externo (missão self-serve, abaixo) roda o **perfil genérico**: apenas os
 scripts `typecheck`, `build`, `test` e `lint` que existirem no `package.json`
 dele (`buildGenericProfile`), rodando do próprio repo alvo, cada step com
@@ -144,19 +153,40 @@ cwd no **worktree sandbox do próprio repo alvo** (o clone do slot), nunca na
 
 ### Missão self-serve (definida no chat)
 
-O usuário define a missão da frota **digitando no chat** — texto livre e/ou
-link de repo do GitHub. Nenhum formulário: as instruções injetadas nas
-sessões do daemon (`sessionctx.ts`, marker `ocr-mission-protocol`; para este
-repo, o `AGENTS.md`) ensinam o agente a gravar ele mesmo
-`~/.opencode-remote/mission.json`:
+O usuário define a missão da frota **digitando no chat** — do jeito que
+quiser: vago ("conserta o bug do meu app"), só um link, ou detalhado
+(pedido + repo + preferências de modelo). Nenhum formulário: as instruções
+injetadas nas sessões do daemon (`sessionctx.ts`, marker
+`ocr-mission-protocol`; para este repo, o `AGENTS.md`) ensinam o agente a
+**compor ele mesmo o arquivo completo** (v2: "o usuário pede do jeito dele,
+o agente compõe o spec") em `~/.opencode-remote/mission.json`:
 
 ```json
-{ "v": 1, "prompt": "o que o usuário quer", "repoUrl": "https://github.com/<org>/<repo>.git", "setAt": "<ISO>" }
+{ "v": 1, "prompt": "o que o usuário quer", "repoUrl": "https://github.com/<org>/<repo>.git",
+  "models": { "builder": "glm52/glm-5.2", "reviewer": "anthropic/claude-opus-4-1" }, "setAt": "<ISO>" }
 ```
 
-`prompt` e `repoUrl` são opcionais (pelo menos um); `repoUrl` só vale no
-formato `https://github.com/<org>/<repo>(.git)?`. Escrita atômica 0600
-(tmp + `chmod 600` + `mv`, o mesmo contrato do `daemon.json`). O pilot
+Regras de composição (protocolo): qualquer link do GitHub nas palavras do
+usuário (no meio da frase, com `/tree/...`, sem `https`) é deduzido e
+normalizado para `repoUrl`; sem link, o campo é omitido e a frota trabalha no
+repo dela mesma. `prompt` é uma afirmação **fiel e autocontida** da intenção
+(pode ser uma frase só; o agente nunca inventa requisitos que o usuário não
+disse; só link → sem prompt). `prompt` e `repoUrl` são opcionais (pelo menos
+um); `repoUrl` só vale no formato `https://github.com/<org>/<repo>(.git)?`.
+**`models` (opcional, v2)**: `{ "<papel>": "<provider/modelo>" }` com papel em
+`strategist | researcher | builder | reviewer | scribe` (subconjunto
+permitido; papel desconhecido ou id malformado **invalida o arquivo inteiro**
+— `parseMissionModels`, fail-closed). O id é o que `opencode models` imprime;
+o protocolo manda o agente só gravar id que verificou nessa saída e listar as
+opções quando o usuário pergunta ("quais modelos?"). Escrita atômica 0600
+(tmp + `chmod 600` + `mv`, o mesmo contrato do `daemon.json`). **Encerrar a
+missão** ("missão limpa", "encerrar missão", "voltar pro repo de vocês"): o
+agente apaga o arquivo (`rm -f`); o card do Mission Control tem a ação
+"Encerrar missão" (confirmação em dois cliques) que chama `DELETE
+/api/mission` (mesmo gate Bearer/cookie dos outros `/api`, `removeMissionFile`
+— unlink atômico, arquivo ausente já é o estado desejado); nos dois casos o
+drift check do pilot vê o hash sumir e se reinicia no modo de auto-evolução.
+O pilot
 (`apps/pilot/src/mission.ts`) lê o arquivo no boot e guarda o **SHA-256 do
 texto**; a cada ciclo do loop o hash é relido e uma mudança (arquivo novo,
 alterado ou removido) entra no **mesmo caminho de self-reload** do drift de
@@ -170,9 +200,40 @@ a fila do `origin/main` **dele** e roda builders/reviewers/judge lá (perfil
 genérico acima). Um repo externo **nunca dispara deploy**: nada de produção
 roda a partir dele, então reset/build/kickstart dos nossos serviços seria só
 uma queda. O Mission Control (aba Linha do tempo) mostra a missão ativa
-(texto + origem prompt/repo + quando foi definida), somente leitura; o
-`GET /api/pilot-mission` devolve `spec` e usa o `prompt` dela como `mission`
-do dashboard quando presente.
+(texto + origem prompt/repo + quando foi definida + a linha `modelos:
+papel=modelo` quando há override), somente leitura fora da ação de
+encerrar; o `GET /api/pilot-mission` devolve `spec` e usa o `prompt` dela
+como `mission` do dashboard quando presente.
+
+**Dispatch com `models` (v2)**: `runAgentForRole` consulta
+`mission.models` **antes** da tabela de tiers (P1-059) para os papéis de
+missão. O id só é usado quando o **catálogo vivo** do opencode
+(`GET /provider`, `modelcatalog.ts`, cache de 10 min por processo) o lista;
+aí o papel roda `opencode run --model <provider/modelo>` (um argv, sem
+shell) e o log registra `agent-dispatch` com `tier:"mission"`. Id
+desconhecido, indisponível ou catálogo inalcançável ⇒ `mission-model-fallback`
+(warn) e o papel segue como antes (tier B se configurado para o strategist,
+senão tier A) — o slot nunca cai por modelo. `reviewer` cobre os dois
+reviewers adversariais; o árbitro de escalada continua no
+`reviewerEscalation` do tier B; o planner não é papel de missão.
+
+**Isolamento de estado por missão (v2, achado c)**: `gate-fail/<ID>.json` e
+`pending-refill.json` vivem sob o **state root da missão**
+(`PilotConfig.stateRoot`: `pilot/` para este repo, `pilot/mission/<key>/`
+para um repo externo) e os contadores `taskAttempts`/`specFails` do
+`state.json` usam a chave `<key>/<ID>` (`attemptsKey`) numa missão externa —
+um `P2-001` alheio nunca herda o carryover, o refill ou o breaker do nosso.
+
+**Breaker de inanição (v2, achado b)**: falhas de infra são retry grátis
+(P1-074), mas a **mesma** falha repetindo na **mesma** task (repo externo
+somente-leitura ⇒ `git push`/`gh pr create` como `infra:"network"` para
+sempre) virava loop infinito de builder rounds com zero attempts queimados.
+`state.infraStreaks[<key>]` conta ocorrências consecutivas do mesmo kind
+(`recordTaskInfraStreak`; qualquer resultado não-infra zera); na terceira
+(`INFRA_STREAK_HARD_FAIL`) o resultado é **falha dura**: evento
+`infra-starvation`, amostra de febre, `taskAttempts` cravado no cap (a task
+sai da fila mesmo que o push do bloqueio falhe no mesmo remote morto) e
+`## Blocked` com o motivo (`infraStarvationReason`) + lição de falha.
 
 O gate também roda a invariant **anti module-shadowing** (P2-014): o diff de
 merge (`origin/main...HEAD`) não pode introduzir na **raiz do workspace**

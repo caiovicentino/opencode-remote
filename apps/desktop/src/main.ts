@@ -444,12 +444,16 @@ async function onReady(): Promise<void> {
   // (POST), nothing else.
   ipcMain.handle("app:daemonApi", async (_e, req: { path?: string; method?: string; body?: unknown }) => {
     if (!req || typeof req.path !== "string") return null;
-    const method = req.method === "POST" ? "POST" : "GET";
+    const method = req.method === "POST" ? "POST" : req.method === "DELETE" ? "DELETE" : "GET";
     const u = new URL(req.path, "http://127.0.0.1");
+    // mission v2: the read-only mission card (GET pilot-mission) and the
+    // "end mission" action (DELETE /api/mission) join the allowlist
     const okPath =
       method === "GET"
-        ? /^\/api\/pilot-(forensic(\/timeline)?|shot)$/.test(u.pathname)
-        : /^\/api\/pilot-takeover$/.test(u.pathname);
+        ? /^\/api\/pilot-(forensic(\/timeline)?|shot|mission)$/.test(u.pathname)
+        : method === "DELETE"
+          ? /^\/api\/mission$/.test(u.pathname)
+          : /^\/api\/pilot-takeover$/.test(u.pathname);
     if (!okPath) return null;
     try {
       const stateFile = join(homedir(), ".opencode-remote", "daemon.json");

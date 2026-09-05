@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
-import { missionDrifted, missionWorkspaceKey, readMission, type MissionSpec } from "./mission";
+import { attemptsKey, missionDrifted, missionWorkspaceKey, readMission, type MissionSpec } from "./mission";
 import { emit } from "./events";
 import { agentStream, exec, runAgent, runAgentForRole } from "./runner";
 import { nowLocalISO } from "./log";
@@ -25,10 +25,14 @@ import {
   enterAuditMode,
   feverReason,
   formatDiagnosis,
+  clearTaskInfraStreak,
+  infraStarvationReason,
+  infraStreakExhausted,
   recordBlockEvent,
   recordCycle,
   recordInfraFailure,
   recordPipelineCrash,
+  recordTaskInfraStreak,
   resultInfraKind,
 } from "./audit";
 import { apiHealthy } from "./runner";
@@ -63,6 +67,11 @@ let activeMission: MissionSpec | null = null;
  * gate run there, but no production service is served from it — the staged
  * deploy (reset + build + launchctl kickstart of OUR services) is skipped. */
 let foreignMission = false;
+/** Mission v2 (hardening c): per-mission state root + key — pilot/ and bare
+ * task ids for this repo, pilot/mission/<key>/ and `<key>/<id>` counters for a
+ * foreign mission. Set once at boot (a mission change restarts the process). */
+let stateRoot = join(homedir(), ".opencode-remote", "pilot");
+let activeMissionKey: string | null = null;
 /** Shared runtime counters — mutated by the dispatcher and by slot workers.
  * The single-threaded event loop keeps mutations atomic; the dispatcher only
  * reloads from disk while no slot is running (so in-flight counters are never
@@ -89,7 +98,7 @@ async function main() {
     log("warn", "mission.json present but invalid — default mission kept (expects {v:1, prompt and/or repoUrl, setAt})");
   }
   if (activeMission) {
-    log("info", "mission loaded", { repoUrl: activeMission.repoUrl, prompt: activeMission.prompt?.slice(0, 160), setAt: activeMission.setAt });
+    log("info", "mission loaded", { repoUrl: activeMission.repoUrl, prompt: activeMission.prompt?.slice(0, 160), models: activeMission.models, setAt: activeMission.setAt });
     emit("phase", { task: "mission", phase: "loaded", ok: true, detail: missionDetail(activeMission) });
   }
   const missionKey = missionWorkspaceKey(activeMission);
@@ -104,6 +113,14 @@ async function main() {
   const slotRoot = missionKey
     ? join(homedir(), ".opencode-remote", "pilot", "mission", missionKey)
     : join(homedir(), ".opencode-remote", "pilot");
+  // mission v2: per-mission state isolation (gate-fail/, pending-refill.json,
+  // namespaced attempt counters) + per-role model pins — all derived here,
+  // BEFORE the slot configs are cloned from cfg
+  stateRoot = slotRoot;
+  activeMissionKey = missionKey;
+  cfg.stateRoot = slotRoot;
+  cfg.missionKey = missionKey ?? undefined;
+  cfg.missionModels = activeMission?.models;
   // P3-101: the sha this process booted on — the loop's stale-process self-heal
   // exits whenever the production repo's HEAD moves past it (idle + no deploy).
   const bootHead = exec("git rev-parse HEAD", { cwd: cfg.repo, allowFail: true }).output.trim() || undefined;
@@ -416,7 +433,7 @@ async function main() {
       writeSandboxConfig(aux.workspace); // headless runs abort without sandbox perms
       // P1-037: a refill whose push failed is persisted outside the worktree
       // and re-landed here — the sync reset above must never eat drafted tasks.
-      const pendingFile = defaultPendingRefillFile();
+      const pendingFile = defaultPendingRefillFile(stateRoot);
       const pending = readPendingRefill(pendingFile);
       if (pending) {
         const reland = await relandPendingRefill(aux.workspace, pendingFile, auxPushIo(aux.workspace));
@@ -449,7 +466,7 @@ async function main() {
         // P2-031: findings and tail must not repeat the same string in the
         // failure lesson — the step name summarizes, the tail carries detail
         const gate = lastGateFail(t.id);
-        await blockAndPush(idle, state, t, state.taskAttempts[t.id] ?? budgetsFor(t.size).attempts, gate?.step ? `kept failing at step "${gate.step}"` : "max attempts reached", false);
+        await blockAndPush(idle, state, t, state.taskAttempts[attemptsKey(activeMissionKey, t.id)] ?? budgetsFor(t.size).attempts, gate?.step ? `kept failing at step "${gate.step}"` : "max attempts reached", false);
         blockedAny = true;
       }
       if (blockedAny) {
@@ -479,7 +496,7 @@ async function runDoctorPass(st: PilotState): Promise<void> {
   const api = await apiHealthy();
   const diag = buildDiagnosis({
     lessonsFile: defaultLessonsFile(),
-    gateFailDir: join(homedir(), ".opencode-remote/pilot/gate-fail"),
+    gateFailDir: join(stateRoot, "gate-fail"),
     attempts: st.taskAttempts,
     api,
   });
@@ -533,11 +550,13 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
     log("info", "lesson impact", { task: task.id, ...impact });
     state.tasks++;
     let blockedAttempts: number | null = null;
+    const taskKey = attemptsKey(activeMissionKey, task.id);
     if (result.ok) {
       recordCycle(state, true, task.id); // P2-032 fever window (P2-063: attributed to the task)
-      delete state.taskAttempts[task.id]; // gate passed — breaker reset
+      delete state.taskAttempts[taskKey]; // gate passed — breaker reset
       // P2-137: the spec-format free-retry franchise resets on merge
-      if (state.specFails) delete state.specFails[task.id];
+      if (state.specFails) delete state.specFails[taskKey];
+      clearTaskInfraStreak(state, taskKey);
     } else {
       // P1-074: infra noise (API down, spawn error, timeout without output)
       // burns no attempt, adds no fever sample and blocks nothing — it counts
@@ -546,10 +565,31 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
       // detail text embeds findings and may legitimately mention infra words)
       const infra = resultInfraKind(result);
       if (infra) {
-        const wake = recordInfraFailure(state);
-        log("warn", "pipeline infra-failure", { task: task.id, kind: infra, infraFails: state.infraFails });
-        if (wake) await runDoctorPass(state);
+        // mission v2 (hardening b): the SAME infra kind repeating on the same
+        // task (read-only foreign remote → push/PR "network" forever) is not
+        // noise anymore — at the threshold it is a hard failure: the task is
+        // blocked with a clear reason and the queue moves on instead of
+        // looping builder rounds with zero attempts burned.
+        const streak = recordTaskInfraStreak(state, taskKey, infra);
+        if (infraStreakExhausted(streak)) {
+          clearTaskInfraStreak(state, taskKey);
+          const reason = infraStarvationReason(infra, streak);
+          log("error", "pipeline infra-starvation", { task: task.id, kind: infra, streak, detail: result.detail.slice(0, 200) });
+          emit("phase", { task: task.id, phase: "infra-starvation", ok: false, detail: reason });
+          recordCycle(state, false, task.id);
+          // pin the counter at the cap FIRST: even if the block landing fails
+          // (the same dead remote), overCap keeps the task out of every pick
+          state.taskAttempts[taskKey] = Math.max(state.taskAttempts[taskKey] ?? 0, taskCfg.maxAttemptsPerTask);
+          const attempts = state.taskAttempts[taskKey]!;
+          await blockAndPush(taskCfg, state, task, attempts, reason, true);
+          blockedAttempts = attempts;
+        } else {
+          const wake = recordInfraFailure(state);
+          log("warn", "pipeline infra-failure", { task: task.id, kind: infra, streak, infraFails: state.infraFails });
+          if (wake) await runDoctorPass(state);
+        }
       } else {
+        clearTaskInfraStreak(state, taskKey);
         recordCycle(state, false, task.id);
         blockedAttempts = await tripCircuitBreaker(taskCfg, state, task, result.detail);
       }
@@ -662,7 +702,7 @@ function launchDeploy(cfg: PilotConfig, task: Task, sha: string, touchedUi: bool
 }
 
 function overCap(task: Task): boolean {
-  return TASK_ID_RE.test(task.id) && isOverCap(state.taskAttempts[task.id], task.size);
+  return TASK_ID_RE.test(task.id) && isOverCap(state.taskAttempts[attemptsKey(activeMissionKey, task.id)], task.size);
 }
 
 /** One-shot validation mode used by the eval battery. */
@@ -827,7 +867,7 @@ async function runStrategist(cfg: PilotConfig, ready: Task[] = []) {
     } else if (result === "failed") {
       // P1-037: persist the refill outside the worktree — the next
       // syncWorkspace reset --hard would otherwise destroy it silently.
-      const saved = savePendingRefill(defaultPendingRefillFile(), lines, message);
+      const saved = savePendingRefill(defaultPendingRefillFile(stateRoot), lines, message);
       log("warn", saved ? "refill saved as pending — relanding next idle cycle" : "pending refill save failed", { lines: lines.length });
       emit("phase", { task: "strategist", phase: "refill", ok: false, detail: saved ? `pending refill saved (${lines.length} lines)` : "pending refill save failed" });
     } else {
@@ -846,8 +886,9 @@ async function runStrategist(cfg: PilotConfig, ready: Task[] = []) {
  * supervisor once. Returns the attempt count when the breaker tripped, else null.
  */
 async function tripCircuitBreaker(cfg: PilotConfig, st: PilotState, task: Task, detail: string): Promise<number | null> {
-  if (!recordTaskFailure(st, task.id, cfg.maxAttemptsPerTask)) return null;
-  const attempts = st.taskAttempts[task.id] ?? 0;
+  const key = attemptsKey(cfg.missionKey, task.id);
+  if (!recordTaskFailure(st, key, cfg.maxAttemptsPerTask)) return null;
+  const attempts = st.taskAttempts[key] ?? 0;
   await blockAndPush(cfg, st, task, attempts, detail, true);
   return attempts;
 }
@@ -878,7 +919,7 @@ async function blockAndPush(cfg: PilotConfig, st: PilotState, task: Task, attemp
     },
   });
   if (push === "pushed") {
-    delete st.taskAttempts[task.id];
+    delete st.taskAttempts[attemptsKey(cfg.missionKey, task.id)];
     recordBlockEvent(st); // P2-032: block-burst trigger watches landings on main
     // P2-031 failure scribe: one structured lesson per landed block (recording
     // only after the push lands keeps retry cycles from duplicating entries).
@@ -912,7 +953,7 @@ function lastGateFail(taskId: string): { step?: string; tail?: string } | undefi
   if (!TASK_ID_RE.test(taskId)) return undefined;
   try {
     const prev = JSON.parse(
-      readFileSync(join(homedir(), ".opencode-remote/pilot/gate-fail", `${taskId}.json`), "utf8"),
+      readFileSync(join(stateRoot, "gate-fail", `${taskId}.json`), "utf8"),
     ) as { step?: string; tail?: string };
     return { step: prev.step, tail: prev.tail };
   } catch {}
@@ -930,7 +971,9 @@ function shq(s: string): string {
 /** One-line mission summary for logs/events — prompt truncated, never secrets. */
 function missionDetail(spec: MissionSpec): string {
   const target = spec.repoUrl ?? "this repo";
-  return spec.prompt ? `${target} — ${spec.prompt.slice(0, 120)}` : target;
+  const base = spec.prompt ? `${target} — ${spec.prompt.slice(0, 120)}` : target;
+  const models = spec.models ? Object.entries(spec.models).map(([r, m]) => `${r}=${m}`).join(",") : "";
+  return models ? `${base} [models: ${models}]` : base;
 }
 
 /**

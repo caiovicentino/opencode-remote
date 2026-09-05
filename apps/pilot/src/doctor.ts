@@ -22,6 +22,7 @@ import { exec } from "./runner";
 import { emit } from "./events";
 import { notifySupervisor } from "./notify";
 import { loadBacklog, parseBacklog } from "./backlog";
+import { bareTaskId } from "./mission";
 import {
   loadConfig,
   loadState,
@@ -335,9 +336,12 @@ export function doctorLog(level: string, msg: string, data?: unknown): void {
   console.log(JSON.stringify({ ts: nowLocalISO(), level, msg, data }));
 }
 
-/** Live circuit-breaker counters: branches of tasks under retry are preserved. */
-function protectedBranchIds(st: PilotState): Set<string> {
-  return new Set(Object.entries(st.taskAttempts ?? {}).filter(([, n]) => n > 0).map(([id]) => id));
+/** Live circuit-breaker counters: branches of tasks under retry are preserved.
+ * Mission v2: counters of a foreign mission are keyed `<org--repo>/<id>` —
+ * the branch is still `pilot/<id>`, so protection matches on the bare id
+ * (conservative: a same-named task of the other repo is protected too). */
+export function protectedBranchIds(st: PilotState): Set<string> {
+  return new Set(Object.entries(st.taskAttempts ?? {}).filter(([, n]) => n > 0).map(([key]) => bareTaskId(key)));
 }
 
 /**

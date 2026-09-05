@@ -35,19 +35,28 @@ export const MISSION_MARKER = "ocr-mission-protocol";
 /** Where the chat agent writes the fleet mission (see apps/pilot/src/mission.ts). */
 export const MISSION_FILE_HINT = "~/.opencode-remote/mission.json";
 
+/** Fleet roles a mission may pin to a model (mirror of apps/pilot/src/mission.ts). */
+export const MISSION_MODEL_ROLES_HINT = "strategist|researcher|builder|reviewer|scribe";
+
 /**
- * Self-serve mission convention: the user defines the fleet's mission by
- * typing in the chat (plain words and/or a GitHub repo link) and the agent
- * itself writes mission.json — no form, no separate pane. Constant bytes like
- * the artifacts block (P1-096): no per-session datum.
+ * Self-serve mission convention (v2 — "the user asks their way, the agent
+ * composes the spec"): the user states the mission however they like (vague,
+ * a bare link, or prompt + repo + preferences) and the agent itself composes
+ * the COMPLETE mission.json — no form, no separate pane. The same block also
+ * teaches the model pins (verified against `opencode models`) and the clear
+ * path (delete the file). Constant bytes like the artifacts block (P1-096):
+ * no per-session datum.
  */
 export function buildMissionPrompt(): string {
   return [
     `[${MISSION_MARKER}] Missão da frota autônoma (vale para toda a sessão):`,
-    `- Quando o usuário definir ou mudar a missão da frota (em palavras e/ou com um link de repo do GitHub), grave você mesmo ${MISSION_FILE_HINT} com exatamente este JSON: {"v":1,"prompt":"<o que o usuário quer, nas palavras dele>","repoUrl":"https://github.com/<org>/<repo>.git","setAt":"<data-hora ISO 8601 de agora>"}.`,
-    `- repoUrl é opcional e só vale no formato https://github.com/<org>/<repo>(.git)? — valide antes de gravar; sem link válido, omita o campo. prompt é opcional quando há repoUrl. Nunca grave tokens, chaves ou segredos.`,
-    `- Escrita atômica e privada: grave em ${MISSION_FILE_HINT}.tmp, rode chmod 600 nele e depois mv por cima de ${MISSION_FILE_HINT}.`,
-    `- Confirme ao usuário em uma frase curta que a frota pega a missão no próximo boot.`,
+    `- O usuário define ou muda a missão da frota do jeito que quiser — vago ("conserta o bug do meu app"), só um link, ou detalhado (pedido + repo + preferências). Você compõe sozinho o ${MISSION_FILE_HINT} COMPLETO a partir do que ele disse, com este JSON: {"v":1,"prompt":"<intenção do usuário, fiel e autocontida>","repoUrl":"https://github.com/<org>/<repo>.git","models":{"<papel>":"<provider/modelo>"},"setAt":"<data-hora ISO 8601 de agora>"}. Campos ausentes são omitidos, nunca inventados.`,
+    `- repoUrl: se aparecer QUALQUER link do GitHub nas palavras do usuário (no meio da frase, com /tree/..., sem https, com .git ou barra final), deduza org/repo e normalize para https://github.com/<org>/<repo>(.git)? — só esse formato vale. Sem link, omita o campo: a frota trabalha no repo dela mesma.`,
+    `- prompt: uma afirmação fiel e autocontida do que o usuário quer (quem lê só o arquivo, sem o chat, precisa entender) — pode ser uma frase só. Nunca invente requisitos, critérios ou escopo que ele não disse; se só houver um link, omita o prompt. Pelo menos um de prompt/repoUrl é obrigatório.`,
+    `- models (opcional): papel -> id de modelo; papéis válidos: ${MISSION_MODEL_ROLES_HINT} (subconjunto permitido; qualquer outro papel invalida o arquivo inteiro). Só grave um id que você verificou na saída de \`opencode models\` (formato provider/modelo); quando o usuário perguntar quais modelos existem ("quais modelos?"), rode \`opencode models\` e liste as opções. Papel sem modelo usa o padrão da frota; sem pedido de modelo, omita o campo.`,
+    `- Nunca grave tokens, chaves ou segredos. Escrita atômica e privada: grave em ${MISSION_FILE_HINT}.tmp, rode chmod 600 nele e depois mv por cima de ${MISSION_FILE_HINT}.`,
+    `- Encerrar a missão ("missão limpa", "encerrar missão", "voltar pro repo de vocês"): apague o arquivo com rm -f ${MISSION_FILE_HINT} — a frota volta ao modo de auto-evolução do repo dela no próximo boot.`,
+    `- Confirme ao usuário em uma frase curta que a frota pega a missão (ou o encerramento) no próximo boot.`,
   ].join("\n");
 }
 

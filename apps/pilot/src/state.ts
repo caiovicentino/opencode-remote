@@ -3,6 +3,8 @@ import { join, dirname } from "node:path";
 import { nowLocalISO } from "./log";
 import { homedir } from "node:os";
 import type { TaskUsd } from "./pricing";
+import type { MissionModels } from "./mission";
+import type { InfraFailureKind } from "./audit";
 
 export interface PilotConfig {
   repo: string; // production checkout (runs the services)
@@ -21,6 +23,16 @@ export interface PilotConfig {
   corpusEveryNMerges: number;
   /** P1-059: tiered cognition — optional; absent block = everything tier A. */
   models?: ModelsConfig;
+  /** Mission v2: per-role model pins from mission.json (`models`); consulted
+   * before the tier table, verified against the live catalog at dispatch. */
+  missionModels?: MissionModels;
+  /** Mission v2 (hardening c): workspace key of a foreign mission
+   * (`org--repo`) — namespaces taskAttempts/specFails; undefined = this repo. */
+  missionKey?: string;
+  /** Mission v2 (hardening c): root of the per-mission state files
+   * (gate-fail/, pending-refill.json) — pilot/ for this repo,
+   * pilot/mission/<key>/ for a foreign mission. */
+  stateRoot: string;
 }
 
 // ── P1-059: tiered cognition (strong models plan/judge, flash executes) ──────
@@ -82,6 +94,7 @@ export const DEFAULTS: PilotConfig = {
   monitorMin: 10,
   digest: true,
   corpusEveryNMerges: 5,
+  stateRoot: join(homedir(), ".opencode-remote", "pilot"),
 };
 
 /** P1-006: scheduler slot count — 1 (serial, default) up to a hard cap of 8. */
@@ -106,6 +119,11 @@ export function loadConfig(): PilotConfig {
       const models = normalizeModels(cfg.models);
       if (models) cfg.models = models;
       else delete cfg.models;
+      // mission v2: these are derived by the scheduler from mission.json,
+      // never read from pilot.json (a stale key there must not leak in)
+      cfg.stateRoot = DEFAULTS.stateRoot;
+      delete cfg.missionKey;
+      delete cfg.missionModels;
       return cfg;
     }
   } catch {}
@@ -161,6 +179,11 @@ export interface PilotState {
    * infra (free retry); survives the midnight rollover — otherwise the free
    * spec-format retry would be reborn every day. Cleared when the task merges. */
   specFails?: Record<string, number>;
+  /** Mission v2 (hardening b): task key → consecutive same-kind infra failures.
+   * Reset by any non-infra outcome of the task; at INFRA_STREAK_HARD_FAIL the
+   * streak is a hard failure (read-only remote, dead gh) instead of an
+   * infinite free reschedule. Survives midnight like taskAttempts. */
+  infraStreaks?: Record<string, { kind: InfraFailureKind; n: number }>;
   redteamLast?: string;
   researchLast?: string;
   /** P3-052: last YYYY-MM-DD the nightly explorer ran (once per day). */
@@ -257,6 +280,19 @@ function normalizeContextPressure(
   return Object.keys(out).length ? out : undefined;
 }
 
+/** Mission v2: tolerant parse of the per-task infra streaks — garbage dropped. */
+function normalizeInfraStreaks(v: unknown): Record<string, { kind: InfraFailureKind; n: number }> {
+  const out: Record<string, { kind: InfraFailureKind; n: number }> = {};
+  if (!v || typeof v !== "object") return out;
+  for (const [task, s] of Object.entries(v as Record<string, unknown>)) {
+    const m = s as { kind?: unknown; n?: unknown } | null;
+    if (!m || typeof m !== "object" || typeof m.kind !== "string" || !m.kind) continue;
+    if (typeof m.n !== "number" || !Number.isFinite(m.n) || m.n <= 0) continue;
+    out[task] = { kind: m.kind as InfraFailureKind, n: Math.floor(m.n) };
+  }
+  return out;
+}
+
 /** P1-075: tolerant parse of the lesson-impact cohorts — garbage → undefined. */
 function normalizeLessonImpact(v: unknown): LessonImpact | undefined {
   if (!v || typeof v !== "object") return undefined;
@@ -290,6 +326,7 @@ export function loadState(file = STATE_FILE): PilotState {
             Object.entries(s.specFails as Record<string, unknown>).filter(([, v]) => typeof v === "number" && Number.isFinite(v)),
           ) as Record<string, number>)
         : {},
+      infraStreaks: normalizeInfraStreaks(s.infraStreaks),
       cycles: Array.isArray(s.cycles) ? s.cycles : [],
       blockEvents: Array.isArray(s.blockEvents) ? s.blockEvents.filter((t) => typeof t === "number") : [],
       auditMode: normalizeAudit(s.auditMode),

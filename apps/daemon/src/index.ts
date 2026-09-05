@@ -100,7 +100,7 @@ import {
 // P2-045: dashboard v2 metrics — aggregations shared with the pilot's eval battery
 import { avgPhaseDurations, burnDown, countFailSteps, rollbackHealthAlert, type HistoryEntry } from "../../pilot/src/metrics";
 import { PRICE_SOURCE_LABEL } from "../../pilot/src/pricing";
-import { readMission } from "../../pilot/src/mission";
+import { readMission, removeMissionFile } from "../../pilot/src/mission";
 import { emit } from "../../pilot/src/events";
 import type { PilotEvent } from "../../pilot/src/events";
 
@@ -2639,6 +2639,21 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
         legacy = (JSON.parse(readFileSync(file, "utf8")) as { mission?: string }).mission ?? "";
       } catch {}
       send(200, { mission: spec?.prompt ?? legacy, spec });
+      return true;
+    }
+    // DELETE /api/mission — mission v2 clear path: remove mission.json (atomic
+    // unlink) so the pilot's drift check self-restarts back to self-improvement
+    // mode. Same Bearer/cookie gate as every /api route (authorized() above);
+    // a missing file is already the desired state (removed:false, still 200).
+    if (seg[1] === "mission" && !seg[2] && req.method === "DELETE") {
+      try {
+        const r = removeMissionFile();
+        log("info", "mission cleared via api", r);
+        audit("mission.clear", r);
+        send(200, { ok: true, ...r });
+      } catch (err) {
+        send(500, { error: String(err instanceof Error ? err.message : err) });
+      }
       return true;
     }
     // GET /api/pilot-events — dashboard feed: state, heartbeat freshness, event tail

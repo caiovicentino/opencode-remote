@@ -2945,6 +2945,22 @@ button.desk-new:hover:not(:disabled) {
   font-size: 0.66rem;
   overflow-wrap: anywhere;
 }
+/* Mission v2: the single "end mission" action — plain button, no motion
+   (auditoria surface; prefers-reduced-motion has nothing to disable here). */
+.mission-active-actions {
+  margin-top: var(--space-2);
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+.mission-active-actions button {
+  font-size: 0.7rem;
+}
+.mission-active-status {
+  margin: var(--space-2) 0 0;
+  font-size: 0.7rem;
+  color: var(--muted);
+}
 .mission-timeline {
   padding-top: var(--space-2);
 }

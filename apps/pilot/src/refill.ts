@@ -23,9 +23,12 @@ export interface PendingRefill {
   ts: string;
 }
 
-/** Lives outside every worktree, so no `reset --hard`/`git clean` can touch it. */
-export function defaultPendingRefillFile(): string {
-  return join(homedir(), ".opencode-remote", "pilot", "pending-refill.json");
+/** Lives outside every worktree, so no `reset --hard`/`git clean` can touch it.
+ * Mission v2 (hardening c): `root` is the per-mission state root
+ * (pilot/ for this repo, pilot/mission/<key>/ for a foreign mission) so a
+ * refill drafted for one repo is never re-landed on the other. */
+export function defaultPendingRefillFile(root = join(homedir(), ".opencode-remote", "pilot")): string {
+  return join(root, "pending-refill.json");
 }
 
 /** Atomic write (tmp + rename): a crash mid-save never leaves a half-file. */

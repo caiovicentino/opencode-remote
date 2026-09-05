@@ -127,7 +127,7 @@ export async function runForensic(cfg: PilotConfig, st: PilotState): Promise<voi
     console.log(JSON.stringify({ ts: nowLocalISO(), level, msg, data }));
   try {
     const lessons = readRecentFailureLessons(defaultLessonsFile(), 100).map((l) => formatFailureLesson(l)).join("\n");
-    const gateFails = listGateFails(join(homedir(), ".opencode-remote/pilot/gate-fail"));
+    const gateFails = listGateFails(join(cfg.stateRoot ?? join(homedir(), ".opencode-remote/pilot"), "gate-fail"));
     const gitLog = exec("git log --oneline -50", { cwd: cfg.workspace, allowFail: true }).output;
     log("info", "weekly forensic starting", { lessons: lessons ? lessons.split("\n").length : 0, gateFails: gateFails.length });
     const r = await runAgentForRole(

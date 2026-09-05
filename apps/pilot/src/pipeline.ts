@@ -10,6 +10,7 @@ import { clearGuardRejections, raiseGuardAlert } from "./guardalert";
 import { latestUiShot } from "./shot";
 import { defaultVerifiedMergesFile, recordVerifiedMerge } from "./deployguard";
 import { touchHeartbeat, type PilotConfig, type PilotState } from "./state";
+import { attemptsKey } from "./mission";
 import { appendLessonsToWorkspace, pickRelevantLessons, readExperienceFile } from "./experience";
 import { defaultLessonsFile, failureLessonsBlock, readRecentFailureLessons } from "./failureLessons";
 import { captureGateCorpus, CORPUS_COMMANDS, CORPUS_DIR, loadGateCorpus } from "./gate-corpus";
@@ -759,6 +760,7 @@ async function commitLessons(ws: string, id: string, lessons: string[]): Promise
 }
 
 async function runScribe(
+  cfg: Pick<PilotConfig, "missionModels">,
   ws: string,
   t: Task,
   diff: string,
@@ -769,11 +771,12 @@ async function runScribe(
   // come back as TEXT and the runner validates + commits them. The next
   // pipeline start rewrites the full sandbox config (writeSandboxConfig).
   writeAuxSandboxConfig(ws);
-  const out = await runAgent(scribePrompt(t, diff), {
+  const out = await runAgentForRole("scribe", scribePrompt(t, diff), {
     cwd: ws,
     timeoutMin: 10,
     label: `scribe-${t.id}`,
     onStdout: agentStream("scribe"),
+    missionModels: cfg.missionModels,
   });
   trackSession?.(out.sessionId);
   if (!out.output.includes("SCRIBE:DONE")) {
@@ -1029,10 +1032,12 @@ export function codeChanges(nameOnly: string, specFile: string | null): string[]
 /**
  * P1-006: per-task gatekeeper failure file (path-safe: id is TASK_ID_RE-checked).
  * Concurrent slots must not overwrite each other's carryover findings.
+ * Mission v2 (hardening c): lives under the per-mission state root, so a
+ * foreign mission's `P2-001` carryover never feeds our `P2-001` builder.
  */
-function gateFailFile(taskId: string): string | null {
+export function gateFailFile(stateRoot: string, taskId: string): string | null {
   if (!TASK_ID_RE.test(taskId)) return null;
-  return join(homedir(), ".opencode-remote/pilot/gate-fail", `${taskId}.json`);
+  return join(stateRoot, "gate-fail", `${taskId}.json`);
 }
 
 /** Sandbox permissions: agents in the clone get full tool access. Must exist for
@@ -1189,7 +1194,9 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
   // P1-060/P1-036: first attempt starts clean at origin/main; later attempts
   // keep the branch so the previous attempt's committed work survives — the
   // builder continues it instead of restarting from scratch.
-  const attemptNo = state.taskAttempts[t.id] ?? 0;
+  // mission v2 (hardening c): per-task counters are namespaced by mission key
+  const stateKey = attemptsKey(cfg.missionKey, t.id);
+  const attemptNo = state.taskAttempts[stateKey] ?? 0;
   const resumed = setupTaskBranch(ws, t.id, attemptNo);
 
   // sandbox permissions: agents in the clone get full tool access (the real
@@ -1208,7 +1215,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
   let resume: AgentIds | null = null;
   // carry over the last gatekeeper failure for this task, so the builder can
   // fix the exact failing step instead of rediscovering it (per-task file)
-  const failFile = gateFailFile(t.id);
+  const failFile = gateFailFile(cfg.stateRoot, t.id);
   try {
     if (failFile) {
       const prev = JSON.parse(readFileSync(failFile, "utf8")) as { task?: string; tail?: string };
@@ -1331,11 +1338,11 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
         // P2-137: the FIRST spec-format failure of a task is infra (free retry,
         // counted in state.specFails once per pipeline cycle — never per internal
         // attempt); from the 2nd on it is merit exactly like before.
-        const priorSpecFails = state.specFails?.[t.id] ?? 0;
+        const priorSpecFails = state.specFails?.[stateKey] ?? 0;
         const isInfra = specFailureIsInfra(priorSpecFails);
         if (isInfra) {
           if (!state.specFails) state.specFails = {};
-          state.specFails[t.id] = priorSpecFails + 1;
+          state.specFails[stateKey] = priorSpecFails + 1;
         }
         // terminal ok:false so the dashboard doesn't hang on "working" (round-3)
         // P2-137: the phase detail carries the rejection cause (like the
@@ -1423,13 +1430,16 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       { cwd: ws, allowFail: true },
     );
     const conflictBlock = mergeConflictBlock(prMergeable.output?.trim(), t.id);
-    const build = await runAgent(builderPrompt(t, round, findings, lessons, specFile, resume, attemptNo + 1, recap) + conflictBlock, {
+    // mission v2: the mission may pin the builder model (verified against the
+    // live catalog at dispatch; default model otherwise — never a crash)
+    const build = await runAgentForRole("builder", builderPrompt(t, round, findings, lessons, specFile, resume, attemptNo + 1, recap) + conflictBlock, {
       cwd: ws,
       timeoutMin: cfg.taskTimeoutMin,
       label: `builder-${t.id}-r${round}`,
       sessionId: builderSession, // context cache: resume the same session across rounds
       printLogs: true,
       onStdout: stream,
+      missionModels: cfg.missionModels,
     });
     // the recap is consumed by this round's prompt — the carryover must not
     // re-inject it on a later cycle unless the checkpoint fires again
@@ -1594,28 +1604,32 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       // it in the next round. Only the LAST round turns it terminal.
       findings = `${findings}\n${gateFindingBlock(gate.step, gate.tail)}`;
       if (round < cfg.maxReviewRounds) {
-        writeGateFailCarry(t.id, gate.step, gate.tail);
+        writeGateFailCarry(cfg.stateRoot, t.id, gate.step, gate.tail);
         continue;
       }
-      recordGateFail(state, t.id, gate.step, gate.tail);
+      recordGateFail(cfg.stateRoot, state, t.id, gate.step, gate.tail);
       return { ok: false, detail: `gatekeeper rejected at step ${gate.step}: ${gate.tail.slice(-300)}`, ...roundMeta() };
     }
 
     // two adversarial reviewers in parallel, isolated contexts
     emit("phase", { task: t.id, phase: "reviewers" });
     console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "reviewers start", data: { task: t.id, round } }));
+    // mission v2: `models.reviewer` pins BOTH adversarial reviewers (the
+    // tier-B escalation arbiter below keeps its own P1-059 model)
     const [sec, qual] = await Promise.all([
-      runAgent(reviewerPrompt("SECURITY", "crypto, auth, injection, secrets, permission surface", t, reviewDiff, uiShot, null, incrementalFrom), {
+      runAgentForRole("reviewer", reviewerPrompt("SECURITY", "crypto, auth, injection, secrets, permission surface", t, reviewDiff, uiShot, null, incrementalFrom), {
         cwd: ws,
         timeoutMin: cfg.reviewTimeoutMin,
         label: `sec-${t.id}-r${round}`,
         onStdout: stream,
+        missionModels: cfg.missionModels,
       }),
-      runAgent(reviewerPrompt("QUALITY", "regressions, UX, docs, test coverage, complexity", t, reviewDiff, uiShot, specFile, incrementalFrom), {
+      runAgentForRole("reviewer", reviewerPrompt("QUALITY", "regressions, UX, docs, test coverage, complexity", t, reviewDiff, uiShot, specFile, incrementalFrom), {
         cwd: ws,
         timeoutMin: cfg.reviewTimeoutMin,
         label: `qual-${t.id}-r${round}`,
         onStdout: stream,
+        missionModels: cfg.missionModels,
       }),
     ]);
     trackSession(sec.sessionId);
@@ -1728,7 +1742,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       const headMoved = headSha(ws) !== gateSha;
       const dirty = exec("git status --porcelain --untracked-files=no", { cwd: ws, allowFail: true }).output.trim();
       if (headMoved || dirty) {
-        recordGateFail(state, t.id, "tamper", `HEAD moved since the gate: ${headMoved}; tracked worktree dirty: ${Boolean(dirty)}`);
+        recordGateFail(cfg.stateRoot, state, t.id, "tamper", `HEAD moved since the gate: ${headMoved}; tracked worktree dirty: ${Boolean(dirty)}`);
         return { ok: false, detail: "worktree changed after the gate ran — reviews void (tamper)", ...roundMeta() };
       }
       // P1-099: gates run in parallel across slots — the battery is hermetic
@@ -1740,7 +1754,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       emit("phase", { task: t.id, phase: "merge", ok: merged.ok, detail: merged.detail });
       if (merged.ok) {
         // gate passed — the per-task carryover files have no reason to linger
-        const f = gateFailFile(t.id);
+        const f = gateFailFile(cfg.stateRoot, t.id);
         if (f) {
           try {
             rmSync(f);
@@ -1752,7 +1766,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
         // latency must not block other slots) before the pipeline returns
         // (the next pipeline resets this worktree, which would race the agent).
         try {
-          await runScribe(ws, t, diff, trackSession);
+          await runScribe(cfg, ws, t, diff, trackSession);
         } catch (err) {
           console.log(
             JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "scribe crashed", data: { task: t.id, err: String(err).slice(0, 200) } }),
@@ -1796,7 +1810,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
         // P2-031: the carryover file must reflect the REAL last failure — a task
         // burning out at review after an old gate failure would otherwise be
         // blocked with a stale step/tail in its failure lesson
-        recordGateFail(state, t.id, "review", findings);
+        recordGateFail(cfg.stateRoot, state, t.id, "review", findings);
         return { ok: false, detail: `max review rounds reached — findings: ${findings.slice(0, 400)}`, ...roundMeta() };
       }
     }
@@ -2018,13 +2032,13 @@ function logHallucination(task: string, reviewer: string, finding: string, reaso
 }
 
 /** Shared gatekeeper failure path: warn log + per-task carryover file + counter. */
-function recordGateFail(state: PilotState, taskId: string, step: string, tail: string) {
+function recordGateFail(stateRoot: string, state: PilotState, taskId: string, step: string, tail: string) {
   console.log(
     JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "gatekeeper fail", data: { task: taskId, step, tail: tail.slice(-300) } }),
   );
   // P2-045: structured step signal on the events feed — the dashboard failure
   // breakdown aggregates these instead of the operator grepping pilot.log
-  writeGateFailCarry(taskId, step, tail);
+  writeGateFailCarry(stateRoot, taskId, step, tail);
   state.failures++;
 }
 
@@ -2034,9 +2048,9 @@ function recordGateFail(state: PilotState, taskId: string, step: string, tail: s
  * for the builder to fix in the same attempt (no attempt burned), so the
  * terminal failure count must only grow when the gate actually kills one.
  */
-function writeGateFailCarry(taskId: string, step: string, tail: string) {
+function writeGateFailCarry(stateRoot: string, taskId: string, step: string, tail: string) {
   emit("phase", { task: taskId, phase: "gate-fail", ok: false, detail: step });
-  const failFile = gateFailFile(taskId);
+  const failFile = gateFailFile(stateRoot, taskId);
   if (failFile) {
     try {
       mkdirSync(dirname(failFile), { recursive: true });

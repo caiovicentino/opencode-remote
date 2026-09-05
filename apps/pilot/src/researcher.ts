@@ -1,4 +1,4 @@
-import { agentStream, exec, runAgent } from "./runner";
+import { agentStream, exec, runAgentForRole } from "./runner";
 import { log, nowLocalISO } from "./log";
 import { notifySupervisor } from "./notify";
 import { emit } from "./events";
@@ -81,11 +81,14 @@ export async function runResearcher(cfg: PilotConfig, state: { researchLast?: st
   // P1-057: untrusted-content agents run sandboxed (bash/edit denied) — swap in
   // before the spawn, restore the full config afterwards for the next pipeline.
   writeAuxSandboxConfig(cfg.workspace);
-  const r = await runAgent(prompt, {
+  // mission v2: the mission may pin a model for the researcher (verified
+  // against the live catalog at dispatch; falls back to the default model)
+  const r = await runAgentForRole("researcher", prompt, {
     cwd: cfg.workspace,
     timeoutMin: 20,
     label: "researcher",
     onStdout: agentStream("researcher"),
+    missionModels: cfg.missionModels,
   });
   writeSandboxConfig(cfg.workspace);
   emit("phase", { task: "research", phase: r.output.includes("RESEARCHER:DONE") ? "done" : "failed", ok: r.output.includes("RESEARCHER:DONE") });

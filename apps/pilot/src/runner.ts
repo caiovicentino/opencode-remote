@@ -3,6 +3,8 @@ import { nowLocalISO } from "./log";
 import { tierBModelFor, startHeartbeat, touchHeartbeat, type TierBRole } from "./state";
 import { emit } from "./events";
 import { notifySupervisor } from "./notify";
+import { isMissionModelRole, type MissionModelRole, type MissionModels } from "./mission";
+import { fetchAvailableModels, pickMissionModel } from "./modelcatalog";
 
 export interface RunResult {
   ok: boolean;
@@ -222,6 +224,9 @@ export async function runAgent(
     spawnImpl?: typeof spawn;
     heartbeatMs?: number;
     heartbeatTouch?: () => void;
+    /** Mission v2: `opencode run --model <provider/model>` — set only after
+     * the id was verified against the live catalog (runAgentForRole). */
+    model?: string;
   },
 ): Promise<RunResult> {
   if (!(await (opts.preflight ?? waitForApi)())) {
@@ -237,6 +242,7 @@ export async function runAgent(
     const args = ["run"];
     if (opts.printLogs) args.push("--print-logs"); // exposes the session id for context-cache resumes
     if (opts.sessionId) args.push("-s", opts.sessionId);
+    if (opts.model) args.push("--model", opts.model); // one argv entry, no shell
     args.push(prompt);
     const spawnFn = opts.spawnImpl ?? spawn;
     const child = spawnFn("opencode", args, {
@@ -385,7 +391,13 @@ export interface AgentRunOpts {
   onStdout?: (chunk: string) => void;
   /** P2-105: extra directories mounted for tier-B dispatch (evidence shots). */
   extraDirs?: string[];
+  /** Test seams (runAgent): preflight + spawn injection. */
+  preflight?: () => Promise<boolean>;
+  spawnImpl?: typeof spawn;
 }
+
+/** Mission v2: every role runAgentForRole can dispatch. */
+export type DispatchRole = TierBRole | MissionModelRole;
 
 /**
  * Exact argv of the tier-B dispatch, pinned by the unit battery. `-p` print
@@ -515,13 +527,33 @@ function logDispatch(level: string, msg: string, data: Record<string, unknown>) 
  * `opts.onStdout` only take effect when the role dispatches to (or falls back
  * to) tier A. The self-watchdog is fed by runTierB's internal heartbeat timer
  * instead of stdout callbacks.
+ *
+ * Mission v2: `opts.missionModels` (mission.json → models) is consulted
+ * FIRST for the mission roles (strategist, researcher, builder, reviewer,
+ * scribe). A pinned model runs through `opencode run --model` only when the
+ * live catalog lists it (`catalog`, default fetchAvailableModels); an
+ * unknown/unavailable id logs `mission-model-fallback` (warn) and the role
+ * proceeds exactly as before (tier table → tier A) — the slot never crashes.
  */
 export async function runAgentForRole(
-  role: TierBRole,
+  role: DispatchRole,
   prompt: string,
-  opts: AgentRunOpts & { models?: unknown; marker?: string },
+  opts: AgentRunOpts & { models?: unknown; marker?: string; missionModels?: MissionModels; catalog?: () => Promise<Set<string> | null> },
 ): Promise<RunResult> {
-  const model = tierBModelFor(opts.models as Parameters<typeof tierBModelFor>[0], role);
+  if (isMissionModelRole(role) && opts.missionModels?.[role]) {
+    const available = await (opts.catalog ?? fetchAvailableModels)();
+    const pick = pickMissionModel(opts.missionModels, role, available);
+    if (pick.model !== null) {
+      logDispatch("info", "agent-dispatch", { role, tier: "mission", model: pick.model, label: opts.label });
+      return runAgent(prompt, { ...opts, model: pick.model });
+    }
+    logDispatch("warn", "mission-model-fallback", { role, wanted: pick.wanted, reason: pick.reason, label: opts.label });
+  }
+  // execution roles (builder/reviewer/scribe/researcher) never go tier B —
+  // only the judgment roles of P1-059 (strategist is both a mission role and
+  // a tier-B role) consult the tier table
+  const tierBEligible = !isMissionModelRole(role) || role === "strategist";
+  const model = tierBEligible ? tierBModelFor(opts.models as Parameters<typeof tierBModelFor>[0], role as TierBRole) : undefined;
   if (!model) return runAgent(prompt, opts);
   logDispatch("info", "agent-dispatch", { role, tier: "B", model, label: opts.label });
   const r = await runTierB(model, prompt, { cwd: opts.cwd, timeoutMin: opts.timeoutMin, extraDirs: opts.extraDirs });

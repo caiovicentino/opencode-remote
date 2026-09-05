@@ -8,15 +8,24 @@
  * untrusted execution surface (P1-056). This module resolves the gate battery
  * per workspace instead:
  *
- *   - "pilot":  the workspace IS a pilot checkout (package name or the
- *     pipeline source tree) — the full, unchanged battery runs, invariants
- *     and golden-corpus checks included.
- *   - "generic": a foreign repo (self-serve mission, mission.json repoUrl) —
- *     ONLY the conventional script names typecheck|build|test|lint that
- *     actually exist in its package.json run, from the target repo, each
- *     capped at GENERIC_STEP_TIMEOUT_MIN. Nothing else from the foreign
- *     package.json is ever executed; constitution invariants never run there.
+ *   - "pilot":  the workspace IS the operator's production checkout or one of
+ *     its slot clones (pilot/repo-N) — the full, unchanged battery runs,
+ *     invariants and golden-corpus checks included.
+ *   - "generic": any other path — a foreign repo (self-serve mission,
+ *     mission.json repoUrl, cloned under pilot/mission/<key>/) — ONLY the
+ *     conventional script names typecheck|build|test|lint that actually exist
+ *     in its package.json run, from the target repo, each capped at
+ *     GENERIC_STEP_TIMEOUT_MIN. Nothing else from the foreign package.json is
+ *     ever executed; constitution invariants never run there.
  *   - "unknown": no detectable battery — the gate fails closed.
+ *
+ * Mission v2 (hardening a): the "pilot" profile is pinned to the PRODUCTION
+ * CHECKOUT PATH, never to a package.json field. The previous detection keyed
+ * off `name: "opencode-remote"` (or the presence of apps/pilot/src/pipeline.ts)
+ * — a foreign repo carrying that name got the FULL pilot battery, i.e. its own
+ * scripts/*.ts ran as our invariants (arbitrary code). Repo CONTENT is
+ * attacker-controlled; the workspace PATH is chosen by the scheduler and is
+ * not.
  *
  * Every step runs with cwd = the repo's own worktree sandbox (the slot
  * workspace), so a foreign target is exercised in its own checkout, never in
@@ -25,11 +34,13 @@
  *
  * NOTE: this is the in-repo mirror of the judge's gateprofile.ts
  * (~/.opencode-remote/judge/src) — the judge decides the gate; this copy only
- * feeds the pilot's preflight typecheck decision and the unit battery.
+ * feeds the pilot's preflight typecheck decision and the unit battery. The
+ * judge copy is pinned by the operator; see docs/PILOT.md for the re-pin.
  */
 
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 
 export type GateProfileKind = "pilot" | "generic" | "unknown";
 
@@ -101,12 +112,40 @@ export const PILOT_GATE_STEPS: ReadonlyArray<readonly [string, string]> = [
   // `invariants --live` + health checks — they need RELAY_URL + prod pairing.
 ];
 
-export const PILOT_PACKAGE_NAME = "opencode-remote";
-export const PILOT_PIPELINE_FILE = "apps/pilot/src/pipeline.ts";
+/**
+ * The operator's production checkout — the ONLY tree (plus its slot clones)
+ * that earns the pilot battery. Same source of truth as PilotConfig.repo
+ * (state.ts DEFAULTS): OCR_PILOT_REPO or the hardcoded operator path.
+ */
+export const PILOT_PROD_CHECKOUT = process.env.OCR_PILOT_REPO ?? "/Volumes/SSD Major/Major/opencode-remote";
+
+/** Where the scheduler creates slot clones of the production checkout
+ * (`<root>/repo-<n>`). Foreign missions clone under `<root>/mission/<key>/`,
+ * which is a different parent — never a pilot path. */
+export const PILOT_SLOT_ROOT = join(homedir(), ".opencode-remote", "pilot");
+
+export const PILOT_SLOT_DIR_RE = /^repo-\d+$/;
 
 export interface GateProfileDeps {
-  exists?: (path: string) => boolean;
   readPackageJson?: (ws: string) => { name?: unknown; scripts?: unknown } | null;
+  /** Production checkout path (default PILOT_PROD_CHECKOUT). */
+  prodCheckout?: string;
+  /** Slot-clone root of the production checkout (default PILOT_SLOT_ROOT). */
+  slotRoot?: string;
+}
+
+/**
+ * Mission v2 (hardening a): is `ws` the production checkout or one of its
+ * direct slot clones (`<slotRoot>/repo-<n>`)? Pure path comparison after
+ * normalization (trailing slashes, `..` segments) — no fs, no repo content.
+ * `<slotRoot>/mission/<key>/repo-1` is NOT a pilot path: its parent is the
+ * mission directory, not the slot root.
+ */
+export function isPilotCheckoutPath(ws: string, deps: Pick<GateProfileDeps, "prodCheckout" | "slotRoot"> = {}): boolean {
+  if (typeof ws !== "string" || !ws) return false;
+  const target = resolve(ws);
+  if (target === resolve(deps.prodCheckout ?? PILOT_PROD_CHECKOUT)) return true;
+  return dirname(target) === resolve(deps.slotRoot ?? PILOT_SLOT_ROOT) && PILOT_SLOT_DIR_RE.test(basename(target));
 }
 
 function defaultReadPackageJson(ws: string): { name?: unknown; scripts?: unknown } | null {
@@ -118,23 +157,26 @@ function defaultReadPackageJson(ws: string): { name?: unknown; scripts?: unknown
 }
 
 /**
- * Resolve the gate profile for the repo at `ws`. Detection reads only
- * package.json (name + scripts) and checks for two marker paths — it never
- * executes anything from the target repo.
+ * Resolve the gate profile for the repo at `ws`. The pilot profile is decided
+ * by PATH alone (isPilotCheckoutPath); everything else reads only package.json
+ * `scripts` — it never executes anything from the target repo and never
+ * trusts a package.json field to promote a workspace to the pilot battery.
  */
 export function detectGateProfile(ws: string, deps: GateProfileDeps = {}): GateProfile {
-  const exists = deps.exists ?? ((p: string) => existsSync(p));
+  // the production checkout / its slot clones get the full battery — by
+  // path, never by package.json content (a foreign repo can name itself
+  // "opencode-remote" and ship an apps/pilot/src/pipeline.ts; it cannot move
+  // its clone out of pilot/mission/<key>/)
+  if (isPilotCheckoutPath(ws, deps)) {
+    return { kind: "pilot", steps: PILOT_GATE_STEPS.map(([n, c]) => [n, c]) };
+  }
   let pkg: { name?: unknown; scripts?: unknown } | null = null;
   try {
     pkg = (deps.readPackageJson ?? defaultReadPackageJson)(ws);
   } catch {
     pkg = null; // unreadable/unparseable manifest → fail closed
   }
-  if (!pkg) return { kind: "unknown", steps: [] };  // The pilot checkout gets the full battery — detected by its package name
-  // or (belt and braces) by the pipeline source tree itself.
-  if (pkg.name === PILOT_PACKAGE_NAME || exists(join(ws, PILOT_PIPELINE_FILE))) {
-    return { kind: "pilot", steps: PILOT_GATE_STEPS.map(([n, c]) => [n, c]) };
-  }
+  if (!pkg) return { kind: "unknown", steps: [] };
   // foreign repo (self-serve mission): the generic battery from its own
   // package.json scripts — nothing outside GENERIC_GATE_SCRIPTS ever runs
   return buildGenericProfile(pkg.scripts);

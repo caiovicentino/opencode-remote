@@ -148,17 +148,36 @@ quando o objetivo for o usuário baixar o arquivo no celular.
 
 ## Missão da frota (self-serve, só pelo chat)
 
-Quando o usuário definir ou mudar a missão da frota autônoma (Pilot) — em
-palavras e/ou com um link de repo do GitHub — grave você mesmo
-`~/.opencode-remote/mission.json` com exatamente este JSON:
-`{"v":1,"prompt":"<o que o usuário quer>","repoUrl":"https://github.com/<org>/<repo>.git","setAt":"<ISO 8601>"}`.
-`repoUrl` é opcional e só vale no formato `https://github.com/<org>/<repo>(.git)?`
-(valide antes; sem link válido, omita o campo); `prompt` é opcional quando há
-`repoUrl`. Nunca grave tokens, chaves ou segredos. Escrita atômica e privada:
-grave em `mission.json.tmp`, `chmod 600`, depois `mv` por cima de
-`mission.json`. Confirme em uma frase curta que a frota pega a missão no
-próximo boot (o pilot detecta a mudança de hash e se reinicia sozinho — idle
-primeiro, forçado após 15 min). Não existe formulário: o chat é o único caminho.
+O usuário define ou muda a missão da frota autônoma (Pilot) **do jeito que
+quiser** — vago ("conserta o bug do meu app"), só um link, ou detalhado
+(pedido + repo + preferências). Você compõe sozinho o
+`~/.opencode-remote/mission.json` COMPLETO a partir do que ele disse:
+`{"v":1,"prompt":"<intenção do usuário, fiel e autocontida>","repoUrl":"https://github.com/<org>/<repo>.git","models":{"<papel>":"<provider/modelo>"},"setAt":"<ISO 8601>"}`.
+Campos ausentes são omitidos, nunca inventados.
+
+- `repoUrl`: se aparecer QUALQUER link do GitHub nas palavras do usuário (no
+  meio da frase, com `/tree/...`, sem https, com `.git` ou barra final),
+  deduza org/repo e normalize para `https://github.com/<org>/<repo>(.git)?` —
+  só esse formato vale. Sem link, omita: a frota trabalha neste repo mesmo.
+- `prompt`: afirmação fiel e autocontida do que o usuário quer (quem lê só o
+  arquivo, sem o chat, entende) — pode ser uma frase só. Nunca invente
+  requisitos, critérios ou escopo que ele não disse; só link → sem prompt.
+  Pelo menos um de `prompt`/`repoUrl` é obrigatório.
+- `models` (opcional): papel → id de modelo; papéis válidos:
+  `strategist|researcher|builder|reviewer|scribe` (subconjunto permitido;
+  qualquer outro papel invalida o arquivo inteiro). Só grave um id que você
+  verificou na saída de `opencode models` (formato `provider/modelo`); quando
+  o usuário perguntar quais modelos existem, rode `opencode models` e liste.
+  Sem pedido de modelo, omita o campo.
+- Nunca grave tokens, chaves ou segredos. Escrita atômica e privada: grave em
+  `mission.json.tmp`, `chmod 600`, depois `mv` por cima de `mission.json`.
+- Encerrar a missão ("missão limpa", "encerrar missão", "voltar pro repo de
+  vocês"): apague o arquivo com `rm -f ~/.opencode-remote/mission.json` — a
+  frota volta ao modo de auto-evolução deste repo no próximo boot.
+- Confirme em uma frase curta que a frota pega a missão (ou o encerramento)
+  no próximo boot (o pilot detecta a mudança de hash e se reinicia sozinho —
+  idle primeiro, forçado após 15 min). Não existe formulário: o chat é o único
+  caminho.
 
 ## Auto-preview (site local abre sozinho no app)
 

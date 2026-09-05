@@ -98,6 +98,45 @@ export function recordInfraFailure(st: PilotState): boolean {
   return st.infraFails % INFRA_DOCTOR_EVERY === 0;
 }
 
+// ── Mission v2 (hardening b): starvation breaker for repeated infra failures ─
+
+/**
+ * Consecutive identical infra failures on ONE task that turn "free retry"
+ * into a hard failure. Motivation: on a read-only foreign repo `git push` /
+ * `gh pr create` fail as infra "network" forever — zero attempts burned, so
+ * the same task was rescheduled every cycle and looped builder rounds without
+ * end. Three identical strikes in a row is no longer noise.
+ */
+export const INFRA_STREAK_HARD_FAIL = 3;
+
+/**
+ * Fold one infra failure of `taskKey` into its streak. Same kind as the last
+ * one → +1; a different kind restarts the streak at 1 (the signal is
+ * "identical failure repeating", not "any infra"). Returns the new length.
+ */
+export function recordTaskInfraStreak(st: PilotState, taskKey: string, kind: InfraFailureKind): number {
+  const streaks = st.infraStreaks ?? (st.infraStreaks = {});
+  const prev = streaks[taskKey];
+  const n = prev && prev.kind === kind ? prev.n + 1 : 1;
+  streaks[taskKey] = { kind, n };
+  return n;
+}
+
+/** Any non-infra outcome (merge, merit failure, hard failure) clears the streak. */
+export function clearTaskInfraStreak(st: PilotState, taskKey: string): void {
+  if (st.infraStreaks) delete st.infraStreaks[taskKey];
+}
+
+/** Pure rule: the streak reached the hard-failure threshold. */
+export function infraStreakExhausted(n: number, limit = INFRA_STREAK_HARD_FAIL): boolean {
+  return n >= limit;
+}
+
+/** Human reason recorded on the ## Blocked line / failure lesson. */
+export function infraStarvationReason(kind: InfraFailureKind, n: number): string {
+  return `infra "${kind}" failed ${n}x in a row on this task — treated as a hard failure instead of an endless free retry (read-only remote, dead gh, or unreachable API?)`;
+}
+
 /**
  * P1-104: bookkeeping for a thrown pipeline crash (the runSlot catch). A crash
  * never produced a merit verdict, so it must never burn a per-task attempt or
