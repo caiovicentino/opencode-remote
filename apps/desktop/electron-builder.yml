@@ -93,8 +93,8 @@ win:
   # P2-126: `nsis` produces the real Windows installer third parties install
   # (assisted setup, per-user, choosable install dir — same story as the mac
   # dmg above); `dir` keeps the plain win-unpacked bundle around for the
-  # deterministic smoke check. Unsigned until CSC_LINK/CSC_KEY_PASSWORD are
-  # configured: SmartScreen shows a one-time warning (README).
+  # deterministic smoke check. Unsigned until the WIN_CSC_* secrets are
+  # configured (P2-159): SmartScreen shows a one-time warning (README).
   target:
     - target: nsis
     - target: dir

@@ -346,6 +346,7 @@ import { ALLOWED_EXTS, extOf, pickConverter, validateExt } from "../tools/doc2pd
 import { checkPng } from "../tools/pngcheck.mjs";
 
 import { signingProfile } from "../apps/desktop/scripts/signing-profile.mjs";
+import { signingProfileWin } from "../apps/desktop/scripts/signing-profile-win.mjs";
 
 import {
   avgDoneDuration,
@@ -8686,6 +8687,85 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P2-161: zero/invalid bound port → no rewrite",
     zero.rewritten === false && negative.rewritten === false && nan.rewritten === false && huge.rewritten === false && zero.reason === "invalid-port" && zero.body === feed(8792),
+  );
+}
+
+// --- P2-159: Windows signing profile — own WIN_CSC_* secrets, never Apple CSC --
+{
+  const pEmpty = signingProfileWin({});
+  check(
+    "P2-159: empty env → unsigned with no problems",
+    pEmpty.mode === "unsigned" && pEmpty.reasons.length === 0,
+  );
+  const pMissingSecrets = signingProfileWin({ WIN_CSC_LINK: "", WIN_CSC_KEY_PASSWORD: "" });
+  check(
+    "P2-159: blank-string secrets (Actions renders missing secrets as \"\") stay unsigned with no problems",
+    pMissingSecrets.mode === "unsigned" && pMissingSecrets.reasons.length === 0,
+  );
+
+  const pPair = signingProfileWin({ WIN_CSC_LINK: "/certs/cert.p12", WIN_CSC_KEY_PASSWORD: "hunter2" });
+  check(
+    "P2-159: complete link+password pair → authenticode",
+    pPair.mode === "authenticode" && pPair.reasons.length === 0,
+  );
+
+  const pLinkOnly = signingProfileWin({ WIN_CSC_LINK: "/certs/cert.p12" });
+  check(
+    "P2-159: link without password → fail-closed problem, unsigned",
+    pLinkOnly.mode === "unsigned" &&
+      pLinkOnly.reasons.length === 1 &&
+      pLinkOnly.reasons[0].includes("WIN_CSC_KEY_PASSWORD"),
+  );
+
+  const pPasswordOnly = signingProfileWin({ WIN_CSC_KEY_PASSWORD: "hunter2" });
+  check(
+    "P2-159: password without link → fail-closed problem, unsigned",
+    pPasswordOnly.mode === "unsigned" &&
+      pPasswordOnly.reasons.length === 1 &&
+      pPasswordOnly.reasons[0].includes("WIN_CSC_LINK"),
+  );
+
+  const pBlank = signingProfileWin({ WIN_CSC_LINK: "   ", WIN_CSC_KEY_PASSWORD: "hunter2" });
+  check(
+    "P2-159: whitespace-only value is a fail-closed problem (operator typo, not absence)",
+    pBlank.mode === "unsigned" && pBlank.reasons.length > 0,
+  );
+
+  const pSubject = signingProfileWin({
+    WIN_CSC_LINK: "/certs/cert.p12",
+    WIN_CSC_KEY_PASSWORD: "hunter2",
+    WIN_CSC_SUBJECT_NAME: "OpenCode Remote",
+  });
+  check(
+    "P2-159: optional subject name does not change the mode",
+    pSubject.mode === "authenticode" && pSubject.reasons.length === 0,
+  );
+  const pSubjectAlone = signingProfileWin({ WIN_CSC_SUBJECT_NAME: "OpenCode Remote" });
+  check(
+    "P2-159: subject name alone never signs (authenticode needs the full pair)",
+    pSubjectAlone.mode === "unsigned" && pSubjectAlone.reasons.length === 0,
+  );
+
+  // Real-repo assertions: the desktop-win job must be wired to the WIN_CSC_*
+  // secrets only — the Apple CSC_LINK/CSC_KEY_PASSWORD pair belongs to the
+  // mac job, and the preflight step must declare shell: bash (P2-126).
+  const root = join(import.meta.dirname, "..");
+  const release = readFileSync(join(root, ".github", "workflows", "release.yml"), "utf8");
+  const start = release.indexOf("\n  desktop-win:");
+  const end = release.indexOf("\n  release-verify:");
+  const block = start === -1 || end === -1 || end < start ? "" : release.slice(start, end);
+  check("P2-159: release.yml still has the desktop-win job", block.length > 0);
+  check(
+    "P2-159: no desktop-win step references the Apple CSC secrets (WIN_CSC_* only)",
+    !/(?<![A-Za-z0-9_])CSC_LINK/.test(block) && !/(?<![A-Za-z0-9_])CSC_KEY_PASSWORD/.test(block),
+  );
+  check(
+    "P2-159: desktop-win resolves the profile via signing-profile-win.mjs before packaging",
+    block.includes("signing-profile-win.mjs") && block.includes("steps.win-signing.outputs.mode"),
+  );
+  check(
+    "P2-159: desktop-win preflight step declares shell: bash (P2-126 lesson)",
+    block.includes("shell: bash"),
   );
 }
 

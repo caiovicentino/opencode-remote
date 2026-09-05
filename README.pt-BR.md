@@ -253,6 +253,26 @@ escolhe um de dois modos:
 Quem prefere Homebrew usa o `Formula/opencode-remote.rb` (AGPL-3.0-only,
 checksum fixado automaticamente pelo pipeline de release a cada tag).
 
+### Instalador do app desktop (Windows)
+
+Os releases também trazem o instalador Windows, `OpenCode Remote Setup
+<versão>.exe` (alvo `nsis` do electron-builder: setup assistido, instalação
+por usuário, diretório escolhível), junto do `latest.yml` que o cheque de
+update do app usa como fallback. A assinatura Windows tem perfil próprio,
+resolvido por `apps/desktop/scripts/signing-profile-win.mjs` antes do
+empacotamento a partir dos secrets `WIN_CSC_LINK` / `WIN_CSC_KEY_PASSWORD`
+(opcional `WIN_CSC_SUBJECT_NAME` para escolher o certificado pelo subject
+name) — o par Apple `CSC_LINK`/`CSC_KEY_PASSWORD` que o job macOS consome
+nunca é consultado no Windows. Com o par configurado, o instalador sai
+assinado com Authenticode e o aviso desaparece. Sem nenhum secret
+`WIN_CSC_*`, o instalador sai **sem assinatura** e o SmartScreen mostra
+"Windows protected your PC" na primeira execução — clique em **More info →
+Run anyway** uma vez; a mesma dança de confiança do fluxo Gatekeeper do
+macOS acima. Perfil configurado pela metade (link sem senha, senha sem link
+ou valor em branco) é fail-closed: o job de release aborta no preflight de
+assinatura e lista todos os problemas em vez de publicar uma assinatura
+quebrada.
+
 **Release**: a tag `vX.Y.Z` precisa ter a mesma versão nos **dois**
 `package.json` (raiz e `apps/desktop`). O workflow de release roda
 `scripts/release-preflight.ts` como primeiro passo e bloqueia o release em

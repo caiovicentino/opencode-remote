@@ -273,13 +273,19 @@ secrets) keep the manual flow via the release page.
 Releases also ship a Windows installer, `OpenCode Remote Setup <version>.exe`
 (electron-builder `nsis` target: assisted setup, per-user install, you can
 pick the installation directory), alongside the `latest.yml` metadata the
-in-app update check falls back to. Until a code-signing certificate is
-configured on the release runner (`CSC_LINK` / `CSC_KEY_PASSWORD` secrets),
-the installer is **unsigned** and Windows SmartScreen shows "Windows
-protected your PC" on first run — click **More info → Run anyway** once; the
-same one-time trust dance as the macOS Gatekeeper flow above. With the
-signing secrets in place the installer is signed automatically and the
-warning goes away.
+in-app update check falls back to. Windows signing has its own profile,
+resolved by `apps/desktop/scripts/signing-profile-win.mjs` before packaging
+from the `WIN_CSC_LINK` / `WIN_CSC_KEY_PASSWORD` secrets (optional
+`WIN_CSC_SUBJECT_NAME` to pick the certificate by subject name) — the Apple
+`CSC_LINK` / `CSC_KEY_PASSWORD` pair the macOS job uses is never consulted on
+Windows. With the pair configured the installer is Authenticode-signed
+automatically and the warning goes away. Without any `WIN_CSC_*` secret the
+installer is **unsigned** and Windows SmartScreen shows "Windows protected
+your PC" on first run — click **More info → Run anyway** once; the same
+one-time trust dance as the macOS Gatekeeper flow above. A half-configured
+profile (link without password, password without link, or a blank value) is
+fail-closed: the release job aborts during the signing preflight and lists
+every problem instead of publishing a broken signature.
 
 **Releasing**: a tag `vX.Y.Z` must carry the same version in **both**
 `package.json` files (repo root and `apps/desktop`). The release workflow runs
@@ -547,9 +553,9 @@ signing preflight notarizes only when a Developer ID certificate and the
 Apple credentials are actually configured (see *Desktop app installer*). The
 same release pipeline ships the **Windows NSIS installer**
 (`OpenCode Remote Setup <version>.exe` + `latest.yml`) from a `windows-latest`
-runner — unsigned (SmartScreen, see the Windows section above) until the CSC
-signing secrets are configured; the smoke check validates the setup exe and
-the metadata on any OS, no Windows required.
+runner — unsigned (SmartScreen, see the Windows section above) until the
+`WIN_CSC_*` signing secrets are configured; the smoke check validates the
+setup exe and the metadata on any OS, no Windows required.
 
 **Auto-updates with consent (P1-050)**: the packaged shell checks the daemon's
 loopback updates folder (`http://127.0.0.1:8792/__ocr/updates/` — a versioned

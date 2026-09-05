@@ -55,6 +55,23 @@ the packaged loopback default only: a feed explicitly set via
 `OCR_UPDATE_FEED` (dev/staging) fails with "feed unreachable" instead of
 making a surprise outbound request.
 
+## Windows installer signing (P2-159)
+
+The Windows installer is signed only from the `WIN_CSC_LINK` /
+`WIN_CSC_KEY_PASSWORD` release secrets (optional `WIN_CSC_SUBJECT_NAME` picks
+the certificate by subject name) — the Apple `CSC_LINK`/`CSC_KEY_PASSWORD`
+pair used for macOS signing/notarization is never consulted on Windows. The
+preflight (`apps/desktop/scripts/signing-profile-win.mjs`) decides the mode
+before packaging:
+
+- no `WIN_CSC_*` secrets → **unsigned** installer; SmartScreen shows "Windows
+  protected your PC" on first run (More info → Run anyway, one time). The job
+  stays green — this is the default;
+- both secrets set → Authenticode-signed installer, no SmartScreen warning;
+- exactly one of them set (or a whitespace-only value) → fail-closed: the
+  `desktop-win` job aborts in the signing preflight with every problem listed
+  (`::warning::` annotations + exit 1) and nothing is uploaded.
+
 ## Health endpoints
 
 ```
