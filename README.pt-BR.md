@@ -486,6 +486,19 @@ problema nunca vira QR — os dois QRs rotulados de cima seguem como fallback. A
 janela limitada de pareamento (P2-190) continua sendo o que restringe a
 validade da credencial.
 
+**Sonda de alcance (P2-197)**: um endereço sintaticamente válido pode mesmo
+assim não levar a lugar nenhum — relay fora do ar, nome de DNS que nunca
+existiu, certificado vencido ou um servidor que não é o nosso. Enquanto a tela
+de pareamento está aberta, o shell sonda o endereço do app uma vez por tick de
+polling (teto de 2s) a partir da máquina que hospeda o daemon e mostra o
+veredito numa linha calma abaixo do QR ("inacessível", "timeout",
+"certificado", "DNS", "erro HTTP", "não é o nosso app"), com ação **Testar de
+novo** quando falha. A sonda bate apenas na origem do endereço do app — nunca
+no link de pareamento, que carrega a credencial — e não envia nenhum
+cabeçalho de credencial. Um aviso nunca bloqueia o pareamento nem esconde o QR:
+o Mac não alcançar o relay não prova que o celular também não alcança (outra
+rede, outro DNS).
+
 **Reconexão guiada pelo código de fechamento (P2-156)**: quando o socket do
 relay fecha, o daemon classifica o código em vez de tratar qualquer queda como
 problema de rede. `1013` (server busy / too many connections / room full) o

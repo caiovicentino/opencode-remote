@@ -1129,6 +1129,39 @@ try {
           // resize vehicle only — the settled 1440 evidence was already taken
           run("P2-193: resize back to desktop width", ["shot", join(shotsDir, "P2-193-resize-back-1440.png"), "1440", "900"], 15_000, localEnv);
 
+          // --- P2-197: reach probe — dead app address warns, QR stays --------
+          // A dead loopback port is a VALID stored address (http to 127.0.0.1
+          // passes webAppUrlProblems), so the shell probes it once per tick,
+          // fails fast (ECONNREFUSED → unreachable) and the overlay must say
+          // so calmly — WITHOUT hiding the QR: the Mac not reaching the relay
+          // proves nothing about the phone's network.
+          const deadPort = await new Promise<number>((resolve, reject) => {
+            const srv = createServer();
+            srv.listen(0, "127.0.0.1", () => {
+              const { port } = srv.address() as AddressInfo;
+              srv.close(() => resolve(port));
+            });
+            srv.on("error", reject);
+          });
+          run("P2-197: point the app address at a dead local port", ["ipc", `window.ocrDesktop.setWebAppUrl('http://127.0.0.1:${deadPort}')`], 15_000, localEnv);
+          await waitProbe(
+            "P2-197: reach warning renders next to the (still visible) QR",
+            "(() => { const card = document.querySelector('.pair-overlay-card'); return (card?.textContent ?? '') + '|' + (!!document.querySelector('.pair-overlay-qr')) + '|' + (!!document.querySelector('.pair-reach-retry')); })()",
+            // ipc stdout is JSON-encoded (trailing quote) — match by inclusion
+            (v) => v.includes(`127.0.0.1:${deadPort}`) && /não respondeu|Testar de novo|Test again/.test(v) && v.includes("true|true"),
+            localEnv,
+            24,
+            500,
+          );
+          const reachShot1440 = join(shotsDir, "P2-197-reach-1440.png");
+          const rc1 = run("P2-197: 1440x900 reach shot", ["shot", reachShot1440, "1440", "900"], 15_000, localEnv);
+          if (rc1.ok) check("P2-197: reach 1440x900 shot is a real PNG", pngSize(reachShot1440).join("x") === "1440x900");
+          const reachShot390 = join(shotsDir, "P2-197-reach-390.png");
+          const rc2 = run("P2-197: 390 reach shot", ["shot", reachShot390, "390", "844"], 15_000, localEnv);
+          if (rc2.ok) check("P2-197: reach 390 shot is a real PNG", pngSize(reachShot390)[0] === 390);
+          // restore the P2-193 leftover so later beats see the same state
+          run("P2-197: restore the stored app address", ["ipc", "window.ocrDesktop.setWebAppUrl('https://app.example.com')"], 15_000, localEnv);
+
           run("P2-106: dismiss via the quiet link", ["click", ".pair-overlay-later"], 15_000, localEnv);
           await waitProbe(
             "P2-106: overlay dismissed",

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { copyText } from "../lib/clipboard";
 import { useT } from "../lib/i18n";
 
@@ -19,6 +19,13 @@ export interface PairLinkInfo {
   problems: string[];
 }
 
+/** P2-197: reach verdict for the app address, probed from the machine that
+ * hosts the daemon (additive field, desktop shell). */
+export interface ReachInfo {
+  state: string;
+  message: string;
+}
+
 interface Props {
   /** PNG data-URL rendered by the desktop main process (P2-007). */
   qrDataUrl: string;
@@ -32,6 +39,10 @@ interface Props {
   /** P2-193: the combined link — when its QR exists, the whole journey
    * collapses into ONE scannable code and the two labeled steps disappear. */
   pairLink?: PairLinkInfo | null;
+  /** P2-197: last reach probe verdict (null/absent = unknown → no line). */
+  reach?: ReachInfo | null;
+  /** P2-197: re-run the reach probe now ("test again" action). */
+  onReachRetry?: () => void;
 }
 
 /**
@@ -46,10 +57,22 @@ interface Props {
  * (open this address) — with the pairing QR demoted to step two. The two
  * steps carry visible labels so two QR codes never appear unlabeled.
  */
-export default function PairingOverlay({ qrDataUrl, onDismiss, deviceList, webApp, pairLink }: Props) {
+export default function PairingOverlay({ qrDataUrl, onDismiss, deviceList, webApp, pairLink, reach, onReachRetry }: Props) {
   const t = useT();
   // P2-189: copy feedback — brief, quiet, and never steals the QR's spotlight.
   const [copied, setCopied] = useState(false);
+  // P2-197: "test again" is in flight — the fresh verdict arrives with the
+  // next pairing-state push, or the flag self-clears (an unchanged verdict is
+  // deduplicated by the shell and never pushed).
+  const [retesting, setRetesting] = useState(false);
+  useEffect(() => {
+    setRetesting(false);
+  }, [reach?.state, reach?.message]);
+  useEffect(() => {
+    if (!retesting) return;
+    const id = setTimeout(() => setRetesting(false), 6_000);
+    return () => clearTimeout(id);
+  }, [retesting]);
   async function copyAddress() {
     if (!webApp?.url) return;
     try {
@@ -138,6 +161,28 @@ export default function PairingOverlay({ qrDataUrl, onDismiss, deviceList, webAp
               <img className="pair-overlay-qr" src={qrDataUrl} alt={t("pairOverlayAlt")} width={240} height={240} />
             </section>
           </>
+        )}
+
+        {/* P2-197: calm reach status below the QR, P2-112 vocabulary. The QR
+            is NEVER hidden or dimmed when the probe fails on purpose: this
+            Mac not reaching the relay does NOT prove the phone can't either
+            (different network, different DNS) — burying the QR on a verdict
+            from another machine's network would kill the journey. */}
+        {reach && (
+          <p className={reach.state === "ok" ? "pair-reach" : "pair-reach pair-reach-warn"}>
+            {reach.state === "ok" ? t("pairReachOk") : reach.message}
+            {reach.state !== "ok" && (
+              <button
+                className="pair-reach-retry"
+                onClick={() => {
+                  setRetesting(true);
+                  onReachRetry?.();
+                }}
+              >
+                {retesting ? t("pairReachTesting") : t("pairReachRetry")}
+              </button>
+            )}
+          </p>
         )}
 
         {deviceList && deviceList.length > 0 && (

@@ -2004,6 +2004,25 @@ button.desk-new:hover:not(:disabled) {
   color: var(--muted);
   max-width: 36ch;
 }
+/* P2-197: reach-probe status — one quiet line below the QR, same calm
+   register as the P2-112 degraded card. Muted when ok, warn-toned (no red,
+   no banner) with a quiet text button when the probe failed. Existing tokens
+   only: no gradient, no glass, no new radius. */
+.pair-reach {
+  margin: 2px 0 0;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--muted);
+  max-width: 40ch;
+}
+.pair-reach-warn {
+  color: var(--warn);
+}
+.pair-reach-retry {
+  font-size: 0.8rem;
+  margin-left: 6px;
+  padding: 0;
+}
 
 /* QR scanner state machine (P2-117): looking → preview → unavailable.
    The stage keeps a 4:3 box at every width so a 390px phone never collapses
