@@ -417,9 +417,17 @@ só quando a requisição de fato chegou sob TLS, porque anunciar HSTS numa
 origem `http://` trava o operador que ainda está subindo o serviço. A
 variável `RELAY_WEB_CSP` sobrescreve a política (precisa declarar
 `default-src`, sem bytes de controle, ≤1024 caracteres — qualquer coisa
-diferente recusa o boot, fail-closed); 404/405 e os bytes do `/healthz`
-ficam como estão. O relay continua cego: nada disso toca frames, chaves ou
-plaintext.
+diferente recusa o boot, fail-closed); 404/405 e os bytes do `/healthz` ficam
+como estão. A rota estática também tem um orçamento de requisições por
+identidade (P2-195): toda requisição que não é o probe gasta um token de um
+balde (`RELAY_WEB_RATE_PER_MIN=120`, `RELAY_WEB_BURST=60`, ambos fail-closed
+com teto `10000`), estouro de rajada responde `429` com `retry-after` e os
+mesmos cabeçalhos de segurança dos documentos 200, a chave da identidade é o
+`ipTag` do P2-174 sobre o mesmo endereço consciente de proxy-hops que o
+caminho de upgrade já deriva (nunca um IP cru), baldes ociosos são podados
+pelo sweep de liveness sob teto de 4096 entradas — e o `GET /healthz` nunca é
+contado nem barrado, então um balanceador não pode ser expulso do próprio
+probe. O relay continua cego: nada disso toca frames, chaves ou plaintext.
 
 No app desktop você não precisa exportar `RELAY_URL` no braço: os Ajustes
 (Settings) têm o card **Relay do celular** (seção exclusiva do shell), onde

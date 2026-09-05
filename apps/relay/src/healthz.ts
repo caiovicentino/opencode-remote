@@ -33,6 +33,16 @@ import { securityHeaders } from "./webheaders.js";
  * under TLS, strict-transport-security. The 404/405/503 responses and the
  * /healthz body stay byte-for-byte as they were: a load balancer reading the
  * probe must not change behavior because of this.
+ *
+ * P2-195: an optional fourth argument enables the per-identity request
+ * budget for the static route (webbudget.ts). Every non-probe request
+ * consumes one token; an over-budget identity answers 429 with retry-after
+ * and a short body, plus the same security header set the 200 documents
+ * carry — rejection leaks nothing new about the origin. The /healthz probe
+ * returns before the budget is ever consulted: a load balancer cannot be
+ * starved out of its own probe, and the probe consumes no tokens. The drain
+ * keeps priority over the budget so the LB protocol stays intact, and the
+ * WebSocket upgrade path never reaches this handler at all.
  */
 
 export interface HealthzState {
@@ -81,6 +91,17 @@ export interface WebStatic {
   isTls: (req: IncomingMessage) => boolean;
 }
 
+/**
+ * P2-195: injected request budget for the static route. The implementation
+ * lives in index.ts (identity derivation via clientIp + the P2-174 ipTag,
+ * buckets in webbudget.ts's WebBudgets map) and is passed only alongside a
+ * configured web root — with no static route there is nothing to budget.
+ */
+export interface WebBudgetGate {
+  /** Consume one token for this request's derived identity. */
+  take(req: IncomingMessage, nowMs: number): { allow: boolean; retryAfterS: number };
+}
+
 /** 200 with the resolved file's content-type and cache policy, body via `send`. */
 function sendDoc(web: WebStatic, abs: string, req: IncomingMessage, res: ServerResponse): void {
   res.writeHead(200, {
@@ -100,6 +121,7 @@ export function healthzHandler(
   s: HealthzState,
   isDraining: () => boolean = () => false,
   web?: WebStatic,
+  budget?: WebBudgetGate,
 ): (req: IncomingMessage, res: ServerResponse) => void {
   return (req, res) => {
     if (req.method === "GET" && req.url?.split("?")[0] === "/healthz") {
@@ -117,10 +139,27 @@ export function healthzHandler(
     }
     // The static route joins the drain protocol: 503 before any method or
     // path decision so the load balancer pulls the instance from rotation
-    // no matter which route the probe hits.
+    // no matter which route the probe hits. Drain also keeps priority over
+    // the budget: a closing instance 503s regardless of bucket state.
     if (isDraining()) {
       res.writeHead(503).end();
       return;
+    }
+    // P2-195: every non-probe request to the static route consumes one
+    // token — 404s and 405s cost stat calls too, so they are budgeted as
+    // well. An over-budget identity gets 429 with retry-after, a short
+    // body and the same security header set as the 200 documents (P2-192).
+    if (budget) {
+      const verdict = budget.take(req, Date.now());
+      if (!verdict.allow) {
+        res.writeHead(429, {
+          "content-type": "text/plain; charset=utf-8",
+          "retry-after": String(verdict.retryAfterS),
+          ...securityHeaders(web.isTls(req), web.csp),
+        });
+        res.end("too many requests\n");
+        return;
+      }
     }
     if (req.method !== "GET" && req.method !== "HEAD") {
       res.writeHead(405, { allow: "GET, HEAD" }).end();

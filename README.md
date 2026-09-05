@@ -511,7 +511,16 @@ only when the request actually arrived under TLS, since announcing HSTS on an
 `http://` origin would lock out an operator still bringing the service up.
 `RELAY_WEB_CSP` overrides the policy (must declare `default-src`, no control
 bytes, ≤1024 chars — anything else refuses the boot, fail-closed); 404/405
-and the `/healthz` bytes are untouched. The relay stays a blind router: no
+and the `/healthz` bytes are untouched. The static route also has a
+per-identity request budget (P2-195): every non-probe request spends one
+token from a token bucket (`RELAY_WEB_RATE_PER_MIN=120`, `RELAY_WEB_BURST=60`,
+both fail-closed with a `10000` ceiling), burst exhaustion answers `429` with
+`retry-after` and the same security headers as the 200 documents, the
+identity key is the P2-174 `ipTag` of the same proxy-hops-aware address the
+upgrade path derives (never a raw IP), idle buckets are pruned by the
+liveness sweep under a 4096-entry cap — and `GET /healthz` is never counted
+nor barred, so a load balancer cannot be starved out of its own probe. The
+relay stays a blind router: no
 plaintext, no keys, no room ids in any of it.
 
 **Close-code-aware relay retries (P2-156)**: when the relay socket closes, the

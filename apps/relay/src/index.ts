@@ -6,7 +6,7 @@ import { randomBytes } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
 // relative imports carry .js specifiers so plain `node` can run the tsc emit
 // (deploy/relay/Dockerfile + tsconfig.build.json) — tsx resolves them too
-import { healthzHandler, type WebStatic } from "./healthz.js";
+import { healthzHandler, type WebBudgetGate, type WebStatic } from "./healthz.js";
 import { TokenBucket } from "./ratelimit.js";
 import { IpCap, clientIp } from "./ipcap.js";
 import { isValidRoomId, MAX_ROOMS_PER_SOCKET } from "./roomid.js";
@@ -20,6 +20,12 @@ import { tlsPlan } from "./tlsconfig.js";
 import { makeIpTagger } from "./iptag.js";
 import { webRootPlan, type DirProbe } from "./webroot.js";
 import { resolveWebCsp } from "./webheaders.js";
+import {
+  resolveWebBudget,
+  WebBudgets,
+  webBudgetIdentity,
+  WEB_BUDGET_IDLE_MS,
+} from "./webbudget.js";
 
 /**
  * Relay: a blind router.
@@ -139,6 +145,20 @@ if (WEB_CSP.problems.length > 0) {
   }
   process.exit(1);
 }
+// P2-195: the static route's request budget (RELAY_WEB_RATE_PER_MIN +
+// RELAY_WEB_BURST) resolves fail-closed alongside every knob above — a
+// non-numeric, negative, zero, fractional or above-ceiling value refuses the
+// boot (one log line per reason, exit 1, no listener) instead of serving the
+// static route with an unvalidated budget. Absent or blank keeps the
+// documented defaults; the budget only gates the static route — the probe
+// and the WebSocket upgrade path are never counted.
+const WEB_BUDGET = resolveWebBudget(process.env);
+if (WEB_BUDGET.problems.length > 0) {
+  for (const reason of WEB_BUDGET.problems) {
+    ev("warn", "invalid relay web budget, refusing to start (fail-closed)", { reason });
+  }
+  process.exit(1);
+}
 // The only fs touches of the static route: existence/file checks per request
 // and a streamed body (empty for HEAD). isFile canonicalizes the target with
 // realpath before the containment comparison — with a separator boundary, so
@@ -184,6 +204,22 @@ const ipCap = new IpCap(MAX_PER_IP);
 // irreversible. The raw address below stays the IpCap key exactly as before;
 // only what reaches a log line changed.
 const tagIp = makeIpTagger(randomBytes(32));
+
+// P2-195: the static route's live bucket map, keyed by the derived identity
+// tag (see the gate below). Pruned by inactivity from the liveness sweep;
+// the entry cap inside WebBudgets is the hard memory bound.
+const WEB_BUDGETS = new WebBudgets(WEB_BUDGET.ratePerMin, WEB_BUDGET.burst);
+// The gate derives the same identity the upgrade path derives — clientIp()
+// honoring RELAY_TRUST_PROXY_HOPS, tagged by the P2-174 ipTag — so the map
+// never holds a raw address and a trusted proxy chain collapses to the same
+// bucket the per-IP cap already uses. Only the static route is gated: the
+// /healthz probe answers before the budget is consulted and upgrades never
+// reach the request path.
+const WEB_BUDGET_GATE: WebBudgetGate | undefined = WEB.enabled
+  ? {
+      take: (req, nowMs) => WEB_BUDGETS.take(webBudgetIdentity(req, TRUST_PROXY_HOPS, tagIp), nowMs),
+    }
+  : undefined;
 
 // root package.json (monorepo) — same single source the web PWA generates from
 const VERSION = (() => {
@@ -363,6 +399,9 @@ server.on(
     // P2-188: optional static PWA route (RELAY_WEB_DIR); undefined keeps the
     // pre-P2-188 404-for-everything-else behavior byte for byte.
     WEB_STATIC,
+    // P2-195: optional per-identity request budget for the static route
+    // (429 + retry-after on burst exhaustion; the probe is never counted).
+    WEB_BUDGET_GATE,
   ),
 );
 
@@ -399,6 +438,11 @@ server.listen(PORT, () => {
     // P2-188: additive provenance field — whether the static PWA route is
     // serving (RELAY_WEB_DIR configured and validated). Never the path.
     webRoot: WEB.enabled,
+    // P2-195: additive provenance field — the resolved static-route budget
+    // when the web root is enabled (absent from the JSON line otherwise).
+    webBudget: WEB.enabled
+      ? { ratePerMin: WEB_BUDGET.ratePerMin, burst: WEB_BUDGET.burst }
+      : undefined,
   });
 });
 
@@ -558,6 +602,13 @@ if (PING_INTERVAL_S > 0) {
     }
     for (const c of wss.clients) {
       if (c.readyState === c.OPEN) c.ping();
+    }
+    // P2-195: idle web-budget buckets ride the same sweep — the entry cap
+    // inside WebBudgets is the hard bound, this returns the memory of
+    // long-gone clients between sweeps.
+    if (WEB.enabled) {
+      const pruned = WEB_BUDGETS.prune(now, WEB_BUDGET_IDLE_MS);
+      if (pruned > 0) ev("debug", "web budget buckets pruned", { pruned });
     }
   }, PING_INTERVAL_S * 1000);
 }

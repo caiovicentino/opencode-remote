@@ -69,6 +69,8 @@ builds this same image (the `caddy` profile adds TLS termination on top).
 | `RELAY_LOG_LEVEL` | `info` | Log verbosity: `error`, `warn`, `info` or `debug` (case-insensitive). Keep `info`: only `debug` writes the per-frame `frame in` line, and on a public host that line reconstructs who talked to whom and when out of retained provider logs. An unknown or non-string value **refuses the boot** (fail-closed) instead of falling back to the default. See the section below. |
 | `RELAY_WEB_DIR` | unset (off) | Directory with the static PWA bundle to serve over HTTP (the image ships it at `/app/apps/web/dist`). Leave unset to answer `404` on every non-probe HTTP path, exactly as before P2-188. Set it to a directory that is missing, not a directory, unreadable, or without a readable `index.html` and the relay **refuses the boot** (fail-closed). See the section below. |
 | `RELAY_WEB_CSP` | unset (default policy) | Override for the `content-security-policy` served with every 200 document of the static route. Must declare `default-src`, stay free of newlines/control bytes and within 1024 characters — anything else **refuses the boot** (fail-closed). See the section below. |
+| `RELAY_WEB_RATE_PER_MIN` | `120` | Sustained static-route requests per minute, per client identity (see the budget section below). Ceiling `10000`; a non-numeric, negative, zero, fractional or above-ceiling value **refuses the boot** (fail-closed). |
+| `RELAY_WEB_BURST` | `60` | Token-bucket burst for the static route, per client identity — how many back-to-back requests a cold page load may cost before throttling. Ceiling `10000`; invalid values **refuse the boot** (fail-closed) exactly like the rate knob. |
 
 The relay also accepts `RELAY_RATE_PER_MIN` and `RELAY_RATE_BURST`
 (per-connection token bucket, defaults `600` and `1000`, ceilings `60000` and
@@ -215,16 +217,57 @@ the single-page fallback alike — carries a fixed set of security headers
 | `cross-origin-resource-policy` | `same-origin` | Other origins may not embed the relay's resources. |
 | `strict-transport-security` | `max-age=31536000` | **Present only when the request arrived under TLS** (the relay checks the socket, not a forgeable header). Announcing HSTS on an `http://` origin would lock out an operator who is still bringing the service up — browsers would refuse the plain-HTTP origin before it terminates TLS. `includeSubDomains` is deliberately absent: the operator's other subdomains are out of this relay's reach and must stay so. |
 
-The `404`, `405` and `503` responses carry none of these headers, and the
-`/healthz` body and headers are byte-for-byte what they were before: a load
-balancer reading the probe must not change behavior because of them. The
-override variable `RELAY_WEB_CSP` replaces the `content-security-policy`
+The `404`, `405` and `503` responses carry none of these headers, the `429`
+of the request budget below carries all of them, and the `/healthz` body and
+headers are byte-for-byte what they were before: a load balancer reading the
+probe must not change behavior because of them. The override variable
+`RELAY_WEB_CSP` replaces the `content-security-policy`
 value only — it is validated fail-closed at boot (a non-string value, a
 newline or control byte, a value above the 1024-character ceiling, or a
 policy that does not declare the `default-src` directive refuses the boot:
 `invalid relay web content policy, refusing to start`, exit 1, no listener).
 The relay stays a blind router: these are static header values, and none of
 the route's decisions ever touch frames, keys or plaintext.
+
+### The static route has a request budget (P2-195)
+
+Before P2-195 the static route answered file for any number of GETs from any
+origin: a single client looping against the bundle consumed file descriptors,
+disk reads and bandwidth of the same process that routes everyone's E2E
+frames. The route is now guarded by a per-identity token bucket (the pure
+`webbudget.ts` module):
+
+- **Every non-probe request consumes one token** — 404s and 405s cost stat
+  calls too, so they are budgeted as well. An over-budget identity answers
+  **`429`** with a `retry-after` header (whole seconds until one token
+  refills), a short `text/plain` body and the same security header set the
+  200 documents carry (P2-192).
+- **The identity is the derived tag, never the address.** The budget keys on
+  the same derivation the WebSocket upgrade path uses — `clientIp()`
+  honoring `RELAY_TRUST_PROXY_HOPS` — tagged by the P2-174 `ipTag`
+  (irreversible per-process hash). The bucket map never holds a raw client
+  address, and no IP is ever logged by the budget.
+- **`GET /healthz` is never counted and never barred.** The probe answers
+  before the budget is consulted: a load balancer cannot be starved out of
+  its own probe no matter how full the bucket of the identity it probes
+  from. The WebSocket upgrade path is untouched — per-connection frame rate
+  limits and the per-IP admission cap work exactly as before.
+- **Buckets cannot leak memory.** Entries idle for more than 15 minutes are
+  dropped by the liveness sweep (the same `RELAY_PING_INTERVAL_S` sweep that
+  reaps stale sockets; with the sweep disabled the entry cap alone bounds the
+  map), and the map never holds more than **4096 entries** — when the cap is
+  reached the entry seen longest ago is discarded, so an active client keeps
+  its bucket and an abandoned one does not cost anything.
+
+Defaults: `RELAY_WEB_RATE_PER_MIN=120` and `RELAY_WEB_BURST=60` — a cold PWA
+load is about a dozen requests, so a refresh storm fits the burst and the
+sustained rate comfortably serves the few paired devices a personal relay
+has. Both knobs are validated fail-closed at boot like every other relay
+knob: a non-numeric, negative, zero, fractional or above-ceiling value
+(`10000` for both) is logged once (`invalid relay web budget, refusing to
+start`) and the process exits `1` before any listener opens. Absent or blank
+keeps the defaults. The `relay listening` line carries the resolved values as
+an additive `webBudget` field when the web root is enabled.
 
 ## Behind a proxy: `x-forwarded-for` and the per-IP cap
 
