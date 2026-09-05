@@ -294,6 +294,38 @@ jobs:
             -t "${{ steps.refs.outputs.version-ref }}" \
             -t "${{ steps.refs.outputs.latest-ref }}" .
 
+      # P2-196: an image that compiles but does not boot — a CMD pointing at a
+      # dist the final stage never copied, a broken embedded RELAY_WEB_DIR, a
+      # boot refused by the P2-188 fail-closed preflight — must never become
+      # the image the stage-4 operator pulls. Boot the just-built image on an
+      # ephemeral loopback port and run the probe battery against it BEFORE
+      # any push; the container is removed no matter how the step ends.
+      # Wait ceiling: 30 attempts × 1s for /healthz (image boot + start-up),
+      # then the smoke CLI itself (5s fetch timeout per probe, documented in
+      # docs/RELAY-HOSTING.md). shell: bash (P2-126 lesson).
+      - name: Smoke the built image (boot + probes) before any push
+        shell: bash
+        run: |
+          set -euo pipefail
+          PORT=$(( (RANDOM % 20000) + 30000 ))
+          docker run -d --name relay-smoke \
+            -p "127.0.0.1:${PORT}:8787" \
+            "${{ steps.refs.outputs.version-ref }}"
+          trap 'docker rm -f relay-smoke >/dev/null 2>&1 || true' EXIT
+          for i in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:${PORT}/healthz" >/dev/null 2>&1; then
+              break
+            fi
+            if [ "$i" = 30 ]; then
+              echo "relay-image-smoke: /healthz never answered after 30 attempts — the image does not boot"
+              docker logs relay-smoke
+              exit 1
+            fi
+            sleep 1
+          done
+          CONTAINER_USER="$(docker exec relay-smoke whoami)"
+          npx --yes tsx@4.23.12 scripts/relay-image-smoke.ts "http://127.0.0.1:${PORT}" "$CONTAINER_USER"
+
       - name: Push both references (opt-in: PUBLISH_RELAY_IMAGE=true)
         if: vars.PUBLISH_RELAY_IMAGE == 'true'
         shell: bash
