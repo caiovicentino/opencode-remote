@@ -17,6 +17,8 @@ export interface PilotEvent {
   detail?: string;
   /** P1-006: scheduler slot that produced the event (1-based). */
   slot?: number;
+  /** P1-056: short pin of the judge that signed a gate verdict. */
+  judge?: string;
 }
 
 /** Append a pipeline event for the dashboard/API. Keeps the file bounded. */

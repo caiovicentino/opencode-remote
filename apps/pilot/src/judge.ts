@@ -20,7 +20,7 @@ function fail(msg: string): never {
 }
 
 /** Fail-closed: the judge copy must exist and match the pinned commit. */
-export function resolveJudge(): { dir: string; cli: string; pub: string } {
+export function resolveJudge(): { dir: string; cli: string; pub: string; pin: string } {
   const dir = JUDGE_DIR;
   const cli = join(dir, "src", "cli.ts");
   const pub = join(dir, "judge.pub");
@@ -40,7 +40,7 @@ export function resolveJudge(): { dir: string; cli: string; pub: string } {
   if (dirty) {
     fail(`judge checkout is dirty — the pin attests HEAD, not uncommitted edits:\n${dirty.slice(0, 400)}`);
   }
-  return { dir, cli, pub };
+  return { dir, cli, pub, pin };
 }
 
 export interface JudgeGateInput {
@@ -62,8 +62,10 @@ export function judgeGate(input: JudgeGateInput): {
   step: string;
   tail: string;
   flaky: string[];
+  /** short pin of the judge that signed the verdict (absent on bridge failure) */
+  judge?: string;
 } {
-  const { dir, cli, pub } = resolveJudge();
+  const { dir, cli, pub, pin } = resolveJudge();
   const tmp = mkdtempSync(join(homedir(), ".opencode-remote", "judge-req-"));
   const reqFile = join(tmp, "req.json");
   writeFileSync(reqFile, JSON.stringify({ ws: input.ws, sha: input.sha, task: input.task, builderOutput: input.builderOutput, startedAtMs: input.startedAtMs, nameOnly: input.nameOnly }));
@@ -96,7 +98,7 @@ export function judgeGate(input: JudgeGateInput): {
     fail(`judge verdict is for ${verdict.sha}, not ${input.sha}`);
   }
   rmSync(tmp, { recursive: true, force: true });
-  return { ok: verdict.ok, step: verdict.ok ? "none" : verdict.step, tail: verdict.ok ? "gate green" : verdict.tail, flaky: verdict.flaky ?? [] };
+  return { ok: verdict.ok, step: verdict.ok ? "none" : verdict.step, tail: verdict.ok ? "gate green" : verdict.tail, flaky: verdict.flaky ?? [], judge: pin.slice(0, 8) };
 }
 
 /** verifyFindings support stays in-repo for now (review phase, not gate). */

@@ -1573,13 +1573,20 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       gate = judgeGate({ ws, sha: gateSha, task: t, builderOutput: build.output, startedAtMs, nameOnly });
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
+      emit("phase", { task: t.id, phase: "gatekeeper-done", ok: false, detail: "judge bridge — fail-closed" });
       return { ok: false, detail: `judge bridge failed (fail-closed): ${detail}`, ...roundMeta() };
     }
     for (const step of gate.flaky) {
       emit("phase", { task: t.id, phase: "gate-flaky", ok: true, detail: step });
       console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "gate-flaky", data: { task: t.id, round, step } }));
     }
-    emit("phase", { task: t.id, phase: "gatekeeper-done", ok: gate.ok, detail: gate.ok ? "green" : gate.step });
+    emit("phase", {
+      task: t.id,
+      phase: "gatekeeper-done",
+      ok: gate.ok,
+      judge: gate.judge,
+      detail: gate.ok ? `verdict assinado ✓ (judge ${gate.judge})` : `${gate.step} · verdict assinado (judge ${gate.judge})`,
+    });
     if (!gate.ok) {
       // a red gate is a builder finding, not an attempt killer: append it to
       // the round's findings (review findings from a previous round coexist —
