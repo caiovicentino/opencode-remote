@@ -71,6 +71,16 @@ remoto, zero confiança**.
   rota de tts-status). Instale no host com `./scripts/setup-whisper.sh`.
   `OCR_STT_BLOCK=1` no daemon é um hatch de teste que força o veredito
   missing-binary para evidência visual determinística
+- **Prontidão de modelo** — o composer avisa antes do primeiro envio quando a
+  máquina que hospeda o daemon não tem nenhum modelo utilizável configurado
+  (nenhuma credencial de provider, ou credenciais sem modelos): uma linha
+  calma acima do composer diz o que fazer, derivada do mesmo catálogo de
+  providers que o gauge de contexto já busca. O indicador descreve a máquina
+  que hospeda o daemon e **nunca impede o envio** — a mensagem pode seguir
+  mesmo assim. O mesmo veredito é servido em
+  `GET /__ocr/model/status` (`{ available, state, message }`, espelhando a
+  rota de stt-status). `OCR_MODEL_BLOCK=1` no daemon é um hatch de teste que
+  força o veredito no-provider para evidência visual determinística
 - **Arquivos** — envie do celular, dê preview de tudo, exporte a conversa
   em markdown; todo card de arquivo tem um botão ⧉ que copia o caminho
   completo do arquivo (Clipboard API com fallback execCommand)

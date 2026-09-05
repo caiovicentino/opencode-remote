@@ -72,6 +72,16 @@ private. That is the product: **local power, remote control, zero trust**.
   `OCR_STT_BLOCK=1` on the daemon is a test hatch that forces the
   missing-binary verdict so the disabled-mic UI can be evidenced
   deterministically even on hosts that do have whisper installed
+- **Model readiness** — the composer warns before the first send when the
+  machine hosting the daemon has no usable model configured (no provider
+  credential, or credentials without models): a single calm line above the
+  composer says what to do, derived from the same provider catalog the
+  context gauge already fetches. The indicator describes the machine hosting
+  the daemon and **never blocks sending** — the message can still go through
+  if a model is reachable anyway. The same verdict is served on
+  `GET /__ocr/model/status` (`{ available, state, message }`, mirroring the
+  stt-status route). `OCR_MODEL_BLOCK=1` on the daemon is a test hatch that
+  forces the no-provider verdict for deterministic screenshots
 - **Files** — upload from the phone, preview anything, export a conversation
   as markdown with one tap; every file card has a ⧉ button that copies the
   file's full path (Clipboard API with an execCommand fallback)
