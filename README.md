@@ -519,6 +519,14 @@ Since P2-178 every external open goes through a single gate: only `http`,
 `file`, `javascript`, `data`, `blob` and any other scheme are refused on
 purpose (the refusal is logged as scheme + reason only, never the URL).
 
+P2-184 extends the same policy to the Browser pane itself: it speaks only
+**http** and **https**. Navigations that start inside the pane — redirects,
+meta refreshes, clicked links — are refused on purpose for every other
+scheme (`file`, `javascript`, `data`, `blob`, custom app schemes), and the
+guest's web preferences are forced in the main process (context isolation +
+sandbox on, node integration off, no renderer-declared preload), so a page
+opened there can never render local files or grant itself privileges.
+
 Since P1-046 the window is a real two-column cockpit: the conversation stays
 open in the left column while Artifacts, Browser, Files or Settings open in a
 contextual pane on the right (switching panes never destroys the chat), and

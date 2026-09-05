@@ -509,6 +509,15 @@ do app. No release, o preflight de assinatura só liga a
 notarização quando há certificado Developer ID e credenciais Apple de fato
 configurados (veja *Instalador do app desktop*).
 
+P2-184: o pane Browser só fala **http** e **https**. Navegações que partem de
+dentro do pane — redirects, meta refresh, links clicados — são recusadas de
+propósito para qualquer outro esquema (`file`, `javascript`, `data`, `blob`,
+esquemas customizados), e as preferências do convidado são forçadas no
+processo principal (context isolation + sandbox ligados, integração com node
+desligada, nenhum preload declarado pelo renderer), assim uma página aberta
+ali nunca renderiza arquivos locais nem concede privilégios a si mesma. A
+recusa é registrada como esquema + motivo, nunca a URL.
+
 **Auto-update com consentimento (P1-050)**: o shell empacotado checa a pasta
 versionada de updates do daemon (`http://127.0.0.1:8792/__ocr/updates/`
 — servida pelo próprio daemon local, sem nova superfície de rede) no boot e
