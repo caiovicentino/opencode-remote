@@ -1043,6 +1043,20 @@ case and carries a **Reconnect now** button wired to the same restart as the
 tray action — so a daemon `kickstart`d by a deploy no longer leaves the app
 stuck on the pairing screen.
 
+**Wake-from-sleep reaction**: when the machine returns from sleep and when the
+session unlocks (macOS/Windows `powerMonitor` events), the shell reacts
+instead of waiting for a backoff that may already be exhausted: if the daemon
+answered healthy at the last poll, an immediate health probe confirms it; if
+the sidecar's respawn budget is exhausted — or the retry the backoff scheduled
+sits more than 30 s away — the daemon is restarted on the spot (the same
+restart the tray action uses); everything else probes immediately too. Each
+event is handled at most once per 10 s window — repeat events inside the
+window are dropped silently, so waking up never floods the log — and each
+handled event writes exactly one `[desktop] wake event (…)` line with the
+action and the reason. Platforms without the OS signal keep the previous
+behavior unchanged, no new periodic probe is introduced, and pairing is never
+touched by a wake: no re-pairing, no allowlist or state-file writes.
+
 **Daemon/app version mismatch banner**: because the shell adopts an external
 daemon (launchd/CLI install), it can end up talking to a daemon older than the
 app itself — the symptom for a lay user is random breakage, not a clear

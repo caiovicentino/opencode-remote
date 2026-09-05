@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, Notification, screen, session, Tray, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, screen, session, Tray, shell } from "electron";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -9,10 +9,12 @@ import {
   fetchDaemonHealth,
   getPairUrl,
   isDaemonDown,
+  nextRespawnInMs,
   readApiToken,
   readDaemonState,
   reconnectState,
   restartDaemon,
+  respawnState,
   sidecarExitInfo,
   setSidecarRelayUrl,
   startDaemonSidecar,
@@ -26,6 +28,7 @@ import { resolveWebAppUrl, webAppUrlProblems } from "./webappurl";
 import { buildPairLink } from "./pairlink";
 import { hasAppMarker, probeVerdict, type ReachVerdict } from "./webreach";
 import { linkVerdict, type RelayLinkVerdict } from "./relaylink";
+import { WAKE_EVENT_TYPES, wakePlan } from "./wakeplan";
 import { initDesktopLog, log, logError } from "./desktop-log";
 import { initSidecarLog } from "./sidecar-log";
 import { phonePaired, type PairingState } from "./pairing";
@@ -765,6 +768,9 @@ async function onReady(): Promise<void> {
 
   createWindow();
   startPairingWatcher();
+  // P2-209: react to the machine's return from sleep / session unlock —
+  // registered after the pairing watcher so the probe path already exists.
+  registerWakeReaction();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -1211,6 +1217,56 @@ function startPairingWatcher(): void {
   if (pairingTimer) return;
   void refreshPairingState();
   pairingTimer = setInterval(() => void refreshPairingState(), PAIRING_POLL_MS);
+}
+
+// --- wake-from-sleep reaction (P2-209) ----------------------------------------
+// A Mac that sleeps overnight can wake with the sidecar out of respawn budget
+// or with its next retry minutes away; the phone then finds no machine even
+// though the app is open and paired. When the OS reports the machine is back
+// (powerMonitor resume/unlock-screen), the pure verdict of src/wakeplan.ts is
+// applied through paths that already exist — the pairing tick's health probe
+// (refreshPairingState) and the already-exported restartDaemon. No new
+// periodic probe, no extra request per tick, no existing timer is touched.
+
+let lastWakeHandledAt: number | null = null;
+
+function handleWakeEvent(eventType: string): void {
+  const now = Date.now();
+  const plan = wakePlan({
+    eventType,
+    gaveUp: isDaemonDown(),
+    failures: respawnState().failures,
+    msUntilNextRespawn: nextRespawnInMs(),
+    daemonHealthy: trayHealthy === true,
+    msSinceLastHandled: lastWakeHandledAt === null ? null : now - lastWakeHandledAt,
+  });
+  // Ignored events (debounced repeats, unknown types) stay silent by design —
+  // a wake must never turn into a log flood.
+  if (plan.action === "ignore") return;
+  lastWakeHandledAt = now;
+  // Exactly one line per handled event: action + motive (static pt-BR from
+  // the planner — no paths, no URLs, no secrets).
+  log(`[desktop] wake event (${eventType}): ${plan.action} — ${plan.reason}`);
+  if (plan.action === "reset-and-respawn") {
+    void restartDaemon().catch((err) => logError("[desktop] wake respawn failed:", err));
+    return;
+  }
+  void refreshPairingState();
+}
+
+function registerWakeReaction(): void {
+  // Availability guard: a platform or build without the module keeps today's
+  // behavior exactly — no registration, no error, nothing new to tick.
+  if (typeof powerMonitor?.on !== "function") {
+    log("[desktop] powerMonitor unavailable — wake reaction not registered");
+    return;
+  }
+  for (const eventType of WAKE_EVENT_TYPES) {
+    // Electron types .on per event literal — the explicit branches keep the
+    // registration honest against the documented vocabulary.
+    if (eventType === "resume") powerMonitor.on("resume", () => handleWakeEvent("resume"));
+    if (eventType === "unlock-screen") powerMonitor.on("unlock-screen", () => handleWakeEvent("unlock-screen"));
+  }
 }
 
 // P3-009: the packaged app ships build/icon.png inside the asar (files list in
