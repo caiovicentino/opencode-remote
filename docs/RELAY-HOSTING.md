@@ -66,6 +66,7 @@ builds this same image (the `caddy` profile adds TLS termination on top).
 | `RELAY_DRAIN_GRACE_MS` | `0` | Extra window between the moment a `SIGTERM` marks the instance as draining (`/healthz` flips to `503`) and the moment the live sockets are closed. Default `0` keeps the historical behavior; raise it (max `2000`) when your load balancer polls `/healthz` too rarely to notice the 503 before `docker stop` proceeds. See the sections below. |
 | `RELAY_TLS_CERT` | unset | Leave unset for provider TLS in front (the default layout). Set **only together with `RELAY_TLS_KEY`** — the two form a mandatory pair — when the relay terminates TLS itself; both files must be readable by the `node` user and the relay serves `wss://` directly. |
 | `RELAY_TLS_KEY` | unset | See `RELAY_TLS_CERT`. Either variable alone, a set-but-blank value, or an unreadable file **refuses the boot** (fail-closed) — the relay never silently downgrades a public host to plain HTTP. |
+| `RELAY_LOG_LEVEL` | `info` | Log verbosity: `error`, `warn`, `info` or `debug` (case-insensitive). Keep `info`: only `debug` writes the per-frame `frame in` line, and on a public host that line reconstructs who talked to whom and when out of retained provider logs. An unknown or non-string value **refuses the boot** (fail-closed) instead of falling back to the default. See the section below. |
 
 The relay also accepts `RELAY_RATE_PER_MIN` and `RELAY_RATE_BURST`
 (per-connection token bucket, defaults `600` and `1000`, ceilings `60000` and
@@ -129,6 +130,34 @@ host-local detail. The `relay listening` line carries an additive
 `tlsSource` field (`env` when the relay terminates TLS itself, `none` behind
 a terminator); no pre-existing field changed meaning, and no log line ever
 prints certificate or key material.
+
+### The log level is fail-closed too (P2-177)
+
+`RELAY_LOG_LEVEL` selects which JSONL lines the relay writes. The four
+accepted values, from least to most verbose, are `error`, `warn`, `info` and
+`debug` (case-insensitive). The default is `info`, and an absent or blank
+variable keeps it: an empty env reproduces the historical behavior exactly.
+
+What `info` (the default) logs: lifecycle lines (`relay listening`,
+`connection open/closed`, shutdown) and every rejection — per-IP cap,
+rate limit, invalid room id, room cap, room capacity, stale sockets — all at
+`warn`. What it does **not** log: the per-frame `frame in` line. That line
+exists only at `debug` and must stay off on any public host: a line per
+routed message, retained for months by the provider, reconstructs who talked
+to whom and when — the exact metadata-leak class the relay's blind-router
+contract exists to prevent (P2-174 closed the same class for client
+addresses) — and multiplies log volume and cost by traffic. Debug is for a
+short-lived local reproduction, never for production.
+
+The value is validated fail-closed at boot like every other relay knob: an
+unknown word or a non-string value is a boot **problem** — each reason is
+logged once (`invalid relay log level, refusing to start`), the process exits
+with code `1` and **no listener opens** — instead of silently falling back to
+the default with a typo'd level. The `relay listening` line carries the
+resolved value as an additive `logLevel` field; no pre-existing field changed
+name or meaning, and admission, caps, rate limiting, room validation,
+routing and the `relay_frames_routed` counter are untouched — only what is
+written to stdout changed.
 
 ## Behind a proxy: `x-forwarded-for` and the per-IP cap
 

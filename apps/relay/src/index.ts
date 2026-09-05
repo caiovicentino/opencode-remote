@@ -14,6 +14,7 @@ import { decideStale } from "./liveness.js";
 import { metricsAuthOk, metricsBinding } from "./metricsbind.js";
 import { relayLimits } from "./limits.js";
 import { relayKnobs } from "./knobs.js";
+import { resolveLogLevel, shouldLog, type LogLevel } from "./loglevel.js";
 import { tlsPlan } from "./tlsconfig.js";
 import { makeIpTagger } from "./iptag.js";
 
@@ -29,6 +30,21 @@ import { makeIpTagger } from "./iptag.js";
  */
 
 const PORT = Number(process.env.RELAY_PORT ?? 8787);
+// P2-177: the log level resolves fail-closed BEFORE anything else logs or
+// listens (same boot shape as the P2-141 limits, the P2-154 TLS pair and the
+// P2-171 knobs). An unknown or non-string RELAY_LOG_LEVEL never falls back
+// silently to the default: every reason is logged once here and the process
+// exits 1 with no listener. An absent or blank variable keeps the default
+// `info`, so an empty env reproduces the pre-P2-177 behavior exactly — and
+// since a problem only ever resolves to that default, the refusal lines
+// below always pass the ev() gate.
+const LOG = resolveLogLevel(process.env);
+if (LOG.problems.length > 0) {
+  for (const reason of LOG.problems) {
+    ev("warn", "invalid relay log level, refusing to start (fail-closed)", { reason });
+  }
+  process.exit(1);
+}
 // P2-141: admission ceilings are env-configurable and validated fail-closed
 // (P2-114 spirit). Any bad value — non-numeric, zero, negative, per-room cap
 // above the socket cap, frame cap above the protocol ceiling — refuses to
@@ -214,7 +230,12 @@ function leaveAll(socket: Socket) {
   }
 }
 
-function ev(level: "info" | "warn", msg: string, data?: unknown) {
+// P2-177: entries below the configured level are dropped before the line is
+// written — the only gate between a relay event and stdout. The default
+// `info` keeps every warn/info line (rejections, rate limits, lifecycle)
+// while the per-frame `frame in` line only exists at `debug`.
+function ev(level: LogLevel, msg: string, data?: unknown) {
+  if (!shouldLog(LOG.level, level)) return;
   console.log(JSON.stringify({ ts: new Date().toISOString(), level, msg, ...(data ? { data } : {}) }));
 }
 
@@ -289,6 +310,9 @@ server.listen(PORT, () => {
     ratePerMin: RATE_PER_MIN,
     rateBurst: RATE_BURST,
     pingIntervalS: PING_INTERVAL_S,
+    // P2-177: additive provenance field — the resolved log level this
+    // process writes at. No pre-existing field changed name or meaning.
+    logLevel: LOG.level,
   });
 });
 
@@ -388,7 +412,12 @@ wss.on("connection", (socket: Socket, req) => {
       return;
     }
 
-    ev("info", "frame in", {
+    // P2-177: debug-only. Hosted, a line per routed message reconstructs
+    // who talked to whom and when out of provider-retained stdout — the
+    // same metadata leak class P2-174 closed for client addresses — and
+    // costs volume proportional to traffic. The default `info` level
+    // routes in silence; the routing itself is unchanged.
+    ev("debug", "frame in", {
       room: frame.room.slice(0, 8),
       from: String(frame.from).slice(0, 10),
       targets: rooms.get(frame.room)?.size ?? -1,
