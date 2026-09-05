@@ -128,6 +128,19 @@ remoto, zero confiança**.
   sessões criadas direto no CLI/TUI do opencode não são tocadas). O registro
   de sessões injetadas vive em memória: sessões criadas antes de um restart
   do daemon não são re-injetadas depois — apenas as criadas pelo daemon novo
+- **Retenção de artifacts** — a pasta de artifacts é limitada por um janitor
+  para que uma instalação antiga nunca encha o disco em silêncio: uma varredura
+  do daemon (uma vez no boot, depois a cada **6 h**) apaga diretórios de sessão
+  inteiros sob `~/.opencode-remote/artifacts/` com mais de **30 dias**, do mais
+  antigo pro mais novo, até a pasta caber em **1 GB** no total. O período de
+  graça de **48 h** protege artifacts recém-escritos, e os **3 diretórios de
+  sessão modificados mais recentemente** são sempre preservados, mesmo com
+  qualquer teto estourado. Só a raiz de artifacts é tocada — `uploads/`
+  (material que o próprio usuário pediu para baixar), `clips/` e qualquer
+  outro diretório de estado nunca são varridos ou apagados. Para desligar o
+  janitor por completo, use `OCR_ARTIFACT_RETENTION=off` no ambiente do daemon
+  (padrão: ligado). Cada varredura registra uma linha de log com quantidade e
+  bytes apagados e incrementa a métrica `ocr_artifact_retention_deleted_total`
 - **App desktop (inicial)** — shell Electron com a mesma UI, com tray e menu nativo;
   inclui um **pane Browser**: no shell desktop ele renderiza um `<webview>` Electron real e
   sandboxed (scroll, click e edit funcionam como num navegador; `contextIsolation`/`sandbox`

@@ -271,6 +271,18 @@ import { dirname, join } from "node:path";
 import { MAX_ARTIFACT_BYTES, MAX_ARTIFACTS_LISTED, artifactMime, capArtifacts, kindFor, listArtifacts, readArtifact, validSegment, type ArtifactMeta } from "../apps/daemon/src/artifacts";
 
 import {
+  RETENTION_DISABLE_ENV,
+  RETENTION_GRACE_MS,
+  RETENTION_INTERVAL_MS,
+  RETENTION_MAX_AGE_DAYS,
+  RETENTION_MAX_TOTAL_BYTES,
+  RETENTION_MIN_SESSIONS,
+  retentionDisabled,
+  retentionPlan,
+  type RetentionEntry,
+} from "../apps/daemon/src/artifactretention";
+
+import {
   ARTIFACTS_MARKER,
   buildArtifactsPathLine,
   buildArtifactsPrompt,
@@ -13633,6 +13645,187 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P2-204: desktop-win does not get the boot smoke (explicit out of scope)",
     !win.includes("packaged-boot"),
+  );
+}
+
+// --- P2-207: artifact retention janitor (artifactretention.ts) ----------------
+
+{
+  const ROOT = join(tmpdir(), "p2-207-artifacts-root");
+  const HOUR = 3_600_000;
+  const DAY = 24 * HOUR;
+  const NOW = 1_800_000_000_000; // arbitrary fixed "now" anchor (pure: no clock reads)
+
+  const sessEntry = (session: string, bytes: number, ageMs: number, name = "report.pdf"): RetentionEntry => ({
+    path: join(ROOT, session, name),
+    bytes,
+    mtime: NOW - ageMs,
+  });
+  const pathsOf = (plan: { paths: string[] }) => plan.paths.map((p) => p.split("/").slice(-2).join("/"));
+
+  // empty input → empty plan
+  check(
+    "P2-207: empty entry list yields an empty plan",
+    retentionPlan(ROOT, [], NOW).paths.length === 0 && retentionPlan(ROOT, [], NOW).bytes === 0,
+  );
+
+  // everything below every ceiling → nothing to do
+  {
+    const plan = retentionPlan(ROOT, [
+      sessEntry("s1", 10, 1 * DAY),
+      sessEntry("s2", 20, 5 * DAY),
+      sessEntry("s3", 30, 10 * DAY),
+      sessEntry("s4", 40, 20 * DAY),
+    ], NOW);
+    check(
+      "P2-207: everything under the ceilings → empty plan",
+      plan.paths.length === 0 && plan.bytes === 0,
+    );
+  }
+
+  // grace period: a freshly written entry never enters the plan, even huge
+  {
+    const plan = retentionPlan(ROOT, [
+      sessEntry("fresh", RETENTION_MAX_TOTAL_BYTES + 1, 1 * HOUR),
+      sessEntry("fresh2", RETENTION_MAX_TOTAL_BYTES + 1, 2 * HOUR),
+      sessEntry("fresh3", RETENTION_MAX_TOTAL_BYTES + 1, 3 * HOUR),
+      sessEntry("old", 100, 40 * DAY),
+    ], NOW);
+    check(
+      "P2-207: entry inside the grace period never enters the plan even with the total blown",
+      !plan.paths.includes(join(ROOT, "fresh", "report.pdf")) &&
+        !plan.paths.includes(join(ROOT, "fresh2", "report.pdf")) &&
+        !plan.paths.includes(join(ROOT, "fresh3", "report.pdf")) &&
+        plan.paths.length === 1,
+    );
+  }
+
+  // the RETENTION_MIN_SESSIONS most recent session dirs survive, always
+  {
+    const allOld = [
+      sessEntry("a", RETENTION_MAX_TOTAL_BYTES, 100 * DAY),
+      sessEntry("b", RETENTION_MAX_TOTAL_BYTES, 101 * DAY),
+      sessEntry("c", RETENTION_MAX_TOTAL_BYTES, 102 * DAY),
+    ];
+    const plan = retentionPlan(ROOT, allOld, NOW);
+    check(
+      "P2-207: the minimum count of most recent sessions survives even when all are old and over every ceiling",
+      plan.paths.length === 0 && plan.bytes === 0,
+    );
+    const plan4 = retentionPlan(ROOT, [sessEntry("d", 5, 103 * DAY), ...allOld], NOW);
+    check(
+      "P2-207: with four sessions only the oldest one is planned (the newest three are preserved)",
+      pathsOf(plan4).join(",") === ["d", "report.pdf"].join("/"),
+    );
+  }
+
+  // byte ceiling: oldest deleted first until the total fits
+  {
+    const plan = retentionPlan(ROOT, [
+      sessEntry("a", 600_000_000, 6 * DAY),
+      sessEntry("b", 600_000_000, 5 * DAY),
+      sessEntry("c", 600_000_000, 4 * DAY),
+      sessEntry("e", 600_000_000, 2 * DAY + 1),
+      sessEntry("f", 600_000_000, 2 * DAY + 1),
+      sessEntry("g", 600_000_000, 2 * DAY + 1),
+    ], NOW);
+    // 3 newest (e,f,g) are preserved; the candidates a..c total 1.8GB: a and b
+    // go from the oldest until the surviving total (0.6GB) fits under 1GB
+    check(
+      "P2-207: byte ceiling deletes from the oldest until the total fits",
+      pathsOf(plan).join(",") === ["a", "report.pdf"].join("/") + "," + ["b", "report.pdf"].join("/") &&
+        plan.bytes === 1_200_000_000,
+    );
+  }
+
+  // age ceiling: only what is past the age limit goes
+  {
+    const plan = retentionPlan(ROOT, [
+      sessEntry("young1", 10, 1 * DAY),
+      sessEntry("young2", 10, 2 * DAY),
+      sessEntry("young3", 10, 2 * DAY),
+      sessEntry("m1", 100, 10 * DAY),
+      sessEntry("m2", 200, 40 * DAY),
+      sessEntry("m3", 400, 60 * DAY),
+    ], NOW);
+    // plan order is oldest → newest (spec): m3 (60d) before m2 (40d)
+    check(
+      "P2-207: age ceiling deletes only what passed the max age in days",
+      pathsOf(plan).join(",") === ["m3", "report.pdf"].join("/") + "," + ["m2", "report.pdf"].join("/") &&
+        plan.bytes === 600,
+    );
+  }
+
+  // refusals: paths outside the root (including .. traversal) are never planned
+  {
+    const plan = retentionPlan(ROOT, [
+      { path: join(tmpdir(), "elsewhere", "sess", "f.pdf"), bytes: RETENTION_MAX_TOTAL_BYTES * 10, mtime: NOW - 100 * DAY },
+      { path: join(ROOT, "..", "uploads", "sess", "f.pdf"), bytes: RETENTION_MAX_TOTAL_BYTES * 10, mtime: NOW - 100 * DAY },
+      { path: ROOT, bytes: RETENTION_MAX_TOTAL_BYTES * 10, mtime: NOW - 100 * DAY },
+      { path: "", bytes: 1, mtime: NOW - 100 * DAY },
+    ], NOW);
+    check(
+      "P2-207: paths outside the root (other dirs, .. traversal, the root itself, empty) are refused",
+      plan.paths.length === 0 && plan.bytes === 0,
+    );
+  }
+
+  // refusals: invalid segment names (the validSegment rule) are never planned
+  {
+    const plan = retentionPlan(ROOT, [
+      { path: join(ROOT, ".hidden", "f.pdf"), bytes: RETENTION_MAX_TOTAL_BYTES * 10, mtime: NOW - 100 * DAY },
+      { path: join(ROOT, "a..b", "f.pdf"), bytes: RETENTION_MAX_TOTAL_BYTES * 10, mtime: NOW - 100 * DAY },
+      { path: join(ROOT, "ok sess", "f.pdf"), bytes: RETENTION_MAX_TOTAL_BYTES * 10, mtime: NOW - 100 * DAY },
+      { path: join(ROOT, "sess", "sub", "f.pdf").replace("sub", "e..vil"), bytes: 1, mtime: NOW - 100 * DAY },
+    ], NOW);
+    check(
+      "P2-207: invalid segment names (dot-leading, .. inside, spaces) are refused",
+      plan.paths.length === 0 && plan.bytes === 0,
+    );
+  }
+
+  // the documented kill switch: default on, off/0/false disables
+  check(
+    "P2-207: retention is enabled by default and only off/0/false disables it",
+    retentionDisabled({}) === false &&
+      retentionDisabled({ [RETENTION_DISABLE_ENV]: "on" }) === false &&
+      retentionDisabled({ [RETENTION_DISABLE_ENV]: "off" }) === true &&
+      retentionDisabled({ [RETENTION_DISABLE_ENV]: "0" }) === true &&
+      retentionDisabled({ [RETENTION_DISABLE_ENV]: "FALSE" }) === true,
+  );
+
+  // documented ceilings stay conservative (a drift here is a doc change)
+  check(
+    "P2-207: documented ceilings are the conservative defaults",
+    RETENTION_MAX_AGE_DAYS === 30 &&
+      RETENTION_MAX_TOTAL_BYTES === 1_000_000_000 &&
+      RETENTION_MIN_SESSIONS === 3 &&
+      RETENTION_GRACE_MS === 48 * 3_600_000 &&
+      RETENTION_INTERVAL_MS === 6 * 60 * 60_000,
+  );
+
+  // real-source assertion: the daemon sweep is called with ONLY the artifacts
+  // root — uploads (user-requested downloads), clips and any other state dir
+  // must never appear in the call arguments.
+  const daemonIndexSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  const sweepAt = daemonIndexSrc.indexOf("retentionPlan(");
+  const sweepCall = sweepAt > -1 ? daemonIndexSrc.slice(sweepAt, sweepAt + 200) : "";
+  check(
+    "P2-207: the real sweep calls retentionPlan with the artifacts root and nothing else",
+    sweepAt > -1 &&
+      sweepCall.includes("ARTIFACTS_ROOT") &&
+      !sweepCall.includes("uploads") &&
+      !sweepCall.includes("UPLOADS") &&
+      !sweepCall.includes("clips") &&
+      !sweepCall.includes("CLIPS"),
+  );
+  const scanAt = daemonIndexSrc.indexOf("function scanRetentionEntries");
+  const scanBody = scanAt > -1 ? daemonIndexSrc.slice(scanAt, scanAt + 600) : "";
+  check(
+    "P2-207: the scanner reads only the artifacts root (never uploads/ or clips/)",
+    scanBody.includes("readdirSync(ARTIFACTS_ROOT") &&
+      !scanBody.includes("uploads") &&
+      !scanBody.includes("clips"),
   );
 }
 
