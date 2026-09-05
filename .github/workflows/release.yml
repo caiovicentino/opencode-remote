@@ -193,6 +193,14 @@ jobs:
             npm run dist --workspace @ocr/desktop
           fi
 
+      # P2-164: same gate P2-130 put on the mac side — a broken bundle (missing
+      # web-dist/index.html or daemon/index.js) must abort the job BEFORE the
+      # setup exe + latest.yml reach Windows users as a blank-opening app.
+      # shell: bash (P2-126 lesson): pwsh does not expand globs.
+      - name: Smoke-check the packaged bundle
+        shell: bash
+        run: npm run dist:smoke --workspace @ocr/desktop
+
       - name: Attach setup exe + update metadata to the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

@@ -115,7 +115,11 @@ saudável" — sem token e mesmo com token, o challenge do healthOnce reprova). 
 desse output (`npm run dist:smoke --workspace @ocr/desktop`, P3-010) valida sem
 abrir o app que o bundle empacotado carrega `web-dist/index.html`, o sidecar
 `daemon/index.js` e o binário (layouts mac/win/linux) — também fora do gate por
-design; é o chão do estágio 5 (instaladores assinados).
+design; é o chão do estágio 5 (instaladores assinados). No workflow de release
+ele roda como passo "Smoke-check the packaged bundle" nos dois jobs de
+empacotamento, entre empacotar e anexar os artefatos (desktop-dmg desde a
+P2-130; desktop-win desde a P2-164, com `shell: bash` explícito — pwsh não
+expande glob), de modo que bundle quebrado aborte o job antes do upload.
 
 **Perfil de gate por repo (P2-116).** A bateria acima pressupõe um checkout do
 próprio pilot; apontar o pipeline para um repo externo quebraria o gate (os
