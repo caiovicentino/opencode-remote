@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { contentTypeFor, cacheControlFor, resolveWebPath, spaFallbackPath } from "./webroot.js";
+import { securityHeaders } from "./webheaders.js";
 
 /**
  * GET /healthz — public, unauthenticated liveness probe for the hosted
@@ -25,6 +26,13 @@ import { contentTypeFor, cacheControlFor, resolveWebPath, spaFallbackPath } from
  * non-GET/HEAD gets 405, an extension path that does not resolve to an
  * existing file gets 404 (never the entry document), and only a safe,
  * extension-less GET/HEAD falls back to the app's index.html.
+ *
+ * P2-192: both 200 paths (resolved asset and SPA fallback) carry the security
+ * header map from webheaders.ts — content-security-policy, referrer-policy,
+ * permissions-policy, framing control and, only when the request arrived
+ * under TLS, strict-transport-security. The 404/405/503 responses and the
+ * /healthz body stay byte-for-byte as they were: a load balancer reading the
+ * probe must not change behavior because of this.
  */
 
 export interface HealthzState {
@@ -67,6 +75,10 @@ export interface WebStatic {
   root: string;
   isFile: (abs: string) => boolean;
   send: (abs: string, req: IncomingMessage, res: ServerResponse) => void;
+  /** P2-192: the boot-resolved content-security-policy for every 200 document. */
+  csp: string;
+  /** P2-192: whether the request arrived under TLS — HSTS is announced only then. */
+  isTls: (req: IncomingMessage) => boolean;
 }
 
 /** 200 with the resolved file's content-type and cache policy, body via `send`. */
@@ -77,6 +89,9 @@ function sendDoc(web: WebStatic, abs: string, req: IncomingMessage, res: ServerR
     // the route is public and unauthenticated: the allowlist already pins
     // what may be served, nosniff keeps browsers from second-guessing it
     "x-content-type-options": "nosniff",
+    // P2-192: CSP, framing, referrer and permissions lockdown on both 200
+    // paths (resolved asset and SPA fallback); HSTS only under TLS
+    ...securityHeaders(web.isTls(req), web.csp),
   });
   web.send(abs, req, res);
 }

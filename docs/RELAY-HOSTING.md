@@ -68,6 +68,7 @@ builds this same image (the `caddy` profile adds TLS termination on top).
 | `RELAY_TLS_KEY` | unset | See `RELAY_TLS_CERT`. Either variable alone, a set-but-blank value, or an unreadable file **refuses the boot** (fail-closed) — the relay never silently downgrades a public host to plain HTTP. |
 | `RELAY_LOG_LEVEL` | `info` | Log verbosity: `error`, `warn`, `info` or `debug` (case-insensitive). Keep `info`: only `debug` writes the per-frame `frame in` line, and on a public host that line reconstructs who talked to whom and when out of retained provider logs. An unknown or non-string value **refuses the boot** (fail-closed) instead of falling back to the default. See the section below. |
 | `RELAY_WEB_DIR` | unset (off) | Directory with the static PWA bundle to serve over HTTP (the image ships it at `/app/apps/web/dist`). Leave unset to answer `404` on every non-probe HTTP path, exactly as before P2-188. Set it to a directory that is missing, not a directory, unreadable, or without a readable `index.html` and the relay **refuses the boot** (fail-closed). See the section below. |
+| `RELAY_WEB_CSP` | unset (default policy) | Override for the `content-security-policy` served with every 200 document of the static route. Must declare `default-src`, stay free of newlines/control bytes and within 1024 characters — anything else **refuses the boot** (fail-closed). See the section below. |
 
 The relay also accepts `RELAY_RATE_PER_MIN` and `RELAY_RATE_BURST`
 (per-connection token bucket, defaults `600` and `1000`, ceilings `60000` and
@@ -196,6 +197,34 @@ and the process exits with code `1` before **any** listener opens. Problem
 text cites `RELAY_WEB_DIR` and never the configured path — log shippers get
 no host-local detail. The `relay listening` line carries an additive
 `webRoot: true|false` field; no path is ever logged.
+
+### The served page ships locked down: security headers (P2-192)
+
+The document the static route serves is the page where the user's end-to-end
+keys live in the phone's browser, so every 200 response — a resolved asset and
+the single-page fallback alike — carries a fixed set of security headers
+(resolved by the pure `webheaders.ts` module, applied by the handler):
+
+| Header | Value | Why |
+|---|---|---|
+| `content-security-policy` | `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; connect-src 'self' wss: https:; base-uri 'self'; frame-ancestors 'none'; form-action 'none'; object-src 'none'` | Same-origin pinning for scripts, fonts and the document base; inline style stays allowed because the generated bundle injects style tags; `data:`/`blob:` images cover canvas and preview rendering; `wss:`/`https:` in `connect-src` because the app dials the relay, which may be a different origin than the one serving the page. Framing, form submission and plugins are shut off entirely. |
+| `referrer-policy` | `no-referrer` | The browser must never send the room URL — or any part of the app address — as a referrer to an external destination. |
+| `permissions-policy` | `geolocation=(), payment=(), usb=(), serial=(), hid=(), midi=()` | The PWA needs none of the powerful platform features; each is denied explicitly. |
+| `x-frame-options` | `DENY` | No third party may frame the page (clickjacking); mirrored by `frame-ancestors 'none'` in the CSP. |
+| `cross-origin-opener-policy` | `same-origin` | Isolates the app's browsing context from any cross-origin opener. |
+| `cross-origin-resource-policy` | `same-origin` | Other origins may not embed the relay's resources. |
+| `strict-transport-security` | `max-age=31536000` | **Present only when the request arrived under TLS** (the relay checks the socket, not a forgeable header). Announcing HSTS on an `http://` origin would lock out an operator who is still bringing the service up — browsers would refuse the plain-HTTP origin before it terminates TLS. `includeSubDomains` is deliberately absent: the operator's other subdomains are out of this relay's reach and must stay so. |
+
+The `404`, `405` and `503` responses carry none of these headers, and the
+`/healthz` body and headers are byte-for-byte what they were before: a load
+balancer reading the probe must not change behavior because of them. The
+override variable `RELAY_WEB_CSP` replaces the `content-security-policy`
+value only — it is validated fail-closed at boot (a non-string value, a
+newline or control byte, a value above the 1024-character ceiling, or a
+policy that does not declare the `default-src` directive refuses the boot:
+`invalid relay web content policy, refusing to start`, exit 1, no listener).
+The relay stays a blind router: these are static header values, and none of
+the route's decisions ever touch frames, keys or plaintext.
 
 ## Behind a proxy: `x-forwarded-for` and the per-IP cap
 
