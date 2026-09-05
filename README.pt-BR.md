@@ -529,7 +529,10 @@ saída JSONL no mesmo `userData/logs/daemon-sidecar.log` (rotaciona para
 `daemon-sidecar.log.1`, cap ~1MB, 2 arquivos — falha de escrita é ignorada em
 silêncio). No app empacotado o stdout/stderr do daemon ia para um console que
 não existe; o item **Open logs folder** do tray agora registra qual arquivo
-guarda o quê.
+guarda o quê. Antes de qualquer escrita, um redator de linhas troca cada URI
+de pareamento por `[pairing-uri redacted]` e descarta o bloco do QR de boot —
+o arquivo é seguro de anexar num relato de bug: ele nunca contém a credencial
+que poderia parear um novo dispositivo com a sua máquina.
 
 **Notificação nativa quando o daemon para**: se o orçamento de respawn do
 sidecar se esgota, o shell dispara uma notificação nativa única —
