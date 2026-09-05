@@ -1,6 +1,17 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { readFileSync, statSync } from "node:fs";
+import { extname } from "node:path";
+import { gzipSync } from "node:zlib";
 import { contentTypeFor, cacheControlFor, resolveWebPath, spaFallbackPath } from "./webroot.js";
 import { securityHeaders } from "./webheaders.js";
+import {
+  negotiateEncoding,
+  WebEncodingCache,
+  webEncodingCacheKey,
+  WEB_ENCODING_CACHE_MAX_BYTES,
+  WEB_ENCODING_CACHE_MAX_ENTRIES,
+  type WebEncodingDecision,
+} from "./webencoding.js";
 
 /**
  * GET /healthz — public, unauthenticated liveness probe for the hosted
@@ -43,6 +54,18 @@ import { securityHeaders } from "./webheaders.js";
  * starved out of its own probe, and the probe consumes no tokens. The drain
  * keeps priority over the budget so the LB protocol stays intact, and the
  * WebSocket upgrade path never reaches this handler at all.
+ *
+ * P2-198: a 200 document whose extension and size pass the pure
+ * webencoding.ts negotiation and whose client accepts gzip is served
+ * content-encoding: gzip — the bytes compressed once per process and
+ * memoized in WEB_ENCODING_CACHE (path + size + mtime keyed, capped in
+ * entries and total bytes). Both 200 variants carry vary: accept-encoding
+ * so a shared cache never mixes them; the identity variant keeps streaming
+ * through the injected `send` exactly as before. The 404/405/503 answers and
+ * the /healthz body stay byte-for-byte as they were: no compression, no
+ * vary — a load balancer reading the probe must not change behavior because
+ * of this. The relay stays blind: only public static assets from the
+ * allowlisted root pass through here, never a sealed frame.
  */
 
 export interface HealthzState {
@@ -78,8 +101,11 @@ export function healthzPayload(s: HealthzState, now = Date.now(), draining = fal
 /**
  * Injected static-file I/O for the P2-188 web route. `root` is the
  * fail-closed-validated RELAY_WEB_DIR; `isFile` and `send` are the only
- * filesystem touches, owned by index.ts so this module stays testable over
- * real HTTP without stubbing fs.
+ * filesystem touches of the identity path, owned by index.ts so this module
+ * stays testable over real HTTP without stubbing fs. P2-198: the gzip path
+ * additionally reads the file (readFileSync) and compresses it (gzipSync)
+ * inside this module — the decision comes from the pure webencoding.ts and
+ * the bytes are memoized in WEB_ENCODING_CACHE.
  */
 export interface WebStatic {
   root: string;
@@ -102,9 +128,53 @@ export interface WebBudgetGate {
   take(req: IncomingMessage, nowMs: number): { allow: boolean; retryAfterS: number };
 }
 
-/** 200 with the resolved file's content-type and cache policy, body via `send`. */
+/**
+ * P2-198: process-wide memoized gzip bodies for the static route. Keyed by
+ * absolute path + size + mtime; capped in entries and total bytes by the
+ * documented webencoding.ts constants, oldest entry discarded first. One
+ * bundle is compressed at most once per process.
+ */
+export const WEB_ENCODING_CACHE = new WebEncodingCache(
+  WEB_ENCODING_CACHE_MAX_ENTRIES,
+  WEB_ENCODING_CACHE_MAX_BYTES,
+);
+
+/**
+ * P2-198: the encoding decision for a 200 document, plus the stat the
+ * decision needs (size for the thresholds, mtime for the cache key). A file
+ * that vanished between isFile() and this stat falls back to identity — the
+ * injected sender re-answers through its own error path, exactly as before.
+ */
+function planEncoding(
+  abs: string,
+  req: IncomingMessage,
+): { decision: WebEncodingDecision; sizeBytes: number; mtimeMs: number } {
+  try {
+    const st = statSync(abs);
+    if (st.isFile()) {
+      return {
+        decision: negotiateEncoding(req.headers["accept-encoding"], extname(abs), st.size),
+        sizeBytes: st.size,
+        mtimeMs: st.mtimeMs,
+      };
+    }
+  } catch {
+    // fall through: identity, streamed through the injected sender
+  }
+  return { decision: { encoding: "identity", vary: false }, sizeBytes: -1, mtimeMs: 0 };
+}
+
+/**
+ * 200 with the resolved file's content-type and cache policy, body via `send`.
+ * P2-198: when the negotiation returns gzip, the compressed bytes come from
+ * WEB_ENCODING_CACHE (compressed once, memoized) and are written with
+ * content-encoding, vary and the already-compressed content-length — the
+ * P2-192 header set passes through untouched. HEAD is answered with the same
+ * headers and no body (Node suppresses the body of a HEAD response). Any
+ * failure reading or compressing falls back to the identity path below.
+ */
 function sendDoc(web: WebStatic, abs: string, req: IncomingMessage, res: ServerResponse): void {
-  res.writeHead(200, {
+  const headers = {
     "content-type": contentTypeFor(abs),
     "cache-control": cacheControlFor(abs),
     // the route is public and unauthenticated: the allowlist already pins
@@ -113,7 +183,30 @@ function sendDoc(web: WebStatic, abs: string, req: IncomingMessage, res: ServerR
     // P2-192: CSP, framing, referrer and permissions lockdown on both 200
     // paths (resolved asset and SPA fallback); HSTS only under TLS
     ...securityHeaders(web.isTls(req), web.csp),
-  });
+  };
+  const plan = planEncoding(abs, req);
+  if (plan.decision.encoding === "gzip") {
+    try {
+      const body = WEB_ENCODING_CACHE.getOrCompute(
+        webEncodingCacheKey(abs, plan.sizeBytes, plan.mtimeMs),
+        () => gzipSync(readFileSync(abs)),
+      );
+      res.writeHead(200, {
+        ...headers,
+        "content-encoding": "gzip",
+        vary: "Accept-Encoding",
+        "content-length": String(body.length),
+      });
+      res.end(body);
+      return;
+    } catch {
+      // the file vanished between isFile() and the read, or compression
+      // failed: fall through to the identity path, which streams as before
+    }
+  }
+  // identity variant: same headers as before (byte for byte) plus vary so a
+  // shared cache never mixes this variant with the gzip one (P2-198)
+  res.writeHead(200, plan.decision.vary ? { ...headers, vary: "Accept-Encoding" } : headers);
   web.send(abs, req, res);
 }
 

@@ -9,9 +9,10 @@ import net from "node:net";
 import { createReadStream, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
+import { gunzipSync } from "node:zlib";
 import { fileURLToPath } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
-import { healthzHandler, healthzPayload } from "../apps/relay/src/healthz";
+import { healthzHandler, healthzPayload, WEB_ENCODING_CACHE } from "../apps/relay/src/healthz";
 import { metricsAuthOk, metricsBinding } from "../apps/relay/src/metricsbind";
 import { DRAIN_GRACE_MS_CEILING, MAX_FRAME_CEILING, relayLimits } from "../apps/relay/src/limits";
 import { createShutdown, DRAIN_MS, refuseUpgrade } from "../apps/relay/src/shutdown";
@@ -34,6 +35,13 @@ import {
   WEB_RATE_PER_MIN_CEILING,
   WEB_RATE_PER_MIN_DEFAULT,
 } from "../apps/relay/src/webbudget";
+import {
+  negotiateEncoding,
+  WebEncodingCache,
+  webEncodingCacheKey,
+  WEB_ENCODING_MAX_BYTES,
+  WEB_ENCODING_MIN_BYTES,
+} from "../apps/relay/src/webencoding";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -1053,6 +1061,203 @@ check("budget map: identity derivation follows TRUST_PROXY_HOPS exactly like the
   check("budget http: the probe consumes no budget (bucket stays empty)", (await budgetRequest("/", { "x-forwarded-for": "9.9.9.1" })).status === 429);
 
   budgetServer.close();
+  rmSync(root, { recursive: true, force: true });
+}
+
+// --- 23. content negotiation (P2-198, pure decision table) --------------------
+const IN_RANGE = 10_000;
+check("encoding: js asset with a plain gzip header is compressed and varies", (() => {
+  const d = negotiateEncoding("gzip", ".js", IN_RANGE);
+  return d.encoding === "gzip" && d.vary === true;
+})());
+check("encoding: absent header stays identity but still varies", (() => {
+  const d = negotiateEncoding(undefined, ".js", IN_RANGE);
+  return d.encoding === "identity" && d.vary === true;
+})());
+check("encoding: gzip with quality zero means identity (refused, not preferred)", (() => {
+  const d = negotiateEncoding("gzip;q=0", ".js", IN_RANGE);
+  return d.encoding === "identity" && d.vary === true;
+})());
+check("encoding: the wildcard accepts gzip", negotiateEncoding("*", ".js", IN_RANGE).encoding === "gzip");
+check("encoding: a zero-quality wildcard refuses gzip too", negotiateEncoding("*;q=0", ".js", IN_RANGE).encoding === "identity");
+check("encoding: case and whitespace around token and q are ignored", (() => {
+  const d = negotiateEncoding("  GZIP ; Q = 0.5 ", ".js", IN_RANGE);
+  return d.encoding === "gzip" && d.vary === true;
+})());
+check("encoding: a header without gzip stays identity", negotiateEncoding("br", ".js", IN_RANGE).encoding === "identity");
+check("encoding: gzip among other encodings is honored", negotiateEncoding("deflate, gzip, br", ".js", IN_RANGE).encoding === "gzip");
+check("encoding: an explicit gzip element wins over the wildcard quality", negotiateEncoding("gzip;q=0, *", ".js", IN_RANGE).encoding === "identity");
+check("encoding: a fractional quality above zero compresses", negotiateEncoding("gzip;q=0.5", ".js", IN_RANGE).encoding === "gzip");
+check("encoding: a non-numeric quality is a malformed header (identity)", negotiateEncoding("gzip;q=abc", ".js", IN_RANGE).encoding === "identity");
+check("encoding: a quality above one is malformed (identity)", negotiateEncoding("gzip;q=2", ".js", IN_RANGE).encoding === "identity");
+check("encoding: an empty quality is malformed (identity)", negotiateEncoding("gzip;q=", ".js", IN_RANGE).encoding === "identity");
+check("encoding: a quality with four decimals is malformed (identity)", negotiateEncoding("gzip;q=0.0001", ".js", IN_RANGE).encoding === "identity");
+check("encoding: an element without a token is malformed (identity)", negotiateEncoding(";q=1", ".js", IN_RANGE).encoding === "identity");
+check("encoding: an empty header is identity", negotiateEncoding("", ".js", IN_RANGE).encoding === "identity");
+check("encoding: png is never compressed, whatever the header says", (() => {
+  const anyHeader = negotiateEncoding("*", ".png", IN_RANGE);
+  const none = negotiateEncoding(undefined, ".png", IN_RANGE);
+  return anyHeader.encoding === "identity" && anyHeader.vary === false && none.encoding === "identity" && none.vary === false;
+})());
+check("encoding: jpg/webp/ico/woff2 are never compressible either", (() => {
+  return [".jpg", ".webp", ".ico", ".woff2"].every(
+    (ext) => negotiateEncoding("gzip", ext, IN_RANGE).encoding === "identity" && negotiateEncoding("gzip", ext, IN_RANGE).vary === false,
+  );
+})());
+check("encoding: the extension is case-insensitive and dot-tolerant", negotiateEncoding("gzip", ".JS", IN_RANGE).encoding === "gzip" && negotiateEncoding("gzip", "js", IN_RANGE).encoding === "gzip");
+check("encoding: a file below the floor is never compressed and does not vary", (() => {
+  const d = negotiateEncoding("gzip", ".js", WEB_ENCODING_MIN_BYTES - 1);
+  return d.encoding === "identity" && d.vary === false;
+})());
+check("encoding: a file at the floor is compressed", negotiateEncoding("gzip", ".js", WEB_ENCODING_MIN_BYTES).encoding === "gzip");
+check("encoding: a file at the ceiling is compressed", negotiateEncoding("gzip", ".js", WEB_ENCODING_MAX_BYTES).encoding === "gzip");
+check("encoding: a file above the ceiling is refused compression", (() => {
+  const d = negotiateEncoding("gzip", ".js", WEB_ENCODING_MAX_BYTES + 1);
+  return d.encoding === "identity" && d.vary === false;
+})());
+check("encoding: thresholds are the documented constants", WEB_ENCODING_MIN_BYTES === 1024 && WEB_ENCODING_MAX_BYTES === 8_388_608);
+
+// --- 24. compressed-body cache (P2-198, pure units) ------------------------------
+check("encoding cache: the same key compresses exactly once", (() => {
+  const c = new WebEncodingCache(8, 1_000_000);
+  let computes = 0;
+  const first = c.getOrCompute("k", () => {
+    computes++;
+    return Buffer.from("one");
+  });
+  const second = c.getOrCompute("k", () => {
+    computes++;
+    return Buffer.from("two");
+  });
+  return computes === 1 && first === second && c.hits === 1 && c.misses === 1;
+})());
+check("encoding cache: the entry cap discards the oldest entry", (() => {
+  const c = new WebEncodingCache(2, 1_000_000);
+  c.getOrCompute("a", () => Buffer.from("1"));
+  c.getOrCompute("b", () => Buffer.from("2"));
+  c.getOrCompute("c", () => Buffer.from("3")); // over the cap → a discarded
+  return c.size === 2 && c.getOrCompute("a", () => Buffer.from("fresh-a")).toString() === "fresh-a";
+})());
+check("encoding cache: the byte cap discards the oldest entry", (() => {
+  const c = new WebEncodingCache(8, 10);
+  c.getOrCompute("a", () => Buffer.alloc(6, 1));
+  c.getOrCompute("b", () => Buffer.alloc(6, 2)); // 12 total > 10 → a evicted
+  return c.bytes === 6 && c.getOrCompute("a", () => Buffer.from("fresh")).toString() === "fresh";
+})());
+check("encoding cache: an entry above the byte cap is never stored", (() => {
+  const c = new WebEncodingCache(8, 10);
+  c.getOrCompute("big", () => Buffer.alloc(11, 1));
+  return c.size === 0 && c.getOrCompute("big", () => Buffer.from("again")).toString() === "again";
+})());
+check("encoding cache: the key binds path, size and mtime together", (() => {
+  const base = webEncodingCacheKey("/a.js", 10, 1);
+  return (
+    base === webEncodingCacheKey("/a.js", 10, 1) &&
+    base !== webEncodingCacheKey("/a.js", 11, 1) &&
+    base !== webEncodingCacheKey("/a.js", 10, 2) &&
+    base !== webEncodingCacheKey("/b.js", 10, 1)
+  );
+})());
+
+// --- 25. negotiated static route over real HTTP (P2-198) --------------------------
+{
+  const root = mkdtempSync(join(tmpdir(), "relay-webgzip-"));
+  const bigJs = 'console.log("bundle");\n'.repeat(120); // 2760 bytes, in range
+  const indexHtml = `<html>${"x".repeat(1200)}</html>`; // 1213 bytes, in range
+  writeFileSync(join(root, "app.js"), bigJs);
+  writeFileSync(join(root, "app-DbC9xY7W.js"), bigJs); // hashed asset → immutable
+  writeFileSync(join(root, "index.html"), indexHtml);
+  writeFileSync(join(root, "tiny.js"), "console.log(1)\n"); // below the floor
+  writeFileSync(join(root, "pic.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 1]));
+  writeFileSync(join(root, "huge.js"), Buffer.alloc(WEB_ENCODING_MAX_BYTES + 1, 0x61)); // above the ceiling
+
+  const gzipServer: Server = createServer(
+    healthzHandler(state, () => false, {
+      root,
+      isFile: (abs) => {
+        try {
+          return statSync(abs).isFile();
+        } catch {
+          return false;
+        }
+      },
+      send: (abs, _req, res) => createReadStream(abs).pipe(res),
+      csp: WEB_CSP_DEFAULT,
+      isTls: () => false,
+    }),
+  );
+  await new Promise<void>((r) => gzipServer.listen(0, "127.0.0.1", r));
+  const gPort = (gzipServer.address() as { port: number }).port;
+  const gzipRequest = (path: string, reqHeaders: Record<string, string> = {}, method = "GET") =>
+    new Promise<{ status: number; headers: Record<string, string | string[] | undefined>; body: Buffer }>((resolve) => {
+      const req = get(`http://127.0.0.1:${gPort}${path}`, { method, headers: reqHeaders }, (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () =>
+          resolve({ status: res.statusCode ?? 0, headers: res.headers, body: Buffer.concat(chunks) }),
+        );
+      });
+      req.end();
+    });
+
+  const gz = await gzipRequest("/app.js", { "accept-encoding": "gzip" });
+  check("gzip http: a js asset with accept-encoding gzip answers content-encoding gzip", gz.status === 200 && gz.headers["content-encoding"] === "gzip");
+  check("gzip http: the compressed body gunzips byte for byte into the original file", gunzipSync(gz.body).toString() === bigJs);
+  check("gzip http: the content-length is the already-compressed length", gz.headers["content-length"] === String(gz.body.length));
+  check("gzip http: content-type and cache-control are untouched", String(gz.headers["content-type"]).startsWith("text/javascript") && gz.headers["cache-control"] === "no-store");
+  check("gzip http: the compressed response carries vary: accept-encoding", gz.headers["vary"] === "Accept-Encoding");
+  check("gzip http: every P2-192 security header rides on the compressed response", ALWAYS_ON_SECURITY_HEADERS.every((k) => gz.headers[k] !== undefined) && gz.headers["x-content-type-options"] === "nosniff");
+
+  const hitsBefore = WEB_ENCODING_CACHE.hits;
+  const gzAgain = await gzipRequest("/app.js", { "accept-encoding": "gzip" });
+  check(
+    "gzip http: the second request of the same asset is byte-identical and served from the cache",
+    gzAgain.body.equals(gz.body) && WEB_ENCODING_CACHE.hits === hitsBefore + 1,
+  );
+
+  const identity = await gzipRequest("/app.js");
+  check("gzip http: the same asset without the header answers without content-encoding", identity.headers["content-encoding"] === undefined && identity.body.toString() === bigJs);
+  check("gzip http: the identity variant carries vary too (shared cache never mixes variants)", identity.headers["vary"] === "Accept-Encoding");
+
+  const qZero = await gzipRequest("/app.js", { "accept-encoding": "gzip;q=0" });
+  check("gzip http: gzip with quality zero falls back to identity", qZero.headers["content-encoding"] === undefined && qZero.body.toString() === bigJs);
+  const wildcard = await gzipRequest("/app.js", { "accept-encoding": "*" });
+  check("gzip http: the wildcard answers gzip", wildcard.headers["content-encoding"] === "gzip");
+
+  const png = await gzipRequest("/pic.png", { "accept-encoding": "gzip" });
+  check("gzip http: png is never compressed and carries no vary", png.headers["content-encoding"] === undefined && png.headers["vary"] === undefined && png.body.equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 1])));
+  const tiny = await gzipRequest("/tiny.js", { "accept-encoding": "gzip" });
+  check("gzip http: a file below the floor is never compressed and carries no vary", tiny.headers["content-encoding"] === undefined && tiny.headers["vary"] === undefined && tiny.body.toString() === "console.log(1)\n");
+  const huge = await gzipRequest("/huge.js", { "accept-encoding": "gzip" });
+  check("gzip http: a file above the ceiling is never compressed and carries no vary", huge.headers["content-encoding"] === undefined && huge.headers["vary"] === undefined && huge.body.length === WEB_ENCODING_MAX_BYTES + 1);
+
+  const spa = await gzipRequest("/pair", { "accept-encoding": "gzip" });
+  check("gzip http: the SPA fallback is compressed the same way", spa.status === 200 && spa.headers["content-encoding"] === "gzip" && gunzipSync(spa.body).toString() === indexHtml);
+  check("gzip http: the SPA fallback carries vary as well", spa.headers["vary"] === "Accept-Encoding");
+
+  const hashed = await gzipRequest("/app-DbC9xY7W.js", { "accept-encoding": "gzip" });
+  check("gzip http: a hashed immutable asset compresses and keeps its cache policy", hashed.headers["content-encoding"] === "gzip" && hashed.headers["cache-control"] === "public, max-age=31536000, immutable");
+
+  const head = await gzipRequest("/app.js", { "accept-encoding": "gzip" }, "HEAD");
+  check("gzip http: HEAD answers the negotiated headers with no body", head.status === 200 && head.headers["content-encoding"] === "gzip" && Number(head.headers["content-length"]) > 0 && head.body.length === 0);
+
+  const missing = await gzipRequest("/missing.js", { "accept-encoding": "gzip" });
+  check("gzip http: 404 is unchanged — no compression, no vary, empty body", missing.status === 404 && missing.headers["content-encoding"] === undefined && missing.headers["vary"] === undefined && missing.body.length === 0);
+  const notAllowed = await gzipRequest("/", { "accept-encoding": "gzip" }, "POST");
+  check("gzip http: 405 is unchanged — allow header, no compression, no vary", notAllowed.status === 405 && notAllowed.headers["allow"] === "GET, HEAD" && notAllowed.headers["content-encoding"] === undefined && notAllowed.headers["vary"] === undefined);
+
+  const probe = await gzipRequest("/healthz", { "accept-encoding": "gzip" });
+  check(
+    "gzip http: /healthz body and headers are byte-for-byte unchanged (no gzip, no vary)",
+    probe.status === 200 &&
+      probe.headers["content-type"] === "application/json" &&
+      probe.headers["content-encoding"] === undefined &&
+      probe.headers["vary"] === undefined &&
+      probe.body.toString() ===
+        `{"ok":true,"version":"0.2.0","uptimeS":${(JSON.parse(probe.body.toString()) as { uptimeS: number }).uptimeS},"rooms":7,"roomsRejected":2}`,
+  );
+
+  gzipServer.close();
   rmSync(root, { recursive: true, force: true });
 }
 

@@ -547,8 +547,16 @@ both fail-closed with a `10000` ceiling), burst exhaustion answers `429` with
 identity key is the P2-174 `ipTag` of the same proxy-hops-aware address the
 upgrade path derives (never a raw IP), idle buckets are pruned by the
 liveness sweep under a 4096-entry cap — and `GET /healthz` is never counted
-nor barred, so a load balancer cannot be starved out of its own probe. The
-relay stays a blind router: no
+nor barred, so a load balancer cannot be starved out of its own probe. Text
+assets are also negotiated with gzip (P2-198): html/js/css/map/json/svg/txt/
+webmanifest between 1024 bytes and 8 MiB are served `content-encoding: gzip`
+when the client's `Accept-Encoding` allows it (quality zero and malformed
+headers mean identity, the `*` wildcard counts as gzip), both variants carry
+`Vary: Accept-Encoding`, the compressed bytes are memoized in memory capped
+at 64 entries / 32 MiB (keyed by path + size + mtime, oldest discarded), and
+`png`/`jpg`/`webp`/`ico`/`woff2` plus every body outside the size range stay
+uncompressed — while the 404/405 answers and the `/healthz` probe remain
+byte-for-byte as they were. The relay stays a blind router: no
 plaintext, no keys, no room ids in any of it.
 
 **Close-code-aware relay retries (P2-156)**: when the relay socket closes, the

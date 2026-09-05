@@ -441,7 +441,16 @@ mesmos cabeçalhos de segurança dos documentos 200, a chave da identidade é o
 caminho de upgrade já deriva (nunca um IP cru), baldes ociosos são podados
 pelo sweep de liveness sob teto de 4096 entradas — e o `GET /healthz` nunca é
 contado nem barrado, então um balanceador não pode ser expulso do próprio
-probe. O relay continua cego: nada disso toca frames, chaves ou plaintext.
+probe. Assets de texto também são negociados com gzip (P2-198): html/js/css/
+map/json/svg/txt/webmanifest entre 1024 bytes e 8 MiB são servidos com
+`content-encoding: gzip` quando o `Accept-Encoding` do cliente permite
+(qualidade zero e cabeçalho malformado significam identity, o coringa `*`
+vale como gzip), as duas variantes carregam `Vary: Accept-Encoding`, os bytes
+comprimidos ficam memoizados em memória com teto de 64 entradas / 32 MiB
+(chave caminho + tamanho + mtime, descarte do mais antigo), e
+`png`/`jpg`/`webp`/`ico`/`woff2` e todo corpo fora da faixa de tamanho seguem
+sem compressão — enquanto 404/405 e o `/healthz` permanecem byte a byte como
+sempre. O relay continua cego: nada disso toca frames, chaves ou plaintext.
 
 No app desktop você não precisa exportar `RELAY_URL` no braço: os Ajustes
 (Settings) têm o card **Relay do celular** (seção exclusiva do shell), onde
