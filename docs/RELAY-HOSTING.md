@@ -152,6 +152,28 @@ entry into attacker-chosen values and rotate its per-IP budget. The header is
 envelope metadata only — the relay never reads frame or key material, and the
 end-to-end encryption guarantees are unaffected either way.
 
+## Logs carry a derived IP tag, not the raw address (P2-174)
+
+The relay writes no personal data to its JSONL log except one field: when a
+connection is rejected by the per-IP cap, the `connection rejected:
+per-IP cap exceeded` line carries `ipTag` — **not** the client's address.
+The tag is the first 12 hex digits of `sha256(salt || address)`, where the
+salt is 32 fresh random bytes generated once when the process boots. What
+that means in practice:
+
+- **Same tag inside one process ⇒ same origin.** Two rejections with the
+  same `ipTag` while this instance is running came from the same source, so
+  triage and per-source correlation keep working.
+- **The tag changes at every restart.** A new process mints a new salt, so
+  tags from yesterday match nothing today: cross-restart (and cross-provider)
+  correlation of the same user is not possible from the log alone.
+- **The tag is irreversible.** Inverting it would require guessing the
+  process's random salt; the raw address is never written anywhere.
+
+Admission, capping, proxy-hop resolution and rate limiting are untouched —
+the raw address remains the internal cap key; only what reaches a log line
+changed. No other relay log line ever carries a client address.
+
 ## Liveness probe
 
 `GET /healthz` answers `200` with a counter-only JSON body and is safe to

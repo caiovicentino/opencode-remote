@@ -1,6 +1,7 @@
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import { accessSync, constants as fsConstants, readFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
 // relative imports carry .js specifiers so plain `node` can run the tsc emit
 // (deploy/relay/Dockerfile + tsconfig.build.json) — tsx resolves them too
@@ -14,6 +15,7 @@ import { metricsAuthOk, metricsBinding } from "./metricsbind.js";
 import { relayLimits } from "./limits.js";
 import { relayKnobs } from "./knobs.js";
 import { tlsPlan } from "./tlsconfig.js";
+import { makeIpTagger } from "./iptag.js";
 
 /**
  * Relay: a blind router.
@@ -78,6 +80,14 @@ if (KNOBS.problems.length > 0) {
 const { ratePerMin: RATE_PER_MIN, rateBurst: RATE_BURST, maxPerIp: MAX_PER_IP, trustProxyHops: TRUST_PROXY_HOPS, pingIntervalS: PING_INTERVAL_S } = KNOBS;
 const RATE_LIMIT_CLOSE = 4029; // custom 4xxx: "too many frames"
 const ipCap = new IpCap(MAX_PER_IP);
+// P2-174: the only personal datum the relay ever logged was the raw client
+// address on the per-IP-cap rejection line — hosted, that lands in provider
+// log retention. From now on the log carries ipTag: the first 12 hex digits
+// of sha256(salt || address) with a fresh random salt per boot. Stable within
+// this process (same tag ⇒ same origin), different across restarts,
+// irreversible. The raw address below stays the IpCap key exactly as before;
+// only what reaches a log line changed.
+const tagIp = makeIpTagger(randomBytes(32));
 
 // root package.json (monorepo) — same single source the web PWA generates from
 const VERSION = (() => {
@@ -310,7 +320,9 @@ wss.on("connection", (socket: Socket, req) => {
   );
   if (!ipCap.admit(ip)) {
     m.rejects++;
-    ev("warn", "connection rejected: per-IP cap exceeded", { ip });
+    // ipTag, never ip (P2-174): the derived identifier keeps triage possible
+    // without writing the user's address into retained provider logs.
+    ev("warn", "connection rejected: per-IP cap exceeded", { ipTag: tagIp(ip) });
     socket.close(1013, "too many connections");
     return;
   }

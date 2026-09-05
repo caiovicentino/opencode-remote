@@ -367,7 +367,13 @@ and WebSocket upgrades are refused while the drain runs, so the balancer
 stops routing new peers to the closing instance — the container
 `HEALTHCHECK` therefore reports unhealthy during the drain on purpose.
 `RELAY_DRAIN_GRACE_MS` (default `0`, max `2000`) delays the socket close
-after the 503 so coarse-polling balancers have time to notice. The daemon
+after the 503 so coarse-polling balancers have time to notice. The relay log
+never records client addresses: the per-IP-cap rejection line carries
+`ipTag`, an identifier derived per process (first 12 hex digits of
+`sha256(salt || address)` with a random salt minted at boot) — two
+rejections with the same tag inside one process come from the same origin,
+the tag changes at every restart, and it cannot be reversed to the address
+(P2-174). The daemon
 validates
 `RELAY_URL` at boot and fails closed: only `ws://`/`wss://` URLs dial, and
 plain `ws://` at a non-loopback host is refused — an invalid URL disables the
