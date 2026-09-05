@@ -211,6 +211,23 @@ export function dirtyGuardDetail(porcelain: string | null): string | null {
   return `prod checkout dirty: ${tracked.length} tracked file(s) modified (${paths}) — deploy aborted before reset`;
 }
 
+// ── Direction guard: a deploy only ever moves production FORWARD ─────────────
+
+/**
+ * Pure verdict for the ancestry probe (`git merge-base --is-ancestor <prod>
+ * <target>`): the target must be a DESCENDANT of the sha production runs.
+ * Production ahead of the target (an unverified direct push landed there, or
+ * the verified list lags) must never be reset backward by the deploy path —
+ * rolling back is only the explicit quarantine/rollback flow's business.
+ * `null` (probe failed) fails closed: unknown ancestry is not safe to reset.
+ */
+export function directionGuardDetail(prodSha: string, target: string, isAncestor: boolean | null): string | null {
+  if (isAncestor === true) return null;
+  const pair = `prod ${prodSha.slice(0, 7)} -> target ${target.slice(0, 7)}`;
+  if (isAncestor === null) return `ancestry unknown (git merge-base failed) for ${pair} — deploy skipped, prod untouched`;
+  return `target is not a descendant of prod HEAD (${pair}) — prod is ahead or diverged; deploy skipped, prod untouched (rollback only via the explicit quarantine/rollback flow)`;
+}
+
 // ── P1-021: last-install state — skip npm ci when the lockfile is unchanged ─
 
 /** sha256 hex digest — the package-lock.json hash persisted in last-install.json. */

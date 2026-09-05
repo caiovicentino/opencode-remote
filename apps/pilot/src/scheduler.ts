@@ -127,6 +127,18 @@ export function nightlyIdleDue(lastCycleAt: number | undefined, now = Date.now()
   return now - (lastCycleAt ?? 0) >= NIGHTLY_IDLE_MS;
 }
 
+/**
+ * Which branch of the nightly layer the loop takes this tick. The nightly
+ * agents (redteam, explorer, forensic, experience maintenance) are the
+ * self-improvement layer of OUR repo: a foreign mission (the user's repo) gets
+ * the mission pipeline only — never a red team attacking their code base, nor
+ * a "nightly skipped" record for a pass that must not run there.
+ */
+export function nightlyLayer(foreignMission: boolean, slotsRunning: number): "run" | "busy" | "off" {
+  if (foreignMission) return "off";
+  return slotsRunning === 0 ? "run" : "busy";
+}
+
 /** The nightly skip record persisted in state.json (once per day, honest). */
 export interface NightlySkip {
   date: string;

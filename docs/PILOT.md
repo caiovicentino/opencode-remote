@@ -199,7 +199,23 @@ nos prompts do strategist e do researcher; `repoUrl` clona o repo em
 a fila do `origin/main` **dele** e roda builders/reviewers/judge lá (perfil
 genérico acima). Um repo externo **nunca dispara deploy**: nada de produção
 roda a partir dele, então reset/build/kickstart dos nossos serviços seria só
-uma queda. O Mission Control (aba Linha do tempo) mostra a missão ativa
+uma queda. A **camada nightly inteira** (redteam, explorer, forensic,
+manutenção de experiência — `nightlyLayer()` em `scheduler.ts`) também fica
+**desligada** numa missão externa: auto-evolução é sobre o nosso repo; o repo
+do usuário recebe só o pipeline de missão (nem o registro "nightly skipped" é
+gravado). **Primeiro contato com o repo externo**: o clone pina o `main`
+local a partir do **branch default real** do remoto (`refs/remotes/origin/HEAD`,
+depois `git remote show origin`, por fim `main` — `missionrepo.ts`); um
+default diferente de `main` é logado com warn + evento `mission/default-branch`
+em vez de falhar em silêncio (o restante do pipeline ainda usa `main` como
+base — parametrizar é follow-up). Sem `BACKLOG.md` no formato do pilot (sem
+`## Ready`), o strategist **semeia o esqueleto** (`## Ready` / `## Blocked` /
+`## Done`, `seedBacklogSkeleton` em `backlog.ts`) dentro do passo `apply` do
+refill — local ao clone, nunca pushado por si; chega ao repo do usuário só
+dentro do PR de refill, como qualquer landing. O protocolo de missão do chat
+manda o agente **avisar o usuário** que a frota trabalha via PRs (branches
+`pilot/<id>` e `pilot/meta`, squash em main) com as credenciais do `gh` desta
+máquina. O Mission Control (aba Linha do tempo) mostra a missão ativa
 (texto + origem prompt/repo + quando foi definida + a linha `modelos:
 papel=modelo` quando há override), somente leitura fora da ação de
 encerrar; o `GET /api/pilot-mission` devolve `spec` e usa o `prompt` dela
@@ -212,8 +228,16 @@ missão. O id só é usado quando o **catálogo vivo** do opencode
 aí o papel roda `opencode run --model <provider/modelo>` (um argv, sem
 shell) e o log registra `agent-dispatch` com `tier:"mission"`. Id
 desconhecido, indisponível ou catálogo inalcançável ⇒ `mission-model-fallback`
-(warn) e o papel segue como antes (tier B se configurado para o strategist,
-senão tier A) — o slot nunca cai por modelo. `reviewer` cobre os dois
+(warn, com `wanted` **e** `usedInstead`) e o papel segue como antes (tier B se
+configurado para o strategist, senão tier A) — o slot nunca cai por modelo.
+A substituição **nunca é silenciosa**: cada fallback é gravado em
+`~/.opencode-remote/pilot/model-substitutions.json` (`modelsubst.ts`, uma
+entrada por papel, apagada quando o pin volta a despachar de verdade); o
+`GET /api/pilot-mission` devolve `modelSubstitutions` (só entradas cujo
+`wanted` ainda é o pin ativo) e o card do Mission Control mostra a linha
+"modelo indisponível, rodando o padrão no lugar: papel: pedido -> usado"; o
+protocolo do chat manda o agente consultar esse campo quando o usuário
+pergunta qual modelo está rodando. `reviewer` cobre os dois
 reviewers adversariais; o árbitro de escalada continua no
 `reviewerEscalation` do tier B; o planner não é papel de missão.
 
@@ -351,6 +375,27 @@ mergeadas pelo workflow sem intervenção humana.
    desconhecido não é seguro de resetar — propositalmente diferente do guard de
    disco). Arquivos untracked (`opencode.json`) e gitignored (`dist/`,
    `node_modules/`) nunca bloqueiam.
+0e. **Guard de direção**: antes do reset, `git merge-base --is-ancestor <prod>
+   <alvo>` — o alvo precisa ser **descendente** do SHA que produção roda. Prod
+   à frente do alvo (push direto não verificado que caiu lá, lista de merges
+   verificados atrasada) ou ancestralidade desconhecida (sonda falhou,
+   fail-closed) ⇒ warn `direction-guard`, evento no feed, **nada muda** (sem
+   reset, sem quarentena, sem notify). O deploy nunca anda produção para trás;
+   voltar só pelo fluxo explícito de quarentena/rollback (`banAndRollback`).
+   Os quatro guards (SHA, disco, árvore suja, direção) vivem em
+   `deployPreflight()`; uma recusa devolve `{ ok:false, refused:"<guard>" }`.
+0f. **Budget e backoff de recusa**: `state.deploys` só anda quando o deploy
+   passa por todos os guards e vai mutar produção (hook `onAttempt`, persistido
+   antes do primeiro reset — um deploy que faz self-reload continua contado).
+   Recusa de guard **não gasta budget**, não conta `failures` nem manda digest
+   (2026-09-05: 196 recusas do guard de árvore suja queimaram o cap de 200 e os
+   merges verificados do dia não deployaram sozinhos). O caminho de pending
+   deploy ainda tenta a cada ciclo idle, mas a **mesma** recusa não-SHA
+   (`dirty-guard`, `disk-guard`, `direction-guard`) 5 vezes seguidas
+   (`DEPLOY_REFUSAL_BACKOFF_AFTER`) pausa o caminho por 30 min
+   (`DEPLOY_REFUSAL_BACKOFF_MS`, `deploybackoff.ts`; warn + evento
+   `deploy/backoff`). Tentativa real, recusa de outro tipo ou restart do
+   processo zeram a sequência (estado em memória).
 1. `git reset --hard <sha>` no repo de produção + install + `npm run build`.
    **P1-021**: o install é decidido pelo hash do `package-lock.json` persistido
    em `~/.opencode-remote/pilot/last-install.json` — lock inalterado roda o fast
