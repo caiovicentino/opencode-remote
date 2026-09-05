@@ -142,9 +142,13 @@ jobs:
 
   # P2-126: stage 5 is half Windows — the release also ships the NSIS setup
   # exe plus the latest.yml metadata the in-app update check falls back to.
-  # Signing is optional: without the CSC_LINK / CSC_KEY_PASSWORD secrets the
-  # build ships unsigned (one-time SmartScreen warning, README) instead of
-  # failing the job. shell: bash so the dist/*.exe glob expands (pwsh won't).
+  # P2-159: Windows signing has its own profile (WIN_CSC_* secrets), resolved
+  # by a preflight before packaging — the job never references the Apple
+  # CSC_LINK/CSC_KEY_PASSWORD pair the mac job consumes, so the installer can
+  # not be signed with (or clobbered by) a Developer ID certificate. Without
+  # WIN_CSC_* secrets the build ships unsigned (one-time SmartScreen warning,
+  # README); a half-configured profile aborts the job (fail-closed preflight).
+  # shell: bash on every run step so globs expand (pwsh won't).
   desktop-win:
     runs-on: windows-latest
     needs: release
@@ -161,16 +165,33 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build + package NSIS installer (signed when CSC secrets exist)
+      # P2-159: pure env inspection — exits 0 writing mode=authenticode|
+      # unsigned, or exits 1 (job aborts) listing ALL fail-closed problems
+      # when the WIN_CSC_* secrets are half-configured or blank.
+      - name: Signing preflight (Authenticode or unsigned)
+        id: win-signing
         env:
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          WIN_CSC_SUBJECT_NAME: ${{ secrets.WIN_CSC_SUBJECT_NAME }}
+        shell: bash
+        run: node apps/desktop/scripts/signing-profile-win.mjs
+
+      - name: Build + package NSIS installer (signed when WIN_CSC_* secrets exist)
+        env:
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          WIN_CSC_SUBJECT_NAME: ${{ secrets.WIN_CSC_SUBJECT_NAME }}
         shell: bash
         run: |
-          if [ -z "$CSC_LINK" ]; then
-            echo "CSC_LINK not configured — shipping unsigned installer (SmartScreen warning, README)"
+          if [ "${{ steps.win-signing.outputs.mode }}" = "unsigned" ]; then
+            echo "Signing profile: unsigned — shipping unsigned installer (SmartScreen warning, README)"
           fi
-          npm run dist --workspace @ocr/desktop
+          if [ -n "$WIN_CSC_SUBJECT_NAME" ]; then
+            npm run dist --workspace @ocr/desktop -- -c.win.signtoolOptions.certificateSubjectName="$WIN_CSC_SUBJECT_NAME"
+          else
+            npm run dist --workspace @ocr/desktop
+          fi
 
       - name: Attach setup exe + update metadata to the GitHub release
         env:
