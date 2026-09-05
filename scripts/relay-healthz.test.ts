@@ -6,11 +6,21 @@
  */
 import { createServer, get, type Server } from "node:http";
 import net from "node:net";
+import { createReadStream, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
 import { healthzHandler, healthzPayload } from "../apps/relay/src/healthz";
 import { metricsAuthOk, metricsBinding } from "../apps/relay/src/metricsbind";
 import { DRAIN_GRACE_MS_CEILING, MAX_FRAME_CEILING, relayLimits } from "../apps/relay/src/limits";
 import { createShutdown, DRAIN_MS, refuseUpgrade } from "../apps/relay/src/shutdown";
+import {
+  cacheControlFor,
+  contentTypeFor,
+  resolveWebPath,
+  spaFallbackPath,
+  webRootPlan,
+} from "../apps/relay/src/webroot";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -453,6 +463,201 @@ check(
     await p;
     check("drain-grace: graceful exit 0 after grace + settle", exits.length === 1 && exits[0] === 0 && t.timers.length === 0);
   }
+}
+
+// --- 10. static web root paths (P2-188, pure resolver) ------------------------
+const WEB_ROOT = "/srv/relay-web";
+check("webroot: common asset resolves inside the root", resolveWebPath(WEB_ROOT, "/assets/app.js") === join(WEB_ROOT, "assets", "app.js"));
+check("webroot: nested path with allowed extension resolves", resolveWebPath(WEB_ROOT, "/assets/chunk/manifest.webmanifest") === join(WEB_ROOT, "assets/chunk/manifest.webmanifest"));
+check("webroot: .. traversal rejected", resolveWebPath(WEB_ROOT, "/..") === null && resolveWebPath(WEB_ROOT, "/../etc/passwd.js") === null);
+check("webroot: percent-encoded traversal rejected after one decode", resolveWebPath(WEB_ROOT, "/..%2f..%2fetc%2fpasswd.js") === null && resolveWebPath(WEB_ROOT, "/%2e%2e/%2e%2e/etc/x.js") === null);
+check("webroot: encoded absolute path rejected (decoded separator)", resolveWebPath(WEB_ROOT, "/%2Fetc%2Fpasswd") === null);
+check("webroot: absolute system path rejected", resolveWebPath(WEB_ROOT, "/etc/passwd") === null);
+check("webroot: hidden file rejected", resolveWebPath(WEB_ROOT, "/.env") === null);
+check("webroot: hidden segment rejected", resolveWebPath(WEB_ROOT, "/config/.secret.json") === null);
+check("webroot: extension outside the allowlist rejected", resolveWebPath(WEB_ROOT, "/secret.php") === null && resolveWebPath(WEB_ROOT, "/bundle.exe") === null);
+check("webroot: missing extension is not an asset (SPA candidate instead)", resolveWebPath(WEB_ROOT, "/pair") === null);
+check("webroot: backslash rejected", resolveWebPath(WEB_ROOT, "/a\\b.js") === null);
+check("webroot: NUL byte rejected", resolveWebPath(WEB_ROOT, "/x%00.js") === null);
+check("webroot: malformed percent escape rejected", resolveWebPath(WEB_ROOT, "/x%zz.js") === null);
+check("webroot: path not starting with / rejected", resolveWebPath(WEB_ROOT, "assets/app.js") === null);
+check("webroot: query-string-free contract — trailing slash is not an asset", resolveWebPath(WEB_ROOT, "/assets/") === null);
+
+// containment backstop with the injected canonicalize hook (fs.realpathSync
+// in index.ts): a symlink planted inside the root pointing outside is null
+{
+  const root = mkdtempSync(join(tmpdir(), "relay-webroot-"));
+  const outside = join(tmpdir(), `relay-webroot-outside-${Date.now()}.js`);
+  writeFileSync(outside, "outside");
+  symlinkSync(outside, join(root, "evil.js"));
+  check(
+    "webroot: symlink escaping the root rejected by resolved-path containment",
+    resolveWebPath(root, "/evil.js", (p) => realpathSync(p)) === null,
+  );
+  rmSync(root, { recursive: true, force: true });
+  rmSync(outside, { force: true });
+}
+
+// --- 11. SPA fallback (P2-188, pure resolver) ----------------------------------
+check("spa: root path falls back to index.html", spaFallbackPath(WEB_ROOT, "/") === join(WEB_ROOT, "index.html"));
+check("spa: extension-less route falls back to index.html", spaFallbackPath(WEB_ROOT, "/pair") === join(WEB_ROOT, "index.html"));
+check("spa: route with extension never falls back (missing asset ≠ index)", spaFallbackPath(WEB_ROOT, "/assets/missing.js") === null);
+check("spa: probe path is never the document", spaFallbackPath(WEB_ROOT, "/healthz") === null);
+check("spa: unsafe path never falls back", spaFallbackPath(WEB_ROOT, "/..%2fetc") === null && spaFallbackPath(WEB_ROOT, "/.env") === null);
+
+// --- 12. content types and cache policy (P2-188, pure maps) --------------------
+check("content-type: html served as text/html", contentTypeFor("/x/index.html") === "text/html; charset=utf-8");
+check("content-type: js served as text/javascript", contentTypeFor("/x/assets/app.js") === "text/javascript; charset=utf-8");
+check("content-type: css served as text/css", contentTypeFor("/x/app.css") === "text/css; charset=utf-8");
+check("content-type: woff2 served as font/woff2", contentTypeFor("/x/font.woff2") === "font/woff2");
+check("content-type: webmanifest served as manifest", contentTypeFor("/x/manifest.webmanifest") === "application/manifest+json");
+check("content-type: svg/png/jpg/webp/ico map to image types", (() => {
+  const t = (p: string) => contentTypeFor(p);
+  return (
+    t("/a.svg").startsWith("image/svg") &&
+    t("/a.png") === "image/png" &&
+    t("/a.jpg") === "image/jpeg" &&
+    t("/a.webp") === "image/webp" &&
+    t("/a.ico") === "image/x-icon"
+  );
+})());
+check("content-type: default is application/octet-stream", contentTypeFor("/x/file.mystery") === "application/octet-stream");
+
+check("cache: hashed asset is immutable", cacheControlFor("/x/assets/app-DbC9xY7W.js") === "public, max-age=31536000, immutable");
+check("cache: entry document is no-store", cacheControlFor("/x/index.html") === "no-store");
+check("cache: unhashed name is no-store", cacheControlFor("/x/sw.js") === "no-store");
+
+// --- 13. webRootPlan preflight (P2-188, problems format) ------------------------
+check("plan: absent RELAY_WEB_DIR keeps the static route off with zero problems", (() => {
+  const p = webRootPlan({}, () => "ok", () => true);
+  return p.enabled === false && p.root === "" && p.problems.length === 0;
+})());
+check("plan: blank RELAY_WEB_DIR keeps the static route off with zero problems", (() => {
+  const p = webRootPlan({ RELAY_WEB_DIR: "   " }, () => "ok", () => true);
+  return p.enabled === false && p.problems.length === 0;
+})());
+check("plan: valid directory with readable index enables the route", (() => {
+  const p = webRootPlan({ RELAY_WEB_DIR: "/srv/web" }, () => "ok", () => true);
+  return p.enabled === true && p.root === "/srv/web" && p.problems.length === 0;
+})());
+check("plan: missing directory is one problem", (() => {
+  const p = webRootPlan({ RELAY_WEB_DIR: "/srv/web" }, () => "missing", () => false);
+  return p.enabled === false && p.problems.length === 1 && p.problems[0].includes("RELAY_WEB_DIR");
+})());
+check("plan: not-a-directory is one problem", (() => {
+  const p = webRootPlan({ RELAY_WEB_DIR: "/srv/web" }, () => "not-directory", () => false);
+  return p.problems.length === 1 && p.problems[0].includes("RELAY_WEB_DIR");
+})());
+check("plan: unreadable directory is one problem", (() => {
+  const p = webRootPlan({ RELAY_WEB_DIR: "/srv/web" }, () => "unreadable", () => false);
+  return p.problems.length === 1 && p.problems[0].includes("RELAY_WEB_DIR");
+})());
+check("plan: missing index.html is one problem", (() => {
+  const p = webRootPlan({ RELAY_WEB_DIR: "/srv/web" }, () => "ok", () => false);
+  return p.enabled === false && p.problems.length === 1 && p.problems[0].includes("index.html");
+})());
+check("plan: problem text never cites the configured path", (() => {
+  const p = webRootPlan({ RELAY_WEB_DIR: "/srv/web" }, () => "missing", () => false);
+  return p.problems.every((r) => !r.includes("/srv/web"));
+})());
+
+// --- 14. handler with a real web root over real HTTP (P2-188) -------------------
+{
+  const root = mkdtempSync(join(tmpdir(), "relay-webhandler-"));
+  writeFileSync(join(root, "index.html"), "<html>app</html>");
+  writeFileSync(join(root, "app.js"), "console.log(1)");
+  const outside = join(tmpdir(), `relay-webhandler-outside-${Date.now()}.js`);
+  writeFileSync(outside, "outside");
+  symlinkSync(outside, join(root, "evil.js"));
+
+  const isFile = (abs: string) => {
+    try {
+      return statSync(abs).isFile() && realpathSync(abs).startsWith(realpathSync(root));
+    } catch {
+      return false;
+    }
+  };
+  const webServer: Server = createServer(
+    healthzHandler(state, () => false, {
+      root,
+      isFile,
+      send: (abs, req, res) => {
+        if (req.method === "HEAD") {
+          res.end();
+          return;
+        }
+        createReadStream(abs).pipe(res);
+      },
+    }),
+  );
+  await new Promise<void>((r) => webServer.listen(0, "127.0.0.1", r));
+  const webPort = (webServer.address() as { port: number }).port;
+  const webRequest = (method: string, path: string) =>
+    new Promise<{ status: number; type: string; cache: string; allow: string; body: string }>((resolve) => {
+      const req = get(`http://127.0.0.1:${webPort}${path}`, { method }, (res) => {
+        let body = "";
+        res.on("data", (c) => (body += c));
+        res.on("end", () =>
+          resolve({
+            status: res.statusCode ?? 0,
+            type: String(res.headers["content-type"]),
+            cache: String(res.headers["cache-control"]),
+            allow: String(res.headers.allow ?? ""),
+            body,
+          }),
+        );
+      });
+      req.end();
+    });
+
+  const doc = await webRequest("GET", "/");
+  check("web-handler: GET / serves the entry document", doc.status === 200 && doc.body === "<html>app</html>");
+  check("web-handler: entry document is text/html + no-store", doc.type.startsWith("text/html") && doc.cache === "no-store");
+  const spa = await webRequest("GET", "/pair");
+  check("web-handler: extension-less route falls back to the entry document", spa.status === 200 && spa.body === "<html>app</html>");
+  const asset = await webRequest("GET", "/app.js");
+  check("web-handler: unhashed asset serves with no-store", asset.status === 200 && asset.type.startsWith("text/javascript") && asset.cache === "no-store");
+  const missingAsset = await webRequest("GET", "/missing.js");
+  check("web-handler: missing asset is 404, never 200 + HTML", missingAsset.status === 404);
+  check("web-handler: hidden file is 404", (await webRequest("GET", "/.env")).status === 404);
+  check("web-handler: traversal is 404", (await webRequest("GET", "/..%2f..%2fetc%2fpasswd.js")).status === 404);
+  check("web-handler: symlink escaping the root is 404", (await webRequest("GET", "/evil.js")).status === 404);
+  check("web-handler: /healthz keeps answering the probe", (await webRequest("GET", "/healthz")).status === 200);
+  check("web-handler: /healthz is never the SPA document", (await webRequest("HEAD", "/healthz")).status === 404);
+  const head = await webRequest("HEAD", "/");
+  check("web-handler: HEAD serves headers without body", head.status === 200 && head.body === "" && head.type.startsWith("text/html"));
+  const post = await webRequest("POST", "/");
+  check("web-handler: POST gets 405 with allow: GET, HEAD", post.status === 405 && post.allow === "GET, HEAD");
+  check("web-handler: query strings are stripped before resolving", (await webRequest("GET", "/?v=1")).status === 200);
+  webServer.close();
+
+  // drain: the static route answers 503 before any method decision
+  const drainFlag2 = { active: false };
+  const drainWebServer: Server = createServer(
+    healthzHandler(state, () => drainFlag2.active, {
+      root,
+      isFile,
+      send: (abs, req, res) => createReadStream(abs).pipe(res),
+    }),
+  );
+  await new Promise<void>((r) => drainWebServer.listen(0, "127.0.0.1", r));
+  const drainWebPort = (drainWebServer.address() as { port: number }).port;
+  const drainRequest = (method: string, path: string) =>
+    new Promise<number>((resolve) => {
+      const req = get(`http://127.0.0.1:${drainWebPort}${path}`, { method }, (res) => {
+        res.resume();
+        res.on("end", () => resolve(res.statusCode ?? 0));
+      });
+      req.end();
+    });
+  drainFlag2.active = true;
+  check("web-handler: static route answers 503 while draining", (await drainRequest("GET", "/")) === 503);
+  check("web-handler: 503 comes before the 405 while draining", (await drainRequest("POST", "/")) === 503);
+  drainFlag2.active = false;
+  drainWebServer.close();
+
+  rmSync(root, { recursive: true, force: true });
+  rmSync(outside, { force: true });
 }
 
 if (failures) process.exit(1);

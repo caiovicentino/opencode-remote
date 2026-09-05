@@ -395,6 +395,18 @@ host não-loopback é recusado — URL inválida desativa a conexão com o relay
 do relay e segue funcionando. Runbook:
 [docs/RELAY-HOSTING.md](docs/RELAY-HOSTING.md).
 
+A imagem também entrega a PWA do celular (P2-188): ela define
+`RELAY_WEB_DIR=/app/apps/web/dist`, então a URL do relay no navegador do
+telefone já abre o app — o primeiro passo da jornada não exige dev server,
+TLS próprio nem tailscale. Só arquivos estáticos são servidos (allowlist de
+extensão, sem traversal, sem dotfiles, contenção à prova de symlink, fallback
+SPA pro `index.html`), o roteamento de WebSocket e o corpo do `/healthz`
+ficam intocados, e a rota estática responde `503` durante o dreno. Um
+`RELAY_WEB_DIR` apontando pra diretório inexistente, que não é diretório,
+ilegível ou sem `index.html` legível recusa o boot — motivos logados uma vez,
+exit 1, sem listener; sem a variável, o comportamento antigo (404 pra todo o
+resto) é preservado.
+
 No app desktop você não precisa exportar `RELAY_URL` no braço: os Ajustes
 (Settings) têm o card **Relay do celular** (seção exclusiva do shell), onde
 você cola o endereço hospedado — ex. `wss://relay.exemplo.com:8788` — e o app

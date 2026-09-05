@@ -67,6 +67,7 @@ builds this same image (the `caddy` profile adds TLS termination on top).
 | `RELAY_TLS_CERT` | unset | Leave unset for provider TLS in front (the default layout). Set **only together with `RELAY_TLS_KEY`** — the two form a mandatory pair — when the relay terminates TLS itself; both files must be readable by the `node` user and the relay serves `wss://` directly. |
 | `RELAY_TLS_KEY` | unset | See `RELAY_TLS_CERT`. Either variable alone, a set-but-blank value, or an unreadable file **refuses the boot** (fail-closed) — the relay never silently downgrades a public host to plain HTTP. |
 | `RELAY_LOG_LEVEL` | `info` | Log verbosity: `error`, `warn`, `info` or `debug` (case-insensitive). Keep `info`: only `debug` writes the per-frame `frame in` line, and on a public host that line reconstructs who talked to whom and when out of retained provider logs. An unknown or non-string value **refuses the boot** (fail-closed) instead of falling back to the default. See the section below. |
+| `RELAY_WEB_DIR` | unset (off) | Directory with the static PWA bundle to serve over HTTP (the image ships it at `/app/apps/web/dist`). Leave unset to answer `404` on every non-probe HTTP path, exactly as before P2-188. Set it to a directory that is missing, not a directory, unreadable, or without a readable `index.html` and the relay **refuses the boot** (fail-closed). See the section below. |
 
 The relay also accepts `RELAY_RATE_PER_MIN` and `RELAY_RATE_BURST`
 (per-connection token bucket, defaults `600` and `1000`, ceilings `60000` and
@@ -158,6 +159,43 @@ resolved value as an additive `logLevel` field; no pre-existing field changed
 name or meaning, and admission, caps, rate limiting, room validation,
 routing and the `relay_frames_routed` counter are untouched — only what is
 written to stdout changed.
+
+### The static web root is fail-closed too (P2-188)
+
+`RELAY_WEB_DIR` points at a directory of static files the relay serves over
+plain HTTP so a phone can open the app from the relay's own URL — no dev
+server, no tailscale origin, no terminal. The image sets it to
+`/app/apps/web/dist` (the PWA bundle compiled into the image); unset keeps
+the historical behavior byte for byte: every HTTP path other than `/healthz`
+answers `404`.
+
+Only static files are ever served — the relay stays a blind router and this
+route never touches frames, keys or plaintext. The rules, in order:
+
+- `GET /healthz` keeps priority and its exact body; the WebSocket upgrade
+  path is untouched.
+- Only `GET` and `HEAD` are served (`405` otherwise, `Allow: GET, HEAD`).
+- While draining (P2-145) the static route answers `503` like the probe, so
+  the load balancer pulls the instance from rotation regardless of route.
+- Path resolution is allowlisted in code: no traversal (`..` in any
+  encoding), no dotfiles, no backslashes, no percent-escape trickery, no
+  extension outside the static allowlist (html, js, css, map, json, svg, png,
+  jpg, webp, ico, woff2, txt, webmanifest), and the resolved file must stay
+  inside the configured root (realpath-checked, so a symlink planted inside
+  the root pointing outside it is rejected too). Anything else is `404`.
+- Extension-less routes fall back to the app's `index.html` (single-page
+  application routing); a missing asset with an extension is always `404`,
+  never the document. Hashed assets (`app-<hash>.js`) are served
+  `cache-control: immutable`; the entry document is `no-store`.
+
+The variable is validated fail-closed at boot like every other relay knob.
+A configured value whose directory is missing, is not a directory, cannot be
+read, or does not contain a readable `index.html` is a boot **problem**: each
+reason is logged once (JSONL, `invalid relay web root, refusing to start`)
+and the process exits with code `1` before **any** listener opens. Problem
+text cites `RELAY_WEB_DIR` and never the configured path — log shippers get
+no host-local detail. The `relay listening` line carries an additive
+`webRoot: true|false` field; no path is ever logged.
 
 ## Behind a proxy: `x-forwarded-for` and the per-IP cap
 
