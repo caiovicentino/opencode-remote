@@ -19,6 +19,7 @@ import { resolveLogLevel, shouldLog, type LogLevel } from "./loglevel.js";
 import { tlsPlan } from "./tlsconfig.js";
 import { makeIpTagger } from "./iptag.js";
 import { webRootPlan, type DirProbe } from "./webroot.js";
+import { resolveWebCsp } from "./webheaders.js";
 
 /**
  * Relay: a blind router.
@@ -125,6 +126,19 @@ if (WEB.problems.length > 0) {
   }
   process.exit(1);
 }
+// P2-192: the override content policy (RELAY_WEB_CSP) resolves fail-closed
+// alongside the web root above — a non-string, control-byte-carrying,
+// oversized or default-src-less value refuses the boot (one log line per
+// reason, exit 1, no listener) instead of serving the page where the user's
+// E2E keys live with an unvalidated policy. Absent or blank keeps the
+// documented default policy with zero problems.
+const WEB_CSP = resolveWebCsp(process.env);
+if (WEB_CSP.problems.length > 0) {
+  for (const reason of WEB_CSP.problems) {
+    ev("warn", "invalid relay web content policy, refusing to start (fail-closed)", { reason });
+  }
+  process.exit(1);
+}
 // The only fs touches of the static route: existence/file checks per request
 // and a streamed body (empty for HEAD). isFile canonicalizes the target with
 // realpath before the containment comparison — with a separator boundary, so
@@ -153,6 +167,11 @@ const WEB_STATIC: WebStatic | undefined = WEB.enabled
           })
           .pipe(res);
       },
+      // P2-192: the resolved policy plus the per-request TLS signal —
+      // TLSSocket.encrypted — so HSTS is announced only when the request
+      // actually arrived under TLS.
+      csp: WEB_CSP.csp,
+      isTls: (req) => (req.socket as { encrypted?: boolean }).encrypted === true,
     }
   : undefined;
 const RATE_LIMIT_CLOSE = 4029; // custom 4xxx: "too many frames"

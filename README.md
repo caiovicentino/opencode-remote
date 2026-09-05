@@ -498,7 +498,21 @@ no traversal, no dotfiles, symlink-safe containment, SPA fallback to
 the static route answers `503` during the drain. A configured
 `RELAY_WEB_DIR` whose directory is missing, not a directory, unreadable or
 without a readable `index.html` refuses the boot — reasons logged once,
-exit 1, no listener; unset keeps the old 404-for-everything behavior.
+exit 1, no listener; unset keeps the old 404-for-everything behavior. Every
+200 document the static route serves is locked down (P2-192): a
+same-origin-only `Content-Security-Policy` (inline style allowed — the
+generated bundle injects style — plus `data:`/`blob:` images and
+`wss:`/`https:` connects because the app dials the relay), `Referrer-Policy:
+no-referrer` so the room URL never leaks as a referrer, `Permissions-Policy`
+denying geolocation/payment/USB/serial/HID/MIDI, `X-Frame-Options: DENY`,
+`Cross-Origin-Opener-Policy: same-origin` and
+`Cross-Origin-Resource-Policy: same-origin` — and `Strict-Transport-Security`
+only when the request actually arrived under TLS, since announcing HSTS on an
+`http://` origin would lock out an operator still bringing the service up.
+`RELAY_WEB_CSP` overrides the policy (must declare `default-src`, no control
+bytes, ≤1024 chars — anything else refuses the boot, fail-closed); 404/405
+and the `/healthz` bytes are untouched. The relay stays a blind router: no
+plaintext, no keys, no room ids in any of it.
 
 **Close-code-aware relay retries (P2-156)**: when the relay socket closes, the
 daemon classifies the close code instead of treating every drop as a network

@@ -6,9 +6,10 @@
  */
 import { createServer, get, type Server } from "node:http";
 import net from "node:net";
-import { createReadStream, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
 import { healthzHandler, healthzPayload } from "../apps/relay/src/healthz";
 import { metricsAuthOk, metricsBinding } from "../apps/relay/src/metricsbind";
@@ -21,6 +22,7 @@ import {
   spaFallbackPath,
   webRootPlan,
 } from "../apps/relay/src/webroot";
+import { securityHeaders, resolveWebCsp, WEB_CSP_DEFAULT, WEB_CSP_MAX_LENGTH } from "../apps/relay/src/webheaders";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -610,6 +612,8 @@ check("plan: problem text never cites the configured path", (() => {
         }
         createReadStream(abs).pipe(res);
       },
+      csp: WEB_CSP_DEFAULT,
+      isTls: () => false,
     }),
   );
   await new Promise<void>((r) => webServer.listen(0, "127.0.0.1", r));
@@ -663,6 +667,8 @@ check("plan: problem text never cites the configured path", (() => {
       root,
       isFile,
       send: (abs, req, res) => createReadStream(abs).pipe(res),
+      csp: WEB_CSP_DEFAULT,
+      isTls: () => false,
     }),
   );
   await new Promise<void>((r) => drainWebServer.listen(0, "127.0.0.1", r));
@@ -684,6 +690,192 @@ check("plan: problem text never cites the configured path", (() => {
   rmSync(root, { recursive: true, force: true });
   rmSync(sibling, { recursive: true, force: true });
   rmSync(outside, { force: true });
+}
+
+// --- 15. web security headers (P2-192, pure decisions) -------------------------
+const ALWAYS_ON_SECURITY_HEADERS = [
+  "content-security-policy",
+  "referrer-policy",
+  "permissions-policy",
+  "x-frame-options",
+  "cross-origin-opener-policy",
+  "cross-origin-resource-policy",
+];
+
+check("webheaders: map carries every always-on header, keyed lowercase", (() => {
+  const h = securityHeaders(false, WEB_CSP_DEFAULT);
+  return ALWAYS_ON_SECURITY_HEADERS.every((k) => typeof h[k] === "string" && h[k]!.length > 0);
+})());
+check("webheaders: HSTS absent without TLS", securityHeaders(false, WEB_CSP_DEFAULT)["strict-transport-security"] === undefined);
+check("webheaders: HSTS present under TLS", (() => {
+  const h = securityHeaders(true, WEB_CSP_DEFAULT);
+  return typeof h["strict-transport-security"] === "string" && h["strict-transport-security"]!.includes("max-age=");
+})());
+check("webheaders: the resolved policy flows into content-security-policy", securityHeaders(false, "default-src 'example.com'")["content-security-policy"] === "default-src 'example.com'");
+check("webheaders: default policy pins framing, forms and plugins to none", (() => {
+  const csp = securityHeaders(false, WEB_CSP_DEFAULT)["content-security-policy"] ?? "";
+  return (
+    csp.includes("frame-ancestors 'none'") &&
+    csp.includes("form-action 'none'") &&
+    csp.includes("object-src 'none'") &&
+    csp.includes("default-src 'self'") &&
+    csp.includes("script-src 'self'") &&
+    csp.includes("base-uri 'self'") &&
+    csp.includes("style-src 'self' 'unsafe-inline'") &&
+    csp.includes("img-src 'self' data: blob:") &&
+    csp.includes("connect-src 'self' wss: https:")
+  );
+})());
+check("webheaders: referrer is never sent, permissions are denied", (() => {
+  const h = securityHeaders(false, WEB_CSP_DEFAULT);
+  return (
+    h["referrer-policy"] === "no-referrer" &&
+    h["permissions-policy"]!.includes("geolocation=()") &&
+    h["permissions-policy"]!.includes("payment=()") &&
+    h["permissions-policy"]!.includes("usb=()") &&
+    h["permissions-policy"]!.includes("serial=()") &&
+    h["permissions-policy"]!.includes("hid=()") &&
+    h["permissions-policy"]!.includes("midi=()") &&
+    h["x-frame-options"] === "DENY" &&
+    h["cross-origin-opener-policy"] === "same-origin" &&
+    h["cross-origin-resource-policy"] === "same-origin"
+  );
+})());
+
+// --- 16. RELAY_WEB_CSP preflight (P2-192, problems format) ----------------------
+check("webcsp: absent RELAY_WEB_CSP keeps the default with zero problems", (() => {
+  const p = resolveWebCsp({});
+  return p.csp === WEB_CSP_DEFAULT && p.problems.length === 0;
+})());
+check("webcsp: blank RELAY_WEB_CSP keeps the default with zero problems", (() => {
+  const p = resolveWebCsp({ RELAY_WEB_CSP: "   " });
+  return p.csp === WEB_CSP_DEFAULT && p.problems.length === 0;
+})());
+check("webcsp: non-string value is a problem", (() => {
+  const p = resolveWebCsp({ RELAY_WEB_CSP: 42 as unknown as string });
+  return p.problems.length === 1 && p.problems[0].includes("RELAY_WEB_CSP");
+})());
+check("webcsp: newline is a problem (header-injection vector)", (() => {
+  const p = resolveWebCsp({ RELAY_WEB_CSP: "default-src 'self'\nX-Evil: 1" });
+  return p.problems.length === 1 && p.csp === WEB_CSP_DEFAULT;
+})());
+check("webcsp: any other control byte is a problem", (() => {
+  const p = resolveWebCsp({ RELAY_WEB_CSP: "default-src 'self'\u0007" });
+  return p.problems.length === 1 && p.csp === WEB_CSP_DEFAULT;
+})());
+check("webcsp: value above the documented ceiling is a problem", (() => {
+  const long = `default-src 'self'; script-src ${"a".repeat(WEB_CSP_MAX_LENGTH)}`;
+  const p = resolveWebCsp({ RELAY_WEB_CSP: long });
+  return p.problems.length === 1 && p.csp === WEB_CSP_DEFAULT;
+})());
+check("webcsp: policy without default-src is a problem", (() => {
+  const p = resolveWebCsp({ RELAY_WEB_CSP: "script-src 'self'" });
+  return p.problems.length === 1 && p.problems[0].includes("default-src");
+})());
+check("webcsp: valid override is served verbatim (trimmed) with no problems", (() => {
+  const p = resolveWebCsp({ RELAY_WEB_CSP: "  default-src 'self'; script-src 'self'  " });
+  return p.problems.length === 0 && p.csp === "default-src 'self'; script-src 'self'";
+})());
+check("webcsp: case-insensitive default-src detection", (() => {
+  const p = resolveWebCsp({ RELAY_WEB_CSP: "DEFAULT-SRC 'self'" });
+  return p.problems.length === 0 && p.csp === "DEFAULT-SRC 'self'";
+})());
+
+// --- 17. security headers over real HTTP (P2-192, real temp web root) ----------
+{
+  const root = mkdtempSync(join(tmpdir(), "relay-websec-"));
+  writeFileSync(join(root, "index.html"), "<html>app</html>");
+  writeFileSync(join(root, "app.js"), "console.log(1)");
+  writeFileSync(join(root, "app-DbC9xY7W.js"), "console.log(1)");
+
+  const tlsFlag = { on: false };
+  const OVERRIDE = "default-src 'self'; script-src 'self'; report-uri /csp";
+  const plan = resolveWebCsp({ RELAY_WEB_CSP: OVERRIDE });
+  const secServer: Server = createServer(
+    healthzHandler(state, () => false, {
+      root,
+      isFile: (abs) => {
+        try {
+          return statSync(abs).isFile();
+        } catch {
+          return false;
+        }
+      },
+      send: (abs, req, res) => {
+        if (req.method === "HEAD") {
+          res.end();
+          return;
+        }
+        createReadStream(abs).pipe(res);
+      },
+      csp: plan.csp,
+      isTls: () => tlsFlag.on,
+    }),
+  );
+  await new Promise<void>((r) => secServer.listen(0, "127.0.0.1", r));
+  const secPort = (secServer.address() as { port: number }).port;
+  const secRequest = (method: string, path: string) =>
+    new Promise<{ status: number; headers: Record<string, string | string[] | undefined>; body: string }>((resolve) => {
+      const req = get(`http://127.0.0.1:${secPort}${path}`, { method }, (res) => {
+        let body = "";
+        res.on("data", (c) => (body += c));
+        res.on("end", () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body }));
+      });
+      req.end();
+    });
+
+  const asset = await secRequest("GET", "/app.js");
+  check("sec-headers: common asset carries every always-on security header", ALWAYS_ON_SECURITY_HEADERS.every((k) => asset.headers[k] !== undefined));
+  check("sec-headers: asset carries the override policy, not the default", asset.headers["content-security-policy"] === OVERRIDE);
+  check("sec-headers: asset keeps content-type and cache-control untouched", String(asset.headers["content-type"]).startsWith("text/javascript") && asset.headers["cache-control"] === "no-store");
+  check("sec-headers: HSTS absent without TLS", asset.headers["strict-transport-security"] === undefined);
+
+  const spa = await secRequest("GET", "/pair");
+  check("sec-headers: SPA fallback carries exactly the same security headers", (() => {
+    const fromAsset = ALWAYS_ON_SECURITY_HEADERS.map((k) => [k, asset.headers[k]] as const);
+    const fromSpa = ALWAYS_ON_SECURITY_HEADERS.map((k) => [k, spa.headers[k]] as const);
+    return (
+      spa.status === 200 &&
+      JSON.stringify(fromAsset) === JSON.stringify(fromSpa) &&
+      spa.headers["strict-transport-security"] === undefined
+    );
+  })());
+
+  tlsFlag.on = true;
+  const tlsDoc = await secRequest("GET", "/");
+  check("sec-headers: HSTS present once the request arrives under TLS", typeof tlsDoc.headers["strict-transport-security"] === "string");
+  tlsFlag.on = false;
+
+  const notFound = await secRequest("GET", "/missing.js");
+  check("sec-headers: 404 carries none of the security headers", ALWAYS_ON_SECURITY_HEADERS.every((k) => notFound.headers[k] === undefined) && notFound.headers["strict-transport-security"] === undefined);
+  const notAllowed = await secRequest("POST", "/");
+  check("sec-headers: 405 carries none of the security headers", ALWAYS_ON_SECURITY_HEADERS.every((k) => notAllowed.headers[k] === undefined) && notAllowed.headers["strict-transport-security"] === undefined);
+
+  const probe = await secRequest("GET", "/healthz");
+  check("sec-headers: /healthz body is byte-for-byte unchanged", probe.status === 200 && probe.body === `{"ok":true,"version":"0.2.0","uptimeS":${(JSON.parse(probe.body) as { uptimeS: number }).uptimeS},"rooms":7,"roomsRejected":2}`);
+  check("sec-headers: /healthz carries no new header (LB contract intact)", ALWAYS_ON_SECURITY_HEADERS.every((k) => probe.headers[k] === undefined) && probe.headers["strict-transport-security"] === undefined && probe.headers["content-type"] === "application/json");
+
+  secServer.close();
+  rmSync(root, { recursive: true, force: true });
+}
+
+// --- 18. built bundle sanity: the default CSP must not break the app ------------
+// Reads apps/web/dist/index.html — produced by the battery's own build step.
+// The default policy allows only same-origin scripts and no inline handlers,
+// so the document must not rely on either.
+{
+  const distIndex = fileURLToPath(new URL("../apps/web/dist/index.html", import.meta.url));
+  if (!existsSync(distIndex)) {
+    console.log("SKIP dist-csp: apps/web/dist/index.html not built yet (npm run build produces it)");
+  } else {
+    const html = readFileSync(distIndex, "utf8");
+    const inlineScript = /<script(?![^>]*\bsrc=)[^>]*>/i.test(html);
+    const inlineHandler = /\son[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/i.test(html);
+    check("dist-csp: entry document loads no inline script", !inlineScript);
+    check("dist-csp: entry document declares no inline event handler", !inlineHandler);
+    const srcs = [...html.matchAll(/<script[^>]*\bsrc="([^"]+)"/gi)].map((m) => m[1] ?? "");
+    check("dist-csp: every script src is same-origin (relative), covered by script-src 'self'", srcs.length > 0 && srcs.every((s) => s.startsWith("./") || s.startsWith("/")));
+  }
 }
 
 if (failures) process.exit(1);

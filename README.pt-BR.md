@@ -405,7 +405,21 @@ ficam intocados, e a rota estática responde `503` durante o dreno. Um
 `RELAY_WEB_DIR` apontando pra diretório inexistente, que não é diretório,
 ilegível ou sem `index.html` legível recusa o boot — motivos logados uma vez,
 exit 1, sem listener; sem a variável, o comportamento antigo (404 pra todo o
-resto) é preservado.
+resto) é preservado. Todo documento 200 da rota estática chega travado
+(P2-192): `Content-Security-Policy` só permitindo a própria origem (estilo
+inline liberado — o bundle gerado injeta estilo — além de imagens
+`data:`/`blob:` e conexões `wss:`/`https:` porque o app disca pro relay),
+`Referrer-Policy: no-referrer` pra URL da sala nunca vazar como referrer,
+`Permissions-Policy` negando geolocalização/pagamento/USB/serial/HID/MIDI,
+`X-Frame-Options: DENY`, `Cross-Origin-Opener-Policy: same-origin` e
+`Cross-Origin-Resource-Policy: same-origin` — e `Strict-Transport-Security`
+só quando a requisição de fato chegou sob TLS, porque anunciar HSTS numa
+origem `http://` trava o operador que ainda está subindo o serviço. A
+variável `RELAY_WEB_CSP` sobrescreve a política (precisa declarar
+`default-src`, sem bytes de controle, ≤1024 caracteres — qualquer coisa
+diferente recusa o boot, fail-closed); 404/405 e os bytes do `/healthz`
+ficam como estão. O relay continua cego: nada disso toca frames, chaves ou
+plaintext.
 
 No app desktop você não precisa exportar `RELAY_URL` no braço: os Ajustes
 (Settings) têm o card **Relay do celular** (seção exclusiva do shell), onde
