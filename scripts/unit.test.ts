@@ -188,6 +188,8 @@ import { execSync, execFileSync, spawn } from "node:child_process";
 
 import { createServer, get } from "node:http";
 
+import { createHash } from "node:crypto";
+
 import { AddressInfo } from "node:net";
 
 import { connect as netConnect } from "node:net";
@@ -202,7 +204,7 @@ import { fileURLToPath } from "node:url";
 
 import { dirname, join } from "node:path";
 
-import { MAX_ARTIFACT_BYTES, artifactMime, kindFor, listArtifacts, readArtifact, validSegment } from "../apps/daemon/src/artifacts";
+import { MAX_ARTIFACT_BYTES, MAX_ARTIFACTS_LISTED, artifactMime, capArtifacts, kindFor, listArtifacts, readArtifact, validSegment, type ArtifactMeta } from "../apps/daemon/src/artifacts";
 
 import {
   ARTIFACTS_MARKER,
@@ -251,6 +253,8 @@ import {
 } from "../apps/relay/src/shutdown";
 
 import { tlsPlan } from "../apps/relay/src/tlsconfig";
+
+import { makeIpTagger, UNKNOWN_IP_TAG, IP_TAG_LENGTH } from "../apps/relay/src/iptag";
 
 import {
   relayKnobs,
@@ -2459,6 +2463,78 @@ try {
   );
 } finally {
   rmSync(aroot, { recursive: true, force: true });
+}
+
+
+// --- P2-173: the listing cap — capArtifacts cuts the tail, never reorders ----
+{
+  const meta = (i: number): ArtifactMeta => ({
+    sessionId: `ses_${i % 3}`,
+    name: `f-${i}.md`,
+    size: i,
+    mtime: 1_000_000 - i, // already sorted newest-first (i=0 is the newest)
+    kind: "md",
+  });
+
+  check("capArtifacts: list under the cap — truncated false, total real, order kept", (() => {
+    const list = [0, 1, 2].map(meta);
+    const r = capArtifacts(list, MAX_ARTIFACTS_LISTED);
+    return (
+      r.items.length === 3 &&
+      r.total === 3 &&
+      r.truncated === false &&
+      r.items[0].name === "f-0.md" && r.items[2].name === "f-2.md" // order preserved
+    );
+  })());
+
+  check("capArtifacts: list exactly at the cap — truncated false", (() => {
+    const list = Array.from({ length: MAX_ARTIFACTS_LISTED }, (_, i) => meta(i));
+    const r = capArtifacts(list, MAX_ARTIFACTS_LISTED);
+    return r.items.length === MAX_ARTIFACTS_LISTED && r.total === MAX_ARTIFACTS_LISTED && r.truncated === false;
+  })());
+
+  check(
+    "capArtifacts: list over the cap — exactly the cap of items starting at the newest, truncated true, real total",
+    (() => {
+      const list = Array.from({ length: 620 }, (_, i) => meta(i));
+      const r = capArtifacts(list, MAX_ARTIFACTS_LISTED);
+      return (
+        MAX_ARTIFACTS_LISTED === 500 &&
+        r.items.length === 500 &&
+        r.items[0].name === "f-0.md" && // newest first
+        r.items[499]?.name === "f-499.md" &&
+        r.items[500] === undefined &&
+        r.total === 620 &&
+        r.truncated === true
+      );
+    })(),
+  );
+
+  check("capArtifacts: empty list — nothing, not truncated", (() => {
+    const r = capArtifacts([], MAX_ARTIFACTS_LISTED);
+    return r.items.length === 0 && r.total === 0 && r.truncated === false;
+  })());
+
+  check(
+    "capArtifacts: missing/zero/negative/fractional/non-numeric cap falls back to the default (fail-closed, never uncapped)",
+    (() => {
+      const list = Array.from({ length: MAX_ARTIFACTS_LISTED + 1 }, (_, i) => meta(i));
+      const fallback = (cap: unknown) => {
+        const r = capArtifacts(list, cap as never);
+        return r.items.length === MAX_ARTIFACTS_LISTED && r.truncated === true && r.total === MAX_ARTIFACTS_LISTED + 1;
+      };
+      return (
+        MAX_ARTIFACTS_LISTED === 500 &&
+        fallback(undefined) && // missing
+        fallback(0) && // zero must NOT disable the cap
+        fallback(-1) &&
+        fallback(2.5) && // fractional
+        fallback(Number.NaN) &&
+        fallback("50") && // non-numeric
+        fallback(null)
+      );
+    })(),
+  );
 }
 
 
@@ -9589,6 +9665,87 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+// --- P2-169: mac privacy preflight — mic/camera strings + device entitlements --
+
+{
+  const fullBuilder = `${BUILDER_LABEL} pair:\n  ${MIC_KEY}: "O OpenCode Remote usa o microfone para gravar e transcrever mensagens de voz no chat."\n  ${CAMERA_KEY}: "O OpenCode Remote usa a câmera para ler o QR code de pareamento."`;
+  const fullPlist = `<plist><dict>\n    <key>com.apple.security.cs.allow-jit</key>\n    <true/>\n    <key>${AUDIO_ENTITLEMENT}</key>\n    <true/>\n    <key>${CAMERA_ENTITLEMENT}</key>\n    <true/>\n  </dict></plist>`;
+
+  check(
+    "P2-169: complete mic/camera pair → no problems",
+    privacyProblems(fullPlist, fullBuilder).length === 0,
+  );
+
+  const micMissing = privacyProblems(fullPlist, `  ${CAMERA_KEY}: "câmera"`);
+  check(
+    "P2-169: missing microphone usage description → one problem citing the key",
+    micMissing.length === 1 && micMissing[0].includes(MIC_KEY),
+    JSON.stringify(micMissing),
+  );
+
+  const cameraMissing = privacyProblems(fullPlist, `  ${MIC_KEY}: "microfone"`);
+  check(
+    "P2-169: missing camera usage description → one problem citing the key",
+    cameraMissing.length === 1 && cameraMissing[0].includes(CAMERA_KEY),
+    JSON.stringify(cameraMissing),
+  );
+
+  const audioMissing = privacyProblems(fullPlist.replace(AUDIO_ENTITLEMENT, "com.apple.security.cs.allow-dyld-environment-variables"), fullBuilder);
+  check(
+    "P2-169: missing audio-input entitlement → one problem citing the entitlement",
+    audioMissing.length === 1 && audioMissing[0].includes(AUDIO_ENTITLEMENT),
+    JSON.stringify(audioMissing),
+  );
+
+  const cameraEntMissing = privacyProblems(fullPlist.replace(CAMERA_ENTITLEMENT, "com.apple.security.cs.other"), fullBuilder);
+  check(
+    "P2-169: missing camera entitlement → one problem citing the entitlement",
+    cameraEntMissing.length === 1 && cameraEntMissing[0].includes(CAMERA_ENTITLEMENT),
+    JSON.stringify(cameraEntMissing),
+  );
+
+  const blank = privacyProblems(fullPlist, fullBuilder.replace(`"O OpenCode Remote usa a câmera para ler o QR code de pareamento."`, '""'));
+  check(
+    "P2-169: present-but-empty usage description → problem citing the key and 'empty'",
+    blank.length === 1 && blank[0].includes(CAMERA_KEY) && blank[0].includes("empty"),
+    JSON.stringify(blank),
+  );
+
+  // every problem at once, never just the first (5 = 2 missing descriptions + 2 missing entitlements + 1 blank)
+  const all = privacyProblems("<plist><dict/></plist>", "builder: yml");
+  check(
+    "P2-169: an empty pair reports all four problems at once",
+    all.length === 4 && all.some((p) => p.includes(MIC_KEY)) && all.some((p) => p.includes(CAMERA_KEY)) && all.some((p) => p.includes(AUDIO_ENTITLEMENT)) && all.some((p) => p.includes(CAMERA_ENTITLEMENT)),
+    JSON.stringify(all),
+  );
+
+  // commented-out keys in the yml count as absent; <false/> counts as absent
+  const commented = privacyProblems(fullPlist, `# ${MIC_KEY}: "nada"\n  ${CAMERA_KEY}: "câmera"`);
+  check(
+    "P2-169: a usage description only inside a # comment counts as missing",
+    commented.length === 1 && commented[0].includes(MIC_KEY),
+    JSON.stringify(commented),
+  );
+  const falseEnt = fullPlist.replace(`<key>${CAMERA_ENTITLEMENT}</key>\n    <true/>`, `<key>${CAMERA_ENTITLEMENT}</key>\n    <false/>`);
+  check(
+    "P2-169: camera entitlement set to <false/> counts as missing",
+    privacyProblems(falseEnt, fullBuilder).length === 1,
+  );
+
+  // real-repo assertion: the shipped pair is complete and carries the 4 new keys
+  const root = join(import.meta.dirname, "..");
+  const realPlist = readFileSync(join(root, "apps", "desktop", "build", "entitlements.mac.plist"), "utf8");
+  const realBuilder = readFileSync(join(root, "apps", "desktop", "electron-builder.yml"), "utf8");
+  check(
+    "P2-169: real repo — plist has both device entitlements, yml has both usage descriptions, pair is complete",
+    realPlist.includes(AUDIO_ENTITLEMENT) &&
+      realPlist.includes(CAMERA_ENTITLEMENT) &&
+      realBuilder.includes(`${MIC_KEY}:`) &&
+      realBuilder.includes(`${CAMERA_KEY}:`) &&
+      privacyProblems(realPlist, realBuilder).length === 0,
+  );
+}
+
 // --- self-serve mission: mission.json spec, hash drift, generic gate profile ---
 {
   const GH = "https://github.com/acme/widgets.git";
@@ -9812,84 +9969,63 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check("mission: strategist/researcher take the chat-defined prompt", pilotIndexSrc.includes("activeMission?.prompt ?? STRATEGIST_MISSION") && pilotIndexSrc.includes("runResearcher(aux, state, activeMission?.prompt)"));
 }
 
-// --- P2-169: mac privacy preflight — mic/camera strings + device entitlements --
-
+// --- P2-174 relay ip tag: per-process derived identifier, never the raw address ---
 {
-  const fullBuilder = `${BUILDER_LABEL} pair:\n  ${MIC_KEY}: "O OpenCode Remote usa o microfone para gravar e transcrever mensagens de voz no chat."\n  ${CAMERA_KEY}: "O OpenCode Remote usa a câmera para ler o QR code de pareamento."`;
-  const fullPlist = `<plist><dict>\n    <key>com.apple.security.cs.allow-jit</key>\n    <true/>\n    <key>${AUDIO_ENTITLEMENT}</key>\n    <true/>\n    <key>${CAMERA_ENTITLEMENT}</key>\n    <true/>\n  </dict></plist>`;
+  const saltA = new Uint8Array(32).map((_, i) => i);
+  const saltB = new Uint8Array(32).map((_, i) => 255 - i);
+  const tagA = makeIpTagger(saltA);
+  const tagB = makeIpTagger(saltB);
 
-  check(
-    "P2-169: complete mic/camera pair → no problems",
-    privacyProblems(fullPlist, fullBuilder).length === 0,
-  );
+  const t1 = tagA("203.0.113.7");
+  check("ip-tag: same address + same salt produces the same tag", tagA("203.0.113.7") === t1 && tagA("203.0.113.7") === tagA("203.0.113.7"));
+  check("ip-tag: different salts produce different tags for the same address", tagB("203.0.113.7") !== t1 && tagB("203.0.113.7") === tagB("203.0.113.7"));
+  check("ip-tag: different addresses produce different tags with the same salt", tagA("203.0.113.8") !== t1 && tagA("::ffff:203.0.113.7") !== t1);
+  check("ip-tag: tag is exactly 12 lowercase hex digits", t1.length === IP_TAG_LENGTH && /^[0-9a-f]{12}$/.test(t1));
 
-  const micMissing = privacyProblems(fullPlist, `  ${CAMERA_KEY}: "câmera"`);
-  check(
-    "P2-169: missing microphone usage description → one problem citing the key",
-    micMissing.length === 1 && micMissing[0].includes(MIC_KEY),
-    JSON.stringify(micMissing),
-  );
+  // spec pin: the tag IS the 12-hex-digit sha256 prefix of salt||address
+  const expected = createHash("sha256").update(saltA).update("203.0.113.7", "utf8").digest("hex").slice(0, 12);
+  check("ip-tag: tag matches sha256(salt||address) first 12 hex digits", t1 === expected);
 
-  const cameraMissing = privacyProblems(fullPlist, `  ${MIC_KEY}: "microfone"`);
-  check(
-    "P2-169: missing camera usage description → one problem citing the key",
-    cameraMissing.length === 1 && cameraMissing[0].includes(CAMERA_KEY),
-    JSON.stringify(cameraMissing),
-  );
+  // empty/absent/unknown never hash the empty string — fixed recognizable tag
+  check("ip-tag: empty, absent and unknown addresses produce the fixed tag", tagA("") === UNKNOWN_IP_TAG && tagA(undefined) === UNKNOWN_IP_TAG && tagA(null) === UNKNOWN_IP_TAG && tagA("unknown") === UNKNOWN_IP_TAG);
+  check("ip-tag: fixed tag is not the hash of the empty string", UNKNOWN_IP_TAG !== tagA("__nonempty__") && UNKNOWN_IP_TAG !== createHash("sha256").digest("hex").slice(0, 12));
 
-  const audioMissing = privacyProblems(fullPlist.replace(AUDIO_ENTITLEMENT, "com.apple.security.cs.allow-dyld-environment-variables"), fullBuilder);
-  check(
-    "P2-169: missing audio-input entitlement → one problem citing the entitlement",
-    audioMissing.length === 1 && audioMissing[0].includes(AUDIO_ENTITLEMENT),
-    JSON.stringify(audioMissing),
-  );
+  // the salt is copied at tagger creation: caller-side mutation cannot flip tags mid-process
+  const saltC = new Uint8Array(32).fill(7);
+  const tagC = makeIpTagger(saltC);
+  const before = tagC("198.51.100.1");
+  saltC.fill(9);
+  check("ip-tag: mutating the caller's salt after creation does not change tags", tagC("198.51.100.1") === before);
 
-  const cameraEntMissing = privacyProblems(fullPlist.replace(CAMERA_ENTITLEMENT, "com.apple.security.cs.other"), fullBuilder);
-  check(
-    "P2-169: missing camera entitlement → one problem citing the entitlement",
-    cameraEntMissing.length === 1 && cameraEntMissing[0].includes(CAMERA_ENTITLEMENT),
-    JSON.stringify(cameraEntMissing),
-  );
+  // fail-closed: a predictable/short salt would make tags dictionary-invertible
+  let threw = false;
+  try {
+    makeIpTagger(new Uint8Array(8));
+  } catch {
+    threw = true;
+  }
+  check("ip-tag: salt below 32 bytes is rejected at tagger creation", threw);
 
-  const blank = privacyProblems(fullPlist, fullBuilder.replace(`"O OpenCode Remote usa a câmera para ler o QR code de pareamento."`, '""'));
+  // source pin: the real index.ts logs ipTag and no ev() call ever carries
+  // the raw ip field (bare word `ip` inside a log payload, with no ipTag).
+  const relayIndexSrc = readFileSync(join(import.meta.dirname, "..", "apps", "relay", "src", "index.ts"), "utf8");
+  const evPayloads: string[] = [];
+  const evRe = /\bev\s*\(/g;
+  let m: RegExpExecArray | null;
+  while ((m = evRe.exec(relayIndexSrc)) !== null) {
+    let depth = 1;
+    let i = evRe.lastIndex;
+    for (; i < relayIndexSrc.length && depth > 0; i++) {
+      if (relayIndexSrc[i] === "(") depth++;
+      else if (relayIndexSrc[i] === ")") depth--;
+    }
+    evPayloads.push(relayIndexSrc.slice(evRe.lastIndex, i));
+  }
   check(
-    "P2-169: present-but-empty usage description → problem citing the key and 'empty'",
-    blank.length === 1 && blank[0].includes(CAMERA_KEY) && blank[0].includes("empty"),
-    JSON.stringify(blank),
-  );
-
-  // every problem at once, never just the first (5 = 2 missing descriptions + 2 missing entitlements + 1 blank)
-  const all = privacyProblems("<plist><dict/></plist>", "builder: yml");
-  check(
-    "P2-169: an empty pair reports all four problems at once",
-    all.length === 4 && all.some((p) => p.includes(MIC_KEY)) && all.some((p) => p.includes(CAMERA_KEY)) && all.some((p) => p.includes(AUDIO_ENTITLEMENT)) && all.some((p) => p.includes(CAMERA_ENTITLEMENT)),
-    JSON.stringify(all),
-  );
-
-  // commented-out keys in the yml count as absent; <false/> counts as absent
-  const commented = privacyProblems(fullPlist, `# ${MIC_KEY}: "nada"\n  ${CAMERA_KEY}: "câmera"`);
-  check(
-    "P2-169: a usage description only inside a # comment counts as missing",
-    commented.length === 1 && commented[0].includes(MIC_KEY),
-    JSON.stringify(commented),
-  );
-  const falseEnt = fullPlist.replace(`<key>${CAMERA_ENTITLEMENT}</key>\n    <true/>`, `<key>${CAMERA_ENTITLEMENT}</key>\n    <false/>`);
-  check(
-    "P2-169: camera entitlement set to <false/> counts as missing",
-    privacyProblems(falseEnt, fullBuilder).length === 1,
-  );
-
-  // real-repo assertion: the shipped pair is complete and carries the 4 new keys
-  const root = join(import.meta.dirname, "..");
-  const realPlist = readFileSync(join(root, "apps", "desktop", "build", "entitlements.mac.plist"), "utf8");
-  const realBuilder = readFileSync(join(root, "apps", "desktop", "electron-builder.yml"), "utf8");
-  check(
-    "P2-169: real repo — plist has both device entitlements, yml has both usage descriptions, pair is complete",
-    realPlist.includes(AUDIO_ENTITLEMENT) &&
-      realPlist.includes(CAMERA_ENTITLEMENT) &&
-      realBuilder.includes(`${MIC_KEY}:`) &&
-      realBuilder.includes(`${CAMERA_KEY}:`) &&
-      privacyProblems(realPlist, realBuilder).length === 0,
+    "ip-tag: index.ts logs ipTag on rejection and no ev() payload carries the raw ip field",
+    evPayloads.some((p) => p.includes("ipTag: tagIp(ip)")) &&
+      evPayloads.filter((p) => /\bip\b/.test(p)).every((p) => p.includes("ipTag")) &&
+      !relayIndexSrc.includes("{ ip }"),
   );
 }
 
