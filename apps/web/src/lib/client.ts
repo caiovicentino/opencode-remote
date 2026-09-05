@@ -436,9 +436,9 @@ export class OcrClient {
     const { hello, sessionKey } = await clientHello(this.daemonSpki, identity);
     this.key = sessionKey;
     this.daemonLastSeq = 0;
-    const retrying = [...this.pending.values()];
+    const retrying = [...this.pending.entries()];
     this.pending.clear();
-    for (const p of retrying) clearTimeout(p.timer);
+    for (const [, p] of retrying) clearTimeout(p.timer);
     ws.send(
       JSON.stringify({
         room: this.room,
@@ -446,7 +446,9 @@ export class OcrClient {
         payload: b64(new TextEncoder().encode(JSON.stringify({ type: "hello", hello }))),
       }),
     );
-    for (const p of retrying) this.replay(p);
+    // same op id across replays: the daemon dedupes prompt sends by id, so a
+    // replayed prompt can never reach the agent twice
+    for (const [id, p] of retrying) this.replay(p, id);
   }
 
   /** Re-run the handshake after a daemon restart and replay in-flight ops. */
@@ -468,20 +470,24 @@ export class OcrClient {
     }
   }
 
-  /** Re-issue a pending op on the fresh session, keeping the caller's promise. */
-  private replay(p: {
-    resolve: (r: OpResponse) => void;
-    reject: (e: Error) => void;
-    args: {
-      method: OpRequestMethod;
-      path: string;
-      body?: unknown;
-      query?: Record<string, string>;
-      timeoutMs: number;
-    };
-  }) {
+  /** Re-issue a pending op on the fresh session, keeping the caller's promise.
+   * `reuseId` keeps the original op id so the daemon can dedupe replays. */
+  private replay(
+    p: {
+      resolve: (r: OpResponse) => void;
+      reject: (e: Error) => void;
+      args: {
+        method: OpRequestMethod;
+        path: string;
+        body?: unknown;
+        query?: Record<string, string>;
+        timeoutMs: number;
+      };
+    },
+    reuseId?: string,
+  ) {
     const req: OpRequest = {
-      id: crypto.randomUUID(),
+      id: reuseId ?? crypto.randomUUID(),
       method: p.args.method,
       path: p.args.path,
       body: p.args.body,

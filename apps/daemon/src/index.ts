@@ -35,6 +35,7 @@ import type {
   RelayFrame,
 } from "@ocr/protocol";
 import { log } from "./log.js";
+import { IdempotencyCache } from "./idempotency.js";
 import { writeStateAtomic } from "./statefile.js";
 import { capMessagePage, parsePageLimit, shouldPaginateMessages, type HistoryRowLike } from "./paginate.js";
 import { handleBrowse } from "./browse.js";
@@ -103,6 +104,8 @@ const relayDisabled = relayUrl.problems.length > 0;
 const OPENCODE_URL = process.env.OPENCODE_URL ?? "http://127.0.0.1:4096";
 const OPENCODE_USER = process.env.OPENCODE_SERVER_USERNAME ?? "opencode";
 const OPENCODE_PASS = process.env.OPENCODE_SERVER_PASSWORD ?? "";
+// replayed prompt sends (same op id from the PWA reconnect replay) → deduped
+const promptIdem = new IdempotencyCache();
 // P1-079 (round 2): context gauge — shared short-TTL cache of the model
 // window map (the /provider catalog is ~6MB; do not refetch it per request).
 const providerWindows = new WindowCache();
@@ -927,6 +930,15 @@ end tell`;
   const url = new URL(req.path, OPENCODE_URL);
   if (req.query) {
     for (const [k, v] of Object.entries(req.query)) url.searchParams.set(k, v);
+  }
+  // prompt-idempotency: a replayed in-flight op (WS reconnect on the PWA)
+  // carries the same op id — never prompt the agent twice for it
+  if (req.method === "POST" && /^\/session\/[^/]+\/message$/.test(req.path)) {
+    if (promptIdem.seen(req.id)) {
+      metrics.inc("ocr_prompt_dedupe_total");
+      return { id: req.id, status: 200, body: { deduped: true } };
+    }
+    promptIdem.remember(req.id);
   }
   try {
     const res = await fetch(url, {
