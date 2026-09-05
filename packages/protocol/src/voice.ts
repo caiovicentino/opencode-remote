@@ -16,9 +16,22 @@ export function stripForSpeech(text: string): string {
 /**
  * Pick the spoken brief of an answer: the first sentences up to maxChars,
  * cutting at a sentence boundary when there is one, else at a word boundary.
+ *
+ * Voice-recap convention (voice ≠ chat): a reply may end with an amplified
+ * spoken summary after a `---` divider. The chat body stays short and
+ * technical; the voice speaks only that recap, with a wider budget (900).
  */
 export function speakBrief(text: string, maxChars = 280): string {
   const clean = stripForSpeech(text).replace(/\s+/g, " ").trim();
+  const sep = clean.lastIndexOf(" --- ");
+  if (sep !== -1) {
+    const recap = clean.slice(sep + 5).trim();
+    if (recap) return pickSpoken(recap, Math.max(maxChars, 900));
+  }
+  return pickSpoken(clean, maxChars);
+}
+
+function pickSpoken(clean: string, maxChars: number): string {
   if (clean.length <= maxChars) return clean;
   const sentences = clean.match(/[^.!?…]+[.!?…]+["')\]]?/g) ?? [];
   let brief = "";

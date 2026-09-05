@@ -51,6 +51,18 @@ check("link keeps the label", stripForSpeech("veja [docs](https://x.com) aí") =
 // empty input stays empty
 check("empty stays empty", speakBrief("   ") === "");
 
+// voice-recap convention: a section after a --- divider is spoken alone,
+// with a wider budget — the chat body is not spoken
+{
+  const withRecap = "Resposta técnica concisa, com detalhes de código.\n---\nResumo falado amplificado, contado em linguagem natural pra ouvir sem ler.";
+  check("divider: recap spoken alone", speakBrief(withRecap) === "Resumo falado amplificado, contado em linguagem natural pra ouvir sem ler.");
+  const longBody = "corpo ".repeat(200) + "\n---\n" + "recap amplificado. ";
+  const recapBrief = speakBrief(longBody);
+  check("divider: body ignored", recapBrief.startsWith("recap amplificado."), recapBrief.slice(0, 40));
+  check("divider: recap budget is 900", recapBrief.length <= 900);
+  check("no divider keeps old behavior", speakBrief("Só uma resposta curta.") === "Só uma resposta curta.");
+}
+
 // ─── spoken-number normalization (apps/daemon/src/spoken.ts) ───────────────
 import { normalizeLang, numberWords, spokenNumbers } from "../apps/daemon/src/spoken";
 import { resolveVoice } from "../apps/daemon/src/edgetts";
