@@ -624,6 +624,18 @@ reference is missing or unreadable it stays quiet. `OCR_DESKTOP_FORCE_CLOCK_BEHI
 on the desktop shell forces the warning for deterministic screenshots
 (test-only hatch).
 
+**Start at login by default (P2-218)**: a packaged app that is not running is
+the one failure no wake reaction can fix — after the first reboot, power cut
+or logout, the phone simply finds no machine, with no cause shown anywhere.
+So the first boot of an installed app (macOS/Windows) turns on **Start at
+login** by itself — that is what lets the phone keep finding this machine —
+and announces it with one calm line on the pairing screen (the QR is never
+hidden). The toggle stays in the tray menu: turning **Start at login** off
+there is definitive and no future boot turns it back on. Dev builds are never
+touched, other platforms keep the previous behavior, and
+`OCR_DESKTOP_FORCE_LOGIN_ITEM=1` on the desktop shell forces the announce for
+deterministic screenshots (test-only hatch, machine untouched).
+
 The image carries no secrets and the relay stays a blind
 router: it never sees plaintext or keys. The optional metrics endpoint
 (`RELAY_METRICS_PORT`) binds loopback by default; setting
@@ -1179,7 +1191,10 @@ sidecar health indicator — it reads `OpenCode Remote — daemon ok` /
 `OpenCode Remote — daemon down`, refreshed by the same 3s poll that feeds the
 pairing overlay. The context menu also has a **Start at login** checkbox
 (macOS/Windows) backed by `app.setLoginItemSettings`, so the toggle persists
-across app restarts and OS reboots. Right below **Open OpenCode Remote** sits
+across app restarts and OS reboots; since P2-218 a packaged build turns it on
+by itself on the very first boot (the phone must keep finding this machine
+after a reboot) and unchecking it in the tray is definitive — no future boot
+re-enables it. Right below **Open OpenCode Remote** sits
 an always-present **Restart daemon** action: it cancels any pending respawn,
 resets the crash budget, stops the daemon the shell spawned and starts it
 again — the one-click recovery when the sidecar gave up ("daemon down") or an

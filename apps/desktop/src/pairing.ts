@@ -100,6 +100,14 @@ export interface PairingState {
    * QR — pairing itself still works right now.
    */
   clock?: { state: string; message: string };
+  /**
+   * P2-218: verdict of the login-item boot decision (loginitem.ts planner),
+   * computed ONCE at boot in the main process. Additive; absent = unknown to
+   * the renderer (any state but "enable" renders nothing — and even "enable"
+   * is a one-boot announce). The announce NEVER hides the QR and NEVER blocks
+   * pairing — it is information, not an error.
+   */
+  startup?: { state: string; message: string };
 }
 
 /**

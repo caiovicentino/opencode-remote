@@ -658,6 +658,19 @@ referência comparável, ela fica calada. `OCR_DESKTOP_FORCE_CLOCK_BEHIND=1` no
 shell desktop força o aviso para screenshots determinísticos (hatch só de
 teste).
 
+**Abrir no login por padrão (P2-218)**: um app empacotado que não está rodando
+é a única falha que nenhuma reação a retorno de suspensão conserta — depois do
+primeiro reboot, corte de energia ou logout, o celular simplesmente não
+encontra a máquina, sem causa mostrada em lugar nenhum. Por isso a primeira
+execução do app instalado (macOS/Windows) liga sozinha o **Start at login** —
+é isso que permite ao celular continuar encontrando esta máquina — e anuncia
+com uma linha calma na tela de pareamento (o QR nunca é escondido). O ajuste
+continua no menu da bandeja: desligar **Start at login** lá é definitivo e
+nenhum boot futuro religa. Builds de desenvolvimento nunca são mexidos, outras
+plataformas mantêm o comportamento anterior, e `OCR_DESKTOP_FORCE_LOGIN_ITEM=1`
+no shell desktop força o anúncio para screenshots determinísticos (hatch só de
+teste, máquina intocada).
+
 **Reconexão guiada pelo código de fechamento (P2-156)**: quando o socket do
 relay fecha, o daemon classifica o código em vez de tratar qualquer queda como
 problema de rede. `1013` (server busy / too many connections / room full) o

@@ -52,6 +52,9 @@ interface Props {
   /** P2-214: clock-skew verdict from the machine hosting the daemon
    * (null/absent = unknown → no line). */
   clock?: { state: string; message: string } | null;
+  /** P2-218: login-item verdict from the machine hosting the daemon
+   * (null/absent = unknown → no line). */
+  startup?: { state: string; message: string } | null;
 }
 
 /**
@@ -66,7 +69,7 @@ interface Props {
  * (open this address) — with the pairing QR demoted to step two. The two
  * steps carry visible labels so two QR codes never appear unlabeled.
  */
-export default function PairingOverlay({ qrDataUrl, onDismiss, deviceList, webApp, pairLink, reach, onReachRetry, relayLink, installLocation, clock }: Props) {
+export default function PairingOverlay({ qrDataUrl, onDismiss, deviceList, webApp, pairLink, reach, onReachRetry, relayLink, installLocation, clock, startup }: Props) {
   const t = useT();
   // P2-189: copy feedback — brief, quiet, and never steals the QR's spotlight.
   const [copied, setCopied] = useState(false);
@@ -239,6 +242,15 @@ export default function PairingOverlay({ qrDataUrl, onDismiss, deviceList, webAp
         {clock && clock.state !== "ok" && clock.state !== "unknown" && (
           <p className="pair-clock pair-clock-warn">{clock.message}</p>
         )}
+
+        {/* P2-218: one-time login-item announce right below the clock line,
+            same P2-112 vocabulary. Visible ONLY on the boot whose verdict was
+            "enable" (the verdict is computed once per boot, not re-ticked);
+            any other state — and an absent field, e.g. a legacy payload — is
+            unknown and renders nothing. This is an announce, not an error:
+            the QR is NEVER hidden or dimmed by this line and pairing is never
+            blocked by it. */}
+        {startup && startup.state === "enable" && <p className="pair-startup">{startup.message}</p>}
 
         {deviceList && deviceList.length > 0 && (
           <p className="splash-under muted">

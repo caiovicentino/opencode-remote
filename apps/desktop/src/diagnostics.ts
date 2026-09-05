@@ -54,6 +54,10 @@ export interface DiagnosticsInput {
    * and the rounded signed offset in seconds only, NEVER the machine's time
    * (privacy contract in this header). Optional/additive. */
   clockSkew?: { state: string; skewSeconds: number | null } | null;
+  /** P2-218: login-item verdict — the action and its short reason only,
+   * NEVER the decision-file location (privacy contract in this header).
+   * Optional/additive. */
+  startup?: { state: string; reason: string } | null;
 }
 
 /** Lines of the diagnostic bundle, in display order. */
@@ -73,6 +77,9 @@ export function buildDiagnosticReport(d: DiagnosticsInput): string {
     `clock skew: ${d.clockSkew?.state ?? "unknown"}${
       d.clockSkew?.skewSeconds == null ? "" : ` (${d.clockSkew.skewSeconds > 0 ? "+" : ""}${d.clockSkew.skewSeconds}s)`
     }`,
+    // P2-218: one additive line — action + short reason only, never the
+    // decision-file location (header privacy contract).
+    `login item: ${d.startup?.state ?? "unknown"}${d.startup?.reason ? ` (${d.startup.reason})` : ""}`,
     `crash files: ${d.crashFiles.length === 0 ? "none" : d.crashFiles.join(", ")}`,
     "--- desktop.log (last lines) ---",
     ...d.logTail.slice(-DIAG_LOG_TAIL),

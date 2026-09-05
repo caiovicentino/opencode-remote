@@ -61,6 +61,8 @@ import { hasAppMarker, probeVerdict, WEB_REACH_TIMEOUT_MS } from "../apps/deskto
 import { clockSkewMessage, skewVerdict, CLOCK_SKEW_TOLERANCE_MS } from "../apps/desktop/src/clockskew";
 import { linkVerdict, type RelayLinkFacts } from "../apps/desktop/src/relaylink";
 import { installMessage, installVerdict } from "../apps/desktop/src/installloc";
+import { loginItemMessage, loginItemPlan } from "../apps/desktop/src/loginitem";
+import { readStartupDecided, startupSettingFile, writeStartupDecided } from "../apps/desktop/src/startupstore";
 import { installBlocksUpdate } from "../apps/desktop/src/update";
 import {
   isWakeEventType,
@@ -15250,6 +15252,156 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       diagSrc.includes("d.clockSkew?.skewSeconds") &&
       !diagSrc.includes("toLocaleTimeString") &&
       !diagSrc.includes("new Date("),
+  );
+}
+
+// --- P2-218: login-item auto-enable (loginitem.ts + startupstore.ts) + wiring --
+
+{
+  // full truth table, rules applied in the documented order
+  const plan = (packaged: boolean, platform: string, alreadyEnabled: boolean, ownerDecided: boolean) =>
+    loginItemPlan({ packaged, platform, alreadyEnabled, ownerDecided });
+
+  // 1. dev build always leaves the OS setting alone — even with no decision
+  check(
+    "P2-218: dev build → leave even with no recorded decision",
+    plan(false, "darwin", false, false).action === "leave",
+  );
+  // 2. platform outside macOS/Windows → leave (the API is a no-op there)
+  check("P2-218: platform outside macOS/Windows → leave", plan(true, "linux", false, false).action === "leave");
+  // 3. recorded decision wins in BOTH directions — off stays off forever
+  check(
+    "P2-218: recorded decision with the toggle OFF → leave (the owner's choice is never reverted)",
+    plan(true, "darwin", false, true).action === "leave",
+  );
+  check(
+    "P2-218: recorded decision with the toggle ON → leave",
+    plan(true, "darwin", true, true).action === "leave",
+  );
+  // 4. already enabled without a decision → nothing to do
+  check("P2-218: already enabled with no decision → leave", plan(true, "darwin", true, false).action === "leave");
+  // 5. first packaged boot without a decision → enable (the whole point)
+  check(
+    "P2-218: first packaged macOS boot without a decision → enable",
+    plan(true, "darwin", false, false).action === "enable",
+  );
+  check(
+    "P2-218: first packaged Windows boot without a decision → enable",
+    plan(true, "win32", false, false).action === "enable",
+  );
+
+  // every generated reason: non-empty, no file path, no URL scheme, no secret
+  const verdicts = [
+    plan(false, "darwin", false, false),
+    plan(true, "linux", false, false),
+    plan(true, "darwin", false, true),
+    plan(true, "darwin", true, true),
+    plan(true, "darwin", true, false),
+    plan(true, "darwin", false, false),
+    plan(true, "win32", false, false),
+  ];
+  const clean = (s: string): boolean =>
+    s.length > 0 &&
+    !s.includes("/") &&
+    !s.includes("\\") &&
+    !s.includes("http:") &&
+    !s.includes("https:") &&
+    !s.includes("file:") &&
+    !s.includes("Users") &&
+    !s.includes("~");
+  check(
+    "P2-218: every reason is non-empty, path-free and scheme-free",
+    verdicts.every((v) => clean(v.reason)),
+  );
+  check(
+    "P2-218: the overlay copy is non-empty, path-free and scheme-free for both actions",
+    clean(loginItemMessage("enable")) && clean(loginItemMessage("leave")),
+  );
+
+  // --- store table (startupstore.ts): tolerant read, atomic private write ----
+  const dir = mkdtempSync(join(tmpdir(), "startupstore-"));
+  const file = join(dir, "startup.json");
+  check("P2-218: missing file → not decided", readStartupDecided(file) === false);
+  writeFileSync(file, "{not json at all", { mode: 0o600 });
+  check("P2-218: corrupted JSON → not decided (never an exception)", readStartupDecided(file) === false);
+  writeFileSync(file, '{"decided":"sim"}', { mode: 0o600 });
+  check("P2-218: wrong field type → not decided", readStartupDecided(file) === false);
+  check(
+    "P2-218: write → read round-trip records the owner decision",
+    writeStartupDecided(file, true) === true && readStartupDecided(file) === true,
+  );
+  check("P2-218: the decision file is private (0600)", (statSync(file).mode & 0o777) === 0o600);
+  check("P2-218: the store names the file startup.json under userData", startupSettingFile("/d").endsWith("startup.json"));
+  rmSync(dir, { recursive: true, force: true });
+
+  // --- real-source assertions over the REAL main.ts --------------------------
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  check(
+    "P2-218: the plan is consulted exactly once in the real main.ts",
+    (mainSrc.match(/loginItemPlan\(/g) ?? []).length === 1,
+  );
+  check(
+    "P2-218: the plan is consulted at boot, before the first update check",
+    mainSrc.indexOf("bootStartup = ") < mainSrc.indexOf('runUpdateCheck("boot")'),
+  );
+  const bootAt = mainSrc.indexOf("bootStartup = ");
+  const bootBlock = bootAt >= 0 ? mainSrc.slice(bootAt, mainSrc.indexOf('runUpdateCheck("boot")')) : "";
+  check(
+    "P2-218: the boot consultation introduces no new timer and no new request",
+    bootBlock.length > 0 && !bootBlock.includes("setInterval(") && !bootBlock.includes("fetch("),
+  );
+  check(
+    "P2-218: app.setLoginItemSettings has exactly ONE caller — the shared helper",
+    (mainSrc.match(/app\.setLoginItemSettings\(/g) ?? []).length === 1,
+  );
+  const helperAt = mainSrc.indexOf("function setLoginItemEnabled");
+  const helperBlock = helperAt >= 0 ? mainSrc.slice(helperAt, helperAt + 500) : "";
+  check(
+    "P2-218: the shared helper records the owner decision",
+    helperBlock.includes("writeStartupDecided("),
+  );
+  const trayAt = mainSrc.indexOf("function trayMenuItems");
+  const trayBlock = trayAt >= 0 ? mainSrc.slice(trayAt, mainSrc.indexOf("return items;", trayAt)) : "";
+  check(
+    "P2-218: the tray click goes through the helper — turning it off is definitive",
+    trayBlock.includes("click: (item) => setLoginItemEnabled(item.checked)") && !trayBlock.includes("setLoginItemSettings"),
+  );
+  check(
+    "P2-218: no new periodic timer was introduced",
+    (mainSrc.match(/setInterval\(/g) ?? []).length === 2,
+  );
+  const setPairingAt = mainSrc.indexOf("setPairingState({");
+  const payload = mainSrc.slice(setPairingAt, mainSrc.indexOf("});", setPairingAt));
+  check(
+    "P2-218: the additive startup field rides AFTER clock in the pairing payload",
+    payload.indexOf("clock: clock") > -1 && payload.indexOf("startup:") > payload.indexOf("clock: clock"),
+  );
+  const hatchAt = mainSrc.indexOf('process.env.OCR_DESKTOP_FORCE_LOGIN_ITEM === "1"');
+  const guardedAt = mainSrc.indexOf('bootStartup.action === "enable" && process.env.OCR_DESKTOP_FORCE_LOGIN_ITEM !== "1"');
+  check(
+    "P2-218: the documented test hatch exists and the enable call is guarded against it (the dev machine is never touched)",
+    hatchAt > -1 && guardedAt > hatchAt,
+  );
+
+  // overlay renders the calm announce below the clock line, never hides the QR
+  const overlaySrc = readFileSync(
+    join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingOverlay.tsx"),
+    "utf8",
+  );
+  check(
+    "P2-218: the overlay renders the startup line below the clock line",
+    overlaySrc.indexOf("{startup &&") > overlaySrc.indexOf("{clock &&"),
+  );
+  check(
+    "P2-218: only the enable state renders; the comment states the QR is NEVER hidden",
+    overlaySrc.includes('startup.state === "enable"') && overlaySrc.includes("NEVER hidden"),
+  );
+
+  // diagnostics: one additive line, state + reason only, never the path
+  const diagSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "diagnostics.ts"), "utf8");
+  check(
+    "P2-218: the diagnostics bundle gains exactly one login-item line (state + reason only)",
+    (diagSrc.match(/login item:/g) ?? []).length === 1 && diagSrc.includes("d.startup?.state") && diagSrc.includes("d.startup?.reason"),
   );
 }
 
