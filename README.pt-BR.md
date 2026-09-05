@@ -450,7 +450,19 @@ comprimidos ficam memoizados em memória com teto de 64 entradas / 32 MiB
 (chave caminho + tamanho + mtime, descarte do mais antigo), e
 `png`/`jpg`/`webp`/`ico`/`woff2` e todo corpo fora da faixa de tamanho seguem
 sem compressão — enquanto 404/405 e o `/healthz` permanecem byte a byte como
-sempre. O relay continua cego: nada disso toca frames, chaves ou plaintext.
+sempre. Requisições condicionais fecham o ciclo (P2-200): todo 200 da rota
+estática carrega um `ETag` forte derivado do mesmo stat da negociação mais a
+codificação — então o validador gzip e o identity são sempre diferentes e um
+cache compartilhado nunca serve bytes comprimidos a quem pediu identity — e
+um `If-None-Match` que revalida (lista, coringa `*`, prefixo fraco `W/`
+ignorado, cabeçalho malformado significa enviar) recebe `304` sem corpo e sem
+leitura em disco, com o etag, `Cache-Control`, `Vary: Accept-Encoding` e os
+cabeçalhos de segurança do P2-192, mas nunca
+`Content-Encoding`/`Content-Length`/`Content-Type`; 404/405 e `/healthz`
+seguem byte a byte, e o orçamento de requisições continua sendo cobrado antes
+da decisão condicional. O relay continua cego: nada disso toca frames, chaves
+ou plaintext — só asset estático público da raiz allowlisted é cacheado ou
+revalidado.
 
 No app desktop você não precisa exportar `RELAY_URL` no braço: os Ajustes
 (Settings) têm o card **Relay do celular** (seção exclusiva do shell), onde
