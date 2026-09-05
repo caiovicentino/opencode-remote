@@ -91,6 +91,15 @@ export interface PairingState {
    * action but NEVER blocks pairing and NEVER hides the QR.
    */
   installLocation?: { state: string; message: string };
+  /**
+   * P2-214: verdict of the machine's clock compared against the Date response
+   * header of the SAME answer the reach probe already obtained (clockskew.ts
+   * classifier), under the same overlay guard. Additive; absent = unknown to
+   * the renderer (ok/unknown render nothing). A wrong clock explains the
+   * automatic date/time action but NEVER blocks pairing and NEVER hides the
+   * QR — pairing itself still works right now.
+   */
+  clock?: { state: string; message: string };
 }
 
 /**

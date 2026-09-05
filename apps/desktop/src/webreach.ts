@@ -29,6 +29,30 @@ export interface ReachVerdict {
   message: string;
 }
 
+/**
+ * P2-214: everything ONE probe attempt already knows — the P2-197 verdict
+ * plus the raw Date response header and the elapsed ms of the SAME answer,
+ * so the clock-skew classifier (clockskew.ts) never needs a second request.
+ * Additive shape: the verdict fields are untouched.
+ */
+export interface ReachProbeOutcome {
+  verdict: ReachVerdict;
+  /** raw Date response header of the same answer (null when the attempt
+   * failed before an answer, or the header is absent) */
+  dateHeader: string | null;
+  /** elapsed ms of the same attempt */
+  elapsedMs: number;
+}
+
+/**
+ * P2-214: read the raw Date response header off the probe's own response.
+ * Pure plumbing over the header bag — the fetch call site in main.ts stays
+ * free of header handling and the unit tests can exercise the reader alone.
+ */
+export function rawDateHeader(res: { headers: { get(name: string): string | null } }): string | null {
+  return res.headers.get("date");
+}
+
 /** Inputs of one probe attempt, already normalized by the caller. */
 export interface ReachProbe {
   /** HTTP status of the answer, or null when the attempt failed before one */

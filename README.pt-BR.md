@@ -605,6 +605,22 @@ celular, não a câmera. Como todo aviso desta tela, ela nunca bloqueia o
 pareamento nem esconde o QR: o elo pode voltar antes de o celular terminar de
 escanear.
 
+**Relógio torto (P2-214)**: uma máquina com relógio muito adiantado ou muito
+atrasado tem o seu próprio modo de falha — o navegador do celular recusa o
+certificado do relay hospedado (a janela de validade deixa de cobrir o "agora"
+do celular), a janela de pareamento fecha num instante que ninguém prevê e
+todo carimbo de horário que o celular mostra fica errado, tudo sem uma linha
+explicando o porquê. Enquanto a tela de pareamento está aberta, o shell compara
+o relógio da máquina com o cabeçalho `Date` da MESMA resposta que a sonda de
+alcance já obteve — sem requisição nova, sem servidor de tempo — e mostra uma
+linha calma abaixo da linha de local de instalação quando o relógio está
+**adiantado** ou **atrasado**, apontando para o ajuste automático de data e
+hora. A linha descreve a máquina que hospeda o daemon e nunca bloqueia o
+pareamento nem esconde o QR (relógio torto não impede de parear agora); sem
+referência comparável, ela fica calada. `OCR_DESKTOP_FORCE_CLOCK_BEHIND=1` no
+shell desktop força o aviso para screenshots determinísticos (hatch só de
+teste).
+
 **Reconexão guiada pelo código de fechamento (P2-156)**: quando o socket do
 relay fecha, o daemon classifica o código em vez de tratar qualquer queda como
 problema de rede. `1013` (server busy / too many connections / room full) o
