@@ -5,7 +5,7 @@
  * infra failure, never a pass.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync, mkdtempSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { verifyVerdict, type Verdict } from "./judgeverdict.js";
@@ -35,6 +35,10 @@ export function resolveJudge(): { dir: string; cli: string; pub: string } {
   const head = execFileSync("git", ["-C", dir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
   if (!head.startsWith(pin)) {
     fail(`judge HEAD ${head.slice(0, 8)} != pinned ${pin.slice(0, 8)} — update ${pinFile} after reviewing the judge diff`);
+  }
+  const dirty = execFileSync("git", ["-C", dir, "status", "--porcelain", "--untracked-files=no"], { encoding: "utf8" }).trim();
+  if (dirty) {
+    fail(`judge checkout is dirty — the pin attests HEAD, not uncommitted edits:\n${dirty.slice(0, 400)}`);
   }
   return { dir, cli, pub };
 }
@@ -73,19 +77,25 @@ export function judgeGate(input: JudgeGateInput): {
   } catch (err) {
     const e = err as { status?: number; stdout?: string; stderr?: Buffer };
     const detail = e.stdout?.toString().slice(-400) || e.stderr?.toString().slice(-400) || String(err);
+    rmSync(tmp, { recursive: true, force: true });
     fail(`judge spawn failed: ${detail}`);
   }
   let parsed: { verdict: Verdict; sig: string };
   try {
     parsed = JSON.parse(raw.trim().split("\n").filter(Boolean).at(-1)!);
   } catch {
+    rmSync(tmp, { recursive: true, force: true });
     fail("judge emitted no parseable verdict");
   }
   const { verdict, sig } = parsed;
   if (!verifyVerdict(readFileSync(pub, "utf8"), verdict, sig)) {
     fail("judge verdict signature INVALID — refusing to act (P1-056)");
   }
-  if (verdict.sha !== input.sha) fail(`judge verdict is for ${verdict.sha}, not ${input.sha}`);
+  if (verdict.sha !== input.sha) {
+    rmSync(tmp, { recursive: true, force: true });
+    fail(`judge verdict is for ${verdict.sha}, not ${input.sha}`);
+  }
+  rmSync(tmp, { recursive: true, force: true });
   return { ok: verdict.ok, step: verdict.ok ? "none" : verdict.step, tail: verdict.ok ? "gate green" : verdict.tail, flaky: verdict.flaky ?? [] };
 }
 

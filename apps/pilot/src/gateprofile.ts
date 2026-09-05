@@ -67,7 +67,9 @@ export const PILOT_GATE_STEPS: ReadonlyArray<readonly [string, string]> = [
   ["reconnect", "npx tsx scripts/reconnect.test.ts"],
   ["integration", "npx tsx scripts/integration.ts"],
   ["desktop-sidecar", "npx tsx scripts/desktop-sidecar.test.ts"],
-  ["invariants", "npx tsx scripts/invariants.ts"],
+  // NOTE (P1-056): the invariants step lives ONLY in the pinned judge copy
+  // (~/.opencode-remote/judge) — never re-add it here; the pilot does not
+  // decide the gate. This table now feeds the preflight typecheck decision.
   // NOTE: live tests (download/push/smoke/live-eval) run post-deploy via
   // `invariants --live` + health checks — they need RELAY_URL + prod pairing.
 ];

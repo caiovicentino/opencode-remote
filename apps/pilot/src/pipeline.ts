@@ -1570,7 +1570,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
     emit("phase", { task: t.id, phase: "gatekeeper" });
     let gate;
     try {
-      gate = judgeGate({ ws, sha: headSha(ws), task: t, builderOutput: build.output, startedAtMs, nameOnly });
+      gate = judgeGate({ ws, sha: gateSha, task: t, builderOutput: build.output, startedAtMs, nameOnly });
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       return { ok: false, detail: `judge bridge failed (fail-closed): ${detail}`, ...roundMeta() };
