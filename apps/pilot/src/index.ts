@@ -9,14 +9,16 @@ import { notifySupervisor } from "./notify";
 import { runResearcher } from "./researcher";
 import { runExplorer } from "./explorer";
 import { runPipeline, TASK_ID_RE, writeSandboxConfig, writeAuxSandboxConfig, budgetsFor, isOverCap, strategistPrompt, STRATEGIST_MARKER } from "./pipeline";
-import { deploy, drainForReload, headDrifted, latestDeployableSha, shouldForceReload, shouldSelfHealReload } from "./deploy";
+import { deploy, drainForReload, headDrifted, latestDeployableSha, shouldForceReload, shouldSelfHealReload, type DeployResult } from "./deploy";
+import { DEPLOY_REFUSAL_BACKOFF_MS, deployBackoffRemaining, noteDeployRefusal, type DeployBackoff } from "./deploybackoff";
 import { digest } from "./push";
-import { addTask, appendCommitAndPush, auxPushIo, blockTask, nextId, parseAuxTaskLines, parseBacklog, type Task } from "./backlog";
+import { addTask, appendCommitAndPush, auxPushIo, blockTask, needsBacklogSkeleton, nextId, parseAuxTaskLines, parseBacklog, type Task } from "./backlog";
+import { detectDefaultBranch } from "./missionrepo";
 import { landMetaCommit, metaIo } from "./metapush";
 import { appendFailureLesson, defaultLessonsFile, failureLessonsBlock, readRecentFailureLessons } from "./failureLessons";
 import { defaultPendingRefillFile, readPendingRefill, relandDetail, relandPendingRefill, savePendingRefill } from "./refill";
 import { forensicDue, runForensic } from "./forensic";
-import { areaKey, nightlyIdleDue, nightlySkipDue, pickBatch, assignSlots, startDelayMs, type SlotAffinity } from "./scheduler";
+import { areaKey, nightlyIdleDue, nightlyLayer, nightlySkipDue, pickBatch, assignSlots, startDelayMs, type SlotAffinity } from "./scheduler";
 import {
   auditClearFile,
   auditResumeDue,
@@ -54,6 +56,9 @@ import { recordLessonImpact } from "./metrics";
 import { runDoctor } from "./doctor";
 
 let deployBusy = false;
+/** Consecutive same-kind deploy refusals (dirty prod, disk, prod ahead) — arms
+ * the pending-deploy hold (deploybackoff.ts). In-memory: a restart looks again. */
+let deployBackoff: DeployBackoff | null = null;
 /** P1-104: set while the deploy-time self-reload waits for the running slots
  * to drain — no new pipeline picks until the process exits onto the new code
  * (otherwise the eager-fill would instantly refill the slots and the reload
@@ -375,13 +380,16 @@ async function main() {
     // unreachable hour===3 gate; a busy-through-the-window day is recorded.
     // P1-075: a crash inside the pass must never take the loop down — it is
     // logged ("nightly pass crashed") and the cycle continues.
-    if (running.size === 0) {
+    // Foreign mission: the whole nightly layer is OFF — redteam/explorer/
+    // forensic are our repo's self-improvement, never an attack on the user's.
+    const nightly = nightlyLayer(foreignMission, running.size);
+    if (nightly === "run") {
       try {
         await maybeNightly(slotCfg.get(1)!, state);
       } catch (err) {
         log("warn", "nightly pass crashed", { err: String(err).slice(0, 200) });
       }
-    } else {
+    } else if (nightly === "busy") {
       const today = nowLocalISO().slice(0, 10);
       const reason = nightlySkipDue(state, today, new Date().getHours(), true);
       if (reason) {
@@ -396,7 +404,12 @@ async function main() {
     // (e.g. after a rollback). Serial by construction: only checked while slots
     // are idle and no fire-and-forget deploy is in flight. A foreign mission
     // repo serves no production service here — never deployed.
-    if (running.size === 0 && !deployBusy && !foreignMission && state.deploys < cfg.maxDeploysPerDay) {
+    // Budget: the daily counter moves only when deploy() starts a REAL attempt
+    // (onAttempt, after every guard passed) — a guard refusal spends nothing.
+    // Same-kind refusals back off (deploybackoff.ts) instead of retrying each
+    // cycle: the 2026-09-05 burn was 196 dirty-guard refusals eating the cap.
+    const backoffHold = deployBackoffRemaining(deployBackoff, Date.now()) > 0;
+    if (running.size === 0 && !deployBusy && !foreignMission && state.deploys < cfg.maxDeploysPerDay && !backoffHold) {
       const prodSha = exec("git rev-parse HEAD", { cwd: cfg.repo, allowFail: true }).output.trim();
       // P2-058: the target is the newest gate-verified, non-quarantined merge
       // sha on origin/main — a direct push to main (bookkeeping or hostile) is
@@ -404,15 +417,14 @@ async function main() {
       const target = latestDeployableSha(cfg.repo);
       if (prodSha && target && prodSha !== target) {
         log("info", "pending deploy: prod behind a gate-verified merge", { prod: prodSha.slice(0, 7), target: target.slice(0, 7) });
-        state.deploys++;
-        saveState(state);
-        const dep = await deploy(cfg, target);
-        log("info", "deploy result", { ok: dep.ok, rolledBack: dep.rolledBack, detail: dep.detail.slice(0, 200) });
-        if (!dep.ok) {
+        const dep = await deploy(cfg, target, undefined, { onAttempt: countDeployAttempt });
+        noteDeployOutcome(dep);
+        log("info", "deploy result", { ok: dep.ok, rolledBack: dep.rolledBack, refused: dep.refused, detail: dep.detail.slice(0, 200) });
+        if (!dep.ok && !dep.refused) {
           state.failures++;
           saveState(state);
         }
-        if (cfg.digest) await digest(dep.ok ? "⬆️ Pilot: deploy" : "⚠️ Pilot rollback", dep.detail.slice(0, 120), "#/");
+        if (cfg.digest && !dep.refused) await digest(dep.ok ? "⬆️ Pilot: deploy" : "⚠️ Pilot rollback", dep.detail.slice(0, 120), "#/");
         if (once) return;
         await sleep(5_000);
         continue;
@@ -436,7 +448,7 @@ async function main() {
       const pendingFile = defaultPendingRefillFile(stateRoot);
       const pending = readPendingRefill(pendingFile);
       if (pending) {
-        const reland = await relandPendingRefill(aux.workspace, pendingFile, auxPushIo(aux.workspace));
+        const reland = await relandPendingRefill(aux.workspace, pendingFile, auxPushIo(aux.workspace), { seedSkeleton: foreignMission });
         log("info", "pending refill reland", { result: reland, lines: pending.lines.length });
         emit("phase", { task: "strategist", phase: "refill", ok: reland === "pushed" || reland === "empty", detail: relandDetail(reland, pending.lines.length) });
         if (reland !== "failed") continue; // backlog changed or snapshot is stale — re-read fresh
@@ -670,12 +682,13 @@ function launchDeploy(cfg: PilotConfig, task: Task, sha: string, touchedUi: bool
     log("warn", "no gate-verified merge sha on origin/main — deploy skipped", { task: task.id, sha: sha.slice(0, 7) });
     return;
   }
-  state.deploys++;
-  saveState(state);
   // fire-and-forget: the deploy (npm ci/build/soak) runs in the prod repo
-  // while builders work in their slot clones — independent file systems
+  // while builders work in their slot clones — independent file systems.
+  // The daily counter moves inside onAttempt (guards passed, mutation about
+  // to start) — a refusal spends nothing.
   deployBusy = true;
   void deploy(cfg, target, { task: task.id, ui: touchedUi }, {
+    onAttempt: countDeployAttempt,
     // P1-104: the end-of-deploy self-reload waits for the running slots to
     // drain (and holds new picks meanwhile) instead of exiting mid-pipeline
     slotsRunning: () => running.size,
@@ -684,9 +697,10 @@ function launchDeploy(cfg: PilotConfig, task: Task, sha: string, touchedUi: bool
     },
   })
     .then((dep) => {
+      noteDeployOutcome(dep);
       log("info", "deploy result", { task: task.id, ...dep });
-      if (!dep.ok) state.failures++;
-      if (cfg.digest) {
+      if (!dep.ok && !dep.refused) state.failures++;
+      if (cfg.digest && !dep.refused) {
         return digest(
           dep.ok ? `🛠 Pilot: ${task.title}` : `⚠️ Pilot rollback: ${task.title}`,
           dep.detail,
@@ -699,6 +713,31 @@ function launchDeploy(cfg: PilotConfig, task: Task, sha: string, touchedUi: bool
       deployBusy = false;
       saveState(state);
     });
+}
+
+/** deploy() onAttempt hook: the daily budget counts REAL attempts only —
+ * persisted before the first mutation, so a self-reloading deploy (process
+ * exits inside deploy()) is still counted. */
+function countDeployAttempt(): void {
+  state.deploys++;
+  saveState(state);
+}
+
+/** Fold a deploy result into the refusal backoff: an attempt (any outcome)
+ * clears the streak; a same-kind refusal grows it and, at the threshold,
+ * holds the pending-deploy path for DEPLOY_REFUSAL_BACKOFF_MS. */
+function noteDeployOutcome(dep: DeployResult): void {
+  if (!dep.refused) {
+    deployBackoff = null;
+    return;
+  }
+  const next = noteDeployRefusal(deployBackoff, dep.refused, Date.now());
+  if (next && next.until > 0) {
+    const minutes = Math.round(DEPLOY_REFUSAL_BACKOFF_MS / 60_000);
+    log("warn", "pending deploy on hold — same refusal repeating", { reason: next.reason, consecutive: next.count, retryInMin: minutes });
+    emit("deploy", { phase: "backoff", ok: false, detail: `${next.count}x ${next.reason} in a row — pending deploy paused ${minutes}min` });
+  }
+  deployBackoff = next;
 }
 
 function overCap(task: Task): boolean {
@@ -860,7 +899,9 @@ async function runStrategist(cfg: PilotConfig, ready: Task[] = []) {
       return;
     }
     const message = `pilot(strategist): queue refill ${nowLocalISO().slice(11, 16)}`;
-    const result = await appendCommitAndPush(cfg.workspace, lines, message, auxPushIo(cfg.workspace));
+    // foreign mission: a target repo without a pilot-format BACKLOG.md gets the
+    // skeleton seeded in the apply step and landed inside this same refill PR
+    const result = await appendCommitAndPush(cfg.workspace, lines, message, auxPushIo(cfg.workspace), 3, { seedSkeleton: foreignMission });
     if (result === "pushed") {
       log("info", "strategist refilled queue", { lines: lines.length });
       emit("phase", { task: "strategist", phase: "refill", ok: true, detail: `queue refill pushed (${lines.length} lines)` });
@@ -997,7 +1038,31 @@ function ensureMissionRepo(repoUrl: string, key: string): string {
     log("info", "mission repo cloned", { repoUrl, dir });
   } else {
     exec("git fetch -q origin", { cwd: dir, allowFail: true });
-    exec("git checkout -q -B main origin/main", { cwd: dir, allowFail: true });
+  }
+  // Pin a local `main` from the remote's ACTUAL default branch (main on most
+  // repos, master on older ones — read from origin/HEAD, never assumed). The
+  // old `checkout -B main origin/main` failed silently on master-default
+  // repos and every later step then failed with unrelated-looking errors.
+  const def = detectDefaultBranch({ exec: (cmd) => exec(cmd, { cwd: dir, allowFail: true }) });
+  const pin = exec(`git checkout -q -B main ${shq(`origin/${def.branch}`)}`, { cwd: dir, allowFail: true });
+  if (!pin.ok) {
+    log("error", "mission repo: cannot pin main to the default branch", { repoUrl, defaultBranch: def.branch, source: def.source, tail: pin.output.slice(-200) });
+    emit("phase", { task: "mission", phase: "default-branch", ok: false, detail: `cannot pin main to origin/${def.branch}` });
+  } else if (def.branch !== "main") {
+    // the rest of the pipeline (queue read, task/meta PRs) still targets
+    // origin/main — say so loudly instead of failing piecemeal later
+    log("warn", "mission repo default branch is not main — pipeline base branch is still main (follow-up: parameterize)", { repoUrl, defaultBranch: def.branch, source: def.source });
+    emit("phase", { task: "mission", phase: "default-branch", ok: false, detail: `default branch is ${def.branch}; the pipeline expects main` });
+  } else {
+    log("info", "mission repo default branch", { repoUrl, defaultBranch: def.branch, source: def.source });
+  }
+  // A target repo without a pilot-format BACKLOG.md is normal on first
+  // contact: the strategist seeds the skeleton locally (never pushed by
+  // itself) and lands it inside its first refill PR.
+  const md = exec(`git show ${shq(`origin/${def.branch}`)}:BACKLOG.md`, { cwd: dir, allowFail: true });
+  if (needsBacklogSkeleton(md.ok ? md.output : null)) {
+    log("info", "mission repo has no BACKLOG.md in the pilot format — the strategist's first refill seeds it (via PR)", { repoUrl });
+    emit("phase", { task: "mission", phase: "backlog", ok: true, detail: "no pilot-format BACKLOG.md yet — first refill PR seeds it" });
   }
   return dir;
 }

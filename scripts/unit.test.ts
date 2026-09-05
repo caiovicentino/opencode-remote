@@ -302,6 +302,14 @@ import {
 } from "../apps/pilot/src/mission";
 
 import { CATALOG_TTL_MS, fetchAvailableModels, parseProviderCatalog, pickMissionModel, resetCatalogCache } from "../apps/pilot/src/modelcatalog";
+import { deployPreflight } from "../apps/pilot/src/deploy";
+import { directionGuardDetail } from "../apps/pilot/src/deployguard";
+import { DEPLOY_REFUSAL_BACKOFF_AFTER, DEPLOY_REFUSAL_BACKOFF_MS, deployBackoffRemaining, noteDeployRefusal } from "../apps/pilot/src/deploybackoff";
+import { nightlyLayer } from "../apps/pilot/src/scheduler";
+import { detectDefaultBranch, parseRemoteShowHead, parseSymbolicHead } from "../apps/pilot/src/missionrepo";
+import { BACKLOG_SKELETON, backlogSkeletonEdit, needsBacklogSkeleton, seedBacklogSkeleton } from "../apps/pilot/src/backlog";
+import { activeModelSubstitutions, clearModelSubstitution, formatModelSubstitutions, readModelSubstitutions, recordModelSubstitution } from "../apps/pilot/src/modelsubst";
+import { formatModelSubstitutions as formatModelSubstitutionsView } from "../apps/web/src/components/MissionControlView";
 
 import { INFRA_STREAK_HARD_FAIL, clearTaskInfraStreak, infraStarvationReason, infraStreakExhausted, recordTaskInfraStreak } from "../apps/pilot/src/audit";
 
@@ -11437,7 +11445,9 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     seen.push(args);
     return spawn(process.execPath, ["-e", "process.exit(0)"]);
   }) as unknown as typeof spawn;
-  const base = { cwd: tmpdir(), timeoutMin: 1, label: "t", preflight: async () => true, spawnImpl: argvSpawn };
+  // substitutionsFile: the fallback path records into a file — keep it out of $HOME
+  const substTmp = mkdtempSync(join(tmpdir(), "ocr-subst-dispatch-"));
+  const base = { cwd: tmpdir(), timeoutMin: 1, label: "t", preflight: async () => true, spawnImpl: argvSpawn, substitutionsFile: join(substTmp, "model-substitutions.json") };
   await runAgentForRole("builder", "hello", { ...base, missionModels: { builder: "glm52/glm-5.2" }, catalog: async () => new Set(["glm52/glm-5.2"]) });
   check("runAgentForRole v2: mission model verified in the catalog → `opencode run --model <id> <prompt>` (one argv entry)", JSON.stringify(seen[0]) === JSON.stringify(["run", "--model", "glm52/glm-5.2", "hello"]));
   await runAgentForRole("builder", "hello", { ...base, missionModels: { builder: "glm52/glm-5.2" }, catalog: async () => new Set(["other/model"]) });
@@ -12828,6 +12838,276 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+// --- Product eval 2026-09-05: deploy budget / direction / nightly / model / first foreign repo ---
+{
+  const evalCfg = (repo: string): PilotConfig => ({
+    repo,
+    workspace: repo,
+    slots: 1,
+    maxTasksPerDay: 1,
+    maxDeploysPerDay: 1,
+    maxReviewRounds: 1,
+    maxAttemptsPerTask: 1,
+    taskTimeoutMin: 1,
+    reviewTimeoutMin: 1,
+    monitorMin: 1,
+    digest: false,
+    corpusEveryNMerges: 0,
+    stateRoot: repo,
+  });
+
+  // (2) direction guard — pure verdict
+  check("direction guard: descendant → null (proceed)", directionGuardDetail("a".repeat(40), "b".repeat(40), true) === null);
+  const dgAhead = directionGuardDetail("a".repeat(40), "b".repeat(40), false) ?? "";
+  check(
+    "direction guard: prod ahead/diverged → skip text names both shas, rollback stays explicit",
+    dgAhead.includes("not a descendant") && dgAhead.includes("aaaaaaa") && dgAhead.includes("bbbbbbb") && dgAhead.includes("quarantine/rollback"),
+  );
+  check("direction guard: failed probe fails closed (ancestry unknown)", (directionGuardDetail("a", "b", null) ?? "").includes("ancestry unknown"));
+
+  // (1)+(2) real git: budget counts real attempts only, deploy never resets prod backward
+  const ddir = mkdtempSync(join(tmpdir(), "ocr-deploy-direction-"));
+  try {
+    execSync("git init -q -b main && git config user.email t@t && git config user.name t", { cwd: ddir });
+    writeFileSync(join(ddir, "f.txt"), "one\n");
+    execSync("git add f.txt && git commit -q -m c1", { cwd: ddir });
+    const c1 = execSync("git rev-parse HEAD", { cwd: ddir, encoding: "utf8" }).trim();
+    writeFileSync(join(ddir, "f.txt"), "two\n");
+    execSync("git commit -qam c2", { cwd: ddir });
+    const c2 = execSync("git rev-parse HEAD", { cwd: ddir, encoding: "utf8" }).trim();
+    execSync(`git checkout -q -b side ${c1}`, { cwd: ddir });
+    writeFileSync(join(ddir, "g.txt"), "side\n");
+    execSync("git add g.txt && git commit -q -m c3", { cwd: ddir });
+    const c3 = execSync("git rev-parse HEAD", { cwd: ddir, encoding: "utf8" }).trim();
+    const verified = [c1, c2, c3].map((sha) => ({ sha, task: "T", at: "t" }));
+    const cfgD = evalCfg(ddir);
+    const events: Array<{ phase?: string; ok?: boolean }> = [];
+    let notifies = 0;
+    let attempts = 0;
+    const opts = {
+      verifiedMerges: verified,
+      quarantine: [],
+      probeFreeBytes: async () => 100 * GB,
+      notify: async () => {
+        notifies++;
+        return true;
+      },
+      emitEvent: (_t: string, fields: { phase?: string; ok?: boolean }) => {
+        events.push(fields);
+      },
+      onAttempt: () => {
+        attempts++;
+      },
+    };
+    // prod at c1, target c2 (descendant): every guard passes
+    execSync(`git checkout -q ${c1}`, { cwd: ddir });
+    check("deployPreflight: clean checkout + descendant target → null (a real attempt may start)", (await deployPreflight(cfgD, c2, { task: "E1" }, opts)) === null);
+    // prod at c2, target c1 (prod ahead): refused, nothing touched
+    execSync(`git checkout -q ${c2}`, { cwd: ddir });
+    const back = await deploy(cfgD, c1, { task: "E1" }, opts);
+    check(
+      "deploy: prod ahead of the target → refused by the direction guard, not rolled back",
+      back.ok === false && back.rolledBack === false && back.refused === "direction-guard" && back.detail.includes("not a descendant"),
+    );
+    check("deploy: direction refusal spent no attempt (onAttempt never fired)", attempts === 0);
+    check("deploy: direction refusal emits direction-guard ok:false and no supervisor notify", events.at(-1)?.phase === "direction-guard" && events.at(-1)?.ok === false && notifies === 0);
+    check("deploy: prod HEAD untouched after the direction refusal", execSync("git rev-parse HEAD", { cwd: ddir, encoding: "utf8" }).trim() === c2);
+    // prod on a diverged branch (c3), target c2: not a descendant either
+    execSync(`git checkout -q ${c3}`, { cwd: ddir });
+    const div = await deploy(cfgD, c2, { task: "E1" }, opts);
+    check("deploy: diverged prod → direction refusal, no attempt", div.refused === "direction-guard" && attempts === 0);
+    // failed ancestry probe: fail-closed
+    execSync(`git checkout -q ${c1}`, { cwd: ddir });
+    const unknown = await deploy(cfgD, c2, { task: "E1" }, { ...opts, probeAncestor: () => null });
+    check("deploy: ancestry probe failure → refused (fail-closed), no attempt", unknown.refused === "direction-guard" && unknown.detail.includes("ancestry unknown") && attempts === 0);
+    // dirty tree: refused before the direction probe, no attempt
+    writeFileSync(join(ddir, "f.txt"), "operator edit\n");
+    const dirtyRef = await deploy(cfgD, c2, { task: "E1" }, opts);
+    check("deploy: dirty-guard refusal carries refused:\"dirty-guard\" and spends no attempt", dirtyRef.refused === "dirty-guard" && attempts === 0);
+    execSync("git checkout -q -- f.txt", { cwd: ddir });
+    // sha guard: refused:"sha-guard"
+    const shaRef = await deploy(cfgD, "9".repeat(40), { task: "E1" }, opts);
+    check("deploy: unverified sha → refused:\"sha-guard\", no attempt", shaRef.refused === "sha-guard" && attempts === 0);
+  } finally {
+    rmSync(ddir, { recursive: true, force: true });
+  }
+  // the index.ts wiring: the daily counter lives ONLY inside the onAttempt hook
+  const pilotIndexSrc = readFileSync(join(import.meta.dirname, "..", "apps", "pilot", "src", "index.ts"), "utf8");
+  check(
+    "index.ts: state.deploys++ appears exactly once, inside countDeployAttempt (the onAttempt hook)",
+    (pilotIndexSrc.match(/state\.deploys\+\+/g) ?? []).length === 1 &&
+      /function countDeployAttempt\(\): void \{\s*state\.deploys\+\+;/.test(pilotIndexSrc) &&
+      (pilotIndexSrc.match(/onAttempt: countDeployAttempt/g) ?? []).length === 2,
+  );
+
+  // (1) refusal backoff — pure
+  const t0 = 1_000_000;
+  check("deploy backoff: constants pinned (5 refusals, 30 min)", DEPLOY_REFUSAL_BACKOFF_AFTER === 5 && DEPLOY_REFUSAL_BACKOFF_MS === 30 * 60_000);
+  let bo = noteDeployRefusal(null, "dirty-guard", t0);
+  check("deploy backoff: first refusal counts, does not arm", bo?.count === 1 && bo?.until === 0 && deployBackoffRemaining(bo, t0) === 0);
+  for (let i = 2; i <= 4; i++) bo = noteDeployRefusal(bo, "dirty-guard", t0 + i);
+  check("deploy backoff: 4 same-kind refusals still free", bo?.count === 4 && deployBackoffRemaining(bo, t0 + 4) === 0);
+  bo = noteDeployRefusal(bo, "dirty-guard", t0 + 5);
+  check(
+    "deploy backoff: 5th consecutive same-kind refusal arms a 30 min hold",
+    bo?.count === 5 && bo?.until === t0 + 5 + DEPLOY_REFUSAL_BACKOFF_MS && deployBackoffRemaining(bo, t0 + 5) === DEPLOY_REFUSAL_BACKOFF_MS,
+  );
+  check("deploy backoff: hold expires after 30 min", deployBackoffRemaining(bo, t0 + 5 + DEPLOY_REFUSAL_BACKOFF_MS) === 0 && deployBackoffRemaining(bo, t0 + 5 + DEPLOY_REFUSAL_BACKOFF_MS - 1) === 1);
+  check("deploy backoff: a different refusal kind restarts the streak", noteDeployRefusal(bo, "disk-guard", t0 + 6)?.count === 1);
+  check("deploy backoff: sha-guard refusals never arm (fail-closed no-op, not a stuck environment)", noteDeployRefusal(bo, "sha-guard", t0 + 6) === null);
+  check("deploy backoff: no streak → free", deployBackoffRemaining(null, t0) === 0);
+  const short = noteDeployRefusal(noteDeployRefusal(null, "direction-guard", t0, { after: 2, backoffMs: 1_000 }), "direction-guard", t0 + 1, { after: 2, backoffMs: 1_000 });
+  check("deploy backoff: threshold and window injectable (tests)", short?.until === t0 + 1 + 1_000 && deployBackoffRemaining(short, t0 + 1_001) === 0);
+
+  // (3) nightly layer vs foreign mission
+  check("nightly layer: foreign mission → off, idle or busy", nightlyLayer(true, 0) === "off" && nightlyLayer(true, 3) === "off");
+  check("nightly layer: own repo → run when idle, busy otherwise", nightlyLayer(false, 0) === "run" && nightlyLayer(false, 1) === "busy");
+  const nightlyAt = pilotIndexSrc.indexOf("const nightly = nightlyLayer(foreignMission, running.size);");
+  check(
+    "index.ts: maybeNightly only runs under nightlyLayer === \"run\" (foreign mission never reaches the red team)",
+    nightlyAt > -1 &&
+      /if \(nightly === "run"\) \{\s*try \{\s*await maybeNightly\(/.test(pilotIndexSrc.slice(nightlyAt, nightlyAt + 400)) &&
+      (pilotIndexSrc.match(/await maybeNightly\(/g) ?? []).length === 1,
+  );
+
+  // (5a) default HEAD detection — injectable io
+  const ioOf = (sym: { ok: boolean; output: string }, show: { ok: boolean; output: string }) => {
+    const calls: string[] = [];
+    return {
+      calls,
+      exec: (cmd: string) => {
+        calls.push(cmd);
+        return cmd.startsWith("git symbolic-ref") ? sym : show;
+      },
+    };
+  };
+  const ioMaster = ioOf({ ok: true, output: "origin/master\n" }, { ok: true, output: "should not be read" });
+  const detMaster = detectDefaultBranch(ioMaster);
+  check("default branch: origin/HEAD symbolic-ref wins (offline), remote show never called", detMaster.branch === "master" && detMaster.source === "symbolic-ref" && ioMaster.calls.length === 1);
+  const ioShow = ioOf({ ok: false, output: "" }, { ok: true, output: "* remote origin\n  Fetch URL: x\n  HEAD branch: develop\n  Remote branches:\n" });
+  const detShow = detectDefaultBranch(ioShow);
+  check("default branch: no symbolic-ref → git remote show origin HEAD branch", detShow.branch === "develop" && detShow.source === "remote-show");
+  const detFallback = detectDefaultBranch(ioOf({ ok: false, output: "" }, { ok: false, output: "" }));
+  check("default branch: both probes down → main (fallback)", detFallback.branch === "main" && detFallback.source === "fallback");
+  check("default branch: (unknown) HEAD and hostile names never pass", detectDefaultBranch(ioOf({ ok: true, output: "origin/evil name; rm -rf\n" }, { ok: true, output: "  HEAD branch: (unknown)\n" })).source === "fallback");
+  check("parseSymbolicHead: full ref and short ref both strip to the branch; a bare name is not a remote ref", parseSymbolicHead("refs/remotes/origin/main\n") === "main" && parseSymbolicHead("origin/release/1.x") === "release/1.x" && parseSymbolicHead("main") === null && parseSymbolicHead("") === null);
+  check("parseRemoteShowHead: only the HEAD branch line", parseRemoteShowHead("  HEAD branch: master\n  Remote branch:\n    master tracked") === "master" && parseRemoteShowHead("nothing") === null);
+  // real git: a clone of a master-default repo reports master
+  const bdir = mkdtempSync(join(tmpdir(), "ocr-default-branch-"));
+  try {
+    const src = join(bdir, "src");
+    const clone = join(bdir, "clone");
+    mkdirSync(src);
+    execSync("git init -q -b master && git config user.email t@t && git config user.name t", { cwd: src });
+    writeFileSync(join(src, "README.md"), "hi\n");
+    execSync("git add README.md && git commit -q -m init", { cwd: src });
+    execSync(`git clone -q ${JSON.stringify(src)} ${JSON.stringify(clone)}`);
+    const realIo = {
+      exec: (cmd: string) => {
+        try {
+          return { ok: true, output: execSync(cmd, { cwd: clone, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }) };
+        } catch {
+          return { ok: false, output: "" };
+        }
+      },
+    };
+    const detReal = detectDefaultBranch(realIo);
+    check("default branch (real git): master-default clone → master via symbolic-ref", detReal.branch === "master" && detReal.source === "symbolic-ref");
+    check("default branch (real git): pinning main from origin/master works where origin/main does not exist", spawnSync("git", ["checkout", "-q", "-B", "main", `origin/${detReal.branch}`], { cwd: clone }).status === 0 && spawnSync("git", ["rev-parse", "--verify", "-q", "origin/main"], { cwd: clone }).status !== 0);
+  } finally {
+    rmSync(bdir, { recursive: true, force: true });
+  }
+
+  // (5b) BACKLOG.md skeleton for a fresh target repo
+  check("backlog skeleton: needed for a missing file or one without ## Ready", needsBacklogSkeleton(null) && needsBacklogSkeleton("# x\n\n## Done\n") && !needsBacklogSkeleton("# x\n\n## Ready\n\n## Done\n"));
+  check("backlog skeleton: carries the three sections every backlog edit relies on", ["## Ready", "## Blocked", "## Done"].every((s) => new RegExp(`^${s}$`, "m").test(BACKLOG_SKELETON)) && BACKLOG_SKELETON.indexOf("## Ready") < BACKLOG_SKELETON.indexOf("## Blocked") && BACKLOG_SKELETON.indexOf("## Blocked") < BACKLOG_SKELETON.indexOf("## Done"));
+  check("backlog skeleton: parses as an empty queue", parseBacklog(BACKLOG_SKELETON).length === 0 && backlogSkeletonEdit(null) === BACKLOG_SKELETON && backlogSkeletonEdit("## Ready\n") === null);
+  const userMd = "# My own backlog\n\n- keep this line\n\n## Done\n- [x] (P2-001) [P2] shipped — done\n";
+  const merged = backlogSkeletonEdit(userMd) ?? "";
+  check(
+    "backlog skeleton: a user's own BACKLOG.md keeps its content and gains only the missing sections (no duplicate ## Done)",
+    merged.startsWith("# My own backlog") && merged.includes("- keep this line") && /^## Ready$/m.test(merged) && /^## Blocked$/m.test(merged) && (merged.match(/^## Done$/gm) ?? []).length === 1,
+  );
+  const sdir = mkdtempSync(join(tmpdir(), "ocr-backlog-seed-"));
+  try {
+    check("seedBacklogSkeleton: creates the file, then keeps it", seedBacklogSkeleton(sdir) === "created" && seedBacklogSkeleton(sdir) === "kept" && readFileSync(join(sdir, "BACKLOG.md"), "utf8") === BACKLOG_SKELETON);
+    check("seedBacklogSkeleton: seeded file accepts a refill line (no more \"missing\")", appendReadyLines(sdir, ["- [ ] (P2-001) [P2] First — spec: x (area: ui)"]) === "applied" && parseBacklog(readFileSync(join(sdir, "BACKLOG.md"), "utf8")).length === 1);
+    writeFileSync(join(sdir, "BACKLOG.md"), userMd);
+    check("seedBacklogSkeleton: user file → appended", seedBacklogSkeleton(sdir) === "appended" && appendReadyLines(sdir, ["- [ ] (P2-002) [P2] Second — spec: x (area: ui)"]) === "applied");
+    // the refill landing seeds inside apply (after the rewind), so no clean/reset can eat it
+    rmSync(join(sdir, "BACKLOG.md"));
+    let seedPushes = 0;
+    const seedIo: AuxPushIo = {
+      exec: (cmd: string) => {
+        if (cmd.includes(`git checkout -q -B ${META_BRANCH}`)) rmSync(join(sdir, "BACKLOG.md"), { force: true }); // the rewind: origin/main has no BACKLOG.md
+        if (cmd.startsWith("git diff")) return { ok: true, output: "BACKLOG.md\n" };
+        if (cmd.startsWith("git push")) {
+          seedPushes++;
+          return { ok: true, output: "" };
+        }
+        if (cmd.startsWith("git rev-parse")) return { ok: true, output: `${"d".repeat(40)}\n` };
+        if (cmd.startsWith("gh ") && cmd.includes("pr view")) return { ok: true, output: JSON.stringify({ state: "MERGED", headRefOid: "d".repeat(40) }) };
+        return { ok: true, output: "" };
+      },
+      sleep: () => Promise.resolve(),
+    };
+    check("appendCommitAndPush: without seedSkeleton a repo with no BACKLOG.md fails (the old forever-loop)", (await appendCommitAndPush(sdir, ["- [ ] (P2-003) [P2] Third — spec: x (area: ui)"], "m", seedIo)) === "failed" && seedPushes === 0);
+    check("appendCommitAndPush: seedSkeleton lands skeleton + lines in one guarded push", (await appendCommitAndPush(sdir, ["- [ ] (P2-003) [P2] Third — spec: x (area: ui)"], "m", seedIo, 3, { seedSkeleton: true })) === "pushed" && seedPushes === 1 && parseBacklog(readFileSync(join(sdir, "BACKLOG.md"), "utf8")).some((t) => t.id === "P2-003"));
+    // reland path threads the same option
+    const pf = join(sdir, "pending-refill.json");
+    savePendingRefill(pf, ["- [ ] (P2-004) [P2] Fourth — spec: x (area: ui)"], "m");
+    const relandIo: AuxPushIo = { exec: (cmd) => (cmd.startsWith("git show") ? { ok: false, output: "" } : seedIo.exec(cmd)), sleep: () => Promise.resolve() };
+    check("relandPendingRefill: seedSkeleton threads through to the landing", (await relandPendingRefill(sdir, pf, relandIo, { seedSkeleton: true })) === "pushed" && !existsSync(pf));
+  } finally {
+    rmSync(sdir, { recursive: true, force: true });
+  }
+  check("index.ts: strategist refill and reland seed the skeleton only on a foreign mission", (pilotIndexSrc.match(/seedSkeleton: foreignMission/g) ?? []).length === 2);
+
+  // (4) model substitution must not be silent
+  const mdir = mkdtempSync(join(tmpdir(), "ocr-model-subst-"));
+  try {
+    const mf = join(mdir, "model-substitutions.json");
+    check("model subst: missing file → empty, never throws", readModelSubstitutions(mf).length === 0);
+    check("model subst: record upserts by role", recordModelSubstitution(mf, { role: "builder", wanted: "glm52/glm-5.2", usedInstead: "tier-A default", reason: "not available", at: "t1" }) && recordModelSubstitution(mf, { role: "builder", wanted: "glm52/glm-5.2", usedInstead: "tier-A default", reason: "not available", at: "t2" }) && readModelSubstitutions(mf).length === 1 && readModelSubstitutions(mf)[0]?.at === "t2");
+    check("model subst: invalid role / id refused (nothing written)", recordModelSubstitution(mf, { role: "planner", wanted: "p/m", usedInstead: "x", reason: "", at: "" }) === false && recordModelSubstitution(mf, { role: "scribe", wanted: "no slash", usedInstead: "x", reason: "", at: "" }) === false && readModelSubstitutions(mf).length === 1);
+    check("model subst: file is private (0600)", (statSync(mf).mode & 0o777) === 0o600);
+    recordModelSubstitution(mf, { role: "scribe", wanted: "gone/model", usedInstead: "tier-A default", reason: "r", at: "t" });
+    const all = readModelSubstitutions(mf);
+    check("model subst: only entries matching the ACTIVE pins surface (re-pinned/cleared missions show nothing)", activeModelSubstitutions({ builder: "glm52/glm-5.2", scribe: "other/model" }, all).map((e) => e.role).join() === "builder" && activeModelSubstitutions(undefined, all).length === 0 && activeModelSubstitutions({}, all).length === 0);
+    check("model subst: clear drops the role, others stay", clearModelSubstitution(mf, "builder") && readModelSubstitutions(mf).map((e) => e.role).join() === "scribe" && clearModelSubstitution(mf, "builder"));
+    writeFileSync(mf, "{ corrupt");
+    check("model subst: corrupt file reads as empty and is overwritten by the next record", readModelSubstitutions(mf).length === 0 && recordModelSubstitution(mf, { role: "reviewer", wanted: "a/b", usedInstead: "tier-A default", reason: "x".repeat(500), at: "t" }) && readModelSubstitutions(mf)[0]?.reason.length === 200);
+    check("model subst: one-line rendering (pilot + card agree)", formatModelSubstitutions([{ role: "builder", wanted: "a/b", usedInstead: "tier-A default", reason: "gone", at: "" }]) === "builder: a/b -> tier-A default (gone)" && formatModelSubstitutionsView([{ role: "builder", wanted: "a/b", usedInstead: "tier-A default" }]) === "builder: a/b -> tier-A default" && formatModelSubstitutionsView(undefined) === "" && formatModelSubstitutionsView([{ role: "x" } as unknown as { role: string; wanted: string; usedInstead: string }]) === "");
+    // the dispatch path records the fallback and clears it when the pin dispatches again
+    const argvSpawn2 = (() => spawn(process.execPath, ["-e", "process.exit(0)"])) as unknown as typeof spawn;
+    const base2 = { cwd: tmpdir(), timeoutMin: 1, label: "t", preflight: async () => true, spawnImpl: argvSpawn2, substitutionsFile: mf };
+    await runAgentForRole("builder", "hello", { ...base2, missionModels: { builder: "glm52/glm-5.2" }, catalog: async () => new Set(["other/model"]) });
+    const rec = readModelSubstitutions(mf).find((e) => e.role === "builder");
+    check("runAgentForRole: an unavailable mission model records the substitution with both ids", rec?.wanted === "glm52/glm-5.2" && rec?.usedInstead === "tier-A default" && /not available/.test(rec?.reason ?? ""));
+    await runAgentForRole("builder", "hello", { ...base2, missionModels: { builder: "glm52/glm-5.2" }, catalog: async () => new Set(["glm52/glm-5.2"]) });
+    check("runAgentForRole: the pin dispatching for real clears its substitution", !readModelSubstitutions(mf).some((e) => e.role === "builder"));
+  } finally {
+    rmSync(mdir, { recursive: true, force: true });
+  }
+  const runnerSrc = readFileSync(join(import.meta.dirname, "..", "apps", "pilot", "src", "runner.ts"), "utf8");
+  check("runner.ts: the fallback warn line carries wanted AND usedInstead", /logDispatch\("warn", "mission-model-fallback", \{ role, wanted: pick\.wanted, usedInstead, reason: pick\.reason/.test(runnerSrc));
+  const daemonSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  check("daemon: GET /api/pilot-mission returns modelSubstitutions filtered by the active pins", daemonSrc.includes("send(200, { mission: spec?.prompt ?? legacy, spec, modelSubstitutions });") && daemonSrc.includes("activeModelSubstitutions(spec?.models, readModelSubstitutions(defaultModelSubstitutionsFile()))"));
+  const mcvSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "MissionControlView.tsx"), "utf8");
+  check("Mission Control card: reads modelSubstitutions and renders the substituted line", mcvSrc.includes("json?.modelSubstitutions") && mcvSrc.includes('t("missionModelSubstituted")'));
+  check(
+    "i18n: missionModelSubstituted exists in en and pt, one line, no emoji",
+    ["en", "pt"].every((l) => {
+      const v = (dict[l as "en" | "pt"] as Record<string, string>).missionModelSubstituted;
+      return typeof v === "string" && v.length > 0 && !v.includes("\n") && !/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(v);
+    }),
+  );
+
+  // (5c) mission protocol: the agent discloses how the fleet touches the user's repo
+  const mproto = buildMissionPrompt();
+  check("mission protocol: discloses PR-based work (squash merges) with this machine's gh credentials", /PRs/.test(mproto) && /squash/.test(mproto) && /credenciais do gh/.test(mproto) && /nada é commitado direto em main/.test(mproto));
+  check("mission protocol: points the chat at modelSubstitutions for \"which model is running\"", mproto.includes("modelSubstitutions") && mproto.includes("/api/pilot-mission"));
+}
 // --- P2-194: device labels + last-seen touch (devicetouch.ts) -----------------
 
 {

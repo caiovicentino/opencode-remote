@@ -200,6 +200,58 @@ export function addTask(repoDir: string, id: string, priority: string, title: st
   writeFileSync(p, updated);
 }
 
+// ── Foreign mission: seed the pilot's BACKLOG.md format when absent ─────────
+
+/** The sections every backlog edit in this module relies on. */
+export const BACKLOG_SECTIONS = ["Ready", "Blocked", "Done"] as const;
+
+/** Minimal BACKLOG.md in the pilot format (what a fresh target repo gets). */
+export const BACKLOG_SKELETON = [
+  "# BACKLOG",
+  "",
+  // NNN on purpose: a real id here would be scanned as "taken" by
+  // appendReadyLines/nextId and block that id forever
+  "Queue of the autonomous fleet for this repository. Task lines live under",
+  "`## Ready` as `- [ ] (P2-NNN) [P2] Title — spec: ... (area: ui) (size: S)`;",
+  "the pilot moves them to `## Blocked` / `## Done`.",
+  "",
+  ...BACKLOG_SECTIONS.flatMap((s) => [`## ${s}`, ""]),
+].join("\n");
+
+/** True when there is no file (null) or no `## Ready` section — the queue
+ * reader, addTask and appendReadyLines all need that section. */
+export function needsBacklogSkeleton(md: string | null | undefined): boolean {
+  return typeof md !== "string" || !/^## Ready$/m.test(md);
+}
+
+/**
+ * Pure: the skeleton for a missing file, or the existing content with the
+ * missing pilot sections appended (a user's own BACKLOG.md is kept intact).
+ * Returns null when nothing is needed.
+ */
+export function backlogSkeletonEdit(md: string | null): string | null {
+  if (!needsBacklogSkeleton(md)) return null;
+  if (md === null) return BACKLOG_SKELETON;
+  const missing = BACKLOG_SECTIONS.filter((s) => !new RegExp(`^## ${s}$`, "m").test(md));
+  return `${md.replace(/\s*$/, "")}\n\n${missing.flatMap((s) => [`## ${s}`, ""]).join("\n")}`;
+}
+
+/**
+ * Seed the skeleton into a clone whose BACKLOG.md is absent or not in the
+ * pilot format. Local to the working tree: this never commits or pushes by
+ * itself — the file reaches the target repo only inside the strategist's
+ * refill PR, like every other backlog landing. Without it the refill failed
+ * ("missing") every 10 minutes forever on a fresh target repo.
+ */
+export function seedBacklogSkeleton(repoDir: string): "created" | "appended" | "kept" {
+  const p = join(repoDir, BACKLOG);
+  const current = existsSync(p) ? readFileSync(p, "utf8") : null;
+  const next = backlogSkeletonEdit(current);
+  if (next === null) return "kept";
+  writeFileSync(p, next);
+  return current === null ? "created" : "appended";
+}
+
 export function nextId(repoDir: string, prefix = "RT"): string {
   const md = existsSync(join(repoDir, BACKLOG)) ? readFileSync(join(repoDir, BACKLOG), "utf8") : "";
   const ids = md.matchAll(/\((?:P\d|RT)-(\d+)\)/g);
@@ -312,6 +364,10 @@ export type AuxPushResult = "pushed" | "refused" | "failed";
  * guard → force-push → PR, retried up to `attempts` times because concurrent
  * scribes/explorers move origin/main (P3-052 lesson). The guard is re-read from
  * the actual branch diff on every attempt; a refused diff never gets pushed.
+ * `opts.seedSkeleton` (foreign mission): a target repo without a pilot-format
+ * BACKLOG.md gets the skeleton seeded inside the apply step — after the
+ * rewind to origin/main, so no clean/reset can eat it — and the refill lands
+ * skeleton + lines in the same guarded single-file commit.
  */
 export async function appendCommitAndPush(
   repoDir: string,
@@ -319,6 +375,7 @@ export async function appendCommitAndPush(
   message: string,
   io: AuxPushIo,
   attempts = 3,
+  opts: { seedSkeleton?: boolean } = {},
 ): Promise<AuxPushResult> {
   return landMetaCommit(
     repoDir,
@@ -331,6 +388,7 @@ export async function appendCommitAndPush(
       // after a queued auto-merge finally lands must converge as success
       // (clearing the P1-037 pending store), not abort forever.
       apply: () => {
+        if (opts.seedSkeleton) seedBacklogSkeleton(repoDir);
         const r = appendReadyLines(repoDir, lines);
         return r === "applied" ? { action: "apply" } : r === "noop" ? { action: "noop" } : { action: "abort" };
       },

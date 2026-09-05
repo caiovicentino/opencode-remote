@@ -5,6 +5,7 @@ import { emit } from "./events";
 import { notifySupervisor } from "./notify";
 import { isMissionModelRole, type MissionModelRole, type MissionModels } from "./mission";
 import { fetchAvailableModels, pickMissionModel } from "./modelcatalog";
+import { clearModelSubstitution, defaultModelSubstitutionsFile, recordModelSubstitution } from "./modelsubst";
 
 export interface RunResult {
   ok: boolean;
@@ -538,22 +539,36 @@ function logDispatch(level: string, msg: string, data: Record<string, unknown>) 
 export async function runAgentForRole(
   role: DispatchRole,
   prompt: string,
-  opts: AgentRunOpts & { models?: unknown; marker?: string; missionModels?: MissionModels; catalog?: () => Promise<Set<string> | null> },
+  opts: AgentRunOpts & {
+    models?: unknown;
+    marker?: string;
+    missionModels?: MissionModels;
+    catalog?: () => Promise<Set<string> | null>;
+    /** Where mission-model substitutions are recorded (tests inject a tmp path). */
+    substitutionsFile?: string;
+  },
 ): Promise<RunResult> {
-  if (isMissionModelRole(role) && opts.missionModels?.[role]) {
-    const available = await (opts.catalog ?? fetchAvailableModels)();
-    const pick = pickMissionModel(opts.missionModels, role, available);
-    if (pick.model !== null) {
-      logDispatch("info", "agent-dispatch", { role, tier: "mission", model: pick.model, label: opts.label });
-      return runAgent(prompt, { ...opts, model: pick.model });
-    }
-    logDispatch("warn", "mission-model-fallback", { role, wanted: pick.wanted, reason: pick.reason, label: opts.label });
-  }
   // execution roles (builder/reviewer/scribe/researcher) never go tier B —
   // only the judgment roles of P1-059 (strategist is both a mission role and
   // a tier-B role) consult the tier table
   const tierBEligible = !isMissionModelRole(role) || role === "strategist";
   const model = tierBEligible ? tierBModelFor(opts.models as Parameters<typeof tierBModelFor>[0], role as TierBRole) : undefined;
+  if (isMissionModelRole(role) && opts.missionModels?.[role]) {
+    const available = await (opts.catalog ?? fetchAvailableModels)();
+    const pick = pickMissionModel(opts.missionModels, role, available);
+    const substFile = opts.substitutionsFile ?? defaultModelSubstitutionsFile();
+    if (pick.model !== null) {
+      logDispatch("info", "agent-dispatch", { role, tier: "mission", model: pick.model, label: opts.label });
+      clearModelSubstitution(substFile, role); // the pin dispatches for real again
+      return runAgent(prompt, { ...opts, model: pick.model });
+    }
+    // Fail-closed to a KNOWN model is right; doing it silently is not — both
+    // ids go to the warn line AND to the substitutions record the daemon
+    // surfaces on the Mission Control card (so the user learns what ran).
+    const usedInstead = model ?? "tier-A default";
+    logDispatch("warn", "mission-model-fallback", { role, wanted: pick.wanted, usedInstead, reason: pick.reason, label: opts.label });
+    recordModelSubstitution(substFile, { role, wanted: pick.wanted ?? "", usedInstead, reason: pick.reason ?? "", at: nowLocalISO() });
+  }
   if (!model) return runAgent(prompt, opts);
   logDispatch("info", "agent-dispatch", { role, tier: "B", model, label: opts.label });
   const r = await runTierB(model, prompt, { cwd: opts.cwd, timeoutMin: opts.timeoutMin, extraDirs: opts.extraDirs });

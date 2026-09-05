@@ -54,6 +54,22 @@ interface MissionSpecView {
   setAt?: string;
 }
 
+/** A pinned model the pilot could not dispatch (GET /api/pilot-mission `modelSubstitutions`). */
+export interface ModelSubstitutionView {
+  role: string;
+  wanted: string;
+  usedInstead: string;
+}
+
+/** One-line `role: wanted -> usedInstead` rendering of the substitutions ("" when none). */
+export function formatModelSubstitutions(subs: ModelSubstitutionView[] | undefined | null): string {
+  if (!Array.isArray(subs)) return "";
+  return subs
+    .filter((s) => s && typeof s.role === "string" && typeof s.wanted === "string" && typeof s.usedInstead === "string")
+    .map((s) => `${s.role}: ${s.wanted} -> ${s.usedInstead}`)
+    .join(", ");
+}
+
 /** One-line `role=model` rendering of the v2 model pins ("" when none). */
 export function formatMissionModels(models: Record<string, string> | undefined | null): string {
   if (!models || typeof models !== "object") return "";
@@ -129,6 +145,7 @@ export default function MissionControlView({
   const [dashUrl, setDashUrl] = useState<string | null>(null);
   // Self-serve mission: undefined = not loaded yet, null = none set.
   const [mission, setMission] = useState<MissionSpecView | null | undefined>(undefined);
+  const [modelSubs, setModelSubs] = useState<ModelSubstitutionView[]>([]);
   // Mission v2 clear path: two-click confirm ("End mission" → "Confirm") so a
   // stray click never deletes the mission; the status line reports the result.
   const [clearArmed, setClearArmed] = useState(false);
@@ -166,6 +183,8 @@ export default function MissionControlView({
       const { json } = await decode(await daemonApi({ path: "/api/pilot-mission" }));
       const spec = json?.spec as MissionSpecView | null | undefined;
       setMission(spec && typeof spec === "object" ? spec : null);
+      const subs = json?.modelSubstitutions;
+      setModelSubs(Array.isArray(subs) ? (subs as ModelSubstitutionView[]) : []);
     } catch {
       // best-effort: the cards error surface already reports a dead daemon
     }
@@ -321,6 +340,11 @@ export default function MissionControlView({
                 {formatMissionModels(mission.models) && (
                   <p className="mission-active-src" data-mission-models>
                     {t("missionModels")}: {formatMissionModels(mission.models)}
+                  </p>
+                )}
+                {formatModelSubstitutions(modelSubs) && (
+                  <p className="mission-active-src mission-bad" data-mission-model-subst>
+                    {t("missionModelSubstituted")}: {formatModelSubstitutions(modelSubs)}
                   </p>
                 )}
                 <p className="mission-active-src">

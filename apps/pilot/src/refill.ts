@@ -78,7 +78,12 @@ export type RelandResult = "pushed" | "empty" | "refused" | "failed" | "none";
  * file, ## Blocked/## Done included), so the pre-filter can never disagree
  * with the append guard.
  */
-export async function relandPendingRefill(repoDir: string, file: string, io: AuxPushIo): Promise<RelandResult> {
+export async function relandPendingRefill(
+  repoDir: string,
+  file: string,
+  io: AuxPushIo,
+  opts: { seedSkeleton?: boolean } = {},
+): Promise<RelandResult> {
   const pending = readPendingRefill(file);
   if (!pending) return "none";
   io.exec("git fetch -q origin");
@@ -92,7 +97,7 @@ export async function relandPendingRefill(repoDir: string, file: string, io: Aux
     clearPendingRefill(file);
     return "empty";
   }
-  const result = await appendCommitAndPush(repoDir, remaining, pending.message, io);
+  const result = await appendCommitAndPush(repoDir, remaining, pending.message, io, 3, opts);
   if (result === "failed") return "failed"; // transient — KEEP the file, retry next idle cycle
   // pushed: done. refused: the mayPush guard rejected a contaminated worktree —
   // clear the store and warn upstream, never loop on it; the strategist

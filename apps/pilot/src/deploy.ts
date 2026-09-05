@@ -23,14 +23,22 @@ import {
   SHA_RE,
   writeLastInstall,
   dirtyGuardDetail,
+  directionGuardDetail,
   type QuarantinedSha,
   type VerifiedMerge,
 } from "./deployguard";
+
+/** Pre-mutation guards that can refuse a deploy. None of them spent an attempt. */
+export type DeployRefusal = "sha-guard" | "disk-guard" | "dirty-guard" | "direction-guard";
 
 export interface DeployResult {
   ok: boolean;
   rolledBack: boolean;
   detail: string;
+  /** Set when a pre-mutation guard refused: nothing was attempted, prod is
+   * untouched and no daily deploy budget was spent (the burn of 2026-09-05:
+   * 196 dirty-guard refusals ate the whole cap before any real attempt). */
+  refused?: DeployRefusal;
 }
 
 // ── P1-044 autocatalysis lane: reinforced deploy for apps/pilot/** merges �───
@@ -308,6 +316,92 @@ export interface DeployOpts {
   /** P2-114: injectable `git status --porcelain --untracked-files=no` probe of
    * the prod checkout (tests); returns the porcelain text or null on failure. */
   probeDirty?: (repo: string) => string | null;
+  /** Direction guard: injectable `git merge-base --is-ancestor <prod> <target>`
+   * probe (tests); true = target descends from prod, null = probe failed. */
+  probeAncestor?: (repo: string, prodSha: string, target: string) => boolean | null;
+  /** Fired exactly once, right after every guard passed and BEFORE the first
+   * mutation — the caller's "a real attempt is starting" hook (daily budget
+   * accounting). Never fired for a guard refusal. */
+  onAttempt?: () => void;
+}
+
+/**
+ * The pre-mutation guard chain, in order: sha (P2-058) → disk (P3-006) →
+ * dirty tree (P2-114) → direction (target must descend from prod HEAD).
+ * Returns the refusal result — `refused` names the guard — or null when the
+ * deploy may proceed. Nothing here touches production; a refusal spends no
+ * budget and quarantines nothing (the sha is not at fault). Exported so the
+ * battery pins "clean checkout + descendant target → proceed" without ever
+ * running the mutation half of deploy().
+ */
+export async function deployPreflight(
+  cfg: PilotConfig,
+  sha: string,
+  meta?: { task?: string; ui?: boolean },
+  opts?: DeployOpts,
+): Promise<DeployResult | null> {
+  const emitEvent = opts?.emitEvent ?? emit;
+  // P2-058 sha guard: first gate of all — a SHA the gatekeeper did not verify
+  // (or that failed a previous deploy) must not reach production, even before
+  // the disk probe. Refusal is expected behavior, not a failure: no notify.
+  const verified = opts?.verifiedMerges ?? readVerifiedMerges(defaultVerifiedMergesFile());
+  const banned = opts?.quarantine ?? readQuarantine(defaultQuarantineFile());
+  const shaGuard = shaGuardDetail(sha, verified, banned);
+  if (shaGuard) {
+    log("warn", shaGuard);
+    emitEvent("deploy", { phase: "sha-guard", ok: false, detail: shaGuard });
+    return { ok: false, rolledBack: false, detail: shaGuard, refused: "sha-guard" };
+  }
+  // P3-006 disk guard: must run before ANY mutation (git/npm) — a full disk
+  // used to surface later as a cryptic git index.lock failure. Unavailable
+  // probe = proceed (fail-open).
+  const probe = opts?.probeFreeBytes ?? freeDiskBytes;
+  const guard = diskGuardDetail(await probe(cfg.repo), opts?.minFreeBytes ?? DISK_MIN_FREE_BYTES);
+  if (guard) {
+    log("warn", guard);
+    emitEvent("deploy", { phase: "disk-guard", ok: false, detail: guard });
+    await (opts?.notify ?? notifySupervisor)(meta?.task ?? "deploy", false, guard);
+    return { ok: false, rolledBack: false, detail: guard, refused: "disk-guard" };
+  }
+  // P2-114 dirty guard: the production checkout doubles as the operator's
+  // working tree — a blind `git reset --hard` would silently destroy tracked
+  // local edits. Untracked/gitignored files never block; a FAILED probe aborts
+  // (fail-closed, unlike the disk guard: an unknown tree state is not safe to
+  // reset away). No quarantine — the sha is not at fault, same as the disk
+  // guard; the pending-deploy self-heal simply retries later.
+  const probeDirty =
+    opts?.probeDirty ??
+    ((repo: string) => {
+      const r = exec("git status --porcelain --untracked-files=no", { cwd: repo, allowFail: true });
+      return r.ok ? r.output : null;
+    });
+  const dirty = dirtyGuardDetail(probeDirty(cfg.repo));
+  if (dirty) {
+    log("warn", dirty);
+    emitEvent("deploy", { phase: "dirty-guard", ok: false, detail: dirty });
+    await (opts?.notify ?? notifySupervisor)(meta?.task ?? "deploy", false, dirty);
+    return { ok: false, rolledBack: false, detail: dirty, refused: "dirty-guard" };
+  }
+  // Direction guard: a deploy only moves production FORWARD. When prod is
+  // already ahead of the target (an unverified direct push landed there), the
+  // reset would silently roll production back — skip with a warn, no state
+  // change, no notify; rollback stays exclusive to the quarantine/rollback flow.
+  const prodSha = exec("git rev-parse HEAD", { cwd: cfg.repo, allowFail: true }).output.trim();
+  const probeAncestor =
+    opts?.probeAncestor ??
+    ((repo: string, prev: string, target: string) => {
+      if (!SHA_RE.test(prev) || !SHA_RE.test(target)) return null;
+      // exit 0 = ancestor, 1 = not; any other failure is indistinguishable
+      // from "not" here, which is the fail-closed answer anyway
+      return exec(`git merge-base --is-ancestor ${prev} ${target}`, { cwd: repo, allowFail: true }).ok;
+    });
+  const direction = directionGuardDetail(prodSha, sha, probeAncestor(cfg.repo, prodSha, sha));
+  if (direction) {
+    log("warn", direction);
+    emitEvent("deploy", { phase: "direction-guard", ok: false, detail: direction });
+    return { ok: false, rolledBack: false, detail: direction, refused: "direction-guard" };
+  }
+  return null;
 }
 
 /**
@@ -345,47 +439,11 @@ export async function deploy(
     notify: opts?.notify,
   });
   emitEvent("deploy", { phase: "start", detail: `sha ${sha.slice(0, 7)}` });
-  // P2-058 sha guard: first gate of all — a SHA the gatekeeper did not verify
-  // (or that failed a previous deploy) must not reach production, even before
-  // the disk probe. Refusal is expected behavior, not a failure: no notify.
-  const verified = opts?.verifiedMerges ?? readVerifiedMerges(defaultVerifiedMergesFile());
-  const banned = opts?.quarantine ?? readQuarantine(defaultQuarantineFile());
-  const shaGuard = shaGuardDetail(sha, verified, banned);
-  if (shaGuard) {
-    log("warn", shaGuard);
-    emitEvent("deploy", { phase: "sha-guard", ok: false, detail: shaGuard });
-    return { ok: false, rolledBack: false, detail: shaGuard };
-  }
-  // P3-006 disk guard: must run before ANY mutation (git/npm) — a full disk
-  // used to surface later as a cryptic git index.lock failure. Unavailable
-  // probe = proceed (fail-open).
-  const probe = opts?.probeFreeBytes ?? freeDiskBytes;
-  const guard = diskGuardDetail(await probe(cfg.repo), opts?.minFreeBytes ?? DISK_MIN_FREE_BYTES);
-  if (guard) {
-    log("warn", guard);
-    emitEvent("deploy", { phase: "disk-guard", ok: false, detail: guard });
-    await (opts?.notify ?? notifySupervisor)(meta?.task ?? "deploy", false, guard);
-    return { ok: false, rolledBack: false, detail: guard };
-  }
-  // P2-114 dirty guard: the production checkout doubles as the operator's
-  // working tree — a blind `git reset --hard` would silently destroy tracked
-  // local edits. Untracked/gitignored files never block; a FAILED probe aborts
-  // (fail-closed, unlike the disk guard: an unknown tree state is not safe to
-  // reset away). No quarantine — the sha is not at fault, same as the disk
-  // guard; the pending-deploy self-heal simply retries later.
-  const probeDirty =
-    opts?.probeDirty ??
-    ((repo: string) => {
-      const r = exec("git status --porcelain --untracked-files=no", { cwd: repo, allowFail: true });
-      return r.ok ? r.output : null;
-    });
-  const dirty = dirtyGuardDetail(probeDirty(cfg.repo));
-  if (dirty) {
-    log("warn", dirty);
-    emitEvent("deploy", { phase: "dirty-guard", ok: false, detail: dirty });
-    await (opts?.notify ?? notifySupervisor)(meta?.task ?? "deploy", false, dirty);
-    return { ok: false, rolledBack: false, detail: dirty };
-  }
+  // guard chain (sha → disk → dirty → direction): a refusal returns here with
+  // `refused` set and nothing mutated; only past this point is a real attempt
+  const refusal = await deployPreflight(cfg, sha, meta, opts);
+  if (refusal) return refusal;
+  opts?.onAttempt?.();
   const prev = exec("git rev-parse HEAD", { cwd: cfg.repo }).output.trim();
   // P1-044: the lane applies when this deploy changes the pilot's own code —
   // detected from the real sha range (covers the pending-deploy self-heal too);

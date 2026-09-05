@@ -102,6 +102,7 @@ import {
 import { avgPhaseDurations, burnDown, countFailSteps, rollbackHealthAlert, type HistoryEntry } from "../../pilot/src/metrics";
 import { PRICE_SOURCE_LABEL } from "../../pilot/src/pricing";
 import { readMission, removeMissionFile } from "../../pilot/src/mission";
+import { activeModelSubstitutions, defaultModelSubstitutionsFile, readModelSubstitutions } from "../../pilot/src/modelsubst";
 import { emit } from "../../pilot/src/events";
 import type { PilotEvent } from "../../pilot/src/events";
 
@@ -2661,7 +2662,11 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       try {
         legacy = (JSON.parse(readFileSync(file, "utf8")) as { mission?: string }).mission ?? "";
       } catch {}
-      send(200, { mission: spec?.prompt ?? legacy, spec });
+      // mission model substitutions: the pilot fell back from a pinned model
+      // to the tier default (modelsubst.ts) — only entries matching the
+      // active pins surface, so the card can say what actually ran
+      const modelSubstitutions = activeModelSubstitutions(spec?.models, readModelSubstitutions(defaultModelSubstitutionsFile()));
+      send(200, { mission: spec?.prompt ?? legacy, spec, modelSubstitutions });
       return true;
     }
     // DELETE /api/mission — mission v2 clear path: remove mission.json (atomic
