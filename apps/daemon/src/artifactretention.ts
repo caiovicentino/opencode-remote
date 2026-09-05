@@ -78,10 +78,12 @@ function sessionUnderRoot(base: string, rawPath: string): string | null {
   // strictly under the root: the root itself and everything outside is refused
   if (abs === base || !abs.startsWith(base + "/")) return null;
   const parts = abs.slice(base.length + 1).split("/");
+  const session = parts[0];
+  if (!session) return null;
   for (const part of parts) {
     if (!validSegment(part)) return null;
   }
-  return parts[0];
+  return session;
 }
 
 /**
