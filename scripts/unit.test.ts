@@ -11274,6 +11274,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
 // --- P2-186: release-checksums — every download asset ships its sha256 ------
 {
   const TAG = "v0.3.0";
+  const repoRoot = join(import.meta.dirname, "..");
   const hA = "aa".repeat(32);
   const hB = "bb".repeat(32);
   const hC = "cc".repeat(32);
@@ -11281,14 +11282,39 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   const hE = "ee".repeat(32);
   const hF = "12".repeat(32);
   const hG = "34".repeat(32);
-  // Complete, valid list — space-free names, lowercase 64-hex digests, one
+  // The fixture is PINNED to the artifact names the workflow actually uploads:
+  // apps/desktop/electron-builder.yml renders the dmg/zip/exe templates, and a
+  // regression back to spaced names must fail here (the checksum rule would
+  // otherwise deadlock every future release as a draft at tag time).
+  const ebYml = readFileSync(join(repoRoot, "apps", "desktop", "electron-builder.yml"), "utf8");
+  const macBlock = ebYml.slice(ebYml.indexOf("\nmac:"), ebYml.indexOf("\ndmg:"));
+  const nsisBlock = ebYml.slice(ebYml.indexOf("\nnsis:"), ebYml.indexOf("\nlinux:"));
+  const renderArtifact = (tpl: string, ext: string) =>
+    tpl.replaceAll("${version}", "0.3.0").replaceAll("${arch}", "arm64").replaceAll("${ext}", ext);
+  const macTpl = /^\s*artifactName: (.+)$/m.exec(macBlock)?.[1]?.trim() ?? "";
+  const nsisTpl = /^\s*artifactName: (.+)$/m.exec(nsisBlock)?.[1]?.trim() ?? "";
+  const REAL_DMG = renderArtifact(macTpl, "dmg");
+  const REAL_ZIP = renderArtifact(macTpl, "zip");
+  const REAL_EXE = renderArtifact(nsisTpl, "exe"); // nsis template ends in a literal .exe
+  check(
+    "P2-186: electron-builder.yml pins space-free dmg/zip/exe artifact names (manifest step cannot deadlock at tag time)",
+    macTpl.length > 0 &&
+      nsisTpl.length > 0 &&
+      !macTpl.includes(" ") &&
+      !nsisTpl.includes(" ") &&
+      REAL_DMG === "OpenCode-Remote-0.3.0-arm64.dmg" &&
+      REAL_ZIP === "OpenCode-Remote-0.3.0-arm64.zip" &&
+      REAL_EXE === "OpenCode-Remote-Setup-0.3.0.exe",
+    `${JSON.stringify(macTpl)} | ${JSON.stringify(nsisTpl)}`,
+  );
+  // Complete, valid list — the REAL asset names, lowercase 64-hex digests, one
   // entry per download asset (tarball included; the P2-153 required slots all
   // match by extension+version or exact name).
   const complete = [
     { name: "opencode-remote-v0.3.0.tar.gz", hash: hF },
-    { name: "OpenCode-Remote-0.3.0.dmg", hash: hB },
-    { name: "OpenCode-Remote-0.3.0-mac.zip", hash: hA },
-    { name: "OpenCode-Remote-Setup-0.3.0.exe", hash: hC },
+    { name: REAL_DMG, hash: hB },
+    { name: REAL_ZIP, hash: hA },
+    { name: REAL_EXE, hash: hC },
     { name: "latest-mac.yml", hash: hD },
     { name: "update-mac.json", hash: hG },
     { name: "latest.yml", hash: hE },
@@ -11297,9 +11323,9 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   // checksumLines shows: byte-wise name order, and every line ends with the
   // two-space separator.
   const canonical = [
-    `${hA}  OpenCode-Remote-0.3.0-mac.zip`,
-    `${hB}  OpenCode-Remote-0.3.0.dmg`,
-    `${hC}  OpenCode-Remote-Setup-0.3.0.exe`,
+    `${hB}  ${REAL_DMG}`,
+    `${hA}  ${REAL_ZIP}`,
+    `${hC}  ${REAL_EXE}`,
     `${hD}  latest-mac.yml`,
     `${hE}  latest.yml`,
     `${hF}  opencode-remote-v0.3.0.tar.gz`,
@@ -11307,7 +11333,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   ].join("\n");
 
   check(
-    "P2-186: complete list → canonical sorted coreutils manifest, no problems",
+    "P2-186: complete list of REAL asset names (pinned to electron-builder.yml) → canonical sorted coreutils manifest, no problems",
     checksumProblems(complete, TAG).length === 0 && checksumLines(complete) === `${canonical}\n`,
     JSON.stringify(checksumProblems(complete, TAG)),
   );
@@ -11340,7 +11366,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     JSON.stringify(checksumProblems(dup, TAG)),
   );
 
-  const spaced = complete.map((e) => (e.name === "OpenCode-Remote-0.3.0.dmg" ? { ...e, name: "OpenCode Remote-0.3.0.dmg" } : e));
+  const spaced = complete.map((e) => (e.name === REAL_DMG ? { ...e, name: REAL_DMG.replace("OpenCode-Remote", "OpenCode Remote") } : e));
   check(
     "P2-186: name with space → problem",
     checksumProblems(spaced, TAG).length === 1 && checksumProblems(spaced, TAG)[0]!.includes("space"),
@@ -11361,7 +11387,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     JSON.stringify(checksumProblems(self, TAG)),
   );
 
-  const noExe = complete.filter((e) => e.name !== "OpenCode-Remote-Setup-0.3.0.exe");
+  const noExe = complete.filter((e) => e.name !== REAL_EXE);
   check(
     "P2-186: required download asset absent → problem (P2-153 contract by import)",
     checksumProblems(noExe, TAG).length === 1 && checksumProblems(noExe, TAG)[0]!.includes("Windows NSIS setup"),
@@ -11383,7 +11409,6 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 
   // --- CLI: tag + entries JSON path + manifest out path, fail-closed ---------
-  const repoRoot = join(import.meta.dirname, "..");
   const tsxEntry = join(repoRoot, "node_modules", "tsx", "dist", "cli.mjs");
   const script = join(repoRoot, "scripts", "release-checksums.ts");
   const dir = mkdtempSync(join(tmpdir(), "release-checksums-"));

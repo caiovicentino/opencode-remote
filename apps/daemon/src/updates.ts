@@ -10,7 +10,7 @@
 //   ~/.opencode-remote/updates/
 //     feed.json                      ← Squirrel.Mac pointer doc (version, url)
 //     0.2.1/latest-mac.yml           ← electron-builder metadata (visibility)
-//     0.2.1/OpenCode Remote-0.2.1-mac.zip
+//     0.2.1/OpenCode-Remote-0.2.1-arm64.zip
 //
 // feed.json's `url` field points at the absolute artifact URL
 // (http://127.0.0.1:<port>/__ocr/updates/0.2.1/<file>), so publishing a new

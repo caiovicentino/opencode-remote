@@ -239,7 +239,7 @@ Node never trusts the macOS keychain.
 ### Desktop app installer (DMG)
 
 Every GitHub release ships a real macOS installer,
-`OpenCode Remote-<version>-arm64.dmg` (electron-builder `dmg` target, branded
+`OpenCode-Remote-<version>-arm64.dmg` (electron-builder `dmg` target, branded
 window). A signing preflight (`apps/desktop/scripts/signing-profile.mjs`) runs
 before packaging and picks one of two modes:
 
@@ -286,7 +286,7 @@ secrets) keep the manual flow via the release page.
 
 ### Desktop app installer (Windows)
 
-Releases also ship a Windows installer, `OpenCode Remote Setup <version>.exe`
+Releases also ship a Windows installer, `OpenCode-Remote-Setup-<version>.exe`
 (electron-builder `nsis` target: assisted setup, per-user install, you can
 pick the installation directory), alongside the `latest.yml` metadata the
 in-app update check falls back to. Windows signing has its own profile,
@@ -392,7 +392,7 @@ check it with your system's standard tool:
     sha256sum -c checksums.txt         # Linux
 
     # Windows (PowerShell) — compare with the line in checksums.txt:
-    Get-FileHash ".\OpenCode Remote Setup 0.3.0.exe" -Algorithm SHA256
+    Get-FileHash ".\OpenCode-Remote-Setup-0.3.0.exe" -Algorithm SHA256
 
 The tool prints `OK` for every file whose hash matches. A mismatch means the
 file on disk is not what CI produced: **do not open or run it**. The most
@@ -668,7 +668,7 @@ During web development, point the shell at the Vite dev server:
 clean checkout.
 
 **Packaging (P1-050)**: `npm run dist --workspace @ocr/desktop` now also
-produces a distributable **`OpenCode Remote-<version>-arm64.dmg`** (branded
+produces a distributable **`OpenCode-Remote-<version>-arm64.dmg`** (branded
 installer window, semantic version in the About panel and in the DMG file
 name) — and `npm run dist:smoke --workspace @ocr/desktop` verifies the
 bundle **and** the DMG artifact. Local builds are ad-hoc signed with hardened
@@ -688,7 +688,7 @@ the app's name. Tag releases ship that DMG +
 signing preflight notarizes only when a Developer ID certificate and the
 Apple credentials are actually configured (see *Desktop app installer*). The
 same release pipeline ships the **Windows NSIS installer**
-(`OpenCode Remote Setup <version>.exe` + `latest.yml`) from a `windows-latest`
+(`OpenCode-Remote-Setup-<version>.exe` + `latest.yml`) from a `windows-latest`
 runner — unsigned (SmartScreen, see the Windows section above) until the
 `WIN_CSC_*` signing secrets are configured; the smoke check validates the
 setup exe and the metadata on any OS, no Windows required.
