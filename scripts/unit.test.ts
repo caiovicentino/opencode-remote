@@ -404,6 +404,8 @@ import { DEEP_LINK_QUERY_MAX, deepLinkFromArgv, parseDeepLink } from "../apps/de
 
 import { externalOpenDecision } from "../apps/desktop/src/extlink";
 
+import { guestAttachDecision, guestNavigationDecision } from "../apps/desktop/src/webviewguard";
+
 import {
   DEFAULT_WINDOW_BOUNDS,
   loadWindowBounds,
@@ -753,6 +755,116 @@ check("permissions.ts is pure (no electron import)", !permissionsSource.includes
 check("permissions.ts is pure (no node builtins)", !permissionsSource.includes("node:fs") && !permissionsSource.includes("node:path") && !permissionsSource.includes("node:os") && !permissionsSource.includes("node:child_process"));
 
 check("permissions.ts is pure (no fetch)", !permissionsSource.includes("fetch("));
+
+
+
+// --- guest webContents guard (P2-184) ----------------------------------------
+
+const httpAttach = guestAttachDecision("http://localhost:3000/", {}, undefined);
+
+check("guestAttachDecision allows http origin", httpAttach.allow);
+
+check("guestAttachDecision allow reason is non-empty", httpAttach.allow && httpAttach.reason.length > 0);
+
+check("guestAttachDecision forces contextIsolation on the allowed attach", httpAttach.allow && httpAttach.webPreferences.contextIsolation === true);
+
+check("guestAttachDecision allows https origin", guestAttachDecision("https://example.com/", undefined, undefined).allow);
+
+check("guestAttachDecision treats uppercase HTTP scheme like lowercase (allowed)", guestAttachDecision("HTTP://localhost:3000/", undefined, undefined).allow);
+
+const fileAttach = guestAttachDecision("file:///Users/x/secret.txt", undefined, undefined);
+
+check("guestAttachDecision denies file origin", !fileAttach.allow);
+
+check("guestAttachDecision denies file origin with expected reason", !fileAttach.allow && fileAttach.reason === "file-scheme-denied");
+
+check("guestAttachDecision treats uppercase FILE scheme like lowercase (denied)", !guestAttachDecision("FILE:///etc/passwd", undefined, undefined).allow);
+
+const ocrAttach = guestAttachDecision("ocr://x", undefined, undefined);
+
+check("guestAttachDecision denies unknown scheme", !ocrAttach.allow);
+
+check("guestAttachDecision unknown scheme reason names the scheme", !ocrAttach.allow && ocrAttach.reason === "scheme-not-allowed:ocr");
+
+const attachVariants: Array<[string, unknown, unknown]> = [
+  ["no prefs at all", undefined, undefined],
+  ["non-object prefs", "garbage", undefined],
+  ["unsafe prefs", { nodeIntegration: true, sandbox: false, contextIsolation: false, webviewTag: true, nodeIntegrationInSubFrames: true }, undefined],
+  ["empty preload", {}, ""],
+  ["non-empty preload", {}, "/tmp/evil.js"],
+  ["preloadURL key", { preloadURL: "/tmp/evil.js" }, undefined],
+];
+
+for (const [name, prefs, preload] of attachVariants) {
+  const decision = guestAttachDecision("https://example.com/", prefs, preload);
+  check(`guestAttachDecision still allows attach with ${name}`, decision.allow);
+  check(`guestAttachDecision sanitizes preferences for ${name}`, decision.allow && decision.webPreferences.contextIsolation === true && decision.webPreferences.sandbox === true && decision.webPreferences.nodeIntegration === false && decision.webPreferences.nodeIntegrationInSubFrames === false && decision.webPreferences.webviewTag === false);
+  check(`guestAttachDecision strips renderer preload for ${name}`, decision.allow && decision.webPreferences.preload === undefined && !("preload" in decision.webPreferences) && !("preloadURL" in decision.webPreferences));
+  check(`guestAttachDecision reason stays non-empty for ${name}`, decision.reason.length > 0);
+}
+
+check("guestNavigationDecision allows http", guestNavigationDecision("http://localhost:3000/x").allow);
+
+check("guestNavigationDecision allows https", guestNavigationDecision("https://example.com/x").allow);
+
+check("guestNavigationDecision treats uppercase HTTPS like lowercase (allowed)", guestNavigationDecision("HTTPS://EXAMPLE.COM/").allow);
+
+const guestNavRefusals: Array<[string, unknown, string]> = [
+  ["file", "file:///etc/passwd", "file-scheme-denied"],
+  ["javascript", "javascript:alert(1)", "javascript-scheme-denied"],
+  ["data", "data:text/html,hello", "data-scheme-denied"],
+  ["blob", "blob:https://example.com/uuid", "blob-scheme-denied"],
+  ["uppercase file", "FILE:///etc/passwd", "file-scheme-denied"],
+  ["unknown scheme", "smb://server/share", "scheme-not-allowed:smb"],
+  ["about", "about:blank", "scheme-not-allowed:about"],
+  ["empty string", "", "empty"],
+  ["whitespace only", "   ", "empty"],
+  ["non-string", 42, "not-a-string"],
+  ["malformed url", "http://exa mple.com/<>", "unparseable-url"],
+  ["bare word", "not a url", "unparseable-url"],
+];
+
+for (const [name, input, expectedReason] of guestNavRefusals) {
+  const decision = guestNavigationDecision(input);
+  check(`guestNavigationDecision refuses ${name}`, !decision.allow);
+  check(`guestNavigationDecision refuses ${name} with expected reason`, !decision.allow && decision.reason === expectedReason);
+  check(`guestNavigationDecision refuses ${name} with non-empty reason`, !decision.allow && decision.reason.length > 0);
+}
+
+// The shell's single guest path: one web-contents-created handler classifies
+// every webContents, the <webview> guest navigations go through the pure
+// decision and the shell window owns the attach hook.
+check("main.ts registers exactly one web-contents-created handler", (mainTsSource.match(/web-contents-created/g) ?? []).length === 1);
+
+check("main.ts imports the webview guard", mainTsSource.includes('from "./webviewguard"'));
+
+check("main.ts hooks will-attach-webview on the shell window", (mainTsSource.match(/on\("will-attach-webview"/g) ?? []).length === 1);
+
+check("main.ts guards guest will-redirect too", (mainTsSource.match(/will-redirect/g) ?? []).length === 1);
+
+check("main.ts has a will-navigate guard for the window and one for the guest", (mainTsSource.match(/will-navigate/g) ?? []).length === 2);
+
+check("main.ts routes guest navigation through the decision", mainTsSource.includes("guestNavigationDecision("));
+
+check("main.ts guest window-open is denied outright", (mainTsSource.match(/setWindowOpenHandler/g) ?? []).length === 2 && mainTsSource.includes('setWindowOpenHandler(() => ({ action: "deny" }))'));
+
+const guestRefusalLines = mainTsSource.split("\n").filter((line) => line.includes("guest navigation refused") || line.includes("guest attach refused"));
+
+check("main.ts has both guest refusal logs", guestRefusalLines.length === 2);
+
+check("main.ts guest refusal logs carry scheme + reason only", guestRefusalLines.length === 2 && guestRefusalLines.every((line) => line.includes("requestingScheme(") && line.includes("${decision.reason}")));
+
+check("main.ts guest refusal logs omit the full URL", guestRefusalLines.length === 2 && guestRefusalLines.every((line) => !line.includes("${url}") && !line.includes("${params.src}")));
+
+// webviewguard.ts stays pure: no electron, no node builtins, no fetch — so the
+// unit test always exercises the real decision code.
+const webviewGuardSource = readFileSync(new URL("../apps/desktop/src/webviewguard.ts", import.meta.url), "utf8");
+
+check("webviewguard.ts is pure (no electron import)", !webviewGuardSource.includes('from "electron"'));
+
+check("webviewguard.ts is pure (no node builtins)", !webviewGuardSource.includes("node:fs") && !webviewGuardSource.includes("node:path") && !webviewGuardSource.includes("node:os") && !webviewGuardSource.includes("node:child_process"));
+
+check("webviewguard.ts is pure (no fetch)", !webviewGuardSource.includes("fetch("));
 
 
 

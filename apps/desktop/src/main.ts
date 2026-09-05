@@ -26,6 +26,7 @@ import { versionMismatch } from "./versions";
 import { applyAppUserModelId, daemonNotify, NOTIFY_BACK_BODY, NOTIFY_DOWN_BODY, NOTIFY_TITLE, type DaemonHealth } from "./notify";
 import { deepLinkFromArgv, parseDeepLink } from "./deeplink";
 import { externalOpenDecision } from "./extlink";
+import { guestAttachDecision, guestNavigationDecision } from "./webviewguard";
 import { permissionDecision, requestingScheme } from "./permissions";
 import { daemonTooltip, loginItemSupported, logsDirPath, openLogsFolder, trayIconSource } from "./tray";
 import { badgePlan, type BadgePlan } from "./badge";
@@ -637,6 +638,43 @@ async function onReady(): Promise<void> {
   session.defaultSession.setPermissionCheckHandler(
     (_wc, permission, requestingOrigin) => permissionDecision(permission, requestingOrigin, permissionCtx).allow,
   );
+
+  // P2-184: the single guest path. Every webContents created from here on is
+  // classified once by type: a Browser-pane <webview> guest has its main-frame
+  // navigations (link clicks, redirects, meta refreshes) checked against the
+  // pure decision — only http/https pass, so a redirect can never render local
+  // user files inside the pane — and its window.open denied outright; the
+  // shell window gets the will-attach-webview hook that forces the sanitized
+  // guest preferences over whatever the renderer declared and drops any
+  // renderer-declared preload. Refusals log scheme + reason only, never the
+  // URL (same policy as the P2-178/P2-182 gates).
+  app.on("web-contents-created", (_event, contents) => {
+    if (contents.getType() === "webview") {
+      const guardGuestNavigation = (navEvent: { preventDefault(): void }, url: string): void => {
+        const decision = guestNavigationDecision(url);
+        if (!decision.allow) {
+          navEvent.preventDefault();
+          logError(`[desktop] guest navigation refused (scheme=${requestingScheme(url)}) — ${decision.reason}`);
+        }
+      };
+      contents.on("will-navigate", guardGuestNavigation);
+      contents.on("will-redirect", guardGuestNavigation);
+      contents.setWindowOpenHandler(() => ({ action: "deny" }));
+    } else if (contents.getType() === "window") {
+      contents.on("will-attach-webview", (attachEvent, webPreferences, params) => {
+        const decision = guestAttachDecision(params.src, webPreferences, webPreferences.preload);
+        if (!decision.allow) {
+          attachEvent.preventDefault();
+          logError(`[desktop] guest attach refused (scheme=${requestingScheme(params.src)}) — ${decision.reason}`);
+          return;
+        }
+        Object.assign(webPreferences, decision.webPreferences);
+        // Electron's own hardening recipe: a renderer-declared preload must
+        // never survive the attach.
+        delete webPreferences.preload;
+      });
+    }
+  });
 
   createWindow();
   startPairingWatcher();
