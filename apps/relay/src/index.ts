@@ -1,11 +1,12 @@
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
-import { accessSync, constants as fsConstants, readFileSync } from "node:fs";
+import { accessSync, constants as fsConstants, createReadStream, readFileSync, realpathSync, statSync } from "node:fs";
+import { join as joinPath, sep } from "node:path";
 import { randomBytes } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
 // relative imports carry .js specifiers so plain `node` can run the tsc emit
 // (deploy/relay/Dockerfile + tsconfig.build.json) — tsx resolves them too
-import { healthzHandler } from "./healthz.js";
+import { healthzHandler, type WebStatic } from "./healthz.js";
 import { TokenBucket } from "./ratelimit.js";
 import { IpCap, clientIp } from "./ipcap.js";
 import { isValidRoomId, MAX_ROOMS_PER_SOCKET } from "./roomid.js";
@@ -17,6 +18,7 @@ import { relayKnobs } from "./knobs.js";
 import { resolveLogLevel, shouldLog, type LogLevel } from "./loglevel.js";
 import { tlsPlan } from "./tlsconfig.js";
 import { makeIpTagger } from "./iptag.js";
+import { webRootPlan, type DirProbe } from "./webroot.js";
 
 /**
  * Relay: a blind router.
@@ -94,6 +96,65 @@ if (KNOBS.problems.length > 0) {
   process.exit(1);
 }
 const { ratePerMin: RATE_PER_MIN, rateBurst: RATE_BURST, maxPerIp: MAX_PER_IP, trustProxyHops: TRUST_PROXY_HOPS, pingIntervalS: PING_INTERVAL_S } = KNOBS;
+// P2-188: the optional static web root (RELAY_WEB_DIR) resolves fail-closed
+// like every knob above — a configured root that is missing, not a
+// directory, unreadable or without a readable index.html refuses the boot
+// (one log line per reason, exit 1, no listener). Absent or blank keeps the
+// pre-P2-188 behavior byte for byte: no static route, /healthz-only HTTP.
+const WEB = webRootPlan(
+  process.env,
+  (dir): DirProbe => {
+    try {
+      return statSync(dir).isDirectory() ? "ok" : "not-directory";
+    } catch (e) {
+      return (e as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "unreadable";
+    }
+  },
+  (dir) => {
+    try {
+      accessSync(joinPath(dir, "index.html"), fsConstants.R_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+);
+if (WEB.problems.length > 0) {
+  for (const reason of WEB.problems) {
+    ev("warn", "invalid relay web root, refusing to start (fail-closed)", { reason });
+  }
+  process.exit(1);
+}
+// The only fs touches of the static route: existence/file checks per request
+// and a streamed body (empty for HEAD). isFile canonicalizes the target with
+// realpath before the containment comparison — with a separator boundary, so
+// a sibling directory sharing the root's name as a string prefix
+// (<root>-backup) or a symlink planted inside the root pointing outside it
+// is rejected (404). Paths are never logged.
+const WEB_STATIC: WebStatic | undefined = WEB.enabled
+  ? {
+      root: WEB.root,
+      isFile: (abs) => {
+        try {
+          return statSync(abs).isFile() && realpathSync(abs).startsWith(realpathSync(WEB.root) + sep);
+        } catch {
+          return false;
+        }
+      },
+      send: (abs, req, res) => {
+        if (req.method === "HEAD") {
+          res.end();
+          return;
+        }
+        createReadStream(abs)
+          .on("error", () => {
+            if (res.headersSent) res.destroy();
+            else res.writeHead(404).end();
+          })
+          .pipe(res);
+      },
+    }
+  : undefined;
 const RATE_LIMIT_CLOSE = 4029; // custom 4xxx: "too many frames"
 const ipCap = new IpCap(MAX_PER_IP);
 // P2-174: the only personal datum the relay ever logged was the raw client
@@ -280,6 +341,9 @@ server.on(
       roomsRejected: () => m.roomsRejected,
     },
     isShuttingDown,
+    // P2-188: optional static PWA route (RELAY_WEB_DIR); undefined keeps the
+    // pre-P2-188 404-for-everything-else behavior byte for byte.
+    WEB_STATIC,
   ),
 );
 
@@ -313,6 +377,9 @@ server.listen(PORT, () => {
     // P2-177: additive provenance field — the resolved log level this
     // process writes at. No pre-existing field changed name or meaning.
     logLevel: LOG.level,
+    // P2-188: additive provenance field — whether the static PWA route is
+    // serving (RELAY_WEB_DIR configured and validated). Never the path.
+    webRoot: WEB.enabled,
   });
 });
 

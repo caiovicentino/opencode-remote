@@ -55,6 +55,12 @@ import {
   readLimitedBody,
   type LimitedBodyReader,
 } from "../apps/daemon/src/bodylimit";
+import {
+  bootstrapDecision,
+  DEFAULT_PAIR_WINDOW_MS,
+  PAIR_WINDOW_CEILING_MS,
+  pairWindow,
+} from "../apps/daemon/src/pairwindow";
 
 import {
   admitNewUpload,
@@ -12002,6 +12008,91 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       "127.1",
       "",
     ].every((h) => isLoopbackHostSetting(h) === isLoopbackHostWebApp(h)),
+  );
+}
+
+// --- P2-190: time-boxed bootstrap pairing window (pairwindow.ts) --------------
+
+{
+  const base = 1_700_000_000_000; // arbitrary fixed "now" anchor (pure: no clock reads)
+
+  // bootstrapDecision matrix
+  check(
+    "P2-190: empty allowlist inside the window → allow",
+    bootstrapDecision(0, base, base + 60_000) === "allow" &&
+      bootstrapDecision(0, base, base + DEFAULT_PAIR_WINDOW_MS - 1) === "allow",
+  );
+  check(
+    "P2-190: empty allowlist exactly at the ceiling → reject-expired (strict comparison)",
+    bootstrapDecision(0, base, base + DEFAULT_PAIR_WINDOW_MS) === "reject-expired",
+  );
+  check(
+    "P2-190: empty allowlist one ms past the ceiling → reject-expired",
+    bootstrapDecision(0, base, base + DEFAULT_PAIR_WINDOW_MS + 1) === "reject-expired",
+  );
+  check(
+    "P2-190: non-empty allowlist → reject-not-allowlisted inside AND outside the window",
+    bootstrapDecision(1, base, base + 1) === "reject-not-allowlisted" &&
+      bootstrapDecision(3, base, base + PAIR_WINDOW_CEILING_MS * 10) === "reject-not-allowlisted",
+  );
+  check(
+    "P2-190: re-arm reopens the window (expired before, allow after a fresh openedAt)",
+    bootstrapDecision(0, base, base + DEFAULT_PAIR_WINDOW_MS + 5_000) === "reject-expired" &&
+      bootstrapDecision(0, base + DEFAULT_PAIR_WINDOW_MS + 5_000, base + DEFAULT_PAIR_WINDOW_MS + 6_000) ===
+        "allow",
+  );
+  check(
+    "P2-190: future open instant never widens the window (clock ahead → reject-expired)",
+    bootstrapDecision(0, base + 60_000, base) === "reject-expired",
+  );
+  check(
+    "P2-190: openedAt = 0 (window never opened) is fail-closed",
+    bootstrapDecision(0, 0, base) === "reject-expired",
+  );
+  check(
+    "P2-190: custom windowMs is honored (1s window)",
+    bootstrapDecision(0, base, base + 999, 1_000) === "allow" &&
+      bootstrapDecision(0, base, base + 1_000, 1_000) === "reject-expired",
+  );
+
+  // pairWindow env matrix — missing/blank are the ONLY no-problem cases
+  check(
+    "P2-190: missing OCR_PAIR_WINDOW_MS keeps the default with no problem",
+    pairWindow({}).windowMs === DEFAULT_PAIR_WINDOW_MS && pairWindow({}).problems.length === 0,
+  );
+  check(
+    "P2-190: blank OCR_PAIR_WINDOW_MS keeps the default with no problem",
+    pairWindow({ OCR_PAIR_WINDOW_MS: "   " }).windowMs === DEFAULT_PAIR_WINDOW_MS &&
+      pairWindow({ OCR_PAIR_WINDOW_MS: "   " }).problems.length === 0,
+  );
+  const invalidWindowValues: Array<[string, string]> = [
+    ["non-numeric", "abc"],
+    ["negative", "-1"],
+    ["zero", "0"],
+    ["fractional", "1.5"],
+    ["above-ceiling", String(PAIR_WINDOW_CEILING_MS + 1)],
+  ];
+  for (const [why, raw] of invalidWindowValues) {
+    const resolved = pairWindow({ OCR_PAIR_WINDOW_MS: raw });
+    check(
+      `P2-190: ${why} OCR_PAIR_WINDOW_MS (${raw}) is exactly one fail-closed problem`,
+      resolved.problems.length === 1 && resolved.problems[0].includes("fail-closed"),
+    );
+  }
+  check(
+    "P2-190: a valid value inside the ceiling resolves without problems",
+    pairWindow({ OCR_PAIR_WINDOW_MS: String(5 * 60_000) }).windowMs === 5 * 60_000 &&
+      pairWindow({ OCR_PAIR_WINDOW_MS: String(5 * 60_000) }).problems.length === 0,
+  );
+
+  // real-source assertion: the empty-allowlist bootstrap branch in the REAL
+  // index.ts must decide through bootstrapDecision — a hand-rolled
+  // `allowlist.length === 0` bypass cannot sneak back in.
+  const daemonIndexSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  const bootstrapAt = daemonIndexSrc.indexOf("const allowlist = readAllowlist();");
+  check(
+    "P2-190: the real bootstrap branch decides through bootstrapDecision(",
+    bootstrapAt > -1 && daemonIndexSrc.slice(bootstrapAt, bootstrapAt + 800).includes("bootstrapDecision("),
   );
 }
 

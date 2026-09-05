@@ -395,6 +395,18 @@ host não-loopback é recusado — URL inválida desativa a conexão com o relay
 do relay e segue funcionando. Runbook:
 [docs/RELAY-HOSTING.md](docs/RELAY-HOSTING.md).
 
+A imagem também entrega a PWA do celular (P2-188): ela define
+`RELAY_WEB_DIR=/app/apps/web/dist`, então a URL do relay no navegador do
+telefone já abre o app — o primeiro passo da jornada não exige dev server,
+TLS próprio nem tailscale. Só arquivos estáticos são servidos (allowlist de
+extensão, sem traversal, sem dotfiles, contenção à prova de symlink, fallback
+SPA pro `index.html`), o roteamento de WebSocket e o corpo do `/healthz`
+ficam intocados, e a rota estática responde `503` durante o dreno. Um
+`RELAY_WEB_DIR` apontando pra diretório inexistente, que não é diretório,
+ilegível ou sem `index.html` legível recusa o boot — motivos logados uma vez,
+exit 1, sem listener; sem a variável, o comportamento antigo (404 pra todo o
+resto) é preservado.
+
 No app desktop você não precisa exportar `RELAY_URL` no braço: os Ajustes
 (Settings) têm o card **Relay do celular** (seção exclusiva do shell), onde
 você cola o endereço hospedado — ex. `wss://relay.exemplo.com:8788` — e o app
@@ -452,6 +464,16 @@ const reply = await ocr.sendAndWait(id, "explique o módulo de autenticação");
 ```
 
 Veja [docs/api.md](docs/api.md).
+
+O primeiro pareamento num daemon recém-instalado só é aceito enquanto a
+**janela de pareamento do bootstrap** está aberta: 15 minutos por padrão
+(`OCR_PAIR_WINDOW_MS`, milissegundos inteiros positivos, teto de 24 h; um valor
+inválido faz o daemon se recusar a subir). A janela abre no boot e é rearmada
+a cada leitura autenticada da tela de pareamento — o QR na tela mantém o
+pareamento disponível. Depois que a janela fechou, clientes desconhecidos são
+rejeitados (evento de auditoria `client.bootstrap-expired`) — reabra a tela de
+pareamento no app desktop ou reinicie o daemon para parear um novo dispositivo —
+veja [docs/security.md](docs/security.md).
 
 ## Arquitetura & segurança
 
