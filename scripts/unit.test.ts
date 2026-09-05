@@ -5019,6 +5019,88 @@ check(
 }
 
 
+// --- P2-172 maximized-state persistence ------------------------------------------
+{
+  // Same fake display setup as the P3-008 block above.
+  const displays = [
+    { workArea: { x: 0, y: 0, width: 1920, height: 1080 } },
+    { workArea: { x: 1920, y: 0, width: 1920, height: 1080 } },
+  ];
+
+  const onScreen = sanitizeWindowBounds({ x: 10, y: 20, width: 1600, height: 900, maximized: true }, displays);
+  check(
+    "window-state: maximized true with valid on-screen bounds is preserved",
+    onScreen.x === 10 && onScreen.y === 20 && onScreen.width === 1600 && onScreen.height === 900 && onScreen.maximized === true,
+  );
+
+  const offScreen = sanitizeWindowBounds({ x: 9999, y: 20, width: 1600, height: 900, maximized: true }, displays);
+  check(
+    "window-state: maximized true survives bounds falling back to the default (display gone)",
+    offScreen.width === DEFAULT_WINDOW_BOUNDS.width &&
+      offScreen.height === DEFAULT_WINDOW_BOUNDS.height &&
+      offScreen.x === DEFAULT_WINDOW_BOUNDS.x &&
+      offScreen.maximized === true,
+  );
+
+  const garbage = sanitizeWindowBounds({ width: "big", height: null, maximized: true }, displays);
+  check(
+    "window-state: maximized true survives garbage bounds falling back to the default",
+    garbage.width === DEFAULT_WINDOW_BOUNDS.width &&
+      garbage.height === DEFAULT_WINDOW_BOUNDS.height &&
+      garbage.maximized === true,
+  );
+
+  const notBoolean = sanitizeWindowBounds({ x: 0, y: 0, width: 1600, height: 900, maximized: "yes" }, displays);
+  const notBoolean2 = sanitizeWindowBounds({ x: 0, y: 0, width: 1600, height: 900, maximized: 1 }, displays);
+  check(
+    "window-state: non-boolean maximized (string/number) normalizes to false",
+    notBoolean.maximized === false && notBoolean2.maximized === false,
+  );
+
+  check(
+    "window-state: maximized absent → false (legacy file, no migration)",
+    sanitizeWindowBounds({ x: 0, y: 0, width: 1600, height: 900 }, displays).maximized === false,
+  );
+
+  const invalidNoMax = sanitizeWindowBounds({ width: 0, height: -5, x: 0, y: 0 }, displays);
+  check(
+    "window-state: invalid bounds with maximized absent → default, not maximized",
+    invalidNoMax.width === DEFAULT_WINDOW_BOUNDS.width &&
+      invalidNoMax.height === DEFAULT_WINDOW_BOUNDS.height &&
+      invalidNoMax.maximized === false,
+  );
+
+  // File roundtrip: saveWindowBounds + loadWindowBounds preserve the flag.
+  const wsdMax = mkdtempSync(join(tmpdir(), "ocr-winstate-max-"));
+  const maxFile = windowStateFile(wsdMax);
+  check(
+    "window-state: roundtrip preserves maximized true",
+    saveWindowBounds(maxFile, { x: 5, y: 6, width: 1440, height: 900, maximized: true }),
+  );
+  const loadedMax = loadWindowBounds(maxFile, displays);
+  check(
+    "window-state: loaded maximized true matches what was saved",
+    loadedMax.x === 5 && loadedMax.y === 6 && loadedMax.width === 1440 && loadedMax.height === 900 && loadedMax.maximized === true,
+  );
+  check(
+    "window-state: roundtrip preserves maximized false",
+    saveWindowBounds(maxFile, { x: 5, y: 6, width: 1440, height: 900, maximized: false }),
+  );
+  check(
+    "window-state: loaded maximized false matches what was saved",
+    loadWindowBounds(maxFile, displays).maximized === false,
+  );
+  // A legacy P3-008 file (no field) still loads — as not maximized.
+  writeFileSync(maxFile, JSON.stringify({ x: 7, y: 8, width: 1600, height: 900 }), "utf8");
+  const legacy = loadWindowBounds(maxFile, displays);
+  check(
+    "window-state: legacy file without the field loads maximized false",
+    legacy.x === 7 && legacy.y === 8 && legacy.width === 1600 && legacy.maximized === false,
+  );
+  rmSync(wsdMax, { recursive: true, force: true });
+}
+
+
 // --- P2-020 daemon graceful shutdown (SIGTERM/SIGINT) ---------------------------
 {
   // controllable fake timers: hard-drain timers fire only when flushed

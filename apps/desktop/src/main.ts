@@ -994,7 +994,9 @@ function createWindow(): BrowserWindow {
   // parked on a since-disconnected screen). screen.* is safe here: this only
   // runs after app.whenReady().
   const stateFile = windowStateFile(app.getPath("userData"));
-  const bounds = loadWindowBounds(stateFile, screen.getAllDisplays());
+  const restored = loadWindowBounds(stateFile, screen.getAllDisplays());
+  // P2-172: bounds feed the constructor; maximized is applied right after it.
+  const { maximized, ...bounds } = restored;
   const win = new BrowserWindow({
     ...bounds,
     minWidth: WINDOW_MIN.width,
@@ -1016,6 +1018,11 @@ function createWindow(): BrowserWindow {
       webviewTag: true,
     },
   });
+  // P2-172: reopen maximized when the user quit maximized — before the show,
+  // so the window never flashes at restored size. maximize() does not make a
+  // hidden window visible, so the P1-081 hermetic path (window never shows)
+  // stays intact.
+  if (maximized) win.maximize();
   win.once("ready-to-show", () => {
     // P1-081: under the hermetic e2e marker the window stays hidden — the
     // gate interacts via webContents and the operator's screen is left alone.
@@ -1050,7 +1057,11 @@ function createWindow(): BrowserWindow {
   // A real quit (tray Quit, menu Quit — flagged via before-quit/will-quit)
   // still closes for real, so the sidecar cleanup in will-quit keeps running.
   win.on("close", (event) => {
-    saveWindowBounds(stateFile, win.getBounds());
+    // P2-172: getNormalBounds (not getBounds) — a maximized window's getBounds
+    // is the full work area, which would reopen as a fake-maximized window
+    // nobody could restore. The normal rect plus the live isMaximized() flag
+    // restore both states faithfully.
+    saveWindowBounds(stateFile, { ...win.getNormalBounds(), maximized: win.isMaximized() });
     if (!quitting) {
       event.preventDefault();
       win.hide();
