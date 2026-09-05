@@ -98,6 +98,9 @@ interface PairingState {
   sidecarExit?: SidecarExitHealth;
   /** P2-189: step one — the address the phone opens (desktop shell only). */
   webApp?: WebAppInfo;
+  /** P2-193: the combined pair link — app address + credential in the
+   * URL fragment (desktop shell only, additive). */
+  pairLink?: { url: string; qrDataUrl: string | null; problems: string[] };
 }
 
 /** Electron bridge from apps/desktop/src/preload.ts (absent in the browser). */
@@ -389,6 +392,31 @@ export default function App() {
   useEffect(() => {
     function applyHash() {
       const h = location.hash;
+      // #/pair?<query> — the combined pair link (P2-193): the app address with
+      // the pairing credential in the fragment. Rebuilds the canonical URI and
+      // routes through the SAME parsePairingUri as paste-pairing — zero new
+      // crypto. The fragment is consumed on the spot (history.replaceState)
+      // so the credential leaves the address bar AND the browser history;
+      // no browser ever sends a fragment to a server, so the relay stays
+      // blind either way. An invalid fragment lands on today's paste screen
+      // with the localized error — never a blank page.
+      if (h.startsWith("#/pair")) {
+        const q = h.includes("?") ? h.slice(h.indexOf("?") + 1) : "";
+        let pairing: Pairing | null = null;
+        try {
+          pairing = parsePairingUri(`opencode-remote://pair?${q}`);
+        } catch {
+          pairing = null;
+        }
+        history.replaceState(null, "", location.pathname + location.search);
+        if (pairing) {
+          void connect(pairing, true);
+        } else {
+          setError(t("invalidCode"));
+          setPhase("error");
+        }
+        return;
+      }
       // #/send?text=...&url=... — share ingestion via hash route
       if (h.startsWith("#/send")) {
         const qs = h.split("?")[1] ?? "";
@@ -732,6 +760,7 @@ export default function App() {
         qrDataUrl={pairingState.qrDataUrl}
         deviceList={phonePairing ? pairingState?.deviceList : undefined}
         webApp={pairingState?.webApp ?? null}
+        pairLink={pairingState?.pairLink ?? null}
         onDismiss={() => {
           setPairingDismissed(true);
           setPhonePairing(false);

@@ -59,6 +59,13 @@ export interface PairingState {
    * problem-bearing address.
    */
   webApp?: { url: string; origin: "stored" | "derived" | "unavailable"; reason: string; qrDataUrl: string | null };
+  /**
+   * P2-193: the combined pair link — the app address with the pairing
+   * credential moved into the URL fragment (never sent to any server).
+   * Additive; qrDataUrl is only ever generated when problems is empty — a QR
+   * is NEVER minted for a problem-bearing link (the two labeled QRs stay).
+   */
+  pairLink?: { url: string; qrDataUrl: string | null; problems: string[] };
 }
 
 /**

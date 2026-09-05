@@ -11,6 +11,14 @@ export interface WebAppInfo {
   qrDataUrl: string | null;
 }
 
+/** P2-193: the combined pair link — the app address with the pairing
+ * credential moved into the URL fragment (additive field, desktop shell). */
+export interface PairLinkInfo {
+  url: string;
+  qrDataUrl: string | null;
+  problems: string[];
+}
+
 interface Props {
   /** PNG data-URL rendered by the desktop main process (P2-007). */
   qrDataUrl: string;
@@ -21,6 +29,9 @@ interface Props {
   /** P2-189: the app address + its QR (null QR when the address is
    * unavailable — the calm explanation renders instead). */
   webApp?: WebAppInfo | null;
+  /** P2-193: the combined link — when its QR exists, the whole journey
+   * collapses into ONE scannable code and the two labeled steps disappear. */
+  pairLink?: PairLinkInfo | null;
 }
 
 /**
@@ -35,7 +46,7 @@ interface Props {
  * (open this address) — with the pairing QR demoted to step two. The two
  * steps carry visible labels so two QR codes never appear unlabeled.
  */
-export default function PairingOverlay({ qrDataUrl, onDismiss, deviceList, webApp }: Props) {
+export default function PairingOverlay({ qrDataUrl, onDismiss, deviceList, webApp, pairLink }: Props) {
   const t = useT();
   // P2-189: copy feedback — brief, quiet, and never steals the QR's spotlight.
   const [copied, setCopied] = useState(false);
@@ -65,42 +76,69 @@ export default function PairingOverlay({ qrDataUrl, onDismiss, deviceList, webAp
         <h2 className="splash-wordmark">OpenCode Remote</h2>
         <p className="splash-value">{t("splashValue")}</p>
 
-        {/* P2-189 step one: get the app open on the phone. The QR carries the
-            app address; when no usable address exists (local relay only), a
-            calm explanation takes its place — never a QR that lies. */}
-        <section className="pair-step" aria-label={t("pairWebAppTitle")}>
-          <span className="pair-step-label">{t("pairStepOne")}</span>
-          <h3 className="pair-step-title">{t("pairWebAppTitle")}</h3>
-          {webApp?.qrDataUrl ? (
-            <>
-              <img
-                className="pair-overlay-qr"
-                src={webApp.qrDataUrl}
-                alt={t("pairWebAppAlt")}
-                width={180}
-                height={180}
-              />
+        {/* P2-193: a usable combined link collapses the journey to a single
+            step — one QR carries the app address AND the credential (in the
+            fragment), so the phone's camera alone finishes pairing. */}
+        {pairLink?.qrDataUrl ? (
+          <section className="pair-step pair-step-single" aria-label={t("pairLinkTitle")}>
+            <h3 className="pair-step-title">{t("pairLinkTitle")}</h3>
+            <img
+              className="pair-overlay-qr"
+              src={pairLink.qrDataUrl}
+              alt={t("pairOverlayAlt")}
+              width={240}
+              height={240}
+            />
+            <p className="pair-link-hint">{t("pairLinkHint")}</p>
+            {webApp?.url && (
               <div className="pair-webapp-address">
                 <code className="pair-webapp-url">{webApp.url}</code>
                 <button className="pair-webapp-copy" onClick={() => void copyAddress()}>
                   {copied ? t("pairWebAppCopied") : t("pairWebAppCopy")}
                 </button>
               </div>
-            </>
-          ) : (
-            <p className="pair-webapp-unavailable">{t("pairWebAppUnavailable")}</p>
-          )}
-        </section>
+            )}
+          </section>
+        ) : (
+          <>
+            {/* P2-189 step one: get the app open on the phone. The QR carries the
+                app address; when no usable address exists (local relay only), a
+                calm explanation takes its place — never a QR that lies. */}
+            <section className="pair-step" aria-label={t("pairWebAppTitle")}>
+              <span className="pair-step-label">{t("pairStepOne")}</span>
+              <h3 className="pair-step-title">{t("pairWebAppTitle")}</h3>
+              {webApp?.qrDataUrl ? (
+                <>
+                  <img
+                    className="pair-overlay-qr"
+                    src={webApp.qrDataUrl}
+                    alt={t("pairWebAppAlt")}
+                    width={180}
+                    height={180}
+                  />
+                  <div className="pair-webapp-address">
+                    <code className="pair-webapp-url">{webApp.url}</code>
+                    <button className="pair-webapp-copy" onClick={() => void copyAddress()}>
+                      {copied ? t("pairWebAppCopied") : t("pairWebAppCopy")}
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <p className="pair-webapp-unavailable">{t("pairWebAppUnavailable")}</p>
+              )}
+            </section>
 
-        {/* P2-189 step two: the pairing QR, now labeled — both QRs on this
-            screen always say which is which. The QR is the hero of the card
-            and the only primary action; keep it visibly larger than the
-            step-one address QR. */}
-        <section className="pair-step" aria-label={t("pairOverlayTitle")}>
-          <span className="pair-step-label">{t("pairStepTwo")}</span>
-          <h3 className="pair-step-title">{t("pairOverlayTitle")}</h3>
-          <img className="pair-overlay-qr" src={qrDataUrl} alt={t("pairOverlayAlt")} width={240} height={240} />
-        </section>
+            {/* P2-189 step two: the pairing QR, now labeled — both QRs on this
+                screen always say which is which. The QR is the hero of the card
+                and the only primary action; keep it visibly larger than the
+                step-one address QR. */}
+            <section className="pair-step" aria-label={t("pairOverlayTitle")}>
+              <span className="pair-step-label">{t("pairStepTwo")}</span>
+              <h3 className="pair-step-title">{t("pairOverlayTitle")}</h3>
+              <img className="pair-overlay-qr" src={qrDataUrl} alt={t("pairOverlayAlt")} width={240} height={240} />
+            </section>
+          </>
+        )}
 
         {deviceList && deviceList.length > 0 && (
           <p className="splash-under muted">

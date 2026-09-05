@@ -23,6 +23,7 @@ import {
 import { relaySettingFile, readStoredRelayUrl, readStoredWebAppUrl, writeStoredRelayUrl, writeStoredWebAppUrl } from "./relaystore";
 import { relayUrlProblems, resolveRelayUrl } from "./relaysetting";
 import { resolveWebAppUrl, webAppUrlProblems } from "./webappurl";
+import { buildPairLink } from "./pairlink";
 import { initDesktopLog, log, logError } from "./desktop-log";
 import { initSidecarLog } from "./sidecar-log";
 import { phonePaired, type PairingState } from "./pairing";
@@ -1080,6 +1081,23 @@ async function refreshPairingState(): Promise<void> {
           ? await QRCode.toDataURL(webAppRes.url, { margin: 1, width: 480 })
           : null,
     };
+    // P2-193: ONE combined QR — the pairing credential rides in the URL
+    // fragment of the app address (no browser ever sends a fragment to a
+    // server, so the hosted relay stays blind). Minted ONLY when the link is
+    // problem-free; any problem keeps today's two labeled QRs as fallback and
+    // the pairLink carries the reason instead. Additive field — uri/qrDataUrl/
+    // webApp are untouched so a legacy renderer keeps rendering.
+    const pairLinkRes = uri
+      ? buildPairLink(webAppRes, uri)
+      : { url: "", problems: ["no pairing URI is available yet"] };
+    const pairLink = {
+      url: pairLinkRes.url,
+      problems: pairLinkRes.problems,
+      qrDataUrl:
+        pairLinkRes.problems.length === 0 && pairLinkRes.url !== ""
+          ? await QRCode.toDataURL(pairLinkRes.url, { margin: 1, width: 480 })
+          : null,
+    };
     setPairingState({
       mode: quietLocal ? "local" : remotePairingRequested ? "remote" : undefined,
       uri,
@@ -1091,6 +1109,9 @@ async function refreshPairingState(): Promise<void> {
       daemonVersion,
       versionMismatch: mismatch,
       opencode: opencode ?? undefined,
+      // P2-193: pairLink rides BEFORE webApp so the payload still ends with
+      // the P2-189 field — the legacy real-source assertion keeps matching.
+      pairLink,
       webApp,
     });
   } catch (err) {

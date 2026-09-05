@@ -58,12 +58,21 @@ identity servers, no accounts.
    localStorage, and the pairing URI/QR hunt stays disabled unless the user
    explicitly opts into remote pairing.
 10. **Durable, private state writes (P2-165).** `daemon.json` (ECDH identity,
-   VAPID keys, machine name, paired clients, apiToken) is persisted atomically:
-   the payload lands in a sibling temp file created with mode 0600 which is
-   then renamed over the destination. A crash, full disk or power loss
-   mid-write can therefore never truncate the state file — which would break
-   boot and every pairing — and the file is never readable by group/other,
-   not even for an instant.
+    VAPID keys, machine name, paired clients, apiToken) is persisted atomically:
+    the payload lands in a sibling temp file created with mode 0600 which is
+    then renamed over the destination. A crash, full disk or power loss
+    mid-write can therefore never truncate the state file — which would break
+    boot and every pairing — and the file is never readable by group/other,
+    not even for an instant.
+11. **Pairing credential rides in the URL fragment (P2-193).** The combined
+    pair link puts the pairing credential in the **fragment** of the app
+    address (`…/#/pair?v=2&…`) — and no browser ever sends a fragment to a
+    server, so the hosted relay stays a blind router exactly as before. The
+    web app consumes the link and wipes the fragment from the address bar and
+    the browser history (`history.replaceState`) in the same tick; a
+    problem-bearing link is never rendered as a QR. The fragment only relaxes
+    *where* the credential is displayed, not *how long it lives*: the limited
+    bootstrap pairing window (P2-190) remains what bounds its validity.
 
 ## Threat notes
 

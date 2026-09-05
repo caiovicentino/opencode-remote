@@ -1985,6 +1985,18 @@ button.desk-new:hover:not(:disabled) {
   flex: none;
   font-size: 0.78rem;
 }
+/* P2-193: the combined pair link — ONE step, one QR. The quiet hint explains
+   why a single code is enough (credential in the fragment); the address row
+   stays for the copy path. No new colors, no new radii — the existing tokens. */
+.pair-step-single {
+  gap: 10px;
+}
+.pair-link-hint {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+  max-width: 36ch;
+}
 .pair-webapp-unavailable {
   margin: 0;
   font-size: 0.85rem;

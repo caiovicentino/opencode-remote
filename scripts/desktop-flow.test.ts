@@ -1106,6 +1106,29 @@ try {
               laterClass.stdout,
             );
           }
+
+          // --- P2-193: combined pair link (ONE QR, credential in fragment) ----
+          // A stored, reachable app address turns the two-step journey into a
+          // single scannable code: the next pairing tick rebuilds the state
+          // with pairLink and the overlay collapses to exactly one QR.
+          run("P2-193: store a reachable app address", ["ipc", "window.ocrDesktop.setWebAppUrl('https://app.example.com')"], 15_000, localEnv);
+          await waitProbe(
+            "P2-193: overlay collapses to a single combined QR",
+            "document.querySelectorAll('.pair-overlay-qr').length + ':' + (!!document.querySelector('.pair-step-single'))",
+            (v) => v.includes("1:true"),
+            localEnv,
+            24,
+            500,
+          );
+          const pairLinkShot1440 = join(shotsDir, "P2-193-pairlink-1440.png");
+          const pl1 = run("P2-193: 1440x900 pair-link shot", ["shot", pairLinkShot1440, "1440", "900"], 15_000, localEnv);
+          if (pl1.ok) check("P2-193: pair-link 1440x900 shot is a real PNG", pngSize(pairLinkShot1440).join("x") === "1440x900");
+          const pairLinkShot390 = join(shotsDir, "P2-193-pairlink-390.png");
+          const pl2 = run("P2-193: 390 pair-link shot", ["shot", pairLinkShot390, "390", "844"], 15_000, localEnv);
+          if (pl2.ok) check("P2-193: pair-link 390 shot is a real PNG", pngSize(pairLinkShot390)[0] === 390);
+          // resize vehicle only — the settled 1440 evidence was already taken
+          run("P2-193: resize back to desktop width", ["shot", join(shotsDir, "P2-193-resize-back-1440.png"), "1440", "900"], 15_000, localEnv);
+
           run("P2-106: dismiss via the quiet link", ["click", ".pair-overlay-later"], 15_000, localEnv);
           await waitProbe(
             "P2-106: overlay dismissed",
