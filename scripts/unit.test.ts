@@ -509,6 +509,8 @@ import { touchesDesktop } from "./ci-scope";
 
 import { imageTags } from "./relay-image";
 
+import { imageSmokeVerdict } from "./relay-image-smoke";
+
 import { expectedAssets, missingAssets, tagProblems } from "./release-assets";
 import { publishDecision } from "./release-publish";
 
@@ -9093,6 +9095,139 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P2-151: ghcr login uses the built-in GITHUB_TOKEN and push steps declare shell: bash",
     block.includes("ghcr.io") && block.includes("${{ github.token }}") && block.includes("shell: bash"),
+  );
+}
+
+
+// --- P2-196: relay-image-smoke — imageSmokeVerdict ---------------------------
+{
+  const okProbes = () => [
+    {
+      name: "healthz",
+      status: 200,
+      body: JSON.stringify({ ok: true, version: "0.2.0", uptimeS: 3, rooms: 1, roomsRejected: 0 }),
+    },
+    {
+      name: "web-root",
+      status: 200,
+      contentType: "text/html; charset=utf-8",
+      headers: {
+        "content-security-policy": "default-src 'self'; script-src 'self'",
+        "referrer-policy": "no-referrer",
+        "permissions-policy": "geolocation=(), payment=()",
+        "x-frame-options": "DENY",
+        "cross-origin-opener-policy": "same-origin",
+        "cross-origin-resource-policy": "same-origin",
+      },
+    },
+    { name: "hashed-asset", status: 200 },
+    { name: "dotfile", status: 404 },
+    { name: "method-not-get", status: 405 },
+    { name: "container-user", user: "node" },
+  ];
+  const failOne = (name: string, patch: Record<string, unknown>) => {
+    const probes = okProbes().map((p) => (p.name === name ? { ...p, ...patch } : p));
+    return imageSmokeVerdict(probes);
+  };
+
+  check("P2-196: every probe passing → zero problems", imageSmokeVerdict(okProbes()).length === 0);
+
+  const healthz = failOne("healthz", { status: 503, body: "draining" });
+  check(
+    "P2-196: healthz failing in isolation → exactly its own problem",
+    healthz.length === 1 && healthz[0]!.includes("healthz") && healthz[0]!.includes("503"),
+    JSON.stringify(healthz),
+  );
+  const webRoot = failOne("web-root", { headers: {} });
+  check(
+    "P2-196: web-root without the P2-192 headers failing in isolation → exactly its own problem",
+    webRoot.length === 1 && webRoot[0]!.includes("web-root") && webRoot[0]!.includes("content-security-policy"),
+    JSON.stringify(webRoot),
+  );
+  const hashed = failOne("hashed-asset", { status: 404 });
+  check(
+    "P2-196: hashed-asset failing in isolation → exactly its own problem",
+    hashed.length === 1 && hashed[0]!.includes("hashed-asset") && hashed[0]!.includes("404"),
+    JSON.stringify(hashed),
+  );
+  const dotfile = failOne("dotfile", { status: 200 });
+  check(
+    "P2-196: dotfile leaking through (200) failing in isolation → exactly its own problem",
+    dotfile.length === 1 && dotfile[0]!.includes("dotfile"),
+    JSON.stringify(dotfile),
+  );
+  const method = failOne("method-not-get", { status: 200 });
+  check(
+    "P2-196: DELETE answered 200 failing in isolation → exactly its own problem",
+    method.length === 1 && method[0]!.includes("method-not-get"),
+    JSON.stringify(method),
+  );
+  const rootUser = failOne("container-user", { user: "root" });
+  check(
+    "P2-196: container running as root → problem",
+    rootUser.length === 1 && rootUser[0]!.includes("container-user") && rootUser[0]!.includes("root"),
+    JSON.stringify(rootUser),
+  );
+  const emptyUser = failOne("container-user", { user: "  " });
+  check(
+    "P2-196: container user unreadable (empty) → problem (fail-closed)",
+    emptyUser.length === 1 && emptyUser[0]!.includes("container-user"),
+    JSON.stringify(emptyUser),
+  );
+
+  const many = imageSmokeVerdict([
+    { name: "healthz", status: 500, body: "boom" },
+    okProbes()[1]!,
+    { name: "dotfile", status: 200 },
+    { name: "container-user", user: "root" },
+  ]);
+  check(
+    "P2-196: several probes failing → ALL problems at once (no short-circuit)",
+    many.length === 3 &&
+      many[0]!.includes("healthz") &&
+      many[1]!.includes("dotfile") &&
+      many[2]!.includes("container-user"),
+    JSON.stringify(many),
+  );
+
+  const unknown = imageSmokeVerdict([...okProbes(), { name: "cpu-affinity", status: 200 }]);
+  check(
+    "P2-196: unknown probe name → problem",
+    unknown.length === 1 && unknown[0]!.includes("unknown probe") && unknown[0]!.includes("cpu-affinity"),
+    JSON.stringify(unknown),
+  );
+  check(
+    "P2-196: empty probe list → problem",
+    imageSmokeVerdict([]).length === 1 && imageSmokeVerdict([])[0]!.includes("no probes"),
+  );
+
+  // --- real-repo assertion: release.yml wires the smoke before the push ------
+  const repoRoot = join(import.meta.dirname, "..");
+  const release = readFileSync(join(repoRoot, ".github", "workflows", "release.yml"), "utf8");
+  const jobStart = release.indexOf("\n  relay-image:");
+  const jobEnd = release.indexOf("\n  release-feeds:");
+  const job = jobStart === -1 || jobEnd === -1 || jobEnd < jobStart ? "" : release.slice(jobStart, jobEnd);
+  const smokeAt = job.indexOf("Smoke the built image");
+  const buildAt = job.indexOf("Build image (both references)");
+  const pushAt = job.indexOf("Push both references");
+  check(
+    "P2-196: release.yml relay-image runs the smoke step between build and push",
+    buildAt > -1 && smokeAt > buildAt && pushAt > smokeAt,
+  );
+  check(
+    "P2-196: smoke step boots the built image detached, reads the container user and runs the smoke CLI",
+    job.includes("docker run -d --name relay-smoke") &&
+      job.includes("docker exec relay-smoke whoami") &&
+      job.includes("scripts/relay-image-smoke.ts"),
+  );
+  check(
+    "P2-196: smoke step declares shell: bash and always removes the container (trap on EXIT)",
+    job.includes("shell: bash") && job.includes("docker rm -f relay-smoke"),
+  );
+  check(
+    "P2-196: push stays opt-in fail-closed on PUBLISH_RELAY_IMAGE after the smoke",
+    /Push both references[\s\S]*?if: vars\.PUBLISH_RELAY_IMAGE == 'true'/.test(job.slice(pushAt)) &&
+      job.includes("if: vars.PUBLISH_RELAY_IMAGE == 'true'"),
   );
 }
 

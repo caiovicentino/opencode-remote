@@ -15,7 +15,8 @@ others means shipping its source.)
 ## Pull the published image
 
 Every release tag builds `deploy/relay/Dockerfile` in CI (the `relay-image`
-job in `.github/workflows/release.yml`) and pushes two references to GHCR —
+job in `.github/workflows/release.yml`), **boots the built image and probes
+it before any push** (P2-196), and only then pushes two references to GHCR —
 the bare semver and `latest`:
 
 ```bash
@@ -35,6 +36,38 @@ The image carries no secrets — every setting enters through `docker run -e`
 or `--env-file` at start time — and the constitutional property is untouched:
 the relay is a blind router that never sees plaintext or key material, so the
 published image adds no crypto surface of its own.
+
+### Every tag boots the image before anything is published (P2-196)
+
+Since P2-196 the `relay-image` job never pushes an image it has not executed.
+Between the build and the push, the workflow starts the just-built image with
+`docker run -d` on an ephemeral loopback port (with `RELAY_WEB_DIR` exactly as
+embedded), waits up to **30 attempts, 1s apart** for `/healthz` to answer, and
+runs the smoke battery of `scripts/relay-image-smoke.ts` against the live
+container (5s fetch timeout per probe):
+
+- `/healthz` answers `200` with today's counter body (`ok`, `version`,
+  `uptimeS`, `rooms`, `roomsRejected`);
+- `/` answers `200` with `text/html` and every security header P2-192
+  introduced (CSP, referrer/permissions policies, framing, COOP/CORP);
+- the content-hashed bundle asset referenced by the entry document answers
+  `200`;
+- a dotfile path answers `404` (the static-route allowlist holds);
+- a non-GET request answers `405`;
+- the process inside the container is not running as root.
+
+Probes run **all at once** — a red smoke lists every failure, not just the
+first. The container is removed no matter how the step ends.
+
+**What a red smoke means for the operator:** the tag's image never reached
+GHCR — neither the version tag nor `latest` was pushed, so what you already
+pull stays whatever you had pinned before. Do not hand-push or re-tag to
+force it: the smoke failure is the signal the image cannot boot (or lost its
+web bundle, or its preflight refuses the environment); check the job log for
+the `- problem(s) found` list and the container's own JSONL boot log, fix the
+image, and let the next tag go green through the same gate. When
+`PUBLISH_RELAY_IMAGE` is not `true` the smoke still runs — a red smoke fails
+the release run even though nothing would have been published.
 
 ## Build and run
 

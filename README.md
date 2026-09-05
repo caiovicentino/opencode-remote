@@ -417,9 +417,9 @@ Prefer not to host the relay on your own Mac? `deploy/relay/Dockerfile` builds
 a small multi-stage image (node 22 slim, tsc-compiled, non-root, `HEALTHCHECK`
 on `/healthz`) for any container platform — point your provider's TLS at it,
 set `RELAY_URL` on the daemon and re-pair the phone. Release tags build that
-image in CI and publish it to GHCR (opt-in: only when the repository variable
-`PUBLISH_RELAY_IMAGE` is `true`; without it the tag just proves the image
-builds):
+image in CI, boot and smoke-probe it, and only then publish it to GHCR (opt-in:
+only when the repository variable `PUBLISH_RELAY_IMAGE` is `true`; without it
+the tag still proves the image builds and boots, but publishes nothing):
 
 ```bash
 docker pull ghcr.io/caiovicentino/opencode-remote:0.2.0   # pin the version, not latest
