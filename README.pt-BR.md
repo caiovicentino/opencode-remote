@@ -338,16 +338,17 @@ ficam em `authenticode.txt` (artefato do workspace do run).
 `scripts/release-preflight.ts` como primeiro passo e bloqueia o release em
 caso de divergência, além de rodar `npm run dist:smoke --workspace
 @ocr/desktop` no bundle empacotado antes do upload do DMG — suba a versão dos
-dois arquivos junto com a tag. Desde a P2-204 o job do DMG também **abre** o
-app empacotado uma vez (passo `Smoke-boot the packaged app`): launch
-hermético do bundle real (userData temporário, nenhum sidecar do daemon,
-janela oculta) que espera a interface montar, verifica a coleta de erros de
-console do renderer com um canário injetado e falha fechado quando o
-Playwright não está disponível — pacote que não abre aborta o release antes
-do upload. Dá para rodar o smoke de boot localmente contra um pacote já
-construído:
+dois arquivos junto com a tag. Desde a P2-204 (DMG) e a P2-208 (Windows) os
+**dois** jobs de empacotamento também **abrem** o app empacotado uma vez
+(passo `Smoke-boot the packaged app`): launch hermético do bundle real
+(userData temporário, nenhum sidecar do daemon, janela oculta) que espera a
+interface montar, verifica a coleta de erros de console do renderer com um
+canário injetado e falha fechado quando o Playwright não está disponível —
+pacote que não abre aborta o release antes do upload. Dá para rodar o smoke
+de boot localmente contra um pacote já construído (macOS ou Windows):
 
     node apps/desktop/scripts/packaged-boot.mjs "apps/desktop/dist/mac-arm64/OpenCode Remote.app"
+    node apps/desktop/scripts/packaged-boot.mjs "apps/desktop/dist/win-unpacked"
 
 PRs que tocam o shell desktop, a web UI ou `package-lock.json` rodam ainda um
 job de empacotamento escopado

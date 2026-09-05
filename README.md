@@ -364,15 +364,16 @@ the run).
 The release workflow runs `scripts/release-preflight.ts` as its first step and
 blocks the release on any mismatch, and runs
 `npm run dist:smoke --workspace @ocr/desktop` on the packaged bundle before
-uploading the DMG. Since P2-204 the DMG job also **boots** the packaged app
-once (`Smoke-boot the packaged app` step): a hermetic launch of the real
-bundle (temp userData, no daemon sidecar, hidden window) that waits for the UI
-to mount, verifies renderer console-error capture with an injected canary and
-fails closed when Playwright is unavailable — a package that does not open
-aborts the release before upload. Run the boot smoke locally against an
-already-built package too:
+uploading the DMG. Since P2-204 (DMG) and P2-208 (Windows) both packaging jobs
+also **boot** the packaged app once (`Smoke-boot the packaged app` step): a
+hermetic launch of the real bundle (temp userData, no daemon sidecar, hidden
+window) that waits for the UI to mount, verifies renderer console-error
+capture with an injected canary and fails closed when Playwright is
+unavailable — a package that does not open aborts the release before upload.
+Run the boot smoke locally against an already-built package too:
 
     node apps/desktop/scripts/packaged-boot.mjs "apps/desktop/dist/mac-arm64/OpenCode Remote.app"
+    node apps/desktop/scripts/packaged-boot.mjs "apps/desktop/dist/win-unpacked"
 
 One command stamps all three from the tag — never bump by
 hand:
