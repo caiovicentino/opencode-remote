@@ -121,6 +121,26 @@ jobs:
       - name: Smoke-check the packaged bundle
         run: npm run dist:smoke --workspace @ocr/desktop
 
+      # P2-170: a DMG whose notarization ticket never got stapled, whose
+      # identity expired, or whose profile silently fell back to ad-hoc used
+      # to be published as if signed — users opened it and got "app is
+      # damaged" with no signal in CI. Run the three Gatekeeper verdicts on
+      # the packaged app and fail the job BEFORE the upload below. The ad-hoc
+      # no-secrets path stays green: spctl rejecting an ad-hoc build and a
+      # missing staple without notarization are the documented right-click →
+      # Open flow (scripts/gatekeeper-verify.ts decides).
+      - name: Gatekeeper verification of the packaged app
+        shell: bash
+        run: |
+          APP="$(find apps/desktop/dist -maxdepth 3 -type d -name '*.app' | head -1)"
+          [ -n "$APP" ] || { echo "gatekeeper-verify: no .app found under apps/desktop/dist — nothing to verify"; exit 1; }
+          codesign --verify --deep --strict --verbose=2 "$APP" > codesign.txt 2>&1 || true
+          spctl -a -vv -t exec "$APP" > spctl.txt 2>&1 || true
+          xcrun stapler validate "$APP" > stapler.txt 2>&1 || true
+          npx --yes tsx@4.23.12 scripts/gatekeeper-verify.ts \
+            "${{ steps.signing.outputs.mode }}" "${{ steps.signing.outputs.notarize }}" \
+            codesign.txt spctl.txt stapler.txt
+
       # P2-146: build the Squirrel.Mac JSON feed from the packed dist root —
       # the zip the mac target now produces + latest-mac.yml become the
       # update-mac.json the packaged shell auto-consumes on darwin. Exits 1
