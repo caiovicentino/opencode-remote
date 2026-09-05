@@ -195,6 +195,17 @@ export const dict = {
     pairRemoteHint:
       "Show the pairing QR to control this machine from your phone — traffic is end-to-end encrypted.",
     pairRemoteAction: "Show pairing QR",
+    // phone relay address (desktop settings, P2-187)
+    relayTitle: "Phone relay",
+    relayHint:
+      "Relay your phone dials for remote pairing. The built-in local relay only serves this machine — for another device, point the app at a hosted relay.",
+    relaySave: "Save",
+    relayReset: "Use local relay",
+    relayInvalid: "Invalid relay address — use wss://relay.example.com:8788 (or ws:// only to a host on this machine).",
+    relayOriginEnv: "Address set by the RELAY_URL environment variable — it wins over this setting.",
+    relayOriginStored: "Saved on this machine.",
+    relayOriginDefault: "Local default — only works on this machine.",
+    relayOriginInvalid: "The saved address is invalid — fix it or go back to the local relay.",
     localConnecting: "Connecting to the local daemon…",
     // degraded first-boot journey (desktop, P2-112): a dead daemon on first
     // boot is never a dead end — calm status, visible auto-retry, minimal
@@ -553,6 +564,17 @@ export const dict = {
     pairRemoteHint:
       "Mostra o QR de pareamento para controlar esta máquina do celular — tráfego criptografado ponta a ponta.",
     pairRemoteAction: "Mostrar QR de pareamento",
+    // endereço do relay do celular (ajustes do desktop, P2-187)
+    relayTitle: "Relay do celular",
+    relayHint:
+      "Relay com o qual o celular se conecta no pareamento remoto. O relay local embutido só serve esta máquina — para outro dispositivo, aponte o app para um relay hospedado.",
+    relaySave: "Salvar",
+    relayReset: "Usar relay local",
+    relayInvalid: "Endereço de relay inválido — use wss://relay.exemplo.com:8788 (ou ws:// apenas para um host nesta máquina).",
+    relayOriginEnv: "Endereço definido pela variável de ambiente RELAY_URL — ela vence este ajuste.",
+    relayOriginStored: "Salvo nesta máquina.",
+    relayOriginDefault: "Padrão local — só funciona nesta máquina.",
+    relayOriginInvalid: "O endereço salvo é inválido — corrija-o ou volte ao relay local.",
     localConnecting: "Conectando ao daemon local…",
     // jornada degradada no primeiro boot (desktop, P2-112): daemon morto no
     // primeiro contato nunca vira beco sem saída — status calmo, retry

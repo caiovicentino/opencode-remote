@@ -20,7 +20,23 @@ import { createRelayRetry } from "../apps/daemon/src/relayretry";
 import { nodeStateFileFs, writeStateAtomic, type StateFileFs } from "../apps/daemon/src/statefile";
 import { appendAudit, readAuditTail, nodeAuditLogFs, AUDIT_CAP_BYTES, type AuditLogFs } from "../apps/daemon/src/auditlog";
 
-import { parseRelayUrl, redactRelayUrl } from "../apps/daemon/src/relayurl";
+import {
+  isLoopbackHost as isLoopbackHostBoot,
+  parseRelayUrl,
+  redactRelayUrl,
+} from "../apps/daemon/src/relayurl";
+import {
+  DEFAULT_RELAY_URL,
+  isLoopbackHost as isLoopbackHostSetting,
+  RELAY_URL_MAX_LEN,
+  relayUrlProblems,
+  resolveRelayUrl,
+} from "../apps/desktop/src/relaysetting";
+import {
+  readStoredRelayUrl,
+  relaySettingFile,
+  writeStoredRelayUrl,
+} from "../apps/desktop/src/relaystore";
 import {
   bodyLimit,
   isBodyLimitError,
@@ -11592,6 +11608,194 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       block.includes("gh release upload") &&
       block.includes(MANIFEST_NAME),
     JSON.stringify(block),
+  );
+}
+
+// --- P2-187: phone relay address configurable in the shell (fail-closed) ------
+
+{
+  // relayUrlProblems: the acceptance table
+  check(
+    "P2-187: wss on a public host is accepted",
+    relayUrlProblems("wss://relay.example.com:8788").length === 0,
+  );
+  check(
+    "P2-187: ws on loopback hosts is accepted (localhost, 127.x, [::1])",
+    ["ws://localhost:8787", "ws://127.0.0.1:8787", "ws://127.255.255.254:8787", "ws://[::1]:8787"].every(
+      (v) => relayUrlProblems(v).length === 0,
+    ),
+  );
+  check("P2-187: ws on a public host is a problem", relayUrlProblems("ws://relay.example.com:8788").length > 0);
+  check(
+    "P2-187: ws on a nip.io-style wildcard is a problem (no loopback prefix games)",
+    relayUrlProblems("ws://127.0.0.1.evil.com:8787").length > 0,
+  );
+  check(
+    "P2-187: http and file schemes are problems",
+    relayUrlProblems("http://relay.example.com").length > 0 &&
+      relayUrlProblems("file:///etc/passwd").length > 0,
+  );
+  check(
+    "P2-187: non-string values are problems",
+    [42, null, {}, [], true, undefined].every((v) => relayUrlProblems(v).length > 0),
+  );
+  check(
+    "P2-187: empty and whitespace-only strings are problems",
+    relayUrlProblems("").length > 0 && relayUrlProblems("   ").length > 0,
+  );
+  check(
+    "P2-187: malformed URLs are problems",
+    relayUrlProblems("ws://").length > 0 && relayUrlProblems("not a url").length > 0,
+  );
+  check(
+    "P2-187: embedded user/password credentials are a problem",
+    relayUrlProblems("wss://user:pass@relay.example.com:8788").length > 0,
+  );
+  check(
+    "P2-187: above the documented length ceiling is a problem",
+    relayUrlProblems(`wss://relay.example.com/${"a".repeat(RELAY_URL_MAX_LEN)}`).length > 0,
+  );
+  check(
+    "P2-187: at the documented length ceiling is accepted",
+    relayUrlProblems(`wss://relay.example.com/${"a".repeat(RELAY_URL_MAX_LEN - "wss://relay.example.com/".length)}`)
+      .length === 0,
+  );
+  check(
+    "P2-187: uppercase scheme is the same scheme",
+    relayUrlProblems("WSS://Relay.Example.com").length === 0,
+  );
+  check("P2-187: uppercase ws on a public host is still a problem", relayUrlProblems("WS://8.8.8.8").length > 0);
+  check(
+    "P2-187: problems never echo the raw value (credentials stay out of logs)",
+    relayUrlProblems("wss://user:secret@relay.example.com").every((p) => !p.includes("secret") && !p.includes("user:")),
+  );
+
+  // loopback parity with the boot authority (apps/daemon/src/relayurl.ts)
+  const parityHosts = [
+    "localhost",
+    "::1",
+    "[::1]",
+    "127.0.0.1",
+    "127.255.255.254",
+    "127.0.0.0",
+    "127.0.0.1.evil.com",
+    "127.attacker.com",
+    "8.8.8.8",
+    "relay.example.com",
+    "localhost.evil.com",
+    "::2",
+    "[::2]",
+    "127.1",
+    "",
+  ];
+  check(
+    "P2-187: loopback rule parity with relayurl.ts on the shared host table",
+    parityHosts.every((h) => isLoopbackHostBoot(h) === isLoopbackHostSetting(h)),
+  );
+
+  // resolveRelayUrl matrix
+  const envWins = resolveRelayUrl({ RELAY_URL: "wss://env.example.com:8788" }, "wss://stored.example.com:8788");
+  check(
+    "P2-187: env wins over a valid stored value",
+    envWins.origin === "env" && envWins.url === "wss://env.example.com:8788",
+  );
+  check(
+    "P2-187: env wins even when invalid (operator path, problems surfaced)",
+    (() => {
+      const r = resolveRelayUrl({ RELAY_URL: "http://env.example.com" }, null);
+      return r.origin === "env" && r.url === "http://env.example.com" && r.problems.length > 0;
+    })(),
+  );
+  const storedWins = resolveRelayUrl({}, "  wss://stored.example.com:8788  ");
+  check(
+    "P2-187: valid stored value wins over the default (and is trimmed)",
+    storedWins.origin === "stored" && storedWins.url === "wss://stored.example.com:8788" && storedWins.problems.length === 0,
+  );
+  const plainDefault = resolveRelayUrl({}, null);
+  check(
+    "P2-187: nothing set → the historical loopback default, byte for byte",
+    plainDefault.url === DEFAULT_RELAY_URL &&
+      plainDefault.url === "ws://127.0.0.1:8787" &&
+      plainDefault.origin === "default" &&
+      plainDefault.problems.length === 0,
+  );
+  check(
+    "P2-187: missing env key behaves like no env",
+    resolveRelayUrl({}, undefined).origin === "default" && resolveRelayUrl({}, undefined).url === DEFAULT_RELAY_URL,
+  );
+  check(
+    "P2-187: blank env value falls through to the stored/default resolution",
+    resolveRelayUrl({ RELAY_URL: "" }, null).origin === "default",
+  );
+  check(
+    "P2-187: invalid stored value → stored-invalid with problems, never the default",
+    (() => {
+      const r = resolveRelayUrl({}, "http://nope.example.com");
+      return r.origin === "stored-invalid" && r.problems.length > 0 && r.url !== DEFAULT_RELAY_URL;
+    })(),
+  );
+  check(
+    "P2-187: invalid stored STRING keeps the raw value so the daemon preflight fails closed",
+    resolveRelayUrl({}, "not a url").url === "not a url",
+  );
+  check(
+    "P2-187: non-string stored value → stored-invalid with an empty url (never the default)",
+    (() => {
+      const r = resolveRelayUrl({}, 42);
+      return r.origin === "stored-invalid" && r.url === "" && r.problems.length > 0;
+    })(),
+  );
+  check(
+    "P2-187: invalid stored value loses to a present env value (env still wins)",
+    resolveRelayUrl({ RELAY_URL: "wss://env.example.com" }, "http://nope").origin === "env",
+  );
+
+  // relaystore round-trip against the real filesystem (0600 tmp+rename)
+  const relayDir = mkdtempSync(join(tmpdir(), "p2-187-relay-"));
+  try {
+    const relayFile = relaySettingFile(relayDir);
+    check(
+      "P2-187: relay.json path sits beside window-state.json",
+      relayFile === join(relayDir, "relay.json"),
+    );
+    check("P2-187: missing relay.json reads as not configured", readStoredRelayUrl(relayFile) === null);
+    check(
+      "P2-187: write + read round-trip",
+      writeStoredRelayUrl(relayFile, "wss://relay.example.com:8788") &&
+        readStoredRelayUrl(relayFile) === "wss://relay.example.com:8788",
+    );
+    check("P2-187: persisted file has mode 0600", (statSync(relayFile).mode & 0o777) === 0o600);
+    check("P2-187: no .tmp leftover after a successful write", !existsSync(`${relayFile}.tmp`));
+    check(
+      "P2-187: null clears the setting ({} on disk)",
+      writeStoredRelayUrl(relayFile, null) && readStoredRelayUrl(relayFile) === null,
+    );
+    writeFileSync(join(relayDir, "corrupt.json"), "{corrupted", { mode: 0o600 });
+    check(
+      "P2-187: corrupted JSON reads as not configured",
+      readStoredRelayUrl(join(relayDir, "corrupt.json")) === null,
+    );
+    writeFileSync(join(relayDir, "wrongfield.json"), JSON.stringify({ url: 42 }), { mode: 0o600 });
+    check(
+      "P2-187: non-string url field reads as not configured",
+      readStoredRelayUrl(join(relayDir, "wrongfield.json")) === null,
+    );
+  } finally {
+    rmSync(relayDir, { recursive: true, force: true });
+  }
+
+  // real-source assertion: every sidecar spawn carries the resolved RELAY_URL
+  const daemonSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "daemon.ts"), "utf8");
+  const spawnSites = daemonSrc.split("spawn(entry.node").length - 1;
+  check("P2-187: daemon.ts still has exactly one sidecar spawn site", spawnSites === 1, String(spawnSites));
+  const spawnBody = daemonSrc.slice(daemonSrc.indexOf("spawn(entry.node"));
+  check(
+    "P2-187: the spawn env carries the resolved RELAY_URL",
+    /RELAY_URL:\s*relayUrlForSpawn/.test(spawnBody),
+  );
+  check(
+    "P2-187: spawn paths funnel through setSidecarRelayUrl (exported for main.ts)",
+    daemonSrc.includes("export function setSidecarRelayUrl") && daemonSrc.includes("relayUrlForSpawn = url"),
   );
 }
 

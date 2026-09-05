@@ -415,6 +415,18 @@ builds):
 docker pull ghcr.io/caiovicentino/opencode-remote:0.2.0   # pin the version, not latest
 ```
 
+On the desktop shell you do not need to export `RELAY_URL` by hand: Settings
+has a **Phone relay** card (desktop-only section) where you paste the hosted
+address — e.g. `wss://relay.example.com:8788` — and the app restarts its daemon
+with it, so the pairing QR stops pointing the phone at the machine's own
+loopback. Precedence is environment first (`RELAY_URL`, for operators who
+script the app), then the saved value, then the local default
+`ws://127.0.0.1:8787` — which only ever works on the machine running the app.
+Addresses are validated by the app before anything is saved (ws/wss only,
+`ws://` restricted to loopback hosts, no embedded credentials); an invalid
+saved address is shown as an error in Settings, never silently replaced by the
+default.
+
 The image carries no secrets and the relay stays a blind
 router: it never sees plaintext or keys. The optional metrics endpoint
 (`RELAY_METRICS_PORT`) binds loopback by default; setting

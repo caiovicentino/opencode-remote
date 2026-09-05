@@ -31,7 +31,7 @@ import SidebarAccount from "./components/SidebarAccount";
 import ChatView from "./components/ChatView";
 import HomeView from "./components/HomeView";
 import { setDraft } from "./lib/drafts";
-import SettingsView, { applyTheme } from "./components/SettingsView";
+import SettingsView, { applyTheme, type RelaySetting, type RelaySettingWriteResult } from "./components/SettingsView";
 import FilesView from "./components/FilesView";
 import ArtifactsView from "./components/ArtifactsView";
 import SendToAgentView from "./components/SendToAgentView";
@@ -120,6 +120,9 @@ interface DesktopBridge {
   onMenuAction?: (cb: (id: string) => void) => () => void;
   /** P1-050: Settings "Copy diagnostic" support bundle (text, no secrets). */
   getDiagnostics?: () => Promise<string>;
+  /** P2-187: phone relay address — Settings card (desktop shell only). */
+  getRelaySetting?: () => Promise<RelaySetting>;
+  setRelayUrl?: (url: string | null) => Promise<RelaySettingWriteResult>;
 }
 
 function desktopBridge(): DesktopBridge | null {
@@ -834,15 +837,17 @@ export default function App() {
     // The stub request makes every settings fetch a quiet no-op.
     return (
       <div className="pair-wrap" data-phase={phase}>
-        <SettingsView
-          request={() => Promise.resolve({ status: 0, body: {} })}
-          onBack={() => setHelpOpen(false)}
-          getDiagnostics={desktopBridge()?.getDiagnostics}
-          onPairRemote={
-            desktopBridge()?.setRemotePairing ? () => void desktopBridge()?.setRemotePairing?.(true) : undefined
-          }
-          upstream={upstream}
-        />
+      <SettingsView
+        request={() => Promise.resolve({ status: 0, body: {} })}
+        onBack={() => setHelpOpen(false)}
+        getDiagnostics={desktopBridge()?.getDiagnostics}
+        onPairRemote={
+          desktopBridge()?.setRemotePairing ? () => void desktopBridge()?.setRemotePairing?.(true) : undefined
+        }
+        getRelaySetting={desktopBridge()?.getRelaySetting}
+        setRelayUrl={desktopBridge()?.setRelayUrl}
+        upstream={upstream}
+      />
       </div>
     );
   }
@@ -925,6 +930,8 @@ export default function App() {
       transport={clientRef.current?.transport}
       getDiagnostics={desktopBridge()?.getDiagnostics}
       onPairRemote={desktopBridge()?.setRemotePairing ? () => void desktopBridge()?.setRemotePairing?.(true) : undefined}
+      getRelaySetting={desktopBridge()?.getRelaySetting}
+      setRelayUrl={desktopBridge()?.setRelayUrl}
       upstream={upstream}
     />
   );

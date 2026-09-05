@@ -14,11 +14,14 @@ import {
   reconnectState,
   restartDaemon,
   sidecarExitInfo,
+  setSidecarRelayUrl,
   startDaemonSidecar,
   stateFilePath,
   stopDaemonSidecar,
   waitForDaemonHealth,
 } from "./daemon";
+import { relaySettingFile, readStoredRelayUrl, writeStoredRelayUrl } from "./relaystore";
+import { relayUrlProblems, resolveRelayUrl } from "./relaysetting";
 import { initDesktopLog, log, logError } from "./desktop-log";
 import { initSidecarLog } from "./sidecar-log";
 import { phonePaired, type PairingState } from "./pairing";
@@ -536,6 +539,43 @@ async function onReady(): Promise<void> {
       return false;
     }),
   );
+  // P2-187: the phone relay address — read (Settings render) and write (Save /
+  // "use the local relay" action). Validation ALWAYS happens here in the main
+  // process: a hostile renderer can submit any payload shape and nothing is
+  // persisted or applied before relayUrlProblems accepts it. Applying a value
+  // restarts the sidecar so the daemon re-emits its pairing URI dialing the
+  // new relay; the daemon's own boot preflight (apps/daemon/src/relayurl.ts)
+  // stays the final authority on what it actually dials.
+  ipcMain.handle("app:relaySetting", () => {
+    return resolveRelayUrl(process.env, readStoredRelayUrl(relaySettingFile(app.getPath("userData"))));
+  });
+  ipcMain.handle("app:setRelayUrl", (_e, payload: unknown) => {
+    const file = relaySettingFile(app.getPath("userData"));
+    // null / blank string is the "use the local relay" action: clear the
+    // stored setting. An exported RELAY_URL still wins when present — the
+    // response origin says so, and the UI explains it to the operator.
+    if (payload === null || (typeof payload === "string" && payload.trim() === "")) {
+      writeStoredRelayUrl(file, null);
+      const res = resolveRelayUrl(process.env, null);
+      setSidecarRelayUrl(res.url);
+      log(`[desktop] relay setting cleared — sidecar RELAY_URL origin ${res.origin}`);
+      void restartDaemon();
+      return { ok: true, ...res };
+    }
+    const problems = relayUrlProblems(payload);
+    if (problems.length > 0) {
+      // Nothing persists, nothing restarts — the UI shows the problem.
+      logError(`[desktop] relay setting rejected: ${problems[0]}`);
+      return { ok: false, url: typeof payload === "string" ? payload : "", origin: "stored-invalid", problems };
+    }
+    const stored = (payload as string).trim();
+    writeStoredRelayUrl(file, stored);
+    const res = resolveRelayUrl(process.env, stored);
+    setSidecarRelayUrl(res.url);
+    log(`[desktop] relay setting saved — sidecar RELAY_URL origin ${res.origin}`);
+    void restartDaemon();
+    return { ok: true, ...res };
+  });
   // P3-053/P2-150: dock unread badge — the renderer derives the count
   // (lib/unread.ts) and pushes it on every change. The surface comes from
   // badgePlan (badge.ts): darwin/linux keep app.setBadgeCount, Windows draws
@@ -583,6 +623,13 @@ async function onReady(): Promise<void> {
       return false;
     }
   });
+
+  // P2-187: resolve the phone relay address (env > stored > default) BEFORE
+  // the first spawn so even the initial sidecar (and every respawn) dials the
+  // configured relay instead of assuming this machine's loopback.
+  setSidecarRelayUrl(
+    resolveRelayUrl(process.env, readStoredRelayUrl(relaySettingFile(app.getPath("userData")))).url,
+  );
 
   // Sidecar: boot a local daemon (unless one is already healthy), wait for
   // /api/health before showing the UI. On timeout we still show the UI —
