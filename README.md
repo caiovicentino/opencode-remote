@@ -810,7 +810,10 @@ output to the same `userData/logs/daemon-sidecar.log` (rotating to
 `daemon-sidecar.log.1`, ~1MB cap, 2 files kept — write failures are silently
 ignored). In the packaged app the daemon's stdout/stderr used to be forwarded
 to a console that does not exist; the tray's **Open logs folder** item now
-logs which file holds what.
+logs which file holds what. Before anything is written, a line redactor
+replaces every pairing URI with `[pairing-uri redacted]` and drops the boot
+QR block, so this file is safe to attach to a bug report — it never contains
+the credential that could pair a new device with your machine.
 
 **First-run QR for your phone**: the first-run overlay with a scannable pairing
 QR (rendered by the main process from the daemon's `GET /__ocr/pairing-uri`, a
