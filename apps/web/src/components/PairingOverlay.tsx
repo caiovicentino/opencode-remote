@@ -196,7 +196,7 @@ export default function PairingOverlay({ qrDataUrl, onDismiss, deviceList, webAp
         {relayLink && (
           <p
             className={
-              relayLink.state === "connected" || relayLink.state === "local"
+              relayLink.state === "connected" || relayLink.state === "local" || relayLink.state === "unknown"
                 ? "pair-relaylink"
                 : "pair-relaylink pair-relaylink-warn"
             }

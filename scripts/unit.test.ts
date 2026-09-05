@@ -13320,17 +13320,20 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check("P2-199: local mode wins over every other signal", local.state === "local");
   const dialing = linkVerdict(facts({ relayConnected: false, attempt: 2, nextDelayMs: 4_000, lastCloseKind: "transient" }));
   check("P2-199: backoff in progress (attempt >= 1) → dialing", dialing.state === "dialing" && dialing.message.length > 0);
+  const firstDial = linkVerdict(facts({ relayConnected: false }));
+  const refusedCapacity = linkVerdict(facts({ relayConnected: false, lastCloseKind: "capacity" }));
+  const refusedRateLimited = linkVerdict(facts({ relayConnected: false, lastCloseKind: "rate-limited" }));
   check(
     "P2-199: first dial (no attempt yet) → dialing too",
-    linkVerdict(facts({ relayConnected: false })).state === "dialing",
+    firstDial.state === "dialing",
   );
   check(
     "P2-199: refusal close capacity → refused",
-    linkVerdict(facts({ relayConnected: false, lastCloseKind: "capacity" })).state === "refused",
+    refusedCapacity.state === "refused",
   );
   check(
     "P2-199: refusal close rate-limited → refused",
-    linkVerdict(facts({ relayConnected: false, lastCloseKind: "rate-limited" })).state === "refused",
+    refusedRateLimited.state === "refused",
   );
   check(
     "P2-199: unknown/new close kind → dialing (never explodes, never accuses)",
@@ -13356,7 +13359,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 
   // every generated message: non-empty, no path separators, no URL scheme
-  const verdicts = [connected, local, dialing, misWithReason, misNoReason, legacy];
+  const verdicts = [connected, local, dialing, firstDial, refusedCapacity, refusedRateLimited, misWithReason, misNoReason, legacy];
   check(
     "P2-199: every message is non-empty, path-free and scheme-free",
     verdicts.every(
@@ -13393,6 +13396,10 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P2-199: the overlay renders the relay-link line and its comment states the QR is NEVER hidden",
     overlaySrc.includes("{relayLink && (") && overlaySrc.includes("NEVER hidden"),
+  );
+  check(
+    "P2-199: the neutral unknown state renders discreet (same class as connected/local)",
+    /relayLink\.state === "connected" \|\| relayLink\.state === "local" \|\| relayLink\.state === "unknown"/.test(overlaySrc),
   );
   check(
     "P2-199: pairRelayLinkOk/pairRelayLinkLocal exist in en and pt",

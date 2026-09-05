@@ -105,7 +105,8 @@ interface PairingState {
    * additive) — absent means unknown, which renders nothing. */
   reach?: { state: string; message: string };
   /** P2-199: daemon↔relay link verdict (desktop shell only, additive) —
-   * absent means unknown, which renders nothing. */
+   * absent only when the health call failed or the overlay cannot be needed;
+   * a legacy daemon travels as the discreet unknown line instead. */
   relayLink?: { state: string; message: string };
 }
 
