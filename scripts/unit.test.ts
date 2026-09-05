@@ -463,6 +463,8 @@ import { publishDecision } from "./release-publish";
 
 import { gatekeeperProblems } from "./gatekeeper-verify";
 
+import { authenticodeProblems } from "./authenticode-verify";
+
 import { feedProblems } from "./feed-consistency";
 
 import { BUNDLE_BUDGETS, budgetProblems, type BundleEntry } from "./bundle-budget";
@@ -10983,6 +10985,159 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       pinAt > editAt &&
       publishJob.includes("gh release download") &&
       publishJob.includes("shasum -a 256"),
+  );
+}
+
+// --- P2-183: authenticode-verify — the packaged Windows installer must match its signing profile before upload
+{
+  // Realistic output of the workflow's PowerShell step on a healthy
+  // Authenticode-signed installer (Status Valid + the signer certificate
+  // subject).
+  const healthy = {
+    mode: "authenticode",
+    signtool:
+      "Status: Valid\nSubject: CN=Example Inc, OU=Software, O=Example, L=Sao Paulo, S=SP, C=BR\nStatusMessage: The signature is valid.\n",
+  };
+
+  check(
+    "P2-183: authenticode mode + Valid status + certificate subject → no problems",
+    authenticodeProblems(healthy).length === 0,
+    JSON.stringify(authenticodeProblems(healthy)),
+  );
+
+  // Every non-Valid status is a problem in authenticode mode, the four named
+  // classes being NotSigned, HashMismatch, NotTrusted and UnknownError.
+  const brokenStatuses: Array<[string, string]> = [
+    ["NotSigned", "not signed at all"],
+    ["HashMismatch", "hash"],
+    ["NotTrusted", "not trusted"],
+    ["UnknownError", "unknown"],
+  ];
+  for (const [status, hint] of brokenStatuses) {
+    const problems = authenticodeProblems({
+      ...healthy,
+      signtool: `Status: ${status}\nSubject: CN=Example Inc\nStatusMessage: ${status}\n`,
+    });
+    check(
+      `P2-183: ${status} status in authenticode mode → problem`,
+      problems.some((p) => p.includes("authenticode") && p.includes(status) && p.includes(hint)),
+      JSON.stringify(problems),
+    );
+  }
+
+  // A Valid signature whose certificate carries no subject is still a problem
+  const noSubject = authenticodeProblems({
+    ...healthy,
+    signtool: "Status: Valid\nSubject: \nStatusMessage: The signature is valid.\n",
+  });
+  check(
+    "P2-183: Valid status but no certificate subject → problem",
+    noSubject.some((p) => p.includes("authenticode") && p.includes("subject")),
+    JSON.stringify(noSubject),
+  );
+
+  // Empty output is fail-closed: the verdict was never produced
+  const empty = authenticodeProblems({ ...healthy, signtool: "" });
+  check(
+    "P2-183: empty PowerShell output → problem (fail-closed)",
+    empty.some((p) => p.includes("authenticode") && p.includes("no output")),
+    JSON.stringify(empty),
+  );
+
+  // Unrecognizable output is fail-closed too (PowerShell rewording must fail loudly)
+  const gibberish = authenticodeProblems({ ...healthy, signtool: "computer says no\n" });
+  check(
+    "P2-183: unrecognizable output → problem",
+    gibberish.some((p) => p.includes("authenticode") && p.includes("unrecognizable")),
+    JSON.stringify(gibberish),
+  );
+
+  // A drifting signing profile must be caught, not guessed
+  const drifted = authenticodeProblems({ ...healthy, mode: "self-signed" });
+  check(
+    "P2-183: unknown signing-profile mode → problem",
+    drifted.some((p) => p.includes("mode")),
+    JSON.stringify(drifted),
+  );
+
+  // The documented no-secrets path: mode=unsigned produces NO problem for ANY
+  // of the outputs above — the SmartScreen warning is the expected flow there.
+  const unsignedOutputs = [
+    healthy.signtool,
+    "Status: NotSigned\nSubject: \nStatusMessage: NotSigned\n",
+    "Status: Valid\nSubject: \nStatusMessage: The signature is valid.\n",
+    "",
+    "computer says no\n",
+  ];
+  for (const signtool of unsignedOutputs) {
+    const problems = authenticodeProblems({ mode: "unsigned", signtool });
+    check(
+      "P2-183: unsigned mode never produces a problem",
+      problems.length === 0,
+      JSON.stringify(problems),
+    );
+  }
+
+  // --- CLI: output by file path, all problems at once, exit 1 -----------------
+  const repoRoot = join(import.meta.dirname, "..");
+  const tsxEntry = join(repoRoot, "node_modules", "tsx", "dist", "cli.mjs");
+  const script = join(repoRoot, "scripts", "authenticode-verify.ts");
+  const tmp = mkdtempSync(join(tmpdir(), "authenticode-verify-"));
+  const signtoolPath = join(tmp, "signtool.txt");
+  const runCli = (args: string[]): { code: number; out: string } => {
+    try {
+      const out = execFileSync(process.execPath, [tsxEntry, script, ...args], { cwd: repoRoot, encoding: "utf8" });
+      return { code: 0, out };
+    } catch (err) {
+      const e = err as { status?: number; stdout?: Buffer; stderr?: Buffer };
+      return { code: e.status ?? -1, out: `${e.stdout ?? ""}${e.stderr ?? ""}` };
+    }
+  };
+  writeFileSync(signtoolPath, healthy.signtool);
+  const cliOk = runCli(["authenticode", signtoolPath]);
+  check(
+    "P2-183: cli exits 0 on a healthy authenticode run",
+    cliOk.code === 0 && cliOk.out.includes("authenticode-verify: OK"),
+    cliOk.out,
+  );
+  writeFileSync(signtoolPath, "Status: NotSigned\nSubject: \nStatusMessage: NotSigned\n");
+  const cliFail = runCli(["authenticode", signtoolPath]);
+  check(
+    "P2-183: cli exits 1 listing every problem at once",
+    cliFail.code === 1 &&
+      cliFail.out.includes("authenticode-verify: FAIL") &&
+      (cliFail.out.match(/  - /g) ?? []).length === 1 &&
+      cliFail.out.includes("1 problem(s) found"),
+    cliFail.out,
+  );
+
+  // --- real-repo assertion: desktop-win gates the upload on Authenticode ------
+  const release = readFileSync(join(repoRoot, ".github", "workflows", "release.yml"), "utf8");
+  const winStart = release.indexOf("\n  desktop-win:");
+  const winEnd = release.indexOf("\n  release-verify:");
+  const win = winStart > -1 && winEnd > winStart ? release.slice(winStart, winEnd) : "";
+  check("P2-183: release.yml still has the desktop-win job", win.length > 0);
+  const smokeStep = win.indexOf("- name: Smoke-check the packaged bundle");
+  const authenticodeStep = win.indexOf("- name: Authenticode verification of the packaged installer");
+  const uploadStep = win.indexOf("- name: Attach setup exe + update metadata to the GitHub release");
+  check(
+    "P2-183: desktop-win runs the Authenticode verification between the bundle smoke and the release upload",
+    smokeStep > -1 && authenticodeStep > smokeStep && uploadStep > authenticodeStep,
+    `smoke=${smokeStep} authenticode=${authenticodeStep} upload=${uploadStep}`,
+  );
+  const authenticodeBlock = authenticodeStep > -1 && uploadStep > authenticodeStep ? win.slice(authenticodeStep, uploadStep) : "";
+  check(
+    "P2-183: Authenticode step declares shell: bash (P2-126 lesson)",
+    /^\s*shell:\s*bash\s*$/m.test(authenticodeBlock),
+    JSON.stringify(authenticodeBlock),
+  );
+  check(
+    "P2-183: Authenticode step runs the PowerShell verification and feeds the CLI with the signing profile verdict",
+    authenticodeBlock.includes("powershell -NoProfile") &&
+      authenticodeBlock.includes("Get-AuthenticodeSignature") &&
+      authenticodeBlock.includes("scripts/authenticode-verify.ts") &&
+      authenticodeBlock.includes("steps.win-signing.outputs.mode"),
+    JSON.stringify(authenticodeBlock),
   );
 }
 

@@ -198,6 +198,30 @@ jobs:
         shell: bash
         run: npm run dist:smoke --workspace @ocr/desktop
 
+      # P2-183: the preflight deciding mode=authenticode proves INTENT to sign,
+      # not that the packaged exe actually carries a valid signature — an
+      # expired certificate, a wrong password signtool silently accepted or a
+      # signing step that never ran used to publish an installer whose first
+      # launch shows the SmartScreen wall, with no signal in CI. Verify the
+      # Authenticode verdict on the packaged setup exe and abort BEFORE the
+      # upload below. mode=unsigned stays green: that is the documented
+      # no-secrets release path (same as ad-hoc on the mac side).
+      # shell: bash (P2-126 lesson): pwsh does not expand globs.
+      - name: Authenticode verification of the packaged installer
+        shell: bash
+        run: |
+          EXE="$(find apps/desktop/dist -maxdepth 1 -type f -name '*.exe' | head -1)"
+          [ -n "$EXE" ] || { echo "authenticode-verify: no setup exe found under apps/desktop/dist — nothing to verify"; exit 1; }
+          cat > authenticode-check.ps1 <<'PS1'
+          $s = Get-AuthenticodeSignature -FilePath $args[0]
+          Write-Output "Status: $($s.Status)"
+          Write-Output "Subject: $($s.SignerCertificate.Subject)"
+          Write-Output "StatusMessage: $($s.StatusMessage)"
+          PS1
+          powershell -NoProfile -ExecutionPolicy Bypass -File authenticode-check.ps1 "$EXE" > authenticode.txt 2>&1 || true
+          npx --yes tsx@4.23.12 scripts/authenticode-verify.ts \
+            "${{ steps.win-signing.outputs.mode }}" authenticode.txt
+
       - name: Attach setup exe + update metadata to the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

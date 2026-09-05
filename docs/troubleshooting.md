@@ -30,6 +30,8 @@ Run `opencode-remote doctor` first — it checks everything below in one shot.
 | mac download says "damaged and can't be opened" | that is an unsigned/stale DMG, not this project's release path: since P2-170 the desktop-dmg job runs the Gatekeeper verdicts (`codesign` verify, `spctl` assess, `stapler` validate — `scripts/gatekeeper-verify.ts`) on the packaged app before uploading, so a notarized release can never ship without its stapled ticket and a Developer ID release can never ship `spctl: rejected`. A normal **ad-hoc** release (no signing secrets) still shows the standard "unidentified developer" wall instead — right-click → **Open** once, per the README |
 | the release workflow failed and the downloads page shows nothing new | that is the P2-179 draft flow working: releases are created as **drafts** and only go public after `release-verify` and `release-feeds` pass and the `release-publish` job's `scripts/release-publish.ts` confirms every required asset is attached. Open the run in Actions and look at which job has the red ✗ (its failing step lists every missing asset at once); the release stays a private draft, so users were never exposed to a broken download. Fix the cause and re-run the workflow (a re-run treats an already-published release as a no-op), or discard the draft with `gh release delete vX.Y.Z --yes` and re-tag — the draft is invisible to users either way |
 
+| the desktop-win release job failed at "Authenticode verification of the packaged installer" | since P2-183 the job verifies the packaged setup exe with PowerShell `Get-AuthenticodeSignature` (`scripts/authenticode-verify.ts`) before attaching it to the release, so an installer that would trip SmartScreen never ships: only `Status: Valid` with a certificate subject passes in authenticode mode. The failing step lists every problem at once under `authenticode-verify:` (not signed, hash mismatch, untrusted chain, expired certificate, unknown error, missing subject, or unrecognizable verification output); the raw `Status:`/`StatusMessage:`/`Subject:` lines are in `authenticode.txt` in the workspace — check whether the certificate expired, the WIN_CSC_KEY_PASSWORD was wrong, or electron-builder skipped signing, fix and re-run |
+
 ## Staging a desktop update release (P1-050)
 
 The packaged desktop app checks `http://127.0.0.1:8792/__ocr/updates/feed.json`
@@ -74,6 +76,15 @@ before packaging:
 - exactly one of them set (or a whitespace-only value) → fail-closed: the
   `desktop-win` job aborts in the signing preflight with every problem listed
   (`::warning::` annotations + exit 1) and nothing is uploaded.
+
+Since P2-183 the signed/unsigned difference is enforced, not assumed: when
+the profile decided mode=authenticode the packaged setup exe is verified with
+`Get-AuthenticodeSignature` before upload, and any status other than `Valid`
+(not signed, hash mismatch, untrusted chain, expired/revoked certificate,
+unknown error) — or a `Valid` signature with no certificate subject — aborts
+the job before the exe reaches the release. mode=unsigned skips the
+verification by design (the one-time SmartScreen warning is the documented
+no-secrets path, same as ad-hoc on macOS).
 
 ## Health endpoints
 

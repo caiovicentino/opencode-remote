@@ -286,6 +286,21 @@ ou valor em branco) é fail-closed: o job de release aborta no preflight de
 assinatura e lista todos os problemas em vez de publicar uma assinatura
 quebrada.
 
+Os dois caminhos de release continuam propositalmente distintos. Quando o
+perfil decide mode=authenticode, o job `desktop-win` também verifica a
+assinatura Authenticode do instalador empacotado (PowerShell
+`Get-AuthenticodeSignature` → `scripts/authenticode-verify.ts`) entre o
+smoke do bundle e o upload: qualquer status diferente de `Valid` (arquivo
+não assinado, hash divergente, cadeia não confiável, certificado
+expirado/revogado, erro desconhecido) ou assinatura cujo certificado não
+tem subject aborta o job ANTES de anexar o setup exe ao release — o aviso
+do SmartScreen deixa de ser o primeiro sinal. Com mode=unsigned a
+verificação é pulada de propósito (o aviso único do SmartScreen é o fluxo
+documentado), exatamente como o caminho ad-hoc no macOS. Quando o passo
+falha, o log do job lista todos os problemas de uma vez em
+`authenticode-verify:`; as linhas `Status:`/`StatusMessage:` da verificação
+ficam em `authenticode.txt` (artefato do workspace do run).
+
 **Release**: a tag `vX.Y.Z` precisa ter a mesma versão nos **dois**
 `package.json` (raiz e `apps/desktop`). O workflow de release roda
 `scripts/release-preflight.ts` como primeiro passo e bloqueia o release em
