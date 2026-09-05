@@ -252,6 +252,8 @@ import {
   RELOAD_DRAIN_POLL_MS,
   ROLLBACK_HEALTH_WINDOW_SEC,
   shouldSelfHealReload,
+  shouldForceReload,
+  DRIFT_FORCE_RELOAD_MS,
   shouldSelfReload,
   soakFailureRateExceeded,
   soakMinutesFor,
@@ -3782,12 +3784,21 @@ check("disk guard: statfs probe returns bytes on a real dir", realFree !== null 
   check("P3-101: slot running → never reload (no mid-pipeline self-kill)", shouldSelfHealReload(1, false, A, B) === false && shouldSelfHealReload(2, false, A, B) === false);
   check("P3-101: deploy in flight → never reload", shouldSelfHealReload(0, true, A, B) === false);
   check("P3-101: no drift → no reload even when idle", shouldSelfHealReload(0, false, A, A) === false);
+
+  // P1-056 (round 2): bounded patience — persistent drift forces a reload even
+  // with busy slots, else a fed queue can deadlock on a stale in-memory battery
+  check("P1-056: drift under threshold → keep working", shouldForceReload(DRIFT_FORCE_RELOAD_MS - 1, false) === false);
+  check("P1-056: drift at threshold → force reload (slots busy is fine)", shouldForceReload(DRIFT_FORCE_RELOAD_MS, false) === true);
+  check("P1-056: no drift timestamp → never force", shouldForceReload(undefined, false) === false);
+  check("P1-056: deploy in flight → never force (deploy has its own reload)", shouldForceReload(DRIFT_FORCE_RELOAD_MS + 60_000, true) === false);
   // P1-034 precedent: source pin — the loop's process.exit(0) must be routed
   // through the pure seam, never a bare headDrifted() check
   const pilotIndexSrc = readFileSync(join(import.meta.dirname, "..", "apps", "pilot", "src", "index.ts"), "utf8");
   check(
-    "P3-101: loop self-heal exit routed through shouldSelfHealReload",
-    pilotIndexSrc.includes("shouldSelfHealReload(running.size, deployBusy, bootHead, headNow)") && !pilotIndexSrc.includes("headDrifted(bootHead"),
+    "P1-056: loop self-heal exits routed through the pure seams (headDrifted + shouldForceReload) — never a bare sha comparison",
+    pilotIndexSrc.includes("headDrifted(bootHead, headNow)") &&
+      pilotIndexSrc.includes("shouldForceReload(Date.now() - driftSince, deployBusy)") &&
+      !pilotIndexSrc.includes("headNow !== bootHead"),
   );
 }
 

@@ -1,7 +1,8 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, statSync, readdirSync, openSync, readSync, closeSync, appendFileSync, copyFileSync, createReadStream, accessSync, constants } from "node:fs";
 import { stat } from "node:fs/promises";
-import { execFile } from "node:child_process";
+import { execFile, execSync } from "node:child_process";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import type { IncomingMessage, ServerResponse, Server as HttpServer } from "node:http";
 import type { Socket as NetSocket } from "node:net";
 import { homedir } from "node:os";
@@ -1249,6 +1250,34 @@ for (const r of loadRoutines()) {
 }
 setInterval(checkRoutines, 30_000);
 setTimeout(checkRoutines, 10_000);
+
+// P1-056 (round 2): <repo>/apps/daemon/src/index.ts → <repo>
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+
+// P1-056 (round 2): autonomous self-restart — if the prod checkout's HEAD
+// moved past this process's boot sha, exit so launchd KeepAlive boots the new
+// code without operator intervention. Idle-only is enough here (the daemon
+// serves HTTP, it does not run pipelines): a mid-request exit is avoided by
+// requiring the process to be at least DRIFT_FORCE_RELOAD_MS old — bounded
+// staleness instead of request-level surgery.
+const BOOT_HEAD = execSync("git rev-parse HEAD", { cwd: REPO_ROOT, encoding: "utf8" }).trim();
+let daemonDriftSince: number | undefined;
+setInterval(() => {
+  try {
+    const head = execSync("git rev-parse HEAD", { cwd: REPO_ROOT, encoding: "utf8" }).trim();
+    if (head && BOOT_HEAD && head !== BOOT_HEAD) {
+      daemonDriftSince ??= Date.now();
+      if (Date.now() - daemonDriftSince >= 60_000) {
+        console.log(JSON.stringify({ ts: new Date().toISOString(), level: "info", msg: "self-restart: prod HEAD moved since boot", data: { bootHead: BOOT_HEAD.slice(0, 7), head: head.slice(0, 7) } }));
+        process.exit(0);
+      }
+    } else {
+      daemonDriftSince = undefined;
+    }
+  } catch {
+    // git probe failed (transient) — never crash the routine interval
+  }
+}, 30_000).unref();
 
 // P2-090: artifacts watcher metric help (counter self-registers on inc).
 metrics.describe(
