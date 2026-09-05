@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { copyText } from "../lib/clipboard";
 import { APP_VERSION } from "../version";
 import { useT, setLang, getLang, type Lang } from "../lib/i18n";
 import { getTtsLang, setTtsLang as persistTtsLang, type TtsLang } from "../lib/voice";
@@ -386,7 +387,6 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
               void (async () => {
                 if (!getDiagnostics) return;
                 try {
-                  const { copyText } = await import("../lib/clipboard");
                   const ok = await copyText(await getDiagnostics());
                   setMsg(ok ? t("diagCopied") : t("diagCopy"));
                 } catch {

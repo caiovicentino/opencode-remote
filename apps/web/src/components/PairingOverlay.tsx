@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { copyText } from "../lib/clipboard";
 import { useT } from "../lib/i18n";
 
 /** P2-189: step one of the pairing journey — the address the phone opens to
@@ -41,7 +42,6 @@ export default function PairingOverlay({ qrDataUrl, onDismiss, deviceList, webAp
   async function copyAddress() {
     if (!webApp?.url) return;
     try {
-      const { copyText } = await import("../lib/clipboard");
       setCopied(await copyText(webApp.url));
       setTimeout(() => setCopied(false), 2000);
     } catch {
