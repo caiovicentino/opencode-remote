@@ -78,7 +78,7 @@ check(
 );
 
 // --- buildDiagnosticReport -----------------------------------------------------
-import { buildDiagnosticReport, DIAG_LOG_TAIL } from "../apps/desktop/src/diagnostics";
+import { buildDiagnosticReport, DIAG_LOG_TAIL, DIAG_SIDECAR_TAIL } from "../apps/desktop/src/diagnostics";
 
 const report = buildDiagnosticReport({
   appVersion: "0.2.0",
@@ -89,6 +89,7 @@ const report = buildDiagnosticReport({
   userData: "/users/u/Library/Application Support/OpenCode Remote",
   daemon: { healthy: false, down: false, reconnecting: true, attempts: 3, port: 8792, portReason: null },
   logTail: ["[1] line", "[2] line"],
+  sidecarLogTail: ["sidecar jsonl line 1"],
   crashFiles: ["crash-2026-09-02T09-34-12-345-renderer.txt"],
   updateStatus: "update-available",
 });
@@ -109,10 +110,54 @@ check(
     userData: "/u",
     daemon: { healthy: true, down: false, reconnecting: false, attempts: 0, port: 8792, portReason: null },
     logTail: [],
+    sidecarLogTail: [],
     crashFiles: [],
     updateStatus: null,
   }).includes("daemon: healthy"),
 );
+
+// --- P2-163: daemon-sidecar.log tail in the bundle ------------------------------
+check(
+  "diagnostics: sidecar section present after the desktop.log tail (P2-163)",
+  report.indexOf("--- desktop.log (last lines) ---") < report.indexOf("--- daemon-sidecar.log (last lines) ---") &&
+    report.includes("sidecar jsonl line 1"),
+);
+check("diagnostics: DIAG_SIDECAR_TAIL is bounded (support-friendly)", DIAG_SIDECAR_TAIL === 20);
+check(
+  "diagnostics: sidecar missing/unreadable file → placeholder line, not an exception",
+  buildDiagnosticReport({
+    appVersion: "0.2.0",
+    electronVersion: "44.1.1",
+    platform: "darwin arm64",
+    locale: "en",
+    packaged: false,
+    userData: "/u",
+    daemon: { healthy: true, down: false, reconnecting: false, attempts: 0, port: 8792, portReason: null },
+    logTail: [],
+    sidecarLogTail: [],
+    crashFiles: [],
+    updateStatus: null,
+  }).includes("(sem log do sidecar)"),
+);
+check("diagnostics: sidecar tail truncated to the last 20 lines", (() => {
+  const lines = Array.from({ length: 25 }, (_, i) => `[s${i + 1}]`);
+  const tail =
+    buildDiagnosticReport({
+      appVersion: "0.2.0",
+      electronVersion: "44.1.1",
+      platform: "darwin arm64",
+      locale: "en",
+      packaged: false,
+      userData: "/u",
+      daemon: { healthy: true, down: false, reconnecting: false, attempts: 0, port: 8792, portReason: null },
+      logTail: [],
+      sidecarLogTail: lines,
+      crashFiles: [],
+      updateStatus: null,
+    })
+      .split("--- daemon-sidecar.log (last lines) ---")[1] ?? "";
+  return tail.includes("[s25]") && tail.includes("[s6]") && !tail.includes("[s5]") && !tail.includes("[s1]");
+})());
 
 // --- P2-143: resolved daemon port + reason surfaced in the bundle --------------
 const daemonLine = (daemon: { port: number; portReason: string | null }): string =>
@@ -125,6 +170,7 @@ const daemonLine = (daemon: { port: number; portReason: string | null }): string
     userData: "/u",
     daemon: { healthy: true, down: false, reconnecting: false, attempts: 0, ...daemon },
     logTail: [],
+    sidecarLogTail: [],
     crashFiles: [],
     updateStatus: null,
   })
