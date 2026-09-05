@@ -97,6 +97,13 @@ jobs:
       - name: Build
         run: npm run build
 
+      # P2-162: size budget over the real build output, before anything is
+      # packaged — a fat dependency fails here instead of shipping as a slow
+      # download. Ceilings live in scripts/bundle-budget.ts.
+      - name: Bundle budget
+        shell: bash
+        run: npx tsx scripts/bundle-budget.ts
+
       - name: Package mac bundle (dir target only — no DMG, no signing)
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false

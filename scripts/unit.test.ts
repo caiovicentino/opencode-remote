@@ -381,6 +381,8 @@ import { expectedAssets, missingAssets, tagProblems } from "./release-assets";
 
 import { feedProblems } from "./feed-consistency";
 
+import { BUNDLE_BUDGETS, budgetProblems, type BundleEntry } from "./bundle-budget";
+
 
 let failures = 0;
 
@@ -8944,6 +8946,86 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
         desktopSrc.includes("PAIR_URL_RE.exec(sidecar.stdoutTail)"),
     );
   }
+}
+
+// --- P2-162: bundle size budget gate -----------------------------------------
+{
+  const realSizes: BundleEntry[] = [
+    { name: "apps/web/dist", bytes: 571_256 },
+    { name: "apps/desktop/dist-daemon/index.js", bytes: 734_536 },
+  ];
+  check("P2-162: real-build sizes fit BUNDLE_BUDGETS with no problems", budgetProblems(realSizes).length === 0);
+  check(
+    "P2-162: BUNDLE_BUDGETS covers exactly the two shipped entries",
+    JSON.stringify(Object.keys(BUNDLE_BUDGETS)) === JSON.stringify(["apps/web/dist", "apps/desktop/dist-daemon/index.js"]),
+  );
+
+  check(
+    "P2-162: entry at exactly the ceiling passes",
+    budgetProblems([{ name: "a.js", bytes: 100 }], { "a.js": 100 }).length === 0,
+  );
+
+  const over = budgetProblems([{ name: "a.js", bytes: 2048 }], { "a.js": 100 });
+  check(
+    "P2-162: over-budget entry cites measured value, ceiling and slack in KB",
+    over.length === 1 &&
+      over[0]!.startsWith("a.js:") &&
+      over[0]!.includes("measured 2.0 KB") &&
+      over[0]!.includes("0.1 KB budget") &&
+      over[0]!.includes("slack -1.9 KB"),
+    JSON.stringify(over),
+  );
+
+  const missing = budgetProblems([], { "a.js": 100 });
+  check(
+    "P2-162: expected entry missing from the list is a problem",
+    missing.length === 1 && missing[0]!.startsWith("a.js:") && missing[0]!.includes("missing"),
+    JSON.stringify(missing),
+  );
+
+  const negative = budgetProblems([{ name: "a.js", bytes: 10 }], { "a.js": -1 });
+  check(
+    "P2-162: negative budget is a problem",
+    negative.length === 1 && negative[0]!.includes("negative"),
+    JSON.stringify(negative),
+  );
+
+  const notNumber = budgetProblems([{ name: "a.js", bytes: 10 }], { "a.js": "big" as unknown as number });
+  check(
+    "P2-162: non-numeric budget is a problem",
+    notNumber.length === 1 && notNumber[0]!.includes("not a number"),
+    JSON.stringify(notNumber),
+  );
+
+  const nanBudget = budgetProblems([{ name: "a.js", bytes: 10 }], { "a.js": NaN });
+  check("P2-162: NaN budget is a problem", nanBudget.length === 1 && nanBudget[0]!.includes("not a number"), JSON.stringify(nanBudget));
+
+  const empty = budgetProblems([], BUNDLE_BUDGETS);
+  check(
+    "P2-162: empty measured list flags every budget key missing",
+    empty.length === 2 && empty[0]!.includes("missing") && empty[1]!.includes("missing"),
+    JSON.stringify(empty),
+  );
+
+  // the real workflow: budget step sits inside desktop-package, after Build,
+  // before packaging, with an explicit bash shell (P2-126 lesson)
+  const ciYml = readFileSync(join(import.meta.dirname, "..", ".github", "workflows", "ci.yml"), "utf8");
+  const jobStart = ciYml.indexOf("  desktop-package:");
+  const buildStep = ciYml.indexOf("- name: Build", jobStart);
+  const budgetStep = ciYml.indexOf("- name: Bundle budget", jobStart);
+  const budgetRun = ciYml.indexOf("scripts/bundle-budget.ts", budgetStep);
+  const packageStep = ciYml.indexOf("Package mac bundle", jobStart);
+  check(
+    "P2-162: ci.yml runs the budget inside desktop-package after Build and before packaging",
+    jobStart > 0 &&
+      buildStep > jobStart &&
+      budgetStep > buildStep &&
+      budgetRun > budgetStep &&
+      budgetStep < packageStep,
+    `job=${jobStart} build=${buildStep} budget=${budgetStep} pkg=${packageStep}`,
+  );
+  const stepBlock = budgetStep > 0 ? ciYml.slice(budgetStep, packageStep) : "";
+  check("P2-162: budget step declares shell: bash (P2-126 lesson)", /^\s*shell:\s*bash\s*$/m.test(stepBlock), JSON.stringify(stepBlock));
 }
 
 if (failures > 0) {
