@@ -282,11 +282,14 @@ signing secrets in place the installer is signed automatically and the
 warning goes away.
 
 **Releasing**: a tag `vX.Y.Z` must carry the same version in **both**
-`package.json` files (repo root and `apps/desktop`). The release workflow runs
-`scripts/release-preflight.ts` as its first step and blocks the release on any
-mismatch, and runs `npm run dist:smoke --workspace @ocr/desktop` on the
-packaged bundle before uploading the DMG — so bump the two files together with
-the tag. PRs that touch the desktop shell, the web UI or `package-lock.json`
+`package.json` files (repo root and `apps/desktop`) plus `apps/web/src/version.ts`.
+The release workflow runs `scripts/release-preflight.ts` as its first step and
+blocks the release on any mismatch, and runs
+`npm run dist:smoke --workspace @ocr/desktop` on the packaged bundle before
+uploading the DMG. One command stamps all three from the tag — never bump by
+hand:
+
+    npx tsx scripts/sync-version.ts vX.Y.Z && git add -A && git commit -m "release: vX.Y.Z" && git tag vX.Y.Z && git push --follow-tags PRs that touch the desktop shell, the web UI or `package-lock.json`
 additionally run a scoped packaging job (`desktop-package`, mac `dir` target
 only, no DMG/signing) smoke-checked with `dist:smoke --no-installer`; the full
 signed installers still ship only at tag time.

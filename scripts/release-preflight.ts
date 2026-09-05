@@ -19,7 +19,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 export const ROOT_LABEL = "package.json";
 export const DESKTOP_LABEL = "apps/desktop/package.json";
 
-const SEMVER = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
+export const SEMVER = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
 
 /**
  * All problems with a release tag against the two versions the tag ships.

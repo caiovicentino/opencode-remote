@@ -248,6 +248,10 @@ export const dict = {
     welcomeStep3Body:
       "You can scan the pairing code anytime from Settings — or do it now and control this machine from anywhere.",
     welcomeLater: "Do this later",
+    welcomeDone: "Done",
+    welcomePairedTitle: "Phone paired",
+    welcomePairedHint: "The phone is already talking to this machine — you can close and start using it.",
+    welcomeQrWait: "Generating QR…",
     reconnectTrying: "Trying…",
     reconnectStarted: "Daemon restart started — the app reconnects on its own.",
     reconnectFailed: "Could not restart the daemon — try again in a moment.",
@@ -596,6 +600,10 @@ export const dict = {
     welcomeStep3Body:
       "Dá para escanear o código de pareamento quando quiser nas Configurações — ou fazer agora e controlar esta máquina de longe.",
     welcomeLater: "Fazer isso depois",
+    welcomeDone: "Pronto",
+    welcomePairedTitle: "Celular pareado",
+    welcomePairedHint: "O celular já está falando com esta máquina — pode fechar e usar.",
+    welcomeQrWait: "Gerando QR…",
     reconnectTrying: "Tentando…",
     reconnectStarted: "Reinício do daemon iniciado — o app reconecta sozinho.",
     reconnectFailed: "Não deu pra reiniciar o daemon agora — tente de novo em instantes.",

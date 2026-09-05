@@ -1351,6 +1351,17 @@ body.dragging-files::after {
 .welcome-later:hover {
   color: var(--fg);
 }
+.welcome-qr {
+  width: min(220px, 60vw);
+  height: auto;
+  border-radius: var(--radius-md);
+  background: var(--qr-bg);
+  padding: 10px;
+  display: block;
+  margin: 0 auto;
+}
+.welcome-pair .pair-section[data-pair-wait="true"] { min-height: 120px; }
+
 .welcome-step {
   display: flex;
   flex-direction: column;

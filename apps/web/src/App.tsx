@@ -785,6 +785,9 @@ export default function App() {
           busy={phase === "connecting"}
           upstream={upstream}
           reconnect={reconnectBtn}
+          qrDataUrl={pairingState?.qrDataUrl}
+          phonePaired={pairingState?.phonePaired}
+          onCancelPairRemote={() => void desktopBridge()?.setRemotePairing?.(false)}
           onPairRemote={desktopBridge()?.setRemotePairing ? () => void desktopBridge()?.setRemotePairing?.(true) : undefined}
           onDone={finishWelcome}
         />

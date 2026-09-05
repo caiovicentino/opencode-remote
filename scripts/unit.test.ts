@@ -232,6 +232,7 @@ import { latestUiShot, pruneShots } from "../apps/pilot/src/shot";
 import { parseMarkdown, parseInline } from "../apps/web/src/lib/md";
 
 import { parseCsv } from "../apps/web/src/lib/csv";
+import { stampVersion, pkgWithVersion, SEMVER } from "./sync-version";
 
 import { ARTIFACT_MAX_BYTES, ArtifactTooLarge, artifactMentions, fetchArtifact, fmtBytes } from "../apps/web/src/lib/artifacts";
 
@@ -3811,6 +3812,32 @@ check("disk guard: statfs probe returns bytes on a real dir", realFree !== null 
 }
 
 
+// --- P1-056: sync-version stamps the tag into the three truth points ---------
+{
+  const ROOT = JSON.stringify({ name: "opencode-remote", version: "0.2.0", scripts: { a: 1 } });
+  const DESK = JSON.stringify({ name: "desktop", version: "0.3.0", main: "x" });
+  const out = stampVersion("v0.3.0", { rootPkg: ROOT, desktopPkg: DESK, webVersion: "0.2.0" });
+  check("sync: root stamped to 0.3.0 with all keys preserved", JSON.parse(out.files["package.json"]).version === "0.3.0" && JSON.parse(out.files["package.json"]).scripts.a === 1);
+  check("sync: desktop untouched when already at target", out.files["apps/desktop/package.json"] === undefined);
+  check("sync: version.ts generated", out.files["apps/web/src/version.ts"].includes('APP_VERSION = "0.3.0"'));
+  const same = stampVersion("0.3.0", {
+    rootPkg: JSON.stringify({ name: "opencode-remote", version: "0.3.0" }),
+    desktopPkg: DESK,
+    webVersion: "0.3.0",
+  });
+  check("sync: idempotent — nothing to write", Object.keys(same.files).length === 0);
+  let threw = false;
+  try { stampVersion("nope", { rootPkg: ROOT, desktopPkg: DESK, webVersion: "0.2.0" }); } catch { threw = true; }
+  check("sync: non-semver rejected", threw && !SEMVER.test("nope"));
+  const round = pkgWithVersion(ROOT, "9.9.9");
+  check("sync: pkg round-trips every other key", JSON.parse(round).name === "opencode-remote" && JSON.parse(round).version === "9.9.9");
+  // fable #10: the REAL files round-trip byte-identically (indent + newline)
+  const realRoot = readFileSync(join(import.meta.dirname, "..", "package.json"), "utf8");
+  const realDesk = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "package.json"), "utf8");
+  check("sync: real root package.json round-trips byte-identical", pkgWithVersion(realRoot, JSON.parse(realRoot).version) === realRoot);
+  check("sync: real desktop package.json round-trips byte-identical", pkgWithVersion(realDesk, JSON.parse(realDesk).version) === realDesk);
+}
+
 // --- P1-104: deploy self-reload waits for the slots to drain ------------------
 {
   // the drain loop: holds new picks, polls until 0 running, feeds the heartbeat
@@ -6594,6 +6621,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "welcomeStepOf", "welcomeStep1Title", "welcomeStep1Body", "welcomeStart",
     "welcomeSkip", "welcomeNext", "welcomeStep2Title", "welcomeAgentOk",
     "welcomeStep3Title", "welcomeStep3Body", "welcomeLater",
+    "welcomeDone", "welcomePairedTitle", "welcomePairedHint", "welcomeQrWait",
   ];
   check(
     "welcome: onboarding copy resolves per locale (no raw-key fallback)",
