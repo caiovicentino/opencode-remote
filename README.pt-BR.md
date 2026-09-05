@@ -92,6 +92,14 @@ remoto, zero confiança**.
 - **Rotinas** — cron de verdade: diário, dias da semana ou loop por intervalo
 - **Seguro por construção** — gate com passkey (WebAuthn), ECDH P-256 +
   AES-256-GCM, anti-replay, allowlist de dispositivos, audit log, biometria
+- **Dispositivos distinguíveis** — cada pareamento ganha um rótulo estável e
+  sem dado pessoal (`Telefone 1`, `Telefone 2`, …) no lugar do `first` fixo, e a
+  lista de dispositivos em Settings mostra um carimbo aproximado de último
+  acesso (`visto 5m`, ou `nunca visto` em entradas anteriores ao campo) junto do
+  prefixo de chave — dá pra revogar um celular perdido sem adivinhar entre
+  prefixos. O carimbo é gravado no máximo uma vez por dispositivo por hora
+  (`DEVICE_TOUCH_INTERVAL_MS`): propositalmente aproximado, nunca a frame, e não
+  muda nenhuma decisão de admissão
 - **BYOM** — opencode suporta qualquer provider; escolha o modelo por sessão
 - **API + SDK** — dirija sessões por código (`packages/sdk`)
 - **Artifacts** — o agente escreve documentos (html, md, csv, pdf) em
