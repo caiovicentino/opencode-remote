@@ -1898,6 +1898,12 @@ button.desk-new:hover:not(:disabled) {
   align-items: center;
   gap: 14px;
   text-align: center;
+  /* width:100% + min-width:0 + max-width: the card must never exceed the
+     viewport minus the overlay padding — as a grid item its automatic
+     min-content size let the step-one address row push the card past 390px
+     phones, clipping the copy action off-screen. */
+  width: 100%;
+  min-width: 0;
   max-width: 420px;
   padding: 28px;
   border-radius: 16px;
@@ -1959,8 +1965,11 @@ button.desk-new:hover:not(:disabled) {
   align-items: center;
   gap: 8px;
   max-width: 100%;
+  min-width: 0;
 }
 .pair-webapp-url {
+  flex: 0 1 auto;
+  min-width: 0;
   font-size: 0.78rem;
   color: var(--text);
   background: var(--surface);
