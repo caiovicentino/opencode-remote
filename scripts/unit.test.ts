@@ -344,6 +344,8 @@ import { versionMismatch } from "../apps/desktop/src/versions";
 
 import { daemonTooltip, loginItemSupported, logsDirPath, openLogsFolder, trayIconSource } from "../apps/desktop/src/tray";
 
+import { menuSpec, type MenuItemSpec } from "../apps/desktop/src/menu";
+
 import { badgePlan } from "../apps/desktop/src/badge";
 
 import {
@@ -4928,6 +4930,128 @@ check(
     "tray: update label keeps the mandated em-dash phrasing",
     updateMenuLabel("update-available")?.includes("Update available") === true &&
       updateMenuLabel("update-available")?.includes("check for updates") === true,
+  );
+}
+
+
+// --- P2-176: pure app-menu specification (apps/desktop/src/menu.ts) ---------
+{
+  const mac = menuSpec("darwin", "Update available — check for updates", true);
+  const win = menuSpec("win32", null, false);
+  const linux = menuSpec("linux", null, false);
+
+  const titled = (items: MenuItemSpec[], label: string) => items.find((i) => i.label === label);
+  const goItems = (items: MenuItemSpec[]) => titled(items, "Ir")?.submenu ?? [];
+  const helpItems = (items: MenuItemSpec[]) => titled(items, "Ajuda")?.submenu ?? [];
+  const byId = (items: MenuItemSpec[], id: string) => items.find((i) => i.id === id);
+
+  // 1. every go-* id survives byte-a-byte, with the exact accelerator and the
+  //    exact renderer action sendMenuAction has always received (P1-046).
+  const expected: [string, string, string][] = [
+    ["go-new-chat", "CmdOrCtrl+T", "newChat"],
+    ["go-palette", "CmdOrCtrl+K", "palette"],
+    ["go-pane-chat", "CmdOrCtrl+1", "pane:chat"],
+    ["go-pane-artifacts", "CmdOrCtrl+2", "pane:artifacts"],
+    ["go-pane-browser", "CmdOrCtrl+3", "pane:browser"],
+    ["go-pane-files", "CmdOrCtrl+4", "pane:files"],
+    ["go-pane-settings", "CmdOrCtrl+5", "pane:settings"],
+    ["go-pane-mission", "CmdOrCtrl+6", "pane:mission"],
+  ];
+  for (const platform of ["darwin", "win32", "linux"]) {
+    const go = goItems(menuSpec(platform, null, false));
+    check(
+      `P2-176: all go ids/accelerators/actions preserved on ${platform}`,
+      expected.every(([id, acc, action]) => {
+        const item = byId(go, id);
+        return item !== undefined && item.accelerator === acc && item.action === action;
+      }),
+    );
+  }
+
+  // 2. every owned label is the exact pt-BR string (product terms the UI's
+  //    own pt-BR copy keeps — Artifacts/Browser/Mission Control — included).
+  const labelChecks: [string, string][] = [
+    ["go-new-chat", "Nova conversa"],
+    ["go-palette", "Paleta de comandos"],
+    ["go-pane-chat", "Conversas"],
+    ["go-pane-artifacts", "Artifacts"],
+    ["go-pane-browser", "Browser"],
+    ["go-pane-files", "Arquivos"],
+    ["go-pane-settings", "Configurações"],
+    ["go-pane-mission", "Mission Control"],
+  ];
+  const go = goItems(mac);
+  check("P2-176: Go menu is titled Ir", titled(mac, "Ir") !== undefined);
+  check("P2-176: View menu is titled Visualizar", titled(mac, "Visualizar") !== undefined);
+  for (const [id, label] of labelChecks) {
+    check(`P2-176: ${id} is labeled "${label}"`, byId(go, id)?.label === label);
+  }
+
+  // 3. the macOS app submenu: darwin-only, quit keeps its role with the
+  //    pt-BR label, and no other platform carries it.
+  const appMenu = mac[0];
+  const quitItem = appMenu?.submenu?.find((i) => i.role === "quit");
+  check(
+    "P2-176: darwin app submenu with about/hide/quit and pt-BR quit label",
+    appMenu?.label === "OpenCode Remote" &&
+      appMenu.submenu?.some((i) => i.role === "about") === true &&
+      appMenu.submenu?.some((i) => i.role === "hide") === true &&
+      quitItem?.label === "Encerrar OpenCode Remote",
+  );
+  for (const [platform, spec] of [["win32", win], ["linux", linux]] as const) {
+    check(
+      `P2-176: no app submenu on ${platform}`,
+      !spec.some((i) => i.submenu?.some((x) => x.role === "quit" || x.role === "about" || x.role === "hide")),
+    );
+  }
+
+  // 4. editMenu/windowMenu stay native roles so the OS translates them.
+  check(
+    "P2-176: editMenu and windowMenu remain native roles on all platforms",
+    ["darwin", "win32", "linux"].every((p) => {
+      const spec = menuSpec(p, null, false);
+      return spec.some((i) => i.role === "editMenu") && spec.some((i) => i.role === "windowMenu");
+    }),
+  );
+
+  // 5. Help submenu on every platform, with the tray-grade support items.
+  for (const platform of ["darwin", "win32", "linux"]) {
+    const help = helpItems(menuSpec(platform, null, false));
+    check(
+      `P2-176: Help submenu present on ${platform} with logs + diagnostics`,
+      titled(menuSpec(platform, null, false), "Ajuda") !== undefined &&
+        byId(help, "help-logs")?.label === "Abrir pasta de logs" &&
+        byId(help, "help-diagnostics")?.label === "Copiar diagnóstico",
+    );
+  }
+
+  // 6. update items follow the updatesEnabled verdict: absent when false,
+  //    present with the received label (status line, disabled) and the
+  //    clickable check item when true.
+  check(
+    "P2-176: no update items when updatesEnabled is false",
+    helpItems(win).every((i) => i.id !== "help-updates" && i.id !== "help-update-status"),
+  );
+  const helpOn = helpItems(mac);
+  const statusItem = byId(helpOn, "help-update-status");
+  check(
+    "P2-176: update status item carries the received label (disabled, like the tray)",
+    statusItem?.label === "Update available — check for updates" && statusItem?.enabled === false,
+  );
+  check(
+    "P2-176: Verificar atualizações item present and clickable when enabled",
+    byId(helpOn, "help-updates")?.label === "Verificar atualizações" && byId(helpOn, "help-updates")?.enabled !== false,
+  );
+
+  // 7. the real main.ts: buildMenu consumes menuSpec and writes no inline
+  //    labels/accelerators anymore (the descriptor is the single source).
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  const start = mainSrc.indexOf("function buildMenu(): void {");
+  const end = start >= 0 ? mainSrc.indexOf("\n}\n", start) : -1;
+  const buildMenuSrc = start >= 0 && end > start ? mainSrc.slice(start, end) : "";
+  check(
+    "P2-176: main.ts buildMenu consumes menuSpec with no inline labels",
+    buildMenuSrc.includes("menuSpec(") && !buildMenuSrc.includes("label:") && !buildMenuSrc.includes("accelerator:"),
   );
 }
 
