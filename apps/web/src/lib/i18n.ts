@@ -400,8 +400,6 @@ export const dict = {
     homeGreetingAnon: "Back in action",
     homePlaceholder: "How can I help you today?",
     homeIdeasTitle: "Ideas for you",
-    homeModeChat: "Chat",
-    homeModeCowork: "Cowork",
     homeIdea1Label: "Pick up where we left off",
     homeIdea1Prompt:
       "Pick up the work on my latest project: list what is still pending and suggest the next step.",
@@ -750,8 +748,6 @@ export const dict = {
     homeGreetingAnon: "De volta à ação",
     homePlaceholder: "Como posso ajudar você hoje?",
     homeIdeasTitle: "Ideias para você",
-    homeModeChat: "Chat",
-    homeModeCowork: "Cowork",
     homeIdea1Label: "Continuar de onde parei",
     homeIdea1Prompt:
       "Retome o trabalho no meu último projeto: liste o que ficou pendente e sugira o próximo passo.",

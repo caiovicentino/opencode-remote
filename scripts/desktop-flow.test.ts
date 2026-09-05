@@ -1199,8 +1199,8 @@ try {
               } catch {}
             }
             check(
-              "P2-123: Chat/Cowork toggle + model selector + mic present",
-              st?.chat === true && st?.cowork === true && st?.model === true && st?.mic === true,
+              "P2-123: model selector + mic present (mode toggle removed — P1-056)",
+              st?.model === true && st?.mic === true,
               structure.stdout,
             );
             check(
@@ -1214,21 +1214,6 @@ try {
               (st?.prompts ?? []).every((p) => p.length > 0) && (st?.disabled ?? []).every((d) => d === false),
               structure.stdout,
             );
-            if (st?.chat && st?.cowork && st?.n === 3) {
-              // the toggle is the ChatView-composer bridge: cowork must land
-              // "build" in the same localStorage key the session composer reads
-              run("P2-123: pick the Cowork mode", ["click", ".home-mode [data-mode=cowork]"], 15_000, localEnv);
-              const cowork = run(
-                "P2-123: Cowork writes the build agent + checks its radio",
-                ["ipc", "(() => ({ agent: localStorage.getItem('ocr_agent') ?? '', checked: document.querySelector('.home-mode [data-mode=cowork]')?.getAttribute('aria-checked') ?? '' }))()"],
-                15_000,
-                localEnv,
-              );
-              check(
-                "P2-123: ocr_agent=build and cowork aria-checked",
-                /"agent":\s*"build"/.test(cowork.stdout) && /"checked":\s*"true"/.test(cowork.stdout),
-                cowork.stdout,
-              );
               // evidence shot with the settled home (1440x900)
               const hs1 = run("P2-123: 1440x900 home evidence shot", ["shot", homeShot1440, "1440", "900"], 15_000, localEnv);
               if (hs1.ok) check("P2-123: 1440x900 home shot is a real PNG", pngSize(homeShot1440).join("x") === "1440x900");

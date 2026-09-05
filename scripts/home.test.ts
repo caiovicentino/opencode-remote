@@ -7,7 +7,7 @@
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { agentForMode, greetingKey, homeIdeas, HOME_MODES } from "../apps/web/src/lib/home";
+import { greetingKey, homeIdeas } from "../apps/web/src/lib/home";
 import { translate } from "../apps/web/src/lib/i18n";
 
 let failures = 0;
@@ -21,11 +21,8 @@ function check(name: string, ok: boolean, detail = "") {
 
 const src = (p: string) => readFileSync(join(import.meta.dirname, "..", p), "utf8");
 
-// modes → agents: cowork selects the existing "build" agent, chat stays default
-check("HOME_MODES are exactly chat and cowork", HOME_MODES.join(",") === "chat,cowork");
-check("agentForMode(chat) is the empty/default agent", agentForMode("chat") === "");
-check("agentForMode(cowork) is the build agent", agentForMode("cowork") === "build");
-
+// P1-056: the Chat/Cowork toggle is gone — the home starts the default agent
+// and the session composer remains the single place that picks an agent.
 // greeting key never produces a dangling comma copy
 check("greetingKey with a name uses homeGreeting", greetingKey("mac-mini") === "homeGreeting");
 check("greetingKey with whitespace-only name is anon", greetingKey("  ") === "homeGreetingAnon");
@@ -37,8 +34,6 @@ const homeKeys = [
   "homeGreetingAnon",
   "homePlaceholder",
   "homeIdeasTitle",
-  "homeModeChat",
-  "homeModeCowork",
   "homeIdea1Label",
   "homeIdea1Prompt",
   "homeIdea2Label",

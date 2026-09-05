@@ -30,7 +30,6 @@ import SessionsView from "./components/SessionsView";
 import SidebarAccount from "./components/SidebarAccount";
 import ChatView from "./components/ChatView";
 import HomeView from "./components/HomeView";
-import { agentForMode } from "./lib/home";
 import { setDraft } from "./lib/drafts";
 import SettingsView, { applyTheme } from "./components/SettingsView";
 import FilesView from "./components/FilesView";
@@ -1057,12 +1056,7 @@ export default function App() {
                 request={request}
                 voice={clientRef.current?.caps?.transcribe === true}
                 creating={creating}
-                onStart={async (prompt, mode) => {
-                  // the toggle wrote the same key; restate it so a start
-                  // always matches the mode it was fired from
-                  localStorage.setItem("ocr_agent", agentForMode(mode));
-                  return createSession(prompt);
-                }}
+                onStart={(prompt) => createSession(prompt)}
               />
             )}
           </main>

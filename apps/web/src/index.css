@@ -1195,15 +1195,6 @@ body.dragging-files::after {
 .home-composer .composer {
   box-shadow: var(--shadow-overlay);
 }
-.home-mode {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  padding: 2px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--panel);
-}
 .home-mode [role="radio"] {
   border: none;
   background: transparent;

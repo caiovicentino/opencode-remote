@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { OpResponse } from "@ocr/protocol";
 import { useT, getLang } from "../lib/i18n";
-import { agentForMode, greetingKey, homeIdeas, HOME_MODES, type HomeIdeaIcon, type HomeMode } from "../lib/home";
+import { greetingKey, homeIdeas, type HomeIdeaIcon } from "../lib/home";
 import { composerSelectorLabel } from "../lib/composer";
 import { useModelSelector } from "../lib/models";
 import { transcribeBlob } from "../lib/transcribe";
@@ -31,20 +31,17 @@ type Props = {
   /** true while App.createSession is in flight — one session per click */
   creating: boolean;
   /** start a session with `prompt` pre-filled; resolves to an error message */
-  onStart: (prompt: string, mode: HomeMode) => Promise<string | null>;
+  onStart: (prompt: string) => Promise<string | null>;
 };
 
 type RecState = "idle" | "rec" | "busy";
 
 /** P2-123: the living home (desktop empty state) — Claude-Desktop-style
- * serif greeting, a central composer with the Chat/Cowork toggle + model
- * selector, and three clickable ideas. Every string comes from the dict. */
+ * serif greeting, a central composer with the model selector and three
+ * clickable ideas. Every string comes from the dict. */
 export default function HomeView({ machineName, request, voice, creating, onStart }: Props) {
   const t = useT();
   const [input, setInput] = useState("");
-  const [mode, setMode] = useState<HomeMode>(() =>
-    localStorage.getItem("ocr_agent") === "build" ? "cowork" : "chat",
-  );
   const [error, setError] = useState(""); // dict copy only — never raw bodies
   const { models, model, pickModel } = useModelSelector(request);
   const [modelMenu, setModelMenu] = useState(false);
@@ -69,18 +66,11 @@ export default function HomeView({ machineName, request, voice, creating, onStar
     };
   }, [modelMenu]);
 
-  function pickMode(next: HomeMode) {
-    setMode(next);
-    // same key the session composer reads, so the choice carries into the
-    // conversation that gets created
-    localStorage.setItem("ocr_agent", agentForMode(next));
-  }
-
   async function start(prompt: string) {
     const text = prompt.trim();
     if (!text || creating) return;
     setError("");
-    const err = await onStart(text, mode);
+    const err = await onStart(text);
     if (err) setError(t("homeStartError")); // input stays — never lose the text
   }
 
@@ -145,21 +135,6 @@ export default function HomeView({ machineName, request, voice, creating, onStar
               }}
             />
             <div className="composer-bar">
-              <div className="home-mode" role="radiogroup" aria-label={t("homeModeChat") + " / " + t("homeModeCowork")}>
-                {HOME_MODES.map((m) => (
-                  <button
-                    key={m}
-                    type="button"
-                    role="radio"
-                    aria-checked={mode === m}
-                    data-mode={m}
-                    disabled={creating}
-                    onClick={() => pickMode(m)}
-                  >
-                    {t(m === "chat" ? "homeModeChat" : "homeModeCowork")}
-                  </button>
-                ))}
-              </div>
               <div className="composer-spacer" />
               <div className="composer-model" ref={modelMenuRef}>
                 <button

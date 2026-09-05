@@ -4,17 +4,6 @@
 
 import { translate, type Lang } from "./i18n";
 
-/** The composer modes the home offers. "cowork" maps to the existing
- * "build" agent — no new backend, same key ChatView's composer reads. */
-export const HOME_MODES = ["chat", "cowork"] as const;
-export type HomeMode = (typeof HOME_MODES)[number];
-
-/** Agent written to localStorage.ocr_agent for a home mode — the exact key
- * ChatView's composer persists its agent selection under. */
-export function agentForMode(mode: HomeMode): string {
-  return mode === "cowork" ? "build" : "";
-}
-
 /** Greeting dict key: never render a dangling comma when the machine name
  * hasn't arrived yet (settings still loading). */
 export function greetingKey(machineName: string): string {
