@@ -92,8 +92,8 @@ Runs next to `opencode serve`. Responsibilities:
   pushed with deep-link.
 - **Skills**: saved prompts rendered as 1-tap chips in the composer.
 - **Security**: client allowlist (first QR pairing bootstraps it, 0600
-  state file, fresh read per handshake), audit log of pairing events,
-  opencode watchdog.
+  state file, fresh read per handshake), audit log of pairing events
+  (0600, capped at ~1 MB with rotation to `audit.log.1`), opencode watchdog.
 
 ### apps/web
 React PWA. Non-extractable ECDH key in IndexedDB (XSS can use it while the

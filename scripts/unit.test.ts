@@ -18,6 +18,7 @@ import { classifyRelayClose, effectiveRetryDelayMs } from "../apps/daemon/src/re
 import { rewriteFeedPort } from "../apps/daemon/src/feedport";
 import { createRelayRetry } from "../apps/daemon/src/relayretry";
 import { nodeStateFileFs, writeStateAtomic, type StateFileFs } from "../apps/daemon/src/statefile";
+import { appendAudit, readAuditTail, nodeAuditLogFs, AUDIT_CAP_BYTES, type AuditLogFs } from "../apps/daemon/src/auditlog";
 
 import { parseRelayUrl, redactRelayUrl } from "../apps/daemon/src/relayurl";
 
@@ -1987,6 +1988,157 @@ function ghMergingIo(realIo: { exec: (cmd: string) => { ok: boolean; output: str
 
   // the default binding really is the node one (no accidental test-only io)
   check("writeStateAtomic: node binding wired", typeof nodeStateFileFs.writeFileSync === "function" && typeof nodeStateFileFs.renameSync === "function" && typeof nodeStateFileFs.unlinkSync === "function");
+}
+
+
+// --- P2-167 appendAudit/readAuditTail: audit.log is 0600, capped and readable
+// across rotation (security events must not grow forever or be born readable) --
+{
+  const LINE = (i: number) => `{"ts":"2026-01-01T00:00:0${i}Z","event":"e${i}"}\n`;
+  const RAW = (i: number) => LINE(i).slice(0, -1); // what readAuditTail returns
+
+  const makeFs = () => {
+    const files = new Map<string, string>();
+    const createdModes: number[] = [];
+    const renames: string[] = [];
+    const unlinks: string[] = [];
+    let failAppend = false;
+    const io: AuditLogFs = {
+      statSync: (f) => {
+        const v = files.get(f);
+        if (v === undefined) throw new Error(`ENOENT: ${f}`);
+        return { size: v.length };
+      },
+      renameSync: (from, to) => {
+        const v = files.get(from);
+        if (v === undefined) throw new Error(`ENOENT: ${from}`);
+        files.delete(from);
+        files.set(to, v);
+        renames.push(`${from}->${to}`);
+      },
+      unlinkSync: (f) => {
+        if (!files.has(f)) throw new Error(`ENOENT: ${f}`);
+        unlinks.push(f);
+        files.delete(f);
+      },
+      appendFileSync: (f, data, opts) => {
+        if (failAppend) throw new Error("ENOSPC: disk full");
+        if (!files.has(f)) createdModes.push(opts.mode);
+        files.set(f, (files.get(f) ?? "") + data);
+      },
+      readFileSync: (f) => {
+        const v = files.get(f);
+        if (v === undefined) throw new Error(`ENOENT: ${f}`);
+        return v;
+      },
+    };
+    return { io, files, createdModes, renames, unlinks, breakAppend: () => (failAppend = true) };
+  };
+
+  const file = "/mock/audit.log";
+  const one = `${file}.1`;
+  const cap = LINE(1).length;
+
+  // 0600-from-creation: the mode rides on the creating append only
+  const fresh = makeFs();
+  appendAudit(file, LINE(1), fresh.io, cap * 10);
+  appendAudit(file, LINE(2), fresh.io, cap * 10);
+  check("appendAudit: file is created 0600 when absent", fresh.createdModes.length === 1 && fresh.createdModes[0] === 0o600);
+
+  // below the cap: everything stays in the active file, no rotation
+  const below = makeFs();
+  const belowCap = cap * 10;
+  appendAudit(file, LINE(1), below.io, belowCap);
+  appendAudit(file, LINE(2), below.io, belowCap);
+  check("appendAudit: below the cap there is no rotation", below.files.get(file) === LINE(1) + LINE(2) && below.renames.length === 0 && !below.files.has(one));
+
+  // rotation exactly at the cap: active file reaches cap -> next append rotates
+  const at = makeFs();
+  appendAudit(file, LINE(1), at.io, cap);
+  check("appendAudit: file at the cap holds the first line", at.files.get(file) === LINE(1) && at.renames.length === 0);
+  appendAudit(file, LINE(2), at.io, cap);
+  check("appendAudit: rotation exactly at the cap moves the active file to .1", at.files.get(one) === LINE(1) && at.files.get(file) === LINE(2) && at.renames.join() === `${file}->${one}`);
+  check("appendAudit: rotated .1 was never recreated by unlinking a missing file", at.unlinks.length === 0);
+
+  // second rotation replaces the previous .1 (exactly 2 files on disk, ever)
+  appendAudit(file, LINE(3), at.io, cap);
+  check("appendAudit: second rotation replaces the previous .1", at.files.get(one) === LINE(2) && at.files.get(file) === LINE(3) && at.unlinks.join() === one);
+
+  // tail spanning both files: .1 (older) first, active file (newer) last
+  const span = makeFs();
+  span.files.set(one, LINE(1) + LINE(2) + LINE(3));
+  span.files.set(file, LINE(4) + LINE(5));
+  check(
+    "readAuditTail: tail spans both files in chronological order",
+    JSON.stringify(readAuditTail(file, 4, span.io)) === JSON.stringify([RAW(2), RAW(3), RAW(4), RAW(5)]),
+  );
+  check("readAuditTail: tail larger than both files returns everything", JSON.stringify(readAuditTail(file, 100, span.io)) === JSON.stringify([RAW(1), RAW(2), RAW(3), RAW(4), RAW(5)]));
+
+  // tail fitting in the active file alone: .1 is not consulted
+  const activeOnly = makeFs();
+  activeOnly.files.set(one, LINE(1) + LINE(2));
+  activeOnly.files.set(file, LINE(3) + LINE(4));
+  check("readAuditTail: tail within the active file ignores .1", JSON.stringify(readAuditTail(file, 2, activeOnly.io)) === JSON.stringify([RAW(3), RAW(4)]));
+
+  // missing/unreadable files: empty tail, never an exception
+  let threw = false;
+  let tail: string[] = [];
+  try {
+    tail = readAuditTail("/mock/absent.log", 10, makeFs().io);
+  } catch {
+    threw = true;
+  }
+  check("readAuditTail: missing files yield an empty tail, no exception", !threw && tail.length === 0);
+  const unreadable = makeFs();
+  unreadable.io.readFileSync = () => {
+    throw new Error("EACCES: not readable");
+  };
+  check("readAuditTail: unreadable files yield an empty tail, no exception", JSON.stringify(readAuditTail(file, 10, unreadable.io)) === "[]");
+
+  // write failure: audit is best-effort, the exception must never propagate
+  const failing = makeFs();
+  failing.breakAppend();
+  let appendThrew = false;
+  try {
+    appendAudit(file, LINE(1), failing.io, cap);
+  } catch {
+    appendThrew = true;
+  }
+  check("appendAudit: write failure never propagates an exception", !appendThrew);
+
+  // rotation failure: degrade to appending into the (oversized) active file
+  const badRotate = makeFs();
+  badRotate.files.set(file, LINE(1));
+  badRotate.io.renameSync = () => {
+    throw new Error("rename boom");
+  };
+  let rotateThrew = false;
+  try {
+    appendAudit(file, LINE(2), badRotate.io, cap);
+  } catch {
+    rotateThrew = true;
+  }
+  check("appendAudit: failed rotation never propagates and still records the event", !rotateThrew && badRotate.files.get(file) === LINE(1) + LINE(2));
+
+  // real fs: created 0600 on disk, rotation leaves exactly audit.log + .1
+  const dir = mkdtempSync(join(tmpdir(), "daemon-auditlog-"));
+  try {
+    const real = join(dir, "audit.log");
+    appendAudit(real, LINE(1), nodeAuditLogFs, cap);
+    appendAudit(real, LINE(2), nodeAuditLogFs, cap);
+    appendAudit(real, LINE(3), nodeAuditLogFs, cap);
+    check("appendAudit: real fs creates the active file 0600", (statSync(real).mode & 0o777) === 0o600);
+    check("appendAudit: real fs keeps exactly 2 files after rotation", readdirSync(dir).sort().join() === "audit.log,audit.log.1");
+    check(
+      "readAuditTail: real fs tail crosses the rotation in chronological order",
+      JSON.stringify(readAuditTail(real, 2, nodeAuditLogFs)) === JSON.stringify([RAW(2), RAW(3)]),
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  // the shipped cap is the same 1MB contract the desktop side uses
+  check("appendAudit: default cap is 1MB", AUDIT_CAP_BYTES === 1_000_000);
 }
 
 

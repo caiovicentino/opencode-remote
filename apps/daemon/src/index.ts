@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, statSync, readdirSync, openSync, readSync, closeSync, appendFileSync, copyFileSync, createReadStream, accessSync, constants } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, statSync, readdirSync, openSync, readSync, closeSync, copyFileSync, createReadStream, accessSync, constants } from "node:fs";
 import { stat } from "node:fs/promises";
 import { execFile, execSync } from "node:child_process";
 import { promisify } from "node:util";
@@ -37,6 +37,7 @@ import type {
 import { log } from "./log.js";
 import { IdempotencyCache } from "./idempotency.js";
 import { writeStateAtomic } from "./statefile.js";
+import { appendAudit, readAuditTail } from "./auditlog.js";
 import { capMessagePage, parsePageLimit, shouldPaginateMessages, type HistoryRowLike } from "./paginate.js";
 import { handleBrowse } from "./browse.js";
 import {
@@ -174,7 +175,8 @@ function audit(event: string, data?: Record<string, unknown>) {
       event,
       ...(data ? { data } : {}),
     });
-    appendFileSync(join(STATE_DIR, "audit.log"), line + "\n");
+    // P2-167: 0600-from-creation, capped with rotation to audit.log.1, never throws.
+    appendAudit(join(STATE_DIR, "audit.log"), line + "\n");
   } catch {}
 }
 
@@ -551,10 +553,9 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
   }
   if (req.path === "/__ocr/audit" && req.method === "GET") {
     try {
-      const lines = readFileSync(join(STATE_DIR, "audit.log"), "utf8")
-        .split("\n")
-        .filter(Boolean)
-        .slice(-100);
+      // P2-167: the tail spans audit.log + audit.log.1 in chronological order,
+      // so the first rotation does not wipe the user's security view.
+      const lines = readAuditTail(join(STATE_DIR, "audit.log"), 100);
       return { id: req.id, status: 200, body: { entries: lines.map((l) => JSON.parse(l)) } };
     } catch {
       return { id: req.id, status: 200, body: { entries: [] } };
