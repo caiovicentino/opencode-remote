@@ -427,6 +427,17 @@ Addresses are validated by the app before anything is saved (ws/wss only,
 saved address is shown as an error in Settings, never silently replaced by the
 default.
 
+**Two-step pairing (P2-189)**: the phone needs an address before there is a
+pairing QR to scan, so the desktop pairing screen shows two labeled steps.
+Step one is the **app address** — `https://…` derived from the relay address
+(`wss://` becomes `https://` on the same host and port, path and query
+discarded) — rendered as a QR plus copyable text. Step two is the pairing QR
+you already know. The deployment convention is that the host serving the
+relay also serves the web app on the same origin; when it does not, save an
+explicit address in Settings → **App address (phone)** — a stored value beats
+the derived one. With the loopback local relay the shell shows a calm
+explanation instead of an address the phone could never reach.
+
 The image carries no secrets and the relay stays a blind
 router: it never sees plaintext or keys. The optional metrics endpoint
 (`RELAY_METRICS_PORT`) binds loopback by default; setting

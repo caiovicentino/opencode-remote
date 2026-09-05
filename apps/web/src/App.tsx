@@ -25,13 +25,19 @@ import {
   type Slot,
 } from "./lib/viewState";
 import PairingView from "./components/PairingView";
-import PairingOverlay from "./components/PairingOverlay";
+import PairingOverlay, { type WebAppInfo } from "./components/PairingOverlay";
 import SessionsView from "./components/SessionsView";
 import SidebarAccount from "./components/SidebarAccount";
 import ChatView from "./components/ChatView";
 import HomeView from "./components/HomeView";
 import { setDraft } from "./lib/drafts";
-import SettingsView, { applyTheme, type RelaySetting, type RelaySettingWriteResult } from "./components/SettingsView";
+import SettingsView, {
+  applyTheme,
+  type RelaySetting,
+  type RelaySettingWriteResult,
+  type WebAppSetting,
+  type WebAppSettingWriteResult,
+} from "./components/SettingsView";
 import FilesView from "./components/FilesView";
 import ArtifactsView from "./components/ArtifactsView";
 import SendToAgentView from "./components/SendToAgentView";
@@ -90,6 +96,8 @@ interface PairingState {
   opencode?: UpstreamHealth;
   /** P2-140: why the local daemon died (desktop shell only). */
   sidecarExit?: SidecarExitHealth;
+  /** P2-189: step one — the address the phone opens (desktop shell only). */
+  webApp?: WebAppInfo;
 }
 
 /** Electron bridge from apps/desktop/src/preload.ts (absent in the browser). */
@@ -123,6 +131,9 @@ interface DesktopBridge {
   /** P2-187: phone relay address — Settings card (desktop shell only). */
   getRelaySetting?: () => Promise<RelaySetting>;
   setRelayUrl?: (url: string | null) => Promise<RelaySettingWriteResult>;
+  /** P2-189: app address the phone opens — Settings card (desktop shell only). */
+  getWebAppUrl?: () => Promise<WebAppSetting>;
+  setWebAppUrl?: (url: string | null) => Promise<WebAppSettingWriteResult>;
 }
 
 function desktopBridge(): DesktopBridge | null {
@@ -720,6 +731,7 @@ export default function App() {
       <PairingOverlay
         qrDataUrl={pairingState.qrDataUrl}
         deviceList={phonePairing ? pairingState?.deviceList : undefined}
+        webApp={pairingState?.webApp ?? null}
         onDismiss={() => {
           setPairingDismissed(true);
           setPhonePairing(false);
@@ -846,6 +858,8 @@ export default function App() {
         }
         getRelaySetting={desktopBridge()?.getRelaySetting}
         setRelayUrl={desktopBridge()?.setRelayUrl}
+        getWebAppUrl={desktopBridge()?.getWebAppUrl}
+        setWebAppUrl={desktopBridge()?.setWebAppUrl}
         upstream={upstream}
       />
       </div>
@@ -932,6 +946,8 @@ export default function App() {
       onPairRemote={desktopBridge()?.setRemotePairing ? () => void desktopBridge()?.setRemotePairing?.(true) : undefined}
       getRelaySetting={desktopBridge()?.getRelaySetting}
       setRelayUrl={desktopBridge()?.setRelayUrl}
+      getWebAppUrl={desktopBridge()?.getWebAppUrl}
+      setWebAppUrl={desktopBridge()?.setWebAppUrl}
       upstream={upstream}
     />
   );

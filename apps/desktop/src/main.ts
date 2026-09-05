@@ -20,8 +20,9 @@ import {
   stopDaemonSidecar,
   waitForDaemonHealth,
 } from "./daemon";
-import { relaySettingFile, readStoredRelayUrl, writeStoredRelayUrl } from "./relaystore";
+import { relaySettingFile, readStoredRelayUrl, readStoredWebAppUrl, writeStoredRelayUrl, writeStoredWebAppUrl } from "./relaystore";
 import { relayUrlProblems, resolveRelayUrl } from "./relaysetting";
+import { resolveWebAppUrl, webAppUrlProblems } from "./webappurl";
 import { initDesktopLog, log, logError } from "./desktop-log";
 import { initSidecarLog } from "./sidecar-log";
 import { phonePaired, type PairingState } from "./pairing";
@@ -576,6 +577,32 @@ async function onReady(): Promise<void> {
     void restartDaemon();
     return { ok: true, ...res };
   });
+  // P2-189: the app address the phone opens (step one of the pairing journey)
+  // — read + validated write beside the relay setting above, same trust
+  // model: validation ALWAYS happens here in the main process and a hostile
+  // renderer can submit any payload shape nothing is persisted before
+  // webAppUrlProblems accepts it. null/blank clears the stored override so
+  // the address falls back to the one derived from the relay.
+  ipcMain.handle("app:webAppUrl", () => currentWebAppResolution());
+  ipcMain.handle("app:setWebAppUrl", (_e, payload: unknown) => {
+    const file = relaySettingFile(app.getPath("userData"));
+    if (payload === null || (typeof payload === "string" && payload.trim() === "")) {
+      writeStoredWebAppUrl(file, null);
+      const res = currentWebAppResolution();
+      log(`[desktop] web app setting cleared — origin ${res.origin}`);
+      return { ok: true, ...res };
+    }
+    const problems = webAppUrlProblems(payload);
+    if (problems.length > 0) {
+      // Nothing persists — the UI shows the problem instead.
+      logError(`[desktop] web app setting rejected: ${problems[0]}`);
+      return { ok: false, url: typeof payload === "string" ? payload : "", origin: "unavailable", problems };
+    }
+    writeStoredWebAppUrl(file, (payload as string).trim());
+    const res = currentWebAppResolution();
+    log(`[desktop] web app setting saved — origin ${res.origin}`);
+    return { ok: true, ...res };
+  });
   // P3-053/P2-150: dock unread badge — the renderer derives the count
   // (lib/unread.ts) and pushes it on every change. The surface comes from
   // badgePlan (badge.ts): darwin/linux keep app.setBadgeCount, Windows draws
@@ -947,6 +974,19 @@ function forcedMismatchState(): PairingState {
   };
 }
 
+/**
+ * P2-189: the address the phone opens (step one of the pairing journey),
+ * resolved fresh on every call: the relay address as resolveRelayUrl sees it
+ * (env > stored > default) feeds the derivation unless the operator stored an
+ * explicit app address, which wins. Pure decision — resolveWebAppUrl in
+ * webappurl.ts; no QR is minted here when the resolution has problems.
+ */
+function currentWebAppResolution() {
+  const file = relaySettingFile(app.getPath("userData"));
+  const relay = resolveRelayUrl(process.env, readStoredRelayUrl(file));
+  return resolveWebAppUrl(relay, readStoredWebAppUrl(file));
+}
+
 async function refreshPairingState(): Promise<void> {
   // Test-only override first: the hermetic harness has no apiToken, so without
   // this the happy path (the only place a real mismatch is detected) is
@@ -1022,6 +1062,20 @@ async function refreshPairingState(): Promise<void> {
       uri = ((await uriRes.json()) as { uri?: string }).uri ?? null;
       if (uri) qrDataUrl = await QRCode.toDataURL(uri, { margin: 1, width: 480 });
     }
+    // P2-189: step one rides the same tick — the address the phone opens
+    // before there is a pairing QR to scan. Additive field; the QR is minted
+    // by the same QRCode.toDataURL ONLY when the resolution is problem-free
+    // (a problem means the reason travels instead and no QR is generated).
+    const webAppRes = currentWebAppResolution();
+    const webApp = {
+      url: webAppRes.url,
+      origin: webAppRes.origin,
+      reason: webAppRes.problems[0] ?? "",
+      qrDataUrl:
+        webAppRes.url !== "" && webAppRes.problems.length === 0
+          ? await QRCode.toDataURL(webAppRes.url, { margin: 1, width: 480 })
+          : null,
+    };
     setPairingState({
       mode: quietLocal ? "local" : remotePairingRequested ? "remote" : undefined,
       uri,
@@ -1033,6 +1087,7 @@ async function refreshPairingState(): Promise<void> {
       daemonVersion,
       versionMismatch: mismatch,
       opencode: opencode ?? undefined,
+      webApp,
     });
   } catch (err) {
     // Daemon down, token rotated or state file wiped: drop the cached state so
