@@ -452,6 +452,19 @@ re rode o workflow — um re-run passa direto por release já publicada — ou
 apague o rascunho com `gh release delete vX.Y.Z --yes` (a tag fica; apague
 também com `--cleanup-tag` se quiser retaggear limpo).
 
+**A página de release diz o que baixar** (P2-216): o corpo gerado
+automaticamente é um muro de títulos de commit, então antes de o release ficar
+público o job `release-publish` escreve nele um guia curto de download
+(`scripts/release-notes.ts`): uma linha para **Mac com Apple Silicon**, uma
+para **Mac com Intel** e uma para **Windows**, cada uma com o nome exato do
+instalador para aquela máquina, mais o aviso de primeira abertura para builds
+macOS sem assinatura e como conferir o download contra o `checksums.txt`. O
+guia só cita arquivos realmente anexados ao release — cada linha de público é
+conferida contra a lista de assets publicados — e se o instalador de algum
+público (ou o próprio `checksums.txt`) estiver faltando, o passo do guia
+falha e o release segue rascunho, em vez de publicar orientação para um
+download que não existe.
+
 **Confira o seu download** (P2-186): todo release também traz o
 `checksums.txt`, um manifesto SHA-256 no formato padrão do coreutils (uma linha
 `<hash>  <nome>` por asset de download, ordenada por nome, dois espaços entre

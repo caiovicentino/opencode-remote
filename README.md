@@ -478,6 +478,18 @@ published release — or delete the draft with
 `gh release delete vX.Y.Z --yes` (the tag stays; delete it too with
 `--cleanup-tag` if you want a clean re-tag).
 
+**The release page tells you what to download** (P2-216): the auto-generated
+release body is a wall of commit titles, so before a release goes public the
+`release-publish` job writes a short download guide into it
+(`scripts/release-notes.ts`): one line each for **Mac com Apple Silicon**,
+**Mac com Intel** and **Windows**, naming the exact installer file for that
+machine, plus the first-open warning for unsigned macOS builds and how to
+check the download against `checksums.txt`. The guide only ever names files
+that are actually attached to the release — each audience line is matched
+against the published asset list — and if any audience's installer (or
+`checksums.txt` itself) is missing, the guide step fails and the release stays
+a draft instead of publishing guidance for a download that does not exist.
+
 **Verify your download** (P2-186): every release also carries
 `checksums.txt`, a SHA-256 manifest in the standard coreutils format (one
 `<hash>  <name>` line per download asset, sorted by name, two spaces between

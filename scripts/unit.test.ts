@@ -565,6 +565,8 @@ import { authenticodeProblems } from "./authenticode-verify";
 
 import { checksumLines, checksumProblems, MANIFEST_NAME } from "./release-checksums";
 
+import { applyGuide, downloadGuide, GUIDE_END, GUIDE_START } from "./release-notes";
+
 import { archFeedProblems, archOfFileName, feedProblems } from "./feed-consistency";
 
 import { BUNDLE_BUDGETS, budgetProblems, type BundleEntry } from "./bundle-budget";
@@ -12110,7 +12112,10 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       publishJob.includes("scripts/release-publish.ts"),
   );
   const cliAt = publishJob.indexOf("scripts/release-publish.ts");
-  const editAt = publishJob.indexOf("gh release edit");
+  // P2-216: the guide step also runs `gh release edit` (its --notes-file
+  // write), so the publish edit is anchored on --draft=false — the assertion's
+  // intent is that the draft only flips public after the CLI verdict.
+  const editAt = publishJob.indexOf("--draft=false");
   const pinAt = publishJob.indexOf("Formula/opencode-remote.rb");
   check(
     "P2-179: the unpublish edit runs after the CLI verdict, and the Formula pin (sha256 from the downloaded tarball) after publication",
@@ -14860,6 +14865,213 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       diagSrc.includes("d.clockSkew?.skewSeconds") &&
       !diagSrc.includes("toLocaleTimeString") &&
       !diagSrc.includes("new Date("),
+  );
+}
+
+// --- P2-216: release-notes — the download guide a stage-5 user can follow ----
+{
+  const TAG = "v0.3.0";
+  const DMG_ARM = "OpenCode Remote-0.3.0-arm64.dmg";
+  const DMG_X64 = "OpenCode Remote-0.3.0-x64.dmg";
+  const EXE = "OpenCode Remote Setup 0.3.0.exe";
+  const complete = [
+    DMG_ARM,
+    DMG_X64,
+    "OpenCode Remote-0.3.0-arm64.zip",
+    "OpenCode Remote-0.3.0-x64.zip",
+    EXE,
+    "latest-mac.yml",
+    "update-mac.json",
+    "update-mac-arm64.json",
+    "update-mac-x64.json",
+    "latest.yml",
+    "checksums.txt",
+  ];
+
+  const ok = downloadGuide(TAG, complete);
+  check(
+    "P2-216: complete release → zero problems",
+    ok.problems.length === 0,
+    JSON.stringify(ok.problems),
+  );
+  check(
+    "P2-216: guide carries one line per audience with the exact file name from the list",
+    ok.guide.includes("**Mac com Apple Silicon:**") &&
+      ok.guide.includes(`\`${DMG_ARM}\``) &&
+      ok.guide.includes("**Mac com Intel:**") &&
+      ok.guide.includes(`\`${DMG_X64}\``) &&
+      ok.guide.includes("**Windows:**") &&
+      ok.guide.includes(`\`${EXE}\``),
+    ok.guide,
+  );
+  check(
+    "P2-216: guide explains the first-open warning and the checksums.txt check",
+    ok.guide.includes("Primeira abertura no macOS") && ok.guide.includes("checksums.txt"),
+    ok.guide,
+  );
+
+  // Never an invented name: every backticked installer token in the guide must
+  // be a name the caller handed in.
+  const downloadNames = [...ok.guide.matchAll(/`([^`]+\.(?:dmg|zip|exe))`/g)].map((m) => m[1]!);
+  check(
+    "P2-216: no file name appears in the guide without being in the received list",
+    downloadNames.length === 3 && downloadNames.every((name) => complete.includes(name)),
+    JSON.stringify(downloadNames),
+  );
+
+  const noIntel = downloadGuide(TAG, complete.filter((n) => n !== DMG_X64));
+  check(
+    "P2-216: missing Intel DMG → problem naming the Intel audience, no invented name in the guide",
+    noIntel.problems.length === 1 &&
+      noIntel.problems[0]!.includes("Mac com Intel") &&
+      !noIntel.guide.includes(DMG_X64) &&
+      noIntel.guide.includes(DMG_ARM),
+    JSON.stringify(noIntel.problems),
+  );
+
+  const noArm = downloadGuide(TAG, complete.filter((n) => n !== DMG_ARM));
+  check(
+    "P2-216: missing Apple Silicon DMG → problem",
+    noArm.problems.length === 1 && noArm.problems[0]!.includes("Mac com Apple Silicon"),
+    JSON.stringify(noArm.problems),
+  );
+
+  const noExe = downloadGuide(TAG, complete.filter((n) => n !== EXE));
+  check(
+    "P2-216: missing Windows installer → problem",
+    noExe.problems.length === 1 && noExe.problems[0]!.includes("Windows"),
+    JSON.stringify(noExe.problems),
+  );
+
+  const noChecksums = downloadGuide(TAG, complete.filter((n) => n !== "checksums.txt"));
+  check(
+    "P2-216: missing checksums.txt → problem and the guide stops announcing it",
+    noChecksums.problems.length === 1 &&
+      noChecksums.problems[0]!.includes("checksums.txt") &&
+      !noChecksums.guide.includes("Conferindo o download"),
+    JSON.stringify(noChecksums.problems),
+  );
+
+  const several = downloadGuide(TAG, complete.filter((n) => n !== DMG_X64 && n !== EXE && n !== "checksums.txt"));
+  check(
+    "P2-216: several problems returned at once (no short-circuit)",
+    several.problems.length === 3 &&
+      several.problems.some((p) => p.includes("Mac com Intel")) &&
+      several.problems.some((p) => p.includes("Windows")) &&
+      several.problems.some((p) => p.includes("checksums.txt")),
+    JSON.stringify(several.problems),
+  );
+
+  const empty = downloadGuide(TAG, []);
+  check(
+    "P2-216: empty asset list → empty-list problem plus one per audience and checksums, all at once",
+    empty.problems.length === 5 && empty.problems[0]!.includes("asset list is empty"),
+    JSON.stringify(empty.problems),
+  );
+
+  const badTag = downloadGuide("0.3", complete);
+  check(
+    "P2-216: invalid tag → problem in the release-assets format (audience slots match nothing)",
+    badTag.problems.length === 4 &&
+      badTag.problems[0]!.includes("is not a semver version"),
+    JSON.stringify(badTag.problems),
+  );
+
+  // --- applyGuide: insert above / replace in place, byte-preserving -----------
+  const body = "## What's Changed\n\n* pilot(P2-215): clock skew (#488)\n";
+  const once = applyGuide(body, ok.guide);
+  check(
+    "P2-216: body without the block → guide above the original text, preserved byte-by-byte",
+    once.startsWith(`${GUIDE_START}\n${ok.guide}\n${GUIDE_END}\n\n`) &&
+      once.endsWith(body) &&
+      once.indexOf(GUIDE_END) < once.indexOf("## What's Changed"),
+    once,
+  );
+
+  const oldBlock = `${GUIDE_START}\nguia antigo\n${GUIDE_END}\n\n${body}`;
+  const replaced = applyGuide(oldBlock, ok.guide);
+  check(
+    "P2-216: body with an old block → only the block is replaced, surroundings intact",
+    replaced === `${GUIDE_START}\n${ok.guide}\n${GUIDE_END}\n\n${body}` && replaced.includes("What's Changed"),
+    replaced,
+  );
+
+  check(
+    "P2-216: applying twice in a row yields identical text (idempotent)",
+    applyGuide(once, ok.guide) === once && applyGuide(replaced, ok.guide) === replaced,
+  );
+
+  // --- CLI: reads tag/assets/body from files, rewrites the body on success ----
+  const repoRoot = join(import.meta.dirname, "..");
+  const tsxEntry = join(repoRoot, "node_modules", "tsx", "dist", "cli.mjs");
+  const script = join(repoRoot, "scripts", "release-notes.ts");
+  const dir = mkdtempSync(join(tmpdir(), "release-notes-"));
+  const assetsPath = join(dir, "assets.txt");
+  const bodyPath = join(dir, "body.md");
+  const runCli = (): { code: number; out: string } => {
+    try {
+      const out = execFileSync(process.execPath, [tsxEntry, script, TAG, assetsPath, bodyPath], {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
+      return { code: 0, out };
+    } catch (err) {
+      const e = err as { status?: number; stdout?: Buffer; stderr?: Buffer };
+      return { code: e.status ?? -1, out: `${e.stdout ?? ""}${e.stderr ?? ""}` };
+    }
+  };
+  writeFileSync(assetsPath, `${complete.join("\n")}\n`);
+  writeFileSync(bodyPath, body);
+  const cliOk = runCli();
+  const rewritten = readFileSync(bodyPath, "utf8");
+  check(
+    "P2-216: cli exits 0 on a complete release and rewrites the body file with the guide applied",
+    cliOk.code === 0 &&
+      cliOk.out.includes(`release-notes: OK ${TAG}`) &&
+      rewritten === once,
+    cliOk.out,
+  );
+  writeFileSync(assetsPath, `${DMG_ARM}\n`);
+  const cliFail = runCli();
+  check(
+    "P2-216: cli exits 1 printing every problem at once and leaves the body untouched",
+    cliFail.code === 1 &&
+      cliFail.out.includes(`release-notes: FAIL ${TAG}`) &&
+      (cliFail.out.match(/  - missing: /g) ?? []).length === 3 &&
+      cliFail.out.includes("3 problem(s) found") &&
+      readFileSync(bodyPath, "utf8") === rewritten,
+    cliFail.out,
+  );
+  rmSync(dir, { recursive: true, force: true });
+
+  // --- real-repo assertion: the guide step exists in release-publish, after
+  // the checksum upload and before the publish step, with shell: bash ---------
+  const release = readFileSync(join(repoRoot, ".github", "workflows", "release.yml"), "utf8");
+  const pubAt = release.indexOf("\n  release-publish:");
+  const publishJob = pubAt === -1 ? "" : release.slice(pubAt);
+  const stepName = "- name: Write the download guide into the release body";
+  const stepAt = publishJob.indexOf(stepName);
+  const stepBlock = stepAt === -1 ? "" : publishJob.slice(stepAt, publishJob.indexOf("\n      - name:", stepAt));
+  const checksumUploadAt = publishJob.indexOf('checksums.txt --clobber');
+  const publishStepAt = publishJob.indexOf("scripts/release-publish.ts");
+  check(
+    "P2-216: release.yml runs the guide step in release-publish, after the checksum upload and before the publish step",
+    stepAt > -1 &&
+      checksumUploadAt > -1 &&
+      publishStepAt > -1 &&
+      checksumUploadAt < stepAt &&
+      stepAt < publishStepAt,
+    `checksum=${checksumUploadAt} guide=${stepAt} publish=${publishStepAt}`,
+  );
+  check(
+    "P2-216: the guide step declares shell: bash and drives scripts/release-notes.ts with gh-provided assets + body",
+    stepBlock.includes("shell: bash") &&
+      stepBlock.includes("scripts/release-notes.ts") &&
+      stepBlock.includes("gh release view") &&
+      stepBlock.includes("--json assets") &&
+      stepBlock.includes("--json body") &&
+      stepBlock.includes("--notes-file"),
+    stepBlock,
   );
 }
 
