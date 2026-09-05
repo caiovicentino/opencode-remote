@@ -152,6 +152,19 @@ private. That is the product: **local power, remote control, zero trust**.
   are not touched). The injected-session registry lives in memory: sessions
   created before a daemon restart are not re-injected after it — only
   sessions created from the fresh daemon are
+- **Artifact retention** — the artifacts folder is bounded by a janitor so a
+  long-lived install never silently fills the disk: a daemon sweep (once at
+  boot, then every **6 h**) deletes whole session dirs under
+  `~/.opencode-remote/artifacts/` that are older than **30 days**, oldest
+  first, until the folder fits within **1 GB** total. The **48 h** grace
+  period keeps freshly written artifacts safe no matter what, and the **3
+  most recently modified** session dirs are always preserved even when every
+  ceiling is blown. Only the artifacts root is ever touched — `uploads/`
+  (user-requested download material), `clips/` and every other state dir are
+  never scanned or deleted. Set `OCR_ARTIFACT_RETENTION=off` in the daemon
+  environment to disable the janitor entirely (default: on). Each sweep logs
+  one line with the deleted count and bytes and bumps the
+  `ocr_artifact_retention_deleted_total` metric
 - **Desktop shell (early)** — Electron app wrapping the same UI, with tray and native menu;
   includes a **Browser pane**: in the desktop shell it renders a real sandboxed Electron
   `<webview>` (scroll, click and edit work like in a browser; `contextIsolation`/`sandbox` on,

@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, statSync, readdirSync, openSync, readSync, closeSync, copyFileSync, createReadStream, accessSync, constants } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, statSync, readdirSync, openSync, readSync, closeSync, copyFileSync, createReadStream, accessSync, constants, rmSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { execFile, execSync } from "node:child_process";
 import { promisify } from "node:util";
@@ -60,6 +60,7 @@ import { spokenNumbers, SPEECH_LANGS } from "./spoken.js";
 import { metrics, startMetricsServer, VERSION } from "./metrics.js";
 import { loadRoutines, saveRoutines, type Routine } from "./routines.js";
 import { ARTIFACTS_ROOT, artifactMime, capArtifacts, kindFor, listArtifacts, readArtifact, sessionTitleMap } from "./artifacts.js";
+import { RETENTION_INTERVAL_MS, retentionDisabled, retentionPlan, type RetentionEntry } from "./artifactretention.js";
 import { WindowCache, contextPct, sessionTokenTotal } from "./contextgauge.js";
 import { ArtifactWatcher } from "./artifactwatch.js";
 import { createShutdown, stopAccepting } from "./shutdown.js";
@@ -1611,6 +1612,64 @@ const artifactWatcher = new ArtifactWatcher(ARTIFACTS_ROOT, (a) => {
   });
 });
 artifactWatcher.start();
+
+// --- P2-207: artifact retention janitor -------------------------------------
+// The artifacts root grows forever otherwise: every conversation that produced
+// a report/spreadsheet/pdf keeps its bytes on the user's disk. The janitor
+// sweeps ONLY this root — never uploads/ (user-requested download material),
+// never clips/ and never any other state dir — once at boot and then every
+// RETENTION_INTERVAL_MS. Set OCR_ARTIFACT_RETENTION=off to disable entirely.
+
+function dirFacts(dir: string): { bytes: number; mtime: number } {
+  let bytes = 0;
+  let mtime = 0;
+  for (const ent of readdirSync(dir, { withFileTypes: true })) {
+    const child = join(dir, ent.name);
+    if (ent.isDirectory()) {
+      const nested = dirFacts(child);
+      bytes += nested.bytes;
+      mtime = Math.max(mtime, nested.mtime);
+    } else {
+      const st = statSync(child);
+      bytes += st.size;
+      mtime = Math.max(mtime, st.mtimeMs);
+    }
+  }
+  return { bytes, mtime };
+}
+
+function scanRetentionEntries(): RetentionEntry[] {
+  const entries: RetentionEntry[] = [];
+  for (const ent of readdirSync(ARTIFACTS_ROOT, { withFileTypes: true })) {
+    if (!ent.isDirectory()) continue; // session dirs are the deletion unit
+    const dir = join(ARTIFACTS_ROOT, ent.name);
+    const facts = dirFacts(dir);
+    entries.push({ path: dir, bytes: facts.bytes, mtime: facts.mtime });
+  }
+  return entries;
+}
+
+function sweepArtifactRetention(): void {
+  try {
+    // the ONLY root the janitor ever scans or deletes under is ARTIFACTS_ROOT
+    const plan = retentionPlan(ARTIFACTS_ROOT, scanRetentionEntries(), Date.now());
+    for (const path of plan.paths) {
+      rmSync(path, { recursive: true, force: true });
+    }
+    log("info", "artifact retention sweep", { deleted: plan.paths.length, bytes: plan.bytes });
+    metrics.inc("ocr_artifact_retention_deleted_total", plan.paths.length);
+  } catch (err) {
+    // a filesystem error aborts this cycle only — no immediate retry; the
+    // next scheduled sweep picks it up
+    log("warn", "artifact retention sweep failed", { error: (err as Error).message });
+  }
+}
+
+if (!retentionDisabled(process.env)) {
+  sweepArtifactRetention();
+  const retentionTimer = setInterval(sweepArtifactRetention, RETENTION_INTERVAL_MS);
+  retentionTimer.unref?.();
+}
 
 const autoApproved = new Map<string, number>();
 
