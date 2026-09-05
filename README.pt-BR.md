@@ -395,6 +395,18 @@ host não-loopback é recusado — URL inválida desativa a conexão com o relay
 do relay e segue funcionando. Runbook:
 [docs/RELAY-HOSTING.md](docs/RELAY-HOSTING.md).
 
+No app desktop você não precisa exportar `RELAY_URL` no braço: os Ajustes
+(Settings) têm o card **Relay do celular** (seção exclusiva do shell), onde
+você cola o endereço hospedado — ex. `wss://relay.exemplo.com:8788` — e o app
+reinicia o daemon com ele, então o QR de pareamento deixa de apontar pro
+loopback da própria máquina. A precedência é: variável de ambiente primeiro
+(`RELAY_URL`, para operadores que roteirizam o app), depois o valor salvo,
+depois o padrão local `ws://127.0.0.1:8787` — que só funciona na máquina onde
+o app roda. O endereço é validado pelo app antes de salvar (apenas ws/wss,
+`ws://` restrito a hosts loopback, sem credenciais embutidas); valor salvo
+inválido aparece como erro nos Ajustes, nunca é trocado em silêncio pelo
+padrão.
+
 **Reconexão guiada pelo código de fechamento (P2-156)**: quando o socket do
 relay fecha, o daemon classifica o código em vez de tratar qualquer queda como
 problema de rede. `1013` (server busy / too many connections / room full) o

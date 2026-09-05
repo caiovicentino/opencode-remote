@@ -60,6 +60,23 @@ export interface PairingState {
   sidecarExit?: { kind: string; reason: string; hint: string };
 }
 
+/** P2-187: the phone relay address resolution (Settings → "Relay do celular").
+ * origin says where the effective address comes from; problems is empty for a
+ * valid address and non-empty when the UI must show the error instead of a
+ * pairing QR. Mirrors apps/desktop/src/relaysetting.ts. */
+export interface RelaySetting {
+  url: string;
+  origin: "env" | "stored" | "default" | "stored-invalid";
+  problems: string[];
+}
+
+/** Result of a write: ok=false carries the validation problems and nothing
+ * was persisted; ok=true carries the new resolution (env still wins over a
+ * saved value). */
+export interface RelaySettingWriteResult extends RelaySetting {
+  ok: boolean;
+}
+
 contextBridge.exposeInMainWorld("ocrDesktop", {
   platform: process.platform,
   version: ipcRenderer.invoke("app:version"),
@@ -81,6 +98,11 @@ contextBridge.exposeInMainWorld("ocrDesktop", {
   setRemotePairing: (on: boolean): Promise<boolean> => ipcRenderer.invoke("app:setRemotePairing", on),
   // P1-053: banner button — manual daemon restart (same path as the tray).
   reconnectDaemon: (): Promise<boolean> => ipcRenderer.invoke("app:reconnectDaemon"),
+  // P2-187: phone relay address — current resolution and the validated write
+  // (null clears the stored setting; validation happens in the main process).
+  getRelaySetting: (): Promise<RelaySetting> => ipcRenderer.invoke("app:relaySetting"),
+  setRelayUrl: (url: string | null): Promise<RelaySettingWriteResult> =>
+    ipcRenderer.invoke("app:setRelayUrl", url),
   // P3-053: dock unread badge — the web UI derives the count (lib/unread.ts)
   // and pushes it on every change; main maps it to app.setBadgeCount. The
   // getter exists so tests can verify the IPC round-trip via the harness.

@@ -32,6 +32,7 @@ Run `opencode-remote doctor` first — it checks everything below in one shot.
 | the desktop-win release job failed at "Authenticode verification of the packaged installer" | since P2-183 the job verifies the packaged setup exe with PowerShell `Get-AuthenticodeSignature` (`scripts/authenticode-verify.ts`) before attaching it to the release, so an installer that would trip SmartScreen never ships: only `Status: Valid` with a certificate subject passes in authenticode mode. The failing step lists every problem at once under `authenticode-verify:` (not signed, hash mismatch, untrusted chain, expired certificate, unknown error, missing subject, or unrecognizable verification output); the raw `Status:`/`StatusMessage:`/`Subject:` lines are in `authenticode.txt` in the workspace — check whether the certificate expired, the WIN_CSC_KEY_PASSWORD was wrong, or electron-builder skipped signing, fix and re-run |
 | the downloaded installer's hash does not match `checksums.txt` (P2-186) | every release ships `checksums.txt` (coreutils format, one `sha256  <file>` line per asset) built from the finished assets right before publication, so a match proves the file is exactly what CI produced. Re-check with the right tool in the download folder: `shasum -a 256 -c checksums.txt` (macOS), `sha256sum -c checksums.txt` (Linux), `Get-FileHash <file> -Algorithm SHA256` compared with the manifest line (Windows PowerShell). A mismatch after a fresh re-download (truncated/proxied downloads are the usual cause) means: do not open or distribute the file — report it on the releases page; the release job itself refuses to publish when any hash or name is off (`release-checksums: FAIL` in the log lists every problem) |
 | the release workflow failed at "Attach the SHA-256 checksum manifest to the release" | since P2-186 the `release-publish` job downloads the draft's assets back, hashes each file with node and validates the list via `scripts/release-checksums.ts` BEFORE the release goes public — the failing step lists every problem at once (empty list, repeated name, hash that is not 64 lowercase hex digits, name with a space or path separator, an entry named `checksums.txt`, or a required asset missing). The release stays a draft (P2-179 contract); fix the asset set and re-run |
+| the pairing QR points the phone at `127.0.0.1` and pairing never completes | the QR carries the relay address the daemon dials, and the default is the machine's own loopback (`ws://127.0.0.1:8787`) — it only ever works while the phone runs on the same Mac. Point the app at a hosted relay: Settings → **Phone relay / Relay do celular** → paste `wss://your-relay:8788` → Save (the app restarts its daemon and re-emits the QR). See the section below |
 
 ## Staging a desktop update release (P1-050)
 
@@ -110,6 +111,34 @@ fallback entirely: the shell uses exactly that port — even when it points
 elsewhere inside the 8792–8796 span — like before the fallback existed. If
 that port is busy, the child dies with the familiar "address in use" error
 and the P2-140 diagnosis explains it; no other port is ever picked.
+
+## Pointing the desktop app at a hosted relay (P2-187)
+
+The local relay (`ws://127.0.0.1:8787`) only serves the machine running the
+app: a phone reading a QR with that address dials itself. For remote pairing,
+give the app a hosted relay address (stage-4 setup, `docs/RELAY-HOSTING.md`):
+
+- **Settings surface (packaged app):** Settings → **Phone relay / Relay do
+  celular** → paste `wss://your-relay:8788` → **Save**. The shell persists it
+  in `relay.json` inside its userData (mode 0600, atomic tmp+rename) and
+  restarts the daemon sidecar so the pairing URI is re-emitted with the new
+  relay. **Use local relay** clears the saved value and goes back to the
+  loopback default.
+- **Environment (operators/dev):** exporting `RELAY_URL` before launching the
+  app still wins over anything saved in Settings — the card shows
+  "set by the RELAY_URL environment variable" and becomes read-only while it
+  is set.
+- **Validation (fail-closed, in the app):** only `ws://`/`wss://`; plain
+  `ws://` to a non-loopback host, embedded `user:pass@` credentials and
+  over-length values are rejected with an error in the card, and nothing is
+  saved. The saved value is applied as-is but the daemon re-validates at boot
+  (`apps/daemon/src/relayurl.ts` remains the final authority): an invalid
+  address makes the daemon withhold the pairing URI instead of dialing garbage.
+- **Adopted daemons (launchd/CLI):** the Settings value only reaches a daemon
+  the shell spawns. If the app adopted an external daemon (reused on :8792),
+  that process gets its `RELAY_URL` from its own service definition — set it
+  in the launchd plist/unit and restart the service; changing the card alone
+  has no effect on it.
 
 ## Service control (macOS launchd)
 

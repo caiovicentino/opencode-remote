@@ -4,6 +4,19 @@ import { useT, setLang, getLang, type Lang } from "../lib/i18n";
 import { getTtsLang, setTtsLang as persistTtsLang, type TtsLang } from "../lib/voice";
 import type { UpstreamNotice } from "../lib/degraded";
 
+/** P2-187: phone relay resolution from the desktop shell (mirrors
+ * apps/desktop/src/preload.ts). origin says where the effective address comes
+ * from; problems is non-empty when the UI must show the error. */
+export interface RelaySetting {
+  url: string;
+  origin: "env" | "stored" | "default" | "stored-invalid";
+  problems: string[];
+}
+
+export interface RelaySettingWriteResult extends RelaySetting {
+  ok: boolean;
+}
+
 interface Props {
   request: (
     method: string,
@@ -19,6 +32,9 @@ interface Props {
   /** P1-070: desktop shell only — explicit "pair a remote phone" action that
    * turns the QR ceremony on (app:setRemotePairing). */
   onPairRemote?: () => void;
+  /** P2-187: desktop shell only — phone relay address read + validated write. */
+  getRelaySetting?: () => Promise<RelaySetting>;
+  setRelayUrl?: (url: string | null) => Promise<RelaySettingWriteResult>;
   /** P2-138: upstream (opencode) notice — renders the help section the calm
    * card's secondary button links to; absent when the agent server is fine. */
   upstream?: UpstreamNotice | null;
@@ -110,7 +126,7 @@ export function applyTheme() {
   document.documentElement.style.fontSize = font === "small" ? "14px" : font === "large" ? "19px" : "16.5px";
 }
 
-export default function SettingsView({ request, onBack, transport, getDiagnostics, onPairRemote, upstream }: Props) {
+export default function SettingsView({ request, onBack, transport, getDiagnostics, onPairRemote, getRelaySetting, setRelayUrl, upstream }: Props) {
   const [devices, setDevices] = useState<Device[]>([]);
   const [name, setName] = useState("");
   const [notify, setNotify] = useState({ permission: true, idle: true });
@@ -146,6 +162,21 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
   const [nrMode, setNrMode] = useState<"daily" | "days" | "interval">("daily");
   const [nrDays, setNrDays] = useState<number[]>([1, 2, 3, 4, 5]);
   const [nrInterval, setNrInterval] = useState(60);
+  // P2-187: phone relay address (desktop shell only). The draft mirrors the
+  // input; `relay` is the main-process resolution (origin + problems).
+  const [relay, setRelay] = useState<RelaySetting | null>(null);
+  const [relayDraft, setRelayDraft] = useState("");
+
+  useEffect(() => {
+    if (!getRelaySetting) return;
+    void getRelaySetting()
+      .then((s) => {
+        setRelay(s);
+        setRelayDraft(s.url);
+      })
+      .catch(() => {});
+    // Mount-time read only: the bridge is stable for the app's lifetime.
+  }, []);
 
   useEffect(() => {
     void (async () => {
@@ -182,6 +213,34 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
   async function saveSettings(patch: { name?: string; notify?: { permission?: boolean; idle?: boolean }; autoMode?: boolean }) {
     const res = await request("PATCH", "/__ocr/settings", patch);
     if (res.status === 200) setMsg(t("saved"));
+  }
+
+  /** P2-187: apply the drafted relay address in the main process (validated
+   * there) and adopt the returned resolution — never trust local state. */
+  async function saveRelay() {
+    if (!setRelayUrl) return;
+    try {
+      const res = await setRelayUrl(relayDraft);
+      setRelay(res);
+      setRelayDraft(res.url);
+      setMsg(res.ok ? t("saved") : t("relayInvalid"));
+    } catch {
+      setMsg(t("relayInvalid"));
+    }
+  }
+
+  /** P2-187: "use the local relay" — clears the stored setting (the env still
+   * wins when exported; the resolution returned by main says which origin). */
+  async function resetRelay() {
+    if (!setRelayUrl) return;
+    try {
+      const res = await setRelayUrl(null);
+      setRelay(res);
+      setRelayDraft(res.url);
+      setMsg(t("saved"));
+    } catch {
+      setMsg(t("relayInvalid"));
+    }
   }
 
   async function saveMcp(name: string, config?: Partial<McpServer>, remove = false) {
@@ -291,6 +350,52 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
             <button className="pair-remote-entry" onClick={onPairRemote}>
               {t("pairRemoteAction")}
             </button>
+          </div>
+        )}
+
+        {/* P2-187: phone relay address — desktop shell only (the PWA pairs */}
+        {/* with the machine it is served by; the ceremony lives in the shell). */}
+        {getRelaySetting && setRelayUrl && relay && (
+          <div className="card relay-setting">
+            <h3>{t("relayTitle")}</h3>
+            <p className="muted" style={{ margin: "0 0 6px" }}>
+              {t("relayHint")}
+            </p>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input
+                style={{ flex: 1 }}
+                value={relayDraft}
+                readOnly={relay.origin === "env"}
+                onChange={(e) => setRelayDraft(e.target.value)}
+                placeholder="wss://relay.example.com:8788"
+                aria-label={t("relayTitle")}
+                spellCheck={false}
+              />
+              {relay.origin !== "env" && (
+                <button className="primary" onClick={() => void saveRelay()}>
+                  {t("relaySave")}
+                </button>
+              )}
+            </div>
+            {relay.problems.length > 0 && (
+              <p className="muted" style={{ margin: "6px 0 0", color: "var(--danger)" }}>
+                {t("relayInvalid")}
+              </p>
+            )}
+            <p className="muted" style={{ margin: "6px 0 0" }}>
+              {relay.origin === "env"
+                ? t("relayOriginEnv")
+                : relay.origin === "stored"
+                  ? t("relayOriginStored")
+                  : relay.origin === "stored-invalid"
+                    ? t("relayOriginInvalid")
+                    : t("relayOriginDefault")}
+            </p>
+            {(relay.origin === "stored" || relay.origin === "stored-invalid") && (
+              <button style={{ marginTop: 6 }} onClick={() => void resetRelay()}>
+                {t("relayReset")}
+              </button>
+            )}
           </div>
         )}
 

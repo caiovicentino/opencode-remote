@@ -11,6 +11,7 @@ import { log, logError } from "./desktop-log";
 import { teeSidecarChunk } from "./sidecar-log";
 import { classifySidecarExit, type SidecarExitVerdict } from "./sidecarexit";
 import { candidatePorts, pickDaemonPort, type DaemonPortReason } from "./daemonport";
+import { DEFAULT_RELAY_URL } from "./relaysetting";
 
 // Single source of truth for the daemon API port: the desktop polls the exact
 // port the spawned child binds. OCR_DAEMON_METRICS_PORT is the desktop-facing
@@ -468,6 +469,24 @@ export async function startDaemonSidecar(
   return true;
 }
 
+// --- P2-187: phone relay address handed to every sidecar spawn ---------------
+
+// The daemon sidecar dials the relay whose address arrives in its RELAY_URL
+// env. It used to be unset, so the daemon fell back to its own loopback
+// default and the remote-pairing QR pointed the phone at the Mac itself. The
+// address is resolved once per change (env > stored > default, see
+// relaysetting.ts) and applied to ALL spawn paths — initial start, backoff
+// respawns and restartDaemon — because they all funnel through spawnChild.
+// Validated by the relayurl.ts preflight at daemon boot; this value only
+// decides what the daemon is TOLD to dial.
+let relayUrlForSpawn = DEFAULT_RELAY_URL;
+
+/** Apply a new relay address for every future sidecar spawn (initial start,
+ * respawns and manual restarts). Callers pass an already-resolved URL. */
+export function setSidecarRelayUrl(url: string): void {
+  relayUrlForSpawn = url;
+}
+
 /** Spawn + wire one daemon child (used by the initial start and by respawns). */
 function spawnChild(entry: DaemonEntry): void {
   // We're taking over with our own child again: the adopted-daemon watchdog
@@ -482,6 +501,10 @@ function spawnChild(entry: DaemonEntry): void {
       ELECTRON_RUN_AS_NODE: "1",
       // Must match the port waitForDaemonHealth() polls (single source above).
       OCR_METRICS_PORT: String(activeDaemonPort()),
+      // P2-187: the phone relay address (env > stored > default) so the
+      // pairing QR no longer points at this machine's own loopback by
+      // default. Validated again by the daemon's own boot preflight.
+      RELAY_URL: relayUrlForSpawn,
     },
     // stdout is piped (not inherited) so we can capture the boot pairing URI;
     // each chunk is forwarded to our own stdout, preserving the old behavior.
