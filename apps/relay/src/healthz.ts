@@ -11,7 +11,9 @@ import {
   WEB_ENCODING_CACHE_MAX_BYTES,
   WEB_ENCODING_CACHE_MAX_ENTRIES,
   type WebEncodingDecision,
+  type WebContentEncoding,
 } from "./webencoding.js";
+import { conditionalVerdict, etagFor } from "./webcond.js";
 
 /**
  * GET /healthz — public, unauthenticated liveness probe for the hosted
@@ -66,6 +68,20 @@ import {
  * vary — a load balancer reading the probe must not change behavior because
  * of this. The relay stays blind: only public static assets from the
  * allowlisted root pass through here, never a sealed frame.
+ *
+ * P2-200: every 200 of the static route — compressed or identity — carries a
+ * strong etag derived from the same stat the encoding decision already took
+ * (size + mtime, no extra disk access) plus the chosen encoding, so the
+ * gzip and identity validators differ and a shared cache can never serve
+ * compressed bytes to a client that asked for identity. A request whose
+ * if-none-match matches — list, whitespace-tolerated, wildcard `*`, weak
+ * comparison per webcond.ts — is answered 304 with no body, carrying the
+ * etag, cache-control, vary and the P2-192 security headers but never
+ * content-encoding, content-length or content-type, and the file is not read
+ * or compressed at all. The per-identity budget (P2-195) is still charged
+ * before the conditional decision — a cheap 304 is still a request — and the
+ * 404/405 answers and the /healthz body stay byte-for-byte as they were: no
+ * validator, no conditional handling.
  */
 
 export interface HealthzState {
@@ -172,6 +188,10 @@ function planEncoding(
  * P2-192 header set passes through untouched. HEAD is answered with the same
  * headers and no body (Node suppresses the body of a HEAD response). Any
  * failure reading or compressing falls back to the identity path below.
+ * P2-200: every 200 carries a strong etag (encoding-derived, so the two
+ * variants never share one), and an if-none-match that revalidates is
+ * answered 304 first — validators and metadata only, no read, no
+ * compression, no body.
  */
 function sendDoc(web: WebStatic, abs: string, req: IncomingMessage, res: ServerResponse): void {
   const headers = {
@@ -185,6 +205,30 @@ function sendDoc(web: WebStatic, abs: string, req: IncomingMessage, res: ServerR
     ...securityHeaders(web.isTls(req), web.csp),
   };
   const plan = planEncoding(abs, req);
+  // P2-200: the strong validator derives from the same stat the encoding
+  // decision already took (zero extra disk access) plus the chosen encoding
+  // — gzip and identity validators differ, so a shared cache can never serve
+  // compressed bytes to a client that asked for identity. A failed stat
+  // leaves nothing to derive a validator from: no etag, no conditional path.
+  const validator = (encoding: WebContentEncoding): Record<string, string> => {
+    if (plan.sizeBytes < 0) return {};
+    return { etag: etagFor(plan.sizeBytes, plan.mtimeMs, encoding) };
+  };
+  const current = validator(plan.decision.encoding).etag;
+  // revalidation first (P2-200): a 304 carries no body, so the file is not
+  // read nor compressed. The per-identity budget (P2-195) was already charged
+  // by the caller — a cheap 304 is still a request.
+  if (current && conditionalVerdict(req.headers["if-none-match"], current) === "not-modified") {
+    const notModified: Record<string, string> = {
+      etag: current,
+      "cache-control": headers["cache-control"],
+      ...securityHeaders(web.isTls(req), web.csp),
+    };
+    if (plan.decision.vary) notModified["vary"] = "Accept-Encoding";
+    res.writeHead(304, notModified);
+    res.end();
+    return;
+  }
   if (plan.decision.encoding === "gzip") {
     try {
       const body = WEB_ENCODING_CACHE.getOrCompute(
@@ -193,6 +237,7 @@ function sendDoc(web: WebStatic, abs: string, req: IncomingMessage, res: ServerR
       );
       res.writeHead(200, {
         ...headers,
+        ...validator("gzip"),
         "content-encoding": "gzip",
         vary: "Accept-Encoding",
         "content-length": String(body.length),
@@ -201,12 +246,25 @@ function sendDoc(web: WebStatic, abs: string, req: IncomingMessage, res: ServerR
       return;
     } catch {
       // the file vanished between isFile() and the read, or compression
-      // failed: fall through to the identity path, which streams as before
+      // failed: the identity sender below answers instead — carrying the
+      // identity validator, so a revalidation of these bytes matches (P2-200)
+      res.writeHead(200, {
+        ...headers,
+        ...validator("identity"),
+        vary: "Accept-Encoding",
+      });
+      web.send(abs, req, res);
+      return;
     }
   }
-  // identity variant: same headers as before (byte for byte) plus vary so a
-  // shared cache never mixes this variant with the gzip one (P2-198)
-  res.writeHead(200, plan.decision.vary ? { ...headers, vary: "Accept-Encoding" } : headers);
+  // identity variant: the pre-P2-198 headers byte for byte, plus the vary
+  // so a shared cache never mixes this variant with the gzip one (P2-198),
+  // plus the strong validator (P2-200)
+  res.writeHead(200, {
+    ...headers,
+    ...validator("identity"),
+    ...(plan.decision.vary ? { vary: "Accept-Encoding" } : {}),
+  });
   web.send(abs, req, res);
 }
 

@@ -6,7 +6,7 @@
  */
 import { createServer, get, type IncomingMessage, type Server } from "node:http";
 import net from "node:net";
-import { createReadStream, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { gunzipSync } from "node:zlib";
@@ -42,6 +42,7 @@ import {
   WEB_ENCODING_MAX_BYTES,
   WEB_ENCODING_MIN_BYTES,
 } from "../apps/relay/src/webencoding";
+import { conditionalVerdict, etagFor } from "../apps/relay/src/webcond";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -1258,6 +1259,180 @@ check("encoding cache: the key binds path, size and mtime together", (() => {
   );
 
   gzipServer.close();
+  rmSync(root, { recursive: true, force: true });
+}
+
+// --- 26. conditional validators (P2-200, pure decisions) -------------------------
+const CURRENT = etagFor(2760, 1_700_000_000_000, "gzip");
+check("etag: the validator is a quoted strong entity tag", CURRENT.startsWith('"') && CURRENT.endsWith('"') && !CURRENT.startsWith("W/"));
+check("etag: the opaque value is 16 lowercase hex digits", /^"[0-9a-f]{16}"$/.test(CURRENT));
+check("etag: stable across repeated calls for the same input", etagFor(2760, 1_700_000_000_000, "gzip") === CURRENT);
+check("etag: differs between gzip and identity for the same file", etagFor(2760, 1_700_000_000_000, "gzip") !== etagFor(2760, 1_700_000_000_000, "identity"));
+check("etag: differs when the size changes", etagFor(2760, 1_700_000_000_000, "gzip") !== etagFor(2761, 1_700_000_000_000, "gzip"));
+check("etag: differs when the mtime changes", etagFor(2760, 1_700_000_000_000, "gzip") !== etagFor(2760, 1_700_000_000_001, "gzip"));
+
+check("cond: a missing header sends", conditionalVerdict(undefined, CURRENT) === "send");
+check("cond: a non-string header sends", conditionalVerdict(42, CURRENT) === "send");
+check("cond: an empty header sends", conditionalVerdict("", CURRENT) === "send");
+check("cond: a whitespace-only header sends", conditionalVerdict("   ", CURRENT) === "send");
+check("cond: the current validator revalidates", conditionalVerdict(CURRENT, CURRENT) === "not-modified");
+check("cond: surrounding whitespace is ignored", conditionalVerdict(`  ${CURRENT}  `, CURRENT) === "not-modified");
+check("cond: the weak form revalidates (weak comparison)", conditionalVerdict(`W/${CURRENT}`, CURRENT) === "not-modified");
+check("cond: the wildcard revalidates", conditionalVerdict("*", CURRENT) === "not-modified");
+check("cond: a padded wildcard revalidates", conditionalVerdict(" * ", CURRENT) === "not-modified");
+check("cond: an unknown validator sends", conditionalVerdict('"nope-0000"', CURRENT) === "send");
+check("cond: a list revalidates when one element matches (last)", conditionalVerdict(`"nope-0000", ${CURRENT}`, CURRENT) === "not-modified");
+check("cond: a list revalidates when one element matches (first)", conditionalVerdict(`${CURRENT} , "nope-0000"`, CURRENT) === "not-modified");
+check("cond: a list without a match sends", conditionalVerdict('"nope-0000", "other-1111"', CURRENT) === "send");
+check("cond: a malformed element never matches", conditionalVerdict("W/", CURRENT) === "send");
+check("cond: a comma-only header sends", conditionalVerdict(",,", CURRENT) === "send");
+check("cond: an unterminated quote is just a non-match (send)", conditionalVerdict('"unterminated', CURRENT) === "send");
+
+// --- 27. conditional static route over real HTTP (P2-200) -------------------------
+{
+  const root = mkdtempSync(join(tmpdir(), "relay-webcond-"));
+  const bigJs = 'console.log("bundle");\n'.repeat(120); // 2760 bytes, in range
+  const indexHtml = `<html>${"x".repeat(1200)}</html>`; // 1213 bytes, in range
+  writeFileSync(join(root, "app.js"), bigJs);
+  writeFileSync(join(root, "index.html"), indexHtml);
+  writeFileSync(join(root, "tiny.js"), "console.log(1)\n"); // below the gzip floor, identity only
+
+  const condServer: Server = createServer(
+    healthzHandler(state, () => false, {
+      root,
+      isFile: (abs) => {
+        try {
+          return statSync(abs).isFile();
+        } catch {
+          return false;
+        }
+      },
+      send: (abs, req, res) => {
+        if (req.method === "HEAD") {
+          res.end();
+          return;
+        }
+        createReadStream(abs).pipe(res);
+      },
+      csp: WEB_CSP_DEFAULT,
+      isTls: () => false,
+    }),
+  );
+  await new Promise<void>((r) => condServer.listen(0, "127.0.0.1", r));
+  const cPort = (condServer.address() as { port: number }).port;
+  const condRequest = (path: string, reqHeaders: Record<string, string> = {}, method = "GET") =>
+    new Promise<{ status: number; headers: Record<string, string | string[] | undefined>; body: Buffer }>((resolve) => {
+      const req = get(`http://127.0.0.1:${cPort}${path}`, { method, headers: reqHeaders }, (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () =>
+          resolve({ status: res.statusCode ?? 0, headers: res.headers, body: Buffer.concat(chunks) }),
+        );
+      });
+      req.end();
+    });
+
+  const first = await condRequest("/app.js", { "accept-encoding": "gzip" });
+  const gzEtag = first.headers.etag;
+  check("cond http: the first GET answers 200 with an etag present", first.status === 200 && typeof gzEtag === "string" && gzEtag.length > 0);
+  check("cond http: the 200 gzip variant is otherwise the P2-198 response", first.headers["content-encoding"] === "gzip" && first.headers["vary"] === "Accept-Encoding");
+
+  const revalidate = await condRequest("/app.js", { "accept-encoding": "gzip", "if-none-match": gzEtag! });
+  check("cond http: a matching if-none-match answers 304", revalidate.status === 304);
+  check("cond http: the 304 has no body at all", revalidate.body.length === 0);
+  check("cond http: the 304 carries the validator", revalidate.headers.etag === gzEtag);
+  check("cond http: the 304 carries cache-control", revalidate.headers["cache-control"] === "no-store");
+  check("cond http: the 304 carries vary", revalidate.headers["vary"] === "Accept-Encoding");
+  check(
+    "cond http: the 304 carries every P2-192 security header",
+    ALWAYS_ON_SECURITY_HEADERS.every((k) => revalidate.headers[k] !== undefined) &&
+      revalidate.headers["x-content-type-options"] === undefined,
+  );
+  check(
+    "cond http: the 304 never carries content-encoding, content-length nor content-type",
+    revalidate.headers["content-encoding"] === undefined &&
+      revalidate.headers["content-length"] === undefined &&
+      revalidate.headers["content-type"] === undefined,
+  );
+
+  const identity = await condRequest("/app.js");
+  const idEtag = identity.headers.etag;
+  check("cond http: the identity variant answers 200 with its own etag", identity.status === 200 && identity.headers["content-encoding"] === undefined && typeof idEtag === "string");
+  check("cond http: the gzip etag differs from the identity etag", gzEtag !== idEtag);
+  check("cond http: the identity 200 keeps the P2-198 vary", identity.headers["vary"] === "Accept-Encoding");
+
+  const crossVariant = await condRequest("/app.js", { "accept-encoding": "gzip", "if-none-match": idEtag! });
+  check(
+    "cond http: an identity etag on a gzip-negotiated request is a mismatch — 200 with a body",
+    crossVariant.status === 200 &&
+      crossVariant.headers["content-encoding"] === "gzip" &&
+      crossVariant.body.length > 0 &&
+      crossVariant.headers.etag === gzEtag,
+  );
+
+  const wildcard = await condRequest("/app.js", { "if-none-match": "*" });
+  check("cond http: the wildcard answers 304", wildcard.status === 304 && wildcard.body.length === 0);
+
+  const unknown = await condRequest("/app.js", { "accept-encoding": "gzip", "if-none-match": '"totally-unknown"' });
+  check("cond http: an unknown validator answers 200 with a body", unknown.status === 200 && gunzipSync(unknown.body).toString() === bigJs && unknown.headers.etag === gzEtag);
+
+  const weak = await condRequest("/app.js", { "accept-encoding": "gzip", "if-none-match": `W/${gzEtag}` });
+  check("cond http: a weak validator matches the strong one (304)", weak.status === 304 && weak.body.length === 0);
+
+  const list = await condRequest("/app.js", { "accept-encoding": "gzip", "if-none-match": ` "nope-1" ,\t${gzEtag} , "nope-2" ` });
+  check("cond http: a list matches when one element matches, whitespace ignored", list.status === 304 && list.body.length === 0);
+
+  const malformed = await condRequest("/app.js", { "if-none-match": "W/" });
+  check("cond http: a malformed header answers 200 with a body", malformed.status === 200 && malformed.body.length > 0);
+  const malformed2 = await condRequest("/app.js", { "if-none-match": ",,," });
+  check("cond http: a comma-only header answers 200 with a body", malformed2.status === 200 && malformed2.body.length > 0);
+
+  const tiny = await condRequest("/tiny.js");
+  check("cond http: a never-compressed asset carries an identity etag too", tiny.status === 200 && typeof tiny.headers.etag === "string" && tiny.headers.vary === undefined);
+  const tinyRevalidate = await condRequest("/tiny.js", { "if-none-match": tiny.headers.etag! });
+  check(
+    "cond http: the tiny asset revalidates without vary (no variants, like its 200)",
+    tinyRevalidate.status === 304 &&
+      tinyRevalidate.headers.vary === undefined &&
+      tinyRevalidate.headers["content-type"] === undefined,
+  );
+
+  // the entry document participates the same way (SPA fallback)
+  const spa = await condRequest("/pair", { "accept-encoding": "gzip" });
+  check("cond http: the SPA fallback answers 200 with an etag", spa.status === 200 && typeof spa.headers.etag === "string");
+  const spaRevalidate = await condRequest("/pair", { "accept-encoding": "gzip", "if-none-match": spa.headers.etag! });
+  check(
+    "cond http: the SPA fallback revalidates with 304 + vary + security headers, no body",
+    spaRevalidate.status === 304 &&
+      spaRevalidate.body.length === 0 &&
+      spaRevalidate.headers.vary === "Accept-Encoding" &&
+      ALWAYS_ON_SECURITY_HEADERS.every((k) => spaRevalidate.headers[k] !== undefined),
+  );
+
+  // a rewritten file (new stat) invalidates the stored validator
+  writeFileSync(join(root, "app.js"), bigJs + "// rebuilt\n");
+  utimesSync(join(root, "app.js"), new Date(1_500_000_000_000), new Date(1_500_000_000_000));
+  const rebuilt = await condRequest("/app.js", { "accept-encoding": "gzip", "if-none-match": gzEtag! });
+  check(
+    "cond http: a rewritten file sends instead of 304 and carries a different etag",
+    rebuilt.status === 200 && rebuilt.body.length > 0 && typeof rebuilt.headers.etag === "string" && rebuilt.headers.etag !== gzEtag,
+  );
+
+  // 404, 405 and the probe are untouched by conditionals
+  const missing = await condRequest("/missing.js", { "if-none-match": "*" });
+  check("cond http: 404 is unchanged — no etag, no conditional handling", missing.status === 404 && missing.headers.etag === undefined && missing.body.length === 0);
+  const notAllowed = await condRequest("/", { "if-none-match": "*" }, "POST");
+  check("cond http: 405 is unchanged", notAllowed.status === 405 && notAllowed.headers.etag === undefined);
+  const probe = await condRequest("/healthz", { "if-none-match": "*" });
+  check(
+    "cond http: /healthz stays byte-for-byte — no etag, same JSON body",
+    probe.status === 200 &&
+      probe.headers.etag === undefined &&
+      probe.body.toString() ===
+        `{"ok":true,"version":"0.2.0","uptimeS":${(JSON.parse(probe.body.toString()) as { uptimeS: number }).uptimeS},"rooms":7,"roomsRejected":2}`,
+  );
+
+  condServer.close();
   rmSync(root, { recursive: true, force: true });
 }
 

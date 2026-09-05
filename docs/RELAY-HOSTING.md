@@ -347,6 +347,39 @@ plaintext flows through it. The WebSocket path gains no compression on
 purpose: sealed frames are incompressible, and per-message deflate would only
 add CPU and memory per peer.
 
+### Conditional requests: etag and 304 (P2-200)
+
+A phone revalidating the app used to re-download the whole bundle on every
+reload of the entry document, which by contract cannot be cached immutably.
+The static route now speaks RFC 7232 conditional requests, decided by the
+pure `webcond.ts` module — no new dependency:
+
+- **Every 200 of the static route carries a strong `etag`**, compressed and
+  identity variants alike. The validator is derived from the same stat the
+  gzip negotiation already took (size + mtime, no extra disk access) plus the
+  chosen encoding — so **the gzip and identity validators always differ** and
+  a shared cache can never serve compressed bytes to a client that asked for
+  identity. The same size, mtime and encoding always produce the same tag,
+  across process restarts too.
+- **A request whose `if-none-match` revalidates is answered `304` with no
+  body**: the file is not read, not compressed, not touched. The 304 carries
+  the etag, `cache-control`, `vary: accept-encoding` (whenever the
+  corresponding 200 would carry it) and every P2-192 security header — and
+  never `content-encoding`, `content-length` or `content-type`.
+- **The `if-none-match` comparison is lenient on structure, strict on
+  match**: comma-separated lists are honored (a match by any element
+  revalidates), whitespace and extra commas are ignored, the `*` wildcard
+  revalidates, the weak `W/` prefix is ignored in the comparison, and a
+  missing, empty or malformed header simply sends the body — a conditional
+  may only ever make the answer cheaper, never change the answer.
+- **The 404, 405 and `/healthz` answers stay byte-for-byte what they were**:
+  no validator, no conditional handling. A load balancer reading the probe
+  sees nothing new. The per-identity request budget above is still charged
+  before the conditional decision — a cheap 304 is still a request.
+- **The relay stays blind**: only public static assets from the allowlisted
+  web root participate in this path — no plaintext, no keys, no room ids,
+  and no sealed frame is ever cached or validated.
+
 ## Behind a proxy: `x-forwarded-for` and the per-IP cap
 
 `x-forwarded-for` is forgeable by any client, so the relay ignores it by

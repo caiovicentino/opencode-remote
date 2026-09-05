@@ -568,8 +568,19 @@ headers mean identity, the `*` wildcard counts as gzip), both variants carry
 at 64 entries / 32 MiB (keyed by path + size + mtime, oldest discarded), and
 `png`/`jpg`/`webp`/`ico`/`woff2` plus every body outside the size range stay
 uncompressed — while the 404/405 answers and the `/healthz` probe remain
-byte-for-byte as they were. The relay stays a blind router: no
-plaintext, no keys, no room ids in any of it.
+byte-for-byte as they were. Conditional requests close the loop (P2-200):
+every 200 of the static route carries a strong `ETag` derived from the
+negotiation's own stat plus the encoding — so the gzip and identity
+validators always differ and a shared cache never serves compressed bytes to
+an identity client — and a matching `If-None-Match` (list, wildcard `*`,
+weak `W/` prefix ignored, malformed header means send) is answered `304`
+with no body and no disk read, carrying the etag, `Cache-Control`,
+`Vary: Accept-Encoding` and the P2-192 security headers but never
+`Content-Encoding`/`Content-Length`/`Content-Type`; 404/405 and `/healthz`
+keep byte-for-byte behavior and the request budget is still charged before
+the conditional decision. The relay stays a blind router: no
+plaintext, no keys, no room ids in any of it — only public static assets
+from the allowlisted web root are ever cached or revalidated.
 
 **Close-code-aware relay retries (P2-156)**: when the relay socket closes, the
 daemon classifies the close code instead of treating every drop as a network
