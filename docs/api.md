@@ -173,6 +173,30 @@ elapsed), never a guarantee; `effortMin` is wall-clock agent time. The desktop
 app renders this feed in the **Mission Control** pane (⌘6); agents can reuse
 the same endpoints via the SDK/curl.
 
+## Request body limit (P2-180)
+
+Every JSON request body on the daemon's `/api/*` routes is capped at
+**1,000,000 bytes (1 MB) of real UTF-8 bytes** by default. A larger body is
+refused the moment the limit is crossed — the bytes never finish buffering in
+memory — with:
+
+```
+HTTP/1.1 413
+{"error": "request body too large (1MB limit)"}
+```
+
+The refusal is logged with the route and the refused size only — never body
+content, token or session ids.
+
+The ceiling is configurable with the `OCR_MAX_BODY_BYTES` environment variable
+(whole number of bytes, up to a documented maximum of 100,000,000). A missing
+or blank value keeps the 1 MB default. **The boot is fail-closed:** a
+non-numeric, negative, zero, fractional or above-ceiling value does NOT fall
+back to the default — the daemon logs one error line per problem and exits
+with code 1 without opening any listener. Fix the variable and start again.
+(File uploads are unaffected: `/__ocr/upload/*` streams with its own separate
+`OCR_UPLOAD_MAX_MB` cap and never reads through the JSON body path.)
+
 ## SDK (TypeScript/JS)
 
 ```js

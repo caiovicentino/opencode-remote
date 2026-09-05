@@ -21,6 +21,15 @@ import { nodeStateFileFs, writeStateAtomic, type StateFileFs } from "../apps/dae
 import { appendAudit, readAuditTail, nodeAuditLogFs, AUDIT_CAP_BYTES, type AuditLogFs } from "../apps/daemon/src/auditlog";
 
 import { parseRelayUrl, redactRelayUrl } from "../apps/daemon/src/relayurl";
+import {
+  bodyLimit,
+  isBodyLimitError,
+  MAX_JSON_BODY_BYTES,
+  MAX_JSON_BODY_CEILING_BYTES,
+  overLimit,
+  readLimitedBody,
+  type LimitedBodyReader,
+} from "../apps/daemon/src/bodylimit";
 
 import { classifyUpstream, UPSTREAM_PROBE_TIMEOUT_MS } from "../apps/daemon/src/upstream";
 
@@ -9368,6 +9377,180 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P2-161: zero/invalid bound port → no rewrite",
     zero.rewritten === false && negative.rewritten === false && nan.rewritten === false && huge.rewritten === false && zero.reason === "invalid-port" && zero.body === feed(8792),
+  );
+}
+
+// --- P2-180: JSON request-body ceiling (bodylimit.ts) --------------------------
+{
+  // fake reader: synchronous emit surface so tests drive data/end/error by hand
+  const makeReader = () => {
+    const listeners = new Map<string, ((...args: unknown[]) => void)[]>();
+    const on = (event: string, listener: (...args: unknown[]) => void) => {
+      const arr = listeners.get(event) ?? [];
+      arr.push(listener);
+      listeners.set(event, arr);
+      return undefined;
+    };
+    const emit = (event: string, ...args: unknown[]) => {
+      for (const cb of listeners.get(event) ?? []) cb(...args);
+    };
+    return { on, emit } as LimitedBodyReader & { emit(event: string, ...args: unknown[]): void };
+  };
+
+  // -- bodyLimit: env matrix ---------------------------------------------------
+  const empty = bodyLimit({});
+  check(
+    "P2-180: missing env keeps the 1MB default with no problem",
+    empty.limit === MAX_JSON_BODY_BYTES && MAX_JSON_BODY_BYTES === 1_000_000 && empty.problems.length === 0,
+  );
+  const blank = bodyLimit({ OCR_MAX_BODY_BYTES: "   " });
+  check(
+    "P2-180: blank env keeps the default with no problem",
+    blank.limit === MAX_JSON_BODY_BYTES && blank.problems.length === 0,
+  );
+  const valid = bodyLimit({ OCR_MAX_BODY_BYTES: "2000000" });
+  check(
+    "P2-180: valid value resolves to the requested ceiling",
+    valid.limit === 2_000_000 && valid.problems.length === 0,
+  );
+  const nonNumeric = bodyLimit({ OCR_MAX_BODY_BYTES: "abc" });
+  check(
+    "P2-180: non-numeric value is a problem",
+    nonNumeric.problems.length === 1 && nonNumeric.problems[0]!.includes("OCR_MAX_BODY_BYTES"),
+  );
+  const negative = bodyLimit({ OCR_MAX_BODY_BYTES: "-1" });
+  check("P2-180: negative value is a problem", negative.problems.length === 1);
+  const zeroVal = bodyLimit({ OCR_MAX_BODY_BYTES: "0" });
+  check("P2-180: zero is a problem", zeroVal.problems.length === 1);
+  const fractional = bodyLimit({ OCR_MAX_BODY_BYTES: "1.5" });
+  check("P2-180: fractional value is a problem", fractional.problems.length === 1);
+  const aboveCeiling = bodyLimit({ OCR_MAX_BODY_BYTES: String(MAX_JSON_BODY_CEILING_BYTES + 1) });
+  check("P2-180: above the documented ceiling is a problem", aboveCeiling.problems.length === 1);
+  const atCeiling = bodyLimit({ OCR_MAX_BODY_BYTES: String(MAX_JSON_BODY_CEILING_BYTES) });
+  check(
+    "P2-180: exactly at the documented ceiling is accepted",
+    atCeiling.limit === MAX_JSON_BODY_CEILING_BYTES && atCeiling.problems.length === 0,
+  );
+
+  // -- overLimit matrix ----------------------------------------------------------
+  check(
+    "P2-180: overLimit is strict — exactly at the limit fits, one byte over aborts",
+    overLimit(MAX_JSON_BODY_BYTES, MAX_JSON_BODY_BYTES) === false &&
+      overLimit(MAX_JSON_BODY_BYTES + 1, MAX_JSON_BODY_BYTES) === true &&
+      overLimit(0, MAX_JSON_BODY_BYTES) === false,
+  );
+
+  // -- readLimitedBody with a fake reader ----------------------------------------
+  await (async () => {
+    const whole = makeReader();
+    const wholeP = readLimitedBody(whole, 100);
+    whole.emit("data", "hello ");
+    whole.emit("data", Buffer.from("world", "utf8"));
+    whole.emit("end");
+    check("P2-180: within-limit body resolves whole (string + Buffer chunks)", (await wholeP) === "hello world");
+
+    // multi-chunk body summed in BYTES, not characters: "áé" is 4 utf-8 bytes,
+    // "í" is 2 — 6 bytes total crosses a 5-byte limit, 3 chars would not
+    const bytewise = makeReader();
+    const bytewiseP = readLimitedBody(bytewise, 5);
+    bytewise.emit("data", "áé");
+    bytewise.emit("data", "í");
+    const bytewiseErr = await bytewiseP.then(
+      () => null,
+      (e) => e,
+    );
+    check(
+      "P2-180: chunks are summed in bytes, not characters (6 bytes > 5 limit rejects)",
+      isBodyLimitError(bytewiseErr) && bytewiseErr.bytes === 6 && bytewiseErr.limit === 5,
+    );
+
+    const multiOk = makeReader();
+    const multiOkP = readLimitedBody(multiOk, 6);
+    multiOk.emit("data", "áé");
+    multiOk.emit("data", "í");
+    multiOk.emit("end");
+    check("P2-180: 6 utf-8 bytes at a 6 limit resolves intact", (await multiOkP) === "áéí");
+
+    // a multi-byte char SPLIT across Buffer chunks survives (Buffer concat,
+    // never string-append of raw chunks)
+    const split = makeReader();
+    const splitP = readLimitedBody(split, 10);
+    const wholeChar = Buffer.from("á", "utf8");
+    split.emit("data", wholeChar.subarray(0, 1));
+    split.emit("data", wholeChar.subarray(1));
+    split.emit("end");
+    check("P2-180: a multi-byte char split across Buffer chunks resolves intact", (await splitP) === "á");
+
+    // accumulation stops at the moment of refusal: chunks pushed after the
+    // abort are never counted, and a later end cannot flip reject → resolve
+    const stop = makeReader();
+    const stopP = readLimitedBody(stop, 5);
+    let stopSettled = false;
+    let stopErr: unknown;
+    let stopBody: string | undefined;
+    stopP.then(
+      (t) => {
+        stopSettled = true;
+        stopBody = t;
+      },
+      (e) => {
+        stopSettled = true;
+        stopErr = e;
+      },
+    );
+    stop.emit("data", "áá"); // 4 bytes — fits
+    stop.emit("data", "í"); // 6 > 5 → aborts here with bytes=6
+    stop.emit("data", "!!!!!"); // post-abort: must be ignored
+    stop.emit("end"); // post-abort: must not resolve
+    await Promise.resolve();
+    check(
+      "P2-180: accumulation stops at the refusal point (later chunks ignored, still rejected)",
+      stopSettled && isBodyLimitError(stopErr) && stopErr.bytes === 6 && stopBody === undefined,
+    );
+
+    const over = makeReader();
+    const overP = readLimitedBody(over, MAX_JSON_BODY_BYTES);
+    over.emit("data", Buffer.alloc(MAX_JSON_BODY_BYTES + 1, 0x61));
+    const overErr = await overP.then(
+      () => null,
+      (e) => e,
+    );
+    check(
+      "P2-180: body above the default limit rejects with the recognizable limit error",
+      isBodyLimitError(overErr) && overErr.bytes === MAX_JSON_BODY_BYTES + 1,
+    );
+
+    const boom = makeReader();
+    const boomP = readLimitedBody(boom, 100);
+    boom.emit("data", "partial");
+    boom.emit("error", new Error("boom"));
+    const boomErr = await boomP.then(
+      (t) => t,
+      (e) => e,
+    );
+    check(
+      "P2-180: reader error propagates instead of resolving an empty/partial body",
+      boomErr instanceof Error && boomErr.message === "boom",
+    );
+  })();
+
+  // -- the real index.ts: upload route stays out of readBody ----------------------
+  const daemonSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  const uploadAt = daemonSrc.indexOf("/__ocr/upload/complete");
+  const uploadEnd = daemonSrc.indexOf("resolve image attachments", uploadAt);
+  const uploadSlice = uploadAt >= 0 && uploadEnd > uploadAt ? daemonSrc.slice(uploadAt, uploadEnd) : "";
+  check(
+    "P2-180: the upload route keeps its own OCR_UPLOAD_MAX_MB cap and never reads through readBody",
+    uploadSlice.includes("OCR_UPLOAD_MAX_MB") && !uploadSlice.includes("readBody("),
+  );
+  check(
+    "P2-180: readBody delegates to readLimitedBody with the boot-resolved ceiling",
+    daemonSrc.includes("return readLimitedBody(req, bodyLimitResolution.limit)"),
+  );
+  check(
+    "P2-180: boot is fail-closed — logs each problem and exits 1 before opening listeners",
+    /for \(const problem of bodyLimitResolution\.problems\) log\("error", problem\)/.test(daemonSrc) &&
+      /bodyLimitResolution\.problems\.length > 0[\s\S]{0,400}process\.exit\(1\)/.test(daemonSrc),
   );
 }
 
