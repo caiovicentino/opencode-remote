@@ -353,7 +353,14 @@ once, exit 1, no listener. The same discipline applies to the TLS pair
 (`RELAY_TLS_CERT` + `RELAY_TLS_KEY`): a mandatory pair, set both for direct
 `wss://` termination or neither to serve plain `ws://` behind a proxy that
 terminates TLS — one variable alone, a blank value, or an unreadable file
-refuses the boot (reason cites the variable, never the path). On `SIGTERM`
+refuses the boot (reason cites the variable, never the path). The tuning
+knobs (`RELAY_RATE_PER_MIN`, `RELAY_RATE_BURST`, `RELAY_MAX_PER_IP`,
+`RELAY_TRUST_PROXY_HOPS`, `RELAY_PING_INTERVAL_S`) get the same discipline
+(P2-171): a non-numeric, negative, fractional or zero value (zero stays valid
+only for the proxy hops) or a value above the knob's documented ceiling makes
+the relay refuse to boot — reasons logged once, exit 1, no listener — instead
+of silently falling back to the default; an absent or blank variable keeps the
+default. On `SIGTERM`
 the drain is visible to the load
 balancer (P2-145): `/healthz` answers `503` with `ok:false,draining:true`
 and WebSocket upgrades are refused while the drain runs, so the balancer

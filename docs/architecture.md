@@ -44,11 +44,11 @@ from a socket over that cap are dropped without disconnecting and counted in
 `rooms_rejected` on `/metrics` and `/healthz`; together with the per-socket
 cap this keeps the rooms map bounded against memory DoS on the public relay.
 Resource limits: 1MB/frame, 1000 sockets, 10 peers/room, a per-IP
-live-connection cap (`RELAY_MAX_PER_IP`, default 20, 0 disables — the
+live-connection cap (`RELAY_MAX_PER_IP`, default 20 — the
 surplus connection is closed with 1013 "too many connections" and counted
 in `rejects` on `/metrics`), and a per-connection
 token bucket on message frames (600 msgs/min sustained, burst 1000 —
-`RELAY_RATE_PER_MIN` / `RELAY_RATE_BURST`, 0 disables). The per-IP cap keys
+`RELAY_RATE_PER_MIN` / `RELAY_RATE_BURST`). The per-IP cap keys
 on a normalized address (`normalizeIp`): IPv4-mapped IPv6
 (`::ffff:a.b.c.d`) unmasks to the plain IPv4 and other IPv6 sources
 aggregate by their /64 prefix, so one dual-stack host gets one budget
@@ -62,12 +62,18 @@ point is the connection, not the handshake pub key — the key stays inside
 the sealed E2E handshake, invisible to the relay by design. The bucket
 resets on reconnect, so a device can trade a reconnect for a fresh budget;
 total abuse stays bounded by the 1000-socket cap. A ws-level liveness sweep
-(P2-067) pings every socket every `RELAY_PING_INTERVAL_S` (default 30,
-0 disables) and terminates peers silent for more than two cycles, so a
+(P2-067) pings every socket every `RELAY_PING_INTERVAL_S` (default 30)
+and terminates peers silent for more than two cycles, so a
 client that vanished without a close frame (phone lost wifi, laptop slept)
 no longer holds a socket slot or its per-IP budget until restart — rooms
 and IP slots release through the normal close path, and the sweep is
-counted in `stale_terminated` on `/metrics`. `GET /healthz` is the one
+counted in `stale_terminated` on `/metrics`. All five tuning knobs
+(`RELAY_RATE_PER_MIN`, `RELAY_RATE_BURST`, `RELAY_MAX_PER_IP`,
+`RELAY_TRUST_PROXY_HOPS`, `RELAY_PING_INTERVAL_S`) are
+validated fail-closed at boot (P2-171): a non-numeric, negative, fractional
+or zero value (zero is valid only for the proxy hops) or a value above the
+knob's documented ceiling refuses to start the relay instead of silently
+keeping the default. `GET /healthz` is the one
 public HTTP endpoint on the relay port — an unauthenticated liveness probe
 answering `{ok, version, uptimeS, rooms, roomsRejected}` (counters only,
 never room ids) for load balancers in the hosted stage; `/metrics` stays

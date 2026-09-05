@@ -12,6 +12,7 @@ import { createShutdown, refuseUpgrade, stopAccepting } from "./shutdown.js";
 import { decideStale } from "./liveness.js";
 import { metricsAuthOk, metricsBinding } from "./metricsbind.js";
 import { relayLimits } from "./limits.js";
+import { relayKnobs } from "./knobs.js";
 import { tlsPlan } from "./tlsconfig.js";
 
 /**
@@ -61,32 +62,22 @@ if (TLS.problems.length > 0) {
   }
   process.exit(1);
 }
-// per-connection rate limit on forwarded message frames (0 disables).
-// Defaults are sized to pass the daemon's worst-case chunked transfer
-// (MAX_CHUNKS = 512 frames, concurrent sessions interleaved on one socket)
-// while still capping runaway or flooding connections. There are no
-// exemptions: envelope metadata is client-controlled, so the only identity
-// the relay verifies is the connection itself.
-const RATE_PER_MIN = envNum("RELAY_RATE_PER_MIN", 600);
-const RATE_BURST = envNum("RELAY_RATE_BURST", 1000);
+// P2-171: the remaining tuning knobs — per-connection rate limit, per-IP cap,
+// trusted proxy hops and liveness sweep — resolve fail-closed like the P2-141
+// limits above: a typo, a negative, fractional or zero value (zero is
+// legitimate only for the proxy hops) or a value above the knob's documented
+// ceiling refuses the boot instead of silently serving with the default. An
+// empty env keeps the exact pre-P2-171 values (600/1000/20/0/30).
+const KNOBS = relayKnobs(process.env);
+if (KNOBS.problems.length > 0) {
+  for (const reason of KNOBS.problems) {
+    ev("warn", "invalid relay knob, refusing to start (fail-closed)", { reason });
+  }
+  process.exit(1);
+}
+const { ratePerMin: RATE_PER_MIN, rateBurst: RATE_BURST, maxPerIp: MAX_PER_IP, trustProxyHops: TRUST_PROXY_HOPS, pingIntervalS: PING_INTERVAL_S } = KNOBS;
 const RATE_LIMIT_CLOSE = 4029; // custom 4xxx: "too many frames"
-// live-connection cap per source IP (0 disables): the socket cap bounds the
-// pool, but one host could otherwise hold all of its slots and deny every
-// other peer admission
-const MAX_PER_IP = envNum("RELAY_MAX_PER_IP", 20);
 const ipCap = new IpCap(MAX_PER_IP);
-// x-forwarded-for is client-forgeable, so it is only honored when the
-// operator declares how many trusted proxy layers sit in front of the relay
-// (0 = direct exposure, header ignored). Behind provider TLS without this,
-// every connection would share the LB's IP and RELAY_MAX_PER_IP would
-// collapse into a global admission cap (P2-128).
-const TRUST_PROXY_HOPS = envNum("RELAY_TRUST_PROXY_HOPS", 0);
-// ws-level liveness sweep (P2-067): every interval the relay pings all
-// sockets and terminates the ones silent for more than interval+grace
-// (grace == interval), so a peer that vanished without a close frame
-// (phone lost wifi, laptop slept) stops holding a socket-cap slot and its
-// per-IP budget until restart. 0 disables the sweep entirely.
-const PING_INTERVAL_S = envNum("RELAY_PING_INTERVAL_S", 30);
 
 // root package.json (monorepo) — same single source the web PWA generates from
 const VERSION = (() => {
@@ -98,18 +89,6 @@ const VERSION = (() => {
     return "unknown";
   }
 })();
-
-/** Env number with validation: invalid values fall back loudly, never silently disable. */
-function envNum(name: string, dflt: number): number {
-  const raw = process.env[name];
-  if (raw === undefined || raw.trim() === "") return dflt;
-  const v = Number(raw);
-  if (!Number.isFinite(v) || v < 0) {
-    ev("warn", "invalid numeric env, using default", { env: name, default: dflt });
-    return dflt;
-  }
-  return v;
-}
 
 interface Socket extends WebSocket {
   id?: string;

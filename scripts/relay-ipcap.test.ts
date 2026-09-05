@@ -1,9 +1,9 @@
 /**
  * Per-IP live-connection cap tests (P2-025): pure IpCap behavior plus the
  * handler path against real relay subprocesses — a strict-env relay
- * rejecting connection cap+1 with 1013 "too many connections", a released
- * slot being reused by the next peer, and a RELAY_MAX_PER_IP=0 relay
- * proving the disabled cap never rejects.
+ * rejecting connection cap+1 with 1013 "too many connections" and a released
+ * slot being reused by the next peer. P2-171: a RELAY_MAX_PER_IP=0 relay
+ * proves the fail-closed boot refusal (zero no longer disables the cap).
  * P2-026: normalizeIp rotation immunity — mapped IPv4 unmasks to the plain
  * IPv4, IPv6 aggregates by /64, and the handler keys admit/release on the
  * normalized value.
@@ -226,19 +226,14 @@ s2!.close();
 reused?.close();
 strict.proc.kill("SIGTERM");
 
-// --- 5. RELAY_MAX_PER_IP=0: cap disabled, never rejects ------------------------
-const disabled = startRelay({ RELAY_MAX_PER_IP: "0" });
-await waitReady(disabled.port);
-const url = `ws://127.0.0.1:${disabled.port}`;
-const sockets = [await tryOpen(url), await tryOpen(url), await tryOpen(url)];
-check("relay: disabled cap admits any number of connections", sockets.every((s) => s !== null));
-const anyClosed = Promise.race([
-  ...sockets.map((s) => closeInfo(s!).then(() => true)),
-  sleep(700).then(() => false),
-]);
-check("relay: disabled cap never closes a connection", (await anyClosed) === false);
-for (const s of sockets) s?.close();
-disabled.proc.kill("SIGTERM");
+// --- 5. RELAY_MAX_PER_IP=0: fail-closed boot refusal (P2-171) -------------------
+// Zero used to disable the cap; since P2-171 a zero knob refuses the boot
+// instead of silently serving a public relay with admission control off.
+const refused = startRelay({ RELAY_MAX_PER_IP: "0" });
+const refusedExit = new Promise<number | null>((r) => refused.proc.on("exit", (c) => r(c)));
+check("relay: zero RELAY_MAX_PER_IP refuses the boot with exit 1 (fail-closed)", (await refusedExit) === 1);
+check("relay: refused boot never opens the listener", (await tryOpen(`ws://127.0.0.1:${refused.port}`)) === null);
+refused.proc.kill("SIGTERM");
 
 if (failures) process.exit(1);
 console.log("relay-ipcap: ALL OK");
