@@ -462,6 +462,11 @@ const reply = await ocr.sendAndWait(id, "explain the auth module");
 
 See [docs/api.md](docs/api.md).
 
+JSON request bodies are capped at 1 MB by default (`OCR_MAX_BODY_BYTES`, up to
+100 MB); oversized bodies answer `413`, and an invalid value makes the daemon
+refuse to boot instead of silently using the default — see
+[docs/api.md](docs/api.md#request-body-limit-p2-180).
+
 ## Architecture & security
 
 - [docs/architecture.md](docs/architecture.md) — tunnel, chunking, services

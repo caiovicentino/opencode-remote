@@ -66,6 +66,7 @@ import { localUpgradeAllowed } from "./localws.js";
 import { createRelayRetry } from "./relayretry.js";
 import { classifyRelayClose, effectiveRetryDelayMs, type RelayCloseKind } from "./relayclose.js";
 import { parseRelayUrl, redactRelayUrl } from "./relayurl.js";
+import { bodyLimit, isBodyLimitError, readLimitedBody, type BodyLimitError } from "./bodylimit.js";
 import {
   classifyUpstream,
   UPSTREAM_PROBE_TIMEOUT_MS,
@@ -103,6 +104,11 @@ const RELAY_URL = process.env.RELAY_URL ?? "ws://127.0.0.1:8787";
 // unaffected because it does not ride the relay.
 const relayUrl = parseRelayUrl(RELAY_URL);
 const relayDisabled = relayUrl.problems.length > 0;
+// P2-180: the JSON body ceiling is resolved exactly once at boot. Fail-closed
+// like the RELAY_URL preflight above: an invalid OCR_MAX_BODY_BYTES never
+// falls back to the default — main() logs one line per problem and exits 1
+// without opening any listener.
+const bodyLimitResolution = bodyLimit(process.env);
 const OPENCODE_URL = process.env.OPENCODE_URL ?? "http://127.0.0.1:4096";
 const OPENCODE_USER = process.env.OPENCODE_SERVER_USERNAME ?? "opencode";
 const OPENCODE_PASS = process.env.OPENCODE_SERVER_PASSWORD ?? "";
@@ -2106,12 +2112,39 @@ function apiToken(): string {
   return token;
 }
 
+// P2-180: readBody keeps its signature but now enforces the boot-resolved
+// byte ceiling via readLimitedBody — an oversized body rejects instead of
+// growing the heap until the process (and, packaged as stage 3, the whole
+// desktop window) dies.
 function readBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolve) => {
-    let body = "";
-    req.on("data", (c) => (body += c));
-    req.on("end", () => resolve(body));
+  return readLimitedBody(req, bodyLimitResolution.limit);
+}
+
+// P2-180: the single 413 path for every JSON route, in the same { error }
+// shape as every other response. The refusal log carries the route and the
+// refused size only — never body content, token or session ids.
+function refuseBody(res: ServerResponse, route: string, err: BodyLimitError): void {
+  log("warn", "request body refused — over the JSON body limit", {
+    route,
+    bytes: err.bytes,
+    limit: err.limit,
   });
+  res.writeHead(413, { "content-type": "application/json" });
+  res.end(JSON.stringify({ error: `request body too large (${err.limit / 1_000_000}MB limit)` }));
+}
+
+// JSON body + 413 on limit. Non-limit errors (JSON.parse syntax) rethrow so
+// each route keeps today's exact behavior for them.
+async function readJsonBody<T>(req: IncomingMessage, res: ServerResponse, route: string): Promise<T | null> {
+  try {
+    return JSON.parse((await readBody(req)) || "{}") as T;
+  } catch (err) {
+    if (isBodyLimitError(err)) {
+      refuseBody(res, route, err);
+      return null;
+    }
+    throw err;
+  }
 }
 
 function send401(res: ServerResponse) {
@@ -2356,7 +2389,12 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     }
     // /api/session…
     if (seg[1] === "mcp" && (req.method === "GET" || req.method === "PUT")) {
-      const body = req.method === "PUT" ? JSON.parse((await readBody(req)) || "{}") : undefined;
+      let body: unknown;
+      if (req.method === "PUT") {
+        const parsed = await readJsonBody<Record<string, unknown>>(req, res, "/api/mcp");
+        if (parsed === null) return true;
+        body = parsed;
+      }
       const r = await op(req.method, "/__ocr/mcp", body);
       send(r.status, r.body);
       return true;
@@ -2414,10 +2452,12 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     }
     // POST /api/pilot-budget — edit daily budgets from the dashboard
     if (seg[1] === "pilot-budget" && req.method === "POST") {
-      const body = JSON.parse((await readBody(req)) || "{}") as {
-        maxTasksPerDay?: number;
-        maxDeploysPerDay?: number;
-      };
+      const body = await readJsonBody<{ maxTasksPerDay?: number; maxDeploysPerDay?: number }>(
+        req,
+        res,
+        "/api/pilot-budget",
+      );
+      if (body === null) return true;
       const file = join(homedir(), ".opencode-remote", "pilot.json");
       try {
         const cfg = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
@@ -2436,7 +2476,8 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     // slots (1-8, clamped) + tier-B coordinator model (fable/opus/…). The
     // pilot hot-reloads pilot.json every scheduling cycle (refreshFleet).
     if (seg[1] === "pilot-fleet" && req.method === "POST") {
-      const body = JSON.parse((await readBody(req)) || "{}") as { slots?: number; coordinator?: string };
+      const body = await readJsonBody<{ slots?: number; coordinator?: string }>(req, res, "/api/pilot-fleet");
+      if (body === null) return true;
       const file = join(homedir(), ".opencode-remote", "pilot.json");
       try {
         const cfg = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
@@ -2463,7 +2504,8 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     }
     // POST /api/pilot-notify — wake the supervisor session after a pipeline result
     if (seg[1] === "pilot-notify" && req.method === "POST") {
-      const body = JSON.parse((await readBody(req)) || "{}") as { text?: string };
+      const body = await readJsonBody<{ text?: string }>(req, res, "/api/pilot-notify");
+      if (body === null) return true;
       let delivered = false;
       try {
         const sup = (
@@ -2490,7 +2532,8 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     if (seg[1] === "pilot-mission") {
       const file = join(homedir(), ".opencode-remote", "pilot.json");
       if (req.method === "POST") {
-        const body = JSON.parse((await readBody(req)) || "{}") as { mission?: string };
+        const body = await readJsonBody<{ mission?: string }>(req, res, "/api/pilot-mission");
+        if (body === null) return true;
         try {
           const cfg = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
           cfg.mission = String(body.mission ?? "").slice(0, 500);
@@ -2649,7 +2692,11 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       let body: { task?: string };
       try {
         body = JSON.parse((await readBody(req)) || "{}") as { task?: string };
-      } catch {
+      } catch (err) {
+        if (isBodyLimitError(err)) {
+          refuseBody(res, "/api/pilot-takeover", err);
+          return true;
+        }
         send(400, { error: "invalid body" });
         return true;
       }
@@ -2730,11 +2777,8 @@ end tell`;
     if (seg[1] !== "session") {
       // POST /api/push — authenticated digest push (used by the pilot loop)
       if (seg[1] === "push" && req.method === "POST") {
-        const body = JSON.parse((await readBody(req)) || "{}") as {
-          title?: string;
-          body?: string;
-          url?: string;
-        };
+        const body = await readJsonBody<{ title?: string; body?: string; url?: string }>(req, res, "/api/push");
+        if (body === null) return true;
         if (!body.title || !body.body) {
           send(400, { error: "title and body required" });
           return true;
@@ -2751,7 +2795,8 @@ end tell`;
       return true;
     }
     if (req.method === "POST" && !seg[2]) {
-      const body = JSON.parse((await readBody(req)) || "{}") as { title?: string };
+      const body = await readJsonBody<{ title?: string }>(req, res, "/api/session");
+      if (body === null) return true;
       send(200, (await op("POST", "/session", { title: body.title })).body);
       return true;
     }
@@ -2775,7 +2820,8 @@ end tell`;
       return true;
     }
     if (req.method === "POST" && seg[3] === "message") {
-      const body = JSON.parse((await readBody(req)) || "{}") as { text?: string };
+      const body = await readJsonBody<{ text?: string }>(req, res, "/api/session/:id/message");
+      if (body === null) return true;
       if (!body.text) {
         send(400, { error: "text required" });
         return true;
@@ -2795,6 +2841,15 @@ end tell`;
 }
 
 async function main() {
+  // P2-180: fail-closed body-limit boot — one log line per problem, exit code
+  // 1, and no listener at all when OCR_MAX_BODY_BYTES is invalid. The daemon
+  // never runs with a ceiling the operator did not ask for.
+  if (bodyLimitResolution.problems.length > 0) {
+    for (const problem of bodyLimitResolution.problems) log("error", problem);
+    process.exit(1);
+    return;
+  }
+
   // Async module state first (see note at the declarations): identity, settings
   // and whisper detection must be ready before anything is served or sent.
   daemon = await loadIdentity();
