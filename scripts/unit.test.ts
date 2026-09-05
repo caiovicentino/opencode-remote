@@ -18,6 +18,13 @@ import { classifyRelayClose, effectiveRetryDelayMs } from "../apps/daemon/src/re
 import { sttVerdict } from "../apps/daemon/src/voicecap";
 import { modelReadyVerdict, providerSummary } from "../apps/daemon/src/modelready";
 import { MIN_OPENCODE_VERSION, parseVersion, versionVerdict } from "../apps/daemon/src/opencodever";
+import {
+  DISK_ALERT_FREE_BYTES,
+  DISK_ALERT_FREE_FRACTION,
+  DISK_WARN_FREE_BYTES,
+  DISK_WARN_FREE_FRACTION,
+  diskVerdict,
+} from "../apps/daemon/src/diskguard";
 import { rewriteFeedPort } from "../apps/daemon/src/feedport";
 import { createRelayRetry } from "../apps/daemon/src/relayretry";
 import { nodeStateFileFs, writeStateAtomic, type StateFileFs } from "../apps/daemon/src/statefile";
@@ -13995,7 +14002,9 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
   check(
     "P2-213: the existing /__ocr/settings read mirrors the verdict — no new route",
-    /body: \{ \.\.\.readSettings\(\), version: VERSION, opencodeVersion: opencodeVersion \}/.test(indexSrc),
+    // P2-215 grew the same object additively (`disk: diskStatus()`), so the
+    // assertion matches the mirror prefix, not the exact closing brace.
+    /body: \{ \.\.\.readSettings\(\), version: VERSION, opencodeVersion: opencodeVersion,/.test(indexSrc),
   );
 
   // the Settings machine section shows the phrase only for too-old and NEVER
@@ -14015,6 +14024,154 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       /OCR_OPENCODE_OLD/.test(src(["README.md"])) &&
       /OCR_OPENCODE_OLD/.test(src(["README.pt-BR.md"])) &&
       /OCR_OPENCODE_OLD/.test(src(["docs", "troubleshooting.md"])),
+  );
+}
+
+// --- P2-215: disk-space readiness verdict (diskguard.ts) + wiring ---------------
+
+{
+  const src = (rel: string[]) => readFileSync(join(import.meta.dirname, "..", ...rel), "utf8");
+  const diskguardSrc = src(["apps", "daemon", "src", "diskguard.ts"]);
+  const indexSrc = src(["apps", "daemon", "src", "index.ts"]);
+  const settingsSrc = src(["apps", "web", "src", "components", "SettingsView.tsx"]);
+
+  // exported thresholds are documented and ordered alert < warn
+  check(
+    "P2-215: thresholds are exported and ordered (alert stricter than warn, both rules)",
+    DISK_ALERT_FREE_BYTES < DISK_WARN_FREE_BYTES && DISK_ALERT_FREE_FRACTION < DISK_WARN_FREE_FRACTION,
+  );
+
+  // verdict matrix
+  check(
+    "P2-215: a roomy volume is ok",
+    diskVerdict(100 * DISK_WARN_FREE_BYTES, 400 * DISK_WARN_FREE_BYTES).state === "ok",
+  );
+  check(
+    "P2-215: fraction below the warning is low even with roomy bytes",
+    diskVerdict(8 * DISK_WARN_FREE_BYTES, 100 * DISK_WARN_FREE_BYTES).state === "low",
+  );
+  check(
+    "P2-215: bytes below the warning is low even with a roomy fraction",
+    diskVerdict(0.5 * DISK_WARN_FREE_BYTES, 4 * DISK_WARN_FREE_BYTES).state === "low",
+  );
+  check(
+    "P2-215: fraction below the alert is critical",
+    diskVerdict(3 * DISK_WARN_FREE_BYTES, 100 * DISK_WARN_FREE_BYTES).state === "critical",
+  );
+  check(
+    "P2-215: bytes below the alert is critical",
+    diskVerdict(0.1 * DISK_WARN_FREE_BYTES, DISK_WARN_FREE_BYTES).state === "critical",
+  );
+  check(
+    "P2-215: when the bytes and fraction rules disagree the more severe state wins",
+    diskVerdict(3 * DISK_WARN_FREE_BYTES, 100 * DISK_WARN_FREE_BYTES).state === "critical" && // bytes ok, fraction 3% critical
+      diskVerdict(0.1 * DISK_WARN_FREE_BYTES, DISK_WARN_FREE_BYTES).state === "critical", // bytes critical, fraction 10% ok
+  );
+
+  // every degenerate reading lands in the neutral unknown
+  check(
+    "P2-215: a null reading is unknown",
+    diskVerdict(null, null).state === "unknown" &&
+      diskVerdict(null, 100 * DISK_WARN_FREE_BYTES).state === "unknown" &&
+      diskVerdict(5 * DISK_WARN_FREE_BYTES, null).state === "unknown",
+  );
+  check(
+    "P2-215: a zero total is unknown",
+    diskVerdict(5 * DISK_WARN_FREE_BYTES, 0).state === "unknown",
+  );
+  check(
+    "P2-215: negative values are unknown",
+    diskVerdict(-1, 100 * DISK_WARN_FREE_BYTES).state === "unknown" &&
+      diskVerdict(5 * DISK_WARN_FREE_BYTES, -100).state === "unknown",
+  );
+  check(
+    "P2-215: non-finite values are unknown",
+    diskVerdict(NaN, 100 * DISK_WARN_FREE_BYTES).state === "unknown" &&
+      diskVerdict(Infinity, 100 * DISK_WARN_FREE_BYTES).state === "unknown" &&
+      diskVerdict(5 * DISK_WARN_FREE_BYTES, NaN).state === "unknown",
+  );
+
+  // message hygiene: no paths, no URL schemes, no command names, no secrets
+  const verdicts = [
+    diskVerdict(100 * DISK_WARN_FREE_BYTES, 400 * DISK_WARN_FREE_BYTES),
+    diskVerdict(0.5 * DISK_WARN_FREE_BYTES, 4 * DISK_WARN_FREE_BYTES),
+    diskVerdict(0.1 * DISK_WARN_FREE_BYTES, DISK_WARN_FREE_BYTES),
+    diskVerdict(null, null),
+  ];
+  check(
+    "P2-215: every verdict message is non-empty, free of paths/URLs/command names and distinct",
+    verdicts.every(
+      (v) =>
+        v.message.trim().length > 0 &&
+        !/[\\/]/.test(v.message) &&
+        !/https?:/i.test(v.message) &&
+        !/\b(npm|npx|brew|curl|wget|git|rm|df|du|sudo)\b/i.test(v.message),
+    ) && new Set(verdicts.map((v) => v.message)).size === verdicts.length,
+  );
+  check(
+    "P2-215: the unknown phrase is neutral — it never accuses a failure",
+    !/falh|erro|inválid|cheio/i.test(diskVerdict(null, null).message),
+  );
+
+  // diskguard.ts stays pure: unit tests must never boot a daemon on import
+  // (strip line comments first — the header prose names the banned modules)
+  const code = diskguardSrc.replace(/\/\/.*$/gm, "");
+  check(
+    "P2-215: diskguard.ts is pure (no node:fs/child_process/http/os/path imports)",
+    !/node:(fs|child_process|http|os|path)/.test(code) && !/"ws"/.test(code),
+  );
+
+  // real-repo assertion: the reading fires once at boot, before the janitor
+  // block, and then rides the SAME interval the P2-207 sweep already uses —
+  // no new periodic timer was introduced anywhere in index.ts (baseline: the
+  // five pre-existing setInterval( call sites).
+  const bootAt = indexSrc.indexOf("refreshDiskState();");
+  const janitorAt = indexSrc.indexOf("if (!retentionDisabled(process.env)) {");
+  check(
+    "P2-215: the disk reading fires once at boot, before the janitor block",
+    bootAt >= 0 && janitorAt > bootAt,
+  );
+  check(
+    "P2-215: the reading rides the existing janitor interval and no new periodic timer exists",
+    /const retentionTimer = setInterval\(\(\) => \{\s*\n\s*refreshDiskState\(\);\s*\n\s*sweepArtifactRetention\(\);\s*\n\s*\}, RETENTION_INTERVAL_MS\)/.test(
+      indexSrc,
+    ) &&
+      (indexSrc.match(/setInterval\(/g) ?? []).length === 5,
+  );
+
+  // additive surfaces: health fields and the settings mirror, no new route
+  check(
+    "P2-215: GET /api/health gains additive diskState/diskMessage",
+    indexSrc.includes("diskState: disk.state") && indexSrc.includes("diskMessage: disk.message"),
+  );
+  check(
+    "P2-215: the existing /__ocr/settings read mirrors the disk verdict — no new route",
+    /disk: diskStatus\(\)/.test(indexSrc),
+  );
+  check(
+    "P2-215: the health payload never carries a path or a raw byte count",
+    !indexSrc.includes("diskBytes") && !/disk[A-Za-z]*:.*STATE_DIR/.test(indexSrc),
+  );
+
+  // documented test hatch forcing critical for deterministic visual evidence
+  const hatchAt = indexSrc.indexOf('process.env.OCR_DISK_FULL === "1"');
+  check(
+    "P2-215: OCR_DISK_FULL=1 is the documented test hatch forcing critical",
+    hatchAt >= 0 &&
+      /OCR_DISK_FULL/.test(src(["README.md"])) &&
+      /OCR_DISK_FULL/.test(src(["README.pt-BR.md"])) &&
+      /OCR_DISK_FULL/.test(src(["docs", "troubleshooting.md"])),
+  );
+
+  // the Settings machine section shows the phrase only for low/critical and
+  // NEVER gates any control on it (fail open on purpose)
+  check(
+    "P2-215: SettingsView renders the phrase only for low/critical and never disables a control with it",
+    settingsSrc.includes('disk?.state === "low"') &&
+      settingsSrc.includes('disk?.state === "critical"') &&
+      settingsSrc.includes("disk-hint") &&
+      !/disabled=\{[^}]*disk/.test(settingsSrc) &&
+      /deliberately fails open/i.test(settingsSrc),
   );
 }
 
