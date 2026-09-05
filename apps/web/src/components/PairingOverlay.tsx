@@ -49,6 +49,9 @@ interface Props {
   /** P2-211: install-location verdict from the machine hosting the daemon
    * (null/absent = unknown → no line). */
   installLocation?: { state: string; message: string } | null;
+  /** P2-214: clock-skew verdict from the machine hosting the daemon
+   * (null/absent = unknown → no line). */
+  clock?: { state: string; message: string } | null;
 }
 
 /**
@@ -63,7 +66,7 @@ interface Props {
  * (open this address) — with the pairing QR demoted to step two. The two
  * steps carry visible labels so two QR codes never appear unlabeled.
  */
-export default function PairingOverlay({ qrDataUrl, onDismiss, deviceList, webApp, pairLink, reach, onReachRetry, relayLink, installLocation }: Props) {
+export default function PairingOverlay({ qrDataUrl, onDismiss, deviceList, webApp, pairLink, reach, onReachRetry, relayLink, installLocation, clock }: Props) {
   const t = useT();
   // P2-189: copy feedback — brief, quiet, and never steals the QR's spotlight.
   const [copied, setCopied] = useState(false);
@@ -222,6 +225,19 @@ export default function PairingOverlay({ qrDataUrl, onDismiss, deviceList, webAp
             while the fix (drag + reopen) happens after it. */}
         {installLocation && installLocation.state !== "ok" && installLocation.state !== "unknown" && (
           <p className="pair-install pair-install-warn">{installLocation.message}</p>
+        )}
+
+        {/* P2-214: calm clock-skew line right below the install-location line,
+            same P2-112 vocabulary. Invisible for ok AND for the neutral
+            unknown (an absent reference is never an accusation); when the
+            machine hosting the daemon is ahead or behind, the line explains
+            the automatic date/time action. The QR is NEVER hidden or dimmed
+            on purpose: a wrong clock does not block pairing NOW — the phone
+            may refuse the relay certificate and the timestamps may look
+            wrong, but the pairing itself still works, so burying the QR
+            would kill the journey while the fix happens after it. */}
+        {clock && clock.state !== "ok" && clock.state !== "unknown" && (
+          <p className="pair-clock pair-clock-warn">{clock.message}</p>
         )}
 
         {deviceList && deviceList.length > 0 && (

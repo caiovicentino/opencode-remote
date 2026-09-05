@@ -2063,6 +2063,21 @@ button.desk-new:hover:not(:disabled) {
   color: var(--warn);
 }
 
+/* P2-214: clock-skew status — one quiet line right below the install-location
+   line, same calm register as the P2-112 degraded card. Only the ahead/behind
+   states render (ok and the neutral unknown stay invisible); warn-toned, no
+   red, no banner, existing tokens only. The QR is never hidden. */
+.pair-clock {
+  margin: 2px 0 0;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--muted);
+  max-width: 40ch;
+}
+.pair-clock-warn {
+  color: var(--warn);
+}
+
 /* QR scanner state machine (P2-117): looking → preview → unavailable.
    The stage keeps a 4:3 box at every width so a 390px phone never collapses
    to just the caption, and the unavailable state replaces the black void

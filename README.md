@@ -574,6 +574,21 @@ not the camera. Like every warning on this screen it never blocks pairing and
 never hides the QR: the link can come back up before the phone finishes
 scanning.
 
+**Clock skew (P2-214)**: a machine whose clock is far off has its own failure
+mode — the phone's browser refuses the hosted relay's certificate (the
+validity window no longer covers the phone's "now"), the pairing window closes
+at an unpredictable instant and every timestamp the phone is shown looks
+wrong, all with no explanation. While the pairing screen is up, the shell
+compares its clock against the `Date` response header of the very same answer
+the reach probe already obtained — no second request, no time server — and
+shows one calm line right below the install-location line when the clock is
+**ahead** or **behind**, pointing at the automatic date/time setting. The line
+describes the machine hosting the daemon and never blocks pairing nor hides
+the QR (a wrong clock does not stop pairing from working right now); when the
+reference is missing or unreadable it stays quiet. `OCR_DESKTOP_FORCE_CLOCK_BEHIND=1`
+on the desktop shell forces the warning for deterministic screenshots
+(test-only hatch).
+
 The image carries no secrets and the relay stays a blind
 router: it never sees plaintext or keys. The optional metrics endpoint
 (`RELAY_METRICS_PORT`) binds loopback by default; setting

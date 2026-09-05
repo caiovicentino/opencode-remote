@@ -50,6 +50,10 @@ export interface DiagnosticsInput {
    * "translocated" | "downloads" | "unknown") — never the bundle path, per
    * the privacy contract in this header. Optional/additive. */
   installLocation?: string | null;
+  /** P2-214: clock-skew verdict of the last guarded reach probe — the state
+   * and the rounded signed offset in seconds only, NEVER the machine's time
+   * (privacy contract in this header). Optional/additive. */
+  clockSkew?: { state: string; skewSeconds: number | null } | null;
 }
 
 /** Lines of the diagnostic bundle, in display order. */
@@ -64,6 +68,11 @@ export function buildDiagnosticReport(d: DiagnosticsInput): string {
     // P2-211: one additive line, state only — the bundle path never enters
     // the bundle (header privacy contract).
     `install location: ${d.installLocation ?? "unknown"}`,
+    // P2-214: one additive line — state + rounded signed offset in seconds,
+    // never the machine's time (header privacy contract).
+    `clock skew: ${d.clockSkew?.state ?? "unknown"}${
+      d.clockSkew?.skewSeconds == null ? "" : ` (${d.clockSkew.skewSeconds > 0 ? "+" : ""}${d.clockSkew.skewSeconds}s)`
+    }`,
     `crash files: ${d.crashFiles.length === 0 ? "none" : d.crashFiles.join(", ")}`,
     "--- desktop.log (last lines) ---",
     ...d.logTail.slice(-DIAG_LOG_TAIL),

@@ -51,6 +51,7 @@ import {
 } from "../apps/desktop/src/webappurl";
 import { buildPairLink, PAIR_LINK_HASH_ROUTE, PAIR_LINK_MAX_LEN } from "../apps/desktop/src/pairlink";
 import { hasAppMarker, probeVerdict, WEB_REACH_TIMEOUT_MS } from "../apps/desktop/src/webreach";
+import { clockSkewMessage, skewVerdict, CLOCK_SKEW_TOLERANCE_MS } from "../apps/desktop/src/clockskew";
 import { linkVerdict, type RelayLinkFacts } from "../apps/desktop/src/relaylink";
 import { installMessage, installVerdict } from "../apps/desktop/src/installloc";
 import { installBlocksUpdate } from "../apps/desktop/src/update";
@@ -14726,6 +14727,139 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P2-211: the diagnostics bundle gains exactly one install-location line carrying the state only",
     (diagSrc.match(/install location:/g) ?? []).length === 1 && diagSrc.includes('d.installLocation ?? "unknown"'),
+  );
+}
+
+// --- P2-214: clock-skew verdict (clockskew.ts) + wiring ------------------------
+
+{
+  // Known HTTP-date reference: 2026-01-01T12:00:00Z
+  const header = "Thu, 01 Jan 2026 12:00:00 GMT";
+  const headerMs = 1_767_268_800_000;
+
+  // 1. clock equal to the server's → ok (offset 0)
+  const equal = skewVerdict(headerMs, header, 0);
+  check("P2-214: clock equal to the server's → ok", equal.state === "ok" && equal.skewMs === 0);
+  // 2. skew below the threshold → ok
+  check(
+    "P2-214: skew below the threshold → ok",
+    skewVerdict(headerMs + 60_000, header, 0).state === "ok",
+  );
+  // 3. positive skew above the threshold → ahead
+  const ahead = skewVerdict(headerMs + 600_000, header, 0);
+  check("P2-214: positive skew above the threshold → ahead", ahead.state === "ahead" && ahead.skewMs === 600_000);
+  // 4. negative skew above the threshold → behind
+  const behind = skewVerdict(headerMs - 600_000, header, 0);
+  check("P2-214: negative skew above the threshold → behind", behind.state === "behind" && behind.skewMs === -600_000);
+  // 5. skew slightly above the threshold with a slow probe → still ok (the
+  //    latency tolerance is the base plus half the elapsed ms)
+  check(
+    "P2-214: a slow probe widens the tolerance — slightly-above-threshold skew stays ok",
+    skewVerdict(headerMs + 120_500, header, 2_000).state === "ok" && 2_000 / 2 + CLOCK_SKEW_TOLERANCE_MS === 121_000,
+  );
+  // 6/7/8. missing, empty and non-date headers → unknown
+  const unk = skewVerdict(headerMs, null, 0);
+  check("P2-214: missing header → unknown", unk.state === "unknown" && unk.skewMs === null);
+  check("P2-214: empty header → unknown", skewVerdict(headerMs, "   ", 0).state === "unknown");
+  const junk = skewVerdict(headerMs, "not-a-date", 0);
+  check("P2-214: unparseable header text → unknown", junk.state === "unknown");
+  // 9. a valid HTTP-date header is interpreted at its exact instant
+  //    (2025-01-15T09:30:00Z = 1736933400000; local 500ms behind → skew -500)
+  const validDate = skewVerdict(1_736_933_399_500, "Wed, 15 Jan 2025 09:30:00 GMT", 0);
+  check(
+    "P2-214: a valid HTTP-date header is interpreted correctly",
+    validDate.state === "ok" && validDate.skewMs === -500,
+  );
+  // the neutral unknown wording never accuses failure
+  check(
+    "P2-214: the neutral unknown wording never accuses failure",
+    !/falha|erro|quebrad|inválid/i.test(unk.message),
+  );
+
+  // every generated message: non-empty, no file path, no URL scheme
+  const verdicts = [equal, ahead, behind, unk, junk, skewVerdict(headerMs + 60_000, header, 0)];
+  check(
+    "P2-214: every message is non-empty, path-free and scheme-free",
+    verdicts.every(
+      (v) =>
+        v.message.length > 0 &&
+        !v.message.includes("/") &&
+        !v.message.includes("\\") &&
+        !v.message.includes("http:") &&
+        !v.message.includes("https:") &&
+        !v.message.includes("file:"),
+    ),
+  );
+  check(
+    "P2-214: clockSkewMessage replays the same copy skewVerdict ships",
+    clockSkewMessage("ahead") === ahead.message && clockSkewMessage("behind") === behind.message,
+  );
+
+  // real-source assertions over the REAL main.ts
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  check(
+    "P2-214: exactly ONE reach probe per tick in the real main.ts",
+    (mainSrc.match(/await probeWebAppReach\(/g) ?? []).length === 1,
+  );
+  const guardAt = mainSrc.search(/if \(!quietLocal && \(!paired \|\| remotePairingRequested\) && webAppRes\.problems\.length === 0 && webAppRes\.url !== ""\) \{/);
+  const guardBlock = guardAt > -1 ? mainSrc.slice(guardAt, guardAt + 900) : "";
+  check(
+    "P2-214: the clock verdict is computed under the same overlay guard as the reach probe",
+    guardBlock.includes("await probeWebAppReach(webAppRes.url)") && guardBlock.includes("skewVerdict("),
+  );
+  check(
+    "P2-214: the clock verdict introduces no new request — it reuses the probe's own answer",
+    guardBlock.length > 0 && !guardBlock.includes("fetch(") && !guardBlock.includes("new URL("),
+  );
+  const probeBodyAt = mainSrc.indexOf("async function probeWebAppReach(");
+  const probeBody =
+    probeBodyAt > -1
+      ? mainSrc.slice(probeBodyAt, mainSrc.indexOf("async function refreshPairingState", probeBodyAt))
+      : "";
+  check(
+    "P2-214: the probe still makes exactly one request (no second fetch for the clock)",
+    (probeBody.match(/fetch\(/g) ?? []).length === 1,
+  );
+  const setPairingAt = mainSrc.indexOf("setPairingState({");
+  const payload = mainSrc.slice(setPairingAt, mainSrc.indexOf("});", setPairingAt));
+  check(
+    "P2-214: the additive clock field rides AFTER installLocation in the pairing payload",
+    payload.indexOf("installLocation: bootInstallLocation") > -1 && payload.indexOf("clock: clock") > payload.indexOf("installLocation: bootInstallLocation"),
+  );
+  check(
+    "P2-214: the documented test hatch forces behind",
+    mainSrc.includes('process.env.OCR_DESKTOP_FORCE_CLOCK_BEHIND === "1"') && mainSrc.includes('clockSkewMessage("behind")'),
+  );
+  check(
+    "P2-214: the diagnostics bundle is fed from the last clock verdict",
+    mainSrc.includes("clockSkew: lastClockSkew"),
+  );
+
+  // overlay renders the calm line below the install-location line, never hides the QR
+  const overlaySrc = readFileSync(
+    join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingOverlay.tsx"),
+    "utf8",
+  );
+  check(
+    "P2-214: the overlay renders the clock line below the install-location line",
+    overlaySrc.indexOf("{clock &&") > overlaySrc.indexOf("{installLocation &&"),
+  );
+  check(
+    "P2-214: ok and unknown render nothing; the comment states the QR is NEVER hidden",
+    overlaySrc.includes('clock.state !== "ok"') &&
+      overlaySrc.includes('clock.state !== "unknown"') &&
+      overlaySrc.includes("NEVER hidden"),
+  );
+
+  // diagnostics: one additive line, state + rounded seconds, never the machine time
+  const diagSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "diagnostics.ts"), "utf8");
+  check(
+    "P2-214: the diagnostics bundle gains exactly one clock-skew line (state + seconds only)",
+    (diagSrc.match(/clock skew:/g) ?? []).length === 1 &&
+      diagSrc.includes("d.clockSkew?.state") &&
+      diagSrc.includes("d.clockSkew?.skewSeconds") &&
+      !diagSrc.includes("toLocaleTimeString") &&
+      !diagSrc.includes("new Date("),
   );
 }
 

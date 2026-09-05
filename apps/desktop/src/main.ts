@@ -26,7 +26,8 @@ import { relaySettingFile, readStoredRelayUrl, readStoredWebAppUrl, writeStoredR
 import { relayUrlProblems, resolveRelayUrl } from "./relaysetting";
 import { resolveWebAppUrl, webAppUrlProblems } from "./webappurl";
 import { buildPairLink } from "./pairlink";
-import { hasAppMarker, probeVerdict, type ReachVerdict } from "./webreach";
+import { hasAppMarker, probeVerdict, rawDateHeader, type ReachProbeOutcome, type ReachVerdict } from "./webreach";
+import { clockSkewMessage, skewVerdict, type ClockSkewVerdict } from "./clockskew";
 import { linkVerdict, type RelayLinkVerdict } from "./relaylink";
 import { installMessage, installVerdict, type InstallLocationVerdict } from "./installloc";
 import { WAKE_EVENT_TYPES, wakePlan } from "./wakeplan";
@@ -189,6 +190,14 @@ function buildDiagnostics(): string {
     updateStatus: lastUpdateStatus,
     // P2-211: the state only, never the bundle path (privacy contract below).
     installLocation: bootInstallLocation?.state ?? null,
+    // P2-214: the clock-skew state and the rounded offset in seconds only —
+    // the machine's time itself never enters the bundle (privacy contract).
+    clockSkew: lastClockSkew
+      ? {
+          state: lastClockSkew.state,
+          skewSeconds: lastClockSkew.skewMs === null ? null : Math.round(lastClockSkew.skewMs / 1000),
+        }
+      : null,
   });
 }
 
@@ -878,6 +887,17 @@ const PROBE_TIMEOUT_MS = 2_000;
 // deterministically. Never set in production — same policy as OCR_DAEMON_FORCE_*.
 const FORCE_VERSION_MISMATCH = process.env.OCR_DAEMON_FORCE_VERSION_MISMATCH === "1";
 
+// P2-214: test-only hatch (same OCR_* policy as OCR_DESKTOP_FORCE_DMG_VOLUME):
+// forces the behind clock-skew verdict so the pairing-overlay line renders
+// deterministically on hosts with a correct clock. Never set in production.
+const FORCE_CLOCK_BEHIND = process.env.OCR_DESKTOP_FORCE_CLOCK_BEHIND === "1";
+
+// P2-214: latest clock-skew verdict of the pairing tick's reach probe, for the
+// diagnostics bundle. Carries the state and the signed offset only — the
+// machine's time itself never leaves the process (diagnostics.ts privacy
+// contract). null until the first guarded probe of the session.
+let lastClockSkew: ClockSkewVerdict | null = null;
+
 let pairingState: PairingState | null = null;
 let pairingTimer: NodeJS.Timeout | null = null;
 
@@ -1047,28 +1067,45 @@ function currentWebAppResolution() {
 // and never sends a credential header. Every path returns a verdict; this
 // must never throw, or the surrounding tick would drop the whole pairing
 // state (and the QR with it).
-async function probeWebAppReach(url: string): Promise<ReachVerdict> {
+// P2-214: the return is additive (ReachProbeOutcome) — the same answer now
+// also carries its raw Date response header and elapsed ms for the clock-skew
+// classifier. Still exactly ONE request, same timeout, no new probe.
+async function probeWebAppReach(url: string): Promise<ReachProbeOutcome> {
   let origin: string;
   try {
     origin = new URL(url).origin;
   } catch {
-    return probeVerdict({ status: null, elapsedMs: 0, errorName: "probe-unparseable-address", appMarker: false });
+    return {
+      verdict: probeVerdict({ status: null, elapsedMs: 0, errorName: "probe-unparseable-address", appMarker: false }),
+      dateHeader: null,
+      elapsedMs: 0,
+    };
   }
   const startedAt = Date.now();
   try {
     const res = await fetch(origin, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS), redirect: "follow" });
+    const elapsedMs = Date.now() - startedAt;
     // The body is only read on a 200 (the only status that can be "ok") and
     // truncated: the marker check needs a prefix, not the whole page.
     const appMarker = res.status === 200 ? hasAppMarker((await res.text()).slice(0, 32_768)) : false;
-    return probeVerdict({ status: res.status, elapsedMs: Date.now() - startedAt, errorName: "", appMarker });
+    return {
+      verdict: probeVerdict({ status: res.status, elapsedMs, errorName: "", appMarker }),
+      dateHeader: rawDateHeader(res),
+      elapsedMs,
+    };
   } catch (err) {
     const e = err as { name?: string; cause?: { code?: string } };
-    return probeVerdict({
-      status: null,
-      elapsedMs: Date.now() - startedAt,
-      errorName: e?.cause?.code ?? e?.name ?? "",
-      appMarker: false,
-    });
+    const elapsedMs = Date.now() - startedAt;
+    return {
+      verdict: probeVerdict({
+        status: null,
+        elapsedMs,
+        errorName: e?.cause?.code ?? e?.name ?? "",
+        appMarker: false,
+      }),
+      dateHeader: null,
+      elapsedMs,
+    };
   }
 }
 
@@ -1183,12 +1220,22 @@ async function refreshPairingState(): Promise<void> {
     // the QR. Probing the ORIGIN of webAppRes.url (probeWebAppReach), never
     // the credential-bearing pairLink. A failed probe only travels as the
     // additive `reach` field: it never blocks pairing nor hides the QR.
+    // P2-214: the clock-skew verdict rides the SAME response the probe already
+    // obtained — no new request, no new timeout, no time server — under the
+    // SAME overlay guard. A wrong clock only travels as the additive `clock`
+    // field: it never blocks pairing nor hides the QR.
     let reach: ReachVerdict | undefined;
+    let clock: ClockSkewVerdict | undefined;
     if (!quietLocal && (!paired || remotePairingRequested) && webAppRes.problems.length === 0 && webAppRes.url !== "") {
-      reach = await probeWebAppReach(webAppRes.url);
+      const outcome = await probeWebAppReach(webAppRes.url);
+      reach = outcome.verdict;
       // Logged without the URL or body: the address may embed the relay host
       // and desktop.log lives on disk unencrypted.
       log(`[desktop] app reach: ${reach.state}`);
+      clock = FORCE_CLOCK_BEHIND
+        ? { state: "behind", message: clockSkewMessage("behind"), skewMs: -86_400_000 }
+        : skewVerdict(Date.now(), outcome.dateHeader, outcome.elapsedMs);
+      lastClockSkew = clock;
     }
     // P2-199: the daemon↔relay link — the link that actually delivers the
     // conversation — judged from the SAME /api/health answer the tick already
@@ -1234,6 +1281,11 @@ async function refreshPairingState(): Promise<void> {
       installLocation: bootInstallLocation
         ? { state: bootInstallLocation.state, message: bootInstallLocation.message }
         : undefined,
+      // P2-214: additive clock-skew verdict, AFTER installLocation so the
+      // P2-189/P2-193/P2-197/P2-199/P2-211 real-source assertions keep
+      // matching; absent = unknown to the renderer (renders nothing). A wrong
+      // clock never blocks pairing and never hides the QR.
+      clock: clock ? { state: clock.state, message: clock.message } : undefined,
     });
   } catch (err) {
     // Daemon down, token rotated or state file wiped: drop the cached state so
