@@ -232,7 +232,7 @@ recuperados do plist, nunca descartados sem querença).
 ### Instalador do app desktop (DMG)
 
 Todo release do GitHub traz o instalador macOS de verdade,
-`OpenCode Remote-<version>-arm64.dmg` (alvo `dmg` do electron-builder, janela
+`OpenCode-Remote-<version>-arm64.dmg` (alvo `dmg` do electron-builder, janela
 com a marca do projeto). Um preflight de assinatura
 (`apps/desktop/scripts/signing-profile.mjs`) roda antes do empacotamento e
 escolhe um de dois modos:
@@ -268,8 +268,8 @@ checksum fixado automaticamente pelo pipeline de release a cada tag).
 
 ### Instalador do app desktop (Windows)
 
-Os releases também trazem o instalador Windows, `OpenCode Remote Setup
-<versão>.exe` (alvo `nsis` do electron-builder: setup assistido, instalação
+Os releases também trazem o instalador Windows, `OpenCode-Remote-Setup-<versão>.exe`
+(alvo `nsis` do electron-builder: setup assistido, instalação
 por usuário, diretório escolhível), junto do `latest.yml` que o cheque de
 update do app usa como fallback. A assinatura Windows tem perfil próprio,
 resolvido por `apps/desktop/scripts/signing-profile-win.mjs` antes do
@@ -356,6 +356,30 @@ que falhou lista todos os assets faltantes) e depois ou conserte a causa e
 re rode o workflow — um re-run passa direto por release já publicada — ou
 apague o rascunho com `gh release delete vX.Y.Z --yes` (a tag fica; apague
 também com `--cleanup-tag` se quiser retaggear limpo).
+
+**Confira o seu download** (P2-186): todo release também traz o
+`checksums.txt`, um manifesto SHA-256 no formato padrão do coreutils (uma linha
+`<hash>  <nome>` por asset de download, ordenada por nome, dois espaços entre
+hash e nome). Ele é gerado pelo próprio pipeline: o job `release-publish`
+baixa os assets prontos de volta do rascunho, calcula o hash de cada arquivo e
+anexa o manifesto **antes** de o release ficar público — então os checksums só
+podem descrever os bytes de fato publicados. Depois de baixar um instalador (e
+o `checksums.txt` ao lado), confira com a ferramenta padrão do seu sistema:
+
+    # macOS / Linux — dentro da pasta dos arquivos baixados:
+    shasum -a 256 -c checksums.txt     # macOS
+    sha256sum -c checksums.txt         # Linux
+
+    # Windows (PowerShell) — compare com a linha no checksums.txt:
+    Get-FileHash ".\OpenCode-Remote-Setup-0.3.0.exe" -Algorithm SHA256
+
+A ferramenta imprime `OK` para cada arquivo cujo hash bate. Divergência
+significa que o arquivo em disco não é o que o CI produziu: **não abra nem
+execute**. A causa mais comum é download truncado ou passado por proxy —
+baixe de novo e confira de novo; se o hash continuar divergente, não
+distribua o arquivo e reporte na página de releases (a fórmula do Homebrew é
+um caminho alternativo de instalação que fixa o próprio sha256 no momento da
+tag).
 
 ## Relay hospedado (Docker)
 
@@ -491,7 +515,7 @@ Durante o desenvolvimento do web, aponte o shell pro dev server do Vite:
 bundle do daemon) antes de empacotar, então funciona também num checkout limpo.
 
 **Empacotamento (P1-050)**: `npm run dist --workspace @ocr/desktop` agora
-também produz um **`OpenCode Remote-<versão>.dmg`** distribuível (janela de
+também produz um **`OpenCode-Remote-<versão>-<arch>.dmg`** distribuível (janela de
 instalação com branding, versão semântica no About e no nome do arquivo).
 Builds locais são assinados ad-hoc com hardened runtime e as entitlements
 compartilhadas (`build/entitlements.mac.plist`) — no primeiro abre, clique

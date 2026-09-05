@@ -29,8 +29,9 @@ Run `opencode-remote doctor` first — it checks everything below in one shot.
 | no mic/camera in the packaged app (P2-169) | the first voice recording or QR scan triggers a macOS permission prompt — grant it. Denied by mistake: System Settings → Privacy & Security → Microphone / Camera → enable **OpenCode Remote**, then reopen the app (the signed build blocks the device without the grant; dev builds only fail the same way without the P2-169 entitlements/usage strings) |
 | mac download says "damaged and can't be opened" | that is an unsigned/stale DMG, not this project's release path: since P2-170 the desktop-dmg job runs the Gatekeeper verdicts (`codesign` verify, `spctl` assess, `stapler` validate — `scripts/gatekeeper-verify.ts`) on the packaged app before uploading, so a notarized release can never ship without its stapled ticket and a Developer ID release can never ship `spctl: rejected`. A normal **ad-hoc** release (no signing secrets) still shows the standard "unidentified developer" wall instead — right-click → **Open** once, per the README |
 | the release workflow failed and the downloads page shows nothing new | that is the P2-179 draft flow working: releases are created as **drafts** and only go public after `release-verify` and `release-feeds` pass and the `release-publish` job's `scripts/release-publish.ts` confirms every required asset is attached. Open the run in Actions and look at which job has the red ✗ (its failing step lists every missing asset at once); the release stays a private draft, so users were never exposed to a broken download. Fix the cause and re-run the workflow (a re-run treats an already-published release as a no-op), or discard the draft with `gh release delete vX.Y.Z --yes` and re-tag — the draft is invisible to users either way |
-
 | the desktop-win release job failed at "Authenticode verification of the packaged installer" | since P2-183 the job verifies the packaged setup exe with PowerShell `Get-AuthenticodeSignature` (`scripts/authenticode-verify.ts`) before attaching it to the release, so an installer that would trip SmartScreen never ships: only `Status: Valid` with a certificate subject passes in authenticode mode. The failing step lists every problem at once under `authenticode-verify:` (not signed, hash mismatch, untrusted chain, expired certificate, unknown error, missing subject, or unrecognizable verification output); the raw `Status:`/`StatusMessage:`/`Subject:` lines are in `authenticode.txt` in the workspace — check whether the certificate expired, the WIN_CSC_KEY_PASSWORD was wrong, or electron-builder skipped signing, fix and re-run |
+| the downloaded installer's hash does not match `checksums.txt` (P2-186) | every release ships `checksums.txt` (coreutils format, one `sha256  <file>` line per asset) built from the finished assets right before publication, so a match proves the file is exactly what CI produced. Re-check with the right tool in the download folder: `shasum -a 256 -c checksums.txt` (macOS), `sha256sum -c checksums.txt` (Linux), `Get-FileHash <file> -Algorithm SHA256` compared with the manifest line (Windows PowerShell). A mismatch after a fresh re-download (truncated/proxied downloads are the usual cause) means: do not open or distribute the file — report it on the releases page; the release job itself refuses to publish when any hash or name is off (`release-checksums: FAIL` in the log lists every problem) |
+| the release workflow failed at "Attach the SHA-256 checksum manifest to the release" | since P2-186 the `release-publish` job downloads the draft's assets back, hashes each file with node and validates the list via `scripts/release-checksums.ts` BEFORE the release goes public — the failing step lists every problem at once (empty list, repeated name, hash that is not 64 lowercase hex digits, name with a space or path separator, an entry named `checksums.txt`, or a required asset missing). The release stays a draft (P2-179 contract); fix the asset set and re-run |
 
 ## Staging a desktop update release (P1-050)
 
@@ -41,12 +42,12 @@ To publish a new version:
 ```
 ~/.opencode-remote/updates/
   feed.json                          # Squirrel.Mac pointer doc: {url, name, notes, releaseDate}
-  0.3.0/OpenCode Remote-0.3.0-mac.zip
+  0.3.0/OpenCode-Remote-0.3.0-arm64.zip
   0.3.0/latest-mac.yml               # optional, electron-builder metadata
 ```
 
 `feed.json`'s `url` field must point at the absolute artifact URL, e.g.
-`http://127.0.0.1:8792/__ocr/updates/0.3.0/OpenCode Remote-0.3.0-mac.zip`.
+`http://127.0.0.1:8792/__ocr/updates/0.3.0/OpenCode-Remote-0.3.0-arm64.zip`.
 The route is unauthenticated (autoUpdater cannot send headers) but strictly
 loopback-bound and limited to that folder: only plain filenames with a known
 extension, no traversal. Dev builds stay opt-in via `OCR_UPDATE_FEED`.

@@ -90,8 +90,9 @@ export function pickZipName(ymlText, fileNames) {
  * Squirrel.Mac JSON document (url/name/notes/pub_date) or null when the
  * problems are fatal (no zip to point at, or the yml/tag contract is broken —
  * publishing such a feed would advertise an update Squirrel can't apply).
- * The download file name is percent-encoded, so artifact names with spaces
- * ("OpenCode Remote-0.2.1-mac.zip") produce valid GitHub download URLs.
+ * The download file name is percent-encoded, so even artifact names with
+ * spaces produce valid GitHub download URLs (P2-186 renamed the artifacts
+ * space-free: "OpenCode-Remote-0.2.1-arm64.zip").
  *
  * @param {string} tag release tag (e.g. "v0.3.0")
  * @param {string|null} ymlText contents of latest-mac.yml (null when absent)
