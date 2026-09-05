@@ -9122,6 +9122,41 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check("P2-162: budget step declares shell: bash (P2-126 lesson)", /^\s*shell:\s*bash\s*$/m.test(stepBlock), JSON.stringify(stepBlock));
 }
 
+// --- P2-164: real-repo assertion — desktop-win smoke-checks before upload ------
+{
+  // Same risk P2-130 closed on the mac side: a Windows bundle without
+  // web-dist/index.html or daemon/index.js used to reach users as a
+  // blank-opening installer because desktop-win went straight from NSIS
+  // packaging to the release upload. The job must run dist:smoke in between.
+  const root = join(import.meta.dirname, "..");
+  const release = readFileSync(join(root, ".github", "workflows", "release.yml"), "utf8");
+  const start = release.indexOf("\n  desktop-win:");
+  const end = release.indexOf("\n  release-verify:");
+  const block = start === -1 || end === -1 || end < start ? "" : release.slice(start, end);
+  check("P2-164: release.yml still has the desktop-win job", block.length > 0);
+
+  const packageStep = block.indexOf("- name: Build + package NSIS installer");
+  const smokeStep = block.indexOf("- name: Smoke-check the packaged bundle");
+  const uploadStep = block.indexOf("- name: Attach setup exe + update metadata to the GitHub release");
+  check(
+    "P2-164: desktop-win runs the smoke step between packaging and the release upload",
+    packageStep > -1 && smokeStep > packageStep && uploadStep > smokeStep,
+    `pkg=${packageStep} smoke=${smokeStep} upload=${uploadStep}`,
+  );
+
+  const smokeBlock = smokeStep > -1 && uploadStep > smokeStep ? block.slice(smokeStep, uploadStep) : "";
+  check(
+    "P2-164: desktop-win smoke step runs dist:smoke in the desktop workspace",
+    smokeBlock.includes("run: npm run dist:smoke --workspace @ocr/desktop"),
+    JSON.stringify(smokeBlock),
+  );
+  check(
+    "P2-164: desktop-win smoke step declares shell: bash (P2-126 lesson)",
+    /^\s*shell:\s*bash\s*$/m.test(smokeBlock),
+    JSON.stringify(smokeBlock),
+  );
+}
+
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);
   process.exit(1);
