@@ -66,6 +66,13 @@ export interface PairingState {
    * is NEVER minted for a problem-bearing link (the two labeled QRs stay).
    */
   pairLink?: { url: string; qrDataUrl: string | null; problems: string[] };
+  /**
+   * P2-197: reach verdict of the app address (webreach.ts classifier),
+   * probed once per pairing tick from the machine hosting the daemon.
+   * Additive; absent = the probe has not run (unknown — renders nothing).
+   * A failed probe never blocks pairing and never hides the QR.
+   */
+  reach?: { state: string; message: string };
 }
 
 /**

@@ -466,6 +466,18 @@ it consumes the link; and a problem-bearing link is never rendered as a QR —
 the two labeled QRs above remain the fallback. The limited pairing window
 (P2-190) is still what bounds the credential's validity.
 
+**Reach probe (P2-197)**: a syntactically valid address can still lead
+nowhere — a relay that is down, a DNS name that never existed, an expired
+certificate or a stranger's server. While the pairing screen is up, the shell
+probes the app address once per poll tick (2s ceiling) from the machine that
+hosts the daemon and shows the verdict as one calm line below the QR
+("unreachable", "timeout", "certificate", "DNS", "HTTP error", "not our app"),
+with a **Test again** action on failure. The probe hits only the origin of the
+app address — never the credential-bearing pairing link — and sends no
+credential header. A warning never blocks pairing and never hides the QR: the
+Mac failing to reach the relay does not prove the phone will (different
+network, different DNS).
+
 The image carries no secrets and the relay stays a blind
 router: it never sees plaintext or keys. The optional metrics endpoint
 (`RELAY_METRICS_PORT`) binds loopback by default; setting

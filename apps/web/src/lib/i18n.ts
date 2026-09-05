@@ -218,6 +218,10 @@ export const dict = {
     pairLinkTitle: "Scan with your phone's camera",
     pairLinkHint:
       "One code is all it takes — the camera opens the app on your phone already paired. The pairing credential rides in the URL fragment, which no browser sends to any server.",
+    // reach probe of the app address (desktop, P2-197): calm line below the QR
+    pairReachOk: "The app address answered — the QR is ready for your phone.",
+    pairReachRetry: "Test again",
+    pairReachTesting: "Testing again…",
     webAppTitle: "App address (phone)",
     webAppHint:
       "Where the phone opens the app — derived from the phone relay (wss:// becomes https://, same host and port) unless you save one here.",
@@ -613,6 +617,10 @@ export const dict = {
     pairLinkTitle: "Escaneie com a câmera do celular",
     pairLinkHint:
       "Um código só — a câmera abre o app no celular já pareado. A credencial de pareamento viaja no fragmento da URL, que nenhum navegador envia a servidor.",
+    // sonda de alcance do endereço do app (desktop, P2-197): linha calma abaixo do QR
+    pairReachOk: "O endereço do app respondeu — o QR está pronto para o celular.",
+    pairReachRetry: "Testar de novo",
+    pairReachTesting: "Testando de novo…",
     webAppTitle: "Endereço do app (celular)",
     webAppHint:
       "Onde o celular abre o app — derivado do relay do celular (wss:// vira https://, mesmo host e porta), a menos que você salve um aqui.",

@@ -101,6 +101,9 @@ interface PairingState {
   /** P2-193: the combined pair link — app address + credential in the
    * URL fragment (desktop shell only, additive). */
   pairLink?: { url: string; qrDataUrl: string | null; problems: string[] };
+  /** P2-197: reach verdict for the app address (desktop shell only,
+   * additive) — absent means unknown, which renders nothing. */
+  reach?: { state: string; message: string };
 }
 
 /** Electron bridge from apps/desktop/src/preload.ts (absent in the browser). */
@@ -120,6 +123,9 @@ interface DesktopBridge {
   onDeepLink?: (cb: (uri: string) => void) => () => void;
   /** P1-053: one-click recovery from the daemon-down banner. */
   reconnectDaemon?: () => Promise<boolean>;
+  /** P2-197: pairing overlay "test again" — re-runs the pairing tick, which
+   * re-probes the app address (desktop shell only). */
+  recheckWebApp?: () => Promise<void>;
   /** P1-061/P1-070: loopback WS credentials (+ room/ecdhPub) for the direct
    * local transport and the zero-ceremony local pairing. */
   getLocalLink?: () => Promise<{ port: number; token: string; room?: string; ecdhPub?: string } | null>;
@@ -761,6 +767,11 @@ export default function App() {
         deviceList={phonePairing ? pairingState?.deviceList : undefined}
         webApp={pairingState?.webApp ?? null}
         pairLink={pairingState?.pairLink ?? null}
+        reach={pairingState?.reach ?? null}
+        onReachRetry={() => {
+          // Optional chaining: in a plain browser there is no desktop bridge.
+          void desktopBridge()?.recheckWebApp?.();
+        }}
         onDismiss={() => {
           setPairingDismissed(true);
           setPhonePairing(false);

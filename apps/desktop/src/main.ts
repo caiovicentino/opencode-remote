@@ -24,6 +24,7 @@ import { relaySettingFile, readStoredRelayUrl, readStoredWebAppUrl, writeStoredR
 import { relayUrlProblems, resolveRelayUrl } from "./relaysetting";
 import { resolveWebAppUrl, webAppUrlProblems } from "./webappurl";
 import { buildPairLink } from "./pairlink";
+import { hasAppMarker, probeVerdict, type ReachVerdict } from "./webreach";
 import { initDesktopLog, log, logError } from "./desktop-log";
 import { initSidecarLog } from "./sidecar-log";
 import { phonePaired, type PairingState } from "./pairing";
@@ -545,6 +546,12 @@ async function onReady(): Promise<void> {
       return false;
     }),
   );
+  // P2-197: the pairing overlay's "test again" action — re-runs the pairing
+  // tick right away (which re-probes the app address) instead of waiting for
+  // the next poll. Fire-and-forget: the next push carries the fresh verdict.
+  ipcMain.handle("app:recheckWebApp", () => {
+    void refreshPairingState();
+  });
   // P2-187: the phone relay address — read (Settings render) and write (Save /
   // "use the local relay" action). Validation ALWAYS happens here in the main
   // process: a hostile renderer can submit any payload shape and nothing is
@@ -992,6 +999,37 @@ function currentWebAppResolution() {
   return resolveWebAppUrl(relay, readStoredWebAppUrl(file));
 }
 
+// P2-197: probe the app address's reachability once per pairing tick. The
+// probe always hits the ORIGIN of the resolved webApp address — NEVER the
+// pairLink address, which carries the pairing credential in its fragment —
+// and never sends a credential header. Every path returns a verdict; this
+// must never throw, or the surrounding tick would drop the whole pairing
+// state (and the QR with it).
+async function probeWebAppReach(url: string): Promise<ReachVerdict> {
+  let origin: string;
+  try {
+    origin = new URL(url).origin;
+  } catch {
+    return probeVerdict({ status: null, elapsedMs: 0, errorName: "probe-unparseable-address", appMarker: false });
+  }
+  const startedAt = Date.now();
+  try {
+    const res = await fetch(origin, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS), redirect: "follow" });
+    // The body is only read on a 200 (the only status that can be "ok") and
+    // truncated: the marker check needs a prefix, not the whole page.
+    const appMarker = res.status === 200 ? hasAppMarker((await res.text()).slice(0, 32_768)) : false;
+    return probeVerdict({ status: res.status, elapsedMs: Date.now() - startedAt, errorName: "", appMarker });
+  } catch (err) {
+    const e = err as { name?: string; cause?: { code?: string } };
+    return probeVerdict({
+      status: null,
+      elapsedMs: Date.now() - startedAt,
+      errorName: e?.cause?.code ?? e?.name ?? "",
+      appMarker: false,
+    });
+  }
+}
+
 async function refreshPairingState(): Promise<void> {
   // Test-only override first: the hermetic harness has no apiToken, so without
   // this the happy path (the only place a real mismatch is detected) is
@@ -1098,6 +1136,18 @@ async function refreshPairingState(): Promise<void> {
           ? await QRCode.toDataURL(pairLinkRes.url, { margin: 1, width: 480 })
           : null,
     };
+    // P2-197: one reach probe per tick, only while the overlay may still be
+    // needed and only for a problem-free address — the same guard that mints
+    // the QR. Probing the ORIGIN of webAppRes.url (probeWebAppReach), never
+    // the credential-bearing pairLink. A failed probe only travels as the
+    // additive `reach` field: it never blocks pairing nor hides the QR.
+    let reach: ReachVerdict | undefined;
+    if (!quietLocal && (!paired || remotePairingRequested) && webAppRes.problems.length === 0 && webAppRes.url !== "") {
+      reach = await probeWebAppReach(webAppRes.url);
+      // Logged without the URL or body: the address may embed the relay host
+      // and desktop.log lives on disk unencrypted.
+      log(`[desktop] app reach: ${reach.state}`);
+    }
     setPairingState({
       mode: quietLocal ? "local" : remotePairingRequested ? "remote" : undefined,
       uri,
@@ -1113,6 +1163,9 @@ async function refreshPairingState(): Promise<void> {
       // the P2-189 field — the legacy real-source assertion keeps matching.
       pairLink,
       webApp,
+      // P2-197: additive reach verdict, AFTER webApp so the P2-189/P2-193
+      // real-source assertions keep matching; absent = unknown to the renderer.
+      reach,
     });
   } catch (err) {
     // Daemon down, token rotated or state file wiped: drop the cached state so

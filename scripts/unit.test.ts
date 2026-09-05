@@ -47,6 +47,7 @@ import {
   WEB_APP_URL_MAX_LEN,
 } from "../apps/desktop/src/webappurl";
 import { buildPairLink, PAIR_LINK_HASH_ROUTE, PAIR_LINK_MAX_LEN } from "../apps/desktop/src/pairlink";
+import { hasAppMarker, probeVerdict, WEB_REACH_TIMEOUT_MS } from "../apps/desktop/src/webreach";
 import {
   bodyLimit,
   isBodyLimitError,
@@ -12610,11 +12611,13 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     rmSync(webAppDir, { recursive: true, force: true });
   }
 
-  // real-source assertion: the shell wires step one end to end
+  // real-source assertion: the shell wires step one end to end.
+  // P2-197: webApp is no longer the LAST field — the additive `reach` rides
+  // after it — so the regex now only pins `webApp,` inside the payload.
   const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
   check(
     "P2-189: webApp travels in the ocr:pairing-state payload",
-    /setPairingState\(\{[\s\S]*?webApp,\s*\}\);/.test(mainSrc),
+    /setPairingState\(\{[\s\S]*?webApp,[\s\S]*?\}\);/.test(mainSrc),
   );
   check(
     "P2-189: the web-app QR is minted by QRCode.toDataURL ONLY when the resolution is problem-free",
@@ -13193,6 +13196,99 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     bootstrapLabelAt > -1 &&
       daemonIndexSrc.slice(bootstrapLabelAt, bootstrapLabelAt + 600).includes("nextDeviceLabel(") &&
       !daemonIndexSrc.includes('label: "first"'),
+  );
+}
+
+// --- P2-197: reach probe of the app address (webreach.ts) --------------------
+
+{
+  const base = { elapsedMs: 1, errorName: "", appMarker: false } as const;
+
+  // probeVerdict matrix — one check per state
+  const ok = probeVerdict({ ...base, status: 200, appMarker: true });
+  check("P2-197: status 200 AND the app marker → ok", ok.state === "ok" && ok.message.length > 0);
+  const notOurs = probeVerdict({ ...base, status: 200, appMarker: false });
+  check("P2-197: status 200 without the app marker → not-our-app", notOurs.state === "not-our-app");
+  const tls = probeVerdict({ status: null, elapsedMs: 1, errorName: "CERT_HAS_EXPIRED", appMarker: false });
+  check("P2-197: certificate error name → tls-error", tls.state === "tls-error");
+  const tlsLower = probeVerdict({ status: null, elapsedMs: 1, errorName: "unable_to_verify_leaf_signature", appMarker: false });
+  check("P2-197: error names match case-insensitively (tls)", tlsLower.state === "tls-error");
+  const dns = probeVerdict({ status: null, elapsedMs: 1, errorName: "ENOTFOUND", appMarker: false });
+  check("P2-197: name-resolution error name → dns-error", dns.state === "dns-error");
+  const abort = probeVerdict({ status: null, elapsedMs: 1, errorName: "AbortError", appMarker: false });
+  check("P2-197: abort → timeout", abort.state === "timeout");
+  const abortAlt = probeVerdict({ status: null, elapsedMs: 1, errorName: "TimeoutError", appMarker: false });
+  check("P2-197: TimeoutError → timeout too", abortAlt.state === "timeout");
+  const httpError = probeVerdict({ ...base, status: 503 });
+  check("P2-197: 503 → http-error (never unreachable)", httpError.state === "http-error");
+  const refused = probeVerdict({ status: null, elapsedMs: 1, errorName: "ECONNREFUSED", appMarker: false });
+  check("P2-197: connection refused → unreachable", refused.state === "unreachable");
+  check(
+    "P2-197: a marker-less 2xx/3xx final answer (204) → not-our-app",
+    probeVerdict({ ...base, status: 204 }).state === "not-our-app",
+  );
+
+  // every generated message: non-empty, no path separators, no URL scheme
+  const verdicts = [ok, notOurs, tls, tlsLower, dns, abort, abortAlt, httpError, refused];
+  check(
+    "P2-197: every message is non-empty, path-free and scheme-free",
+    verdicts.every(
+      (v) =>
+        v.message.length > 0 &&
+        !v.message.includes("/") &&
+        !v.message.includes("\\") &&
+        !v.message.includes("http:") &&
+        !v.message.includes("https:"),
+    ),
+  );
+
+  // hasAppMarker against the REAL index.html markers and a stranger's page
+  const realIndex = readFileSync(join(import.meta.dirname, "..", "apps", "web", "index.html"), "utf8");
+  check(
+    "P2-197: hasAppMarker is true for the real app shell and false for a stranger page",
+    hasAppMarker(realIndex) === true && hasAppMarker("<h1>nginx</h1>") === false,
+  );
+
+  // real-source assertions over the REAL main.ts
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  const helperAt = mainSrc.indexOf("async function probeWebAppReach(");
+  const helperBody = helperAt > -1 ? mainSrc.slice(helperAt, helperAt + 1600) : "";
+  check(
+    "P2-197: the real main.ts probes the ORIGIN of webApp, never the credential-bearing pairLink",
+    mainSrc.includes("probeWebAppReach(webAppRes.url)") &&
+      mainSrc.includes("new URL(url).origin") &&
+      !mainSrc.includes("probeWebAppReach(pairLink") &&
+      !mainSrc.includes("probeWebAppReach(pairLinkRes"),
+  );
+  check(
+    "P2-197: the probe request never carries a credential header",
+    helperAt > -1 && !helperBody.includes("headers") && !helperBody.includes("authorization"),
+  );
+  check(
+    "P2-197: the probe timeout reuses PROBE_TIMEOUT_MS (2s) and equals WEB_REACH_TIMEOUT_MS",
+    /const PROBE_TIMEOUT_MS = 2_000;/.test(mainSrc) && WEB_REACH_TIMEOUT_MS === 2_000,
+  );
+  const setPairingAt = mainSrc.indexOf("setPairingState({");
+  const payload = mainSrc.slice(setPairingAt, mainSrc.indexOf("});", setPairingAt));
+  check(
+    "P2-197: the additive reach field rides AFTER webApp in the pairing payload",
+    payload.indexOf("webApp,") > -1 && payload.indexOf("reach,") > payload.indexOf("webApp,"),
+  );
+  check(
+    "P2-197: the probe runs only under the QR guard and a problem-free address",
+    /!quietLocal && \(!paired \|\| remotePairingRequested\) && webAppRes\.problems\.length === 0 && webAppRes\.url !== ""/.test(mainSrc),
+  );
+  check(
+    "P2-197: the renderer treats an absent reach as unknown (optional chaining, no crash)",
+    readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingOverlay.tsx"), "utf8").includes("{reach && ("),
+  );
+  check(
+    "P2-197: pairReachOk/pairReachRetry/pairReachTesting exist in en and pt",
+    ["pairReachOk", "pairReachRetry", "pairReachTesting"].every(
+      (k) =>
+        typeof (dict.en as Record<string, string>)[k] === "string" &&
+        typeof (dict.pt as Record<string, string>)[k] === "string",
+    ),
   );
 }
 

@@ -68,6 +68,12 @@ export interface PairingState {
    * Optional and additive; qrDataUrl is null whenever problems is non-empty
    * (no QR for a problem-bearing link — the two-QR fallback stays). */
   pairLink?: { url: string; qrDataUrl: string | null; problems: string[] };
+  /** P2-197: how the last reach probe of the app address went (state ok |
+   * unreachable | timeout | tls-error | dns-error | http-error | not-our-app
+   * plus a static pt-BR message). Optional and additive: absent means the
+   * probe has not run (or the shell is legacy) — an unknown state renders
+   * nothing and never blocks pairing. */
+  reach?: { state: string; message: string };
 }
 
 /** P2-187: the phone relay address resolution (Settings → "Relay do celular").
@@ -125,6 +131,9 @@ contextBridge.exposeInMainWorld("ocrDesktop", {
   setRemotePairing: (on: boolean): Promise<boolean> => ipcRenderer.invoke("app:setRemotePairing", on),
   // P1-053: banner button — manual daemon restart (same path as the tray).
   reconnectDaemon: (): Promise<boolean> => ipcRenderer.invoke("app:reconnectDaemon"),
+  // P2-197: pairing overlay "test again" — re-runs the pairing tick, which
+  // re-probes the app address; the next ocr:pairing-state push carries it.
+  recheckWebApp: (): Promise<void> => ipcRenderer.invoke("app:recheckWebApp"),
   // P2-187: phone relay address — current resolution and the validated write
   // (null clears the stored setting; validation happens in the main process).
   getRelaySetting: (): Promise<RelaySetting> => ipcRenderer.invoke("app:relaySetting"),
