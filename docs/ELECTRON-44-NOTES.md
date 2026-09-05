@@ -3,6 +3,20 @@
 Task: [P2-066] — validate the desktop shell on the Electron 44 line and probe the
 staged auto-update path that stage 5 (notarized DMG + Windows installer) will build on.
 
+## P2-168: security bump 44.1.1 → 44.2.0 (Chromium sandbox RCE)
+
+CVE-2026-85046 is a Chromium sandbox escape → RCE, actively exploited in the wild —
+and this app is an embedded Chromium. `scripts/electron-vuln.ts` (P2-168) audits the
+pin: pure `electronExposure()` compares the electron devDependency against a static
+map of fixed versions and returns `affected`/`chromiumVersion`/`reason` in the
+release-preflight `problems` style; the CLI prints the verdict and exits 1 when
+affected. The minimum safe bump on the 44 line is **44.2.0**, which updated Chromium
+to **152.0.7977.76** (electron#53382) and Node.js to v24.20.0 — that Chromium build
+carries the CVE-2026-85046 fix. The pin was bumped 44.1.1 → 44.2.0 and re-validated:
+`dist:smoke` OK (packaged bundle reports `CFBundleVersion = 44.2.0`) and
+`test:desktop-flow` all green. No API-surface or behavior change; the audit CLI is
+the only new tool (`npx tsx scripts/electron-vuln.ts [<electronVersion>]`).
+
 ## Current state
 
 - P2-015 already did the major jump 38.8.6 → 44.1.0 (d421bae) with no API breaks.
