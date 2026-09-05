@@ -55,6 +55,7 @@ import {
 } from "./pilotforensic.js";
 import { detectWhisperDetail, transcribeAudio, type WhisperTool } from "./whisper.js";
 import { sttVerdict } from "./voicecap.js";
+import { modelReadyVerdict, providerSummary, type ProviderSummary } from "./modelready.js";
 import { cachedSpeech, detectEdgeTts, prewarmSpeech, putSpeech, resolveVoice, synthesizeSpeech, TTS_VOICES } from "./edgetts.js";
 import { spokenNumbers, SPEECH_LANGS } from "./spoken.js";
 import { metrics, startMetricsServer, VERSION } from "./metrics.js";
@@ -280,6 +281,36 @@ let sttModelPresent = false;
  */
 function sttStatus(): { available: boolean; state: string; message: string } {
   const verdict = process.env.OCR_STT_BLOCK === "1" ? sttVerdict(null, false) : sttVerdict(sttToolType, sttModelPresent);
+  return { available: verdict.state === "ready", state: verdict.state, message: verdict.message };
+}
+
+// P2-210: last summary observed from the provider catalog — fed ONLY by
+// fetches that already happen (the context ruler's on-miss refresh and the
+// /provider passthrough). The readiness route never fetches on its own: it
+// reads this summary, so "no usable provider" surfaces before the first
+// message instead of as a raw upstream error after it.
+let modelCatalogSummary: ProviderSummary[] | null = null;
+let modelCatalogFailed = false;
+
+/** Record an observation of the already-fetched provider catalog. */
+function noteProviderCatalog(catalog: unknown, ok: boolean) {
+  modelCatalogFailed = !ok;
+  if (ok) {
+    modelCatalogSummary = providerSummary(catalog as Parameters<typeof providerWindows.refresh>[0]);
+  }
+}
+
+/**
+ * P2-210: model-readiness verdict for the status route. OCR_MODEL_BLOCK=1 is
+ * a documented test hatch (same spirit as OCR_STT_BLOCK): it forces the
+ * no-provider verdict so the composer hint can be evidenced deterministically
+ * on hosts that DO have credentials.
+ */
+function modelStatus(): { available: boolean; state: string; message: string } {
+  const verdict =
+    process.env.OCR_MODEL_BLOCK === "1"
+      ? modelReadyVerdict([])
+      : modelReadyVerdict(modelCatalogSummary, modelCatalogFailed);
   return { available: verdict.state === "ready", state: verdict.state, message: verdict.message };
 }
 // local TTS replies (optional; edge-tts CLI) — P2-125 voice mode
@@ -538,10 +569,17 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
               headers: authHeader ? { authorization: authHeader } : {},
             });
             if (pres.ok) {
-              providerWindows.refresh((await pres.json()) as Parameters<typeof providerWindows.refresh>[0]);
+              const catalog = (await pres.json()) as Parameters<typeof providerWindows.refresh>[0];
+              providerWindows.refresh(catalog);
+              // P2-210: same catalog, already fetched — record the readiness
+              // summary without a new request or a freshness-policy change.
+              noteProviderCatalog(catalog, true);
               window = providerWindows.lookup(providerID, modelID);
+            } else {
+              noteProviderCatalog(null, false);
             }
           } catch {
+            noteProviderCatalog(null, false);
             // provider catalog is optional — without it there is no gauge
           }
         }
@@ -869,6 +907,13 @@ end tell`;
   if (req.path === "/__ocr/voice/stt-status" && req.method === "GET") {
     return { id: req.id, status: 200, body: sttStatus() };
   }
+  // P2-210: model-readiness status, mirroring the stt-status route shape
+  // (available boolean + verdict state and actionable pt-BR message). Same
+  // auth, same tunnel — no new network surface. Reads ONLY the already-cached
+  // catalog summary (see noteProviderCatalog); it never fires its own fetch.
+  if (req.path === "/__ocr/model/status" && req.method === "GET") {
+    return { id: req.id, status: 200, body: modelStatus() };
+  }
   if (req.path === "/__ocr/voice/tts" && req.method === "POST") {
     const { text, lang } = req.body as { text?: string; lang?: string };
     if (!text || typeof text !== "string" || text.length > 2000) {
@@ -1075,7 +1120,13 @@ end tell`;
           name?: string;
           models?: Record<string, { id?: string; name?: string }>;
         }[];
+        connected?: unknown;
       };
+      // P2-210: the client's own /provider fetch (model selector) already
+      // delivered the raw catalog — record the readiness summary BEFORE it is
+      // slimmed away (no new request; this is what makes the verdict available
+      // on the home screen before the first message).
+      noteProviderCatalog(j, true);
       if (j?.all) {
         body = {
           all: j.all.map((p) => ({
@@ -1087,6 +1138,10 @@ end tell`;
           })),
         };
       }
+    } else if (!res.ok && req.method === "GET" && req.path === "/provider") {
+      // P2-210: the catalog fetch the client already made failed — an honest
+      // unknown until the next successful observation.
+      noteProviderCatalog(null, false);
     }
     return { id: req.id, status: res.status, body };
   } catch (err) {

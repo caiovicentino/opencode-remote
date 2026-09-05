@@ -10,6 +10,7 @@ import {
 import type { EventEnvelope } from "@ocr/protocol";
 import { WavRecorder, encodeWav } from "../lib/recorder";
 import { transcribeBlob, useSttStatus } from "../lib/transcribe";
+import { useModelStatus } from "../lib/modelstatus";
 import { useModelSelector } from "../lib/models";
 import ModelMenuItems from "./ModelMenuItems";
 import { saveFile } from "../lib/files";
@@ -317,6 +318,13 @@ export default function ChatView({
   // the mic fails open; a known non-ready state disables it with the phrase.
   const stt = useSttStatus(request);
   const sttBlocked = !!stt && stt.state !== "ready";
+  // P2-210: host model-readiness verdict. DELIBERATELY fail-open: the calm
+  // line above the composer never disables it and never blocks sending —
+  // blocking the conversation because a probe says the machine has no
+  // credentials would be worse than the late raw upstream error this line
+  // replaces. Its whole job is to explain that failure before the first send.
+  const modelStatus = useModelStatus(request);
+  const modelHint = modelStatus && modelStatus.state !== "ready" ? modelStatus : null;
   // P2-125 voice replies: toggle + playback state. Availability comes from the
   // daemon (edge-tts installed on the host); the full answer stays in the chat.
   const [ttsOn, setTtsOn] = useState(() => localStorage.getItem("ocr-tts-on") === "1");
@@ -2500,6 +2508,11 @@ export default function ChatView({
         )}
 
 
+        {modelHint && (
+          <p className="composer-hint" role="status">
+            {modelHint.message}
+          </p>
+        )}
         <div className="composer">
           {images.length > 0 && (
             <div className="composer-atts">

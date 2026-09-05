@@ -16,6 +16,7 @@ import { isLoopbackAddr, localOriginAllowed, localUpgradeAllowed } from "../apps
 
 import { classifyRelayClose, effectiveRetryDelayMs } from "../apps/daemon/src/relayclose";
 import { sttVerdict } from "../apps/daemon/src/voicecap";
+import { modelReadyVerdict, providerSummary } from "../apps/daemon/src/modelready";
 import { rewriteFeedPort } from "../apps/daemon/src/feedport";
 import { createRelayRetry } from "../apps/daemon/src/relayretry";
 import { nodeStateFileFs, writeStateAtomic, type StateFileFs } from "../apps/daemon/src/statefile";
@@ -13542,6 +13543,144 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       (chatViewSrc.match(/sttBlocked/g) ?? []).length >= 3 &&
       (homeViewSrc.match(/sttBlocked/g) ?? []).length >= 3 &&
       src(["apps", "web", "src", "lib", "transcribe.ts"]).includes('request("GET", "/__ocr/voice/stt-status")'),
+  );
+}
+
+// --- P2-210: model-readiness verdict (modelready.ts) + wiring ------------------
+
+{
+  const src = (rel: string[]) => readFileSync(join(import.meta.dirname, "..", ...rel), "utf8");
+  const modelreadySrc = src(["apps", "daemon", "src", "modelready.ts"]);
+  const indexSrc = src(["apps", "daemon", "src", "index.ts"]);
+
+  // verdict matrix
+  check(
+    "P2-210: one provider with at least one model is ready (zero-model peers do not block it)",
+    modelReadyVerdict([{ id: "prov-a", models: 1 }]).state === "ready" &&
+      modelReadyVerdict([
+        { id: "prov-a", models: 0 },
+        { id: "prov-b", models: 7 },
+      ]).state === "ready",
+  );
+  check("P2-210: an empty provider list is no-provider", modelReadyVerdict([]).state === "no-provider");
+  check(
+    "P2-210: providers present with zero models is no-model",
+    modelReadyVerdict([
+      { id: "prov-a", models: 0 },
+      { id: "prov-b", models: 0 },
+    ]).state === "no-model",
+  );
+  check(
+    "P2-210: a fetch-error indicator lands in unknown even with a good summary",
+    modelReadyVerdict([{ id: "prov-a", models: 3 }], true).state === "unknown",
+  );
+  check(
+    "P2-210: a missing summary lands in unknown",
+    modelReadyVerdict(null).state === "unknown" && modelReadyVerdict(undefined).state === "unknown",
+  );
+
+  // message hygiene: no paths, no URL schemes, no provider identifiers, no secrets
+  const ids = ["anthropic", "openai", "sk-secret-token-123", "my-machine"];
+  const verdicts = [
+    modelReadyVerdict([{ id: "anthropic", models: 5 }]),
+    modelReadyVerdict([]),
+    modelReadyVerdict([{ id: "anthropic", models: 0 }]),
+    modelReadyVerdict([{ id: "anthropic", models: 0 }], true),
+    modelReadyVerdict(null),
+    modelReadyVerdict(undefined, true),
+  ];
+  check(
+    "P2-210: every verdict message is non-empty, free of paths/URLs and never names a provider or secret",
+    verdicts.every(
+      (v) =>
+        v.message.trim().length > 0 &&
+        !/[\\/]/.test(v.message) &&
+        !/https?:/i.test(v.message) &&
+        ids.every((id) => !v.message.includes(id)),
+    ),
+  );
+  check(
+    "P2-210: the unknown phrase is neutral — it never accuses a failure",
+    modelReadyVerdict(null).message !== modelReadyVerdict([]).message &&
+      !/falh|erro|inválid/i.test(modelReadyVerdict(null).message),
+  );
+
+  // providerSummary derives from the SAME catalog shape the ruler caches
+  const catalog = {
+    all: [
+      { id: "openai", models: { "gpt-1": {}, "gpt-2": {} } },
+      { id: "offline", models: {} },
+    ],
+    connected: ["openai", "ghost", "offline"],
+  };
+  check(
+    "P2-210: providerSummary counts models per connected provider from the cached catalog",
+    JSON.stringify(providerSummary(catalog)) ===
+      JSON.stringify([
+        { id: "openai", models: 2 },
+        { id: "ghost", models: 0 },
+        { id: "offline", models: 0 },
+      ]),
+  );
+  check(
+    "P2-210: a catalog without the connected list cannot answer — null, never a guess",
+    providerSummary({ all: [{ id: "openai", models: {} }] }) === null && providerSummary(null) === null,
+  );
+  check(
+    "P2-210: a connected provider missing from all counts zero models (no-model)",
+    modelReadyVerdict(providerSummary({ all: [], connected: ["openai"] })).state === "no-model",
+  );
+
+  // modelready.ts stays pure: unit tests must never boot a daemon on import
+  // (strip line comments first — the header prose names the banned modules)
+  const code = modelreadySrc.replace(/\/\/.*$/gm, "");
+  check(
+    "P2-210: modelready.ts is pure (no node:fs/child_process/http/ws imports)",
+    !/node:(fs|child_process|http|os|path)/.test(code) && !/"ws"/.test(code),
+  );
+
+  // real-repo assertion: the route mirrors stt-status and consumes the cached
+  // catalog — the route body never fires a fetch of its own
+  const routeAt = indexSrc.indexOf('/__ocr/model/status" && req.method === "GET"');
+  const routeBody = routeAt >= 0 ? indexSrc.slice(routeAt, indexSrc.indexOf("if (req.path", routeAt + 20)) : "";
+  check(
+    "P2-210: GET /__ocr/model/status mirrors the stt-status route shape",
+    routeAt >= 0 && /body: modelStatus\(\) \}/.test(routeBody) && !routeBody.includes("fetch("),
+  );
+  check(
+    "P2-210: the readiness summary comes only from fetches that already happen — the ruler refresh and the /provider passthrough",
+    /providerWindows\.refresh\(catalog\);\s*\n\s*\/\/ P2-210/.test(indexSrc) &&
+      indexSrc.includes("noteProviderCatalog(catalog, true)") &&
+      indexSrc.includes("noteProviderCatalog(j, true)") &&
+      /modelReadyVerdict\(modelCatalogSummary, modelCatalogFailed\)/.test(indexSrc),
+  );
+
+  // documented test hatch forcing no-provider for deterministic evidence
+  check(
+    "P2-210: OCR_MODEL_BLOCK=1 is the documented test hatch forcing no-provider",
+    indexSrc.includes('process.env.OCR_MODEL_BLOCK === "1"') &&
+      /OCR_MODEL_BLOCK/.test(src(["README.md"])) &&
+      /OCR_MODEL_BLOCK/.test(src(["README.pt-BR.md"])) &&
+      /OCR_MODEL_BLOCK/.test(src(["docs", "troubleshooting.md"])),
+  );
+
+  // both composers consult the verdict, show the calm hint and NEVER block
+  // sending (fail open on purpose — no disabled= may depend on the hint)
+  const chatViewSrc = src(["apps", "web", "src", "components", "ChatView.tsx"]);
+  const homeViewSrc = src(["apps", "web", "src", "components", "HomeView.tsx"]);
+  check(
+    "P2-210: ChatView and HomeView probe model status, show the calm hint and never disable sending",
+    chatViewSrc.includes("const modelStatus = useModelStatus(request)") &&
+      homeViewSrc.includes("const modelStatus = useModelStatus(request)") &&
+      (chatViewSrc.match(/modelHint/g) ?? []).length >= 2 &&
+      (homeViewSrc.match(/modelHint/g) ?? []).length >= 2 &&
+      src(["apps", "web", "src", "lib", "modelstatus.ts"]).includes('request("GET", "/__ocr/model/status")') &&
+      !/disabled=\{[^}]*modelHint/.test(chatViewSrc) &&
+      !/disabled=\{[^}]*modelHint/.test(homeViewSrc),
+  );
+  check(
+    "P2-210: the fail-open reason is written in the code comment",
+    /DELIBERATELY fail-open/.test(chatViewSrc) && /DELIBERATELY fail-open/.test(homeViewSrc),
   );
 }
 

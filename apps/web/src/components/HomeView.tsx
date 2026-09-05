@@ -5,6 +5,7 @@ import { greetingKey, homeIdeas, type HomeIdeaIcon } from "../lib/home";
 import { composerSelectorLabel } from "../lib/composer";
 import { useModelSelector } from "../lib/models";
 import { transcribeBlob, useSttStatus } from "../lib/transcribe";
+import { useModelStatus } from "../lib/modelstatus";
 import { WavRecorder } from "../lib/recorder";
 import ModelMenuItems from "./ModelMenuItems";
 import {
@@ -55,6 +56,13 @@ export default function HomeView({ machineName, request, voice, creating, onStar
   // disable with the actionable phrase once the daemon reports a problem.
   const stt = useSttStatus(request);
   const sttBlocked = !!stt && stt.state !== "ready";
+  // P2-210: host model-readiness verdict. DELIBERATELY fail-open: this hint
+  // never disables the composer and never blocks sending — blocking the
+  // conversation because a probe says the machine has no credentials would be
+  // worse than the late raw upstream error this calm line replaces. The
+  // reason it exists at all is to explain the failure BEFORE the first send.
+  const modelStatus = useModelStatus(request);
+  const modelHint = modelStatus && modelStatus.state !== "ready" ? modelStatus : null;
 
   // close the model menu on outside clicks, like the ChatView dropdown
   useEffect(() => {
@@ -123,6 +131,11 @@ export default function HomeView({ machineName, request, voice, creating, onStar
         </div>
 
         <div className="home-composer">
+          {modelHint && (
+            <p className="composer-hint" role="status">
+              {modelHint.message}
+            </p>
+          )}
           <div className="composer">
             <textarea
               ref={taRef}
