@@ -1882,7 +1882,11 @@ button.desk-new:hover:not(:disabled) {
   inset: 0;
   z-index: 200;
   display: grid;
-  place-items: center;
+  /* P2-189: two labeled steps make the card taller than the old single-QR
+     one — "safe center" keeps small content centered yet lets tall content
+     start at the top and scroll instead of clipping the actions off-screen. */
+  place-items: safe center;
+  overflow-y: auto;
   background: color-mix(in srgb, var(--bg) 92%, transparent);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
@@ -1935,7 +1939,7 @@ button.desk-new:hover:not(:disabled) {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   width: 100%;
 }
 .pair-step-label {

@@ -77,8 +77,8 @@ export default function PairingOverlay({ qrDataUrl, onDismiss, deviceList, webAp
                 className="pair-overlay-qr"
                 src={webApp.qrDataUrl}
                 alt={t("pairWebAppAlt")}
-                width={220}
-                height={220}
+                width={180}
+                height={180}
               />
               <div className="pair-webapp-address">
                 <code className="pair-webapp-url">{webApp.url}</code>
@@ -93,15 +93,13 @@ export default function PairingOverlay({ qrDataUrl, onDismiss, deviceList, webAp
         </section>
 
         {/* P2-189 step two: the pairing QR, now labeled — both QRs on this
-            screen always say which is which. */}
+            screen always say which is which. The QR is the hero of the card
+            and the only primary action; keep it visibly larger than the
+            step-one address QR. */}
         <section className="pair-step" aria-label={t("pairOverlayTitle")}>
           <span className="pair-step-label">{t("pairStepTwo")}</span>
           <h3 className="pair-step-title">{t("pairOverlayTitle")}</h3>
-          <img className="pair-overlay-qr" src={qrDataUrl} alt={t("pairOverlayAlt")} width={280} height={280} />
-          <ol className="splash-steps">
-            <li>{t("splashStep2")}</li>
-            <li>{t("splashStep3")}</li>
-          </ol>
+          <img className="pair-overlay-qr" src={qrDataUrl} alt={t("pairOverlayAlt")} width={240} height={240} />
         </section>
 
         {deviceList && deviceList.length > 0 && (

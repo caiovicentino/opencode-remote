@@ -173,9 +173,6 @@ export const dict = {
     pairOverlayLater: "Pair later",
     // first-run splash (desktop, P1-050): promise the first value in <60s
     splashValue: "Control this machine from your phone. Your agent, your code — end-to-end encrypted.",
-    splashStep1: "Open OpenCode Remote on your phone",
-    splashStep2: "Scan this pairing code",
-    splashStep3: "Send your first message — audio, photo or text",
     splashUnder: "First value in under a minute.",
     pairDevicesCount: "Paired devices ({n}): ",
     // diagnostics (desktop settings, P1-050)
@@ -560,9 +557,6 @@ export const dict = {
     pairOverlayLater: "Parear depois",
     // first-run splash (desktop, P1-050): promessa do 1º valor em <60s
     splashValue: "Controle esta máquina do celular. Seu agente, seu código — criptografia ponta a ponta.",
-    splashStep1: "Abra o OpenCode Remote no celular",
-    splashStep2: "Escaneie este código de pareamento",
-    splashStep3: "Mande a primeira mensagem — áudio, foto ou texto",
     splashUnder: "Primeiro valor em menos de 1 minuto.",
     pairDevicesCount: "Celulares pareados ({n}): ",
     // diagnostics (desktop settings, P1-050)
