@@ -243,6 +243,24 @@ private. That is the product: **local power, remote control, zero trust**.
   `OCR_UPLOAD_RETENTION_GRACE_HOURS`, `OCR_UPLOAD_RETENTION_MAX_AGE_DAYS`,
   `OCR_UPLOAD_RETENTION_MAX_BYTES` and `OCR_UPLOAD_RETENTION_MIN_FILES`
   (invalid values fail the boot, fail-closed)
+- **Clips retention** — `~/.opencode-remote/clips/` (the rendered social clips
+  plus the extracted transcription audio, the heaviest files the product
+  produces) is bounded by the same janitor sweep and cadence (once at boot,
+  then every **6 h**): the decision unit is the **group** — one folder per
+  source video, or one loose work file at the root — deleted whole, never by
+  halves. Groups older than **30 days** go and, oldest first, enough of the
+  rest goes to keep the folder within **4 GB**. Groups modified in the last
+  **24 h** are never touched and the **3 most recently modified** groups
+  always survive, even when every ceiling is blown. Only the clips root is
+  scanned (immediate children; symlinks are never followed and the uploads,
+  artifacts and every other state dir stay out of reach). Each sweep logs one
+  line with the deleted count and bytes (never file or folder names — those
+  come from your video titles) and bumps the
+  `ocr_clip_retention_deleted_total` metric. Set `OCR_CLIP_RETENTION=off` in
+  the daemon environment to disable it entirely (default: on); the ceilings
+  are overridable via `OCR_CLIP_RETENTION_GRACE_HOURS`,
+  `OCR_CLIP_RETENTION_MAX_AGE_DAYS`, `OCR_CLIP_RETENTION_MAX_BYTES` and
+  `OCR_CLIP_RETENTION_MIN_GROUPS` (invalid values fail the boot, fail-closed)
 - **Desktop shell (early)** — Electron app wrapping the same UI, with tray and native menu;
   includes a **Browser pane**: in the desktop shell it renders a real sandboxed Electron
   `<webview>` (scroll, click and edit work like in a browser; `contextIsolation`/`sandbox` on,

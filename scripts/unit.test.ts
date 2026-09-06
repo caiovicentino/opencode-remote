@@ -395,6 +395,23 @@ import {
 } from "../apps/daemon/src/uploadretention";
 
 import {
+  CLIP_RETENTION_DEFAULTS,
+  CLIP_RETENTION_DISABLE_ENV,
+  CLIP_RETENTION_GRACE_HOURS,
+  CLIP_RETENTION_GRACE_HOURS_CEILING,
+  CLIP_RETENTION_MAX_AGE_DAYS,
+  CLIP_RETENTION_MAX_AGE_DAYS_CEILING,
+  CLIP_RETENTION_MAX_BYTES_CEILING,
+  CLIP_RETENTION_MAX_TOTAL_BYTES,
+  CLIP_RETENTION_MIN_GROUPS,
+  CLIP_RETENTION_MIN_GROUPS_CEILING,
+  clipRetentionDisabled,
+  clipRetentionPlan,
+  parseClipRetention,
+  type ClipGroup,
+} from "../apps/daemon/src/clipretention";
+
+import {
   ARTIFACTS_MARKER,
   buildArtifactsPathLine,
   buildArtifactsPrompt,
@@ -15560,14 +15577,14 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   // five pre-existing setInterval( call sites). P2-228 taught that shared
   // interval to sweep uploads too — still exactly one timer, two janitors.
   const bootAt = indexSrc.indexOf("refreshDiskState();");
-  const janitorAt = indexSrc.indexOf("if (artifactsSweepOn || uploadsSweepOn) {");
+  const janitorAt = indexSrc.indexOf("if (artifactsSweepOn || uploadsSweepOn || clipsSweepOn) {");
   check(
     "P2-215: the disk reading fires once at boot, before the janitor block",
     bootAt >= 0 && janitorAt > bootAt,
   );
   check(
     "P2-215: the reading rides the existing janitor interval and no new periodic timer exists",
-    /const retentionTimer = setInterval\(\(\) => \{\s*\n\s*refreshDiskState\(\);\s*\n\s*if \(artifactsSweepOn\) sweepArtifactRetention\(\);\s*\n\s*if \(uploadsSweepOn\) sweepUploadRetention\(\);\s*\n\s*\}, RETENTION_INTERVAL_MS\)/.test(
+    /const retentionTimer = setInterval\(\(\) => \{\s*\n\s*refreshDiskState\(\);\s*\n\s*if \(artifactsSweepOn\) sweepArtifactRetention\(\);\s*\n\s*if \(uploadsSweepOn\) sweepUploadRetention\(\);\s*\n\s*if \(clipsSweepOn\) sweepClipRetention\(\);\s*\n\s*\}, RETENTION_INTERVAL_MS\)/.test(
       indexSrc,
     ) &&
       (indexSrc.match(/setInterval\(/g) ?? []).length === 5,
@@ -16243,7 +16260,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   // real-source assertions: the sweep rides the EXISTING janitor hook and no
   // new periodic timer exists anywhere in index.ts
   const daemonSrc228 = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
-  const hookAt = daemonSrc228.indexOf("if (artifactsSweepOn || uploadsSweepOn) {");
+  const hookAt = daemonSrc228.indexOf("if (artifactsSweepOn || uploadsSweepOn || clipsSweepOn) {");
   const hookEnd = hookAt > -1 ? daemonSrc228.indexOf("}, RETENTION_INTERVAL_MS)", hookAt) : -1;
   const hookBody = hookAt > -1 && hookEnd > -1 ? daemonSrc228.slice(hookAt, hookEnd) : "";
   check(
@@ -16290,6 +16307,364 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P2-228: uploadretention.ts is pure (no node:fs/path/child_process/http/os or fetch imports)",
     !/node:(fs|path|child_process|http|os)/.test(pureCode) && !/\bfetch\b/.test(pureCode),
+  );
+}
+
+// --- P2-248: clips retention (clipretention.ts) --------------------------------
+
+{
+  const HOUR = 3_600_000;
+  const DAY = 24 * HOUR;
+  const NOW = 1_800_000_000_000; // arbitrary fixed "now" anchor (pure: no clock reads)
+  const MB = 1_000_000;
+
+  const group = (name: string, bytes: number, ageMs: number): ClipGroup => ({
+    path: join("/state", "clips", name),
+    bytes,
+    mtime: NOW - ageMs,
+  });
+  const namesOf = (plan: { paths: string[] }) => plan.paths.map((p) => p.split("/").pop());
+
+  // empty clips root → empty plan
+  check(
+    "P2-248: empty group list yields an empty plan",
+    clipRetentionPlan([], NOW).paths.length === 0 && clipRetentionPlan([], NOW).bytes === 0,
+  );
+
+  // grace outranks every blown ceiling: 1 h-old groups survive maxAge 1 ms,
+  // a 1-byte ceiling and minGroups 1
+  {
+    const plan = clipRetentionPlan(
+      [group("one-video", 3_500 * MB, 1 * HOUR), group("two-video", 3_500 * MB, 2 * HOUR)],
+      NOW,
+      { graceMs: 24 * HOUR, maxAgeMs: 1, maxTotalBytes: 1, minGroups: 1 },
+    );
+    check(
+      "P2-248: a group inside the grace period is never planned even with every ceiling blown",
+      plan.paths.length === 0 && plan.bytes === 0,
+    );
+  }
+
+  // the most recent groups up to minGroups survive even past every ceiling:
+  // all three groups are past the age ceiling and over the byte ceiling, yet
+  // only the oldest is planned
+  {
+    const plan = clipRetentionPlan(
+      [
+        group("old-a", 2_000 * MB, 40 * DAY),
+        group("old-b", 2_000 * MB, 30 * DAY),
+        group("old-c", 2_000 * MB, 20 * DAY),
+      ],
+      NOW,
+      { graceMs: 1, maxAgeMs: 1 * DAY, maxTotalBytes: 1, minGroups: 2 },
+    );
+    check(
+      "P2-248: the most recent groups up to minGroups are never planned even with every ceiling blown",
+      namesOf(plan).join(",") === "old-a" && plan.bytes === 2_000 * MB,
+    );
+  }
+
+  // age ceiling boundary with the explicit threshold: exactly 30 days old is
+  // NOT deletable (strictly greater required), one ms past is
+  {
+    const plan = clipRetentionPlan(
+      [
+        group("fresh", 1, 1 * HOUR),
+        group("edge-exact", 10, 30 * DAY),
+        group("edge-past", 10, 30 * DAY + 1),
+      ],
+      NOW,
+      { graceMs: 1, maxAgeMs: 30 * DAY, maxTotalBytes: 1_000_000_000_000, minGroups: 1 },
+    );
+    check(
+      "P2-248: a group exactly at the age ceiling survives; one ms past it is planned",
+      namesOf(plan).join(",") === "edge-past" && plan.bytes === 10,
+    );
+  }
+
+  // byte ceiling boundary with the explicit threshold: a deletable pool
+  // totaling exactly 1000 bytes plans nothing, one byte over deletes the
+  // oldest group only
+  {
+    const t = { graceMs: 1, maxAgeMs: 100 * DAY, maxTotalBytes: 1000, minGroups: 1 };
+    const exact = clipRetentionPlan(
+      [group("workfile", 10, 1 * HOUR), group("video-b", 400, 4 * HOUR), group("video-a", 600, 5 * HOUR)],
+      NOW,
+      t,
+    );
+    check(
+      "P2-248: a deletable pool totaling exactly the byte ceiling plans nothing",
+      exact.paths.length === 0 && exact.bytes === 0,
+    );
+    const over = clipRetentionPlan(
+      [group("workfile", 10, 1 * HOUR), group("video-b", 400, 4 * HOUR), group("video-a", 601, 5 * HOUR)],
+      NOW,
+      t,
+    );
+    check(
+      "P2-248: one byte above the byte ceiling deletes the oldest group until the pool fits",
+      namesOf(over).join(",") === "video-a" && over.bytes === 601,
+    );
+  }
+
+  // byte excess oldest-first: 1500 bytes against a 900-byte ceiling removes
+  // the two oldest candidates and stops there
+  {
+    const plan = clipRetentionPlan(
+      [
+        group("newest", 10, 1 * HOUR),
+        group("c-video", 500, 3 * HOUR),
+        group("b-video", 500, 4 * HOUR),
+        group("a-video", 500, 5 * HOUR),
+      ],
+      NOW,
+      { graceMs: 1, maxAgeMs: 100 * DAY, maxTotalBytes: 900, minGroups: 1 },
+    );
+    check(
+      "P2-248: byte excess removes candidates oldest-first until the pool fits",
+      namesOf(plan).join(",") === "a-video,b-video" && plan.bytes === 1000,
+    );
+  }
+
+  // fail-safe: groups the module cannot reason about are refused, never planned
+  {
+    const plan = clipRetentionPlan(
+      [
+        group("fresh", 1, 1 * HOUR),
+        group("ok", 10, 40 * DAY),
+        { path: join("/state", "clips", "nan"), bytes: Number.NaN, mtime: NOW - 40 * DAY },
+        { path: join("/state", "clips", "inf"), bytes: 10, mtime: Number.POSITIVE_INFINITY },
+      ],
+      NOW,
+      { graceMs: 1, maxAgeMs: 1 * DAY, maxTotalBytes: 1_000_000_000_000, minGroups: 1 },
+    );
+    check(
+      "P2-248: groups with non-finite bytes or non-finite instant are refused, never planned",
+      namesOf(plan).join(",") === "ok" && plan.bytes === 10,
+    );
+  }
+
+  // an instant in the future is inside the grace period by definition — it is
+  // never planned (documented defaults)
+  {
+    const plan = clipRetentionPlan(
+      [
+        group("fresh-1", 10, 1 * HOUR),
+        group("fresh-2", 10, 2 * HOUR),
+        { path: join("/state", "clips", "timelord"), bytes: 3_999 * MB, mtime: NOW + 1 * HOUR },
+      ],
+      NOW,
+    );
+    check(
+      "P2-248: a group with an instant in the future is never planned",
+      plan.paths.length === 0 && plan.bytes === 0,
+    );
+  }
+
+  // determinism: the same input in two different orders yields the same plan
+  {
+    const t = { graceMs: 1, maxAgeMs: 100 * DAY, maxTotalBytes: 1000, minGroups: 1 };
+    const base = (): ClipGroup[] => [
+      group("newest", 1, 1 * HOUR),
+      group("b-bin", 800, 2 * DAY),
+      group("a-bin", 800, 2 * DAY),
+    ];
+    const p1 = clipRetentionPlan(base(), NOW, t);
+    const p2 = clipRetentionPlan([...base()].reverse(), NOW, t);
+    check(
+      "P2-248: the plan is identical for the same input in two different orders (mtime ties by path)",
+      JSON.stringify(p1) === JSON.stringify(p2) &&
+        namesOf(p1).join(",") === "a-bin" &&
+        p1.bytes === 800,
+    );
+  }
+
+  // the plan never contains a path that was not received
+  {
+    const inputs = [
+      group("keep", 10, 1 * HOUR),
+      group("gone-huge", 4_000 * MB + 1, 40 * DAY),
+      group("gone-old", 10, 40 * DAY),
+    ];
+    const plan = clipRetentionPlan(inputs, NOW, { ...CLIP_RETENTION_DEFAULTS, minGroups: 1 });
+    check(
+      "P2-248: no planned path is outside the received list",
+      plan.paths.every((p) => inputs.some((g) => g.path === p)) && plan.paths.length === 2,
+    );
+  }
+
+  // documented thresholds stay conservative (a drift here is a doc change)
+  check(
+    "P2-248: documented thresholds are the conservative defaults",
+    CLIP_RETENTION_GRACE_HOURS === 24 &&
+      CLIP_RETENTION_MAX_AGE_DAYS === 30 &&
+      CLIP_RETENTION_MAX_TOTAL_BYTES === 4_000_000_000 &&
+      CLIP_RETENTION_MIN_GROUPS === 3,
+  );
+  check(
+    "P2-248: documented override ceilings stay conservative",
+    CLIP_RETENTION_GRACE_HOURS_CEILING === 720 &&
+      CLIP_RETENTION_MAX_AGE_DAYS_CEILING === 3650 &&
+      CLIP_RETENTION_MIN_GROUPS_CEILING === 1000,
+  );
+
+  // parseClipRetention: empty environment reproduces the documented defaults
+  {
+    const cfg = parseClipRetention({});
+    check(
+      "P2-248: empty environment reproduces the documented defaults",
+      !cfg.disabled &&
+        cfg.problems.length === 0 &&
+        cfg.thresholds.graceMs === CLIP_RETENTION_DEFAULTS.graceMs &&
+        cfg.thresholds.maxAgeMs === CLIP_RETENTION_DEFAULTS.maxAgeMs &&
+        cfg.thresholds.maxTotalBytes === CLIP_RETENTION_DEFAULTS.maxTotalBytes &&
+        cfg.thresholds.minGroups === CLIP_RETENTION_DEFAULTS.minGroups,
+    );
+  }
+
+  // the documented kill switch: default on, off/0/false disables — the
+  // shutdown value is accepted with no problem
+  {
+    const cfg = parseClipRetention({ [CLIP_RETENTION_DISABLE_ENV]: "off" });
+    check(
+      "P2-248: the documented shutdown value is accepted with no problem",
+      cfg.disabled && cfg.problems.length === 0,
+    );
+  }
+  check(
+    "P2-248: retention is enabled by default and only off/0/false disables it",
+    clipRetentionDisabled({}) === false &&
+      clipRetentionDisabled({ [CLIP_RETENTION_DISABLE_ENV]: "on" }) === false &&
+      clipRetentionDisabled({ [CLIP_RETENTION_DISABLE_ENV]: "0" }) === true &&
+      clipRetentionDisabled({ [CLIP_RETENTION_DISABLE_ENV]: "FALSE" }) === true,
+  );
+
+  // blank values are the only other no-problem case (missing keeps defaults)
+  check(
+    "P2-248: blank values keep the documented defaults with no problem",
+    parseClipRetention({ OCR_CLIP_RETENTION_GRACE_HOURS: "   " }).problems.length === 0 &&
+      parseClipRetention({ OCR_CLIP_RETENTION_GRACE_HOURS: "   " }).thresholds.graceMs ===
+        CLIP_RETENTION_DEFAULTS.graceMs,
+  );
+
+  // fail-closed table: each bad shape is a problem, thresholds fall back
+  check(
+    "P2-248: non-numeric value is a fail-closed problem",
+    parseClipRetention({ OCR_CLIP_RETENTION_GRACE_HOURS: "abc" }).problems.length === 1 &&
+      parseClipRetention({ OCR_CLIP_RETENTION_GRACE_HOURS: "abc" }).thresholds.graceMs ===
+        CLIP_RETENTION_DEFAULTS.graceMs,
+  );
+  check(
+    "P2-248: zero, negative and fractional values are problems",
+    parseClipRetention({ OCR_CLIP_RETENTION_MAX_AGE_DAYS: "0" }).problems.length === 1 &&
+      parseClipRetention({ OCR_CLIP_RETENTION_MAX_BYTES: "-5" }).problems.length === 1 &&
+      parseClipRetention({ OCR_CLIP_RETENTION_MIN_GROUPS: "1.5" }).problems.length === 1,
+  );
+  check(
+    "P2-248: a value above the documented maximum ceiling is a problem",
+    parseClipRetention({ OCR_CLIP_RETENTION_MAX_BYTES: String(CLIP_RETENTION_MAX_BYTES_CEILING + 1) })
+      .problems.length === 1,
+  );
+  check(
+    "P2-248: several bad variables return ALL problems at once (no short-circuit)",
+    parseClipRetention({
+      OCR_CLIP_RETENTION_GRACE_HOURS: "abc",
+      OCR_CLIP_RETENTION_MAX_BYTES: "-1",
+      OCR_CLIP_RETENTION_MIN_GROUPS: "2.5",
+    }).problems.length === 3,
+  );
+  {
+    const cfg = parseClipRetention({
+      OCR_CLIP_RETENTION_GRACE_HOURS: "48",
+      OCR_CLIP_RETENTION_MAX_AGE_DAYS: "60",
+      OCR_CLIP_RETENTION_MAX_BYTES: "5000000000",
+      OCR_CLIP_RETENTION_MIN_GROUPS: "10",
+    });
+    check(
+      "P2-248: valid overrides are honored with no problem",
+      cfg.problems.length === 0 &&
+        cfg.thresholds.graceMs === 48 * HOUR &&
+        cfg.thresholds.maxAgeMs === 60 * DAY &&
+        cfg.thresholds.maxTotalBytes === 5_000_000_000 &&
+        cfg.thresholds.minGroups === 10,
+    );
+  }
+
+  // clipretention.ts stays pure: unit tests must never boot a daemon on
+  // import (strip line comments first — the header prose names banned modules)
+  const clipRetentionSrc = readFileSync(
+    join(import.meta.dirname, "..", "apps", "daemon", "src", "clipretention.ts"),
+    "utf8",
+  );
+  const clipPureCode = clipRetentionSrc.replace(/\/\/.*$/gm, "");
+  check(
+    "P2-248: clipretention.ts is pure (no node:fs/path/child_process or fetch imports)",
+    !/node:(fs|path|child_process)/.test(clipPureCode) && !/\bfetch\b/.test(clipPureCode),
+  );
+
+  // real-source assertions on index.ts: the clips scan exists exactly once,
+  // reads ONLY the clips root, and the uploads/artifacts scans are untouched
+  const daemonSrc248 = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  const clipFactsAt = daemonSrc248.indexOf("function clipGroupFacts");
+  const clipScanAt = daemonSrc248.indexOf("function scanClipGroups");
+  const clipSweepAt = daemonSrc248.indexOf("function sweepClipRetention");
+  const clipWalkBody = clipFactsAt > -1 && clipSweepAt > clipFactsAt
+    ? daemonSrc248.slice(clipFactsAt, clipSweepAt)
+    : "";
+  const clipScanBody = clipScanAt > -1 && clipSweepAt > clipScanAt
+    ? daemonSrc248.slice(clipScanAt, clipSweepAt)
+    : "";
+  const clipSweepBody = clipSweepAt > -1 ? daemonSrc248.slice(clipSweepAt, clipSweepAt + 800) : "";
+  check(
+    "P2-248: the clips scan exists exactly once and reads only the clips root",
+    clipFactsAt > -1 && clipScanAt > clipFactsAt && clipSweepAt > clipScanAt &&
+      (daemonSrc248.match(/function scanClipGroups/g) ?? []).length === 1 &&
+      (daemonSrc248.match(/function sweepClipRetention/g) ?? []).length === 1 &&
+      (daemonSrc248.match(/function clipGroupFacts/g) ?? []).length === 1 &&
+      clipScanBody.includes("readdirSync(CLIPS_ROOT") &&
+      clipScanBody.includes('startsWith(".")') &&
+      clipScanBody.includes("clipGroupFacts(path)") &&
+      !clipScanBody.includes("UPLOADS_ROOT") &&
+      !clipScanBody.includes("ARTIFACTS_ROOT") &&
+      !clipScanBody.includes("STATE_FILE") &&
+      !clipScanBody.includes("audit"),
+  );
+  check(
+    "P2-248: the clips walk never follows a symbolic link (lstat + skip only, no statSync)",
+    clipWalkBody.split("isSymbolicLink").length === 3 &&
+      (clipWalkBody.match(/lstatSync\(/g) ?? []).length === 2 &&
+      !/[^l]statSync\(/.test(clipWalkBody),
+  );
+  check(
+    "P2-248: the sweep deletes whole planned groups and logs one name-free line",
+    clipSweepBody.includes("clipRetentionPlan(scanClipGroups()") &&
+      clipSweepBody.includes("rmSync(path, { recursive: true, force: true })") &&
+      clipSweepBody.includes("deleted: plan.paths.length, bytes: plan.bytes"),
+  );
+  check(
+    "P2-248: the clips sweep rides the existing janitor hook with no new periodic timer",
+    daemonSrc248.includes("setTimeout(sweepClipRetention, 0)") &&
+      /if \(clipsSweepOn\) sweepClipRetention\(\);/.test(daemonSrc248) &&
+      (daemonSrc248.match(/setInterval\(/g) ?? []).length === 5,
+  );
+  const upScanAt248 = daemonSrc248.indexOf("function scanUploadEntries");
+  const upScanBody248 = upScanAt248 > -1 ? daemonSrc248.slice(upScanAt248, upScanAt248 + 700) : "";
+  const artScanAt248 = daemonSrc248.indexOf("function scanRetentionEntries");
+  const artScanBody248 = artScanAt248 > -1 ? daemonSrc248.slice(artScanAt248, artScanAt248 + 500) : "";
+  check(
+    "P2-248: the uploads and artifacts scans remain untouched by the clips janitor",
+    upScanBody248.includes("readdirSync(UPLOADS_ROOT") &&
+      !upScanBody248.includes("CLIPS_ROOT") &&
+      artScanBody248.includes("readdirSync(ARTIFACTS_ROOT") &&
+      !artScanBody248.includes("CLIPS_ROOT"),
+  );
+  // the fail-closed contract: an invalid OCR_CLIP_RETENTION_* exits before
+  // any listener opens, same as the uploads retention problems
+  check(
+    "P2-248: an invalid OCR_CLIP_RETENTION_* fails the boot closed in main()",
+    /if \(clipRetention\.problems\.length > 0\) \{\s*\n\s*for \(const problem of clipRetention\.problems\) log\("error", problem\);\s*\n\s*process\.exit\(1\);/.test(
+      daemonSrc248,
+    ),
   );
 }
 

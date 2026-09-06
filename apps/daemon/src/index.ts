@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, renameSync, statSync, readdirSync, openSync, readSync, closeSync, copyFileSync, createReadStream, accessSync, constants, rmSync, statfs } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, renameSync, statSync, lstatSync, readdirSync, openSync, readSync, closeSync, copyFileSync, createReadStream, accessSync, constants, rmSync, statfs } from "node:fs";
 import { stat } from "node:fs/promises";
 import { execFile, execSync } from "node:child_process";
 import { promisify } from "node:util";
@@ -65,6 +65,7 @@ import { loadRoutines, saveRoutines, type Routine } from "./routines.js";
 import { ARTIFACTS_ROOT, artifactMime, capArtifacts, kindFor, listArtifacts, readArtifact, sessionTitleMap } from "./artifacts.js";
 import { RETENTION_INTERVAL_MS, retentionDisabled, retentionPlan, type RetentionEntry } from "./artifactretention.js";
 import { parseUploadRetention, uploadRetentionPlan, type UploadEntry as UploadFile } from "./uploadretention.js";
+import { clipRetentionPlan, parseClipRetention, type ClipGroup } from "./clipretention.js";
 import { diskVerdict, type DiskVerdict } from "./diskguard.js";
 import { docConvertProbe, docConvertVerdict, type DocConvertVerdict } from "./doccap.js";
 import { WindowCache, contextPct, sessionTokenTotal } from "./contextgauge.js";
@@ -1955,6 +1956,80 @@ function sweepUploadRetention(): void {
   }
 }
 
+// --- P2-248: clips retention ---------------------------------------------------
+// ~/.opencode-remote/clips/ is where tools/clip.mjs writes the heaviest files
+// the product produces — rendered vertical clips plus the extracted
+// transcription audio — one folder per source video with loose work files at
+// the root, and nothing ever cleaned it. The sweep reads ONLY the immediate
+// children of CLIPS_ROOT (a group = one source-video folder or one loose work
+// file), never follows a symbolic link (lstat + isSymbolicLink skips only),
+// never walks above the root and NEVER touches the uploads root, the
+// artifacts root, the chunk-staging area, the state file, the audit log or
+// anything outside CLIPS_ROOT — deletion removes whole groups and never the
+// root itself. The prohibition is written in clipretention.ts's header and
+// pinned by the real-source assertions in scripts/unit.test.ts.
+
+const CLIPS_ROOT = join(STATE_DIR, "clips");
+
+/** Recursive size/latest-mtime of one group dir; symlinks are never followed. */
+function clipGroupFacts(dir: string): { bytes: number; mtime: number } {
+  let bytes = 0;
+  let mtime = 0;
+  for (const ent of readdirSync(dir, { withFileTypes: true })) {
+    if (ent.isSymbolicLink()) continue; // symlinks are never followed
+    const child = join(dir, ent.name);
+    if (ent.isDirectory()) {
+      const nested = clipGroupFacts(child);
+      bytes += nested.bytes;
+      mtime = Math.max(mtime, nested.mtime);
+    } else {
+      const st = lstatSync(child);
+      bytes += st.size;
+      mtime = Math.max(mtime, st.mtimeMs);
+    }
+  }
+  return { bytes, mtime };
+}
+
+function scanClipGroups(): ClipGroup[] {
+  const groups: ClipGroup[] = [];
+  for (const ent of readdirSync(CLIPS_ROOT, { withFileTypes: true })) {
+    if (ent.isSymbolicLink()) continue; // symlinks are never followed
+    if (ent.name.startsWith(".")) continue; // hidden entries are ignored
+    const path = join(CLIPS_ROOT, ent.name);
+    try {
+      if (ent.isDirectory()) {
+        const facts = clipGroupFacts(path);
+        groups.push({ path, bytes: facts.bytes, mtime: facts.mtime });
+      } else if (ent.isFile()) {
+        const st = lstatSync(path);
+        groups.push({ path, bytes: st.size, mtime: st.mtimeMs });
+      }
+    } catch {
+      continue; // vanished between readdir and stat — skip, never plan it
+    }
+  }
+  return groups;
+}
+
+function sweepClipRetention(): void {
+  try {
+    // the ONLY root this sweep ever scans or deletes under is CLIPS_ROOT
+    const plan = clipRetentionPlan(scanClipGroups(), Date.now(), clipRetention.thresholds);
+    for (const path of plan.paths) {
+      rmSync(path, { recursive: true, force: true }); // whole group, never the root
+    }
+    // one log line per sweep, count and bytes only — never a file or folder
+    // name: those come from the user's video titles (P2-182)
+    log("info", "clip retention sweep", { deleted: plan.paths.length, bytes: plan.bytes });
+    metrics.inc("ocr_clip_retention_deleted_total", plan.paths.length);
+  } catch (err) {
+    // a filesystem error aborts this cycle only — one log line, no immediate
+    // retry; the next scheduled sweep picks it up
+    log("warn", "clip retention sweep failed", { error: (err as Error).message });
+  }
+}
+
 // P2-215: the disk reading fires once at boot (unconditionally — the verdict
 // must exist even with the janitor disabled) and then rides the SAME
 // RETENTION_INTERVAL_MS interval the sweep already uses; no new timer exists.
@@ -1962,11 +2037,15 @@ function sweepUploadRetention(): void {
 // drives both sweeps, each honoring its own kill switch, so no new periodic
 // timer exists here either. An invalid OCR_UPLOAD_RETENTION_* keeps the sweep
 // off: main() exits fail-closed before any listener opens.
+// P2-248: the clips janitor shares the same hook and interval too — still one
+// timer, three janitors, each with its own kill switch and fail-closed parse.
 refreshDiskState();
 const artifactsSweepOn = !retentionDisabled(process.env);
 const uploadRetention = parseUploadRetention(process.env);
 const uploadsSweepOn = uploadRetention.problems.length === 0 && !uploadRetention.disabled;
-if (artifactsSweepOn || uploadsSweepOn) {
+const clipRetention = parseClipRetention(process.env);
+const clipsSweepOn = clipRetention.problems.length === 0 && !clipRetention.disabled;
+if (artifactsSweepOn || uploadsSweepOn || clipsSweepOn) {
   if (artifactsSweepOn) sweepArtifactRetention();
   if (uploadsSweepOn) {
     // first sweep is fire-and-forget one tick after boot: boot is never
@@ -1974,10 +2053,16 @@ if (artifactsSweepOn || uploadsSweepOn) {
     const bootSweep = setTimeout(sweepUploadRetention, 0);
     bootSweep.unref?.();
   }
+  if (clipsSweepOn) {
+    // same fire-and-forget boot tick: boot is never delayed by the clips scan
+    const clipBootSweep = setTimeout(sweepClipRetention, 0);
+    clipBootSweep.unref?.();
+  }
   const retentionTimer = setInterval(() => {
     refreshDiskState();
     if (artifactsSweepOn) sweepArtifactRetention();
     if (uploadsSweepOn) sweepUploadRetention();
+    if (clipsSweepOn) sweepClipRetention();
   }, RETENTION_INTERVAL_MS);
   retentionTimer.unref?.();
 }
@@ -3404,6 +3489,13 @@ async function main() {
   // an invalid OCR_UPLOAD_RETENTION_* never falls back to the default silently.
   if (uploadRetention.problems.length > 0) {
     for (const problem of uploadRetention.problems) log("error", problem);
+    process.exit(1);
+    return;
+  }
+  // P2-248: same fail-closed contract for the clips retention thresholds —
+  // an invalid OCR_CLIP_RETENTION_* never falls back to the default silently.
+  if (clipRetention.problems.length > 0) {
+    for (const problem of clipRetention.problems) log("error", problem);
     process.exit(1);
     return;
   }
