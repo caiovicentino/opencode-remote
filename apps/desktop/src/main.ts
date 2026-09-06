@@ -73,6 +73,7 @@ import { installerNameIsSafe, integrityVerdict, winDownloadDecision } from "./wi
 import { menuSpec, type MenuItemSpec } from "./menu";
 import { contextMenuSpec, SPELLING_SUGGESTIONS_MAX } from "./ctxmenu";
 import { nextCheckDelayMs } from "./updateschedule";
+import { UPDATE_PROGRESS_LIMITS, updateProgressView, type UpdateProgressView } from "./updateprogress";
 import { loadWindowBounds, saveWindowBounds, WINDOW_MIN, windowStateFile } from "./window-state";
 import { DEFAULT_ZOOM_LEVEL, zoomStartupPlan, zoomVerdict, type ZoomAction } from "./zoomlevel";
 import {
@@ -560,6 +561,8 @@ function runUpdateCheck(source: string): void {
     // no sink, so they can never download; a skipped/failed download falls
     // back to the release page inside update.ts.
     winInstallerDownload: source === "tray" ? downloadWinInstaller : undefined,
+    // P2-258: the updater's own download-progress events feed the tray label.
+    onProgress: onUpdateProgress,
     onStatus: (status, version) => {
       lastUpdateStatus = status;
       // P2-257: track the downloaded release so the reminder plan can tell it
@@ -569,6 +572,19 @@ function runUpdateCheck(source: string): void {
       if (status === "update-downloaded") {
         if (version) lastDownloadedVersion = version;
         scheduleUpdateReminder();
+      }
+      // P2-258: the progress label describes a background download in flight.
+      // Statuses with no such download behind them clear it ("update-available"
+      // does NOT — the download it announces is exactly what the label tracks,
+      // and feed failures don't either: Squirrel keeps downloading).
+      if (
+        status === "update-downloaded" ||
+        status === "update-not-available" ||
+        status === "update-available-manual" ||
+        status === "update-installer-ready" ||
+        status === "disabled"
+      ) {
+        clearUpdateProgress();
       }
       refreshTrayMenu();
       // P2-176: the Help menu carries the same status label — rebuild it at
@@ -675,8 +691,75 @@ function scheduleNextUpdateCheck(status: UpdateStatus): void {
     return;
   }
   log(`[desktop] update recheck (${status}) in ${Math.round(delay / 60_000)} min`);
-  updateRecheckTimer = setTimeout(() => runUpdateCheck("scheduled"), delay);
+  updateRecheckTimer = setTimeout(() => {
+    // P2-258: the stalled-download verdict rides the SAME tick
+    // updateschedule.ts already feeds — no new timer anywhere.
+    evaluateUpdateProgressSilence();
+    runUpdateCheck("scheduled");
+  }, delay);
   updateRecheckTimer.unref?.();
+}
+
+// --- download progress in the tray (P2-258) -----------------------------------
+// The updater's own "download-progress" event (forwarded by update.ts to the
+// sink below) is the only new input: no new network request, no new IPC
+// channel, no new timer. The verdict is computed by the pure module
+// src/updateprogress.ts; the ONLY effect is the tray's update-status label
+// plus one static log line for the stalled verdict — never a cancel, never a
+// downgrade, never a new download, never an install. The stalled condition is
+// evaluated on the SAME tick updateschedule.ts feeds (see
+// scheduleNextUpdateCheck) because a stalled download emits no events of its
+// own. Dedup: identical labels never rebuild the tray menu (same contract as
+// updateTrayStatus), and the harness-session rule has nothing to gate — this
+// block opens no window, dialog or focus (OCR_DESKTOP_SESSION changes no
+// framing; see the header of src/updateprogress.ts).
+
+/** The last progress the updater reported (bytes, announced total, instant). */
+let updateProgressBytes = 0;
+let updateProgressTotal = 0;
+let updateProgressAt = 0;
+/** The label the tray currently shows for the download — the dedup key. */
+let lastUpdateProgressLabel: string | null = null;
+
+function setUpdateProgress(view: UpdateProgressView | null): void {
+  const label = view ? view.label : null;
+  if (lastUpdateProgressLabel === label) return;
+  lastUpdateProgressLabel = label;
+  if (view?.verdict === "stuck") {
+    log("[desktop] update progress: download stalled — label only, nothing cancelled, downgraded, re-downloaded or installed");
+  }
+  refreshTrayMenu();
+}
+
+/** The runUpdateCheck sink: one live progress event from the updater. */
+function onUpdateProgress(info: unknown): void {
+  const raw = info as { transferred?: unknown; total?: unknown };
+  const bytes = typeof raw?.transferred === "number" && Number.isFinite(raw.transferred) ? raw.transferred : 0;
+  const total = typeof raw?.total === "number" && Number.isFinite(raw.total) ? raw.total : 0;
+  const now = Date.now();
+  updateProgressBytes = bytes;
+  updateProgressTotal = total;
+  updateProgressAt = now;
+  // At event time the age is zero by construction: the view can only answer
+  // "downloading" or "unknown" here — exactly the live label the user needs.
+  setUpdateProgress(updateProgressView(bytes, total, now, now, UPDATE_PROGRESS_LIMITS));
+}
+
+/** Clear the progress label when no download can be talking anymore. */
+function clearUpdateProgress(): void {
+  updateProgressBytes = 0;
+  updateProgressTotal = 0;
+  updateProgressAt = 0;
+  setUpdateProgress(null);
+}
+
+/** Re-evaluate the view with the last observed progress at the recheck tick —
+ * a download whose silence exceeds the documented limit flips the label, and
+ * nothing else happens anywhere in this process. */
+function evaluateUpdateProgressSilence(): void {
+  if (updateProgressAt <= 0) return;
+  const now = Date.now();
+  setUpdateProgress(updateProgressView(updateProgressBytes, updateProgressTotal, updateProgressAt, now, UPDATE_PROGRESS_LIMITS));
 }
 
 // --- deferred-update reminder (P2-257) ----------------------------------------
@@ -2328,6 +2411,10 @@ function toElectronItems(
  * "restart to install" is false under the consent flow). */
 function currentUpdateLabel(): string | null {
   if (lastUpdateStatus === "update-downloaded") return UPDATE_DOWNLOADED_TRAY_LABEL;
+  // P2-258: while the background download is in flight (or stalled) the
+  // progress label replaces the "check for updates" invite that the mere
+  // availability status would keep showing for the whole download.
+  if (lastUpdateStatus === "update-available" && lastUpdateProgressLabel) return lastUpdateProgressLabel;
   return lastUpdateStatus === null ? null : updateMenuLabel(lastUpdateStatus);
 }
 

@@ -1694,7 +1694,12 @@ reason) and a clickable "Check for updates" item that re-runs the check and
 refreshes the menu in place. P2-257: when a release is already downloaded the
 status line becomes the truthful, clickable "Atualização baixada — a instalação
 acontece ao aceitar a oferta" — clicking it reopens the consent dialog, since
-a plain restart installs nothing under the consent flow. Since
+a plain restart installs nothing under the consent flow. P2-258: during the
+background download the same status line shows live progress — "Downloading
+update… 42%" ("Downloading update…" when the feed announces no total) — and if
+the network dies mid-way it becomes "Update download stalled — check for
+updates" at the next scheduled recheck, purely informational: nothing is
+cancelled, downgraded or re-downloaded by the label. Since
 P2-176 the app menu's **Ajuda** submenu mirrors both items (rebuilt on every
 status change, so its label never goes stale). Applying
 a release always goes through the consent dialog (P1-050): the updater asks
