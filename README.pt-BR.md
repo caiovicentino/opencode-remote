@@ -334,6 +334,11 @@ para a rede sem ser gravado. Cada publicação instala num cache com nome novo e
 o activate apaga as sobras com hash de publicação anterior, então o cache não
 cresce para sempre.
 
+A versão nova nunca quebra a aba que já está aberta (P2-246): o service worker
+atualizado espera enquanto existir janela viva da publicação anterior e assume
+só na próxima abertura do app, então os arquivos que o documento na tela ainda
+vai pedir nunca somem do cache no meio da conversa.
+
 - Se nada foi guardado ainda (a primeira visita foi sem rede ou o pre-carregamento
   foi interrompido), o app mostra uma página mínima e estática — "Você está sem
   conexão … recarregue a página" — no lugar de tela branca ou erro cru do

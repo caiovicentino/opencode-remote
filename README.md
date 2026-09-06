@@ -334,6 +334,11 @@ recorded. Each publication installs into a fresh versioned cache, and activate
 evicts hash-named leftovers of an earlier publication, so the cache never
 grows forever.
 
+A new version never breaks the tab that is already open (P2-246): the updated
+service worker waits while a window from the previous publication is live and
+takes over on the next app opening, so the assets that document still requests
+are never swept from the cache mid-conversation.
+
 - With nothing cached yet (the first visit happened offline or the precache
   was interrupted), the app shows a minimal static page in Portuguese — "Você
   está sem conexão … recarregue a página" — instead of a white screen or the

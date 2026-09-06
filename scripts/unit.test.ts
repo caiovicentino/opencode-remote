@@ -19017,7 +19017,9 @@ check(
   swSrc.includes("self.precacheTargets(") &&
     swSrc.includes("self.strategyFor(url.pathname, event.request.method)") &&
     swSrc.includes("self.offlineDocument()") &&
-    swSrc.includes("self.staleEntries(") &&
+    // P2-246: the sweep is consumed through sweepPlan, which delegates to
+    // staleEntries inside the policy — still no decision lives in sw.js.
+    swSrc.includes("self.sweepPlan(") &&
     !swSrc.includes("[A-Za-z0-9") &&
     !swSrc.includes("(?:") &&
     !/<!doctype|<html/i.test(swSrc),
@@ -19041,6 +19043,146 @@ check(
     policyCode.includes('"cache-first"') &&
     policyCode.includes('"network-first"') &&
     policyCode.includes('"network-first-nosave"'),
+);
+
+// --- P2-246: publication takeover and sweep respect live clients -------------
+
+// The REAL policy file, already loaded above in an isolated node:vm context
+// (P2-239); no logic is copied into the test — the table below exercises the
+// published functions directly.
+const plans = swSandbox as unknown as {
+  takeoverPlan: (clientCount: unknown) => string;
+  sweepPlan: (clientCount: unknown, cachedPaths: string[], currentTargets: string[]) => string[];
+  staleEntries: (cachedPaths: string[], currentTargets: string[]) => string[];
+};
+
+const OLD_LEFTOVER = "/assets/old-Qqqqqqq1.js";
+const OTHER_LEFTOVER = "/assets/old-Rrrrrrr2.css";
+const CURRENT_TARGET = VITE_JS;
+
+check(
+  "P2-246: takeoverPlan — zero clients is the only takeover-now (first install breaks nothing)",
+  plans.takeoverPlan(0) === "takeover-now",
+);
+
+check(
+  "P2-246: takeoverPlan — one live client waits",
+  plans.takeoverPlan(1) === "wait",
+);
+
+check(
+  "P2-246: takeoverPlan — many live clients wait",
+  plans.takeoverPlan(2) === "wait" && plans.takeoverPlan(50) === "wait",
+);
+
+check(
+  "P2-246: takeoverPlan — non-numeric counts wait (fail-closed)",
+  plans.takeoverPlan(undefined) === "wait" &&
+    plans.takeoverPlan(null) === "wait" &&
+    plans.takeoverPlan("1") === "wait" &&
+    plans.takeoverPlan(true) === "wait",
+);
+
+check(
+  "P2-246: takeoverPlan — non-finite counts wait (fail-closed)",
+  plans.takeoverPlan(Number.NaN) === "wait" &&
+    plans.takeoverPlan(Number.POSITIVE_INFINITY) === "wait" &&
+    plans.takeoverPlan(Number.NEGATIVE_INFINITY) === "wait",
+);
+
+check(
+  "P2-246: takeoverPlan — negative counts wait (fail-closed)",
+  plans.takeoverPlan(-1) === "wait" && plans.takeoverPlan(-100) === "wait",
+);
+
+check(
+  "P2-246: sweepPlan — rule order: a live client AND obvious leftovers at the same time is still an empty sweep",
+  JSON.stringify(
+    plans.sweepPlan(1, ["/", OLD_LEFTOVER, OTHER_LEFTOVER, CURRENT_TARGET], [CURRENT_TARGET]),
+  ) === "[]",
+);
+
+check(
+  "P2-246: sweepPlan — with no client the result is exactly what staleEntries decides for the same input",
+  JSON.stringify(plans.sweepPlan(0, ["/", OLD_LEFTOVER, CURRENT_TARGET, OTHER_LEFTOVER], [CURRENT_TARGET])) ===
+    JSON.stringify(plans.staleEntries(["/", OLD_LEFTOVER, CURRENT_TARGET, OTHER_LEFTOVER], [CURRENT_TARGET])) &&
+    JSON.stringify(plans.sweepPlan(0, [OLD_LEFTOVER, OTHER_LEFTOVER], [])) ===
+      JSON.stringify(plans.staleEntries([OLD_LEFTOVER, OTHER_LEFTOVER], [])),
+);
+
+check(
+  "P2-246: sweepPlan — the root document is never returned",
+  !plans.sweepPlan(0, ["/", "/index.html", OLD_LEFTOVER], [CURRENT_TARGET]).includes("/"),
+);
+
+check(
+  "P2-246: sweepPlan — the current publication target is never returned",
+  !plans.sweepPlan(0, [CURRENT_TARGET, OLD_LEFTOVER], [CURRENT_TARGET]).includes(CURRENT_TARGET),
+);
+
+check(
+  "P2-246: sweepPlan — never returns a path outside the received list",
+  plans
+    .sweepPlan(0, [OLD_LEFTOVER], [CURRENT_TARGET])
+    .every((p) => p === OLD_LEFTOVER),
+);
+
+check(
+  "P2-246: sweepPlan — received order is preserved",
+  JSON.stringify(plans.sweepPlan(0, [OTHER_LEFTOVER, "/", OLD_LEFTOVER], [CURRENT_TARGET])) ===
+    JSON.stringify([OTHER_LEFTOVER, OLD_LEFTOVER]),
+);
+
+check(
+  "P2-246: sweepPlan — stable result across two calls with the same input",
+  JSON.stringify(plans.sweepPlan(0, [OLD_LEFTOVER, CURRENT_TARGET], [CURRENT_TARGET])) ===
+    JSON.stringify(plans.sweepPlan(0, [OLD_LEFTOVER, CURRENT_TARGET], [CURRENT_TARGET])),
+);
+
+check(
+  "P2-246: sweepPlan — doubtful counts never sweep, fail-closed",
+  JSON.stringify(plans.sweepPlan(Number.NaN, [OLD_LEFTOVER], [])) === "[]" &&
+    JSON.stringify(plans.sweepPlan(-2, [OLD_LEFTOVER], [])) === "[]" &&
+    JSON.stringify(plans.sweepPlan(undefined, [OLD_LEFTOVER], [])) === "[]",
+);
+
+// Source pins on the real worker and real entrypoint.
+const mainTsx = readFileSync(new URL("../apps/web/src/main.tsx", import.meta.url), "utf8");
+const swCode246 = swSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+
+check(
+  "P2-246: sw.js — importScripts stays the first instruction and both decisions consult the plans",
+  swCode246.trim().startsWith('importScripts("/sw-policy.js")') &&
+    swCode246.includes('if (self.takeoverPlan(windows.length) === "takeover-now") self.skipWaiting();') &&
+    swCode246.includes("self.sweepPlan(windows.length, have, precacheList)"),
+);
+
+check(
+  "P2-246: sw.js — no takeover or sweep threshold is decided locally (the count is only passed through)",
+  !/windows\.length\s*[<>=!]/.test(swCode246),
+);
+
+check(
+  "P2-246: sw-policy.js — the policy publishes the two plans and keeps the fail-closed rule",
+  policyCode.includes("self.takeoverPlan = takeoverPlan;") &&
+    policyCode.includes("self.sweepPlan = sweepPlan;") &&
+    policyCode.includes('"takeover-now"') &&
+    policyCode.includes('"wait"') &&
+    policyCode.includes("Number.isFinite"),
+);
+
+check(
+  "P2-246: main.tsx — the P3-005 file-scheme guard stays intact and no new interface is added",
+  mainTsx.includes('import.meta.env.PROD') &&
+    mainTsx.includes('location.protocol !== "file:"') &&
+    mainTsx.includes('navigator.serviceWorker.register("/sw.js")') &&
+    !mainTsx.includes("addEventListener") &&
+    !mainTsx.includes("controllerchange") &&
+    !mainTsx.includes("updatefound") &&
+    !mainTsx.includes("postMessage") &&
+    !mainTsx.includes("MessageChannel") &&
+    !mainTsx.includes("setTimeout") &&
+    !mainTsx.includes("setInterval"),
 );
 
 // --- P2-240: honest queue view (backlogview.ts) ---------------------------------
