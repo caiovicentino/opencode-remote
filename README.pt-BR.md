@@ -1260,6 +1260,14 @@ best-effort: em plataformas sem suporte a notificação o shell segue rodando
 em silêncio — com a janela fechada no tray, é assim que o usuário leigo
 descobre que perdeu o controle.
 
+**A bandeja conta a viagem inteira (P2-252)**: o tooltip e a linha de status
+no topo do menu da bandeja deixam de falar só do processo local e passam a
+dizer o que de fato acontece — `processo local fora do ar: nenhum telefone
+alcança esta máquina` com o sidecar no chão, `o relay recusou a conexão`,
+`conectando ao relay`, `nenhum telefone pareado: escaneie o código no celular`
+ou `tudo pronto: o celular alcança esta máquina` — alimentados pelo mesmo
+poll de 3s do pareamento, sem requisição nova.
+
 **Fechar a janela mantém o app na bandeja**: na primeira vez que a janela é
 fechada, uma notificação nativa única avisa que o OpenCode Remote continua
 rodando — na barra de menus no macOS, na bandeja do sistema no Windows/Linux
