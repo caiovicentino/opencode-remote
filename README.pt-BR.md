@@ -1167,10 +1167,8 @@ rótulo vira "Update download stalled — check for updates", apenas informativo
 nada é cancelado, rebaixado ou baixado de novo por causa do rótulo. Desde a
 P2-264, antes de a reverificação agendada começar um download o shell mede o
 espaço livre do volume que hospeda o diretório de dados: quando não cabe o
-pacote mais a cópia descompactada (com uma folga documentada), quando o
-espaço não pôde ser medido, ou quando o release não anuncia o tamanho e o
-espaço livre está abaixo de um piso conservador de 2 GB, a checagem é adiada
-— a bandeja mostra `Update postponed
+pacote mais a cópia descompactada (com uma folga documentada), ou o espaço
+não pôde ser medido, a checagem é adiada — a bandeja mostra `Update postponed
 — not enough disk space`, uma linha cai no `desktop.log` e **liberar espaço em
 disco (ou clicar em Check for updates) destrava a atualização** no próximo
 tique; nada é cancelado, apagado ou instalado pelas suas costas. Checagens

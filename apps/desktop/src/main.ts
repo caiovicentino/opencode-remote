@@ -826,7 +826,14 @@ function updateSpaceGateSkip(): boolean {
   } catch {
     freeBytes = null; // unreadable volume → the pure verdict fails closed
   }
-  const announced = updateProgressTotal > 0 ? updateProgressTotal : null;
+  // The announced size is the updater's own announcement for the release this
+  // decision is about: a STALLED download is the same release the scheduled
+  // check would restart, so its total is the best size knowledge there is.
+  // Any other progress state (no download this session, unknown total, or a
+  // release the feed may have moved past) reads as unknown — the pure verdict
+  // then answers "warn" and the update proceeds (never refused for a missing
+  // size), so a stale total cannot postpone a fitting new release.
+  const announced = lastUpdateProgressVerdict === "stuck" && updateProgressTotal > 0 ? updateProgressTotal : null;
   const view = updateSpaceVerdict(freeBytes, announced, UPDATE_SPACE_LIMITS);
   if (view.verdict === "download") {
     setUpdateSpaceLabel(null);

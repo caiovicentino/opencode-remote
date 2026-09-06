@@ -19,12 +19,9 @@
 //   1. Free bytes that are not numeric, not finite or negative become
 //      "postpone", fail-closed — downloading without knowing is exactly the
 //      case that breaks today.
-//   2. An announced size that is absent, not finite or <= 0 warns and NEVER
-//      refuses the update for the missing size alone — the feed may omit it,
-//      and refusing for that would stop the whole product — EXCEPT when the
-//      free space is also below the documented conservative floor, where a
-//      blind download of an unknown number of hundreds of megabytes is
-//      exactly the bug this gate fixes: that postpones.
+//   2. An announced size that is absent, not finite or <= 0 becomes "warn"
+//      and NEVER "postpone" — the feed may omit the size, and refusing an
+//      update for that would stop the whole product.
 //   3. Free space below the necessary (the announced size times the
 //      documented multiplier plus the documented headroom, because the
 //      installer needs the downloaded package and the unpacked copy at the
@@ -34,8 +31,7 @@
 //      becomes "warn".
 //   5. Only the remainder becomes "download".
 // The result is identical for the same input in two calls — no clock, no
-// randomness, no I/O. A release whose size IS announced is judged by rules
-// 3–5 alone: a proven fit downloads even below the conservative floor.
+// randomness, no I/O.
 //
 // Harness-session rule (OCR_DESKTOP_SESSION): by the P2-235/P2-238 lessons it
 // is the FIRST decision of any path that would open a window, dialog or
@@ -68,25 +64,15 @@ export const UPDATE_SPACE_SIZE_MULTIPLIER = 2;
  * is called unconditionally safe — filesystem overhead, temp files, deltas. */
 export const UPDATE_SPACE_HEADROOM_BYTES = 250_000_000;
 
-/** Conservative floor for the unknown-size case: when the release does not
- * announce how big it is, a blind download is only allowed on a disk with at
- * least this much free. Aligned with the daemon's own P2-215 warn threshold
- * (apps/daemon/src/diskguard.ts, DISK_WARN_FREE_BYTES) — the value this
- * product already documents as "writes start failing here soon" — without
- * importing anything from the daemon workspace. */
-export const UPDATE_SPACE_FLOOR_BYTES = 2_000_000_000;
-
 /** The documented constants, as consumed by main.ts and pinned by the tests. */
 export const UPDATE_SPACE_LIMITS: UpdateSpaceLimits = Object.freeze({
   sizeMultiplier: UPDATE_SPACE_SIZE_MULTIPLIER,
   headroomBytes: UPDATE_SPACE_HEADROOM_BYTES,
-  floorBytes: UPDATE_SPACE_FLOOR_BYTES,
 });
 
 export interface UpdateSpaceLimits {
   sizeMultiplier: number;
   headroomBytes: number;
-  floorBytes: number;
 }
 
 /** Exactly one of three verdicts, per the rule order in the header. */
@@ -105,8 +91,8 @@ export interface UpdateSpaceView {
   label: string;
   /** One static sentence, safe for the shell log — no path, no volume. */
   phrase: string;
-  /** Why: invalid-free-bytes | invalid-release-size | unknown-size-low-space |
-   * insufficient-space | low-space-warning | enough-space. */
+  /** Why: invalid-free-bytes | invalid-release-size | insufficient-space |
+   * low-space-warning | enough-space. */
   reason: string;
 }
 
@@ -114,8 +100,6 @@ const POSTPONED_PHRASE =
   "The update was postponed because this machine does not have enough free disk space — free up space and click Check for updates.";
 const POSTPONED_UNKNOWN_PHRASE =
   "The update was postponed because the free disk space could not be measured — free up space and click Check for updates.";
-const UNKNOWN_SIZE_LOW_SPACE_PHRASE =
-  "The update did not announce its size and this machine is low on free disk space — free up space and click Check for updates.";
 const SIZE_UNKNOWN_PHRASE =
   "The update did not announce its size — the download continues, and freeing space avoids a failed install.";
 const WARN_PHRASE =
@@ -143,10 +127,6 @@ export function updateSpaceVerdict(
     typeof limits.headroomBytes === "number" && Number.isFinite(limits.headroomBytes) && limits.headroomBytes >= 0
       ? limits.headroomBytes
       : UPDATE_SPACE_HEADROOM_BYTES;
-  const floor =
-    typeof limits.floorBytes === "number" && Number.isFinite(limits.floorBytes) && limits.floorBytes >= 0
-      ? limits.floorBytes
-      : UPDATE_SPACE_FLOOR_BYTES;
   // Rule 1 — free bytes that cannot be trusted postpone fail-closed.
   if (
     typeof freeBytes !== "number" ||
@@ -160,19 +140,9 @@ export function updateSpaceVerdict(
       reason: "invalid-free-bytes",
     };
   }
-  // Rule 2 — no usable announced size never refuses the update for the
-  // missing size alone (the feed may omit it; refusing for that would stop
-  // the whole product) — but below the documented conservative floor a blind
-  // download is exactly the failure this gate fixes, so it postpones.
+  // Rule 2 — no usable announced size never refuses the update: the feed may
+  // omit the size, and refusing for that would stop the whole product.
   if (typeof announcedSize !== "number" || !Number.isFinite(announcedSize) || announcedSize <= 0) {
-    if (freeBytes < floor) {
-      return {
-        verdict: "postpone",
-        label: UPDATE_SPACE_LABEL_POSTPONED,
-        phrase: UNKNOWN_SIZE_LOW_SPACE_PHRASE,
-        reason: "unknown-size-low-space",
-      };
-    }
     return {
       verdict: "warn",
       label: UPDATE_SPACE_LABEL_SIZE_UNKNOWN,
