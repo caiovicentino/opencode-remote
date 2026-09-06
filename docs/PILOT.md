@@ -162,6 +162,11 @@ veredito vive numa função pura (`bootVerdict`) com motivos `binary-missing`,
 Playwright ausente falha fechado. O smoke de boot também fica **fora do gate
 por design** — é etapa de distribuição: roda no workflow de release (nos dois
 jobs de empacotamento) e localmente contra um pacote já construído (README).
+Desde a P2-242 o mesmo boot real do pacote roda também no CI além do release
+(passo `Smoke-boot the packaged app` nos dois jobs de empacotamento do ci.yml,
+depois do smoke de inspeção, com `shell: bash` explícito e timeout próprio —
+paridade guardada por `scripts/bootsmokeparity.ts` em `scripts/unit.test.ts`) e
+segue FORA do gate determinístico por design.
 Na mesma ponta de distribuição, o job `release-feeds` do workflow confere o
 CONTEÚDO dos quatro feeds de update antes da publicação (P2-157, estendido
 pela P2-212): `update-mac-arm64.json` e `update-mac-x64.json` — os dois que

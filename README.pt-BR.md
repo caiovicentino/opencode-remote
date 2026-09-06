@@ -509,6 +509,17 @@ O primeiro comando gera `apps/desktop/dist/win-unpacked`; o segundo valida o
 layout do bundle de forma determinística (web UI, sidecar do daemon,
 executável).
 
+Desde a P2-242 os dois jobs de empacotamento do CI também **abrem** o pacote
+real uma vez no PR (passo `Smoke-boot the packaged app`, logo depois do smoke
+de inspeção) — o mesmo launch hermético do workflow de release (userData
+temporário, sessão própria da execução, nenhum sidecar, Playwright ausente
+falha fechado), de modo que pacote que não abre reprova o PR em vez de
+estourar no dia da publicação. Reproduza o mesmo boot localmente contra um
+pacote já construído:
+
+    node apps/desktop/scripts/packaged-boot.mjs "apps/desktop/dist/mac-arm64/OpenCode Remote.app"
+    node apps/desktop/scripts/packaged-boot.mjs "apps/desktop/dist/win-unpacked"
+
 Desde a P2-224 o mesmo PR roda também o job `verify-win` no windows-latest,
 que faz typecheck e roda o subconjunto portátil da bateria de unit
 (`scripts/portable-suite.ts` — sem Electron, sockets, chmod, spawns nem
@@ -539,7 +550,9 @@ de boot localmente contra um pacote já construído (macOS ou Windows):
 PRs que tocam o shell desktop, a web UI ou `package-lock.json` rodam ainda um
 job de empacotamento escopado
 (`desktop-package`, alvo mac `dir` apenas, sem DMG/assinatura) validado com
-`dist:smoke --no-installer`; os instaladores assinados completos seguem
+`dist:smoke --no-installer` e, desde a P2-242, selado pelo boot real do
+pacote (passo `Smoke-boot the packaged app` nas duas plataformas); os
+instaladores assinados completos seguem
 saindo só na tag. Antes de empacotar, esse job também garante os orçamentos de
 tamanho de `scripts/bundle-budget.ts` (P2-162): o payload somado de
 `apps/web/dist` e o bundle sidecar `apps/desktop/dist-daemon/index.js` precisam

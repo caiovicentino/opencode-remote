@@ -528,6 +528,16 @@ Reproduce the same run locally on a Windows machine:
 The first command produces `apps/desktop/dist/win-unpacked`; the second
 validates its layout deterministically (web UI, daemon sidecar, executable).
 
+Since P2-242 the CI packaging jobs on both platforms also **boot** the real
+bundle once in the PR (`Smoke-boot the packaged app` step, right after the
+inspection smoke) — the same hermetic launch the release workflow performs
+(temp userData, run-own session, no sidecar, Playwright missing fails closed),
+so a package that does not open fails the PR instead of publication day.
+Reproduce the same boot locally against an already-built package:
+
+    node apps/desktop/scripts/packaged-boot.mjs "apps/desktop/dist/mac-arm64/OpenCode Remote.app"
+    node apps/desktop/scripts/packaged-boot.mjs "apps/desktop/dist/win-unpacked"
+
 Since P2-224 the same PR also runs the `verify-win` job on windows-latest,
 which typechecks and runs the portable, Windows-safe subset of the unit
 battery (`scripts/portable-suite.ts` — no Electron, sockets, chmod, spawns or
@@ -559,7 +569,9 @@ hand:
 
     npx tsx scripts/sync-version.ts vX.Y.Z && git add -A && git commit -m "release: vX.Y.Z" && git tag vX.Y.Z && git push --follow-tags PRs that touch the desktop shell, the web UI or `package-lock.json`
 additionally run a scoped packaging job (`desktop-package`, mac `dir` target
-only, no DMG/signing) smoke-checked with `dist:smoke --no-installer`; the full
+only, no DMG/signing) smoke-checked with `dist:smoke --no-installer` and,
+since P2-242, sealed by the real packaged boot (`Smoke-boot the packaged app`
+step on both platforms); the full
 signed installers still ship only at tag time. Before packaging, that job also
 enforces the bundle size budgets of `scripts/bundle-budget.ts` (P2-162): the
 summed `apps/web/dist` payload and the `apps/desktop/dist-daemon/index.js`

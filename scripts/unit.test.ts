@@ -699,6 +699,8 @@ import { PORTABLE_TESTS, portableSuitePlan } from "./portable-suite";
 
 import { PORTABLE_EXCLUSION_CAUSES, PORTABLE_EXCLUSIONS, portableCoverage } from "./portablecoverage";
 
+import { bootSmokeParity, parseWorkflowJobs, type WorkflowJob, type WorkflowStep } from "./bootsmokeparity";
+
 import { imageTags } from "./relay-image";
 
 import { imageSmokeVerdict } from "./relay-image-smoke";
@@ -19027,6 +19029,215 @@ check(
   check(
     "P2-240: no new periodic timer was introduced by the route change",
     (routeSrc.match(/setInterval\(/g) || []).length === 5,
+  );
+}
+
+// --- P2-242: boot-smoke parity — CI boots the real package like release -----
+
+{
+  const wfJob = (name: string, platform: string, steps: WorkflowStep[]): WorkflowJob => ({ name, platform, steps });
+  const wfStep = (run: string, extra: Partial<WorkflowStep> = {}): WorkflowStep => ({
+    name: extra.name ?? "step",
+    run,
+    shell: extra.shell ?? null,
+    timeoutMinutes: extra.timeoutMinutes ?? null,
+  });
+  const pkg = wfStep("npm run dist --workspace @ocr/desktop -- --mac --dir", { name: "Package mac bundle" });
+  const boot = (extra: Partial<WorkflowStep> = {}): WorkflowStep =>
+    wfStep('node apps/desktop/scripts/packaged-boot.mjs "$APP"', { name: "Smoke-boot the packaged app", shell: "bash", timeoutMinutes: 10, ...extra });
+
+  // parseWorkflowJobs — the full table.
+  check("P2-242: parseWorkflowJobs — empty text yields an empty job list", parseWorkflowJobs("").length === 0 && parseWorkflowJobs("   \n\n").length === 0);
+  check(
+    "P2-242: parseWorkflowJobs — text with a jobs key but no job, and text without a jobs key, both yield an empty list",
+    parseWorkflowJobs("jobs:\n").length === 0 && parseWorkflowJobs("name: CI\non:\n  push:\n    branches: [main]\n").length === 0,
+  );
+  const twoSteps = parseWorkflowJobs(
+    [
+      "name: T",
+      "on: push",
+      "jobs:",
+      "  verify:",
+      "    runs-on: ubuntu-latest",
+      "    steps:",
+      "      - name: First",
+      "        run: echo one",
+      "      - name: Second",
+      "        shell: bash",
+      "        timeout-minutes: 5",
+      "        run: |",
+      "          echo two",
+          "          echo three",
+      "",
+    ].join("\n"),
+  );
+  check(
+    "P2-242: parseWorkflowJobs — a job with two steps returns both in order with name, platform, command, shell and timeout",
+    twoSteps.length === 1 &&
+      twoSteps[0].name === "verify" &&
+      twoSteps[0].platform === "ubuntu-latest" &&
+      twoSteps[0].steps.length === 2 &&
+      twoSteps[0].steps[0].name === "First" &&
+      twoSteps[0].steps[0].run === "echo one" &&
+      twoSteps[0].steps[0].shell === null &&
+      twoSteps[0].steps[0].timeoutMinutes === null &&
+      twoSteps[0].steps[1].name === "Second" &&
+      twoSteps[0].steps[1].run === "echo two\necho three" &&
+      twoSteps[0].steps[1].shell === "bash" &&
+      twoSteps[0].steps[1].timeoutMinutes === 5,
+    JSON.stringify(twoSteps),
+  );
+  check(
+    "P2-242: parseWorkflowJobs — a step without shell and timeout reports both fields as absent",
+    twoSteps[0]?.steps[0]?.shell === null && twoSteps[0]?.steps[0]?.timeoutMinutes === null,
+  );
+  check(
+    "P2-242: parseWorkflowJobs — malformed text never throws and degrades to a recognizable partial structure",
+    (() => {
+      const samples = [
+        "jobs:",
+        "  :::",
+        "    - ]]]",
+        " broken: {{",
+        "jobs:\n  a:\n   steps:\n    - run: |",
+        "jobs: [\n  broken",
+        "\tjobs:\n\t x: y",
+        "jobs:\n  bad key: {",
+      ];
+      try {
+        return samples.every((s) => Array.isArray(parseWorkflowJobs(s)));
+      } catch {
+        return false;
+      }
+    })(),
+  );
+
+  // bootSmokeParity — the full table.
+  check("P2-242: bootSmokeParity — two empty job lists yield zero problems", bootSmokeParity([], []).length === 0);
+  const noBoot = bootSmokeParity([wfJob("desktop-package", "macos-14", [pkg])], []);
+  check(
+    "P2-242: bootSmokeParity — a packaging job without the real boot yields one problem naming the job",
+    noBoot.length === 1 && noBoot[0].includes('"desktop-package"') && noBoot[0].includes("never boots the real package"),
+    noBoot.join(" | "),
+  );
+  const bootFirst = bootSmokeParity([wfJob("j", "ubuntu-latest", [boot(), pkg])], []);
+  check(
+    "P2-242: bootSmokeParity — a real boot positioned before the packaging step yields the position problem",
+    bootFirst.length === 1 && bootFirst[0].includes("before the packaging step"),
+    bootFirst.join(" | "),
+  );
+  const noShell = bootSmokeParity([wfJob("j", "ubuntu-latest", [pkg, boot({ shell: null })])], []);
+  check(
+    "P2-242: bootSmokeParity — a boot step without shell: bash yields the shell problem",
+    noShell.length === 1 && noShell[0].includes("without declaring shell: bash"),
+    noShell.join(" | "),
+  );
+  const noTimeout = bootSmokeParity([wfJob("j", "ubuntu-latest", [pkg, boot({ timeoutMinutes: null })])], []);
+  check(
+    "P2-242: bootSmokeParity — a boot step without its own timeout yields the timeout problem",
+    noTimeout.length === 1 && noTimeout[0].includes("without its own timeout-minutes"),
+    noTimeout.join(" | "),
+  );
+  const twoCauses = bootSmokeParity([wfJob("j", "ubuntu-latest", [pkg, boot({ shell: null, timeoutMinutes: null })])], []);
+  check(
+    "P2-242: bootSmokeParity — two simultaneous causes yield two problems, never one merged verdict",
+    twoCauses.length === 2 && twoCauses.some((p) => p.includes("shell: bash")) && twoCauses.some((p) => p.includes("timeout-minutes")),
+    twoCauses.join(" | "),
+  );
+  const nonPackaging = bootSmokeParity(
+    [
+      wfJob("verify", "ubuntu-latest", [wfStep("npm run build", { name: "Build" }), wfStep("npm run test:unit", { name: "Unit tests" })]),
+      wfJob("smoke-only", "ubuntu-latest", [wfStep("npm run dist:smoke --workspace @ocr/desktop -- --no-installer", { name: "Smoke" })]),
+    ],
+    [],
+  );
+  check(
+    "P2-242: bootSmokeParity — a job that packages nothing (including a dist:smoke-only job) never generates a problem",
+    nonPackaging.length === 0,
+    nonPackaging.join(" | "),
+  );
+  const happyCi = [wfJob("desktop-package", "macos-14", [wfStep("npm ci", { name: "Install" }), pkg, boot()])];
+  const happyRelease = [wfJob("desktop-dmg", "macos-14", [pkg, boot()])];
+  check("P2-242: bootSmokeParity — packaging jobs with a proper boot after packaging yield zero problems", bootSmokeParity(happyCi, happyRelease).length === 0);
+  const stableA = bootSmokeParity(happyCi, [wfJob("desktop-win", "windows-latest", [pkg, boot({ shell: null, timeoutMinutes: null })])]);
+  const stableB = bootSmokeParity(happyCi, [wfJob("desktop-win", "windows-latest", [pkg, boot({ shell: null, timeoutMinutes: null })])]);
+  check(
+    "P2-242: bootSmokeParity — the problem order is stable between two calls with the same input",
+    JSON.stringify(stableA) === JSON.stringify(stableB) && stableA.length === 2,
+    stableA.join(" | "),
+  );
+  const withProblems = [...noBoot, ...bootFirst, ...noShell, ...noTimeout, ...twoCauses];
+  check(
+    "P2-242: bootSmokeParity — no problem text contains an absolute file path",
+    withProblems.every((p) => !p.startsWith("/") && !p.includes("/Users/") && !p.includes("/home/") && !p.includes("C:\\")),
+  );
+
+  // Real-repo assertion: the actual ci.yml and release.yml parse clean and
+  // both packaging jobs of ci.yml carry the boot step with the release
+  // contract — zero problems across both workflows.
+  const ciJobs = parseWorkflowJobs(readFileSync(join(import.meta.dirname, "..", ".github", "workflows", "ci.yml"), "utf8"));
+  const releaseJobs = parseWorkflowJobs(readFileSync(join(import.meta.dirname, "..", ".github", "workflows", "release.yml"), "utf8"));
+  check(
+    "P2-242: the real workflows parse into the expected job set",
+    ["verify", "scope", "desktop-package", "desktop-package-win", "verify-win", "relay-image"].every((n) => ciJobs.some((j) => j.name === n)) &&
+      ["release", "desktop-dmg", "desktop-win", "release-verify", "release-feeds", "release-publish"].every((n) => releaseJobs.some((j) => j.name === n)),
+  );
+  const parity = bootSmokeParity(ciJobs, releaseJobs);
+  check("P2-242: real ci.yml + release.yml through both modules — zero boot-smoke parity problems", parity.length === 0, parity.join(" | "));
+  const macJob = ciJobs.find((j) => j.name === "desktop-package");
+  const winJob = ciJobs.find((j) => j.name === "desktop-package-win");
+  for (const [label, job, packagingRun] of [
+    ["mac", macJob, "npm run dist --workspace @ocr/desktop -- --mac --dir"],
+    ["windows", winJob, "npm run dist --workspace @ocr/desktop -- --win --dir"],
+  ] as const) {
+    const steps = job?.steps ?? [];
+    const bootIdx = steps.findIndex((s) => /packaged-boot\.mjs/.test(s.run));
+    const pkgIdx = steps.findIndex((s) => s.run === packagingRun);
+    const smokeIdx = steps.findIndex((s) => s.run.includes("dist:smoke --workspace @ocr/desktop -- --no-installer"));
+    const bootStep = bootIdx > -1 ? steps[bootIdx] : null;
+    check(
+      `P2-242: ci.yml ${label} packaging job — the real boot runs after packaging and after the inspection smoke, with shell: bash and its own timeout`,
+      pkgIdx > -1 &&
+        smokeIdx > pkgIdx &&
+        bootIdx > smokeIdx &&
+        bootStep?.shell === "bash" &&
+        typeof bootStep?.timeoutMinutes === "number" &&
+        (bootStep?.timeoutMinutes ?? 0) > 0,
+      JSON.stringify(steps.map((s) => ({ name: s.name, shell: s.shell, timeout: s.timeoutMinutes }))),
+    );
+  }
+  check(
+    "P2-242: ci.yml — the boot step resolves the dir-target bundle per platform (.app on macOS, win-unpacked on Windows)",
+    (macJob?.steps.find((s) => /packaged-boot\.mjs/.test(s.run))?.run ?? "").includes("-name '*.app'") &&
+      (winJob?.steps.find((s) => /packaged-boot\.mjs/.test(s.run))?.run ?? "").includes("win-unpacked"),
+  );
+  check(
+    "P2-242: ci.yml — no packaging-job step uploads artifacts, publishes, signs or notarizes",
+    [macJob, winJob].every(
+      (j) =>
+        j &&
+        j.steps.every((s) => !/upload-artifact|gh release|ghr|--publish|notariz/i.test(s.run)) &&
+        j.steps.some((s) => s.run.includes("packaged-boot.mjs")),
+    ),
+  );
+  check(
+    "P2-242: ci.yml — the pre-existing steps of both packaging jobs are still present",
+    (macJob?.steps.map((s) => s.name) ?? []).join("\n").includes("Install dependencies") &&
+      (macJob?.steps.map((s) => s.name) ?? []).join("\n").includes("Bundle budget") &&
+      (macJob?.steps.map((s) => s.name) ?? []).some((n) => n.startsWith("Package mac bundle")) &&
+      (macJob?.steps.map((s) => s.name) ?? []).some((n) => n.startsWith("Smoke-check the packaged bundle")) &&
+      (winJob?.steps.map((s) => s.name) ?? []).join("\n").includes("Install dependencies") &&
+      (winJob?.steps.map((s) => s.name) ?? []).some((n) => n.startsWith("Package Windows bundle")) &&
+      (winJob?.steps.map((s) => s.name) ?? []).some((n) => n.startsWith("Smoke-check the packaged bundle")),
+    JSON.stringify({ mac: macJob?.steps.map((s) => s.name), win: winJob?.steps.map((s) => s.name) }),
+  );
+  check(
+    "P2-242: release.yml — both release packaging jobs still boot the real package (parity baseline)",
+    ["desktop-dmg", "desktop-win"].every((name) => {
+      const job = releaseJobs.find((j) => j.name === name);
+      const bootStep = job?.steps.find((s) => /packaged-boot\.mjs/.test(s.run));
+      return job && bootStep && bootStep.shell === "bash" && typeof bootStep.timeoutMinutes === "number";
+    }),
   );
 }
 

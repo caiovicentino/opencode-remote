@@ -113,6 +113,25 @@ jobs:
       - name: Smoke-check the packaged bundle (installer checks skipped)
         run: npm run dist:smoke --workspace @ocr/desktop -- --no-installer
 
+      # P2-242: dist-smoke only INSPECTS the bundle; a regression that only
+      # shows up at runtime — main throwing at boot, an asar missing an asset
+      # the renderer asks for, a blank window — used to surface only on
+      # release day, where the real boot lived alone (release.yml). Boot the
+      # real packaged .app here too, reusing the release boot script and its
+      # hermetic contract unchanged (temp userData, run-own session, no
+      # sidecar, Playwright missing fails closed). Nothing is uploaded,
+      # signed, notarized or published.
+      - name: Smoke-boot the packaged app
+        shell: bash
+        timeout-minutes: 10
+        run: |
+          ARCH_DIR="$(uname -m | sed 's/x86_64/x64/')"
+          APP="$(find apps/desktop/dist -maxdepth 3 -type d -name '*.app' | grep -F "$ARCH_DIR" | head -1)"
+          [ -n "$APP" ] || APP="$(find apps/desktop/dist -maxdepth 3 -type d -name '*.app' | head -1)"
+          [ -n "$APP" ] || { echo "packaged-boot: no .app under apps/desktop/dist — nothing to boot"; exit 1; }
+          echo "packaged-boot: booting $APP"
+          node apps/desktop/scripts/packaged-boot.mjs "$APP"
+
   # P2-219: the Windows packaging surface (nsis/win config, signing profile,
   # win-unpacked layout) was only exercised inside the release workflow, so a
   # packaging regression surfaced as a red job on publication day. This job
@@ -155,6 +174,19 @@ jobs:
         shell: bash
         timeout-minutes: 10
         run: npm run dist:smoke --workspace @ocr/desktop -- --no-installer
+
+      # P2-242: same parity for Windows — boot the real win-unpacked bundle
+      # in the PR, reusing the release boot script and its hermetic contract
+      # unchanged. shell: bash (P2-126/P2-164 lessons) with its own timeout;
+      # nothing is uploaded, signed or published.
+      - name: Smoke-boot the packaged app
+        shell: bash
+        timeout-minutes: 10
+        run: |
+          DIR="$(find apps/desktop/dist -maxdepth 2 -type d -name 'win-unpacked' | head -1)"
+          [ -n "$DIR" ] || { echo "packaged-boot: no win-unpacked dir under apps/desktop/dist — nothing to boot"; exit 1; }
+          echo "packaged-boot: booting $DIR"
+          node apps/desktop/scripts/packaged-boot.mjs "$DIR"
 
   # P2-224: the unit battery only ever ran on ubuntu-latest, so the Windows
   # half of the path logic (relay webroot, installloc, loginitem, desktop-log,
