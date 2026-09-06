@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, powerMonitor, screen, session, Tray, shell } from "electron";
+import { app, autoUpdater, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, powerMonitor, screen, session, Tray, shell } from "electron";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -67,7 +67,8 @@ import { loginItemSupported, logsDirPath, openLogsFolder, trayIconSource } from 
 import { trayStatus } from "./traystatus";
 import { badgePlan, type BadgePlan } from "./badge";
 import { CLOSE_HINT_LOG, closeHintPlan, hintFlagPath, readHintFlag, writeHintFlag } from "./closehint";
-import { checkForUpdatesOnBoot, updatesEnabled, updateMenuLabel, type UpdateDialogSinks, type UpdateStatus, type WinInstallerRequest } from "./update";
+import { checkForUpdatesOnBoot, installBlocksUpdate, updatesEnabled, updateMenuLabel, type UpdateDialogSinks, type UpdateStatus, type WinInstallerRequest } from "./update";
+import { UPDATE_DOWNLOADED_TRAY_LABEL, UPDATE_REMIND_LIMITS, updateReminderPlan, type UpdateOfferRecord } from "./updateremind";
 import { installerNameIsSafe, integrityVerdict, winDownloadDecision } from "./winupdate";
 import { menuSpec, type MenuItemSpec } from "./menu";
 import { contextMenuSpec, SPELLING_SUGGESTIONS_MAX } from "./ctxmenu";
@@ -151,6 +152,14 @@ let lastUnreadBadge = 0;
 // consecutive dead-feed checks and drives the 15 min → 6 h backoff.
 let updateRecheckTimer: NodeJS.Timeout | null = null;
 let updateFeedFailures = 0;
+// P2-257: deferred-offer bookkeeping, process memory only (no new state file).
+// `lastDownloadedVersion` is the release the tray is talking about;
+// `reminderOffer` records the offers already shown for one version (version,
+// instant, count) — askInstall is the single recording point, so the original
+// P1-050 dialog and the reminder reopen bookkeep identically.
+let lastDownloadedVersion: string | null = null;
+let reminderOffer: UpdateOfferRecord = { version: null, at: 0, count: 0 };
+let reminderDialogOpen = false;
 
 // P2-211: install-location verdict, computed EXACTLY ONCE at boot (in
 // onReady, before the first update check) and reused by every surface: the
@@ -499,6 +508,10 @@ function showGpuDisabledHint(): void {
  * release is the updater's own quitAndInstall (Squirrel.Mac swaps the bundle). */
 const updateDialogSinks: UpdateDialogSinks = {
   askInstall: async (version) => {
+    // P2-257: the offer's instant and count are recorded the moment the
+    // consent dialog is actually shown — the single recording point shared by
+    // the original flow and the reminder reopen (process memory only).
+    recordUpdateOffer(version);
     const options: Electron.MessageBoxOptions = {
       type: "info",
       title: "Update ready",
@@ -549,6 +562,14 @@ function runUpdateCheck(source: string): void {
     winInstallerDownload: source === "tray" ? downloadWinInstaller : undefined,
     onStatus: (status, version) => {
       lastUpdateStatus = status;
+      // P2-257: track the downloaded release so the reminder plan can tell it
+      // apart from the version whose offers were already recorded, and hand
+      // the SAME timer over to the reminder once the download completes (the
+      // P2-155 recheck has nothing left to do in this state).
+      if (status === "update-downloaded") {
+        if (version) lastDownloadedVersion = version;
+        scheduleUpdateReminder();
+      }
       refreshTrayMenu();
       // P2-176: the Help menu carries the same status label — rebuild it at
       // the same trigger point so the label never goes stale.
@@ -645,10 +666,113 @@ function scheduleNextUpdateCheck(status: UpdateStatus): void {
   if (status === "feed-unreachable" || status === "unrecognized-feed") updateFeedFailures++;
   else updateFeedFailures = 0;
   const delay = nextCheckDelayMs(status, updateFeedFailures, Math.random);
-  if (delay == null) return;
+  if (delay == null) {
+    // P2-257: "update-downloaded" never re-checks (updateschedule.ts) — the
+    // SAME timer carries the reminder plan instead, so a deferred offer comes
+    // back instead of dying with the closed dialog (P2-152: the app keeps
+    // running indefinitely).
+    if (status === "update-downloaded") scheduleUpdateReminder();
+    return;
+  }
   log(`[desktop] update recheck (${status}) in ${Math.round(delay / 60_000)} min`);
   updateRecheckTimer = setTimeout(() => runUpdateCheck("scheduled"), delay);
   updateRecheckTimer.unref?.();
+}
+
+// --- deferred-update reminder (P2-257) ----------------------------------------
+// After the user answers "Later" once, the offer used to vanish forever:
+// update.ts never re-schedules a decided release and a plain restart installs
+// nothing. The plan lives in src/updateremind.ts (pure, unit-tested); here
+// only the SAME timer already feeding the recheck is re-armed — no new timer,
+// no new IPC channel, no new network request, no new state file — and the
+// EXACT consent dialog is reopened. Nothing installs by itself: accepting the
+// dialog applies the release through the same quitAndInstall call the
+// P1-050 flow makes; deferring records the offer and re-arms.
+
+function reminderState() {
+  return {
+    status: lastUpdateStatus ?? "disabled",
+    version: lastDownloadedVersion,
+    harnessSession: HERMETIC_E2E,
+  };
+}
+
+/** Record an offer the moment the consent dialog is shown (see askInstall). */
+function recordUpdateOffer(version: string): void {
+  const now = Date.now();
+  reminderOffer =
+    reminderOffer.version === version
+      ? { version, at: now, count: reminderOffer.count + 1 }
+      : { version, at: now, count: 1 };
+  scheduleUpdateReminder();
+}
+
+/** Arm the reminder on the SAME timer updateschedule.ts feeds. */
+function scheduleUpdateReminder(): void {
+  if (updateRecheckTimer) {
+    clearTimeout(updateRecheckTimer);
+    updateRecheckTimer = null;
+  }
+  // Reminders exist only for offers already shown: the first dialog for a
+  // release belongs to the consent flow itself (update.ts offerInstall).
+  if (!lastDownloadedVersion || reminderOffer.version !== lastDownloadedVersion) return;
+  // P2-211: a bundle the updater cannot replace (DMG volume / translocated
+  // copy) never gets a dialog — reminding would offer an unapplicable update.
+  if (installBlocksUpdate(bootInstallLocation)) return;
+  const now = Date.now();
+  const plan = updateReminderPlan(reminderState(), reminderOffer, now, UPDATE_REMIND_LIMITS);
+  if (plan.reason === "cap-reached") {
+    log(`[desktop] update reminder: cap reached for ${lastDownloadedVersion} — tray item stays available`);
+    return;
+  }
+  if (plan.action !== "remind" && plan.reason !== "interval-not-elapsed") {
+    log(`[desktop] update reminder: idle (${plan.reason})`);
+    return;
+  }
+  const age = Math.max(0, now - reminderOffer.at);
+  const delay = Math.max(0, UPDATE_REMIND_LIMITS.minIntervalMs - age);
+  log(`[desktop] update reminder for ${lastDownloadedVersion} in ${Math.round(delay / 60_000)} min`);
+  updateRecheckTimer = setTimeout(() => fireUpdateReminder(), delay);
+  updateRecheckTimer.unref?.();
+}
+
+/** Timer fired: re-consult the plan (the state may have moved on) and reopen. */
+function fireUpdateReminder(): void {
+  updateRecheckTimer = null;
+  const plan = updateReminderPlan(reminderState(), reminderOffer, Date.now(), UPDATE_REMIND_LIMITS);
+  if (plan.action !== "remind") return;
+  const version = reminderOffer.version;
+  if (!version) return;
+  void offerUpdateReminderDialog(version);
+}
+
+async function offerUpdateReminderDialog(version: string): Promise<void> {
+  // P2-257 harness-session rule FIRST — before any other consideration — so
+  // a hermetic run never opens a window or steals focus (P2-235/P2-238) and
+  // no evidence screenshot changes framing.
+  if (HERMETIC_E2E) return;
+  if (lastUpdateStatus !== "update-downloaded") return;
+  if (reminderDialogOpen) return;
+  if (installBlocksUpdate(bootInstallLocation)) {
+    log(`[desktop] update reminder: install not offered (${bootInstallLocation?.state ?? "unknown"})`);
+    return;
+  }
+  reminderDialogOpen = true;
+  try {
+    const choice = await updateDialogSinks.askInstall(version);
+    if (choice === "install") {
+      // The user just consented — applying is the SAME single call the
+      // P1-050 flow makes (update.ts offerInstall → quitAndInstall).
+      log(`[desktop] update reminder: accepted — applying ${version}`);
+      autoUpdater.quitAndInstall();
+      return;
+    }
+    log(`[desktop] update reminder: deferred ${version} — the offer will come back`);
+  } finally {
+    reminderDialogOpen = false;
+  }
+  // The "Later" choice was recorded by askInstall; re-arm from scratch.
+  scheduleUpdateReminder();
 }
 
 // P2-218: the ONLY caller of app.setLoginItemSettings — the tray checkbox and
@@ -2198,8 +2322,12 @@ function toElectronItems(
 }
 
 /** The tray's update-status label, shared with the menu so both surfaces can
- * never drift apart on what the last check decided (P2-176). */
+ * never drift apart on what the last check decided (P2-176). P2-257: for a
+ * downloaded release the label tells the truth — installation happens by
+ * accepting the offer, never by a plain restart (updateMenuLabel's
+ * "restart to install" is false under the consent flow). */
 function currentUpdateLabel(): string | null {
+  if (lastUpdateStatus === "update-downloaded") return UPDATE_DOWNLOADED_TRAY_LABEL;
   return lastUpdateStatus === null ? null : updateMenuLabel(lastUpdateStatus);
 }
 
@@ -2420,9 +2548,19 @@ function trayMenuItems(): Electron.MenuItemConstructorOptions[] {
   if (updatesEnabled()) {
     const statusLabel = currentUpdateLabel();
     if (statusLabel) {
-      // Informational-only state line; the install itself needs the consent
-      // dialog (updateDialogSinks), never a tray mis-click.
-      items.push({ label: statusLabel, enabled: false });
+      // P2-257: the downloaded-release item carries the truthful label and is
+      // clickable — it opens the SAME consent dialog, never installs by
+      // itself. Every other state stays an informational-only line.
+      if (lastUpdateStatus === "update-downloaded") {
+        items.push({
+          label: statusLabel,
+          click: () => {
+            if (lastDownloadedVersion) void offerUpdateReminderDialog(lastDownloadedVersion);
+          },
+        });
+      } else {
+        items.push({ label: statusLabel, enabled: false });
+      }
     }
     items.push({
       label: "Check for updates",

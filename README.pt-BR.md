@@ -1124,8 +1124,12 @@ com a janela fechada no tray) ele também reconfere sozinho a cada ~6 h
 (jitter de ±10%), recuando de 15 min até o teto de 6 h enquanto o feed estiver
 inacessível. Achando um `feed.json` mais
 novo, o release baixa em segundo plano e um diálogo de consentimento oferece
-**Reiniciar agora / Depois** — nada instala sem clique explícito, versão
-adiada não é re-oferecida na sessão, e checagens repetidas nunca empilham
+**Reiniciar agora / Depois** — nada instala sem clique explícito. Desde a
+P2-257, a oferta adiada não desaparece: volta até duas vezes (uma a cada 4 h,
+três ofertas por versão no total, no mesmo temporizador da reverificação) e o
+item do tray para release baixada reabre o mesmo diálogo — a instalação
+acontece ao aceitar a oferta ("Reiniciar agora"), nunca por uma
+reinicialização comum. Checagens repetidas nunca empilham
 ofertas velhas. Desde a P2-146, todo release do GitHub também publica os
 feeds JSON do Squirrel.Mac, gerados por
 `apps/desktop/scripts/update-feed.mjs` a partir do `latest-mac.yml` + dos

@@ -1683,15 +1683,22 @@ JSON feed path. Feed or network
 failures are strictly log-only and never block or crash the window.
 
 Whenever a feed is configured, the tray menu also gains two items (P3-019): a
-disabled status line reflecting the latest check ("Update available — check for
-updates", "Update available — open release page", "Update ready — restart to
-install", "Up to date", or the failure reason) and a clickable "Check for
-updates" item that re-runs the check and refreshes the menu in place. Since
+status line reflecting the latest check ("Update available — check for
+updates", "Update available — open release page", "Up to date", or the failure
+reason) and a clickable "Check for updates" item that re-runs the check and
+refreshes the menu in place. P2-257: when a release is already downloaded the
+status line becomes the truthful, clickable "Atualização baixada — a instalação
+acontece ao aceitar a oferta" — clicking it reopens the consent dialog, since
+a plain restart installs nothing under the consent flow. Since
 P2-176 the app menu's **Ajuda** submenu mirrors both items (rebuilt on every
 status change, so its label never goes stale). Applying
 a release always goes through the consent dialog (P1-050): the updater asks
-"Restart now / Later" once the download finishes — a deferred version is not
-re-offered in the same session. On macOS the packaged shell updates itself
+"Restart now / Later" once the download finishes. P2-257: a deferred offer
+comes back — up to two reminders, one every 4 h (three offers per version in
+total, carried by the same recheck timer) — and the tray item for a downloaded
+release tells the truth and reopens the same dialog on click; the update
+applies only by accepting the offer ("Restart now"), never by a plain
+restart. On macOS the packaged shell updates itself
 this way, and the same Squirrel JSON feeds are published on every GitHub
 release (per architecture since P2-191: `update-mac-arm64.json` /
 `update-mac-x64.json`, with `update-mac.json` kept as the arm64 alias; built
