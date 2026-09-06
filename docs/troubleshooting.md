@@ -251,6 +251,32 @@ until the app is opened again (for example at the next login, P2-218).
   `OCR_DESKTOP_QUIT_DIALOG_ANSWER=quit|stay|never` auto-answers it on the
   desktop shell (test-only hatches for deterministic screenshots/flows).
 
+## The phone asked to be added to the Home Screen (P2-220)
+
+When the phone opens the web app as a **regular browser tab** (iPhone or iPad,
+not installed to the Home Screen), iOS may erase that site's script-writable
+storage after ~7 days without use. The pairing identity lives in that storage
+(IndexedDB + localStorage), so the tab would silently lose the pairing and
+land back on the pairing screen with no explanation — the only recovery being
+another QR read on the Mac.
+
+To keep that loss from being silent, the app shows a calm one-line note above
+the conversation list explaining that **adding the app to the Home Screen
+keeps the pairing saved** and where the action lives in the browser (Share
+button → Add to Home Screen).
+
+- The note appears **only on iPhone/iPad browsers outside the installed
+  (standalone) mode**, and only while a saved pairing exists. The desktop app
+  and the first-run screen never show it.
+- **Dismissing is definitive** on that device — there is no undo UI. To see
+  the note again, clear the site's localStorage (or reinstall) — or, for
+  testing, open the address with `?installhint=1`, a documented test-only
+  hatch that forces the note to show without persisting anything.
+- The note is a normal element in the page flow: it never covers the message
+  field, never blocks sending and never disables a control.
+- Android is deliberately out of scope: Chrome has its own install prompt and
+  a different storage-eviction policy (future task if it ever earns one).
+
 ## Service control (macOS launchd)
 
 ```

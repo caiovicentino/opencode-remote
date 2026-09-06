@@ -47,6 +47,10 @@ interface Props {
   variant?: "grid" | "rows";
   /** P3-084: currently open conversation — drives the sharp active row. */
   activeSession?: string | null;
+  /** P2-220: one-line iOS install hint (null/absent hides the banner). */
+  installHint?: string | null;
+  /** P2-220: persists the dismissal under its own localStorage key. */
+  onDismissInstallHint?: () => void;
 }
 
 /** P1-064: collapsed header for autonomous-pilot sessions, pinned to the end
@@ -120,6 +124,8 @@ export default function SessionsView({
   onCreateSession,
   variant = "grid",
   activeSession = null,
+  installHint = null,
+  onDismissInstallHint,
 }: Props) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const t = useT();
@@ -452,6 +458,24 @@ export default function SessionsView({
       )}
 
       <div className="list">
+        {/* P2-220: calm iOS install hint, in the P2-112 card vocabulary. It
+            fails OPEN on purpose: normal document flow at the top of the list
+            — never position:fixed/sticky, never covering the message field,
+            never blocking send, never disabling or hiding any control. If the
+            detection is wrong somewhere, the cost is one quiet line, not a
+            lost pairing. */}
+        {installHint && (
+          <div className="install-hint" role="note" data-install-hint>
+            <span className="install-hint-body">{installHint}</span>
+            <button
+              className="install-hint-dismiss"
+              onClick={onDismissInstallHint}
+              aria-label={t("installHintDismiss")}
+            >
+              {t("installHintDismiss")}
+            </button>
+          </div>
+        )}
         {/* P2-108: badge filters folded into a search-attached menu (was a
             chip row); locale-independent hooks for the gate: data-filter. */}
         <div className="sess-search-row">

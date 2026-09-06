@@ -2,6 +2,7 @@
 // usage: const t = useT(); t("search") — components re-render on change.
 
 import { useSyncExternalStore } from "react";
+import { INSTALL_HINT_MESSAGE } from "./installhint";
 
 export type Lang = "en" | "pt";
 
@@ -460,6 +461,11 @@ export const dict = {
     homeIdea3Label: "Recap my recent sessions",
     homeIdea3Prompt: "Summarize my recent conversations, with the next step for each one.",
     homeStartError: "Couldn't start the conversation. Check the connection and try again.",
+    // P2-220: iOS install hint above the conversation list (iPhone/iPad,
+    // regular tab, saved pairing). Dismissal is definitive — documented.
+    installHintBody:
+      "Add the app to your Home Screen to keep this pairing saved — in the browser, tap the Share button and choose Add to Home Screen.",
+    installHintDismiss: "Dismiss",
   },
   pt: {
     search: "Buscar conversas…",
@@ -860,5 +866,10 @@ export const dict = {
     homeIdea3Label: "Resumo das conversas recentes",
     homeIdea3Prompt: "Resuma minhas conversas recentes, com o próximo passo de cada uma.",
     homeStartError: "Não deu pra iniciar a conversa. Verifique a conexão e tente de novo.",
+    // P2-220: aviso de instalação acima da lista de conversas (iPhone/iPad,
+    // aba comum, pareamento salvo). Dispensar é definitivo — documentado.
+    // EXATAMENTE a frase do módulo puro (afirmado por scripts/unit.test.ts).
+    installHintBody: INSTALL_HINT_MESSAGE,
+    installHintDismiss: "Dispensar",
   },
 } satisfies Record<Lang, Record<string, string>>;

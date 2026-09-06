@@ -263,6 +263,26 @@ built `apps/web/dist` statically on `127.0.0.1:5173` (P2-075), never a dev
 server. The daemon watches `/healthz` and flags a dead origin on the
 dashboard (red chip + `[pwa] origin` event).
 
+### Keep the pairing on the iPhone: add to Home Screen (P2-220)
+
+If the phone opens the app as a **regular Safari tab** (never installed to the
+Home Screen), iOS may wipe that website's saved storage — including the
+pairing key — after about a week of no use, and the only recovery would be
+walking back to the Mac to scan another QR. To prevent that silent loss, the
+app shows a **calm one-line hint** above the conversation list explaining how
+to add it to the Home Screen (Share button → Add to Home Screen). The hint:
+
+- appears **only on iPhone/iPad** browsers, outside the installed
+  (standalone) mode, while a saved pairing exists;
+- never appears in the desktop app (its storage is never swept) and never on
+  the first-run screen with nothing to lose;
+- can be dismissed — **dismissal is definitive** on that device; and
+- never blocks anything: it is a normal element in the page flow, it never
+  covers the message field or disables a control.
+
+`?installhint=1` on the address forces the hint to show for screenshots and
+support reproduction (test-only hatch; nothing is persisted by it).
+
 ## Install as a third party (no tailnet — LAN mode)
 
 The `wss://…ts.net` in the Quick Start is just one way to reach the relay.

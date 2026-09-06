@@ -1777,6 +1777,42 @@ button.desk-new:hover:not(:disabled) {
   border-radius: var(--radius-pill);
   background: var(--accent);
 }
+/* ── P2-220: iOS install hint ──────────────────────────────────────────────
+   Calm one-line note above the conversation list, in the P2-112 card
+   vocabulary (flat --surface panel, --border edge, --muted text — no
+   gradient, no alert color, no emoji). Deliberately in normal document
+   flow: never fixed or sticky, so it can never cover the message composer
+   or steal a tap. */
+.install-hint {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.install-hint-body {
+  color: var(--muted);
+  font-size: var(--font-size-sm);
+  line-height: 1.45;
+}
+.install-hint-dismiss {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  padding: 2px 4px;
+  color: var(--muted);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.install-hint-dismiss:hover {
+  color: var(--fg);
+}
 .sess-menu-scrim {
   position: fixed;
   inset: 0;
