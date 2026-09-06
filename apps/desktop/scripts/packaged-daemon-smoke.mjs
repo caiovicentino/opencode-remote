@@ -87,8 +87,16 @@ function ephemeralPort() {
  * socket is ever opened.
  */
 export function hermeticDaemonEnv(tempHome, port) {
+  // Allowlisted env (round-3 review): only what an Electron-as-Node runtime
+  // and the daemon's boot actually need. Nothing else from the runner — a
+  // future step-level secret can never flow into the child whose stderr gets
+  // echoed into the job log.
+  const allowlisted = {};
+  for (const key of ["PATH", "TMPDIR", "TEMP", "TMP", "LANG", "SystemRoot", "SYSTEMDRIVE", "windir", "ComSpec", "PATHEXT"]) {
+    if (process.env[key] !== undefined) allowlisted[key] = process.env[key];
+  }
   return {
-    ...process.env,
+    ...allowlisted,
     // Same flag daemon.ts sets: the Electron binary then behaves as plain
     // Node instead of booting a second GUI runtime.
     ELECTRON_RUN_AS_NODE: "1",
@@ -96,6 +104,9 @@ export function hermeticDaemonEnv(tempHome, port) {
     RELAY_URL: "off", // invalid on purpose → relay disabled (fail-closed)
     HOME: tempHome,
     USERPROFILE: tempHome,
+    // Windows AppData pointers stay inside the temp tree as well.
+    APPDATA: tempHome,
+    LOCALAPPDATA: tempHome,
   };
 }
 
@@ -109,13 +120,13 @@ function readToken(tempHome) {
   }
 }
 
-/** One /api/health probe; resolves the status code or throws. */
-async function probeStatus(port, token) {
+/** One /api/health probe; resolves { status, json } or throws. */
+async function probeHealth(port, token) {
   const res = await fetch(`http://127.0.0.1:${port}/api/health`, {
     headers: token ? { authorization: `Bearer ${token}` } : {},
     signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
   });
-  return res.status;
+  return { status: res.status, json: (res.headers.get("content-type") ?? "").startsWith("application/json") };
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -184,12 +195,25 @@ async function main() {
   let healthAnswered = false;
   let healthStatus = null;
 
-  // Hard ceiling so a hung child can never hold the runner: kill + fail.
+  // Hard ceiling so a hung child can never hold the runner. process.exit
+  // skips the finally below, so this path does its own cleanup: verdict
+  // printed, child killed, temp HOME (which holds a freshly generated
+  // daemon.json) removed — THEN the immediate exit.
+  const startedAt = Date.now();
   const watchdog = setTimeout(() => {
-    console.error(`packaged-daemon-smoke: FAIL — exceeded ${WATCHDOG_MS}ms, killing the daemon`);
+    const verdict = daemonVerdict({
+      exitCode,
+      signal: exitSignal,
+      elapsedMs: Date.now() - startedAt,
+      healthAnswered,
+      healthStatus,
+      stderrTail,
+    });
+    printVerdict(verdict, appPath);
     try {
       child?.kill("SIGKILL");
     } catch {}
+    rmSync(tempHome, { recursive: true, force: true });
     process.exit(1);
   }, WATCHDOG_MS);
 
@@ -211,21 +235,24 @@ async function main() {
       exitSignal = signal;
     });
 
-    // Poll /api/health until it answers (or the child died / deadline hit).
-    // An unauthenticated first hit makes a fresh daemon generate and persist
-    // its apiToken; the authenticated status is the actual proof.
-    const startedAt = Date.now();
+    // Poll /api/health until it answers (or the child died / deadline hit),
+    // with healthOnce's challenge discipline: the unauthenticated probe must
+    // reproduce the daemon's 401-JSON signature BEFORE any token is spent —
+    // a generic "200 for anything" squatter never receives it.
     const deadline = startedAt + HEALTH_TIMEOUT_MS;
     let elapsedMs = 0;
     while (Date.now() < deadline) {
       if (exitCode !== null || exitSignal !== null) break;
       try {
-        await probeStatus(port, null).catch(() => null);
-        const token = readToken(tempHome);
-        if (token) {
-          healthStatus = await probeStatus(port, token);
-          healthAnswered = true;
-          break;
+        const challenge = await probeHealth(port, null);
+        if (challenge.status === 401 && challenge.json) {
+          const token = readToken(tempHome);
+          if (token) {
+            const answer = await probeHealth(port, token);
+            healthStatus = answer.status;
+            healthAnswered = true;
+            break;
+          }
         }
       } catch {}
       await sleep(POLL_MS);

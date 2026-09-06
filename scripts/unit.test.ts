@@ -20199,7 +20199,6 @@ check(
     "P2-251: no short-circuit — dead child with a module-resolution tail and no health answer yields ALL three problems in order",
     JSON.stringify(reasons({ exitCode: 1, healthAnswered: false, healthStatus: null, stderrTail: "Error: MODULE_NOT_FOUND" })) ===
       JSON.stringify(["daemon-exited", "module-resolution", "health-unreachable"]),
-    JSON.stringify(v({ exitCode: 1, healthAnswered: false, healthStatus: null, stderrTail: "Error: MODULE_NOT_FOUND" }.problems)),
   );
   check(
     "P2-251: health answered but the child died afterwards is still a rejection (only alive+healthy passes)",
@@ -20263,10 +20262,15 @@ check(
     bootSmokeParity([wfJob("desktop-package", [pkgStep, bootStep])], []).length === 0,
   );
   check(
-    "P2-251: a daemon smoke with bad shell/timeout/position yields one problem per cause",
+    "P2-251: a daemon smoke placed before packaging with bad shell/timeout yields one problem per cause (position, shell, timeout)",
     (() => {
-      const problems = bootSmokeParity([], [wfJob("desktop-win", [pkgStep, daemonStep, { ...daemonStep, shell: null, timeoutMinutes: null }, bootStep])]);
-      return problems.length === 2 && problems.some((p) => p.includes("shell: bash")) && problems.some((p) => p.includes("timeout-minutes"));
+      const problems = bootSmokeParity([], [wfJob("desktop-win", [{ ...daemonStep, shell: null, timeoutMinutes: null }, pkgStep, daemonStep, bootStep])]);
+      return (
+        problems.length === 3 &&
+        problems.some((p) => p.includes("before the packaging step")) &&
+        problems.some((p) => p.includes("shell: bash")) &&
+        problems.some((p) => p.includes("timeout-minutes"))
+      );
     })(),
   );
   check(
