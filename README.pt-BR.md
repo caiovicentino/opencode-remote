@@ -894,6 +894,13 @@ plataformas mantêm o comportamento anterior, e `OCR_DESKTOP_FORCE_LOGIN_ITEM=1`
 no shell desktop força o anúncio para screenshots determinísticos (hatch só de
 teste, máquina intocada).
 
+**Desinstalação no Windows (P2-249)**: desinstalar o app remove a entrada de
+abertura no login (nada de boot tentando abrir um programa que não existe
+mais) e a pasta de dados do próprio app no perfil de quem desinstalou —
+arquivos de estado e logs incluídos, já que a instalação é por usuário — e
+nunca toca Documentos, Área de Trabalho, Downloads nem nada fora dos dados do
+próprio app.
+
 **Reconexão guiada pelo código de fechamento (P2-156)**: quando o socket do
 relay fecha, o daemon classifica o código em vez de tratar qualquer queda como
 problema de rede. `1013` (server busy / too many connections / room full) o

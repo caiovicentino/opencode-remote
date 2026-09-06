@@ -90,6 +90,7 @@ import { clockSkewMessage, skewVerdict, CLOCK_SKEW_TOLERANCE_MS } from "../apps/
 import { linkVerdict, type RelayLinkFacts } from "../apps/desktop/src/relaylink";
 import { installMessage, installVerdict } from "../apps/desktop/src/installloc";
 import { loginItemMessage, loginItemPlan } from "../apps/desktop/src/loginitem";
+import { uninstallCleanupPlan, UNINSTALL_REMOVABLE_NAMES } from "../apps/desktop/src/uninstallplan";
 import { readStartupDecided, startupSettingFile, writeStartupDecided } from "../apps/desktop/src/startupstore";
 import {
   QUIT_BUTTON_INDEX,
@@ -20738,6 +20739,136 @@ check("P2-241: no new periodic timer was introduced by the handler", !dlBlock.in
       daemonSrc.includes("docConvertExts: docConvert.exts") &&
       daemonSrc.includes('docConvertCheckedAt: readinessCheckedAt(readinessState["doc-convert"].probedAt)') &&
       daemonSrc.includes('versionCheckedAt: readinessCheckedAt(readinessState["opencode-version"].probedAt)'),
+  );
+}
+
+// --- P2-249: Windows uninstall cleanup (uninstallplan.ts + installer.nsh + electron-builder.yml)
+
+{
+  const plan = (names: string[]) => uninstallCleanupPlan("OpenCode Remote", names);
+  const same = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
+
+  // empty observed list → empty plan
+  const emptyPlan = plan([]);
+  check(
+    "P2-249: an empty observed list yields an empty plan",
+    emptyPlan.remove.length === 0 && emptyPlan.preserve.length === 0 && emptyPlan.refused.length === 0,
+  );
+
+  // a name outside the documented set is always preserved, never guessed
+  const unknown = plan(["Notes.txt", "Cache", "MinhaPasta"]);
+  check(
+    "P2-249: a name outside the documented set is preserved, never guessed",
+    same(unknown.preserve, ["Cache", "MinhaPasta", "Notes.txt"]) &&
+      unknown.remove.length === 0 &&
+      unknown.refused.length === 0,
+  );
+
+  // every documented name is removed (and only there)
+  const documented = plan([...UNINSTALL_REMOVABLE_NAMES]);
+  check(
+    "P2-249: every documented app name is scheduled for removal, ascending",
+    same(documented.remove, [...UNINSTALL_REMOVABLE_NAMES].sort()) && documented.preserve.length === 0,
+  );
+  check(
+    "P2-249: the documented set covers the identity/pairing state file and the shell state + logs",
+    same([...UNINSTALL_REMOVABLE_NAMES].sort(), [
+      "close-hint.flag",
+      "daemon.json",
+      "gpu-state.json",
+      "logs",
+      "quit-ask.json",
+      "relay.json",
+      "startup.json",
+      "update-staging",
+      "window-state.json",
+    ]),
+  );
+
+  // refusals: empty, separator, parent jump, absolute path — never removed,
+  // never preserved, surfaced in the refused bucket
+  const refused = plan(["", "logs\\sub", "logs/sub", "..", "/etc", "C:\\Users", "C:"]);
+  check(
+    "P2-249: empty, separator, parent-jump and absolute-path names are refused, not removed",
+    same(refused.refused, ["", "..", "/etc", "C:", "C:\\Users", "logs/sub", "logs\\sub"]) &&
+      refused.remove.length === 0 &&
+      refused.preserve.length === 0,
+  );
+  for (const bad of ["", "..", "/etc", "C:\\Users", "C:", "a/b", "a\\b"]) {
+    const p = plan([bad]);
+    check(
+      `P2-249: a refused name never lands in remove or preserve (${JSON.stringify(bad)})`,
+      p.refused.length === 1 && p.remove.length === 0 && p.preserve.length === 0,
+    );
+  }
+
+  // determinism: the same input in two different orders yields an identical plan
+  const a = plan(["logs", "relay.json", "Random", "startup.json", "..", "daemon.json"]);
+  const b = plan(["daemon.json", "..", "startup.json", "Random", "relay.json", "logs"]);
+  check(
+    "P2-249: the same input in two different orders produces an identical plan",
+    JSON.stringify(a) === JSON.stringify(b) && same(a.remove, ["daemon.json", "logs", "relay.json", "startup.json"]),
+  );
+
+  // the plan never contains a name it did not receive
+  const received = new Set(["logs", "relay.json", "Random", "..", "", "/abs"]);
+  const mixed = plan([...received]);
+  check(
+    "P2-249: the plan never returns a name it was not given",
+    [...mixed.remove, ...mixed.preserve, ...mixed.refused].every((n) => received.has(n)),
+  );
+
+  // module hygiene: uninstallplan.ts stays pure — zero imports, no I/O
+  const planSrc = readFileSync(
+    join(import.meta.dirname, "..", "apps", "desktop", "src", "uninstallplan.ts"),
+    "utf8",
+  );
+  check(
+    "P2-249: uninstallplan.ts imports nothing (no electron, node:fs, node:path, fetch)",
+    planSrc.split("\n").filter((l) => l.trim().startsWith("import ") || l.includes("require(") || l.includes('from "')).length === 0,
+  );
+
+  // real installer.nsh: the customUnInstall macro exists, removes the
+  // autostart entry and never touches a user folder
+  const nsh = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "build", "installer.nsh"), "utf8");
+  check(
+    "P2-249: installer.nsh defines the customUnInstall macro electron-builder invokes",
+    /!macro\s+customUnInstall\b/.test(nsh),
+  );
+  check(
+    "P2-249: installer.nsh deletes the per-user Run autostart entry the login item created",
+    nsh.includes("DeleteRegValue HKCU") && nsh.includes("Software\\Microsoft\\Windows\\CurrentVersion\\Run"),
+  );
+  check(
+    "P2-249: installer.nsh cites no Documents/Desktop/Downloads constant and removes no folder",
+    !/\$(DESKTOP|DOCUMENTS|DOWNLOADS)/i.test(nsh) && !/\bRMDir\b/i.test(nsh) && !/\bDelete\s+\S/.test(nsh),
+  );
+
+  // real electron-builder.yml: the nsis block declares the data wipe; the
+  // other platform blocks stay byte-identical in their anchors
+  const yml = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "electron-builder.yml"), "utf8");
+  const nsisAt = yml.indexOf("nsis:");
+  const linuxAt = yml.indexOf("linux:");
+  const wipeAt = yml.indexOf("deleteAppDataOnUninstall: true");
+  check(
+    "P2-249: the nsis block declares deleteAppDataOnUninstall inside it",
+    nsisAt !== -1 && wipeAt > nsisAt && (linuxAt === -1 || wipeAt < linuxAt),
+  );
+  check(
+    "P2-249: the nsis block keeps oneClick/perMachine/allowToChangeInstallationDirectory and the artifactName",
+    yml.includes("oneClick: false") &&
+      yml.includes("perMachine: false") &&
+      yml.includes("allowToChangeInstallationDirectory: true") &&
+      yml.includes("artifactName: OpenCode-Remote-Setup-${version}.exe"),
+  );
+  check(
+    "P2-249: the mac, dmg, win and linux blocks are untouched (anchor lines intact)",
+    yml.includes("hardenedRuntime: true") &&
+      yml.includes("entitlements: build/entitlements.mac.plist") &&
+      yml.includes("artifactName: OpenCode-Remote-${version}-${arch}.${ext}") &&
+      yml.includes("title: OpenCode Remote ${version}") &&
+      yml.includes("target: dir") &&
+      yml.indexOf("target:") < nsisAt,
   );
 }
 
