@@ -645,6 +645,19 @@ export default function ChatView({
   // P3-085: streaming reasoning ("Pensou por Xs" block) — refs above the
   // [sessionId] switch effect, cleared on every switch (P1-089 rule).
   const [liveThinking, setLiveThinking] = useState<ThinkingState | null>(null);
+  // P2-266: one document-level signal of in-progress work (live stream tail
+  // or a send in flight). The service-worker update wiring in main.tsx reads
+  // it before offering a version swap — reloading over a streaming answer
+  // would lose it. Session switches re-run this effect; unmount clears it.
+  const streamingNow = sending || !!liveText || !!liveThinking;
+  useEffect(() => {
+    document.dispatchEvent(
+      new CustomEvent("ocr:streaming", { detail: { streaming: streamingNow } }),
+    );
+    return () => {
+      document.dispatchEvent(new CustomEvent("ocr:streaming", { detail: { streaming: false } }));
+    };
+  }, [streamingNow]);
   const thinkingRef = useRef<ThinkingState | null>(null);
 
   useEffect(() => {

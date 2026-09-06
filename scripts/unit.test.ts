@@ -12,6 +12,14 @@ import { gateFailFile, mergeConflictBlock } from "../apps/pilot/src/pipeline";
 
 import { parsePairingUri, localWsUrl, shouldFailoverToRelay } from "../apps/web/src/lib/client";
 
+import {
+  SW_SWAP_MESSAGE,
+  SW_UPDATE_MIN_INTERVAL_MS,
+  demoForced,
+  swUpdatePlan,
+  type SwUpdateInput,
+} from "../apps/web/src/lib/swupdate";
+
 import { isLoopbackAddr, localOriginAllowed, localUpgradeAllowed } from "../apps/daemon/src/localws";
 
 import { classifyRelayClose, effectiveRetryDelayMs } from "../apps/daemon/src/relayclose";
@@ -20499,18 +20507,183 @@ check(
 );
 
 check(
-  "P2-246: main.tsx — the P3-005 file-scheme guard stays intact and no new interface is added",
+  "P2-246/P2-266: main.tsx — the P3-005 file-scheme guard stays intact and the only SW interface is the documented one",
   mainTsx.includes('import.meta.env.PROD') &&
     mainTsx.includes('location.protocol !== "file:"') &&
     mainTsx.includes('navigator.serviceWorker.register("/sw.js")') &&
-    !mainTsx.includes("addEventListener") &&
-    !mainTsx.includes("controllerchange") &&
+    // P2-266: the page applies the plan on visibility, reloads once on
+    // controller change and posts only the documented swap message.
+    mainTsx.includes("visibilitychange") &&
+    mainTsx.includes("controllerchange") &&
+    mainTsx.includes("swReloaded") &&
+    mainTsx.includes("swSwap") &&
+    // Still banned: any local decision-making surface.
     !mainTsx.includes("updatefound") &&
-    !mainTsx.includes("postMessage") &&
     !mainTsx.includes("MessageChannel") &&
     !mainTsx.includes("setTimeout") &&
     !mainTsx.includes("setInterval"),
 );
+
+// --- P2-266: the installed-app update plan (lib/swupdate.ts) ---------------------
+
+const swUpdateBase: SwUpdateInput = {
+  registered: true,
+  waitingWorker: false,
+  lastCheckAt: 1_000_000,
+  now: 1_000_000 + 10_000,
+  streaming: false,
+  draftUnsent: false,
+  minIntervalMs: 60_000, // explicit threshold for every timing case below
+};
+
+check(
+  "P2-266: swUpdatePlan — no registration is idle even with a waiting worker (no interlocutor)",
+  swUpdatePlan({ ...swUpdateBase, registered: false, waitingWorker: true }).plan === "idle" &&
+    swUpdatePlan({ ...swUpdateBase, registered: false, waitingWorker: true }).reason ===
+      "no-registration",
+);
+
+check(
+  "P2-266: swUpdatePlan — rule order: waiting worker AND streaming at the same time loses to the stream",
+  (() => {
+    const v = swUpdatePlan({ ...swUpdateBase, waitingWorker: true, streaming: true });
+    return v.plan === "idle" && v.reason === "user-work";
+  })(),
+);
+
+check(
+  "P2-266: swUpdatePlan — rule order: waiting worker AND unsent draft at the same time loses to the draft",
+  (() => {
+    const v = swUpdatePlan({ ...swUpdateBase, waitingWorker: true, draftUnsent: true });
+    return v.plan === "idle" && v.reason === "user-work";
+  })(),
+);
+
+check(
+  "P2-266: swUpdatePlan — waiting worker with no work in progress offers the new version",
+  (() => {
+    const v = swUpdatePlan({ ...swUpdateBase, waitingWorker: true });
+    return v.plan === "offer" && v.reason === "waiting-worker";
+  })(),
+);
+
+check(
+  "P2-266: swUpdatePlan — a check exactly at the minimum interval is due (threshold: 60000ms)",
+  (() => {
+    const v = swUpdatePlan({ ...swUpdateBase, lastCheckAt: swUpdateBase.now - 60_000 });
+    return v.plan === "check" && v.reason === "check-due";
+  })(),
+);
+
+check(
+  "P2-266: swUpdatePlan — a check older than the minimum interval is due",
+  swUpdatePlan({ ...swUpdateBase, lastCheckAt: swUpdateBase.now - 60_001 }).plan === "check",
+);
+
+check(
+  "P2-266: swUpdatePlan — a check younger than the minimum interval waits",
+  (() => {
+    const v = swUpdatePlan({ ...swUpdateBase, lastCheckAt: swUpdateBase.now - 59_999 });
+    return v.plan === "idle" && v.reason === "too-recent";
+  })(),
+);
+
+check(
+  "P2-266: swUpdatePlan — a future last-check instant is treated as just checked (age never negative)",
+  (() => {
+    const v = swUpdatePlan({ ...swUpdateBase, lastCheckAt: swUpdateBase.now + 60_000 });
+    return v.plan === "idle" && v.reason === "too-recent";
+  })(),
+);
+
+check(
+  "P2-266: swUpdatePlan — non-finite instants are refused, never guessed",
+  swUpdatePlan({ ...swUpdateBase, now: Number.NaN }).reason === "bad-instants" &&
+    swUpdatePlan({ ...swUpdateBase, lastCheckAt: Number.NaN }).reason === "bad-instants" &&
+    swUpdatePlan({ ...swUpdateBase, now: Number.POSITIVE_INFINITY }).plan === "idle" &&
+    swUpdatePlan({ ...swUpdateBase, lastCheckAt: Number.NEGATIVE_INFINITY }).plan === "idle",
+);
+
+check(
+  "P2-266: swUpdatePlan — the demo hatch offers only when the caller already resolved it",
+  swUpdatePlan({ ...swUpdateBase, demo: true }).plan === "offer" &&
+    swUpdatePlan({ ...swUpdateBase, demo: true }).reason === "demo" &&
+    // the hatch never overrides the higher rules
+    swUpdatePlan({ ...swUpdateBase, demo: true, registered: false }).plan === "idle" &&
+    swUpdatePlan({ ...swUpdateBase, demo: true, streaming: true }).plan === "idle" &&
+    swUpdatePlan({ ...swUpdateBase, demo: true, waitingWorker: true }).reason ===
+      "waiting-worker",
+);
+
+check(
+  "P2-266: swUpdatePlan — the documented default interval applies when the caller passes none",
+  (() => {
+    const v = swUpdatePlan({
+      ...swUpdateBase,
+      minIntervalMs: undefined,
+      lastCheckAt: swUpdateBase.now - (SW_UPDATE_MIN_INTERVAL_MS - 1),
+    });
+    const due = swUpdatePlan({
+      ...swUpdateBase,
+      minIntervalMs: undefined,
+      lastCheckAt: swUpdateBase.now - SW_UPDATE_MIN_INTERVAL_MS,
+    });
+    return SW_UPDATE_MIN_INTERVAL_MS > 0 && v.plan === "idle" && due.plan === "check";
+  })(),
+);
+
+check(
+  "P2-266: swUpdatePlan — identical input, identical verdict (two calls)",
+  (() => {
+    const input: SwUpdateInput = { ...swUpdateBase, waitingWorker: true, streaming: false };
+    return (
+      JSON.stringify(swUpdatePlan(input)) === JSON.stringify(swUpdatePlan(input)) &&
+      JSON.stringify(swUpdatePlan({ ...input, waitingWorker: false, demo: true })) ===
+        JSON.stringify(swUpdatePlan({ ...input, waitingWorker: false, demo: true }))
+    );
+  })(),
+);
+
+check(
+  "P2-266: demoForced — the demo parameter counts only inside the desktop shell in a harness session",
+  demoForced("?swupdate=demo", { desktopShell: true, harnessSession: true }) === true &&
+    demoForced("?swupdate=demo", { desktopShell: true, harnessSession: false }) === false &&
+    demoForced("?swupdate=demo", { desktopShell: false, harnessSession: true }) === false &&
+    demoForced("?swupdate=demo", { desktopShell: false, harnessSession: false }) === false &&
+    // every normal boot ignores it
+    demoForced("", { desktopShell: true, harnessSession: true }) === false &&
+    demoForced("?swupdate=ready", { desktopShell: true, harnessSession: true }) === false &&
+    demoForced("?other=1", { desktopShell: true, harnessSession: true }) === false,
+);
+
+// Source pin: the real module keeps the purity hygiene (comments stripped
+// first — the same normalization the P2-239 policy pins use).
+const swUpdateSrc = readFileSync(
+  new URL("../apps/web/src/lib/swupdate.ts", import.meta.url),
+  "utf8",
+).replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+check(
+  "P2-266: swupdate.ts — the decision module stays pure (no DOM, storage or network identifiers in code)",
+  !/\b(navigator|window|document|localStorage|fetch)\b/.test(swUpdateSrc),
+);
+
+check(
+  "P2-266: sw.js — the message listener skips waiting exclusively for the documented swap message",
+  (() => {
+    const start = swSrc.indexOf('self.addEventListener("message"');
+    if (start === -1) return false;
+    const nextListener = swSrc.indexOf('self.addEventListener("', start + 10);
+    const block = swSrc.slice(start, nextListener === -1 ? undefined : nextListener);
+    const skipSites = (swSrc.match(/skipWaiting\(\)/g) ?? []).length;
+    return (
+      block.includes(`event.data === "${SW_SWAP_MESSAGE}"`) &&
+      block.includes("self.skipWaiting()") &&
+      skipSites === 2 && // the P2-246 takeover-plan call and this one — nothing else
+      swSrc.split(SW_SWAP_MESSAGE).length === 2 // the literal appears exactly once
+    );
+  })(),
+);
+
 
 // --- P2-240: honest queue view (backlogview.ts) ---------------------------------
 {

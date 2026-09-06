@@ -380,6 +380,15 @@ atualizado espera enquanto existir janela viva da publicação anterior e assume
 só na próxima abertura do app, então os arquivos que o documento na tela ainda
 vai pedir nunca somem do cache no meio da conversa.
 
+O app instalado deixa de depender desse fechamento (P2-266): quando a tela
+volta a ficar visível, o app verifica se há publicação nova (no máximo uma vez
+a cada 30 minutos, nunca enquanto uma resposta está chegando ou existe
+rascunho não enviado) e, havendo versão nova esperando, mostra uma faixa de
+uma linha cuja ação "Atualizar agora" troca a versão e recarrega — sem
+desinstalar, sem refazer o pareamento, sem mais nada. `?swupdate=demo` no
+endereço força a faixa para screenshots e reprodução em suporte, e só vale
+dentro do shell desktop em sessão de harness — qualquer boot normal ignora.
+
 - Se nada foi guardado ainda (a primeira visita foi sem rede ou o pre-carregamento
   foi interrompido), o app mostra uma página mínima e estática — "Você está sem
   conexão … recarregue a página" — no lugar de tela branca ou erro cru do
