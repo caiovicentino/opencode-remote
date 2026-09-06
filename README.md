@@ -925,6 +925,17 @@ restart the daemon to pair a new device — see
 - [docs/troubleshooting.md](docs/troubleshooting.md)
 - [docs/capacitor.md](docs/capacitor.md) — native iOS shell recipe
 
+**Self-protecting identity file (P2-234).** `daemon.json` carries the machine
+identity and the paired-devices list, so an unreadable file (truncated
+pre-P2-165 write, full disk, failed manual edit) no longer crashes the daemon
+with a raw syntax error that makes the machine vanish from the phone. The boot
+refuses with one calm pt-BR line, moves the illegible file to a 0600
+quarantine copy beside the original and exits with the documented code 78 —
+nothing is deleted, the identity is never regenerated behind your back.
+Restoring the quarantine file over `daemon.json` brings every pairing back;
+deleting both files starts the machine over and requires pairing again. See
+[docs/troubleshooting.md](docs/troubleshooting.md#the-identity-file-is-unreadable-p2-234).
+
 ## Pilot — autonomous development (24/7)
 
 This repo evolves itself: the Pilot service ([docs/PILOT.md](docs/PILOT.md)) picks tasks from

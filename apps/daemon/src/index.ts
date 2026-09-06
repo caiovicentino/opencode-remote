@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, statSync, readdirSync, openSync, readSync, closeSync, copyFileSync, createReadStream, accessSync, constants, rmSync, statfs } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, renameSync, statSync, readdirSync, openSync, readSync, closeSync, copyFileSync, createReadStream, accessSync, constants, rmSync, statfs } from "node:fs";
 import { stat } from "node:fs/promises";
 import { execFile, execSync } from "node:child_process";
 import { promisify } from "node:util";
@@ -37,6 +37,7 @@ import type {
 import { log } from "./log.js";
 import { IdempotencyCache } from "./idempotency.js";
 import { writeStateAtomic } from "./statefile.js";
+import { identityVerdict, quarantineName } from "./identityfile.js";
 import { appendAudit, readAuditTail } from "./auditlog.js";
 import { capMessagePage, parsePageLimit, shouldPaginateMessages, type HistoryRowLike } from "./paginate.js";
 import { handleBrowse } from "./browse.js";
@@ -221,9 +222,46 @@ function audit(event: string, data?: Record<string, unknown>) {
 async function loadIdentity(): Promise<DaemonIdentity> {
   const dir = STATE_DIR;
   mkdirSync(dir, { recursive: true });
-  let raw: Partial<IdentityFile> = existsSync(STATE_FILE)
-    ? (JSON.parse(readFileSync(STATE_FILE, "utf8")) as Partial<IdentityFile>)
-    : {};
+  // P2-234: the identity file is read through the pure verdict in
+  // identityfile.ts. An unreadable daemon.json (truncated pre-P2-165 write,
+  // full disk, failed manual edit) used to crash right here with a raw
+  // SyntaxError and the machine vanished from the phone without a word.
+  let exists = true;
+  let content: string | null = null;
+  let readFailure: string | null = null;
+  try {
+    content = readFileSync(STATE_FILE, "utf8");
+  } catch (err) {
+    // A missing file is the long-standing first-run path, bit for bit; any
+    // other filesystem failure refuses the boot with the file untouched.
+    const code = (err as NodeJS.ErrnoException)?.code ?? "";
+    if (code === "ENOENT") exists = false;
+    else readFailure = code || "EUNKNOWN";
+  }
+  const verdict = identityVerdict(exists, content, readFailure);
+  if (verdict.plan === "refuse") {
+    // Rule-order contract (identityfile.ts header): a filesystem read
+    // failure NEVER quarantines — the file stays exactly where it is. For
+    // unreadable content, preserve it beside the original (0600, never
+    // deleted) so the owner can restore the pairings.
+    let quarantined = false;
+    if (verdict.quarantine) {
+      try {
+        const qfile = join(dir, quarantineName(basename(STATE_FILE), new Date()));
+        renameSync(STATE_FILE, qfile);
+        chmodSync(qfile, 0o600);
+        quarantined = true;
+      } catch {}
+    }
+    log("error", verdict.message, { quarantined });
+    audit("identity.unreadable", { quarantined });
+    // Documented exit code 78 (EX_CONFIG): the identity is never recreated
+    // behind the owner's back in this run — the next run either finds the
+    // file quarantined (first run) or fails the same read again.
+    process.exit(78);
+  }
+  let raw: Partial<IdentityFile> =
+    verdict.plan === "use" ? (JSON.parse(content!) as Partial<IdentityFile>) : {};
 
   if (!raw.ecdhPub || !raw.ecdhPriv) {
     // v1 -> v2 migration (or first run)

@@ -26,6 +26,15 @@ import {
   docConvertProbe,
   docConvertVerdict,
 } from "../apps/daemon/src/doccap";
+import {
+  IDENTITY_FIRST_RUN_MESSAGE,
+  IDENTITY_REFUSE_CONTENT_MESSAGE,
+  IDENTITY_REFUSE_READ_MESSAGE,
+  IDENTITY_USE_MESSAGE,
+  identityVerdict,
+  quarantineName,
+  type IdentityVerdict,
+} from "../apps/daemon/src/identityfile";
 import { modelReadyVerdict, providerSummary } from "../apps/daemon/src/modelready";
 import { MIN_OPENCODE_VERSION, parseVersion, versionVerdict } from "../apps/daemon/src/opencodever";
 import {
@@ -17762,6 +17771,166 @@ check(
     "P2-231: doc2pdf.mjs failure is the pt-BR verdict phrase, not the English terminal error",
     !doc2pdfSrc.includes("no converter available") &&
       /docConvertVerdict\(process\.platform/.test(doc2pdfSrc),
+  );
+}
+
+// --- P2-234: identity-file boot verdict (identityfile.ts) + wiring ----------
+
+{
+  const src = (rel: string[]) => readFileSync(join(import.meta.dirname, "..", ...rel), "utf8");
+  const identitySrc = src(["apps", "daemon", "src", "identityfile.ts"]);
+  const indexSrc = src(["apps", "daemon", "src", "index.ts"]);
+
+  const VALID =
+    '{"room":"abc","ecdhPub":"pub","ecdhPriv":"priv","vapid":{"publicKey":"a","privateKey":"b"},"clients":[]}';
+
+  // full verdict table — [exists, content, readFailure, expected plan]
+  const table: Array<[boolean, string | null, string | null, IdentityVerdict["plan"]]> = [
+    [false, null, null, "first-run"], // missing file → first run (unchanged path)
+    [true, "", null, "first-run"], // existing but empty → first run
+    [true, "  \n\t ", null, "first-run"], // whitespace-only → first run
+    [true, "isto não é json {", null, "refuse"], // unparseable text
+    [true, "[]", null, "refuse"], // JSON list
+    [true, "42", null, "refuse"], // JSON number
+    [true, '"texto"', null, "refuse"], // JSON string
+    [true, '{"foo":1}', null, "refuse"], // object with no documented identity field
+    [true, VALID, null, "use"], // valid identity object
+    [true, null, "EACCES", "refuse"], // read failure with the file present
+    [false, null, "EBUSY", "refuse"], // read failure with the file absent — NEVER first-run
+  ];
+
+  const verdicts = table.map(([ex, c, fail]) => identityVerdict(ex, c, fail));
+  check(
+    "P2-234: verdict table — every row lands on the documented plan",
+    verdicts.every((v, i) => v.plan === table[i][3]),
+  );
+  check(
+    "P2-234: a read failure is evaluated first — never first-run, never quarantine",
+    identityVerdict(true, null, "EACCES").plan === "refuse" &&
+      identityVerdict(true, null, "EACCES").quarantine === false &&
+      identityVerdict(false, null, "EBUSY").plan === "refuse" &&
+      identityVerdict(false, null, "EBUSY").quarantine === false,
+  );
+  check(
+    "P2-234: only unreadable content asks for the quarantine move",
+    identityVerdict(true, "{", null).quarantine === true &&
+      identityVerdict(true, "[]", null).quarantine === true &&
+      identityVerdict(true, '{"foo":1}', null).quarantine === true &&
+      identityVerdict(false, null, null).quarantine === false &&
+      identityVerdict(true, VALID, null).quarantine === false,
+  );
+
+  // message hygiene: static, short, no path, no URL scheme, never content
+  const hostile = '{"ecdhPub":"MUITO-SECRETO-1234567890","vapid":{"privateKey":"CHAVE-PRIVADA-ABCD"}}';
+  const allVerdicts = [
+    ...verdicts,
+    identityVerdict(true, hostile, null),
+    identityVerdict(true, hostile.slice(0, 7), null),
+    identityVerdict(true, null, "EACCES"),
+  ];
+  check(
+    "P2-234: every message is non-empty and free of paths and URL schemes",
+    allVerdicts.every(
+      (v) =>
+        v.message.trim().length > 0 &&
+        !/[\\/]/.test(v.message) &&
+        !/[A-Za-z]:/.test(v.message) &&
+        !v.message.includes("://"),
+    ),
+  );
+  check(
+    "P2-234: no message ever echoes a fragment of the file content (private key)",
+    allVerdicts.every(
+      (v) =>
+        !v.message.includes("MUITO-SECRETO") &&
+        !v.message.includes("CHAVE-PRIVADA") &&
+        !v.message.includes("ecdhPub") &&
+        !v.message.includes("ecdhPriv") &&
+        !v.message.includes("vapid"),
+    ),
+  );
+  check(
+    "P2-234: messages are the static exported phrases",
+    verdicts.every((v, i) => {
+      const expected =
+        v.plan === "refuse"
+          ? table[i][2] !== null
+            ? IDENTITY_REFUSE_READ_MESSAGE
+            : IDENTITY_REFUSE_CONTENT_MESSAGE
+          : v.plan === "first-run"
+            ? IDENTITY_FIRST_RUN_MESSAGE
+            : IDENTITY_USE_MESSAGE;
+      return v.message === expected;
+    }),
+  );
+
+  // quarantineName: derivation, uniqueness, chronological order, never original
+  const t1 = new Date("2026-09-06T03:04:05.123Z");
+  const t2 = new Date("2026-09-06T03:04:05.124Z");
+  const t3 = new Date("2026-12-31T23:59:59.999Z");
+  const q1 = quarantineName("daemon.json", t1);
+  const q2 = quarantineName("daemon.json", t2);
+  const q3 = quarantineName("daemon.json", t3);
+  check(
+    "P2-234: quarantine name derives from the original plus a sortable stamp",
+    q1.startsWith("daemon.json.") &&
+      q1.endsWith(".quarantine") &&
+      q1.includes("20260906T030405123Z"),
+  );
+  check("P2-234: two different stamps never collide", q1 !== q2 && q2 !== q3 && q1 !== q3);
+  check(
+    "P2-234: quarantine names sort chronologically as plain strings",
+    [q1, q2, q3].every((q, i, arr) => i === 0 || arr[i - 1] < q) &&
+      JSON.stringify([q3, q1, q2].sort()) === JSON.stringify([q1, q2, q3]),
+  );
+  check(
+    "P2-234: quarantine name never equals the original and is never empty",
+    ["daemon.json", "x", "", "   "].every(
+      (n) => quarantineName(n, t1) !== n.trim() && quarantineName(n, t1).trim().length > 0,
+    ),
+  );
+
+  // purity: unit tests must never boot a daemon on import
+  // (strip line comments first — the header prose names the banned modules)
+  const identityCode = identitySrc.replace(/\/\/.*$/gm, "");
+  check(
+    "P2-234: identityfile.ts is pure (no node:fs/crypto/child_process/path/os/fetch imports)",
+    !/node:(fs|crypto|child_process|path|os|http)/.test(identityCode) && !/\bfetch\(/.test(identityCode),
+  );
+
+  // real-repo wiring: the identity read goes through the verdict, exactly once
+  // at boot; the refuse path moves and never deletes, never recreates the
+  // identity, and no periodic timer was introduced.
+  const refuseAt = indexSrc.indexOf('verdict.plan === "refuse"');
+  const exitAt = indexSrc.indexOf("process.exit(78)");
+  const refuseBlock = refuseAt >= 0 && exitAt > refuseAt ? indexSrc.slice(refuseAt, exitAt) : "";
+  check(
+    "P2-234: the daemon reads the identity through the verdict, exactly once at boot",
+    (indexSrc.match(/identityVerdict\(/g) || []).length === 1 &&
+      indexSrc.indexOf("async function loadIdentity") < indexSrc.indexOf("identityVerdict(") &&
+      indexSrc.includes('quarantineName(basename(STATE_FILE'),
+  );
+  check(
+    "P2-234: the refuse path moves the file to quarantine and never deletes it",
+    refuseBlock.includes("quarantineName(") &&
+      refuseBlock.includes("renameSync(") &&
+      refuseBlock.includes("chmodSync(") &&
+      refuseBlock.includes('audit("identity.unreadable"') &&
+      refuseBlock.includes('log("error", verdict.message') &&
+      !/unlink|rmsync|rm\(/i.test(refuseBlock),
+  );
+  check(
+    "P2-234: the refuse path never recreates the identity and exits with the documented code",
+    !refuseBlock.includes("newIdentity") &&
+      !refuseBlock.includes("writeStateAtomic") &&
+      indexSrc.includes("process.exit(78)"),
+  );
+  check(
+    "P2-234: no periodic identity timer was introduced",
+    indexSrc
+      .split("\n")
+      .filter((l) => l.includes("setInterval"))
+      .every((l) => !/identity/i.test(l)),
   );
 }
 

@@ -50,6 +50,39 @@ Run `opencode-remote doctor` first — it checks everything below in one shot.
 | Windows: "Check for updates" says an update is ready — now what? (P2-233) | that explicit click downloaded the installer named by `latest.yml` into the `update-staging` folder inside the app's user data directory, verified its sha512 against the digest the feed publishes and opened Explorer with the file already selected — **double-click it yourself**; the app never runs the installer. If the digest did not match, the file was deleted on purpose (one `win update:` line in `desktop.log` explains it) and the app falls back to the release page — click **Check for updates** again to retry the verified download |
 | the phone refuses the relay certificate or the timestamps look wrong, and nothing explained why (P2-214) | read the clock line under the pairing QR: while the pairing screen is up, the shell compares the machine's clock against the `Date` response header of the same answer the reach probe already obtained (no second request, no time server) and, when the machine hosting the daemon is **ahead of** or **behind** the reference, one calm line asks you to turn on automatic date and time in the system settings and reopen the app. The line describes the machine hosting the daemon — not the phone. It **never blocks pairing** (the QR stays visible — a wrong clock does not stop pairing from working right now) and stays quiet when the reference is missing or unreadable. `OCR_DESKTOP_FORCE_CLOCK_BEHIND=1` on the desktop shell forces the warning for deterministic screenshots (test-only hatch) |
 
+## The identity file is unreadable (P2-234)
+
+At boot the daemon reads `~/.opencode-remote/daemon.json` — the file that
+carries the machine identity and the paired-devices list. If that file is
+unreadable (a truncated write from before the P2-165 atomic-write fix, a disk
+that filled up, a failed manual edit), the daemon refuses to start with ONE
+calm line in the log instead of a raw syntax error:
+
+```
+{"level":"error","msg":"O arquivo de identidade está ilegível e foi preservado ao lado do original — …"}
+```
+
+What it means:
+
+- **The old file is preserved, never deleted.** The daemon moves the illegible
+  `daemon.json` to a sibling quarantine file next to the original
+  (`daemon.json.<timestamp>.quarantine`, mode 0600) and exits with code **78**
+  (documented: identity config error). Nothing is regenerated behind your
+  back.
+- **Restoring the file restores the pairings.** Rename the quarantine file
+  back over `daemon.json` (fix what made it unreadable first) and restart the
+  app — every pairing comes back exactly as it was.
+- **Deleting both files starts the machine over.** Remove `daemon.json` and
+  its quarantine copy and the next boot is a fresh first run: a new identity
+  is created and every phone must pair again by scanning the QR.
+- If the log line instead says the file **could not be read** (permission
+  denied, file busy), nothing was moved: fix the file's permission and start
+  the app again — a transient read failure is never treated as a fresh start,
+  so it can never silently wipe your pairings.
+
+The same phrase rides the audit log (`identity.unreadable`, no file content)
+and the desktop status card's generic daemon-down diagnosis.
+
 ## Staging a desktop update release (P1-050)
 
 The packaged desktop app checks `http://127.0.0.1:8792/__ocr/updates/feed.json`
