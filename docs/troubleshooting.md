@@ -382,6 +382,13 @@ pronto: o celular alcança esta máquina` — static pt-BR sentences that never
 echo the daemon's raw reason and never carry paths, addresses, ports or
 secrets.
 
+P2-258: while a macOS update downloads in the background, the update-status
+line right below shows the live progress — `Downloading update… 42%`
+(number-free `Downloading update…` when the feed announces no total) — and if
+the network dies mid-way it says `Update download stalled — check for updates`
+at the next scheduled recheck; the label only describes the download, it never
+cancels, downgrades or re-downloads anything.
+
 ## Quitting and the phone's access (P2-221)
 
 Closing the window is **not** quitting: the app keeps running in the

@@ -60,6 +60,7 @@ export const PORTABLE_TESTS: readonly string[] = [
   "thinking.test.ts",
   "traystatus.test.ts",
   "updateremind.test.ts",
+  "updateprogress.test.ts",
   "voice.test.ts",
 ];
 

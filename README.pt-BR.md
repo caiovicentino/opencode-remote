@@ -1137,7 +1137,13 @@ P2-257, a oferta adiada não desaparece: volta até duas vezes (uma a cada 4 h,
 três ofertas por versão no total, no mesmo temporizador da reverificação) e o
 item do tray para release baixada reabre o mesmo diálogo — a instalação
 acontece ao aceitar a oferta ("Reiniciar agora"), nunca por uma
-reinicialização comum. Checagens repetidas nunca empilham
+reinicialização comum. Desde a P2-258, durante o download em segundo plano o
+próprio item de status da bandeja acompanha o progresso — "Downloading
+update… 42%" (ou "Downloading update…" sem número quando o feed não anuncia o
+total) — e, se a rede morrer no meio, no próximo tique de reverificação o
+rótulo vira "Update download stalled — check for updates", apenas informativo:
+nada é cancelado, rebaixado ou baixado de novo por causa do rótulo. Checagens
+repetidas nunca empilham
 ofertas velhas. Desde a P2-146, todo release do GitHub também publica os
 feeds JSON do Squirrel.Mac, gerados por
 `apps/desktop/scripts/update-feed.mjs` a partir do `latest-mac.yml` + dos

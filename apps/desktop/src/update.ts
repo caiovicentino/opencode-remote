@@ -320,6 +320,11 @@ export interface UpdateCheckOptions {
    * check never auto-opens a browser, and each version opens at most once per
    * session. */
   openReleasePage?: (url: string) => void;
+  /** P2-258: forwarded updater "download-progress" emissions (Electron's
+   * ProgressInfo shape, unvalidated — the consumer sanitizes fail-closed).
+   * The only consumer is the tray's progress label; no new network request,
+   * no new IPC channel, no new timer anywhere in this wiring. */
+  onProgress?: (info: unknown) => void;
   /** P2-233: Windows explicit-action installer download. When wired (main.ts
    * does it ONLY for a user-initiated tray/Help re-check — never boot, never
    * the P2-155 scheduled recheck) and the platform is win32, a latest.yml
@@ -426,6 +431,8 @@ export function attachUpdateListeners(
     onStatus?: (s: UpdateStatus, v: string | null) => void;
     /** P2-211: boot install-location verdict (see installBlocksUpdate). */
     installLocation?: { state: string; message: string } | null;
+    /** P2-258: sink for the updater's own "download-progress" emissions. */
+    onProgress?: (info: unknown) => void;
   },
 ): void {
   const count = typeof updater.listenerCount === "function" ? updater.listenerCount.bind(updater) : () => 0;
@@ -436,6 +443,11 @@ export function attachUpdateListeners(
     hooks.log(`update check failed (log-only, continuing): ${message}`);
   });
   updater.on("update-available", () => hooks.log("update-available (autoUpdater event) — download continues in background"));
+  // P2-258: forward the updater's own download-progress emissions to the sink
+  // the caller already injected — nothing else. No new network request, no
+  // new IPC channel, no new timer; the tray's progress label is the only
+  // consumer (main.ts sanitizes the payload fail-closed).
+  updater.on("download-progress", (info) => hooks.onProgress?.(info));
   updater.on("update-downloaded", (...args: unknown[]) => {
     const st = stateFor(updater);
     const version = versionFromDownloadedArgs(args) ?? st.version ?? "";
@@ -577,7 +589,7 @@ export async function checkForUpdatesOnBoot(opts: UpdateCheckOptions = {}): Prom
     // handing a latest-*.yml to the built-in autoUpdater fails outright.
     if (updater) {
       const dialog = opts.dialog ?? { askInstall: async () => "later", quitAndInstall: () => {} };
-      attachUpdateListeners(updater, { log, dialog, onStatus: opts.onStatus, installLocation: opts.installLocation });
+      attachUpdateListeners(updater, { log, dialog, onStatus: opts.onStatus, installLocation: opts.installLocation, onProgress: opts.onProgress });
       stateFor(updater).version = feed.version;
       try {
         updater.setFeedURL({ url: feedUrl, serverType: "json" });
