@@ -39,7 +39,11 @@ self.addEventListener("install", (event) => {
           }
         }),
       );
-      self.skipWaiting();
+      // P2-246: takeover is not unconditional anymore — while a live tab from
+      // the previous publication exists the worker waits, and the browser
+      // activates it by itself when the last controlled tab closes.
+      const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+      if (self.takeoverPlan(windows.length) === "takeover-now") self.skipWaiting();
     })(),
   );
 });
@@ -47,14 +51,18 @@ self.addEventListener("install", (event) => {
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     (async () => {
+      // P2-246: the sweep consults the plan — with a live controlled client
+      // nothing is deleted, so the open document can never ask for an entry
+      // this activation just evicted.
+      const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
       const keys = await caches.keys();
       await Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)));
       // P2-239: sweep versioned leftovers of an earlier publication that
-      // survived inside the current cache (staleEntries decides, never here).
+      // survived inside the current cache (the plan decides, never here).
       if (precacheList.length > 0) {
         const cache = await caches.open(CACHE);
         const have = (await cache.keys()).map((r) => new URL(r.url).pathname);
-        const stale = self.staleEntries(have, precacheList);
+        const stale = self.sweepPlan(windows.length, have, precacheList);
         await Promise.all(stale.map((path) => cache.delete(path)));
       }
     })(),

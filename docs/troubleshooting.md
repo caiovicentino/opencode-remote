@@ -522,6 +522,10 @@ old cache names and versioned leftovers of an earlier publication).
   browser settings (iOS: Settings → Apps → Safari → Advanced → Website Data,
   or the browser's "Delete website data" for the origin), or remove and
   re-add the Home Screen entry — the next online visit rebuilds everything.
+- **The new version only arrived after I closed and reopened the app**: by
+  design (P2-246) — while a window from the previous publication is open the
+  updated service worker waits and takes over on the next opening, so the tab
+  in use never has its cached assets swept mid-conversation.
 
 ## Service control (macOS launchd)
 

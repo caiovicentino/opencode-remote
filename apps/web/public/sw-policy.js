@@ -136,7 +136,56 @@ function staleEntries(cachedPaths, currentTargets) {
   }
 }
 
+/**
+ * Why (P2-246): a new publication must never break the tab that is already
+ * open — the worker it was serving from just had its versioned leftovers
+ * swept, and an immediate takeover would evict files that document still
+ * asks for on demand. takeoverPlan returns exactly one of two plans:
+ * "takeover-now" only when there is no controlled client at all (first
+ * install, nothing to break), "wait" when a live tab from the previous
+ * publication exists. Doubtful counts (not a number, not finite, negative)
+ * are treated as a live client, fail-closed: taking over under a doubtful
+ * count is worse than waiting one more cycle, and a waiting worker is
+ * activated by the browser by itself as soon as the last controlled tab
+ * closes — so the new version still lands on the next opening.
+ * @param {number} clientCount window clients controlled in this scope
+ * @returns {"takeover-now"|"wait"}
+ */
+function takeoverPlan(clientCount) {
+  return liveClient(clientCount) ? "wait" : "takeover-now";
+}
+
+/**
+ * Why (P2-246): activation may only sweep versioned leftovers when no client
+ * is being served — otherwise the open document could still request an entry
+ * this sweep is about to delete. Rule order is the contract: the live-client
+ * rule comes FIRST, before any leftover, cache-name or target consideration,
+ * and returns an empty list. Only with no controlled client at all the result
+ * is exactly what staleEntries decides for the same input — received order
+ * preserved, never the root document, never a path outside the received list.
+ * @param {number} clientCount window clients controlled in this scope
+ * @param {string[]} cachedPaths paths currently held in the cache
+ * @param {string[]} currentTargets paths of the current publication
+ * @returns {string[]} paths safe to delete now
+ */
+function sweepPlan(clientCount, cachedPaths, currentTargets) {
+  if (liveClient(clientCount)) return [];
+  return staleEntries(cachedPaths, currentTargets);
+}
+
+// Fail-closed presence check: any count that is not a plain non-negative
+// number reads as "client present", so an unreliable count can never cause a
+// takeover or a sweep — both simply wait for the next cycle.
+function liveClient(clientCount) {
+  if (typeof clientCount !== "number") return true;
+  if (!Number.isFinite(clientCount)) return true;
+  if (clientCount < 0) return true;
+  return clientCount > 0;
+}
+
 self.precacheTargets = precacheTargets;
 self.strategyFor = strategyFor;
 self.offlineDocument = offlineDocument;
 self.staleEntries = staleEntries;
+self.takeoverPlan = takeoverPlan;
+self.sweepPlan = sweepPlan;
