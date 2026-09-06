@@ -847,6 +847,12 @@ touched, other platforms keep the previous behavior, and
 `OCR_DESKTOP_FORCE_LOGIN_ITEM=1` on the desktop shell forces the announce for
 deterministic screenshots (test-only hatch, machine untouched).
 
+**Windows uninstall (P2-249)**: uninstalling the app removes the **Start at
+login** autostart entry (no more boots trying to open a program that no
+longer exists) and the app's own data folder under your user profile — state
+files and logs included, since the install is per-user — and never touches
+Documents, Desktop, Downloads or anything outside the app's own data.
+
 The image carries no secrets and the relay stays a blind
 router: it never sees plaintext or keys. The optional metrics endpoint
 (`RELAY_METRICS_PORT`) binds loopback by default; setting
