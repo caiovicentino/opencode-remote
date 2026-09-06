@@ -578,7 +578,12 @@ Hospedado, o relay também protege a própria memória (P2-217): par que para de
 ler tem o buffer de saída limitado por `RELAY_BUFFER_CAP_BYTES` (padrão
 4 MiB por socket) e é fechado sozinho — close code `1013` e métrica aditiva
 `slow_consumers_total` — em vez de um celular travado no 4G crescer sem teto
-no processo e derrubar as conversas de todo mundo.
+no processo e derrubar as conversas de todo mundo. A admissão também tem teto
+no processo inteiro (P2-227): quando o número de sockets vivos chega a
+`RELAY_MAX_SOCKETS_GLOBAL` (padrão 1000, teto 10000), novos upgrades são
+recusados com close `1013` e métrica `capacity_refused_total` — o relay diz
+não pra conexão nova em vez de morrer por esgotamento de descritor de arquivo
+e derrubar as conversas de todos os inquilinos.
 
 A imagem também entrega a PWA do celular (P2-188): ela define
 `RELAY_WEB_DIR=/app/apps/web/dist`, então a URL do relay no navegador do

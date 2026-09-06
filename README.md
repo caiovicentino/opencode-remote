@@ -601,6 +601,11 @@ reading has its outgoing buffer capped by `RELAY_BUFFER_CAP_BYTES` (default
 4 MiB per socket) and is closed alone — with close code `1013` and an
 additive `slow_consumers_total` metric — instead of one frozen 4G phone
 growing the process without bound and dropping every room's conversations.
+Admission is capped process-wide too (P2-227): once the live socket count
+reaches `RELAY_MAX_SOCKETS_GLOBAL` (default 1000, ceiling 10000), new
+upgrades are refused with close `1013` and a `capacity_refused_total` metric —
+the relay says no to new sockets instead of dying from file-descriptor
+exhaustion and dropping every tenant's conversations.
 
 On the desktop shell you do not need to export `RELAY_URL` by hand: Settings
 has a **Phone relay** card (desktop-only section) where you paste the hosted

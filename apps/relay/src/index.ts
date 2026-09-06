@@ -40,6 +40,7 @@ import {
   SLOW_CONSUMER_CLOSE_CODE,
   SLOW_CONSUMER_CLOSE_REASON,
 } from "./backpressure.js";
+import { acceptVerdict, parseMaxSockets } from "./capacity.js";
 
 /**
  * Relay: a blind router.
@@ -246,6 +247,21 @@ if (BUFFER_CAP.problems.length > 0) {
   process.exit(1);
 }
 const bufferCapBytes = BUFFER_CAP.cap;
+// P2-227: the process-wide socket capacity (RELAY_MAX_SOCKETS_GLOBAL) resolves
+// fail-closed like every knob above — a non-numeric, zero, negative,
+// fractional or above-ceiling value refuses the boot (one log line per
+// reason, exit 1, no listener) instead of serving with an unvalidated cap.
+// Absent or blank keeps the documented default; the cap gates only the
+// admission check below — the per-IP cap, the frame-size cap and the
+// backpressure verdict are untouched.
+const CAPACITY = parseMaxSockets(process.env);
+if (CAPACITY.problems.length > 0) {
+  for (const reason of CAPACITY.problems) {
+    ev("warn", "invalid relay socket capacity, refusing to start (fail-closed)", { reason });
+  }
+  process.exit(1);
+}
+const maxSocketsGlobal = CAPACITY.maxSockets;
 // The only fs touches of the static route: existence/file checks per request
 // and a streamed body (empty for HEAD). isFile canonicalizes the target with
 // realpath before the containment comparison — with a separator boundary, so
@@ -346,6 +362,7 @@ const m = {
   roomsRejected: 0,
   staleTerminated: 0,
   slowConsumers: 0,
+  capacityRefused: 0,
   startedAt: Date.now(),
 };
 if (METRICS.port && METRICS.problems.length === 0) {
@@ -375,6 +392,8 @@ if (METRICS.port && METRICS.problems.length === 0) {
           `relay_stale_terminated ${m.staleTerminated}`,
           "# TYPE relay_slow_consumers_total counter",
           `relay_slow_consumers_total ${m.slowConsumers}`,
+          "# TYPE relay_capacity_refused_total counter",
+          `relay_capacity_refused_total ${m.capacityRefused}`,
           "# TYPE relay_rooms_active gauge",
           `relay_rooms_active ${rooms.size}`,
         ];
@@ -396,6 +415,7 @@ if (METRICS.port && METRICS.problems.length === 0) {
             rooms_rejected: m.roomsRejected,
             stale_terminated: m.staleTerminated,
             slow_consumers_total: m.slowConsumers,
+            capacity_refused_total: m.capacityRefused,
             rooms_active: rooms.size,
           },
           null,
@@ -526,6 +546,9 @@ server.listen(PORT, () => {
     // P2-217: additive provenance field — the resolved per-socket backpressure
     // cap in bytes. No pre-existing field changed name or meaning.
     bufferCapBytes,
+    // P2-227: additive provenance field — the resolved process-wide live
+    // socket capacity. No pre-existing field changed name or meaning.
+    maxSocketsGlobal,
     // P2-177: additive provenance field — the resolved log level this
     // process writes at. No pre-existing field changed name or meaning.
     logLevel: LOG.level,
@@ -572,6 +595,20 @@ wss.on("connection", (socket: Socket, req) => {
     // without writing the user's address into retained provider logs.
     ev("warn", "connection rejected: per-IP cap exceeded", { ipTag: tagIp(ip) });
     socket.close(1013, "too many connections");
+    return;
+  }
+  // P2-227: process-wide capacity gate — the last admission check, after the
+  // per-IP cap and before the connection is accepted into the relay (the ws
+  // client is already inside wss.clients here, so the count is the live
+  // total). A refusal closes ONLY this one socket: no room is touched, no
+  // established connection is affected. The per-IP slot this attempt took is
+  // given back, so a flood of refusals cannot leak per-IP budgets.
+  const capacity = acceptVerdict(wss.clients.size, maxSocketsGlobal);
+  if (capacity.action === "refuse") {
+    ipCap.release(ip);
+    m.capacityRefused++;
+    ev("warn", "connection refused: process at socket capacity", { count: m.capacityRefused, reason: capacity.reason });
+    socket.close(1013, "server busy");
     return;
   }
   socket.ip = ip;

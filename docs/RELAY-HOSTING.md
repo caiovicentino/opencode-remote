@@ -104,6 +104,7 @@ builds this same image (the `caddy` profile adds TLS termination on top).
 |---|---|---|
 | `RELAY_PORT` | `8787` | Keep `8787` on the container's private network and publish it only to the TLS terminator. Set it if you map a different host port. |
 | `RELAY_MAX_SOCKETS` | `1000` | Total concurrent websocket ceiling. Raise it only on an instance sized for the load (a stage-4 scale-out can grow this without recompiling). |
+| `RELAY_MAX_SOCKETS_GLOBAL` | `1000` | Process-wide live-socket capacity enforced at admission (P2-227): once the live count reaches it, every new upgrade is refused — close code `1013` ("server busy"), additive `capacity_refused_total` counter — instead of accepting one more socket into a process that may be near its file-descriptor limit. Ceiling `10000`; a non-numeric, zero, negative, fractional or above-ceiling value refuses the boot (fail-closed). See the capacity section below. |
 | `RELAY_MAX_PER_ROOM` | `10` | Peer ceiling per room. Must not exceed `RELAY_MAX_SOCKETS`. |
 | `RELAY_MAX_FRAME_BYTES` | `1000000` | Largest accepted frame in bytes (ws `maxPayload`). Hard ceiling is `16777216` (16 MiB, the int32 `maxPayload` bound); sealed op payloads are far smaller. |
 | `RELAY_BUFFER_CAP_BYTES` | `4194304` | Per-socket ceiling on accumulated outgoing bytes (P2-217): when a target's own queue plus the next frame passes it, that target is closed with close code `1013` and the reason `consumidor lento: buffer de saida acima do teto` instead of buffering forever. Ceiling `67108864` (64 MiB); a non-numeric, zero, negative, fractional or above-ceiling value refuses the boot (fail-closed). Raise it only on an instance whose peers legitimately buffer multi-megabyte bursts. |
@@ -197,6 +198,41 @@ The knob is validated fail-closed at boot like every other relay knob
 (`invalid relay buffer cap, refusing to start`, exit 1, no listener), and the
 `relay listening` line carries the resolved value as an additive
 `bufferCapBytes` field.
+
+### Capacity: the process refuses new sockets instead of dying (P2-227)
+
+A hosted multi-tenant relay serves many room pairs from one process, and
+every live websocket holds one file descriptor. Before P2-227 the only
+connection ceiling was per identity (`RELAY_MAX_PER_IP`, default 20) — so a
+handful of distinct addresses, or a proxy misconfiguration that funnels
+thousands of tenants through one trusted hop, could push the process to its
+file-descriptor exhaustion point and kill every tenant's conversations at
+once, with no line explaining why.
+
+The admission path now consults a process-wide verdict **after** the per-IP
+cap and **before** a connection is accepted: when the live socket count is at
+`RELAY_MAX_SOCKETS_GLOBAL` (default 1000, ceiling 10000), the new socket
+alone is refused — close code `1013` ("server busy"). Established
+connections and rooms are untouched, the additive `capacity_refused_total`
+counter (`relay_capacity_refused_total` in the Prometheus text format)
+increments, and one `warn` JSONL line carries only the counter and the reason
+(`teto global de sockets atingido`) — never a room id, a client address or any
+payload content. The verdict also fails open when the live count is missing,
+negative or non-finite: a broken count must never refuse a good connection.
+In short, the process degrades to "new peers must wait for a slot" instead of
+dying whole; daemons and phones already reconnect with backoff and find
+another instance (or the same one after drain).
+
+Size the knob together with the host's file-descriptor limit: the relay needs
+one descriptor per live websocket plus a fixed handful for the listeners,
+stdout and timers, so keep `RELAY_MAX_SOCKETS_GLOBAL` comfortably below the
+`nofile` limit the process actually runs with (`ulimit -n`, or the docker
+`--ulimit nofile=…` / compose equivalent). Raise both together when an
+instance must legitimately hold more peers — and remember the ws-level
+`RELAY_MAX_SOCKETS` above still applies as the outer bound. The knob is
+validated fail-closed at boot (`invalid relay socket capacity, refusing to
+start`, exit 1, no listener) and the `relay listening` line carries the
+resolved value as an additive `maxSocketsGlobal` field.
 
 ### The TLS pair is mandatory together and fail-closed (P2-154)
 
