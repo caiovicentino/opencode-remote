@@ -226,6 +226,31 @@ vanished.
   forces the announce for deterministic screenshots (test-only hatch; the
   machine's setting is never touched under it).
 
+## Quitting and the phone's access (P2-221)
+
+Closing the window is **not** quitting: the app keeps running in the
+menu bar / system tray and the phone keeps its remote access. **Quitting is**
+what ends it — the tray **Quit** item and the app menu's **Encerrar OpenCode
+Remote** (`Cmd+Q`) stop the daemon sidecar, so the phone finds no machine
+until the app is opened again (for example at the next login, P2-218).
+
+- On a packaged build with a healthy daemon and a paired phone, quitting asks
+  first with a native box: **Sair** (quit for real), **Continuar na bandeja**
+  (dismiss — the app and the phone's access stay alive) and **Não perguntar de
+  novo** (quit now and never ask again).
+- The **Não perguntar de novo** choice is **definitive by design**: the request
+  is stored as a boolean-only flag (`userData/quit-ask.json`, written 0600) and
+  every future explicit quit is silent, even after reboot. To be asked again,
+  quit the app and delete `quit-ask.json` from the app's userData folder.
+- The box never appears when there is nothing to lose — dev builds, an
+  unhealthy daemon, no paired phone — or in a test-harness session, which
+  always quits silently so the automated gates never stall on a modal.
+- The last quit decision rides the desktop.log (`[desktop] quit confirm: …`)
+  and the diagnostics bundle (`quit confirm:`) — state and reason only, never
+  paths or tokens. `OCR_DESKTOP_FORCE_QUIT_CONFIRM=1` forces the box and
+  `OCR_DESKTOP_QUIT_DIALOG_ANSWER=quit|stay|never` auto-answers it on the
+  desktop shell (test-only hatches for deterministic screenshots/flows).
+
 ## Service control (macOS launchd)
 
 ```

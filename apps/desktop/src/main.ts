@@ -32,6 +32,18 @@ import { linkVerdict, type RelayLinkVerdict } from "./relaylink";
 import { installMessage, installVerdict, type InstallLocationVerdict } from "./installloc";
 import { loginItemMessage, loginItemPlan, type LoginItemVerdict } from "./loginitem";
 import { readStartupDecided, startupSettingFile, writeStartupDecided } from "./startupstore";
+import {
+  QUIT_BUTTON_INDEX,
+  QUIT_BUTTON_NEVER,
+  QUIT_BUTTON_QUIT,
+  QUIT_BUTTON_STAY,
+  QUIT_DIALOG_DETAIL,
+  QUIT_DIALOG_MESSAGE,
+  QUIT_DIALOG_TITLE,
+  quitVerdict,
+  type QuitVerdict,
+} from "./quithint";
+import { quitAskFile, readQuitDontAsk, writeQuitDontAsk } from "./quitstore";
 import { WAKE_EVENT_TYPES, wakePlan } from "./wakeplan";
 import { initDesktopLog, log, logError } from "./desktop-log";
 import { initSidecarLog } from "./sidecar-log";
@@ -107,6 +119,14 @@ let bootInstallLocation: InstallLocationVerdict | null = null;
 // bundle. No periodic re-probe on purpose — the owner's decision is recorded
 // the moment it is made and never re-derived while the process runs.
 let bootStartup: LoginItemVerdict | null = null;
+
+// P2-221: latest quit-confirmation verdict of the explicit quit path, for the
+// diagnostics bundle. null until the user asks to quit this session — the
+// verdict itself is consulted exactly once, inside explicitQuit().
+let lastQuitVerdict: QuitVerdict | null = null;
+// P2-221: while the native confirmation box is open, further explicit quits
+// are ignored — a double-click on the tray item must never stack two modals.
+let quitDialogShown = false;
 
 // P3-012: file logging installed before anything can log — console.* in the
 // packaged app is invisible to the stage-5 user (no terminal), so every
@@ -210,6 +230,10 @@ function buildDiagnostics(): string {
     // P2-218: the login-item action and its short reason only — never a path,
     // never the decision-file location (privacy contract in this header).
     startup: bootStartup ? { state: bootStartup.action, reason: bootStartup.reason } : null,
+    // P2-221: the quit-confirmation action and its short reason only — never
+    // a path, never the decision-file location (privacy contract in this
+    // header). null until the user asks to quit this session.
+    quitConfirm: lastQuitVerdict ? { state: lastQuitVerdict.action, reason: lastQuitVerdict.reason } : null,
   });
 }
 
@@ -1650,6 +1674,9 @@ const menuShellHandlers: Record<string, () => void> = {
   // Same diagnostics bundle the app:diagnostics handler serves the renderer,
   // written straight to the clipboard from the menu item.
   "help-diagnostics": () => clipboard.writeText(buildDiagnostics()),
+  // P2-221: the menu quit goes through the same explicit-quit path as the
+  // tray Quit item (verdict + native confirmation), not the bare role.
+  "app-quit": () => void explicitQuit(),
 };
 
 function toElectronItems(items: MenuItemSpec[]): Electron.MenuItemConstructorOptions[] {
@@ -1739,6 +1766,104 @@ function revealLogsFolder(): void {
   });
 }
 
+// --- quit confirmation (P2-221) ------------------------------------------------
+// Sair pelo menu ou pela bandeja encerra o sidecar do daemon no will-quit e,
+// desde a P2-218, o app abre no login justamente para o telefone sempre
+// encontrar a máquina — sair sem dizer nada virou a forma silenciosa de
+// derrubar o acesso remoto. O caminho de saída EXPLÍCITO (item Sair da
+// bandeja e item Encerrar do menu) consulta o veredito puro de quithint.ts
+// UMA única vez e, no "confirmar", abre a caixa nativa com três saídas. O
+// fechamento da janela (P2-152), o gancho de will-quit, a limpeza do sidecar,
+// o lock de instância única e a persistência de bounds ficam intocados —
+// nenhuma sonda nova, nenhuma requisição nova, nenhum timer novo.
+//
+// P2-221 test hatches (same test-only OCR_* policy as OCR_DAEMON_FORCE_*):
+//   OCR_DESKTOP_FORCE_QUIT_CONFIRM=1 forces the "confirm" verdict so the
+//   dialog flow is reachable on a dev/test machine; and
+//   OCR_DESKTOP_QUIT_DIALOG_ANSWER=quit|stay|never auto-answers the native
+//   box so the flow stays deterministic (a modal would block the gate).
+//   Never set in production — a harness session already quits silently via
+//   the verdict's first rule.
+
+/** The one real-quit body the old tray Quit item ran (P2-021): flag before
+ * app.quit() so the close handler lets the window die, and drop the tray so
+ * the shutting-down shell doesn't rebuild its menu. */
+function realQuit(): void {
+  quitting = true;
+  tray = null;
+  app.quit();
+}
+
+/** Native three-way box: quit for real, keep running in the tray, or record
+ * "don't ask again" (which quits now AND forever after). The test hatch
+ * OCR_DESKTOP_QUIT_DIALOG_ANSWER answers in place instead of opening a modal
+ * on the gate's headless path. */
+async function askQuitDialog(): Promise<"quit" | "stay" | "never"> {
+  const preset = process.env.OCR_DESKTOP_QUIT_DIALOG_ANSWER;
+  if (preset === "quit" || preset === "stay" || preset === "never") {
+    log(`[desktop] quit dialog auto-answered by test hatch: ${preset}`);
+    return preset;
+  }
+  const options: Electron.MessageBoxOptions = {
+    type: "question",
+    title: QUIT_DIALOG_TITLE,
+    message: QUIT_DIALOG_MESSAGE,
+    detail: QUIT_DIALOG_DETAIL,
+    buttons: [QUIT_BUTTON_QUIT, QUIT_BUTTON_STAY, QUIT_BUTTON_NEVER],
+    defaultId: QUIT_BUTTON_INDEX.quit,
+    // Escape/Cancel keeps the app — and the phone's access — alive.
+    cancelId: QUIT_BUTTON_INDEX.stay,
+    noLink: true,
+  };
+  const { response } =
+    mainWindow && !mainWindow.isDestroyed()
+      ? await dialog.showMessageBox(mainWindow, options)
+      : await dialog.showMessageBox(options);
+  if (response === QUIT_BUTTON_INDEX.quit) return "quit";
+  if (response === QUIT_BUTTON_INDEX.never) return "never";
+  return "stay";
+}
+
+/** The single explicit-quit entry point, shared by the tray Quit item and the
+ * menu's Encerrar item. Consults the pure verdict once; every input already
+ * exists at quit time (no probe, no request, no timer). */
+async function explicitQuit(): Promise<void> {
+  const forced = process.env.OCR_DESKTOP_FORCE_QUIT_CONFIRM === "1";
+  const verdict = forced
+    ? ({ action: "confirm", reason: "hatch de teste que força a confirmação de saída" } as QuitVerdict)
+    : quitVerdict({
+        packaged: app.isPackaged,
+        harnessSession: HERMETIC_E2E,
+        daemonHealthy: trayHealthy === true,
+        phonePaired: pairedNow(),
+        dontAskAgain: readQuitDontAsk(quitAskFile(app.getPath("userData"))),
+      });
+  lastQuitVerdict = verdict;
+  // Exactly one line per explicit quit: action + motive (static pt-BR from
+  // the planner — no paths, no URLs, no secrets).
+  log(`[desktop] quit confirm: ${verdict.action} (${verdict.reason})`);
+  if (verdict.action !== "confirm") {
+    realQuit();
+    return;
+  }
+  if (quitDialogShown) return;
+  quitDialogShown = true;
+  try {
+    const choice = await askQuitDialog();
+    if (choice === "stay") {
+      log("[desktop] quit cancelled — the app keeps running in the tray");
+      return;
+    }
+    if (choice === "never") {
+      const written = writeQuitDontAsk(quitAskFile(app.getPath("userData")), true);
+      if (!written) log("[desktop] quit-ask flag write failed (continuing)");
+    }
+    realQuit();
+  } finally {
+    quitDialogShown = false;
+  }
+}
+
 function trayMenuItems(): Electron.MenuItemConstructorOptions[] {
   const items: Electron.MenuItemConstructorOptions[] = [
     { label: "Open OpenCode Remote", click: showMainWindow },
@@ -1798,11 +1923,11 @@ function trayMenuItems(): Electron.MenuItemConstructorOptions[] {
     {
       label: "Quit",
       click: () => {
-        // P2-021: real quit — flag before app.quit() so the close handler
-        // doesn't hide; will-quit then stops the daemon sidecar with cleanup.
-        quitting = true;
-        tray = null;
-        app.quit();
+        // P2-221: the explicit quit path consults the pure verdict (P2-221
+        // section above) and may confirm before the real quit; realQuit()
+        // keeps the P2-021 contract — flag before app.quit() so the close
+        // handler doesn't hide; will-quit stops the daemon sidecar.
+        void explicitQuit();
       },
     },
   );

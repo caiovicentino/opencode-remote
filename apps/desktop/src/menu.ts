@@ -84,8 +84,11 @@ export function menuSpec(platform: string, updateLabel: string | null, updatesEn
         { role: "about" },
         { type: "separator" },
         { role: "hide" },
-        // Role stays quit (system behavior); only the label is ours.
-        { role: "quit", label: "Encerrar OpenCode Remote" },
+        // P2-221: wired by id to the same explicitQuit() path as the tray Quit
+        // item — the Electron quit role would bypass both the verdict and the
+        // confirmation box (a role ignores click handlers), and the Cmd+Q
+        // accelerator moves here to keep the system shortcut.
+        { id: "app-quit", label: "Encerrar OpenCode Remote", accelerator: "CmdOrCtrl+Q" },
       ],
     });
   }
