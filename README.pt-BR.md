@@ -228,7 +228,10 @@ remoto, zero confiança**.
   inclui um **pane Browser**: no shell desktop ele renderiza um `<webview>` Electron real e
   sandboxed (scroll, click e edit funcionam como num navegador; `contextIsolation`/`sandbox`
   ligados, `nodeIntegration` desligado, popups desligados), com barra de URL editável, reload
-  e botão maximizar (~80% de largura). O modo screenshot via Playwright (`/api/browse`) segue
+  e botão maximizar (~80% de largura). Um download iniciado no pane segue a
+  política única de downloads do shell — nenhum diálogo nativo, nome saneado,
+  salvo na pasta Downloads do sistema ou recusado com uma linha de log (P2-241). O modo
+  screenshot via Playwright (`/api/browse`) segue
   como fallback no PWA e como superfície de browse dos reviewers (`tools/browse.mjs`)
 - **Primeiro boot degradado (P2-112)** — com o daemon local inacessível no primeiro
   contato, o app não trava mais no pareamento: um cartão calmo ("Conectando pela
@@ -923,6 +926,22 @@ builds empacotados nunca. Quando não há nada o que oferecer, nenhum menu abre.
 Sessões de teste automatizado nunca abrem o menu — um popup nativo roubaria o
 foco do gate (a mesma regra de sessão de harness das demais superfícies
 nativas).
+
+**Downloads (P2-241)**: um download iniciado em qualquer lugar do shell — um
+link no pane Browser, um link de artifact, um redirecionamento — nunca abre
+diálogo nativo de salvar. Todo download passa por uma política única e pura,
+nesta ordem: sessão de teste hermética (`OCR_DESKTOP_SESSION`) não grava um
+byte; esquema que o gate de abertura externa recusa (file, blob, data,
+javascript — http/https/mailto passam) é cancelado; o nome anunciado precisa
+sobreviver ao saneamento fail-closed (nada de nome vazio ou só de espaços,
+nada de `/` `\` `..` `:`, nada de caractere de controle, nada de nome
+reservado do Windows, teto de 200 caracteres — a extensão é preservada) e o
+tamanho anunciado não pode passar de **1 GB** (tamanho desconhecido nunca
+recusa sozinho). O que passa cai na pasta **Downloads** do sistema com o nome
+tornado único na pasta (nada é sobrescrito), é revelado selecionado no
+explorador de arquivos e anunciado com no máximo uma notificação ao terminar —
+e o app **nunca executa nem abre** o arquivo baixado (só revela, como o
+instalador da P2-233). Recusas viram uma linha sem caminho no `desktop.log`.
 
 **Home viva (P2-123)**: sem conversa selecionada, o cockpit mostra uma home de
 verdade no lugar do beco antigo — greeting serifado ("De volta à ação, &lt;máquina&gt;",

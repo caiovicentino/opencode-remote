@@ -635,6 +635,16 @@ import { DEEP_LINK_QUERY_MAX, deepLinkFromArgv, parseDeepLink } from "../apps/de
 
 import { externalOpenDecision } from "../apps/desktop/src/extlink";
 
+import {
+  downloadVerdict,
+  DOWNLOAD_LIMITS,
+  DOWNLOAD_MAX_BYTES,
+  DOWNLOAD_NAME_MAX,
+  DOWNLOAD_PHRASES,
+  safeDownloadName,
+  uniqueDownloadName,
+} from "../apps/desktop/src/downloadplan";
+
 import { guestAttachDecision, guestNavigationDecision } from "../apps/desktop/src/webviewguard";
 
 import {
@@ -873,7 +883,7 @@ check("main.ts routes every shell.openExternal through the extlink decision", op
 
 check("main.ts imports externalOpenDecision", mainTsSource.includes('from "./extlink"'));
 
-check("main.ts consults externalOpenDecision three times (window-open + release page + context menu)", (mainTsSource.match(/externalOpenDecision\(/g) ?? []).length === 3);
+check("main.ts consults externalOpenDecision four times (window-open + release page + context menu + download gate)", (mainTsSource.match(/externalOpenDecision\(/g) ?? []).length === 4);
 
 
 
@@ -19029,6 +19039,139 @@ check(
     (routeSrc.match(/setInterval\(/g) || []).length === 5,
   );
 }
+
+// --- download plan (P2-241) ---------------------------------------------------
+// The whole verdict table is pinned by contract: rule 1 = harness session,
+// rule 2 = refused scheme (the P2-178 extlink verdict), rule 3 = invalid
+// name, rule 4 = announced size above the documented ceiling.
+
+const dlLimits = { nameMax: DOWNLOAD_NAME_MAX, bytesMax: DOWNLOAD_MAX_BYTES };
+const dlHttps = externalOpenDecision("https://example.com/file.pdf");
+
+const dlOk = downloadVerdict({ harnessSession: false, schemeVerdict: dlHttps, announcedName: "file.pdf", announcedBytes: 1024, limits: dlLimits });
+check("downloadVerdict saves a valid http(s) download", dlOk.action === "salvar");
+check("downloadVerdict save plan carries the sanitized name", dlOk.action === "salvar" && dlOk.name === "file.pdf");
+check("downloadVerdict save plan carries the static save phrase", dlOk.action === "salvar" && dlOk.reason === DOWNLOAD_PHRASES.save);
+check("DOWNLOAD_LIMITS carries the documented constants", DOWNLOAD_LIMITS.nameMax === DOWNLOAD_NAME_MAX && DOWNLOAD_LIMITS.bytesMax === DOWNLOAD_MAX_BYTES);
+
+// Rule 1 by contract: a harness session refuses before any scheme, name or
+// size consideration — the P2-221/P2-235/P2-238 lesson, first rule stays first.
+const dlHarness = downloadVerdict({ harnessSession: true, schemeVerdict: dlHttps, announcedName: "file.pdf", announcedBytes: 1024, limits: dlLimits });
+check("downloadVerdict refuses in a harness session even with allowed scheme and valid name", dlHarness.action === "recusar");
+check("downloadVerdict harness refusal carries no name", dlHarness.action === "recusar" && dlHarness.name === "");
+check("downloadVerdict harness refusal is the harness phrase", dlHarness.action === "recusar" && dlHarness.reason === DOWNLOAD_PHRASES.harness);
+
+// Rule order: harness and refused scheme hold simultaneously — the harness
+// reason wins, because rule 1 is consulted first.
+const dlOrder = downloadVerdict({ harnessSession: true, schemeVerdict: externalOpenDecision("file:///etc/passwd"), announcedName: "evil.txt", announcedBytes: 1024, limits: dlLimits });
+check("downloadVerdict rule order — harness beats refused scheme", dlOrder.action === "recusar" && dlOrder.reason === DOWNLOAD_PHRASES.harness);
+
+// Rule 2: whatever the extlink verdict refuses, the download refuses.
+for (const [scheme, url] of [
+  ["file", "file:///etc/passwd"],
+  ["javascript", "javascript:alert(1)"],
+  ["data", "data:text/plain,hi"],
+  ["blob", "blob:https://example.com/uuid"],
+  ["unknown", "smb://server/share"],
+] as Array<[string, string]>) {
+  const plan = downloadVerdict({ harnessSession: false, schemeVerdict: externalOpenDecision(url), announcedName: "ok-name.txt", announcedBytes: 1024, limits: dlLimits });
+  check(`downloadVerdict refuses ${scheme} scheme outside harness`, plan.action === "recusar" && plan.reason === DOWNLOAD_PHRASES.scheme && plan.name === "");
+}
+
+// Rule 3: the full invalid-name table (fail-closed, through the verdict).
+for (const [label, badName] of [
+  ["empty string", ""],
+  ["spaces only", "   "],
+  ["slash", "a/b.txt"],
+  ["backslash", "a\\b.txt"],
+  ["dot dot", "a..b.txt"],
+  ["colon", "a:b.txt"],
+  ["control char", "a\tb.txt"],
+  ["windows reserved", "CON.txt"],
+  ["name above the ceiling", "x".repeat(DOWNLOAD_NAME_MAX + 1)],
+  ["non-string", 42],
+  ["null", null],
+  ["absent", undefined],
+] as Array<[string, unknown]>) {
+  const plan = downloadVerdict({ harnessSession: false, schemeVerdict: dlHttps, announcedName: badName, announcedBytes: 1024, limits: dlLimits });
+  check(`downloadVerdict refuses invalid name (${label})`, plan.action === "recusar" && plan.reason === DOWNLOAD_PHRASES.name && plan.name === "");
+}
+check("downloadVerdict accepts the name at the exact documented ceiling", safeDownloadName("x".repeat(DOWNLOAD_NAME_MAX)) === "x".repeat(DOWNLOAD_NAME_MAX));
+
+// Rule 4: announced size above the ceiling refuses; the boundary itself and
+// every unknown shape never refuse on their own.
+check(
+  "downloadVerdict refuses announced size above the ceiling",
+  downloadVerdict({ harnessSession: false, schemeVerdict: dlHttps, announcedName: "file.iso", announcedBytes: DOWNLOAD_MAX_BYTES + 1, limits: dlLimits }).action === "recusar",
+);
+check(
+  "downloadVerdict saves the announced size at the exact ceiling boundary",
+  downloadVerdict({ harnessSession: false, schemeVerdict: dlHttps, announcedName: "file.iso", announcedBytes: DOWNLOAD_MAX_BYTES, limits: dlLimits }).action === "salvar",
+);
+for (const [label, size] of [
+  ["zero (unknown)", 0],
+  ["negative (unknown)", -1],
+  ["null", null],
+  ["undefined", undefined],
+  ["string", "1024"],
+  ["NaN", Number.NaN],
+  ["Infinity", Number.POSITIVE_INFINITY],
+] as Array<[string, unknown]>) {
+  const plan = downloadVerdict({ harnessSession: false, schemeVerdict: dlHttps, announcedName: "file.bin", announcedBytes: size, limits: dlLimits });
+  check(`downloadVerdict unknown size never refuses on its own (${label})`, plan.action === "salvar" && plan.name === "file.bin");
+}
+
+// Determinism: the same input yields a byte-identical plan twice.
+check(
+  "downloadVerdict is stable across two calls with the same input",
+  JSON.stringify(downloadVerdict({ harnessSession: false, schemeVerdict: dlHttps, announcedName: "file.pdf", announcedBytes: 1024, limits: dlLimits })) ===
+    JSON.stringify(dlOk),
+);
+
+// Phrase hygiene: every static phrase is free of absolute paths and URL
+// schemes — no colon and no slash of any kind can appear.
+for (const [key, phrase] of Object.entries(DOWNLOAD_PHRASES)) {
+  check(`downloadVerdict phrase ${key} has no absolute path or URL scheme`, !phrase.includes("/") && !phrase.includes("\\") && !phrase.includes(":"));
+}
+
+// safeDownloadName directly: extension preserved, trimming, reserved names.
+check("safeDownloadName preserves the extension when it exists", safeDownloadName("relatório final.pdf") === "relatório final.pdf");
+check("safeDownloadName trims surrounding spaces", safeDownloadName("  file.zip  ") === "file.zip");
+check("safeDownloadName refuses a bare reserved name without extension", safeDownloadName("NUL") === null);
+check("safeDownloadName refuses an uppercase reserved name", safeDownloadName("lpt3.zip") === null);
+check("safeDownloadName allows ordinary names through unchanged", safeDownloadName("nota-fiscal 2026.pdf") === "nota-fiscal 2026.pdf");
+
+// uniqueDownloadName: never overwrites an existing file.
+check("uniqueDownloadName returns the plain name in an empty folder", uniqueDownloadName("a.txt", []) === "a.txt");
+check("uniqueDownloadName avoids one existing name", uniqueDownloadName("a.txt", ["a.txt"]) === "a (1).txt");
+check("uniqueDownloadName avoids two existing names", uniqueDownloadName("a.txt", ["a.txt", "a (1).txt"]) === "a (2).txt");
+check("uniqueDownloadName handles extensionless names", uniqueDownloadName("README", ["README"]) === "README (1)");
+check("uniqueDownloadName keeps dotfile stems extensionless", uniqueDownloadName(".hidden", [".hidden"]) === ".hidden (1)");
+check("uniqueDownloadName never returns a name already present", ["a.txt", "a (1).txt", "a (2).txt"].every((taken) => uniqueDownloadName("a.txt", [taken, "other.bin"]) !== taken));
+
+// Module purity: same hygiene as extlink.ts / hotkey.ts — no electron, no
+// node builtins, no I/O of any kind.
+const dlModuleSrc = readFileSync(new URL("../apps/desktop/src/downloadplan.ts", import.meta.url), "utf8");
+check(
+  "P2-241: downloadplan stays pure — no electron import, no node: builtins, no fetch",
+  !dlModuleSrc.includes('from "electron"') && !dlModuleSrc.includes("node:") && !dlModuleSrc.includes("fetch("),
+);
+
+// Source pins on the real main.ts: exactly one listener, harness rule first,
+// reveal-not-execute, one notification, no new timer, no save dialog.
+const dlMainSrc = readFileSync(new URL("../apps/desktop/src/main.ts", import.meta.url), "utf8");
+const dlIdx = dlMainSrc.indexOf('session.defaultSession.on("will-download"');
+const dlEndMarker = dlMainSrc.indexOf("// P2-184:", dlIdx);
+const dlBlock = dlMainSrc.slice(dlIdx, dlEndMarker > dlIdx ? dlEndMarker : dlIdx + 4000);
+check("P2-241: main.ts registers exactly one will-download listener", (dlMainSrc.match(/\.on\("will-download"/g) || []).length === 1);
+check("P2-241: the handler consults the pure verdict before anything else", dlBlock.includes("const plan = downloadVerdict({") && dlBlock.indexOf("const plan = downloadVerdict({") < dlBlock.indexOf("item.cancel()") && dlBlock.indexOf("const plan = downloadVerdict({") < dlBlock.indexOf("item.setSavePath("));
+check("P2-241: the harness-session rule is the first input consulted", /const plan = downloadVerdict\(\{\s*harnessSession: HERMETIC_E2E,/.test(dlBlock));
+check("P2-241: the handler consumes the P2-178 extlink verdict", dlBlock.includes("schemeVerdict: externalOpenDecision(item.getURL())"));
+check("P2-241: the refuse plan cancels the item", dlBlock.includes("item.cancel()"));
+check("P2-241: the save plan sets the path without any dialog", dlBlock.includes("item.setSavePath(") && !dlBlock.includes("showSaveDialog") && !dlBlock.includes("showMessageBox"));
+check("P2-241: the done path reveals the file and never executes or opens it", dlBlock.includes("shell.showItemInFolder(") && !/shell\.openItem|shell\.openPath|shell\.openExternal|\.exec\(|spawn\(/.test(dlBlock));
+check("P2-241: at most one notification is sent per download", (dlBlock.match(/new Notification\(/g) || []).length === 1);
+check("P2-241: no new periodic timer was introduced by the handler", !dlBlock.includes("setInterval(") && !dlBlock.includes("setTimeout("));
 
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);
