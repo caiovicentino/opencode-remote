@@ -4,6 +4,7 @@ import { APP_VERSION } from "../version";
 import { useT, setLang, getLang, type Lang } from "../lib/i18n";
 import { timeAgo } from "../lib/time";
 import { getTtsLang, setTtsLang as persistTtsLang, type TtsLang } from "../lib/voice";
+import { readinessRows, summarize, MACHINE_SEVERITY_DOT } from "../lib/machinestate";
 import type { UpstreamNotice } from "../lib/degraded";
 
 /** P2-187: phone relay resolution from the desktop shell (mirrors
@@ -348,6 +349,22 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
     setDevices((prev) => prev.filter((d) => d.pub !== pub));
   }
 
+  // P2-232: machine readiness rows from the SAME /__ocr/settings object this
+  // view already fetches on mount (opencodeVersion + disk, the daemon's own
+  // verdict mirrors) — no new request, no new poll. The module ignores absent
+  // or malformed verdicts, so a legacy daemon yields the calm empty state.
+  // The daemon's phrases render verbatim; the app never rewrites them and
+  // never invents its own.
+  const machineRows = readinessRows({
+    opencode: {
+      versionState: opencodeVersion?.state,
+      versionMessage: opencodeVersion?.message,
+    },
+    diskState: disk?.state,
+    diskMessage: disk?.message,
+  });
+  const machineSummary = summarize(machineRows);
+
   return (
     <div className="screen">
       <header>
@@ -388,6 +405,20 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
           <p className="muted" style={{ margin: "2px 0 0" }}>
             {transport === "local" ? t("connLocal") : t("connRelay")}
           </p>
+        </div>
+
+        <div className="card machine-state">
+          <h3>{t("machineStateTitle")}</h3>
+          <p className="machine-state-summary">{t(machineSummary.titleKey)}</p>
+          {machineRows.map((row) => (
+            <div className="machine-row" key={row.key}>
+              <span className={`status-dot ${MACHINE_SEVERITY_DOT[row.severity]}`} aria-hidden="true" />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <b style={{ fontSize: "var(--font-size-sm)" }}>{t(row.labelKey)}</b>
+                {row.message && <p className="muted machine-row-msg">{row.message}</p>}
+              </div>
+            </div>
+          ))}
         </div>
 
         <div className="card">

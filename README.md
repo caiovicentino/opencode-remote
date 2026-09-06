@@ -113,6 +113,14 @@ private. That is the product: **local power, remote control, zero trust**.
   artifacts under `~/.opencode-remote/artifacts/` are trimmed automatically
   by the retention janitor); `OCR_DISK_FULL=1` on the daemon is a test hatch
   that forces the critical verdict for deterministic screenshots
+- **Machine state panel** — Settings → **Machine state** gathers in one calm
+  list every readiness verdict the machine itself reports: the remote relay
+  link, the agent server and its version, disk space and document→PDF
+  conversion. Worst verdict first, one row per verdict with a severity marker
+  and **the machine's own phrase, verbatim** — the app never rewrites it and
+  never invents one. Verdicts the connected daemon does not report simply
+  don't appear (calm empty state), and nothing in the panel ever blocks: it
+  describes the machine hosting the daemon — never the phone
 - **Files** — upload from the phone, preview anything, export a conversation
   as markdown with one tap; every file card has a ⧉ button that copies the
   file's full path (Clipboard API with an execCommand fallback)

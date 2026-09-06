@@ -2550,6 +2550,29 @@ button.desk-new:hover:not(:disabled) {
   font-weight: 600;
   color: var(--fg);
 }
+/* Machine state section (P2-232): one row per readiness verdict — the shared
+   status-dot chrome carries the severity, the daemon's own phrase sits below
+   the label. No new colors: the same dot ladder as the connection indicator. */
+.machine-state-summary {
+  margin: 0 0 10px;
+  font-weight: 600;
+}
+.machine-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.machine-row:last-child {
+  margin-bottom: 0;
+}
+.machine-row .status-dot {
+  margin-top: 4px;
+}
+.machine-row-msg {
+  margin: 0;
+  font-size: var(--font-size-sm);
+}
 /* spinner inside the reconnect button (trying state, P2-112) */
 .reconnect-spin {
   display: inline-block;

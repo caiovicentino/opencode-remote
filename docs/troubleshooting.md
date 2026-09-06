@@ -141,6 +141,26 @@ the default installer works) and retry — the tool needs no daemon restart;
 the health verdict refreshes on the next daemon boot (the probe runs once,
 at boot).
 
+## Machine state in one place (P2-232)
+
+Settings → **Machine state** ("Estado da máquina") gathers every readiness
+verdict the machine itself reports — the remote relay link, the agent server
+and its version, disk space, document → PDF conversion — in a single calm
+list, worst verdict first, each row with a severity marker (green / amber /
+red), a short label and **the machine's own phrase, verbatim**: the app never
+rewrites a phrase and never invents one. The section consumes the same
+settings read the screen already performs (the daemon mirrors its health
+verdicts on `GET /__ocr/settings`) — no new request, no new poll.
+
+- A verdict the connected daemon does not report simply renders no row; with
+  nothing known yet the section shows the calm empty state. Nothing in the
+  panel ever blocks or disables a control — it describes the machine hosting
+  the daemon, never the phone.
+- Deterministic screenshots: `OCR_OPENCODE_OLD=1` forces the too-old agent
+  version (amber row) and `OCR_DISK_FULL=1` the critical disk verdict (red
+  row) on the daemon — the same hatches documented for the single-line
+  indicators above.
+
 ## Local daemon port fallback (P2-143)
 
 The desktop shell's local daemon prefers port 8792. If another program already
