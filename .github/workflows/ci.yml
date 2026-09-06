@@ -19,6 +19,19 @@ jobs:
       - name: Install
         run: npm ci
 
+      # P2-269: dependency advisory gate — before this, the only
+      # dependency-security check in the repo was the Electron CVE list, so a
+      # known vulnerability in any other runtime dependency could travel
+      # inside the signed installer with the pipeline green. The job is
+      # reproved on the reject verdict alone (high or critical advisory in a
+      # runtime dependency); a failed collection, a dev-only advisory, a
+      # still-valid exemption or a below-floor severity only warns. Deadlined
+      # exemptions: scripts/audit-exemptions.json (docs/security.md).
+      - name: Dependency advisories
+        shell: bash
+        timeout-minutes: 5
+        run: npm run audit:deps
+
       - name: Lint
         run: npx eslint apps packages scripts --quiet
 

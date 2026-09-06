@@ -1110,6 +1110,13 @@ state save, and when the main file is ever illegible at boot the daemon
 preserves it in quarantine and restores the copy automatically, so every
 pairing survives without manual work.
 
+**Dependency advisory gate (P2-269).** Every CI run audits the dependency
+tree (`npm run audit:deps`): a high or critical advisory in a runtime
+dependency fails the job — nothing vulnerable rides inside the signed
+installer — while dev-only findings and network outages only warn; operators
+exempt an advisory with a deadline in `scripts/audit-exemptions.json`
+(see [docs/security.md](docs/security.md)).
+
 ## Pilot — autonomous development (24/7)
 
 This repo evolves itself: the Pilot service ([docs/PILOT.md](docs/PILOT.md)) picks tasks from

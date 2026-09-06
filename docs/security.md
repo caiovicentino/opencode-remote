@@ -119,6 +119,15 @@ identity servers, no accounts.
     Nothing outside the app's own data is touched, and a test-harness
     session refuses the wipe before any dialog can open.
 
+13. **Dependency advisories (P2-269).** CI runs `npm run audit:deps`
+    (`scripts/audit-deps.ts`) on every PR, and a new advisory at severity
+    **high** or **critical** in a runtime dependency fails the job, while a
+    failed collection, a dev-only advisory, a below-floor severity or a
+    still-valid exemption only warns; to exempt an advisory, add an entry
+    with the advisory id, a one-sentence reason and an expiry date to
+    `scripts/audit-exemptions.json` — past the expiry the advisory counts in
+    full again.
+
 ## Key rotation
 
 Delete `~/.opencode-remote/daemon.json` (or `manage.ts revoke-all`) and

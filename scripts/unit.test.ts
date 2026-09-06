@@ -860,6 +860,13 @@ import {
   CASK_RELEASES_BASE,
   type CaskManifest,
 } from "./caskmanifest";
+import {
+  AUDIT_SEVERITY_FLOOR,
+  auditVerdict,
+  type AuditAdvisory,
+  type AuditExemption,
+  type AuditSeverity,
+} from "./auditverdict";
 
 
 let failures = 0;
@@ -23468,6 +23475,181 @@ check("P2-241: no new periodic timer was introduced by the handler", !dlBlock.in
   check(
     "P2-267: the wipe item carries no renderer action (shell-wired by id only)",
     helpItems[wipeItemAt]?.action === undefined,
+  );
+}
+
+// --- P2-269: dependency advisory verdict (auditverdict.ts) ------------------
+{
+  const adv = (id: string, pkg: string, severity: AuditSeverity, devOnly = false): AuditAdvisory => ({
+    id,
+    package: pkg,
+    severity,
+    devOnly,
+  });
+  const CRIT = adv("GHSA-b-crit", "left-pad", "critical");
+  const HIGH = adv("GHSA-c-high", "right-pad", "high");
+  const MOD = adv("GHSA-a-mod", "middle-pad", "moderate");
+  const NOW = Date.parse("2026-09-06T12:00:00Z");
+  const FLOOR: AuditSeverity = "high";
+  const okList = (list: readonly AuditAdvisory[]) => ({ ok: true, advisories: list });
+  const futureExemption = (id: string): AuditExemption => ({
+    id,
+    reason: "documented one-sentence motive",
+    expiresAt: "2026-10-01T00:00:00Z",
+  });
+
+  // Rule 1: an absent, shapeless or failed collection warns and NEVER
+  // rejects — even with a critical advisory riding along.
+  check(
+    "P2-269: a failed collection warns even with a critical advisory present (rule order)",
+    auditVerdict({ ok: false, advisories: [CRIT] }, [], NOW, FLOOR).outcome === "warn",
+  );
+  check(
+    "P2-269: an absent collection warns and never rejects",
+    auditVerdict(null, [], NOW, FLOOR).outcome === "warn" &&
+      auditVerdict(undefined, [], NOW, FLOOR).outcome === "warn",
+  );
+  check(
+    "P2-269: a shapeless collection (no advisory list) warns and never rejects",
+    auditVerdict({ ok: true } as unknown as { ok: boolean; advisories: AuditAdvisory[] }, [], NOW, FLOOR).outcome === "warn",
+  );
+
+  // Rule order, second proof: a critical runtime advisory and an expired
+  // exemption at the same time — the void exemption counts nothing and the
+  // advisory rejects.
+  const expired: AuditExemption[] = [
+    { id: "GHSA-b-crit", reason: "window closed", expiresAt: "2026-09-01T00:00:00Z" },
+  ];
+  check(
+    "P2-269: a critical runtime advisory with an expired exemption rejects (rule order)",
+    auditVerdict(okList([CRIT]), expired, NOW, FLOOR).outcome === "reject",
+  );
+
+  // Rule 2: a dev-only advisory never blocks, whatever its severity.
+  check(
+    "P2-269: a critical dev-only advisory warns",
+    auditVerdict(okList([adv("GHSA-b-crit", "left-pad", "critical", true)]), [], NOW, FLOOR).outcome === "warn",
+  );
+
+  // Rule 5 boundaries, floor explicit: exactly at the floor rejects, one
+  // step below warns.
+  check(
+    "P2-269: an advisory exactly at the explicit floor (high) rejects",
+    auditVerdict(okList([HIGH]), [], NOW, "high").outcome === "reject",
+  );
+  check(
+    "P2-269: an advisory one step below the floor (moderate < high) warns",
+    auditVerdict(okList([MOD]), [], NOW, "high").outcome === "warn",
+  );
+
+  // Rule 6: the plain blocking case.
+  check(
+    "P2-269: a critical runtime advisory without exemption rejects",
+    auditVerdict(okList([CRIT]), [], NOW, FLOOR).outcome === "reject",
+  );
+
+  // Rule 4: a still-valid exemption downgrades to warn and the advisory
+  // never disappears from the report.
+  const exempted = auditVerdict(okList([CRIT]), [futureExemption("GHSA-b-crit")], NOW, FLOOR);
+  check(
+    "P2-269: a still-valid exemption downgrades a critical runtime advisory to warn",
+    exempted.outcome === "warn",
+  );
+  check(
+    "P2-269: the exempted advisory stays in the report with its deadline",
+    exempted.lines.some((l) => l.includes("GHSA-b-crit") && l.includes("2026-10-01T00:00:00Z")),
+  );
+
+  // A healthy collection that found nothing approves.
+  check(
+    "P2-269: a healthy empty advisory list approves",
+    auditVerdict(okList([]), [], NOW, FLOOR).outcome === "approve",
+  );
+
+  // Determinism: identical report for the same input in two calls, and a
+  // stable identifier ordering regardless of the input order.
+  const messy = [HIGH, MOD, CRIT, adv("GHSA-d-dev", "devdep", "high", true)];
+  const exemptedMod = [futureExemption("GHSA-a-mod")];
+  const run1 = auditVerdict(okList(messy), exemptedMod, NOW, FLOOR);
+  const run2 = auditVerdict(okList([...messy].reverse()), exemptedMod, NOW, FLOOR);
+  check(
+    "P2-269: the same input yields an identical report in two calls",
+    JSON.stringify(run1) === JSON.stringify(auditVerdict(okList(messy), exemptedMod, NOW, FLOOR)),
+  );
+  check(
+    "P2-269: report lines are stably ordered by advisory identifier",
+    JSON.stringify(run1) === JSON.stringify(run2) &&
+      JSON.stringify(run1.lines.map((l) => l.split(" ")[2])) ===
+        JSON.stringify(["GHSA-a-mod", "GHSA-b-crit", "GHSA-c-high", "GHSA-d-dev"]),
+  );
+
+  // The documented floor is high: only high and critical runtime advisories
+  // block CI.
+  check(
+    "P2-269: the documented severity floor is high",
+    AUDIT_SEVERITY_FLOOR === "high",
+  );
+
+  // Real-repo assertions: the CI step, the exemptions file and the purity of
+  // the verdict module.
+  const repoRoot = join(import.meta.dirname, "..");
+  const ciYml = readFileSync(join(repoRoot, ".github", "workflows", "ci.yml"), "utf8");
+  const verifyJob = ciYml.slice(0, ciYml.indexOf("\n  scope:"));
+  const stepAt = verifyJob.indexOf("- name: Dependency advisories");
+  const nextStepAt = verifyJob.indexOf("- name:", stepAt + 10);
+  const stepBlock = stepAt >= 0 && nextStepAt > stepAt ? verifyJob.slice(stepAt, nextStepAt) : "";
+  const installAt = verifyJob.indexOf("- name: Install\n");
+  const buildAt = verifyJob.indexOf("- name: Build\n");
+  check(
+    "P2-269: the dependency-advisories step exists exactly once in ci.yml",
+    ciYml.split("- name: Dependency advisories").length === 2,
+  );
+  check(
+    "P2-269: the step sits after the install step and before the build step",
+    installAt > -1 && stepAt > installAt && buildAt > stepAt,
+  );
+  check(
+    "P2-269: the step declares shell bash and its own timeout-minutes",
+    stepBlock.includes("shell: bash") && stepBlock.includes("timeout-minutes:"),
+  );
+  check(
+    "P2-269: the step runs the audit-deps script via the package.json entry",
+    stepBlock.includes("npm run audit:deps") &&
+      (JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as { scripts: Record<string, string> }).scripts["audit:deps"] ===
+        "tsx scripts/audit-deps.ts",
+  );
+
+  // The versioned exemption list: every entry carries id, motive and a
+  // parseable expiry date, and no entry ever carries a token, a machine path
+  // or an address.
+  const exemptionsRaw = readFileSync(join(repoRoot, "scripts", "audit-exemptions.json"), "utf8");
+  const exemptionsDoc = JSON.parse(exemptionsRaw) as { exemptions?: AuditExemption[] };
+  check(
+    "P2-269: the exemptions file holds an exemptions array",
+    Array.isArray(exemptionsDoc.exemptions),
+  );
+  check(
+    "P2-269: every exemption entry has id, one-sentence reason and a parseable expiry",
+    (exemptionsDoc.exemptions ?? []).every(
+      (e) =>
+        typeof e.id === "string" && e.id.length > 0 &&
+        typeof e.reason === "string" && e.reason.length > 0 &&
+        typeof e.expiresAt === "string" && !Number.isNaN(Date.parse(e.expiresAt)),
+    ),
+  );
+  check(
+    "P2-269: the exemptions file carries no token, machine path or address",
+    !/ghp_|github_pat_|npm_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]|xox[bap]/.test(exemptionsRaw) &&
+      !/\/Users\/|\/home\/|[A-Za-z]:\\/.test(exemptionsRaw) &&
+      !/https?:\/\//.test(exemptionsRaw),
+  );
+
+  // Purity: the verdict module imports no file system, no process spawning
+  // and no network vocabulary at all.
+  const verdictSrc = readFileSync(join(repoRoot, "scripts", "auditverdict.ts"), "utf8");
+  check(
+    "P2-269: auditverdict.ts imports no node:child_process, node:fs or fetch",
+    !/^import[^\n]*(node:child_process|node:fs|fetch)/m.test(verdictSrc) && !verdictSrc.includes("fetch("),
   );
 }
 
