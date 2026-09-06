@@ -117,6 +117,16 @@ remoto, zero confiança**.
 - **Arquivos** — envie do celular, dê preview de tudo, exporte a conversa
   em markdown; todo card de arquivo tem um botão ⧉ que copia o caminho
   completo do arquivo (Clipboard API com fallback execCommand)
+- **Conversão de documentos em PDF** — mande um documento (docx/doc/rtf/html/csv/xlsx/pptx)
+  e o agente converte localmente: LibreOffice dá fidelidade completa e é
+  descoberto pelo PATH e pelos caminhos padrão de instalação (app bundle no
+  macOS, `C:\Program Files\LibreOffice\program\soffice.exe` no Windows); no
+  macOS, o fallback nativo textutil+cupsfilter cobre doc/docx/rtf/html/csv
+  sem preservar formatação. A prontidão da máquina aparece em `GET /api/health`
+  (`docConvertState` / `docConvertMessage` / `docConvertExts`, sondado uma vez
+  no boot) antes de você mandar qualquer coisa; sem conversor instalado, a
+  ferramenta responde com uma frase curta pedindo o LibreOffice — nunca um
+  erro cru em inglês — e o arquivo original nunca é alterado
 - **Handoff** — continue a sessão exata no Mac (ícone de laptop no header do chat)
 - **Painel ao vivo** — estado de cada sessão: trabalhando, esperando aprovação,
   fez pergunta, pronto, erro; cards mostram o tempo relativo da última

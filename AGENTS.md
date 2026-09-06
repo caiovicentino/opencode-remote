@@ -137,6 +137,17 @@ um PDF de volta, rode `node tools/doc2pdf.mjs <arquivo>` (padrão: arquivos em
 macOS (textutil+cupsfilter) p/ doc/docx/rtf/html/csv. A saída imprime `[file: <abs path>]`;
 repita essa linha na resposta pro card de download aparecer no chat.
 
+O que a máquina precisa (P2-231): com LibreOffice instalado a conversão é
+completa (todos os formatos, fidelidade preservada) — o conversor é descoberto
+pelo PATH e pelos caminhos padrão de instalação (app bundle no macOS;
+`C:\Program Files\LibreOffice\program\soffice.exe` no Windows). Sem LibreOffice
+no macOS resta o fallback nativo (textutil+cupsfilter), só p/ doc/docx/rtf/html/csv
+e sem preservar formatação. Sem nenhum conversor, a ferramenta responde com
+uma frase curta em português pedindo a instalação do LibreOffice — nunca um
+erro cru em inglês — e o arquivo original continua intacto. A prontidão da
+conversão também viaja em `/api/health` (`docConvertState` /
+`docConvertMessage` / `docConvertExts`), sondada uma única vez no boot.
+
 ## Artifacts (documentos renderizáveis)
 
 Quando o resultado for um documento (html, md, csv, pdf…), escreva-o em

@@ -65,6 +65,7 @@ import { ARTIFACTS_ROOT, artifactMime, capArtifacts, kindFor, listArtifacts, rea
 import { RETENTION_INTERVAL_MS, retentionDisabled, retentionPlan, type RetentionEntry } from "./artifactretention.js";
 import { parseUploadRetention, uploadRetentionPlan, type UploadEntry as UploadFile } from "./uploadretention.js";
 import { diskVerdict, type DiskVerdict } from "./diskguard.js";
+import { docConvertProbe, docConvertVerdict, type DocConvertVerdict } from "./doccap.js";
 import { WindowCache, contextPct, sessionTokenTotal } from "./contextgauge.js";
 import { ArtifactWatcher } from "./artifactwatch.js";
 import { createShutdown, stopAccepting } from "./shutdown.js";
@@ -315,6 +316,32 @@ function modelStatus(): { available: boolean; state: string; message: string } {
       ? modelReadyVerdict([])
       : modelReadyVerdict(modelCatalogSummary, modelCatalogFailed);
   return { available: verdict.state === "ready", state: verdict.state, message: verdict.message };
+}
+
+// P2-231: document→PDF conversion readiness, probed EXACTLY ONCE at boot on
+// the same readiness hook as whisper/edge-tts — never per request, never
+// periodic (the single probe call site lives inside main()). The verdict is
+// announced in /api/health BEFORE the user sends a document, instead of the
+// old raw English terminal error mid-conversation.
+let docConvert: DocConvertVerdict = docConvertVerdict(process.platform, {
+  soffice: false,
+  textutil: false,
+  cupsfilter: false,
+});
+
+/** One probe over the known install locations from doccap.ts. Synchronous on
+ * purpose (a handful of existsSync calls — it cannot delay boot); any probe
+ * failure degrades to the unavailable verdict with a single log line instead
+ * of an exception. */
+function probeDocConvert(): void {
+  try {
+    docConvert = docConvertVerdict(process.platform, docConvertProbe(process.platform, existsSync));
+  } catch (err) {
+    docConvert = docConvertVerdict(process.platform, { soffice: false, textutil: false, cupsfilter: false });
+    log("warn", "doc conversion probe failed — advertising unavailable", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 // local TTS replies (optional; edge-tts CLI) — P2-125 voice mode
 let edgeTtsBin: string | null = null;
@@ -2785,6 +2812,13 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
         // fields keep their exact shape.
         diskState: disk.state,
         diskMessage: disk.message,
+        // P2-231: additive document→PDF conversion readiness — probed once at
+        // boot (state + short pt-BR phrase + covered extensions). No absolute
+        // path, URL scheme or raw probe output ever reaches the payload, and
+        // no existing field is removed or renamed.
+        docConvertState: docConvert.state,
+        docConvertMessage: docConvert.message,
+        docConvertExts: docConvert.exts,
       });
       return true;
     }
@@ -3314,6 +3348,10 @@ async function main() {
   edgeTtsBin = detectEdgeTts();
   if (edgeTtsBin) log("info", "voice replies available", { voice: resolveVoice("pt-BR", TTS_PT_VOICE).voice, voices: TTS_VOICES });
   else log("info", "voice replies unavailable (edge-tts not found; optional feature)");
+
+  // P2-231: same readiness hook as the capabilities above — one probe, in
+  // memory, before any server answers; boot never blocks on it.
+  probeDocConvert();
 
   log("info", "daemon starting (protocol v2)", {
     machine: machineName,
