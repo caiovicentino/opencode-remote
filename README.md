@@ -248,7 +248,9 @@ private. That is the product: **local power, remote control, zero trust**.
   `<webview>` (scroll, click and edit work like in a browser; `contextIsolation`/`sandbox` on,
   `nodeIntegration` off, popups off), with an editable URL bar, reload and a maximize toggle
   (~80% width). The webview guest always fills the whole pane — including after the maximize
-  toggle or a window resize — instead of painting in a top strip (P2-092). The Playwright
+  toggle or a window resize — instead of painting in a top strip (P2-092). A download started
+  in the pane follows the shell's one download policy — no native dialog, sanitized name,
+  saved to the system Downloads folder or refused with a log line (P2-241). The Playwright
   screenshot mode (`/api/browse`) remains the fallback in the PWA
   and the reviewer-driving path (`tools/browse.mjs`)
 - **Auto-preview** — when the agent mentions a `http(s)://localhost:<port>` / `127.0.0.1:<port>`
@@ -1015,6 +1017,22 @@ elemento**; packaged builds never do. When there is nothing to act on, no menu
 opens at all. Automated test sessions never open the menu — a native popup
 would steal focus from the gate (same harness-session rule as every other
 native surface).
+
+**Downloads (P2-241)**: a download started anywhere in the shell — a link in
+the Browser pane, an artifact link, a redirect — never opens a native save
+dialog. Every download is checked against one pure policy, in this order: a
+hermetic test session (`OCR_DESKTOP_SESSION`) never saves a byte; a scheme the
+external-open gate refuses (file, blob, data, javascript — http/https/mailto
+pass) is cancelled; the announced name must survive a fail-closed sanitizer
+(no empty or space-only names, no `/` `\` `..` `:`, no control characters, no
+Windows reserved names, 200-character ceiling — the extension is preserved)
+and the announced size may not exceed **1 GB** (an unknown size never refuses
+by itself). What passes lands in the system **Downloads folder** with the
+name deduped against the folder (nothing is ever overwritten), is revealed
+selected in the file manager and announced with at most one notification on
+completion — and the app **never executes or opens** the downloaded file
+(reveal-only, same as the P2-233 installer). Refusals log one path-free line
+in `desktop.log`.
 
 **Living home (P2-123)**: with no conversation selected the cockpit shows a
 real home instead of a dead end — a serif greeting ("Back in action, &lt;machine&gt;",

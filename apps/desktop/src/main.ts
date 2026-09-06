@@ -54,6 +54,7 @@ import { versionMismatch } from "./versions";
 import { applyAppUserModelId, daemonNotify, NOTIFY_BACK_BODY, NOTIFY_DOWN_BODY, NOTIFY_TITLE, type DaemonHealth } from "./notify";
 import { deepLinkFromArgv, parseDeepLink } from "./deeplink";
 import { externalOpenDecision } from "./extlink";
+import { downloadVerdict, DOWNLOAD_LIMITS, uniqueDownloadName } from "./downloadplan";
 import { guestAttachDecision, guestNavigationDecision } from "./webviewguard";
 import { permissionDecision, requestingScheme } from "./permissions";
 import { daemonTooltip, loginItemSupported, logsDirPath, openLogsFolder, trayIconSource } from "./tray";
@@ -995,6 +996,61 @@ async function onReady(): Promise<void> {
   session.defaultSession.setPermissionCheckHandler(
     (_wc, permission, requestingOrigin) => permissionDecision(permission, requestingOrigin, permissionCtx).allow,
   );
+
+  // P2-241: the single download policy for the whole shell, registered
+  // unconditionally on the default session — the one session every surface
+  // uses (main window and Browser-pane guest alike). Until this handler the
+  // event fell through to Electron's default: a native save dialog with the
+  // server's raw name, no scheme check, no ceiling, no log line. Now every
+  // download consults the pure plan first: a harness session never saves a
+  // byte (rule-order contract, see downloadplan.ts), a refused scheme /
+  // invalid name / oversize body cancels with one log line, and everything
+  // else lands in the documented Downloads folder with NO dialog — sanitized,
+  // deduped against the folder so nothing is ever overwritten — then is
+  // revealed (NEVER executed or opened, see the module header) and announced
+  // once on completion. No new IPC channel, no new timer: the done listener
+  // belongs to the item's own lifecycle, and log lines never carry paths.
+  session.defaultSession.on("will-download", (_event, item) => {
+    const plan = downloadVerdict({
+      harnessSession: HERMETIC_E2E,
+      schemeVerdict: externalOpenDecision(item.getURL()),
+      announcedName: item.getFilename(),
+      announcedBytes: item.getTotalBytes(),
+      limits: DOWNLOAD_LIMITS,
+    });
+    if (plan.action !== "salvar") {
+      item.cancel();
+      log(`[desktop] download refused — ${plan.reason}`);
+      return;
+    }
+    let existing: string[] | null = null;
+    try {
+      const dir = app.getPath("downloads");
+      mkdirSync(dir, { recursive: true });
+      existing = readdirSync(dir);
+    } catch {
+      existing = null;
+    }
+    if (!existing) {
+      item.cancel();
+      log("[desktop] download refused — downloads folder unreadable");
+      return;
+    }
+    const dest = join(app.getPath("downloads"), uniqueDownloadName(plan.name, existing));
+    item.setSavePath(dest);
+    item.once("done", (_e, state) => {
+      if (state !== "completed") {
+        log(`[desktop] download not completed — ${plan.reason}`);
+        return;
+      }
+      // Reveal (never execute): the file manager shows the file selected —
+      // the same path the P2-233 installer download uses.
+      shell.showItemInFolder(dest);
+      log(`[desktop] download done — ${plan.reason}`);
+      // At most ONE notification per download, reusing the plan's phrase.
+      new Notification({ title: NOTIFY_TITLE, body: plan.reason, silent: false }).show();
+    });
+  });
 
   // P2-184: the single guest path. Every webContents created from here on is
   // classified once by type: a Browser-pane <webview> guest has its main-frame
