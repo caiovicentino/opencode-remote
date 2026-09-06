@@ -36,9 +36,10 @@
  * OS and double as the portable path-logic regression net.
  */
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { PORTABLE_EXCLUSIONS, portableCoverage } from "./portablecoverage";
 
 export const PORTABLE_TESTS: readonly string[] = [
   "bubble-merge.test.ts",
@@ -100,6 +101,17 @@ function cli(): number {
     return 1;
   }
   const here = dirname(fileURLToPath(import.meta.url));
+  // P2-237: fail-closed coverage guard — every .test.ts file actually in
+  // scripts/ (from a directory read, never a second hand-written list) must
+  // be either in PORTABLE_TESTS or declared in PORTABLE_EXCLUSIONS with a
+  // documented cause. Runs before any test is executed.
+  const onDisk = readdirSync(here).filter((f) => f.endsWith(".test.ts")).sort();
+  const coverageProblems = portableCoverage(onDisk, PORTABLE_TESTS, PORTABLE_EXCLUSIONS);
+  if (coverageProblems.length > 0) {
+    for (const problem of coverageProblems) console.error(problem);
+    console.error("portable-suite: FAIL — a test file is outside the portable list and the exclusion list");
+    return 1;
+  }
   const repoRoot = resolve(here, "..");
   const tsxEntry = join(repoRoot, "node_modules", "tsx", "dist", "cli.mjs");
   for (const file of PORTABLE_TESTS) {
