@@ -132,6 +132,24 @@ jobs:
           echo "packaged-boot: booting $APP"
           node apps/desktop/scripts/packaged-boot.mjs "$APP"
 
+      # P2-253: the boot smoke above deliberately never spawns the sidecar, so
+      # the daemon bundle built by bundle-daemon.mjs used to reach the release
+      # without ever executing in the PR. Run the same daemon smoke the
+      # release workflow runs (packaged resources/daemon/index.js via the
+      # package's own Electron as the Node runtime), hermetically — temp HOME,
+      # relay off, ephemeral metrics port — against the same resolved bundle
+      # as the boot step. Nothing is uploaded, signed or published. shell:
+      # bash (P2-126 lesson) and its own timeout (P2-245 lesson).
+      - name: Smoke the packaged daemon sidecar
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          ARCH_DIR="$(uname -m | sed 's/x86_64/x64/')"
+          APP="$(find apps/desktop/dist -maxdepth 3 -type d -name '*.app' | grep -F "$ARCH_DIR" | head -1)"
+          [ -n "$APP" ] || APP="$(find apps/desktop/dist -maxdepth 3 -type d -name '*.app' | head -1)"
+          [ -n "$APP" ] || { echo "packaged-daemon-smoke: no .app under apps/desktop/dist — nothing to boot"; exit 1; }
+          node apps/desktop/scripts/packaged-daemon-smoke.mjs "$APP"
+
   # P2-219: the Windows packaging surface (nsis/win config, signing profile,
   # win-unpacked layout) was only exercised inside the release workflow, so a
   # packaging regression surfaced as a red job on publication day. This job
@@ -187,6 +205,20 @@ jobs:
           [ -n "$DIR" ] || { echo "packaged-boot: no win-unpacked dir under apps/desktop/dist — nothing to boot"; exit 1; }
           echo "packaged-boot: booting $DIR"
           node apps/desktop/scripts/packaged-boot.mjs "$DIR"
+
+      # P2-253: same daemon-sidecar smoke the release win job runs — the
+      # packaged resources/daemon/index.js boots via the package's own
+      # Electron as the Node runtime, hermetically (temp HOME, relay off,
+      # ephemeral metrics port), against the same resolved win-unpacked
+      # bundle as the boot step. Nothing is uploaded or published. shell:
+      # bash (P2-126 lesson) and its own timeout (P2-245 lesson).
+      - name: Smoke the packaged daemon sidecar
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          DIR="$(find apps/desktop/dist -maxdepth 2 -type d -name 'win-unpacked' | head -1)"
+          [ -n "$DIR" ] || { echo "packaged-daemon-smoke: no win-unpacked dir under apps/desktop/dist — nothing to boot"; exit 1; }
+          node apps/desktop/scripts/packaged-daemon-smoke.mjs "$DIR"
 
   # P2-224: the unit battery only ever ran on ubuntu-latest, so the Windows
   # half of the path logic (relay webroot, installloc, loginitem, desktop-log,

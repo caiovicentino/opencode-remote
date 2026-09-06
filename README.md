@@ -634,7 +634,10 @@ hand:
 additionally run a scoped packaging job (`desktop-package`, mac `dir` target
 only, no DMG/signing) smoke-checked with `dist:smoke --no-installer` and,
 since P2-242, sealed by the real packaged boot (`Smoke-boot the packaged app`
-step on both platforms); the full
+step on both platforms) and, since P2-253, by the same packaged daemon smoke
+the release runs (`Smoke the packaged daemon sidecar` step on both platforms)
+— a daemon packaging regression now fails the pull request instead of
+surfacing only at the tag; the full
 signed installers still ship only at tag time. Before packaging, that job also
 enforces the bundle size budgets of `scripts/bundle-budget.ts` (P2-162): the
 summed `apps/web/dist` payload and the `apps/desktop/dist-daemon/index.js`

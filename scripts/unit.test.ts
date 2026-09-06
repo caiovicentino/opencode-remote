@@ -20025,31 +20025,34 @@ check(
 
   // bootSmokeParity — the full table.
   check("P2-242: bootSmokeParity — two empty job lists yield zero problems", bootSmokeParity([], []).length === 0);
+  // Since P2-253 the daemon smoke is owed by both workflows, so the fixtures
+  // below carry a proper daemon step unless the daemon rule is the one under
+  // test — the boot rules stay independently pinned.
   const noBoot = bootSmokeParity([wfJob("desktop-package", "macos-14", [pkg])], []);
   check(
-    "P2-242: bootSmokeParity — a packaging job without the real boot yields one problem naming the job",
-    noBoot.length === 1 && noBoot[0].includes('"desktop-package"') && noBoot[0].includes("never boots the real package"),
+    "P2-242: bootSmokeParity — a packaging job without the real boot yields the problem naming the job (plus the P2-253 daemon problem)",
+    noBoot.length === 2 && noBoot[0].includes('"desktop-package"') && noBoot[0].includes("never boots the real package") && noBoot[1].includes("packaged daemon sidecar"),
     noBoot.join(" | "),
   );
-  const bootFirst = bootSmokeParity([wfJob("j", "ubuntu-latest", [boot(), pkg])], []);
+  const bootFirst = bootSmokeParity([wfJob("j", "ubuntu-latest", [boot(), pkg, daemon()])], []);
   check(
     "P2-242: bootSmokeParity — a real boot positioned before the packaging step yields the position problem",
     bootFirst.length === 1 && bootFirst[0].includes("before the packaging step"),
     bootFirst.join(" | "),
   );
-  const noShell = bootSmokeParity([wfJob("j", "ubuntu-latest", [pkg, boot({ shell: null })])], []);
+  const noShell = bootSmokeParity([wfJob("j", "ubuntu-latest", [pkg, boot({ shell: null }), daemon()])], []);
   check(
     "P2-242: bootSmokeParity — a boot step without shell: bash yields the shell problem",
     noShell.length === 1 && noShell[0].includes("without declaring shell: bash"),
     noShell.join(" | "),
   );
-  const noTimeout = bootSmokeParity([wfJob("j", "ubuntu-latest", [pkg, boot({ timeoutMinutes: null })])], []);
+  const noTimeout = bootSmokeParity([wfJob("j", "ubuntu-latest", [pkg, boot({ timeoutMinutes: null }), daemon()])], []);
   check(
     "P2-242: bootSmokeParity — a boot step without its own timeout yields the timeout problem",
     noTimeout.length === 1 && noTimeout[0].includes("without its own timeout-minutes"),
     noTimeout.join(" | "),
   );
-  const twoCauses = bootSmokeParity([wfJob("j", "ubuntu-latest", [pkg, boot({ shell: null, timeoutMinutes: null })])], []);
+  const twoCauses = bootSmokeParity([wfJob("j", "ubuntu-latest", [pkg, boot({ shell: null, timeoutMinutes: null }), daemon()])], []);
   check(
     "P2-242: bootSmokeParity — two simultaneous causes yield two problems, never one merged verdict",
     twoCauses.length === 2 && twoCauses.some((p) => p.includes("shell: bash")) && twoCauses.some((p) => p.includes("timeout-minutes")),
@@ -20067,7 +20070,7 @@ check(
     nonPackaging.length === 0,
     nonPackaging.join(" | "),
   );
-  const happyCi = [wfJob("desktop-package", "macos-14", [wfStep("npm ci", { name: "Install" }), pkg, boot()])];
+  const happyCi = [wfJob("desktop-package", "macos-14", [wfStep("npm ci", { name: "Install" }), pkg, boot(), daemon()])];
   const happyRelease = [wfJob("desktop-dmg", "macos-14", [pkg, boot(), daemon()])];
   check("P2-242: bootSmokeParity — packaging jobs with a proper boot after packaging yield zero problems", bootSmokeParity(happyCi, happyRelease).length === 0);
   const stableA = bootSmokeParity(happyCi, [wfJob("desktop-win", "windows-latest", [pkg, boot({ shell: null, timeoutMinutes: null }), daemon()])]);
@@ -20258,8 +20261,11 @@ check(
     })(),
   );
   check(
-    "P2-251: a ci.yml packaging job is exempt from the daemon-smoke requirement (out of the task's scope)",
-    bootSmokeParity([wfJob("desktop-package", [pkgStep, bootStep])], []).length === 0,
+    "P2-253: a ci.yml packaging job is no longer exempt from the daemon-smoke requirement",
+    (() => {
+      const problems = bootSmokeParity([wfJob("desktop-package", [pkgStep, bootStep])], []);
+      return problems.length === 1 && problems[0].includes('"desktop-package"') && problems[0].includes("packaged daemon sidecar");
+    })(),
   );
   check(
     "P2-251: a daemon smoke placed before packaging with bad shell/timeout yields one problem per cause (position, shell, timeout)",
@@ -20309,6 +20315,89 @@ check(
       stepSlice.includes("node apps/desktop/scripts/packaged-daemon-smoke.mjs"),
     );
   }
+}
+
+// --- P2-253: bootSmokeParity demands the daemon smoke from ci.yml too -------
+
+{
+  const wfJob = (name: string, steps: WorkflowStep[]): WorkflowJob => ({ name, platform: "x", steps });
+  const pkgStep: WorkflowStep = { name: "Package", run: "npm run dist --workspace @ocr/desktop -- --mac --dir", shell: null, timeoutMinutes: null };
+  const bootStep: WorkflowStep = { name: "Boot", run: 'node apps/desktop/scripts/packaged-boot.mjs "$APP"', shell: "bash", timeoutMinutes: 10 };
+  const daemonStep: WorkflowStep = { name: "Smoke the packaged daemon sidecar", run: 'node apps/desktop/scripts/packaged-daemon-smoke.mjs "$APP"', shell: "bash", timeoutMinutes: 5 };
+
+  const missing = bootSmokeParity([wfJob("desktop-package", [pkgStep, bootStep])], []);
+  check(
+    "P2-253: a ci job that packages and boots but never smokes the daemon yields the problem naming the job",
+    missing.length === 1 && missing[0].includes('"desktop-package"') && missing[0].includes("never boots the packaged daemon sidecar"),
+    missing.join(" | "),
+  );
+  const smokeFirst = bootSmokeParity([wfJob("desktop-package", [daemonStep, pkgStep, bootStep])], []);
+  check(
+    "P2-253: a ci daemon smoke positioned before the packaging step yields the position problem",
+    smokeFirst.length === 1 && smokeFirst[0].includes("smokes the daemon sidecar before the packaging step"),
+    smokeFirst.join(" | "),
+  );
+  const smokeNoShell = bootSmokeParity([wfJob("desktop-package", [pkgStep, bootStep, { ...daemonStep, shell: null }])], []);
+  check(
+    "P2-253: a ci daemon smoke without shell: bash yields the shell problem",
+    smokeNoShell.length === 1 && smokeNoShell[0].includes("smokes the daemon sidecar without declaring shell: bash"),
+    smokeNoShell.join(" | "),
+  );
+  const smokeNoTimeout = bootSmokeParity([wfJob("desktop-package", [pkgStep, bootStep, { ...daemonStep, timeoutMinutes: null }])], []);
+  check(
+    "P2-253: a ci daemon smoke without its own timeout-minutes yields the timeout problem",
+    smokeNoTimeout.length === 1 && smokeNoTimeout[0].includes("smokes the daemon sidecar without its own timeout-minutes"),
+    smokeNoTimeout.join(" | "),
+  );
+  check(
+    "P2-253: a complete correct ci packaging job (package, boot, daemon smoke — in that order) yields zero problems",
+    bootSmokeParity([wfJob("desktop-package", [pkgStep, bootStep, daemonStep])], []).length === 0,
+  );
+  check(
+    "P2-253: a ci job that packages nothing is never flagged for the daemon smoke",
+    bootSmokeParity([wfJob("verify", [{ name: "Build", run: "npm run build", shell: "bash", timeoutMinutes: 5 }])], []).length === 0,
+  );
+
+  const twoCauses = bootSmokeParity([wfJob("desktop-package", [pkgStep, bootStep, { ...daemonStep, shell: null, timeoutMinutes: null }])], []);
+  check(
+    "P2-253: two simultaneous daemon-smoke causes yield two problems, no short-circuit",
+    twoCauses.length === 2 && twoCauses.some((p) => p.includes("shell: bash")) && twoCauses.some((p) => p.includes("timeout-minutes")),
+    twoCauses.join(" | "),
+  );
+  check(
+    "P2-253: the problem order is stable for the same input across two calls",
+    JSON.stringify(twoCauses) ===
+      JSON.stringify(bootSmokeParity([wfJob("desktop-package", [pkgStep, bootStep, { ...daemonStep, shell: null, timeoutMinutes: null }])], [])),
+  );
+  check(
+    "P2-253: no problem text embeds a file path coming from the input",
+    [...missing, ...smokeFirst, ...smokeNoShell, ...smokeNoTimeout, ...twoCauses].every(
+      (p) => !p.startsWith("/") && !p.includes("/Users/") && !p.includes("/home/") && !p.includes("C:\\"),
+    ),
+  );
+
+  // Real-repo assertion: the actual ci.yml carries the daemon smoke in BOTH
+  // packaging jobs — after the packaged boot, with shell: bash and its own
+  // timeout — and bootSmokeParity is green against both real workflows.
+  const ciJobs = parseWorkflowJobs(readFileSync(join(import.meta.dirname, "..", ".github", "workflows", "ci.yml"), "utf8"));
+  const releaseJobs = parseWorkflowJobs(readFileSync(join(import.meta.dirname, "..", ".github", "workflows", "release.yml"), "utf8"));
+  for (const job of ciJobs.filter((j) => j.name === "desktop-package" || j.name === "desktop-package-win")) {
+    const bootAt = job.steps.findIndex((s) => /packaged-boot\.mjs/.test(s.run));
+    const smokeAt = job.steps.findIndex((s) => /packaged-daemon-smoke\.mjs/.test(s.run));
+    const smoke = smokeAt > -1 ? job.steps[smokeAt] : null;
+    check(
+      `P2-253: ci.yml ${job.name} — the daemon smoke runs after the packaged boot, with shell: bash and its own timeout-minutes`,
+      bootAt > -1 && smokeAt > bootAt && smoke?.shell === "bash" && typeof smoke?.timeoutMinutes === "number" && (smoke?.timeoutMinutes ?? 0) > 0,
+      JSON.stringify(job.steps.map((s) => ({ name: s.name, shell: s.shell, timeout: s.timeoutMinutes }))),
+    );
+    check(
+      `P2-253: ci.yml ${job.name} — the daemon smoke invokes the same release script and never uploads or publishes`,
+      (job.steps[smokeAt]?.run ?? "").includes("node apps/desktop/scripts/packaged-daemon-smoke.mjs") &&
+        !/upload-artifact|gh release|ghr|--publish|notariz/i.test(job.steps[smokeAt]?.run ?? ""),
+    );
+  }
+  const parity = bootSmokeParity(ciJobs, releaseJobs);
+  check("P2-253: scripts/bootsmokeparity.ts is green against the real files of both workflows", parity.length === 0, parity.join(" | "));
 }
 
 // --- download plan (P2-241) ---------------------------------------------------
