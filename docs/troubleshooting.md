@@ -445,6 +445,29 @@ button → Add to Home Screen).
 - Android is deliberately out of scope: Chrome has its own install prompt and
   a different storage-eviction policy (future task if it ever earns one).
 
+## The phone opens the app with no network (P2-239)
+
+Since P2-239 the service worker precaches the root document and every
+same-origin, hash-named asset it references on install, and answers those
+addresses cache-first offline — so after one online visit the app opens
+without a network and without a white screen. Hash-named files never mix
+publications (each install fills a fresh versioned cache; activate deletes
+old cache names and versioned leftovers of an earlier publication).
+
+- **Nothing was cached yet** — the first visit happened offline, or the
+  install was interrupted: the app answers with a minimal static page
+  ("Você está sem conexão … quando a conexão voltar, recarregue a página")
+  instead of the browser's raw error. Reconnect and reload; the next
+  install fills the cache by itself.
+- **A lazy-loaded feature still fails offline**: only assets referenced by
+  the root document are precached; chunks fetched on demand (e.g. the push
+  settings panel) need the network the first time they are used.
+- **How to clear**: publishing a new version rotates the cache automatically.
+  To force it by hand, clear the site's data for the app origin in the phone
+  browser settings (iOS: Settings → Apps → Safari → Advanced → Website Data,
+  or the browser's "Delete website data" for the origin), or remove and
+  re-add the Home Screen entry — the next online visit rebuilds everything.
+
 ## Service control (macOS launchd)
 
 ```

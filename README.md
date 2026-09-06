@@ -320,6 +320,27 @@ to add it to the Home Screen (Share button → Add to Home Screen). The hint:
 `?installhint=1` on the address forces the hint to show for screenshots and
 support reproduction (test-only hatch; nothing is persisted by it).
 
+### Offline on the phone (P2-239)
+
+After one online visit the PWA keeps its shell: on install the service worker
+caches the root document and every same-origin, hash-versioned asset it
+references (`assets/index-*.js`, `assets/index-*.css`…), so reopening the app
+with the network down still renders the UI. Hash-named files are answered
+cache-first, the navigation document is revalidated network-first, and
+everything else — plus any non-GET request — goes to the network without being
+recorded. Each publication installs into a fresh versioned cache, and activate
+evicts hash-named leftovers of an earlier publication, so the cache never
+grows forever.
+
+- With nothing cached yet (the first visit happened offline or the precache
+  was interrupted), the app shows a minimal static page in Portuguese — "Você
+  está sem conexão … recarregue a página" — instead of a white screen or the
+  browser's raw error. Reconnect and reload.
+- To force a clean re-download, clear the site's data for the app origin in
+  the phone browser settings (or remove and re-add the Home Screen entry);
+  the next online visit rebuilds the cache. Shipping a new version also
+  rotates the cache automatically.
+
 ## Install as a third party (no tailnet — LAN mode)
 
 The `wss://…ts.net` in the Quick Start is just one way to reach the relay.

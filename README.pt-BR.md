@@ -319,6 +319,27 @@ explicando como adicioná-lo à Tela de Início (botão Compartilhar → Adicion
 `?installhint=1` no endereço força o aviso a aparecer para screenshots e
 reprodução de suporte (hatch só de teste; nada é gravado por ele).
 
+### Offline no celular (P2-239)
+
+Depois de uma visita com internet a PWA guarda o próprio shell: ao instalar,
+o service worker coloca no cache o documento raiz e todo arquivo versionado
+por hash que ele referencia (`assets/index-*.js`, `assets/index-*.css`…), então
+reabrir o app sem rede continua renderizando a interface. Arquivo com hash no
+nome é servido cache-first, o documento de navegação é revalidado
+network-first, e todo o resto — além de qualquer método que não seja GET — vai
+para a rede sem ser gravado. Cada publicação instala num cache com nome novo e
+o activate apaga as sobras com hash de publicação anterior, então o cache não
+cresce para sempre.
+
+- Se nada foi guardado ainda (a primeira visita foi sem rede ou o pre-carregamento
+  foi interrompido), o app mostra uma página mínima e estática — "Você está sem
+  conexão … recarregue a página" — no lugar de tela branca ou erro cru do
+  navegador. Reconecte e recarregue.
+- Para forçar um download limpo, apague os dados do site nas configurações do
+  navegador do celular (ou remova e recrie o atalho da Home Screen); a próxima
+  visita com internet reconstrói o cache. Publicar uma versão nova também troca
+  o cache sozinho.
+
 ## Instalar como terceiro (sem tailnet — modo LAN)
 
 O `wss://…ts.net` do Quick Start é só um jeito de alcançar o relay. Qualquer

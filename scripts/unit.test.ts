@@ -18460,6 +18460,201 @@ check(
   );
 }
 
+// --- P2-239: the real service-worker policy, loaded in an isolated VM -------
+
+// The policy module is a classic script: no import/export, no fetch, no
+// caches, no listeners, no mutable global state — decisions only.
+import vm from "node:vm";
+
+const swPolicySrc = readFileSync(
+  new URL("../apps/web/public/sw-policy.js", import.meta.url),
+  "utf8",
+);
+const swSrc = readFileSync(new URL("../apps/web/public/sw.js", import.meta.url), "utf8");
+
+const swSandbox: Record<string, unknown> = {};
+swSandbox.self = swSandbox;
+vm.createContext(swSandbox);
+vm.runInContext(swPolicySrc, swSandbox, { filename: "apps/web/public/sw-policy.js" });
+const swPolicy = swSandbox as unknown as {
+  precacheTargets: (rootDocument: string) => string[];
+  strategyFor: (path: string, method?: string) => string;
+  offlineDocument: () => string;
+  staleEntries: (cachedPaths: string[], currentTargets: string[]) => string[];
+};
+
+const htmlDoc = (head: string) =>
+  `<!doctype html><html><head>${head}</head><body><div id="root"></div></body></html>`;
+const VITE_JS = "/assets/index-B3iKfWlp.js";
+const VITE_CSS = "/assets/index-DiSUPidX.css";
+const LEGACY_ASSET = "/assets/vendor.a1b2c3d4.css";
+
+check(
+  "P2-239: precacheTargets — empty document -> empty list, never throws",
+  JSON.stringify(swPolicy.precacheTargets("")) === "[]" &&
+    JSON.stringify(swPolicy.precacheTargets(undefined as unknown as string)) === "[]",
+);
+
+check(
+  "P2-239: precacheTargets — document without references -> empty list",
+  JSON.stringify(swPolicy.precacheTargets(htmlDoc("<meta charset=\"utf-8\"><p>hello</p>"))) === "[]",
+);
+
+check(
+  "P2-239: precacheTargets — two versioned assets in stable order of appearance",
+  JSON.stringify(
+    swPolicy.precacheTargets(
+      htmlDoc(`<link rel="stylesheet" href="${VITE_CSS}"><script type="module" src="${VITE_JS}"></script>`),
+    ),
+  ) === JSON.stringify([VITE_CSS, VITE_JS]),
+);
+
+check(
+  "P2-239: precacheTargets — a repeated reference appears exactly once",
+  JSON.stringify(
+    swPolicy.precacheTargets(htmlDoc(`<link href="${VITE_CSS}"><link href="${VITE_CSS}">`)),
+  ) === JSON.stringify([VITE_CSS]),
+);
+
+check(
+  "P2-239: precacheTargets — other origins and protocol-relative addresses ignored",
+  JSON.stringify(
+    swPolicy.precacheTargets(
+      htmlDoc(
+        `<link href="https://evil.example/x.js"><script src="//cdn.example/y.js"></script><link href="${VITE_CSS}">`,
+      ),
+    ),
+  ) === JSON.stringify([VITE_CSS]),
+);
+
+check(
+  "P2-239: precacheTargets — data: URIs and anchors ignored",
+  JSON.stringify(
+    swPolicy.precacheTargets(
+      htmlDoc(
+        `<img src="data:image/png;base64,AAAA"><a href="#top">t</a><link href="${VITE_CSS}#map">`,
+      ),
+    ),
+  ) === JSON.stringify([VITE_CSS]),
+);
+
+check(
+  "P2-239: strategyFor — versioned assets are cache-first (Vite and legacy hash styles)",
+  swPolicy.strategyFor(VITE_JS) === "cache-first" &&
+    swPolicy.strategyFor(LEGACY_ASSET) === "cache-first",
+);
+
+check(
+  "P2-239: strategyFor — plain words and counters never read as hashes",
+  swPolicy.strategyFor("/manual-download.pdf") === "network-first-nosave" &&
+    swPolicy.strategyFor("/icon-512.png") === "network-first-nosave" &&
+    swPolicy.strategyFor("/recorder-worklet.js") === "network-first-nosave",
+);
+
+check(
+  "P2-239: strategyFor — the navigation document is network-first",
+  swPolicy.strategyFor("/") === "network-first" &&
+    swPolicy.strategyFor("/index.html") === "network-first",
+);
+
+check(
+  "P2-239: strategyFor — unknown paths are network-first without recording",
+  swPolicy.strategyFor("/settings") === "network-first-nosave" &&
+    swPolicy.strategyFor("/manifest.webmanifest") === "network-first-nosave",
+);
+
+check(
+  "P2-239: strategyFor — non-GET always goes to the network without recording, even versioned",
+  swPolicy.strategyFor(VITE_JS, "POST") === "network-first-nosave" &&
+    swPolicy.strategyFor("/", "HEAD") === "network-first-nosave" &&
+    swPolicy.strategyFor(LEGACY_ASSET, "PUT") === "network-first-nosave",
+);
+
+check(
+  "P2-239: staleEntries — leftovers of an earlier publication are returned, order preserved",
+  JSON.stringify(
+    swPolicy.staleEntries(
+      ["/assets/old-Aaaaaaa1.js", "/", VITE_JS, "/assets/old-Bbbbbbb2.css", "/icon.svg"],
+      [VITE_JS],
+    ),
+  ) === JSON.stringify(["/assets/old-Aaaaaaa1.js", "/assets/old-Bbbbbbb2.css"]),
+);
+
+check(
+  "P2-239: staleEntries — current targets are never returned, neither is the root document",
+  JSON.stringify(swPolicy.staleEntries(["/", "/index.html", VITE_JS], [VITE_JS, "/index.html"])) ===
+    "[]" &&
+    JSON.stringify(swPolicy.staleEntries(["/"], [])) === "[]",
+);
+
+check(
+  "P2-239: staleEntries — never returns a path outside the received list",
+  swPolicy
+    .staleEntries(["/assets/old-Ccccccc3.js"], ["/assets/other-Dddddd4.js"])
+    .every((p) => p === "/assets/old-Ccccccc3.js"),
+);
+
+check(
+  "P2-239: decisions are stable across repeated calls with the same input",
+  JSON.stringify(swPolicy.precacheTargets(htmlDoc(`<script src="${VITE_JS}"></script>`))) ===
+    JSON.stringify(swPolicy.precacheTargets(htmlDoc(`<script src="${VITE_JS}"></script>`))) &&
+    swPolicy.strategyFor(VITE_JS) === swPolicy.strategyFor(VITE_JS) &&
+    JSON.stringify(swPolicy.staleEntries([VITE_CSS], [])) ===
+      JSON.stringify(swPolicy.staleEntries([VITE_CSS], [])),
+);
+
+const offlineHtml = swPolicy.offlineDocument();
+check(
+  "P2-239: offlineDocument — static, Portuguese, short and self-contained",
+  offlineHtml === swPolicy.offlineDocument() &&
+    offlineHtml.includes("<!doctype html>") &&
+    /conexão/i.test(offlineHtml) &&
+    !offlineHtml.includes("://") &&
+    !/https?:/i.test(offlineHtml) &&
+    !/href=|src=/i.test(offlineHtml) &&
+    !/\/(Users|home|var|tmp)\//.test(offlineHtml) &&
+    !/session|sessid|token/i.test(offlineHtml),
+);
+
+// Source pins on the two real public files: the worker must orchestrate only.
+const swCode = swSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+const policyCode = swPolicySrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+check(
+  "P2-239: importScripts of the policy is the first instruction of sw.js",
+  swCode.trim().startsWith('importScripts("/sw-policy.js")'),
+);
+
+check(
+  "P2-239: none of the five decisions is reimplemented inside sw.js",
+  swSrc.includes("self.precacheTargets(") &&
+    swSrc.includes("self.strategyFor(url.pathname, event.request.method)") &&
+    swSrc.includes("self.offlineDocument()") &&
+    swSrc.includes("self.staleEntries(") &&
+    !swSrc.includes("[A-Za-z0-9") &&
+    !swSrc.includes("(?:") &&
+    !/<!doctype|<html/i.test(swSrc),
+);
+
+check(
+  "P2-239: the cache name moved on so the new publication inherits nothing",
+  swSrc.includes('const CACHE = "ocr-shell-v3"') && !swSrc.includes("ocr-shell-v2"),
+);
+
+check(
+  "P2-239: sw-policy.js is a pure classic script and the only home of the decisions",
+  !/^\s*(import|export)\b/m.test(policyCode) &&
+    !policyCode.includes("fetch(") &&
+    !policyCode.includes("caches") &&
+    !policyCode.includes("addEventListener") &&
+    !/\b(let|var)\b/.test(policyCode) &&
+    ["precacheTargets", "strategyFor", "offlineDocument", "staleEntries"].every((fn) =>
+      policyCode.includes(`self.${fn} = ${fn};`),
+    ) &&
+    policyCode.includes('"cache-first"') &&
+    policyCode.includes('"network-first"') &&
+    policyCode.includes('"network-first-nosave"'),
+);
+
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);
   process.exit(1);
