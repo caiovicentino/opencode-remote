@@ -1,5 +1,6 @@
 import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, powerMonitor, screen, session, Tray, shell } from "electron";
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import QRCode from "qrcode";
@@ -58,7 +59,8 @@ import { permissionDecision, requestingScheme } from "./permissions";
 import { daemonTooltip, loginItemSupported, logsDirPath, openLogsFolder, trayIconSource } from "./tray";
 import { badgePlan, type BadgePlan } from "./badge";
 import { CLOSE_HINT_LOG, closeHintPlan, hintFlagPath, readHintFlag, writeHintFlag } from "./closehint";
-import { checkForUpdatesOnBoot, updatesEnabled, updateMenuLabel, type UpdateDialogSinks, type UpdateStatus } from "./update";
+import { checkForUpdatesOnBoot, updatesEnabled, updateMenuLabel, type UpdateDialogSinks, type UpdateStatus, type WinInstallerRequest } from "./update";
+import { installerNameIsSafe, integrityVerdict, winDownloadDecision } from "./winupdate";
 import { menuSpec, type MenuItemSpec } from "./menu";
 import { nextCheckDelayMs } from "./updateschedule";
 import { loadWindowBounds, saveWindowBounds, WINDOW_MIN, windowStateFile } from "./window-state";
@@ -453,6 +455,11 @@ function runUpdateCheck(source: string): void {
             void shell.openExternal(decision.href).catch((err) => logError("[desktop] opening release page failed:", err));
           }
         : undefined,
+    // P2-233: Windows installer download — wired ONLY for the explicit tray /
+    // Help-menu re-check ("tray"). Boot and the P2-155 scheduled recheck pass
+    // no sink, so they can never download; a skipped/failed download falls
+    // back to the release page inside update.ts.
+    winInstallerDownload: source === "tray" ? downloadWinInstaller : undefined,
     onStatus: (status, version) => {
       lastUpdateStatus = status;
       refreshTrayMenu();
@@ -471,6 +478,71 @@ function runUpdateCheck(source: string): void {
       // as a dead feed so the backoff keeps the periodic check alive.
       scheduleNextUpdateCheck("feed-unreachable");
     });
+}
+
+// P2-233: Windows explicit-action installer download. The ONLY trigger is the
+// user clicking the existing "Check for updates" item (tray or Help menu) —
+// never boot, never a timer, never the P2-155 scheduled recheck, because this
+// handler is wired into checkForUpdatesOnBoot only for the "tray" source.
+//
+// The installer is downloaded to a staging folder inside userData, verified
+// against the feed digest fail-closed (diverging bytes are deleted) and
+// revealed in the file manager on success. The app NEVER executes it — see
+// the header of src/winupdate.ts for why that surface stays closed.
+const WIN_DOWNLOAD_TIMEOUT_MS = 300_000;
+const WIN_STAGING_DIR = "update-staging";
+
+async function downloadWinInstaller(info: WinInstallerRequest): Promise<boolean> {
+  // Rule-order contract (P2-221): the pure decision is the FIRST thing
+  // consulted, and inside it the harness-session rule comes before any
+  // platform/packaged consideration — the hermetic harness (tools/desktop.mjs,
+  // test:desktop-flow, packaged-boot smokes) must never fetch internet bytes.
+  const decision = winDownloadDecision({
+    harnessSession: HERMETIC_E2E,
+    packaged: app.isPackaged,
+    platform: process.platform,
+    explicitAction: true,
+  });
+  if (decision.action !== "download") {
+    log(`[desktop] win update: download skipped (${decision.reason}) — release page stays the fallback`);
+    return false;
+  }
+  if (!installerNameIsSafe(info.file)) {
+    log("[desktop] win update: download skipped (unsafe-installer-name) — release page stays the fallback");
+    return false;
+  }
+  let dest = "";
+  try {
+    const staging = join(app.getPath("userData"), WIN_STAGING_DIR);
+    mkdirSync(staging, { recursive: true });
+    dest = join(staging, info.file);
+    const res = await fetch(info.url, { signal: AbortSignal.timeout(WIN_DOWNLOAD_TIMEOUT_MS) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const bytes = Buffer.from(await res.arrayBuffer());
+    writeFileSync(dest, bytes);
+    // electron-builder publishes sha512 as base64 — measured the same way.
+    const measured = createHash("sha512").update(bytes).digest("base64");
+    const verdict = integrityVerdict(info.expectedDigest, measured);
+    if (!verdict.ok) {
+      rmSync(dest, { force: true });
+      log(`[desktop] win update: ${verdict.message}`);
+      return false;
+    }
+    // Reveal (never execute): the file manager shows the verified installer.
+    shell.showItemInFolder(dest);
+    log(`[desktop] win update: ${verdict.message} (${info.version})`);
+    return true;
+  } catch (err) {
+    // Network/mount failure: clean the partial file, keep the manual
+    // release-page flow as the fallback (one log line either way).
+    try {
+      if (dest) rmSync(dest, { force: true });
+    } catch {
+      // best-effort cleanup only
+    }
+    log(`[desktop] win update: download failed (${err instanceof Error ? err.message : String(err)}) — release page stays the fallback`);
+    return false;
+  }
 }
 
 // P2-155: plan and arm the next update check from the status the last one

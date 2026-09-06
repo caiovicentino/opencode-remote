@@ -446,6 +446,27 @@ profile (link without password, password without link, or a blank value) is
 fail-closed: the release job aborts during the signing preflight and lists
 every problem instead of publishing a broken signature.
 
+#### How updates work on Windows (P2-233)
+
+Windows has no background update engine: the app checks `latest.yml`, and
+the actual install is always a manual, user-driven act. Since P2-233 the
+in-app flow no longer dead-ends on the seven-file release page. When **you**
+click the existing **Check for updates** item (tray or Help menu) and a newer
+version is published, the app downloads the one installer the feed names —
+the file resolved right next to `latest.yml`, nothing else — into the
+`update-staging` folder inside the app's user data directory, verifies it and
+reveals it in
+Explorer, already selected, ready for you to double-click. The app **never
+executes the installer** — not with confirmation, not scheduled, never:
+running a freshly downloaded binary is a surface the product does not open.
+Integrity is fail-closed: the sha512 digest published in `latest.yml` is
+compared against the digest measured on the downloaded bytes (case-insensitive
+base64), a mismatch deletes the downloaded file and keeps the release page as
+the fallback, and a network failure or a feed without a digest likewise leaves
+the old manual flow — opening the GitHub release page — untouched. Nothing
+downloads at boot, on a timer, or from the periodic background re-check; only
+your explicit click does.
+
 The two release paths stay visibly different on purpose. When the profile
 decides mode=authenticode, the `desktop-win` job additionally verifies the
 packaged installer's Authenticode signature (PowerShell

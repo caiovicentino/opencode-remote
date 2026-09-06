@@ -426,6 +426,27 @@ ou valor em branco) é fail-closed: o job de release aborta no preflight de
 assinatura e lista todos os problemas em vez de publicar uma assinatura
 quebrada.
 
+#### Como funciona a atualização no Windows (P2-233)
+
+O Windows não tem motor de update em segundo plano: o app consulta o
+`latest.yml` e a instalação em si é sempre um ato manual, seu. Desde a
+P2-233 o fluxo dentro do app não termina mais no muro de sete arquivos da
+página de release. Quando **você** clica no item **Verificar atualizações**
+que já existe (bandeja ou menu Ajuda) e há versão nova publicada, o app baixa
+o único instalador que o feed cita — o arquivo resolvido ao lado do próprio
+`latest.yml`, nada além dele — para a pasta `update-staging` dentro do
+diretório de dados de usuário do app, confere a
+integridade e revela o arquivo no Explorer, já selecionado, pronto para o
+seu duplo clique. O app **nunca executa o instalador** — nem com confirmação,
+nem agendado, nunca: executar binário recém-baixado é uma superfície que o
+produto não precisa abrir. A integridade é fail-closed: o digest sha512
+publicado no `latest.yml` é comparado com o digest medido nos bytes baixados
+(base64, comparação sem diferenciar maiúsculas de minúsculas); divergência
+apaga o arquivo baixado e mantém a página de release como fallback, e falha
+de rede ou feed sem digest também deixa o caminho manual de sempre — abrir a
+página de release no GitHub — intacto. Nada baixa no boot, por temporizador
+nem no recheck periódico de fundo; só o seu clique explícito baixa.
+
 Os dois caminhos de release continuam propositalmente distintos. Quando o
 perfil decide mode=authenticode, o job `desktop-win` também verifica a
 assinatura Authenticode do instalador empacotado (PowerShell
