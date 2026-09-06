@@ -1125,6 +1125,16 @@ e são validados contra os displays conectados no boot: janela esquecida num
 monitor desconectado (ou arquivo corrompido) cai no padrão 1280×820 em vez de
 abrir off-screen ou travar.
 
+**O tamanho do texto também é lembrado (P2-238)**: os itens de zoom do menu
+Visualizar (**Tamanho padrão**, **Ampliar**, **Reduzir**) ajustam o texto do
+app com as mesmas teclas de sempre (Cmd/Ctrl+0, Cmd/Ctrl++ , Cmd/Ctrl+-) e o
+nível escolhido é gravado junto com os bounds da janela — reabriu, o tamanho
+continua. A faixa vai de ~58% a ~3× do tamanho de fábrica (níveis −3 a 6,
+~20% por clique) para o app continuar legível e utilizável; nos extremos o
+item do menu aparece desabilitado. **Tamanho padrão** (Cmd/Ctrl+0) sempre
+devolve o tamanho de fábrica. Sessões de teste (`OCR_DESKTOP_SESSION`) começam
+sempre no padrão e não gravam nada.
+
 **Log persistente do shell**: o app desktop grava tudo que o processo main
 emite (linhas `[desktop] …`: ciclo de vida do daemon, polls de pareamento,
 crashes do renderer, erros fatais) em `userData/logs/desktop.log` — assim o

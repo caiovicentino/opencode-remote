@@ -1460,6 +1460,16 @@ a maximized session never comes back as a screen-sized window stuck to the
 desktop. Fullscreen is deliberately not persisted (on macOS it creates its own
 Space; restoring it standalone would be hostile).
 
+**Text size is remembered too (P2-238)**: the View menu's zoom items
+(**Tamanho padrão**, **Ampliar**, **Reduzir**) adjust the app's text like the
+native roles did (same shortcuts: Cmd/Ctrl+0, Cmd/Ctrl++ , Cmd/Ctrl+-), and
+the chosen level is saved alongside the window bounds — reopen and your size
+is still there. The level is limited to roughly 58%–3× of the factory size
+(zoom levels −3 to 6, ~20% per step) so the shell stays readable and usable;
+at either end the menu item renders disabled. **Tamanho padrão** (Cmd/Ctrl+0)
+always brings the factory size back. Test sessions (`OCR_DESKTOP_SESSION`)
+always start at the default and write nothing.
+
 **Persistent shell log**: the desktop app appends everything the main process
 logs (`[desktop] …` lines: daemon sidecar lifecycle, pairing polls, renderer
 crashes, fatal errors) to `userData/logs/desktop.log` — so a packaged app used

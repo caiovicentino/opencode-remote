@@ -404,6 +404,27 @@ other external open — only http/https/mailto; a refused scheme offers only
   behavior (the pane is a sandboxed webview with its own navigation policy);
   the context menu belongs to the app shell around it.
 
+## Text size that stays put (P2-238)
+
+The View menu's **Ampliar**, **Reduzir** and **Tamanho padrão** items change
+the app's text size (shortcuts Cmd/Ctrl + +, Cmd/Ctrl + − and Cmd/Ctrl + 0 —
+the same keys the old zoom roles used). The chosen size is remembered across
+restarts: it lives in the same `window-state.json` file as the window bounds
+and is re-applied the moment the window finishes loading.
+
+- **The range**: roughly 58%–3× of the factory size (zoom levels −3 to 6,
+  ~20% per click). The limits keep the app legible and usable; an item at its
+  limit shows up disabled instead of pretending it worked.
+- **Back to normal**: **Visualizar → Tamanho padrão** (Cmd/Ctrl+0) always
+  returns the factory size.
+- **Text too big after a bad level?** Opened at 3× and lost? The keyboard
+  shortcut Cmd/Ctrl+0 resets it instantly — no need to read the menu.
+- **Test sessions** (`OCR_DESKTOP_SESSION` — the desktop harness and
+  `npm run test:desktop-flow`) always start at the default size and write no
+  zoom to disk, so screenshots keep a stable framing.
+- **The Browser pane is unaffected**: the zoom belongs to the app shell
+  around it, not to the webview guest or its navigation guard.
+
 ## The window stopped responding (P2-223)
 
 If the app window freezes, the shell tells you instead of leaving you staring
