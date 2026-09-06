@@ -61,7 +61,26 @@ import { checkForUpdatesOnBoot, updatesEnabled, updateMenuLabel, type UpdateDial
 import { menuSpec, type MenuItemSpec } from "./menu";
 import { nextCheckDelayMs } from "./updateschedule";
 import { loadWindowBounds, saveWindowBounds, WINDOW_MIN, windowStateFile } from "./window-state";
-import { installFatalErrorHandlers, onRendererGone, ReloadGuard } from "./crash";
+import {
+  installFatalErrorHandlers,
+  newHangEpisodeState,
+  onHangWindowClosed,
+  onRendererGone,
+  onReloadBudgetExhausted,
+  onResponsive,
+  onUnresponsive,
+  ReloadGuard,
+  type HangContext,
+  type HangEpisodeState,
+} from "./crash";
+import {
+  HANG_BUTTON_INDEX,
+  HANG_BUTTON_RELOAD,
+  HANG_BUTTON_WAIT,
+  HANG_DIALOG_MESSAGE,
+  HANG_DIALOG_TITLE,
+  HANG_NOTIFY_TITLE,
+} from "./hangwatch";
 import { clientLogsDir, writeCrashReport } from "./crash-log";
 import {
   instanceRecordPath,
@@ -234,6 +253,9 @@ function buildDiagnostics(): string {
     // a path, never the decision-file location (privacy contract in this
     // header). null until the user asks to quit this session.
     quitConfirm: lastQuitVerdict ? { state: lastQuitVerdict.action, reason: lastQuitVerdict.reason } : null,
+    // P2-223: the last frozen-window episode — duration and outcome only,
+    // one line in the bundle (privacy contract in this header).
+    lastHang: hangEpisode.last,
   });
 }
 
@@ -245,6 +267,27 @@ installFatalErrorHandlers(app, {
 });
 // P3-011: shared crash-recovery budget — max 3 renderer reloads per 60s.
 const rendererReloadGuard = new ReloadGuard();
+
+// P2-223: the unresponsive-window watch. One episode state per window
+// (recreated in createWindow) plus one shared context. The verdict's first
+// rule (harness session) keeps every headless gate run free of modal boxes,
+// and the episode's single timer lives in crash.ts — canceled on responsive
+// and on window close.
+let hangEpisode: HangEpisodeState = newHangEpisodeState();
+const hangContext: HangContext = {
+  harnessSession: HERMETIC_E2E,
+  budget: rendererReloadGuard,
+  sinks: {
+    log: (line) => log(line),
+    notify: (body) => showHangTip(body),
+    showDialog: () => void showHangDialog(),
+  },
+  timers: {
+    setTimeout: (fn, ms) => setTimeout(fn, ms),
+    clearTimeout: (handle) => clearTimeout(handle as NodeJS.Timeout),
+  },
+  now: () => Date.now(),
+};
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -1109,6 +1152,53 @@ function maybeShowCloseHint(): void {
   }
 }
 
+/** P2-223 tray tip for a frozen window — same notification discipline as
+ * observeDaemonHealth(): best-effort, never fatal. The verdict's harness
+ * rule already keeps test sessions on "log"; this guard is defense in
+ * depth so a headless run never even fires a toast. */
+function showHangTip(body: string): void {
+  try {
+    if (HERMETIC_E2E) return;
+    if (!Notification.isSupported()) return;
+    new Notification({ title: HANG_NOTIFY_TITLE, body, silent: true }).show();
+  } catch (err) {
+    logError("[desktop] hang notification failed:", err);
+  }
+}
+
+// P2-223: the native two-way box for a window frozen far past the tip —
+// Recarregar (reload in place; the conversation lives in the daemon, nothing
+// is lost) or Aguardar (it may still recover). Test hatch, same OCR_* policy:
+// OCR_DESKTOP_HANG_DIALOG_ANSWER=reload|wait auto-answers in place so a
+// screenshot flow stays deterministic — never set in production, and a
+// harness session never reaches the box (the verdict's first rule).
+async function showHangDialog(): Promise<void> {
+  const preset = process.env.OCR_DESKTOP_HANG_DIALOG_ANSWER;
+  if (preset === "reload" || preset === "wait") {
+    log(`[desktop] hang dialog auto-answered by test hatch: ${preset}`);
+    if (preset === "reload" && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.reload();
+    return;
+  }
+  const options: Electron.MessageBoxOptions = {
+    type: "warning",
+    title: HANG_DIALOG_TITLE,
+    message: HANG_DIALOG_MESSAGE,
+    buttons: [HANG_BUTTON_RELOAD, HANG_BUTTON_WAIT],
+    defaultId: HANG_BUTTON_INDEX.wait,
+    // Escape/Enter keep the app alive — waiting is the conservative default.
+    cancelId: HANG_BUTTON_INDEX.wait,
+    noLink: true,
+  };
+  const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
+  const { response } = win ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options);
+  if (response === HANG_BUTTON_INDEX.reload) {
+    log("[desktop] hang dialog: owner chose to reload the frozen window");
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.reload();
+    return;
+  }
+  log("[desktop] hang dialog: owner chose to wait");
+}
+
 /** P3-054: deterministic mismatch state for the harness (see the hatch note
  * above). uri/qrDataUrl stay null so the QR overlay can never open from it —
  * same shape discipline as reconnectingState(). */
@@ -1575,6 +1665,8 @@ function createWindow(): BrowserWindow {
     }
   });
   win.on("closed", () => {
+    // P2-223: the episode's pending hang timer dies with the window.
+    onHangWindowClosed(hangEpisode, hangContext);
     if (mainWindow === win) mainWindow = null;
   });
   // Open external links (docs, GitHub) in the browser, never in-app.
@@ -1593,12 +1685,24 @@ function createWindow(): BrowserWindow {
   // Log the crash reason and reload the page (bounded by the shared budget).
   // P1-050: non-clean exits also land a crash report file in the shared
   // client-logs folder before the (possibly successful) in-place recovery.
+  // P2-223: when the budget is gone the white screen goes through the
+  // hang-watch verdict instead of dying silently.
   win.webContents.on("render-process-gone", (_event, details) => {
     if (details && details.reason !== "clean-exit") {
       reportCrash("renderer", `reason=${details.reason} exitCode=${details.exitCode}`);
     }
-    onRendererGone(win, details, rendererReloadGuard, log, logError);
+    onRendererGone(win, details, rendererReloadGuard, log, logError, () =>
+      onReloadBudgetExhausted(hangEpisode, hangContext),
+    );
   });
+  // P2-223: a frozen window used to say nothing at all. The watch is driven
+  // by webContents "unresponsive"/"responsive"; hangwatch.ts decides how loud
+  // to be (log / tray tip / native box) with the harness-session rule first,
+  // and crash.ts owns the episode's single timer — canceled on responsive and
+  // on window close, never a new periodic timer.
+  hangEpisode = newHangEpisodeState();
+  win.webContents.on("unresponsive", () => onUnresponsive(hangEpisode, hangContext));
+  win.webContents.on("responsive", () => onResponsive(hangEpisode, hangContext));
   // A stray OS file-drop or rogue link must never navigate the window away
   // from the app shell (the renderer's own drag&drop handler is the supported
   // path; this is the last line of defense). In-app reloads stay allowed.

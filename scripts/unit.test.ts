@@ -73,6 +73,16 @@ import {
   QUIT_DIALOG_TITLE,
   quitVerdict,
 } from "../apps/desktop/src/quithint";
+import {
+  hangVerdict,
+  HANG_BUTTON_INDEX,
+  HANG_BUTTON_RELOAD,
+  HANG_BUTTON_WAIT,
+  HANG_DIALOG_THRESHOLD_MS,
+  HANG_DIALOG_TITLE,
+  HANG_NOTIFY_TITLE,
+  HANG_WARN_THRESHOLD_MS,
+} from "../apps/desktop/src/hangwatch";
 import { quitAskFile, readQuitDontAsk, writeQuitDontAsk } from "../apps/desktop/src/quitstore";
 import { installBlocksUpdate } from "../apps/desktop/src/update";
 import {
@@ -15958,6 +15968,125 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     (diagSrc.match(/quit confirm:/g) ?? []).length === 1 &&
       diagSrc.includes("d.quitConfirm?.state") &&
       diagSrc.includes("d.quitConfirm?.reason"),
+  );
+}
+
+// --- P2-223: hang watch (hangwatch.ts) + wiring ---------------------------------
+
+{
+  const verdict = (
+    harnessSession: boolean,
+    unresponsiveMs: number,
+    reloadBudgetExhausted: boolean,
+    alreadyWarned: boolean,
+  ) => hangVerdict({ harnessSession, unresponsiveMs, reloadBudgetExhausted, alreadyWarned });
+
+  // 1. harness session — FIRST rule: even a long freeze with an exhausted
+  //    budget only logs, because a modal box would hang the gate (P2-221).
+  check(
+    "P2-223: harness session + long hang + exhausted budget → log only",
+    verdict(true, 60_000, true, false).action === "log",
+  );
+  // 2. below the exported warn threshold a normal GC spike only logs.
+  check(
+    "P2-223: hang below the warn threshold → log only",
+    verdict(false, HANG_WARN_THRESHOLD_MS - 1, false, false).action === "log",
+  );
+  // 3. a freeze still going past the dialog threshold outside the harness
+  //    offers the native box.
+  check(
+    "P2-223: long hang above the threshold outside harness → dialog",
+    verdict(false, HANG_DIALOG_THRESHOLD_MS + 1, false, false).action === "dialog",
+  );
+  // 4. one user-facing warning per episode: after the tip, stay quiet.
+  check(
+    "P2-223: warning already shown in this episode → log only",
+    verdict(false, HANG_WARN_THRESHOLD_MS + 1, false, true).action === "log",
+  );
+  // 5. exhausted budget in a harness session still only logs (harness first).
+  check(
+    "P2-223: exhausted budget in a harness session → log only",
+    verdict(true, 0, true, false).action === "log",
+  );
+  // 6. exhausted budget outside the harness offers the box — the definitive
+  //    white screen gets the escape hatch.
+  check(
+    "P2-223: exhausted budget outside harness → dialog",
+    verdict(false, 0, true, false).action === "dialog",
+  );
+  // the warn action is real: a fresh freeze past the tip threshold, still
+  // under the dialog beat, warns without a modal.
+  check(
+    "P2-223: fresh freeze past the tip threshold → warn without a box",
+    verdict(false, HANG_WARN_THRESHOLD_MS + 1, false, false).action === "warn",
+  );
+
+  // every generated phrase: non-empty, no file path, no URL scheme, no secret
+  const all = [
+    verdict(true, 60_000, true, false),
+    verdict(false, HANG_WARN_THRESHOLD_MS - 1, false, false),
+    verdict(false, HANG_DIALOG_THRESHOLD_MS + 1, false, false),
+    verdict(false, HANG_WARN_THRESHOLD_MS + 1, false, true),
+    verdict(false, HANG_WARN_THRESHOLD_MS + 1, false, false),
+    verdict(true, 0, true, false),
+    verdict(false, 0, true, false),
+  ];
+  const clean = (s: string): boolean =>
+    s.length > 0 &&
+    !s.includes("/") &&
+    !s.includes("\\") &&
+    !s.includes("http:") &&
+    !s.includes("https:") &&
+    !s.includes("file:") &&
+    !s.includes("Users") &&
+    !s.includes("~");
+  check(
+    "P2-223: every verdict phrase is non-empty, path-free and scheme-free",
+    all.every((v) => clean(v.log) && clean(v.tray) && clean(v.dialog)),
+  );
+  check(
+    "P2-223: notification + dialog copy is non-empty, path-free and scheme-free",
+    [HANG_NOTIFY_TITLE, HANG_DIALOG_TITLE, HANG_BUTTON_RELOAD, HANG_BUTTON_WAIT].every(clean),
+  );
+  check(
+    "P2-223: the dialog offers exactly Recarregar/Aguardar in the fixed order",
+    HANG_BUTTON_INDEX.reload === 0 && HANG_BUTTON_INDEX.wait === 1,
+  );
+
+  // real-source assertions over the REAL main.ts / hangwatch.ts
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  const hangwatchSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "hangwatch.ts"), "utf8");
+  check(
+    "P2-223: main.ts registers both the unresponsive and the responsive listeners",
+    mainSrc.includes('win.webContents.on("unresponsive"') && mainSrc.includes('win.webContents.on("responsive"'),
+  );
+  check(
+    "P2-223: each hang listener is registered exactly once (no double-fire merge artifact)",
+    (mainSrc.match(/win\.webContents\.on\("unresponsive"/g) ?? []).length === 1 &&
+      (mainSrc.match(/win\.webContents\.on\("responsive"/g) ?? []).length === 1,
+  );
+  check(
+    "P2-223: the harness-session rule is the FIRST one in hangVerdict (documented contract)",
+    hangwatchSrc.indexOf("input.harnessSession") > -1 &&
+      hangwatchSrc.indexOf("input.harnessSession") < hangwatchSrc.indexOf("input.unresponsiveMs") &&
+      hangwatchSrc.indexOf("input.unresponsiveMs") < hangwatchSrc.indexOf("input.alreadyWarned"),
+  );
+  check(
+    "P2-223: hangwatch.ts is pure — no electron, no node:fs, no fetch",
+    !/from\s+"electron"/.test(hangwatchSrc) &&
+      !/from\s+"node:fs"/.test(hangwatchSrc) &&
+      !hangwatchSrc.includes("fetch("),
+  );
+  check(
+    "P2-223: the white-screen path feeds the same verdict (budget-exhausted hook in main.ts)",
+    mainSrc.includes("onReloadBudgetExhausted(hangEpisode, hangContext)"),
+  );
+
+  // diagnostics: one additive line, duration + outcome only, never the path
+  const diagSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "diagnostics.ts"), "utf8");
+  check(
+    "P2-223: the diagnostics bundle gains exactly one last-hang line (duration + outcome only)",
+    (diagSrc.match(/last hang:/g) ?? []).length === 1 && diagSrc.includes("d.lastHang"),
   );
 }
 

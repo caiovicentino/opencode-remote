@@ -62,6 +62,10 @@ export interface DiagnosticsInput {
    * and its short reason only, NEVER the decision-file location (privacy
    * contract in this header). Optional/additive. */
   quitConfirm?: { state: string; reason: string } | null;
+  /** P2-223: the last unresponsive-window episode — duration in ms and the
+   * outcome only ("responsive" | "warn" | "dialog" | "budget-exhausted"),
+   * one line, never any path or token. Optional/additive. */
+  lastHang?: { durationMs: number; outcome: string } | null;
 }
 
 /** Lines of the diagnostic bundle, in display order. */
@@ -87,6 +91,9 @@ export function buildDiagnosticReport(d: DiagnosticsInput): string {
     // P2-221: one additive line — action + short reason of the last explicit
     // quit, never the decision-file location (header privacy contract).
     `quit confirm: ${d.quitConfirm?.state ?? "unknown"}${d.quitConfirm?.reason ? ` (${d.quitConfirm.reason})` : ""}`,
+    // P2-223: one additive line — the last frozen-window episode with its
+    // duration and outcome, nothing else (header privacy contract).
+    `last hang: ${d.lastHang ? `${d.lastHang.outcome} after ${Math.round(d.lastHang.durationMs / 1000)}s` : "none"}`,
     `crash files: ${d.crashFiles.length === 0 ? "none" : d.crashFiles.join(", ")}`,
     "--- desktop.log (last lines) ---",
     ...d.logTail.slice(-DIAG_LOG_TAIL),
