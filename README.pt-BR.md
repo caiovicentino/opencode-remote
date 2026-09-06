@@ -177,7 +177,13 @@ remoto, zero confiança**.
 - **Rotinas** — cron de verdade: diário, dias da semana ou loop por intervalo;
   execução presa (daemon reiniciado no meio, evento de sessão perdido) é
   liberada sozinha após o prazo de 2 h (`OCR_RUN_LEASE_MS`, `off` para
-  desativar) e a rotina volta a rodar no próximo horário programado
+  desativar) e a rotina volta a rodar no próximo horário programado; o
+  arquivo de rotinas é gravado de forma atômica (a mesma escrita
+  tmp+rename 0600 que protege o estado do daemon) e um arquivo ilegível ou
+  que não pôde ser lido nunca é sobrescrito — o daemon segue com a lista
+  vazia enquanto os bytes originais vão para uma cópia
+  `routines.json.<timestamp>.quarantine` ao lado, ficando no lugar, intactos,
+  até que essa mudança consiga acontecer
 - **Seguro por construção** — gate com passkey (WebAuthn), ECDH P-256 +
   AES-256-GCM, anti-replay, allowlist de dispositivos, audit log, biometria
 - **Dispositivos distinguíveis** — cada pareamento ganha um rótulo estável e
