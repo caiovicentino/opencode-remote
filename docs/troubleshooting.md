@@ -443,6 +443,37 @@ bundle (`last hang:`). Test sessions never see the box, and
 `OCR_DESKTOP_HANG_DIALOG_ANSWER=reload|wait` auto-answers it (test-only
 hatch).
 
+## Black window: video acceleration turns itself off (P2-244)
+
+On machines with a defective video driver, the app used to open on a black
+window (or full of rendering artifacts), get the exact same thing after every
+reopen and repeat that path forever with no word from the shell. The desktop
+app now watches the GPU process the way the renderer already had its watch:
+
+- **What happens**: every crash of the GPU process is counted inside a
+  one-hour window (a window long enough to bridge app restarts, since the
+  machine that reopens the app keeps crashing seconds after each boot). The
+  first crashes are only recorded — one static line in desktop.log per crash.
+  At the **third crash inside the window** the shell turns hardware
+  acceleration off for the next start (`app.disableHardwareAcceleration`
+  before the app is ready) and keeps going on software rendering, which
+  survives a broken driver.
+- **How to know the acceleration was turned off**: a single notification
+  ("Aceleração de vídeo desligada após quedas repetidas…", at most one per
+  start — the same tip covers a boot that started already disabled) and the
+  `[desktop] gpu acceleration: disable (…)` line in desktop.log. There is no
+  native dialog, no new setting and nothing is disabled without a count of
+  real crashes behind it.
+- **How to go back to the default**: nothing to do in the common case — the
+  policy heals itself. When an entire hour passes without a new GPU crash
+  (driver updated or fixed, for instance), the next boot reads the state as
+  expired and starts with acceleration on again; three new crashes inside an
+  hour turn it off once more. To reset the counter immediately, quit the app
+  and delete `gpu-state.json` from the userData folder (the same folder that
+  holds `window-state.json`; the file carries only a crash count and a
+  timestamp). A test session (harness) never disables the acceleration and
+  never writes the file.
+
 ## The phone asked to be added to the Home Screen (P2-220)
 
 When the phone opens the web app as a **regular browser tab** (iPhone or iPad,
