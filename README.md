@@ -1055,6 +1055,14 @@ Restoring the quarantine file over `daemon.json` brings every pairing back;
 deleting both files starts the machine over and requires pairing again. See
 [docs/troubleshooting.md](docs/troubleshooting.md#the-identity-file-is-unreadable-p2-234).
 
+**Automatic identity backup (P2-254).** The daemon keeps a recovery copy of
+`daemon.json` — full identity and paired devices — as the sibling
+`daemon.json.backup` in the same state directory, written with the same atomic
+0600-restricted permission as the original at most once a day right after a
+state save, and when the main file is ever illegible at boot the daemon
+preserves it in quarantine and restores the copy automatically, so every
+pairing survives without manual work.
+
 ## Pilot — autonomous development (24/7)
 
 This repo evolves itself: the Pilot service ([docs/PILOT.md](docs/PILOT.md)) picks tasks from

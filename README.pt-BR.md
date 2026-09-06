@@ -964,6 +964,14 @@ quarentena no lugar do `daemon.json` devolve todos os pareamentos; apagar os
 dois arquivos recomeça a máquina do zero, exigindo novo pareamento. Veja
 [docs/troubleshooting.md](docs/troubleshooting.md).
 
+**Cópia de segurança automática da identidade (P2-254).** O daemon mantém uma
+cópia de recuperação do `daemon.json` — identidade completa e aparelhos
+pareados — como o irmão `daemon.json.backup` no mesmo diretório de estado,
+escrita com a mesma permissão restrita 0600 do original no máximo uma vez por
+dia logo depois de uma gravação de estado, e se o arquivo principal ficar
+ilegível no boot o daemon o preserva em quarentena e restaura a cópia
+automaticamente, sem trabalho manual.
+
 ## App desktop (inicial)
 
 O primeiro estágio da [visão desktop](docs/VISION.md): um shell Electron
