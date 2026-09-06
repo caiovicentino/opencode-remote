@@ -65,6 +65,7 @@ import { menuSpec, type MenuItemSpec } from "./menu";
 import { contextMenuSpec, SPELLING_SUGGESTIONS_MAX } from "./ctxmenu";
 import { nextCheckDelayMs } from "./updateschedule";
 import { loadWindowBounds, saveWindowBounds, WINDOW_MIN, windowStateFile } from "./window-state";
+import { DEFAULT_ZOOM_LEVEL, zoomStartupPlan, zoomVerdict, type ZoomAction } from "./zoomlevel";
 import {
   installFatalErrorHandlers,
   newHangEpisodeState,
@@ -109,6 +110,15 @@ const TRAY_ICON_PNG =
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let daemonStopped = false;
+// P2-238: the remembered View-menu zoom level. `zoomLevel` is the level the
+// shell wants (applied again on every finished load), `zoomPersistable` is
+// false only for a harness session (OCR_DESKTOP_SESSION — the level stays the
+// default and nothing zoom-related is written to disk, or every evidence
+// screenshot would inherit another run's framing). No IPC, no timer: the
+// level moves only through the View menu and persists through the same
+// window-state file the bounds already use.
+let zoomLevel = DEFAULT_ZOOM_LEVEL;
+let zoomPersistable = false;
 // P2-021: set by every real quit path (tray Quit, before-quit, will-quit) so
 // the window's close handler can tell "user closed the window" apart from
 // "app is shutting down" — close-to-tray on every platform.
@@ -1685,6 +1695,13 @@ function createWindow(): BrowserWindow {
   // runs after app.whenReady().
   const stateFile = windowStateFile(app.getPath("userData"));
   const restored = loadWindowBounds(stateFile, screen.getAllDisplays());
+  // P2-238: the zoom decision consults the harness-session rule FIRST (the
+  // zoomlevel.ts contract) — a test session always starts at the default
+  // level and persists nothing, so the flow battery's framing is stable.
+  const zoomPlan = zoomStartupPlan({ harnessSession: HERMETIC_E2E, saved: restored.zoom });
+  zoomLevel = zoomPlan.level;
+  zoomPersistable = zoomPlan.persist;
+  log(`[desktop] zoom: ${zoomPlan.reason}`);
   // P2-172: bounds feed the constructor; the maximized flag is applied in the
   // ready-to-show handler below.
   const { maximized, ...bounds } = restored;
@@ -1753,7 +1770,13 @@ function createWindow(): BrowserWindow {
     // is the full work area, which would reopen as a fake-maximized window
     // nobody could restore. The normal rect plus the live isMaximized() flag
     // restore both states faithfully.
-    saveWindowBounds(stateFile, { ...win.getNormalBounds(), maximized: win.isMaximized() });
+    // P2-238: the zoom level rides the same existing persistence path; a
+    // harness session writes no zoom field at all (JSON drops undefined).
+    saveWindowBounds(stateFile, {
+      ...win.getNormalBounds(),
+      maximized: win.isMaximized(),
+      zoom: zoomPersistable ? zoomLevel : undefined,
+    });
     if (!quitting) {
       event.preventDefault();
       win.hide();
@@ -1851,6 +1874,13 @@ function createWindow(): BrowserWindow {
     });
     Menu.buildFromTemplate(toElectronItems(items, handlers)).popup({ window: win });
   });
+  // P2-238: apply the remembered level after every finished load — the first
+  // boot with the persisted value and every manual reload with the level the
+  // session already moved to (zoomLevel is updated in place by the menu).
+  win.webContents.on("did-finish-load", () => {
+    if (win.isDestroyed()) return;
+    win.webContents.setZoomLevel(zoomLevel);
+  });
   loadUi(win);
   return win;
 }
@@ -1923,7 +1953,26 @@ const menuShellHandlers: Record<string, () => void> = {
   // P2-221: the menu quit goes through the same explicit-quit path as the
   // tray Quit item (verdict + native confirmation), not the bare role.
   "app-quit": () => void explicitQuit(),
+  // P2-238: the three View zoom items. Each one computes the pure verdict
+  // (clamped level + limit flag), applies it live and rebuilds the menu so the
+  // item at its limit renders disabled. Nothing is written here — the level
+  // reaches disk through the close handler's saveWindowBounds call.
+  "view-zoom-in": () => applyZoomAction("increase"),
+  "view-zoom-out": () => applyZoomAction("decrease"),
+  "view-zoom-reset": () => applyZoomAction("restore"),
 };
+
+// P2-238: one menu click = one Chromium zoom step, clamped by the pure
+// zoomlevel.ts verdict. Applies to every live window (the shell has one) and
+// refreshes the menu enablement; the next did-finish-load reapplies it too.
+function applyZoomAction(action: ZoomAction): void {
+  const verdict = zoomVerdict(zoomLevel, action);
+  zoomLevel = verdict.level;
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.setZoomLevel(verdict.level);
+  }
+  buildMenu();
+}
 
 function toElectronItems(
   items: MenuItemSpec[],
@@ -1958,7 +2007,9 @@ function currentUpdateLabel(): string | null {
 
 function buildMenu(): void {
   Menu.setApplicationMenu(
-    Menu.buildFromTemplate(toElectronItems(menuSpec(process.platform, currentUpdateLabel(), updatesEnabled(), hotkey))),
+    Menu.buildFromTemplate(
+      toElectronItems(menuSpec(process.platform, currentUpdateLabel(), updatesEnabled(), hotkey, zoomLevel)),
+    ),
   );
 }
 

@@ -8,10 +8,13 @@
 // Electron template.
 
 import type { HotkeyPlan } from "./hotkey";
+import { zoomVerdict } from "./zoomlevel";
 
 /** The roles the shell relies on. A closed union on purpose: editMenu and
  * windowMenu stay native roles exactly so the OS keeps translating them by
- * itself (P2-176), and the macOS app submenu keeps the system behaviors. */
+ * itself (P2-176), and the macOS app submenu keeps the system behaviors.
+ * P2-238: the zoom roles left the union — the three View items are shell-owned
+ * ids now, so the level can be tracked, limited and persisted. */
 export type MenuRole =
   | "about"
   | "hide"
@@ -20,9 +23,6 @@ export type MenuRole =
   | "windowMenu"
   | "reload"
   | "forceReload"
-  | "resetZoom"
-  | "zoomIn"
-  | "zoomOut"
   | "toggleDevTools";
 
 /** Plain-data menu item: everything the Electron template needs except the
@@ -58,6 +58,24 @@ const HELP_TITLE = "Ajuda";
  * shows the plan's reason phrase instead — never a lying combination. */
 export const HOTKEY_MENU_LABEL = "Atalho global para reabrir a janela";
 
+/** P2-238: the View-menu zoom items, shell-owned (ids wired by main.ts to the
+ * same persistence path as the window bounds). Labels are short pt-BR — no
+ * emoji (P2-118), no paths, no URL schemes; accelerators are exactly the ones
+ * the native roles used to register. When `level` is undefined (legacy
+ * three/four-arg callers) every item stays enabled; otherwise each one renders
+ * disabled at its limit instead of pretending the click did something. */
+function zoomSubmenu(level: number | undefined): MenuItemSpec[] {
+  const enabled = (current: unknown, action: "increase" | "decrease" | "restore"): boolean | undefined => {
+    if (level === undefined) return undefined;
+    return !zoomVerdict(current, action).atLimit;
+  };
+  return [
+    { id: "view-zoom-reset", label: "Tamanho padrão", accelerator: "CmdOrCtrl+0", enabled: enabled(level, "restore") },
+    { id: "view-zoom-in", label: "Ampliar", accelerator: "CmdOrCtrl+Plus", enabled: enabled(level, "increase") },
+    { id: "view-zoom-out", label: "Reduzir", accelerator: "CmdOrCtrl+-", enabled: enabled(level, "decrease") },
+  ];
+}
+
 /** Help submenu: the tray-grade support actions a lay user looks for in the
  * menu bar (P3-016/P3-019 handlers, now reachable without the tray). The
  * update items exist only when a feed is configured — without one the Help
@@ -87,14 +105,16 @@ function helpSubmenu(updateLabel: string | null, updatesEnabled: boolean, hotkey
  * The whole application menu as plain data. `platform` is process.platform,
  * `updateLabel` the tray's status label (updateMenuLabel(lastUpdateStatus) —
  * null when no check resolved yet or updates are disabled), `updatesEnabled`
- * the updatesEnabled() verdict and `hotkey` the resolved P2-229 plan (the
- * caller rebuilds the menu on every status change so no label goes stale).
+ * the updatesEnabled() verdict, `hotkey` the resolved P2-229 plan and
+ * `zoomLevel` the shell's current zoom level (P2-238 — the caller rebuilds the
+ * menu on every status change and every zoom step so nothing goes stale).
  */
 export function menuSpec(
   platform: string,
   updateLabel: string | null,
   updatesEnabled: boolean,
   hotkey?: HotkeyPlan | null,
+  zoomLevel?: number,
 ): MenuItemSpec[] {
   const items: MenuItemSpec[] = [];
   if (platform === "darwin") {
@@ -134,9 +154,7 @@ export function menuSpec(
         { role: "reload" },
         { role: "forceReload" },
         { type: "separator" },
-        { role: "resetZoom" },
-        { role: "zoomIn" },
-        { role: "zoomOut" },
+        ...zoomSubmenu(zoomLevel),
         { type: "separator" },
         { role: "toggleDevTools" },
       ],

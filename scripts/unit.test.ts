@@ -583,6 +583,15 @@ import { versionMismatch } from "../apps/desktop/src/versions";
 import { daemonTooltip, loginItemSupported, logsDirPath, openLogsFolder, trayIconSource } from "../apps/desktop/src/tray";
 
 import { HOTKEY_MENU_LABEL, menuSpec, type MenuItemSpec } from "../apps/desktop/src/menu";
+import {
+  DEFAULT_ZOOM_LEVEL,
+  MAX_ZOOM_LEVEL,
+  MIN_ZOOM_LEVEL,
+  sanitizeZoom,
+  ZOOM_STEP,
+  zoomStartupPlan,
+  zoomVerdict,
+} from "../apps/desktop/src/zoomlevel";
 import { contextMenuSpec, SPELLING_SUGGESTIONS_MAX } from "../apps/desktop/src/ctxmenu";
 import {
   acceleratorProblem,
@@ -5610,6 +5619,199 @@ check(
   check(
     "P2-176: main.ts buildMenu consumes menuSpec with no inline labels",
     buildMenuSrc.includes("menuSpec(") && !buildMenuSrc.includes("label:") && !buildMenuSrc.includes("accelerator:"),
+  );
+}
+
+
+// --- P2-238: remembered zoom level (apps/desktop/src/zoomlevel.ts) ---------------
+{
+  const viewItems = (level: number | undefined) => {
+    const view = menuSpec("darwin", null, false, null, level).find((i) => i.label === "Visualizar");
+    return (view?.submenu ?? []).filter((i) => i.id?.startsWith("view-zoom-"));
+  };
+  const byId = (items: MenuItemSpec[], id: string) => items.find((i) => i.id === id);
+
+  // 1. sanitizeZoom full table: whatever the disk yields, a valid level comes
+  //    out and nothing ever throws.
+  check("P2-238: sanitizeZoom — absent state becomes the default", sanitizeZoom(undefined) === DEFAULT_ZOOM_LEVEL);
+  check("P2-238: sanitizeZoom — text becomes the default", sanitizeZoom("big") === DEFAULT_ZOOM_LEVEL);
+  check(
+    "P2-238: sanitizeZoom — non-finite values become the default",
+    sanitizeZoom(Number.NaN) === DEFAULT_ZOOM_LEVEL && sanitizeZoom(Number.POSITIVE_INFINITY) === DEFAULT_ZOOM_LEVEL && sanitizeZoom(Number.NEGATIVE_INFINITY) === DEFAULT_ZOOM_LEVEL,
+  );
+  check(
+    "P2-238: sanitizeZoom — wrong types (null/bool/object/array) become the default",
+    sanitizeZoom(null) === DEFAULT_ZOOM_LEVEL &&
+      sanitizeZoom(true) === DEFAULT_ZOOM_LEVEL &&
+      sanitizeZoom({ level: 2 }) === DEFAULT_ZOOM_LEVEL &&
+      sanitizeZoom([2]) === DEFAULT_ZOOM_LEVEL,
+  );
+  check("P2-238: sanitizeZoom — below the minimum becomes the minimum", sanitizeZoom(-99) === MIN_ZOOM_LEVEL);
+  check("P2-238: sanitizeZoom — above the maximum becomes the maximum", sanitizeZoom(99) === MAX_ZOOM_LEVEL);
+  check(
+    "P2-238: sanitizeZoom — valid levels (integer and fractional) pass through",
+    sanitizeZoom(0) === 0 && sanitizeZoom(2.3) === 2.3 && sanitizeZoom(MIN_ZOOM_LEVEL) === MIN_ZOOM_LEVEL && sanitizeZoom(MAX_ZOOM_LEVEL) === MAX_ZOOM_LEVEL,
+  );
+
+  // 2. zoomVerdict table: one step per click, honest limit flags, restore
+  //    always lands on the default.
+  const up = zoomVerdict(DEFAULT_ZOOM_LEVEL, "increase");
+  check(
+    "P2-238: zoomVerdict — increase from the default moves exactly one step up",
+    up.level === DEFAULT_ZOOM_LEVEL + ZOOM_STEP && up.atLimit === false,
+  );
+  const down = zoomVerdict(DEFAULT_ZOOM_LEVEL, "decrease");
+  check(
+    "P2-238: zoomVerdict — decrease from the default moves exactly one step down",
+    down.level === DEFAULT_ZOOM_LEVEL - ZOOM_STEP && down.atLimit === false,
+  );
+  const atCeiling = zoomVerdict(MAX_ZOOM_LEVEL, "increase");
+  check(
+    "P2-238: zoomVerdict — increase at the ceiling keeps the level and flags the limit",
+    atCeiling.level === MAX_ZOOM_LEVEL && atCeiling.atLimit === true,
+  );
+  const atFloor = zoomVerdict(MIN_ZOOM_LEVEL, "decrease");
+  check(
+    "P2-238: zoomVerdict — decrease at the floor keeps the level and flags the limit",
+    atFloor.level === MIN_ZOOM_LEVEL && atFloor.atLimit === true,
+  );
+  check(
+    "P2-238: zoomVerdict — restore always returns the default",
+    zoomVerdict(MAX_ZOOM_LEVEL, "restore").level === DEFAULT_ZOOM_LEVEL &&
+      zoomVerdict(MIN_ZOOM_LEVEL, "restore").level === DEFAULT_ZOOM_LEVEL &&
+      zoomVerdict(2.3, "restore").level === DEFAULT_ZOOM_LEVEL &&
+      zoomVerdict(DEFAULT_ZOOM_LEVEL, "restore").atLimit === true,
+  );
+  check(
+    "P2-238: zoomVerdict — stable between two calls with the same input",
+    JSON.stringify(zoomVerdict(1.4, "increase")) === JSON.stringify(zoomVerdict(1.4, "increase")) &&
+      JSON.stringify(zoomVerdict(1.4, "restore")) === JSON.stringify(zoomVerdict(1.4, "restore")),
+  );
+  let sweepInBounds = true;
+  for (const level of [-99, -3, 0, 0.5, 2.3, 6, 99, "x", undefined, Number.NaN]) {
+    for (const action of ["increase", "decrease", "restore"] as const) {
+      const v = zoomVerdict(level, action);
+      sweepInBounds = sweepInBounds && v.level >= MIN_ZOOM_LEVEL && v.level <= MAX_ZOOM_LEVEL;
+    }
+  }
+  check("P2-238: zoomVerdict — no verdict ever leaves the documented range", sweepInBounds);
+
+  // 3. Startup plan: the harness-session rule is FIRST — the default level
+  //    even when the state on disk says otherwise, and persist=false so
+  //    nothing zoom-related is ever written (stable evidence framing).
+  check(
+    "P2-238: harness session — default level, nothing persisted, even with out-of-default saved state",
+    zoomStartupPlan({ harnessSession: true, saved: 4 }).level === DEFAULT_ZOOM_LEVEL &&
+      zoomStartupPlan({ harnessSession: true, saved: 4 }).persist === false &&
+      zoomStartupPlan({ harnessSession: true, saved: -2.5 }).persist === false,
+  );
+  check(
+    "P2-238: non-harness — absent/garbage state falls back to the default and persists",
+    zoomStartupPlan({ harnessSession: false, saved: undefined }).level === DEFAULT_ZOOM_LEVEL &&
+      zoomStartupPlan({ harnessSession: false, saved: "corrupted" }).level === DEFAULT_ZOOM_LEVEL &&
+      zoomStartupPlan({ harnessSession: false, saved: undefined }).persist === true,
+  );
+  check(
+    "P2-238: non-harness — a remembered level survives the roundtrip",
+    zoomStartupPlan({ harnessSession: false, saved: 2 }).level === 2 &&
+      zoomStartupPlan({ harnessSession: false, saved: 99 }).level === MAX_ZOOM_LEVEL,
+  );
+
+  // 4. Persistence shape: the zoom field is additive in window-state.json.
+  const displays = [{ workArea: { x: 0, y: 0, width: 1920, height: 1080 } }];
+  const zoomDir = mkdtempSync(join(tmpdir(), "ocr-zoom-"));
+  const zoomFile = windowStateFile(zoomDir);
+  check(
+    "P2-238: window-state roundtrip preserves the zoom level",
+    saveWindowBounds(zoomFile, { x: 1, y: 2, width: 1280, height: 820, zoom: 2 }) &&
+      loadWindowBounds(zoomFile, displays).zoom === 2 &&
+      JSON.parse(readFileSync(zoomFile, "utf8")).zoom === 2,
+  );
+  writeFileSync(zoomFile, JSON.stringify({ x: 7, y: 8, width: 1600, height: 900 }), "utf8");
+  check(
+    "P2-238: legacy file without the zoom field stays valid and means the default",
+    loadWindowBounds(zoomFile, displays).zoom === undefined,
+  );
+  writeFileSync(zoomFile, JSON.stringify({ x: 7, y: 8, width: 1600, height: 900, zoom: 99 }), "utf8");
+  check(
+    "P2-238: out-of-range zoom on disk is clamped at load time",
+    loadWindowBounds(zoomFile, displays).zoom === MAX_ZOOM_LEVEL,
+  );
+  rmSync(zoomDir, { recursive: true, force: true });
+
+  // 5. The View menu renders the verdict: items go disabled at their limit
+  //    instead of pretending the click did something.
+  const mid = viewItems(1);
+  check(
+    "P2-238: View menu — mid-range level leaves every zoom item enabled",
+    mid.length === 3 && mid.every((i) => i.enabled !== false),
+  );
+  check(
+    "P2-238: View menu — at the ceiling only Ampliar is disabled",
+    byId(viewItems(MAX_ZOOM_LEVEL), "view-zoom-in")?.enabled === false &&
+      byId(viewItems(MAX_ZOOM_LEVEL), "view-zoom-out")?.enabled !== false,
+  );
+  check(
+    "P2-238: View menu — at the floor only Reduzir is disabled",
+    byId(viewItems(MIN_ZOOM_LEVEL), "view-zoom-out")?.enabled === false &&
+      byId(viewItems(MIN_ZOOM_LEVEL), "view-zoom-in")?.enabled !== false,
+  );
+  check(
+    "P2-238: View menu — Tamanho padrão is disabled while already at the default",
+    byId(viewItems(DEFAULT_ZOOM_LEVEL), "view-zoom-reset")?.enabled === false,
+  );
+  check(
+    "P2-238: View menu — legacy menuSpec callers keep every zoom item enabled",
+    viewItems(undefined).every((i) => i.enabled === undefined),
+  );
+  const zoomSpec = viewItems(1);
+  check(
+    "P2-238: View menu — same labels and accelerators the native roles had, no emoji, no roles",
+    byId(zoomSpec, "view-zoom-reset")?.label === "Tamanho padrão" &&
+      byId(zoomSpec, "view-zoom-reset")?.accelerator === "CmdOrCtrl+0" &&
+      byId(zoomSpec, "view-zoom-in")?.label === "Ampliar" &&
+      byId(zoomSpec, "view-zoom-in")?.accelerator === "CmdOrCtrl+Plus" &&
+      byId(zoomSpec, "view-zoom-out")?.label === "Reduzir" &&
+      byId(zoomSpec, "view-zoom-out")?.accelerator === "CmdOrCtrl+-" &&
+      zoomSpec.every((i) => i.role === undefined),
+  );
+
+  // 6. The real main.ts/menu.ts: the harness rule is consulted first, the
+  //    level persists through the existing window-state path and no periodic
+  //    timer came with the feature.
+  const menuTsSource = readFileSync(new URL("../apps/desktop/src/menu.ts", import.meta.url), "utf8");
+  const zoomTsSource = readFileSync(new URL("../apps/desktop/src/zoomlevel.ts", import.meta.url), "utf8");
+  const planAt = mainTsSource.indexOf("zoomStartupPlan({");
+  const firstApplyAt = mainTsSource.indexOf("setZoomLevel");
+  check(
+    "P2-238: main.ts consults the harness-session rule before anything applies a zoom level",
+    planAt >= 0 && firstApplyAt > planAt && mainTsSource.slice(planAt, planAt + 120).includes("harnessSession: HERMETIC_E2E"),
+  );
+  const saveAt = mainTsSource.indexOf("saveWindowBounds(stateFile, {");
+  const closeBlock = saveAt >= 0 ? mainTsSource.slice(saveAt, mainTsSource.indexOf("});", saveAt)) : "";
+  check(
+    "P2-238: main.ts persists the level through the same window-state path as the bounds",
+    closeBlock.includes("getNormalBounds()") && closeBlock.includes("zoom:") && closeBlock.includes("zoomPersistable"),
+  );
+  check(
+    "P2-238: the zoom wiring introduces no periodic timer",
+    mainTsSource
+      .split("\n")
+      .filter((l) => l.includes("setZoomLevel") || l.includes("zoomStartupPlan"))
+      .every((l) => !l.includes("setInterval") && !l.includes("setTimeout")) &&
+      !/setInterval|setTimeout/.test(zoomTsSource),
+  );
+  check(
+    "P2-238: zoomlevel.ts keeps the pure-module hygiene (no electron, no fs, no I/O)",
+    zoomTsSource
+      .split("\n")
+      .filter((l) => l.trim().startsWith("import "))
+      .every((l) => !/electron|node:fs|node:path|node:os|node:child_process/.test(l)) &&
+      !/setInterval|setTimeout/.test(zoomTsSource),
+  );
+  check(
+    "P2-238: menu.ts no longer carries the native zoom roles",
+    !menuTsSource.includes('"resetZoom"') && !menuTsSource.includes('"zoomIn"') && !menuTsSource.includes('"zoomOut"'),
   );
 }
 

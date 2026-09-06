@@ -11,6 +11,7 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { sanitizeZoom } from "./zoomlevel";
 
 export interface WindowBounds {
   x?: number;
@@ -19,6 +20,9 @@ export interface WindowBounds {
   height: number;
   /** True when the user quit with the window maximized (P2-172). */
   maximized?: boolean;
+  /** The remembered View-menu zoom level (P2-238). Absent in files written
+   * before P2-238 — that shape stays valid and means the default. */
+  zoom?: number;
 }
 
 /** Matches Electron's Rectangle (only the fields we validate against). */
@@ -65,8 +69,13 @@ export function sanitizeWindowBounds(
 ): WindowBounds {
   const b = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
   const maximized = b.maximized === true;
+  // P2-238: zoom rides along additively — the field only appears when the file
+  // carried a number (a legacy file keeps its exact old shape), and the value
+  // is clamped by the pure zoom policy before it ever reaches the shell.
+  const zoom = typeof b.zoom === "number" ? sanitizeZoom(b.zoom) : undefined;
+  const withZoom = (bounds: WindowBounds): WindowBounds => (zoom === undefined ? bounds : { ...bounds, zoom });
   if (!finite(b.width) || !finite(b.height) || b.width <= 0 || b.height <= 0) {
-    return { ...defaults, maximized };
+    return withZoom({ ...defaults, maximized });
   }
   const bounds: WindowBounds = {
     width: Math.max(WINDOW_MIN.width, b.width),
@@ -78,12 +87,12 @@ export function sanitizeWindowBounds(
     // Validate against the attached displays before applying position: a
     // window parked on a since-disconnected display re-opens at the default.
     if (!displays.some((d) => intersects(d.workArea, { x, y, width: bounds.width, height: bounds.height }))) {
-      return { ...defaults, maximized };
+      return withZoom({ ...defaults, maximized });
     }
     bounds.x = x;
     bounds.y = y;
   }
-  return { ...bounds, maximized };
+  return withZoom({ ...bounds, maximized });
 }
 
 /**
@@ -101,7 +110,9 @@ export function loadWindowBounds(file: string, displays: DisplayArea[]): WindowB
   }
 }
 
-/** Persist bounds (plus the maximized flag); log-only on failure (a full disk must never block quit). */
+/** Persist bounds (plus the maximized flag and the remembered zoom level);
+ * log-only on failure (a full disk must never block quit). A zoom of undefined
+ * (test session, P2-238) is simply omitted from the file by JSON.stringify. */
 export function saveWindowBounds(file: string, bounds: WindowBounds): boolean {
   try {
     writeFileSync(
@@ -112,6 +123,7 @@ export function saveWindowBounds(file: string, bounds: WindowBounds): boolean {
         width: bounds.width,
         height: bounds.height,
         maximized: bounds.maximized === true,
+        zoom: bounds.zoom,
       }),
     );
     return true;
