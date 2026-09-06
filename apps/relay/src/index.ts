@@ -15,6 +15,7 @@ import { decideStale } from "./liveness.js";
 import { metricsAuthOk, metricsBinding } from "./metricsbind.js";
 import { relayLimits } from "./limits.js";
 import { relayKnobs } from "./knobs.js";
+import { unknownRelayKeys } from "./knobnames.js";
 import { resolveLogLevel, shouldLog, type LogLevel } from "./loglevel.js";
 import { tlsPlan } from "./tlsconfig.js";
 import {
@@ -89,6 +90,22 @@ if (LOG.problems.length > 0) {
     ev("warn", "invalid relay log level, refusing to start (fail-closed)", { reason });
   }
   process.exit(1);
+}
+// P2-263: an unrecognized RELAY_ variable is ignored by every resolver below,
+// which used to hide typos in silence — the operator believed the chosen knob
+// was applied while the `relay listening` line showed the default. Each
+// unknown key gets ONE warn line here, before any listener opens, carrying
+// the key name and (when something sits within an edit distance of 2) the
+// nearest documented knob name — never the value, because one of these
+// variables carries the metrics bearer token and others carry certificate
+// paths. Advisory only: hosting platforms inject variables of their own, so
+// an unknown key must never refuse the boot (no exit, no problem list).
+for (const { key, suggestion } of unknownRelayKeys(Object.keys(process.env))) {
+  ev(
+    "warn",
+    "unknown RELAY_ environment variable ignored",
+    suggestion === undefined ? { key } : { key, suggestion },
+  );
 }
 // P2-141: admission ceilings are env-configurable and validated fail-closed
 // (P2-114 spirit). Any bad value — non-numeric, zero, negative, per-room cap
