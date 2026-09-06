@@ -31,6 +31,11 @@
 // read failure wins — it is the stronger invariant, so a missing file is
 // only ever a first run when the read itself did not fail.
 //
+// The verdict owns the LOAD decision only: a read failure refuses without a
+// quarantine move, and the caller (routines.ts) defers the preservation of
+// the still-present original to its first save, so the original file is
+// never overwritten either way.
+//
 // Every message is a static string: no file path, no URL scheme, no secret
 // and never any snippet of the file content or of a routine prompt, because
 // the sentence goes to the log (P2-182 lesson).
@@ -62,6 +67,8 @@ export const ROUTINES_REFUSE_CONTENT_MESSAGE =
   "O arquivo de rotinas está ilegível e foi preservado ao lado do original — nada foi apagado e a lista fica vazia até o arquivo ser restaurado ou removido.";
 export const ROUTINES_REFUSE_READ_MESSAGE =
   "O arquivo de rotinas não pôde ser lido — verifique a permissão dele sem apagar nada; a lista fica vazia apenas nesta sessão.";
+export const ROUTINES_REFUSE_PRESERVE_FAILED_MESSAGE =
+  "O arquivo de rotinas não pôde ser preservado ao lado do original — nada foi apagado e a lista fica vazia até o arquivo ser restaurado ou removido.";
 
 function isWellFormedEntry(value: unknown): value is Routine {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;

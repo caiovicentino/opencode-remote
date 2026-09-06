@@ -179,9 +179,11 @@ remoto, zero confiança**.
   liberada sozinha após o prazo de 2 h (`OCR_RUN_LEASE_MS`, `off` para
   desativar) e a rotina volta a rodar no próximo horário programado; o
   arquivo de rotinas é gravado de forma atômica (a mesma escrita
-  tmp+rename 0600 que protege o estado do daemon) e, se um dia ficar
-  ilegível, o daemon segue com a lista vazia preservando os bytes originais
-  numa cópia `routines.json.<timestamp>.quarantine` ao lado
+  tmp+rename 0600 que protege o estado do daemon) e um arquivo ilegível ou
+  que não pôde ser lido nunca é sobrescrito — o daemon segue com a lista
+  vazia enquanto os bytes originais vão para uma cópia
+  `routines.json.<timestamp>.quarantine` ao lado, ficando no lugar, intactos,
+  até que essa mudança consiga acontecer
 - **Seguro por construção** — gate com passkey (WebAuthn), ECDH P-256 +
   AES-256-GCM, anti-replay, allowlist de dispositivos, audit log, biometria
 - **Dispositivos distinguíveis** — cada pareamento ganha um rótulo estável e

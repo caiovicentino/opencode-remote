@@ -47,6 +47,7 @@ import {
 import {
   ROUTINES_FIRST_RUN_MESSAGE,
   ROUTINES_REFUSE_CONTENT_MESSAGE,
+  ROUTINES_REFUSE_PRESERVE_FAILED_MESSAGE,
   ROUTINES_REFUSE_READ_MESSAGE,
   ROUTINES_USE_MESSAGE,
   routinesVerdict,
@@ -21904,6 +21905,7 @@ check("P2-241: no new periodic timer was introduced by the handler", !dlBlock.in
     routinesVerdict(true, null, "EACCES"),
     routinesVerdict(false, null, null),
     routinesVerdict(true, midInvalid, null),
+    { plan: "refuse", quarantine: false, routines: [], discarded: 0, message: ROUTINES_REFUSE_PRESERVE_FAILED_MESSAGE },
   ];
   check(
     "P2-256: every message is non-empty and free of paths and URL schemes",
@@ -21961,6 +21963,28 @@ check("P2-241: no new periodic timer was introduced by the handler", !dlBlock.in
       routinesModSrc.includes("quarantineName(") &&
       routinesModSrc.includes("renameSync(") &&
       !/unlink|rmsync|rm\(/i.test(routinesModSrc),
+  );
+  check(
+    "P2-256: the refusal log never promises preservation when the quarantine move failed",
+    routinesModSrc.includes("ROUTINES_REFUSE_PRESERVE_FAILED_MESSAGE") &&
+      /quarantine && !quarantined \? ROUTINES_REFUSE_PRESERVE_FAILED_MESSAGE/.test(routinesModSrc),
+  );
+  check(
+    "P2-256: the first save after a refusal preserves the original through the same quarantine move before any write",
+    routinesModSrc.includes("let refusalPendingPreservation") &&
+      (() => {
+        const saveFn = routinesModSrc.slice(routinesModSrc.indexOf("export function saveRoutines"));
+        return (
+          saveFn.includes("preserveRefusedOriginal()") &&
+          saveFn.indexOf("preserveRefusedOriginal()") < saveFn.indexOf("writeStateAtomic(") &&
+          saveFn.includes("writeStateAtomic(")
+        );
+      })(),
+  );
+  check(
+    "P2-256: a save whose preservation fails is skipped, never overwriting the unreadable original",
+    /if \(refusalPendingPreservation && !preserveRefusedOriginal\(\)\)/.test(routinesModSrc) &&
+      routinesModSrc.includes("refusalPendingPreservation = false; // the original is already gone"),
   );
 
   // real-repo wiring: no new periodic timer, one boot read, and every

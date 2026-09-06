@@ -188,9 +188,10 @@ private. That is the product: **local power, remote control, zero trust**.
   released automatically after a 2 h run lease (`OCR_RUN_LEASE_MS`, `off` to
   disable) and the routine fires again at its next scheduled time; the
   routines file is written atomically (the same tmp+rename write, created
-  0600, that protects the daemon state file), and if it is ever illegible the
-  daemon keeps going with an empty list while the original bytes are
-  preserved in a `routines.json.<timestamp>.quarantine` copy beside it
+  0600, that protects the daemon state file) and an illegible or unreadable
+  file is never overwritten — the daemon keeps going with an empty list
+  while the original bytes land in a `routines.json.<timestamp>.quarantine`
+  copy beside it, staying in place untouched until that move can happen
 - **Secure by construction** — passkey (WebAuthn) gate, ECDH P-256 + AES-256-GCM,
   replay protection, device allowlist, audit log, biometric unlock
 - **Distinguishable devices** — every pairing gets a stable, personal-data-free
