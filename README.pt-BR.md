@@ -474,6 +474,13 @@ página de releases e rode `winget install --manifest caiovicentino.opencode-rem
 na pasta deles; é um caminho de instalação alternativo ao instalador solto,
 igual à fórmula do Homebrew no Mac.
 
+O Mac recebe a mesma cortesia no sentido oposto (P2-255): cada release anexa o
+`opencode-remote-cask.rb`, manifesto de cask do Homebrew cobrindo as duas
+arquiteturas de DMG (Apple Silicon e Intel), gerado e verificado pelo próprio
+pipeline a partir do sha256 publicado no `checksums.txt` — baixe-o da página
+de releases e rode `brew install --cask ./opencode-remote-cask.rb` para
+instalar o app com uma linha, sem arrastar DMG nenhum à mão.
+
 **Instale uma vez a partir do DMG (P2-211).** O atualizador só consegue trocar
 um bundle que vive na pasta **Aplicativos** — um app aberto direto do DMG
 montado (ou da pasta de downloads) roda somente leitura num caminho aleatório

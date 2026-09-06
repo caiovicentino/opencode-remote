@@ -477,6 +477,13 @@ three `.yaml` files from the releases page and run
 folder; this is an alternative install path to the loose setup exe, just like
 the Homebrew formula on the Mac.
 
+The same courtesy runs the other way for Mac users (P2-255): every release
+attaches `opencode-remote-cask.rb`, a Homebrew cask manifest covering both DMG
+architectures (Apple Silicon and Intel), generated and verified by the release
+pipeline from the sha256 published in `checksums.txt` — download it from the
+releases page and run `brew install --cask ./opencode-remote-cask.rb` to
+install the app with one line instead of dragging a DMG by hand.
+
 Since P2-146 the macOS packaging also produces the zip artifacts Squirrel.Mac
 needs (one per architecture, additive to the DMGs) and the release workflow
 publishes the Squirrel.Mac JSON feeds built from `latest-mac.yml` by
