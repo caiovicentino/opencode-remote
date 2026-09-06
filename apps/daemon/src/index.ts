@@ -58,6 +58,7 @@ import { detectWhisperDetail, transcribeAudio, type WhisperTool } from "./whispe
 import { sttVerdict } from "./voicecap.js";
 import { modelReadyVerdict, providerSummary, type ProviderSummary } from "./modelready.js";
 import { MIN_OPENCODE_VERSION, versionVerdict, type OpencodeVersionVerdict } from "./opencodever.js";
+import { parseReadinessKnobs, readinessRefreshPlan } from "./readiness.js";
 import { cachedSpeech, detectEdgeTts, prewarmSpeech, putSpeech, resolveVoice, synthesizeSpeech, TTS_VOICES } from "./edgetts.js";
 import { spokenNumbers, SPEECH_LANGS } from "./spoken.js";
 import { metrics, startMetricsServer, VERSION } from "./metrics.js";
@@ -808,6 +809,10 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
     // machine section can reach without a new route (the desktop bridge
     // forwards only the known health fields, apps/desktop stays untouched).
     // P2-215: same channel logic for the disk verdict (`disk`, additive).
+    // P2-250: lazy version re-probe right before the verdict is answered —
+    // an opencode updated after boot is picked up here (at most once per
+    // interval) instead of needing a daemon restart.
+    maybeReprobeOpencodeVersion();
     return {
       id: req.id,
       status: 200,
@@ -964,6 +969,9 @@ end tell`;
     if (!whisperTool) {
       // P2-201: the actionable capability phrase (pt-BR, no script paths) from
       // the same verdict the status route serves — never the raw English hint.
+      // P2-250: lazy re-probe right before the refusal — a whisper installed
+      // after boot is picked up here instead of needing a daemon restart.
+      await maybeReprobeTranscription();
       return { id: req.id, status: 501, body: { error: sttStatus().message } };
     }
     try {
@@ -1677,6 +1685,87 @@ function probeOpencodeVersion(binPath: string): void {
       !err && !stderr && raw ? versionVerdict(raw, MIN_OPENCODE_VERSION) : versionVerdict(null, MIN_OPENCODE_VERSION);
     log("info", "opencode version probed", { state: opencodeVersion.state });
   });
+}
+
+// P2-250: lazy capability re-probing. The boot probes above stay EXACTLY as
+// they are (once per capability, no new timer); what is new is that the
+// cached verdicts can now be refreshed lazily, at the point of use and at
+// most once per capability per interval, guided by the pure planner in
+// readiness.ts. The lay user who installs LibreOffice, installs whisper or
+// updates opencode AFTER the first boot stops receiving the same polite
+// refusal forever (docs/VISION.md stage 3). The knobs are fail-closed:
+// main() exits when parseReadinessKnobs reported any problem.
+const readinessKnobs = parseReadinessKnobs(process.env);
+
+/** Per-capability probe bookkeeping: when the cached verdict was established
+ * and whether a probe is currently running (never duplicated). */
+const readinessState: Record<"transcription" | "doc-convert" | "opencode-version", { probedAt: number; inFlight: boolean }> = {
+  transcription: { probedAt: 0, inFlight: false },
+  "doc-convert": { probedAt: 0, inFlight: false },
+  "opencode-version": { probedAt: 0, inFlight: false },
+};
+
+/** ISO instant of the last probe of a capability, for the health payload. */
+function readinessCheckedAt(probedAt: number): string | null {
+  return probedAt > 0 ? new Date(probedAt).toISOString() : null;
+}
+
+/** Lazy transcription re-probe: reuses detectWhisperDetail() as-is. Ready
+ * never re-probes (happy path costs zero); a missing capability re-probes at
+ * most once per interval, right before the route answers with the refusal. */
+async function maybeReprobeTranscription(): Promise<void> {
+  const st = readinessState.transcription;
+  const ready = whisperTool !== null && sttToolType !== null && sttModelPresent;
+  const plan = readinessRefreshPlan(ready, st.probedAt, Date.now(), st.inFlight, readinessKnobs);
+  if (readinessKnobs.disabled || plan.action !== "redo") return;
+  st.inFlight = true;
+  try {
+    const detected = await detectWhisperDetail();
+    whisperTool = detected.tool;
+    sttToolType = detected.toolType;
+    sttModelPresent = detected.modelPresent;
+  } catch {
+    // a re-probe that cannot run teaches nothing new — keep the cached verdict
+  } finally {
+    st.inFlight = false;
+    st.probedAt = Date.now();
+    // one line per re-done probe: capability name + resulting state only
+    log("info", "readiness re-probe", { capability: "transcription", state: sttStatus().state });
+  }
+}
+
+/** Lazy document-conversion re-probe: reuses probeDocConvert() as-is. Only a
+ * "complete" verdict counts as ready — a partial one (native macOS pipeline)
+ * must still be able to flip to complete once LibreOffice is installed. */
+function maybeReprobeDocConvert(): void {
+  const st = readinessState["doc-convert"];
+  const plan = readinessRefreshPlan(docConvert.state === "complete", st.probedAt, Date.now(), st.inFlight, readinessKnobs);
+  if (readinessKnobs.disabled || plan.action !== "redo") return;
+  st.inFlight = true;
+  try {
+    probeDocConvert();
+  } finally {
+    st.inFlight = false;
+    st.probedAt = Date.now();
+    // one line per re-done probe: capability name + resulting state only
+    log("info", "readiness re-probe", { capability: "doc-convert", state: docConvert.state });
+  }
+}
+
+/** Lazy opencode-version re-probe: reuses the existing binary refresh and
+ * version-spawn helpers as-is, fire-and-forget — the probe callback already
+ * logs the resulting state ("opencode version probed"). The dispatch stamps
+ * probedAt immediately; the 3 s probe cap is far below the minimum interval,
+ * so no in-flight duplication is possible. The documented OCR_OPENCODE_OLD=1
+ * test hatch keeps its forced verdict (never re-probed away). */
+function maybeReprobeOpencodeVersion(): void {
+  if (process.env.OCR_OPENCODE_OLD === "1") return;
+  const st = readinessState["opencode-version"];
+  const plan = readinessRefreshPlan(opencodeVersion.state === "ok", st.probedAt, Date.now(), st.inFlight, readinessKnobs);
+  if (readinessKnobs.disabled || plan.action !== "redo") return;
+  st.probedAt = Date.now();
+  refreshOpencodeBinary(true);
+  if (binaryPick.path !== null) probeOpencodeVersion(binaryPick.path);
 }
 
 /** Record a finished probe: refreshes the /api/health detail and the legacy
@@ -2940,6 +3029,12 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       // state + short pt-BR phrase only; no absolute path and no raw byte
       // count of the volume ever reach the payload.
       const disk = diskStatus();
+      // P2-250: lazy re-probes when the health route is consulted — doc
+      // conversion and the opencode version verdicts are answered here, so
+      // they are the two refreshed (at most once per interval each; reuse
+      // answers immediately, never delayed).
+      maybeReprobeDocConvert();
+      maybeReprobeOpencodeVersion();
       send(200, {
         healthy: true,
         version: VERSION,
@@ -2959,6 +3054,9 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
           // output ever reach the payload.
           versionState: opencodeVersion.state,
           versionMessage: opencodeVersion.message,
+          // P2-250: additive — when the version verdict was last probed, so a
+          // screen can say when that was checked. null until the first probe.
+          versionCheckedAt: readinessCheckedAt(readinessState["opencode-version"].probedAt),
         },
         relayConnected,
         // P2-156: additive lastClose inside relayRetry — the close code and
@@ -2992,6 +3090,10 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
         docConvertState: docConvert.state,
         docConvertMessage: docConvert.message,
         docConvertExts: docConvert.exts,
+        // P2-250: additive — when the doc-conversion verdict was last probed
+        // (ISO instant, null before the first probe). Existing fields keep
+        // their exact shape for the consumers P2-232 introduced.
+        docConvertCheckedAt: readinessCheckedAt(readinessState["doc-convert"].probedAt),
       });
       return true;
     }
@@ -3506,6 +3608,13 @@ async function main() {
     process.exit(1);
     return;
   }
+  // P2-250: same fail-closed contract for the lazy re-probe knobs — an
+  // invalid OCR_READINESS_* never falls back to the default silently.
+  if (readinessKnobs.problems.length > 0) {
+    for (const problem of readinessKnobs.problems) log("error", problem);
+    process.exit(1);
+    return;
+  }
 
   // Async module state first (see note at the declarations): identity, settings
   // and whisper detection must be ready before anything is served or sent.
@@ -3534,6 +3643,11 @@ async function main() {
   // P2-231: same readiness hook as the capabilities above — one probe, in
   // memory, before any server answers; boot never blocks on it.
   probeDocConvert();
+
+  // P2-250: stamp the boot instants of the cached verdicts — the lazy
+  // re-probes count their interval from here. No additional boot probe.
+  readinessState.transcription.probedAt = Date.now();
+  readinessState["doc-convert"].probedAt = Date.now();
 
   log("info", "daemon starting (protocol v2)", {
     machine: machineName,
@@ -3575,6 +3689,9 @@ async function main() {
   } else if (binaryPick.path !== null) {
     probeOpencodeVersion(binaryPick.path);
   }
+  // P2-250: the version verdict above (probe, hatch or no-binary) is the
+  // cached boot verdict — the lazy re-probe interval counts from here.
+  readinessState["opencode-version"].probedAt = Date.now();
   const signal = AbortSignal.timeout(UPSTREAM_PROBE_TIMEOUT_MS);
   try {
     const res = await fetch(new URL("/global/health", OPENCODE_URL), {

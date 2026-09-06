@@ -146,7 +146,9 @@ e sem preservar formatação. Sem nenhum conversor, a ferramenta responde com
 uma frase curta em português pedindo a instalação do LibreOffice — nunca um
 erro cru em inglês — e o arquivo original continua intacto. A prontidão da
 conversão também viaja em `/api/health` (`docConvertState` /
-`docConvertMessage` / `docConvertExts`), sondada uma única vez no boot.
+`docConvertMessage` / `docConvertExts`), sondada no boot e revalidada
+preguiçosamente no ponto de uso (P2-250, no máximo uma vez por
+`OCR_READINESS_MIN_MS` por capacidade; `OCR_READINESS_DISABLE=off` desliga).
 
 ## Artifacts (documentos renderizáveis)
 

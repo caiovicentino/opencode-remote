@@ -131,9 +131,24 @@ private. That is the product: **local power, remote control, zero trust**.
   native textutil+cupsfilter fallback covers doc/docx/rtf/html/csv without
   preserving formatting. The machine's readiness is announced by `GET /api/health`
   (`docConvertState` / `docConvertMessage` / `docConvertExts`, probed once at
-  boot) before you send anything; with no converter installed the tool answers
+  boot) before you send anything;   with no converter installed the tool answers
   with one short sentence asking for LibreOffice — never a raw English error —
   and the original file is never modified
+- **Lazy capability revalidation (P2-250)** — the machine-capability verdicts
+  (voice transcription, document→PDF conversion, opencode version) are still
+  probed once at boot, but they are no longer frozen: right before the daemon
+  answers "this machine can't do that" (a voice transcription refused, the
+  health/settings read of the conversion or version verdict) it re-probes the
+  capability lazily, at most **once per minute per capability** — so
+  installing LibreOffice or whisper, or updating opencode, is picked up
+  without restarting the daemon. A verdict that already works is never
+  re-probed (the happy path costs nothing), a probe in flight is never
+  duplicated, and `GET /api/health` carries additive
+  `docConvertCheckedAt` / `opencode.versionCheckedAt` instants so a screen
+  can say when each capability was last checked. Set `OCR_READINESS_MIN_MS`
+  to change the minimum interval (whole milliseconds, default 60000, ceiling
+  3600000) or `OCR_READINESS_DISABLE=off` to turn revalidation off entirely
+  (invalid values fail the boot, fail-closed)
 - **Handoff** — continue the exact session on your Mac (laptop icon in the
   chat header)
 - **Live board** — every session's state at a glance: working, waiting for

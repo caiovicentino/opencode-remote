@@ -422,6 +422,15 @@ import {
 } from "../apps/daemon/src/clipretention";
 
 import {
+  READINESS_DEFAULT_INTERVAL_MS,
+  READINESS_DISABLE_ENV,
+  READINESS_INTERVAL_CEILING_MS,
+  READINESS_INTERVAL_ENV,
+  parseReadinessKnobs,
+  readinessRefreshPlan,
+} from "../apps/daemon/src/readiness";
+
+import {
   ARTIFACTS_MARKER,
   buildArtifactsPathLine,
   buildArtifactsPrompt,
@@ -15616,13 +15625,17 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 
   // real-repo assertion: the probe runs EXACTLY ONCE at boot, under the
-  // binary-found guard, and no per-request call was introduced anywhere
-  const probeCalls = indexSrc.match(/probeOpencodeVersion\(/g) ?? [];
-  const bootAt = indexSrc.indexOf("refreshOpencodeBinary(true)");
-  const hatchAt = indexSrc.indexOf('process.env.OCR_OPENCODE_OLD === "1"');
+  // binary-found guard, and no per-request call was introduced anywhere.
+  // P2-250: a third call site exists — the documented lazy reuse right before
+  // the version verdict is answered (health + settings), still never
+  // per-request and never periodic; the boot region anchors the search.
+  const probeCalls = indexSrc.match(/\bprobeOpencodeVersion\(/g) ?? [];
+  const mainAt = indexSrc.indexOf("async function main()");
+  const bootAt = indexSrc.indexOf("refreshOpencodeBinary(true)", mainAt);
+  const hatchAt = indexSrc.indexOf('process.env.OCR_OPENCODE_OLD === "1"', mainAt);
   check(
     "P2-213: the version probe is fired once at boot, guarded by a resolved binary",
-    probeCalls.length === 2 &&
+    probeCalls.length === 3 &&
       bootAt >= 0 &&
       hatchAt > bootAt &&
       /else if \(binaryPick\.path !== null\) \{\s*\n\s*probeOpencodeVersion\(binaryPick\.path\);/.test(indexSrc),
@@ -18814,11 +18827,13 @@ check(
   // real-repo assertion: the daemon probes ONCE, on the existing boot readiness
   // hook (next to whisper/edge-tts), with no periodic timer and no per-request
   // probing — failures degrade to unavailable instead of throwing.
+  // P2-250: the probe function gained exactly one documented lazy reuse call
+  // site (health route) — the boot call inside main() remains the last one.
   check(
     "P2-231: the daemon probes doc conversion exactly once, inside main()'s readiness hook",
-    (indexSrc.match(/docConvertProbe\(/g) || []).length === 1 &&
-      indexSrc.includes("probeDocConvert();") &&
-      indexSrc.indexOf("async function main") < indexSrc.indexOf("probeDocConvert();"),
+    (indexSrc.match(/\bdocConvertProbe\(/g) || []).length === 1 &&
+      (indexSrc.match(/\bprobeDocConvert\(\);/g) || []).length === 2 &&
+      indexSrc.lastIndexOf("probeDocConvert();") > indexSrc.indexOf("async function main"),
   );
   check(
     "P2-231: no periodic doc-conversion timer was introduced",
@@ -20490,6 +20505,239 @@ check("P2-241: no new periodic timer was introduced by the handler", !dlBlock.in
     !wingetSrc.includes("node:fs") &&
       !wingetSrc.includes("node:child_process") &&
       !wingetSrc.includes("fetch("),
+  );
+}
+
+// --- P2-250: lazy capability re-probing (readiness.ts) -------------------------
+
+{
+  const MIN = 60_000;
+  const NOW = 1_800_000_000_000; // arbitrary fixed "now" anchor (pure: no clock reads)
+  const plan = (ready: boolean, probedAt: number, inFlight: boolean, minIntervalMs = MIN) =>
+    readinessRefreshPlan(ready, probedAt, NOW, inFlight, { minIntervalMs });
+
+  // rule 1 — a verdict that says the capability works is NEVER re-probed,
+  // no matter how old it is (the happy path must cost zero)
+  {
+    const hugeAge = 10 * 365 * 24 * 3_600_000;
+    const p = plan(true, NOW - hugeAge, false);
+    check(
+      "P2-250: a ready verdict is never re-probed, even with an enormous age",
+      p.action === "reuse" && p.reason === "verdict-ready",
+    );
+  }
+
+  // rule 2 — a probe already in flight is never duplicated
+  {
+    const p = plan(false, NOW - 10 * MIN, true);
+    check(
+      "P2-250: a probe in flight is never duplicated",
+      p.action === "reuse" && p.reason === "probe-in-flight",
+    );
+  }
+
+  // rule 3 — strictly newer than the interval is reused
+  {
+    const p = plan(false, NOW - (MIN - 1), false);
+    check(
+      "P2-250: a verdict newer than the interval is reused",
+      p.action === "reuse" && p.reason === "fresh",
+    );
+  }
+
+  // rule 3 boundary — exactly at the interval is NOT newer anymore: redo
+  {
+    const p = plan(false, NOW - MIN, false);
+    check(
+      "P2-250: a verdict exactly at the interval (age === minIntervalMs) is re-probed",
+      p.action === "redo" && p.reason === "stale",
+    );
+  }
+
+  // rule 4 — past the interval is redone
+  {
+    const p = plan(false, NOW - (MIN + 1), false);
+    check(
+      "P2-250: a verdict older than the interval is re-probed",
+      p.action === "redo" && p.reason === "stale",
+    );
+  }
+
+  // guard — a future probedAt is treated as now: age clamps to zero
+  {
+    const p = plan(false, NOW + 5_000, false);
+    check(
+      "P2-250: an instant in the future is treated as now (age never negative)",
+      p.action === "reuse" && p.reason === "fresh",
+    );
+  }
+
+  // guard — non-finite instants are refused, never guessed about
+  {
+    const a = readinessRefreshPlan(false, NaN, NOW, false, { minIntervalMs: MIN });
+    const b = readinessRefreshPlan(false, NOW, Infinity, false, { minIntervalMs: MIN });
+    check(
+      "P2-250: a non-finite instant is refused (reuse, never a guessed probe)",
+      a.action === "reuse" && a.reason === "invalid-instant" && b.action === "reuse" && b.reason === "invalid-instant",
+    );
+  }
+}
+
+{
+  // parseReadinessKnobs: empty environment reproduces the documented defaults
+  const cfg = parseReadinessKnobs({});
+  check(
+    "P2-250: an empty environment yields the documented defaults",
+    cfg.minIntervalMs === READINESS_DEFAULT_INTERVAL_MS &&
+      cfg.disabled === false &&
+      cfg.problems.length === 0 &&
+      READINESS_DEFAULT_INTERVAL_MS === 60_000,
+  );
+
+  // blank value behaves like absent (the only no-problem fallback)
+  check(
+    "P2-250: a blank OCR_READINESS_MIN_MS keeps the default with no problem",
+    parseReadinessKnobs({ [READINESS_INTERVAL_ENV]: "   " }).problems.length === 0 &&
+      parseReadinessKnobs({ [READINESS_INTERVAL_ENV]: "   " }).minIntervalMs === READINESS_DEFAULT_INTERVAL_MS,
+  );
+
+  // the documented disable value is accepted (any case), enable too
+  check(
+    "P2-250: the documented disable value turns revalidation off with no problem",
+    (["off", "0", "false", "OFF", "False"] as const).every(
+      (v) => parseReadinessKnobs({ [READINESS_DISABLE_ENV]: v }).disabled === true &&
+        parseReadinessKnobs({ [READINESS_DISABLE_ENV]: v }).problems.length === 0,
+    ) &&
+      (["on", "1", "true"] as const).every(
+        (v) => parseReadinessKnobs({ [READINESS_DISABLE_ENV]: v }).disabled === false &&
+          parseReadinessKnobs({ [READINESS_DISABLE_ENV]: v }).problems.length === 0,
+      ),
+  );
+
+  // fail-closed table: non-numeric, zero, negative, fractional, above ceiling
+  check(
+    "P2-250: a non-numeric interval is a problem",
+    parseReadinessKnobs({ [READINESS_INTERVAL_ENV]: "abc" }).problems.length === 1 &&
+      parseReadinessKnobs({ [READINESS_INTERVAL_ENV]: "abc" }).minIntervalMs === READINESS_DEFAULT_INTERVAL_MS,
+  );
+  check(
+    "P2-250: a zero interval is a problem",
+    parseReadinessKnobs({ [READINESS_INTERVAL_ENV]: "0" }).problems.length === 1,
+  );
+  check(
+    "P2-250: a negative interval is a problem",
+    parseReadinessKnobs({ [READINESS_INTERVAL_ENV]: "-5" }).problems.length === 1,
+  );
+  check(
+    "P2-250: a fractional interval is a problem",
+    parseReadinessKnobs({ [READINESS_INTERVAL_ENV]: "1500.5" }).problems.length === 1,
+  );
+  check(
+    "P2-250: an interval above the documented ceiling is a problem",
+    parseReadinessKnobs({ [READINESS_INTERVAL_ENV]: String(READINESS_INTERVAL_CEILING_MS + 1) }).problems.length === 1 &&
+      parseReadinessKnobs({ [READINESS_INTERVAL_ENV]: String(READINESS_INTERVAL_CEILING_MS) }).problems.length === 0,
+  );
+
+  // ALL problems at once, never a short-circuit
+  {
+    const cfg = parseReadinessKnobs({ [READINESS_INTERVAL_ENV]: "abc", [READINESS_DISABLE_ENV]: "banana" });
+    check(
+      "P2-250: several problems are returned at once, never short-circuited",
+      cfg.problems.length === 2 && cfg.disabled === false,
+    );
+  }
+}
+
+// --- P2-250: real-repo assertions — purity + lazy wiring ------------------------
+{
+  const readinessSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "readiness.ts"), "utf8");
+  const daemonSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  // source with block and // comments stripped, so prose comments never trip
+  // a code-shaped assertion
+  const code = daemonSrc
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split("\n")
+    .map((l) => l.split("//")[0])
+    .join("\n");
+
+  // the module stays pure: index.ts runs main() on import, so unit tests must
+  // never boot a daemon through it (lessons P2-149 / P2-228)
+  check(
+    "P2-250: readiness.ts stays pure — no node:fs, node:path, node:child_process or fetch imports",
+    !readinessSrc.includes('from "node:fs"') &&
+      !readinessSrc.includes('from "node:path"') &&
+      !readinessSrc.includes('from "node:child_process"') &&
+      !readinessSrc.includes("fetch(") &&
+      !readinessSrc.includes("require("),
+  );
+
+  // the boot probe of each capability still happens EXACTLY once:
+  // detectWhisperDetail (boot + lazy helper), probeDocConvert (definition +
+  // boot + lazy helper), probeOpencodeVersion (definition + boot + lazy helper)
+  check(
+    "P2-250: the boot probe of each capability still happens exactly once",
+    (code.match(/\bdetectWhisperDetail\(/g) || []).length === 2 &&
+      (code.match(/\bprobeDocConvert\(/g) || []).length === 3 &&
+      (code.match(/\bprobeOpencodeVersion\(/g) || []).length === 3,
+  );
+
+  // revalidation appears ONLY at the described use points: the transcribe
+  // refusal, the health route (doc-convert + version) and the settings read
+  // (version) — never anywhere else
+  {
+    const lines = code.split("\n");
+    const callLines = lines.filter((l) =>
+      /maybeReprobe(?:Transcription|DocConvert|OpencodeVersion)\(/.test(l) && !l.includes("function maybeReprobe"),
+    );
+    check(
+      "P2-250: revalidation fires at exactly four use points (transcribe refusal, health ×2, settings)",
+      callLines.length === 4 &&
+        callLines.filter((l) => l.includes("maybeReprobeTranscription")).length === 1 &&
+        callLines.filter((l) => l.includes("maybeReprobeDocConvert")).length === 1 &&
+        callLines.filter((l) => l.includes("maybeReprobeOpencodeVersion")).length === 2,
+    );
+    // each call sits inside a route handler region (tunnel proxy or handleApi),
+    // never inside main()
+    const mainIdx = daemonSrc.indexOf("async function main()");
+    check(
+      "P2-250: no revalidation call site lives inside main()",
+      callLines.every((l) => {
+        const idx = daemonSrc.indexOf(l);
+        return idx !== -1 && idx < mainIdx;
+      }),
+    );
+  }
+
+  // no new periodic scheduling anywhere in the readiness wiring
+  {
+    const timerLines = code.split("\n").filter((l) => l.includes("setInterval(") || l.includes("setTimeout("));
+    check(
+      "P2-250: no timer is introduced by the readiness wiring",
+      timerLines.length > 0 &&
+        timerLines.every((l) => !l.toLowerCase().includes("readiness") && !l.includes("maybeReprobe") && !l.includes("P2-250")),
+    );
+  }
+
+  // the re-probe log lines carry ONLY the capability name and the resulting
+  // state (lesson P2-182: never a path, a resolved binary or env content)
+  {
+    const logLines = code.split("\n").filter((l) => l.includes("readiness re-probe"));
+    check(
+      "P2-250: each re-done probe logs exactly one line with capability + state only",
+      logLines.length === 2 &&
+        logLines.every((l) => /capability: "(transcription|doc-convert)", state: [\w.()]+?\s*\}/.test(l)),
+    );
+  }
+
+  // the health payload keeps the P2-232 fields verbatim and gains only the
+  // additive per-capability last-checked instants
+  check(
+    "P2-250: the health payload keeps docConvertState/Message/Exts and adds only checkedAt fields",
+    daemonSrc.includes("docConvertState: docConvert.state") &&
+      daemonSrc.includes("docConvertMessage: docConvert.message") &&
+      daemonSrc.includes("docConvertExts: docConvert.exts") &&
+      daemonSrc.includes('docConvertCheckedAt: readinessCheckedAt(readinessState["doc-convert"].probedAt)') &&
+      daemonSrc.includes('versionCheckedAt: readinessCheckedAt(readinessState["opencode-version"].probedAt)'),
   );
 }
 

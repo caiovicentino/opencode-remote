@@ -136,6 +136,21 @@ remoto, zero confiança**.
   no boot) antes de você mandar qualquer coisa; sem conversor instalado, a
   ferramenta responde com uma frase curta pedindo o LibreOffice — nunca um
   erro cru em inglês — e o arquivo original nunca é alterado
+- **Revalidação preguiçosa de capacidades (P2-250)** — os vereditos de
+  capacidade da máquina (transcrição de voz, conversão de documentos em PDF,
+  versão do opencode) continuam sondados uma vez no boot, mas não ficam mais
+  congelados: imediatamente antes de o daemon responder "esta máquina não faz
+  isso" (uma transcrição de voz recusada, a leitura do veredito de conversão
+  ou de versão na saúde/ajustes) ele volta a sondar a capacidade, no máximo
+  **uma vez por minuto por capacidade** — instalar o LibreOffice ou o whisper,
+  ou atualizar o opencode, passa a valer sem reiniciar o daemon. Veredito que
+  já funciona nunca é re-sondado (o caminho feliz custa zero), sondagem em
+  voo nunca é duplicada, e `GET /api/health` passa a carregar
+  `docConvertCheckedAt` / `opencode.versionCheckedAt` (aditivos) para uma tela
+  dizer quando cada capacidade foi conferida. Ajuste o intervalo mínimo com
+  `OCR_READINESS_MIN_MS` (milissegundos inteiros, padrão 60000, teto 3600000)
+  ou desligue a revalidação com `OCR_READINESS_DISABLE=off` (valores inválidos
+  derrubam o boot, fail-closed)
 - **Handoff** — continue a sessão exata no Mac (ícone de laptop no header do chat)
 - **Painel ao vivo** — estado de cada sessão: trabalhando, esperando aprovação,
   fez pergunta, pronto, erro; cards mostram o tempo relativo da última
