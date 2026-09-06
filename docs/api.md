@@ -98,6 +98,26 @@ bootstrap pairing window from docs/security.md. `false` once the window
 closed (or was never opened); reopen the pairing screen in the desktop app
 or restart the daemon to pair.
 
+### `/api/health` — capability last-checked instants (P2-250)
+
+`GET /api/health` adds two additive fields carrying WHEN each capability
+verdict was last probed (ISO instant, `null` before the first probe):
+`docConvertCheckedAt` at the top level and `versionCheckedAt` inside the
+`opencode` object. Every state/message field the payload already had keeps
+its exact shape.
+
+The verdicts themselves are no longer frozen at the boot probe: the daemon
+re-probes a capability lazily, right before it answers with a refusal
+(voice transcription 501) or serves the verdict (health route: doc conversion
++ version; `/__ocr/settings`: version), at most once per
+`OCR_READINESS_MIN_MS` per capability (whole milliseconds, default 60000,
+ceiling 3600000; invalid values fail the boot, fail-closed). A verdict that
+already works is never re-probed and a probe in flight is never duplicated.
+Set `OCR_READINESS_DISABLE=off|0|false` to turn revalidation off entirely;
+`on|1|true` is the documented enable value and anything else fails the boot.
+Each actually re-done probe logs exactly one line with the capability name
+and the resulting state — never a path, a resolved binary or env content.
+
 ### Pairing state (P2-007)
 
 Two read-only routes serve the desktop shell's first-run QR overlay; they are
