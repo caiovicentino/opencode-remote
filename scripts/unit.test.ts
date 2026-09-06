@@ -580,7 +580,7 @@ import {
   privacyProblems,
 } from "./mac-privacy";
 
-import { touchesDesktop } from "./ci-scope";
+import { touchesDesktop, touchesRelayImage } from "./ci-scope";
 
 import { imageTags } from "./relay-image";
 
@@ -15847,6 +15847,104 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     (diagSrc.match(/quit confirm:/g) ?? []).length === 1 &&
       diagSrc.includes("d.quitConfirm?.state") &&
       diagSrc.includes("d.quitConfirm?.reason"),
+  );
+}
+
+// --- P2-222: ci-scope — touchesRelayImage, PR relay-image scope classifier ----
+{
+  check("P2-222: touchesRelayImage — path under apps/relay", touchesRelayImage(["apps/relay/src/index.ts"]));
+  check("P2-222: touchesRelayImage — the relay Dockerfile itself", touchesRelayImage(["deploy/relay/Dockerfile"]));
+  check("P2-222: touchesRelayImage — root .dockerignore (docker context exclusion)", touchesRelayImage([".dockerignore"]));
+  check("P2-222: touchesRelayImage — root package-lock.json", touchesRelayImage(["package-lock.json"]));
+  check("P2-222: touchesRelayImage — bare relay dir entry counts", touchesRelayImage(["apps/relay"]));
+  check("P2-222: touchesRelayImage — apps/desktop path is not the relay surface", !touchesRelayImage(["apps/desktop/src/main.ts"]));
+  check("P2-222: touchesRelayImage — docs path is not the relay surface", !touchesRelayImage(["docs/PILOT.md"]));
+  check("P2-222: touchesRelayImage — empty diff", !touchesRelayImage([]));
+  check(
+    "P2-222: touchesRelayImage — windows-style separators normalize like forward ones",
+    touchesRelayImage(["apps\\relay\\src\\index.ts"]) &&
+      touchesRelayImage(["deploy\\relay\\Dockerfile"]) &&
+      touchesRelayImage(["apps\\relay\\src\\index.ts"]) === touchesRelayImage(["apps/relay/src/index.ts"]),
+  );
+  check(
+    "P2-222: touchesRelayImage — ./ prefix and whitespace normalize",
+    touchesRelayImage([" ./apps/relay/src/index.ts"]) && touchesRelayImage(["./package-lock.json"]),
+  );
+  check(
+    "P2-222: touchesRelayImage — app-sounding paths outside the surface don't count",
+    !touchesRelayImage(["apps/relay-tests/x.ts", "src/apps/relay-mock.ts"]),
+  );
+  check(
+    "P2-222: touchesDesktop keeps today's table intact (relay surface never trips it)",
+    touchesDesktop(["apps/desktop/src/main.ts"]) &&
+      touchesDesktop(["apps/web/src/lib/viewState.ts"]) &&
+      touchesDesktop(["package-lock.json"]) &&
+      touchesDesktop(["apps\\desktop\\src\\main.ts"]) &&
+      !touchesDesktop(["apps/relay/src/index.ts", "deploy/relay/Dockerfile", ".dockerignore", "docs/PILOT.md"]),
+  );
+}
+
+// --- P2-222: real-repo assertion — ci.yml wires relay-image to the new scope --
+{
+  const root = join(import.meta.dirname, "..");
+  const ci = readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8");
+  const relayJobStart = ci.indexOf("\n  relay-image:");
+  check("P2-222: ci.yml declares the relay-image job", relayJobStart !== -1);
+  const rest = ci.slice(relayJobStart + 1);
+  const nextJob = rest.match(/\n  [a-zA-Z0-9_-]+:/);
+  const relayJob = nextJob && nextJob.index !== undefined ? rest.slice(0, nextJob.index) : rest;
+  check(
+    "P2-222: relay-image runs on ubuntu-latest, needs scope, gated ONLY on the relay-image output",
+    relayJob.includes("runs-on: ubuntu-latest") &&
+      relayJob.includes("needs: scope") &&
+      relayJob.includes("if: needs.scope.outputs.relay-image == 'true'") &&
+      !relayJob.includes("outputs.desktop"),
+  );
+  check(
+    "P2-222: scope job exposes both indicators (desktop unchanged + relay-image)",
+    ci.includes("desktop: ${{ steps.scope.outputs.desktop }}") &&
+      ci.includes("relay-image: ${{ steps.scope.outputs.relay-image }}"),
+  );
+  check(
+    "P2-222: relay-image builds from deploy/relay/Dockerfile with an ephemeral local tag",
+    relayJob.includes("docker build -f deploy/relay/Dockerfile") && relayJob.includes("relay-smoke:pr"),
+  );
+  const buildIdx = relayJob.indexOf("docker build");
+  const runIdx = relayJob.indexOf("docker run -d");
+  const smokeIdx = relayJob.indexOf("scripts/relay-image-smoke.ts");
+  check(
+    "P2-222: boot + smoke run AFTER the build, with the release wait ceiling (30 attempts) and cleanup",
+    buildIdx !== -1 && runIdx !== -1 && smokeIdx !== -1 &&
+      buildIdx < runIdx && runIdx < smokeIdx &&
+      relayJob.includes("seq 1 30") &&
+      relayJob.includes("docker rm -f relay-smoke"),
+  );
+  check(
+    "P2-222: no step in the whole ci.yml logs in to a registry, pushes an image or reads secrets",
+    !ci.includes("docker/login-action") &&
+      !ci.includes("docker login") &&
+      !ci.includes("docker push") &&
+      !ci.includes("ghcr.io") &&
+      !ci.includes("secrets."),
+  );
+  const steps = relayJob.split(/\n      - /).slice(1);
+  const runSteps = steps.filter((step) => step.includes("run:"));
+  check(
+    "P2-222: every run step of relay-image declares shell: bash (P2-126/P2-164 lessons)",
+    runSteps.length >= 2 && runSteps.every((step) => step.includes("shell: bash")),
+  );
+  check(
+    "P2-222: heavy relay-image steps carry their own timeout",
+    runSteps.length >= 2 && runSteps.every((step) => step.includes("timeout-minutes:")),
+  );
+  check(
+    "P2-222: the two desktop packaging jobs remain present, still gated on the desktop output",
+    ci.includes("desktop-package:") &&
+      ci.includes("desktop-package-win:") &&
+      ci.includes("if: needs.scope.outputs.desktop == 'true'") &&
+      ci.includes("-- --mac --dir") &&
+      ci.includes("-- --win --dir") &&
+      (ci.match(/dist:smoke --workspace @ocr\/desktop -- --no-installer/g) ?? []).length === 2,
   );
 }
 
