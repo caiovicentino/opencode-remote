@@ -7,6 +7,8 @@
 // main.ts is the only place that translates this descriptor into the
 // Electron template.
 
+import type { HotkeyPlan } from "./hotkey";
+
 /** The roles the shell relies on. A closed union on purpose: editMenu and
  * windowMenu stay native roles exactly so the OS keeps translating them by
  * itself (P2-176), and the macOS app submenu keeps the system behaviors. */
@@ -51,12 +53,25 @@ const GO_TITLE = "Ir";
 const VIEW_TITLE = "Visualizar";
 const HELP_TITLE = "Ajuda";
 
+/** P2-229: the informational item shown when the global hotkey IS registered
+ * (the accelerator renders right beside it). When the plan refuses, the item
+ * shows the plan's reason phrase instead — never a lying combination. */
+export const HOTKEY_MENU_LABEL = "Atalho global para reabrir a janela";
+
 /** Help submenu: the tray-grade support actions a lay user looks for in the
  * menu bar (P3-016/P3-019 handlers, now reachable without the tray). The
  * update items exist only when a feed is configured — without one the Help
- * menu is the same three items everywhere. */
-function helpSubmenu(updateLabel: string | null, updatesEnabled: boolean): MenuItemSpec[] {
+ * menu is the same three items everywhere. `hotkey` rides along since P2-229:
+ * when present, the plan's outcome leads the submenu as a disabled line. */
+function helpSubmenu(updateLabel: string | null, updatesEnabled: boolean, hotkey?: HotkeyPlan | null): MenuItemSpec[] {
   const items: MenuItemSpec[] = [];
+  if (hotkey) {
+    items.push(
+      hotkey.register && hotkey.accelerator
+        ? { id: "help-hotkey", label: HOTKEY_MENU_LABEL, accelerator: hotkey.accelerator, enabled: false }
+        : { id: "help-hotkey", label: hotkey.reason, enabled: false },
+    );
+  }
   if (updatesEnabled) {
     // Informational-only status line, same contract as the tray (P3-019):
     // the install itself needs the consent dialog, never a menu mis-click.
@@ -71,11 +86,16 @@ function helpSubmenu(updateLabel: string | null, updatesEnabled: boolean): MenuI
 /**
  * The whole application menu as plain data. `platform` is process.platform,
  * `updateLabel` the tray's status label (updateMenuLabel(lastUpdateStatus) —
- * null when no check resolved yet or updates are disabled) and
- * `updatesEnabled` the updatesEnabled() verdict; the caller rebuilds the menu
- * on every status change so the label never goes stale (P2-176).
+ * null when no check resolved yet or updates are disabled), `updatesEnabled`
+ * the updatesEnabled() verdict and `hotkey` the resolved P2-229 plan (the
+ * caller rebuilds the menu on every status change so no label goes stale).
  */
-export function menuSpec(platform: string, updateLabel: string | null, updatesEnabled: boolean): MenuItemSpec[] {
+export function menuSpec(
+  platform: string,
+  updateLabel: string | null,
+  updatesEnabled: boolean,
+  hotkey?: HotkeyPlan | null,
+): MenuItemSpec[] {
   const items: MenuItemSpec[] = [];
   if (platform === "darwin") {
     items.push({
@@ -124,7 +144,7 @@ export function menuSpec(platform: string, updateLabel: string | null, updatesEn
     { role: "windowMenu" },
     {
       label: HELP_TITLE,
-      submenu: helpSubmenu(updateLabel, updatesEnabled),
+      submenu: helpSubmenu(updateLabel, updatesEnabled, hotkey),
     },
   );
   return items;

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, screen, session, Tray, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, powerMonitor, screen, session, Tray, shell } from "electron";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -45,6 +45,7 @@ import {
 } from "./quithint";
 import { quitAskFile, readQuitDontAsk, writeQuitDontAsk } from "./quitstore";
 import { WAKE_EVENT_TYPES, wakePlan } from "./wakeplan";
+import { HOTKEY_USER_ENV, hotkeyPlan, type HotkeyPlan } from "./hotkey";
 import { initDesktopLog, log, logError } from "./desktop-log";
 import { initSidecarLog } from "./sidecar-log";
 import { phonePaired, type PairingState } from "./pairing";
@@ -146,6 +147,12 @@ let lastQuitVerdict: QuitVerdict | null = null;
 // P2-221: while the native confirmation box is open, further explicit quits
 // are ignored — a double-click on the tray item must never stack two modals.
 let quitDialogShown = false;
+
+// P2-229: the global-hotkey plan, resolved EXACTLY ONCE at boot (in onReady,
+// before the first menu/tray build so both surfaces show its outcome) and
+// reused by every surface: the registration, the Help menu item and the tray
+// item. null only before ready — nothing consults it that early.
+let hotkey: HotkeyPlan | null = null;
 
 // P3-012: file logging installed before anything can log — console.* in the
 // packaged app is invisible to the stage-5 user (no terminal), so every
@@ -502,6 +509,20 @@ function setLoginItemEnabled(enabled: boolean): void {
 
 async function onReady(): Promise<void> {
   logInstanceBoot();
+  // P2-229: the global-hotkey plan is resolved ONCE after the app is ready,
+  // before the first menu/tray build — both surfaces display its outcome.
+  // Registration goes through the plan (harness session first, then the
+  // documented kill switch, then the owner choice, then the platform
+  // default); the shortcut itself calls the same showMainWindow() the tray
+  // uses.
+  hotkey = hotkeyPlan({
+    harnessSession: HERMETIC_E2E,
+    env: process.env,
+    userAccelerator: process.env[HOTKEY_USER_ENV],
+    platform: process.platform,
+  });
+  log(`[desktop] global hotkey: ${hotkey.register ? hotkey.accelerator : "off"} (${hotkey.reason})`);
+  registerGlobalHotkey();
   buildMenu();
   buildTray();
 
@@ -956,6 +977,10 @@ async function onReady(): Promise<void> {
       clearTimeout(updateRecheckTimer);
       updateRecheckTimer = null;
     }
+    // P2-229: the global shortcut must never outlive the process — a
+    // dangling system-wide key would keep firing into a dead app.
+    // unregisterAll() is idempotent and safe when nothing was registered.
+    globalShortcut.unregisterAll();
     // Encerra o daemon que subimos antes de sair (idempotente).
     if (daemonStopped) return;
     event.preventDefault();
@@ -1807,7 +1832,9 @@ function currentUpdateLabel(): string | null {
 }
 
 function buildMenu(): void {
-  Menu.setApplicationMenu(Menu.buildFromTemplate(toElectronItems(menuSpec(process.platform, currentUpdateLabel(), updatesEnabled()))));
+  Menu.setApplicationMenu(
+    Menu.buildFromTemplate(toElectronItems(menuSpec(process.platform, currentUpdateLabel(), updatesEnabled(), hotkey))),
+  );
 }
 
 // P3-015: prefer the monochrome template asset (build/trayTemplate.png;
@@ -1823,6 +1850,30 @@ function trayImage(): Electron.NativeImage {
   const img = nativeImage.createFromPath(source.path);
   if (source.template) img.setTemplateImage(true);
   return img;
+}
+
+// --- global reopen hotkey (P2-229) ---------------------------------------------
+// After close-to-tray (P2-021) the only way back was hunting the tray icon.
+// The plan is pure (src/hotkey.ts, unit-tested): the harness-session rule is
+// FIRST — tools/desktop.mjs and test:desktop-flow run on the operator's
+// machine and a test session must never steal system-wide keys — then the
+// documented kill switch, then the owner's accelerator (invalid → register
+// nothing, never a silent default) and finally the platform default. The
+// shortcut calls the SAME showMainWindow() the tray uses (no new window
+// type, nothing new to compose). Registration failure — normally the
+// combination already taken by another application — is the normal case and
+// fails OPEN on purpose: one log line, no dialog, the tray stays the
+// guaranteed way back.
+function registerGlobalHotkey(): void {
+  if (!hotkey?.register || !hotkey.accelerator) return;
+  try {
+    const ok = globalShortcut.register(hotkey.accelerator, showMainWindow);
+    if (!ok) {
+      log(`[desktop] global hotkey not registered: ${hotkey.accelerator} — combination likely taken by another application`);
+    }
+  } catch (err) {
+    logError("[desktop] global hotkey registration failed:", err);
+  }
 }
 
 function buildTray(): void {
@@ -1972,6 +2023,16 @@ function trayMenuItems(): Electron.MenuItemConstructorOptions[] {
   const items: Electron.MenuItemConstructorOptions[] = [
     { label: "Open OpenCode Remote", click: showMainWindow },
   ];
+  // P2-229: the same truth the Help menu carries — the active accelerator as
+  // a disabled informational item, or the plan's reason when nothing is
+  // registered (never a lying combination).
+  if (hotkey) {
+    items.push(
+      hotkey.register && hotkey.accelerator
+        ? { label: `Atalho global: ${hotkey.accelerator}`, enabled: false }
+        : { label: hotkey.reason, enabled: false },
+    );
+  }
   // P3-019/P1-050: update items exist only when a feed is configured — for an
   // unpackaged dev run without OCR_UPDATE_FEED the tray is byte-for-byte
   // identical to the pre-P3-019 menu. Packaged builds always have a feed: the

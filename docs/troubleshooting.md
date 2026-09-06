@@ -252,6 +252,29 @@ until the app is opened again (for example at the next login, P2-218).
   `OCR_DESKTOP_QUIT_DIALOG_ANSWER=quit|stay|never` auto-answers it on the
   desktop shell (test-only hatches for deterministic screenshots/flows).
 
+## The global reopen shortcut (P2-229)
+
+After the window is closed to the tray, a system-wide key combination brings
+it back from anywhere — `Command+Shift+O` on macOS, `Ctrl+Shift+O` on
+Windows/Linux — running the same show-and-focus path as the tray click. The
+Help menu and the tray show the active combination as a disabled line, so you
+can always see what is registered and why.
+
+- **Another app already owns the combination**: registration fails with one
+  line in the desktop.log (`global hotkey not registered`) and no dialog —
+  the tray keeps working as before. Pick a free combination with
+  `OCR_DESKTOP_HOTKEY="Ctrl+Alt+R"` and reopen the app.
+- **You want it gone**: set `OCR_DESKTOP_DISABLE_HOTKEY=1` and the shell
+  registers nothing; the Help menu and the tray then show the reason instead
+  of a shortcut.
+- **Your custom combination is ignored**: the value must be a real
+  accelerator with at least one modifier (`Ctrl`, `Alt`, `Shift`,
+  `CommandOrControl`…) plus an allowed key. An invalid value never falls back
+  silently to the default — nothing is registered and the surfaces say why.
+- **Automated test sessions never register a global shortcut**: a test run on
+  your machine must not steal system-wide keys, so the harness-session rule
+  comes first in the decision and disables the feature entirely.
+
 ## The window stopped responding (P2-223)
 
 If the app window freezes, the shell tells you instead of leaving you staring

@@ -1310,6 +1310,20 @@ window is closed, a one-time native notification says the app keeps running —
 in the menu bar on macOS, in the system tray on Windows/Linux — and how to
 reopen it; it is shown once and never again.
 
+**Global shortcut to reopen the window (P2-229)**: a system-wide key
+combination brings the window back from anywhere — `Command+Shift+O` on macOS
+and `Ctrl+Shift+O` on Windows/Linux. It runs the same show-and-focus path as
+the tray click, so a window closed by mistake needs no tray-icon hunt. The
+Help menu and the tray show the active combination as a disabled line — or
+the reason none is registered, never a lying shortcut. Choose another
+combination with `OCR_DESKTOP_HOTKEY="Ctrl+Alt+R"` (at least one modifier is
+required; an invalid value registers nothing instead of silently falling back
+to the default) or turn the feature off with `OCR_DESKTOP_DISABLE_HOTKEY=1`.
+If another application already owns the combination, registration fails open:
+one line in the desktop.log and the tray keeps working. Automated test
+sessions never register a global shortcut — a test run must not steal
+system-wide keys.
+
 **Quitting asks when the phone would lose access (P2-221)**: **Quit** in the
 tray menu and **Encerrar OpenCode Remote** in the app menu (or `Cmd+Q`) are a
 real quit with full daemon cleanup — and since the app now opens at login

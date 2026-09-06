@@ -1066,6 +1066,20 @@ rodando — na barra de menus no macOS, na bandeja do sistema no Windows/Linux
 — e como reabrir (clique no ícone da bandeja ou abra o app de novo). A dica
 aparece uma única vez; fechar de novo, ou reabrir depois, não notifica.
 
+**Atalho global para reabrir a janela (P2-229)**: uma combinação de teclas do
+sistema traz a janela de volta de qualquer lugar — `Command+Shift+O` no macOS
+e `Ctrl+Shift+O` no Windows/Linux. O atalho usa o mesmo caminho de mostrar e
+focar do clique na bandeja, então uma janela fechada por engano não exige
+caçar o ícone. O menu Ajuda e a bandeja exibem a combinação ativa como item
+informativo desabilitado — ou o motivo de nenhum atalho estar registrado,
+jamais uma combinação mentirosa. Escolha outra combinação com
+`OCR_DESKTOP_HOTKEY="Ctrl+Alt+R"` (pelo menos um modificador é obrigatório;
+valor inválido não registra nada em vez de cair no padrão em silêncio) ou
+desligue a feature com `OCR_DESKTOP_DISABLE_HOTKEY=1`. Se outro aplicativo já
+usa a combinação, o registro falha aberto: uma linha no desktop.log e a
+bandeja continua funcionando. Sessões de teste automatizadas nunca registram
+atalho global — um run de teste não pode roubar teclas do sistema inteiro.
+
 **Sair pede confirmação quando o celular perderia o acesso (P2-221)**: o item
 **Quit** da bandeja e o **Encerrar OpenCode Remote** do menu do app (ou
 `Cmd+Q`) fazem um quit de verdade com limpeza completa do daemon — e como o
