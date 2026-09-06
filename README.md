@@ -1005,6 +1005,18 @@ the P2-129 jittered backoff unchanged. The verdict shows up as additive
 `lastClose: { code, kind }` inside `/api/health`'s `relayRetry` object — the
 raw close reason is never exposed.
 
+**Dial-error-aware relay retries (P2-260)**: when the relay cannot even be
+reached — the name does not resolve, the connection is refused, the connect
+time runs out, or the relay's TLS certificate is expired, untrusted or for
+another hostname — the daemon classifies the dial error the way it classifies
+close codes, and logs one short static pt-BR hint instead of the raw Node
+message (which embeds the relay host and port). Permanent configuration
+causes floor the reconnect wait at 60s and certificate causes at 5min — a
+wrong address or certificate never heals with waiting, so the machine stops
+hammering it — while transient blips keep the P2-129 jittered backoff
+untouched. The verdict shows up as additive `lastDial: { kind, hint }` inside
+`/api/health`'s `relayRetry` object, next to `lastClose`.
+
 ## CLI
 
 ```bash

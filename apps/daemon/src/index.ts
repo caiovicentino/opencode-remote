@@ -82,6 +82,7 @@ import { createShutdown, stopAccepting } from "./shutdown.js";
 import { localUpgradeAllowed } from "./localws.js";
 import { createRelayRetry } from "./relayretry.js";
 import { classifyRelayClose, effectiveRetryDelayMs, type RelayCloseKind } from "./relayclose.js";
+import { relayDialVerdict, type RelayDialKind } from "./relaydialerror.js";
 import { parseRelayUrl, redactRelayUrl } from "./relayurl.js";
 import { bodyLimit, isBodyLimitError, readLimitedBody, type BodyLimitError } from "./bodylimit.js";
 import { pairWindow, bootstrapDecision } from "./pairwindow.js";
@@ -2702,6 +2703,16 @@ const relayRetry = createRelayRetry();
 // /api/health's relayRetry object as lastClose — code + kind only; the raw
 // close reason never reaches the API surface.
 let relayLastClose: { code: number | null; kind: RelayCloseKind } | null = null;
+// P2-260: verdict of the most recent relay dial failure, surfaced additively
+// inside /api/health's relayRetry object as lastDial — kind + static pt-BR
+// hint only; the raw Node message (it embeds the relay host and port) never
+// reaches the log or the API surface.
+let relayLastDial: { kind: RelayDialKind; hint: string } | null = null;
+// P2-260: floor of the dial failure in flight. A dial error never produces a
+// close code (ws emits a generic 1006 close right after the error), so the
+// close handler consumes this with the same max(jittered, floor) rule
+// effectiveRetryDelayMs applies to close floors — no new timer.
+let relayPendingDialFloorMs = 0;
 // handle to the loopback API/metrics server (shutdown calls .close())
 let apiServer: HttpServer | null = null;
 // P2-161: the port the loopback API server actually bound (set in main()).
@@ -2737,6 +2748,8 @@ function connectRelay() {
 
     ws.on("open", () => {
       relayRetry.reset();
+      // P2-260: a successful dial invalidates any stale dial-failure floor.
+      relayPendingDialFloorMs = 0;
       log("info", "connected to relay", { relay: redactRelayUrl(RELAY_URL), room: daemon.room });
     metrics.gauge("ocr_relay_connected", 1);
     metrics.inc("ocr_relay_connects_total");
@@ -2752,7 +2765,16 @@ function connectRelay() {
     // curve as an abrupt network drop. The kind's floor only ever lengthens
     // the wait; transient keeps the P2-129 jittered schedule untouched.
     const verdict = classifyRelayClose(code, Buffer.isBuffer(reason) ? reason.toString("utf-8") : "");
-    const retryInMs = effectiveRetryDelayMs(relayRetry.schedule(), verdict);
+    // P2-260: a dial failure (unresolved name, refused, timeout, bad relay
+    // certificate) never produces a close code — the close that follows the
+    // error is the generic 1006. The pending dial verdict floors the same
+    // wait via the same max(jittered, floor) rule the close verdict uses; a
+    // transient drop keeps the P2-129 jittered schedule untouched.
+    const retryInMs = Math.max(
+      effectiveRetryDelayMs(relayRetry.schedule(), verdict),
+      relayPendingDialFloorMs,
+    );
+    relayPendingDialFloorMs = 0;
     relayLastClose = { code: typeof code === "number" ? code : null, kind: verdict.kind };
     metrics.inc("ocr_relay_retries_total");
     log("warn", "relay connection lost; retrying", {
@@ -2771,7 +2793,18 @@ function connectRelay() {
     setTimeout(connectRelay, retryInMs);
   });
 
-  ws.on("error", (err) => log("error", "relay error", { error: err.message }));
+  ws.on("error", (err) => {
+    // P2-260: triage the failure instead of logging the raw Node message —
+    // the message embeds the relay host and port, and the sidecar log ships
+    // in support requests (P2-163). Only the kind + static pt-BR hint are
+    // recorded; unknown input stays transient (floor 0), so the wait only
+    // ever lengthens for a known permanent cause.
+    const errCode = (err as NodeJS.ErrnoException).code;
+    const verdict = relayDialVerdict(typeof errCode === "string" ? errCode : null, err.message);
+    relayPendingDialFloorMs = verdict.floorMs;
+    relayLastDial = { kind: verdict.kind, hint: verdict.hint };
+    log("error", "relay dial failed", { kind: verdict.kind, hint: verdict.hint });
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -3172,9 +3205,13 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
         // P2-156: additive lastClose inside relayRetry — the close code and
         // triage kind of the most recent relay close (null until the first
         // close happens). No raw reason, URL or room id is ever exposed.
+        // P2-260: additive lastDial in the same surface — kind + static
+        // pt-BR hint of the most recent relay dial failure (null until the
+        // first dial error), so the machine's owner can see WHY the relay is
+        // unreachable; the raw Node message never reaches the payload.
         relayRetry: relayConnected
           ? null
-          : { ...relayRetry.snapshot(), lastClose: relayLastClose },
+          : { ...relayRetry.snapshot(), lastClose: relayLastClose, lastDial: relayLastDial },
         // P2-139: additive boot-validation verdict of RELAY_URL; relayConnected
         // and relayRetry above keep their exact shape. Userinfo (if any) is
         // redacted before the URL reaches the API surface.

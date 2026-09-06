@@ -15,6 +15,7 @@ import { parsePairingUri, localWsUrl, shouldFailoverToRelay } from "../apps/web/
 import { isLoopbackAddr, localOriginAllowed, localUpgradeAllowed } from "../apps/daemon/src/localws";
 
 import { classifyRelayClose, effectiveRetryDelayMs } from "../apps/daemon/src/relayclose";
+import { relayDialVerdict, RELAY_DIAL_FLOOR_MS } from "../apps/daemon/src/relaydialerror";
 import {
   DEFAULT_RUN_LEASE_MS,
   RUN_LEASE_CEILING_MS,
@@ -11294,6 +11295,183 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     identical &&= effectiveRetryDelayMs(withFloor.schedule(), transientVerdict) === pure.schedule();
   }
   check("P2-156: 10 retries under transient match the bare P2-129 curve", identical);
+}
+
+
+// --- P2-260: relay dial-error triage (pure classifier + floor rule) ---------
+
+{
+  // 1. every known network code with its kind and floor
+  check(
+    "P2-260: ENOTFOUND resolves to unresolved-name with a 60s floor",
+    relayDialVerdict("ENOTFOUND", "getaddrinfo ENOTFOUND relay-host").kind === "unresolved-name" &&
+      relayDialVerdict("ENOTFOUND", "").floorMs === 60_000,
+  );
+  check(
+    "P2-260: ECONNREFUSED resolves to refused with a 60s floor",
+    relayDialVerdict("ECONNREFUSED", "connect ECONNREFUSED").kind === "refused" &&
+      relayDialVerdict("ECONNREFUSED", "").floorMs === 60_000,
+  );
+  check(
+    "P2-260: ETIMEDOUT resolves to timed-out with a 60s floor",
+    relayDialVerdict("ETIMEDOUT", "connect ETIMEDOUT").kind === "timed-out" &&
+      relayDialVerdict("ETIMEDOUT", "").floorMs === 60_000,
+  );
+  // temporary DNS failure keeps the fast P2-129 curve (documented exception)
+  check(
+    "P2-260: EAI_AGAIN is a known code that stays transient with zero floor",
+    relayDialVerdict("EAI_AGAIN", "getaddrinfo EAI_AGAIN relay-host").kind === "transient" &&
+      relayDialVerdict("EAI_AGAIN", "").floorMs === 0,
+  );
+
+  // 2. every known certificate code with its kind and long floor
+  for (const code of ["CERT_HAS_EXPIRED", "ERR_SSL_SSLV3_ALERT_CERTIFICATE_EXPIRED"]) {
+    const v = relayDialVerdict(code, "");
+    check(`P2-260: ${code} resolves to cert-expired with a long floor`, v.kind === "cert-expired" && v.floorMs === 300_000);
+  }
+  check(
+    "P2-260: ERR_TLS_CERT_ALTNAME_INVALID resolves to cert-name-mismatch with a long floor",
+    relayDialVerdict("ERR_TLS_CERT_ALTNAME_INVALID", "").kind === "cert-name-mismatch" &&
+      relayDialVerdict("ERR_TLS_CERT_ALTNAME_INVALID", "").floorMs === 300_000,
+  );
+  for (const code of [
+    "DEPTH_ZERO_SELF_SIGNED_CERT",
+    "SELF_SIGNED_CERT_IN_CHAIN",
+    "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+    "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+    "UNABLE_TO_GET_ISSUER_CERT",
+  ]) {
+    const v = relayDialVerdict(code, "");
+    check(`P2-260: ${code} resolves to cert-untrusted with a long floor`, v.kind === "cert-untrusted" && v.floorMs === 300_000);
+  }
+
+  // 3. rule order — a certificate cause beats a network cause in one input
+  check(
+    "P2-260: cert code wins over network text (rule 1 over rule 3)",
+    relayDialVerdict("CERT_HAS_EXPIRED", "getaddrinfo ENOTFOUND relay-host").kind === "cert-expired",
+  );
+  check(
+    "P2-260: cert text wins over network text when no code is known (rule 1 inside the heuristic)",
+    relayDialVerdict(null, "getaddrinfo ENOTFOUND relay-host: certificate has expired").kind === "cert-expired",
+  );
+  // rule order — a known code beats message text suggesting another cause
+  check(
+    "P2-260: known code wins over text suggesting a certificate cause (rule 2)",
+    relayDialVerdict("ECONNREFUSED", "certificate has expired").kind === "refused",
+  );
+  check(
+    "P2-260: known code wins over text suggesting another network cause (rule 2)",
+    relayDialVerdict("ECONNREFUSED", "getaddrinfo ENOTFOUND relay-host").kind === "refused",
+  );
+
+  // 4. text alone (no code) classified by the documented heuristic
+  check("P2-260: bare getaddrinfo text is unresolved-name", relayDialVerdict(null, "getaddrinfo ENOTFOUND relay").kind === "unresolved-name");
+  check("P2-260: bare refused text is refused", relayDialVerdict(null, "connection refused by peer").kind === "refused");
+  check("P2-260: bare timed-out text is timed-out", relayDialVerdict(null, "connection timed out").kind === "timed-out");
+  check("P2-260: bare expired-certificate text is cert-expired", relayDialVerdict(null, "certificate has expired").kind === "cert-expired");
+  check("P2-260: bare altname text is cert-name-mismatch", relayDialVerdict(null, "hostname does not match certificate's altnames").kind === "cert-name-mismatch");
+  check("P2-260: bare self-signed text is cert-untrusted", relayDialVerdict(null, "self signed certificate in certificate chain").kind === "cert-untrusted");
+  check("P2-260: bare certificate text is cert-other", relayDialVerdict(null, "certificate verification failed").kind === "cert-other");
+
+  // 5. fail-closed: unknown / missing / empty input is transient, floor zero
+  check("P2-260: unknown code is transient with zero floor", relayDialVerdict("ESOMETHINGELSE", "something broke").kind === "transient" && relayDialVerdict("ESOMETHINGELSE", "something broke").floorMs === 0);
+  check("P2-260: absent code with uninformative message is transient", relayDialVerdict(null, "something broke").kind === "transient");
+  check("P2-260: empty message is transient", relayDialVerdict(null, "").kind === "transient" && relayDialVerdict(null, "").floorMs === 0);
+  check("P2-260: entirely absent input is transient", relayDialVerdict().kind === "transient" && relayDialVerdict().floorMs === 0);
+  check("P2-260: undefined message with unknown code is transient", relayDialVerdict("ENOIDEA", undefined).kind === "transient");
+
+  // 6. pure and deterministic: the same input twice gives the same verdict
+  const first = relayDialVerdict("ENOTFOUND", "getaddrinfo ENOTFOUND relay");
+  const second = relayDialVerdict("ENOTFOUND", "getaddrinfo ENOTFOUND relay");
+  check(
+    "P2-260: the same input classifies identically in two calls",
+    first.kind === second.kind && first.floorMs === second.floorMs && first.hint === second.hint,
+  );
+
+  // 7. the floor table is exactly the eight documented kinds
+  check(
+    "P2-260: floor table covers the eight kinds with transient at zero",
+    Object.keys(RELAY_DIAL_FLOOR_MS).length === 8 &&
+      RELAY_DIAL_FLOOR_MS.transient === 0 &&
+      RELAY_DIAL_FLOOR_MS["unresolved-name"] === 60_000 &&
+      RELAY_DIAL_FLOOR_MS["cert-expired"] === 300_000,
+  );
+
+  // 8. hints are static pt-BR operator copy: no host, port, URL, path or secret
+  const dialHintByKind = new Map<string, string>([
+    ["unresolved-name", relayDialVerdict("ENOTFOUND", "").hint],
+    ["refused", relayDialVerdict("ECONNREFUSED", "").hint],
+    ["timed-out", relayDialVerdict("ETIMEDOUT", "").hint],
+    ["cert-expired", relayDialVerdict("CERT_HAS_EXPIRED", "").hint],
+    ["cert-untrusted", relayDialVerdict("DEPTH_ZERO_SELF_SIGNED_CERT", "").hint],
+    ["cert-name-mismatch", relayDialVerdict("ERR_TLS_CERT_ALTNAME_INVALID", "").hint],
+    ["cert-other", relayDialVerdict(null, "certificate verification failed").hint],
+    ["transient", relayDialVerdict(null, "").hint],
+  ]);
+  const dialHints = [...dialHintByKind.values()];
+  check("P2-260: every kind ships a non-empty, distinct hint", dialHints.every((h) => h.length > 0) && new Set(dialHints).size === 8);
+  check(
+    "P2-260: hints carry no host, port, URL, path or secret (no digits, no slashes, no scheme)",
+    dialHints.every((h) => !/[0-9]/.test(h) && !h.includes("/") && !h.includes("://") && !h.toLowerCase().includes("url") && !h.toLowerCase().includes("host") && !h.toLowerCase().includes("porta") && !h.toLowerCase().includes("token") && !h.toLowerCase().includes("caminho")),
+  );
+  check(
+    "P2-260: each kind's hint names its cause in plain pt-BR",
+    dialHintByKind.get("unresolved-name")!.includes("não resolve") &&
+      dialHintByKind.get("refused")!.includes("recusou") &&
+      dialHintByKind.get("timed-out")!.includes("esgotou o tempo") &&
+      dialHintByKind.get("cert-expired")!.includes("vencido") &&
+      dialHintByKind.get("cert-untrusted")!.includes("confiável") &&
+      dialHintByKind.get("cert-name-mismatch")!.includes("não confere") &&
+      dialHintByKind.get("cert-other")!.includes("problema de certificado") &&
+      dialHintByKind.get("transient")!.includes("temporária"),
+  );
+
+  // 9. module hygiene: the real relaydialerror.ts imports nothing at all —
+  // no ws, net, tls, node:fs, no fetch — so no test can ever boot a daemon
+  const dialSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "relaydialerror.ts"), "utf8");
+  check(
+    "P2-260: relaydialerror.ts is pure — zero imports (no ws, net, tls, node:fs, fetch)",
+    !/^\s*import\b/m.test(dialSrc) && !dialSrc.includes("require(") && !dialSrc.includes("fetch"),
+  );
+  check(
+    "P2-260: relaydialerror.ts never mentions ws/net/tls as modules",
+    !/\bfrom\s+["'](ws|net|tls|node:fs)["']/.test(dialSrc),
+  );
+
+  // 10. the real index.ts classifies in the existing error handler, never
+  // logs the raw Node message in free text, and adds no new timer
+  const indexSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  const relayFnStart = indexSrc.indexOf("function connectRelay(");
+  const relayFnEnd = indexSrc.indexOf("const localWss", relayFnStart);
+  const relayFn = indexSrc.slice(relayFnStart, relayFnEnd);
+  const errorStart = relayFn.indexOf('ws.on("error"');
+  const errorBlock = relayFn.slice(errorStart);
+  check("P2-260: the relay socket error handler classifies via relayDialVerdict", errorBlock.includes("relayDialVerdict("));
+  check(
+    "P2-260: the raw error message is no longer logged in free text",
+    !errorBlock.includes('"relay error"') && !/"error"\s*:\s*err\.message/.test(errorBlock) && !errorBlock.includes("{ error: err.message }"),
+  );
+  check(
+    "P2-260: the error handler surfaces only the kind + static hint",
+    errorBlock.includes("relayLastDial = { kind: verdict.kind, hint: verdict.hint }") &&
+      !/[,{]\s*error:/.test(errorBlock),
+  );
+  check(
+    "P2-260: no new timer — connectRelay keeps exactly one setTimeout and zero setInterval",
+    (relayFn.match(/setTimeout\(/g) ?? []).length === 1 && !relayFn.includes("setInterval("),
+  );
+  check(
+    "P2-260: the close handler consumes the dial floor with the same max rule",
+    relayFn.includes("relayPendingDialFloorMs") && /Math\.max\(\s*effectiveRetryDelayMs\(/.test(relayFn),
+  );
+  check(
+    "P2-260: a successful dial clears the pending floor",
+    relayFn.includes("relayPendingDialFloorMs = 0;"),
+  );
+  check(
+    "P2-260: the dial hint rides the same health surface as lastClose",
+    indexSrc.includes("lastClose: relayLastClose, lastDial: relayLastDial"),
+  );
 }
 
 
