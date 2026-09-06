@@ -42,6 +42,15 @@ import {
 } from "./backpressure.js";
 import { acceptVerdict, parseMaxSockets } from "./capacity.js";
 import {
+  budgetVerdict,
+  parseRoomBudget,
+  ROOM_BUDGET_CLOSE_CODE,
+  ROOM_BUDGET_CLOSE_REASON,
+  ROOM_BUDGET_WARN_REASON,
+  type RoomBudgetLimits,
+  type RoomBudgetState,
+} from "./roombudget.js";
+import {
   idleUnjoined,
   parseJoinDeadline,
   JOIN_UNJOINED_CLOSE_CODE,
@@ -282,6 +291,23 @@ if (JOIN_DEADLINE.problems.length > 0) {
   process.exit(1);
 }
 const joinDeadlineMs = JOIN_DEADLINE.deadlineMs;
+// P2-243: the per-room accumulated-volume budget (RELAY_ROOM_BUDGET_WINDOW_MS
+// + RELAY_ROOM_BUDGET_BYTES) resolves fail-closed like every knob above — a
+// non-numeric, zero, negative (other than the documented -1 disable value),
+// fractional or above-ceiling value refuses the boot (one log line per
+// reason, exit 1, no listener) instead of serving with an unvalidated
+// budget. Absent or blank keeps the documented defaults (1 GiB per room per
+// 1 h window); the budget gates only the forwarding loop below — admission,
+// the frame-size cap, the rate bucket and the backpressure verdict are
+// untouched.
+const ROOM_BUDGET = parseRoomBudget(process.env);
+if (ROOM_BUDGET.problems.length > 0) {
+  for (const reason of ROOM_BUDGET.problems) {
+    ev("warn", "invalid relay room budget, refusing to start (fail-closed)", { reason });
+  }
+  process.exit(1);
+}
+const roomBudgetLimits: RoomBudgetLimits = { windowMs: ROOM_BUDGET.windowMs, capBytes: ROOM_BUDGET.capBytes };
 // The only fs touches of the static route: existence/file checks per request
 // and a streamed body (empty for HEAD). isFile canonicalizes the target with
 // realpath before the containment comparison — with a separator boundary, so
@@ -370,6 +396,12 @@ interface Socket extends WebSocket {
 
 const rooms = new Map<string, Set<Socket>>();
 
+// P2-243: accumulated per-room volume within the tumbling window, keyed by
+// room id. Written only on the forwarding path (no timer, no sweep) and
+// discarded in leaveAll the moment the room itself dies, so the map can
+// never outgrow `rooms`.
+const roomBudgets = new Map<string, RoomBudgetState>();
+
 // --- optional metrics endpoint (bind configurable, token-optional) -----------
 // P2-132: the bind address is configurable (RELAY_METRICS_BIND) so a scraper
 // outside the container can reach it, and an optional bearer token
@@ -389,6 +421,8 @@ const m = {
   capacityRefused: 0,
   // P2-230: sockets closed for never having joined any room.
   idleUnjoinedClosed: 0,
+  // P2-243: rooms closed for moving more bytes than the window budget allows.
+  roomBudgetTerminated: 0,
   startedAt: Date.now(),
 };
 if (METRICS.port && METRICS.problems.length === 0) {
@@ -485,7 +519,12 @@ function join(socket: Socket, room: string) {
 function leaveAll(socket: Socket) {
   for (const room of socket.rooms ?? []) {
     rooms.get(room)?.delete(socket);
-    if (rooms.get(room)?.size === 0) rooms.delete(room);
+    if (rooms.get(room)?.size === 0) {
+      rooms.delete(room);
+      // P2-243: the budget state dies with the room — the map never holds
+      // an entry for a room that no longer exists.
+      roomBudgets.delete(room);
+    }
   }
 }
 
@@ -537,6 +576,8 @@ server.on(
       startedAt: m.startedAt,
       rooms: () => rooms.size,
       roomsRejected: () => m.roomsRejected,
+      // P2-243: additive — rooms closed by the per-room volume budget.
+      roomsBudgetTerminated: () => m.roomBudgetTerminated,
     },
     isShuttingDown,
     // P2-188: optional static PWA route (RELAY_WEB_DIR); undefined keeps the
@@ -585,6 +626,11 @@ server.listen(PORT, () => {
     // (JOIN_DEADLINE_MS_DISABLED when the reaper is disabled). No
     // pre-existing field changed name or meaning.
     joinDeadlineMs,
+    // P2-243: additive provenance fields — the resolved per-room volume
+    // budget (capBytes is ROOM_BUDGET_BYTES_DISABLED when the budget is
+    // disabled). No pre-existing field changed name or meaning.
+    roomBudgetWindowMs: ROOM_BUDGET.windowMs,
+    roomBudgetCapBytes: ROOM_BUDGET.capBytes,
     // P2-177: additive provenance field — the resolved log level this
     // process writes at. No pre-existing field changed name or meaning.
     logLevel: LOG.level,
@@ -735,14 +781,42 @@ wss.on("connection", (socket: Socket, req) => {
 
     const targets = rooms.get(frame.room);
     if (!targets) return;
-    m.framesRouted++;
-    m.bytesRouted += frame.payload.length;
     const out = JSON.stringify({
       room: frame.room,
       from: frame.from ?? socket.id,
       seq: frame.seq,
       payload: frame.payload,
     });
+    // P2-243: per-room accumulated-volume verdict, consulted at the SAME
+    // forwarding point as the token bucket above and the per-socket
+    // backpressure verdict in the loop below — no new timer, no sweep, boot
+    // unchanged. Only this frame's serialized byte count is counted: never
+    // its content, never an envelope field, never any identity. The state
+    // dies with the room (leaveAll), so the map cannot grow forever.
+    const budget = budgetVerdict(roomBudgets.get(frame.room), Date.now(), out.length, roomBudgetLimits);
+    roomBudgets.set(frame.room, budget.state);
+    if (budget.plan.action === "terminate") {
+      m.roomBudgetTerminated++;
+      ev("warn", "room closed: volume above the window budget", {
+        room: frame.room.slice(0, 8),
+        count: m.roomBudgetTerminated,
+        reason: ROOM_BUDGET_CLOSE_REASON,
+      });
+      // the same close path every policy close uses (room full, slow
+      // consumer): each socket of the room closes alone and runs the normal
+      // close path — per-IP slot release included
+      for (const t of [...targets]) t.close(ROOM_BUDGET_CLOSE_CODE, ROOM_BUDGET_CLOSE_REASON);
+      return;
+    }
+    if (budget.plan.action === "warn") {
+      // at most ONE line per room per window (budgetVerdict's warned flag)
+      ev("warn", "room nearing the window volume budget", {
+        room: frame.room.slice(0, 8),
+        reason: ROOM_BUDGET_WARN_REASON,
+      });
+    }
+    m.framesRouted++;
+    m.bytesRouted += frame.payload.length;
     for (const t of targets) {
       if (t === socket || t.readyState !== t.OPEN) continue;
       // P2-217: backpressure gate — consult the target's own accumulated

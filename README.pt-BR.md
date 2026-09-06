@@ -672,7 +672,17 @@ e derrubar as conversas de todos os inquilinos. E a conexão precisa se
 habilitar pra vaga (P2-230): socket que nunca entra em quarto é fechado após
 `RELAY_JOIN_DEADLINE_MS` (padrão 60s, teto 1h, `-1` desliga) com métrica
 `idle_unjoined_closed` — o pong automático sozinho não segura vaga pra
-sempre.
+sempre. E nenhum quarto come o link por volume (P2-243): dentro de uma
+janela que se renova (`RELAY_ROOM_BUDGET_WINDOW_MS`, padrão 1h), um quarto
+só pode encaminhar `RELAY_ROOM_BUDGET_BYTES` (padrão
+1 GiB, ~3,8x a hora mais pesada legítima de conversa + voz + arquivos +
+screenshots) antes de ter os sockets fechados — metade do teto escreve uma
+linha de aviso por janela, o teto fechado gera o contador
+`roomsBudgetTerminated` no `/healthz`. Só o tamanho dos quadros é acumulado
+(o relay continua cego: nenhum conteúdo, nenhum campo de envelope, nenhuma
+identidade); `RELAY_ROOM_BUDGET_BYTES=-1` desliga o orçamento num relay
+privado e allowlistado. Runbook:
+[docs/RELAY-HOSTING.md](docs/RELAY-HOSTING.md).
 
 A imagem também entrega a PWA do celular (P2-188): ela define
 `RELAY_WEB_DIR=/app/apps/web/dist`, então a URL do relay no navegador do

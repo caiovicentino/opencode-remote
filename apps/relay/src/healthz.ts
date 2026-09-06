@@ -89,6 +89,9 @@ export interface HealthzState {
   startedAt: number;
   rooms: () => number;
   roomsRejected: () => number;
+  /** P2-243: additive — rooms closed by the per-room volume budget. When
+   *  absent the payload keeps the exact pre-P2-243 shape. */
+  roomsBudgetTerminated?: () => number;
 }
 
 export interface HealthzPayload {
@@ -99,6 +102,9 @@ export interface HealthzPayload {
   roomsRejected: number;
   /** Additive and only present while draining (P2-145). */
   draining?: true;
+  /** Additive (P2-243): rooms terminated by the per-room volume budget,
+   *  present only when the state provides the counter. */
+  roomsBudgetTerminated?: number;
 }
 
 export function healthzPayload(s: HealthzState, now = Date.now(), draining = false): HealthzPayload {
@@ -109,6 +115,9 @@ export function healthzPayload(s: HealthzState, now = Date.now(), draining = fal
     rooms: s.rooms(),
     roomsRejected: s.roomsRejected(),
   };
+  // P2-243: additive field only when the state provides the getter — a state
+  // without it reproduces the pre-P2-243 body byte for byte
+  if (s.roomsBudgetTerminated !== undefined) base.roomsBudgetTerminated = s.roomsBudgetTerminated();
   // healthy body stays byte-identical to the pre-P2-145 probe; the additive
   // field only appears while draining (ok flips to false in the same case)
   return draining ? { ...base, draining: true } : base;

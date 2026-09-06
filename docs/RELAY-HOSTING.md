@@ -109,6 +109,8 @@ builds this same image (the `caddy` profile adds TLS termination on top).
 | `RELAY_MAX_PER_ROOM` | `10` | Peer ceiling per room. Must not exceed `RELAY_MAX_SOCKETS`. |
 | `RELAY_MAX_FRAME_BYTES` | `1000000` | Largest accepted frame in bytes (ws `maxPayload`). Hard ceiling is `16777216` (16 MiB, the int32 `maxPayload` bound); sealed op payloads are far smaller. |
 | `RELAY_BUFFER_CAP_BYTES` | `4194304` | Per-socket ceiling on accumulated outgoing bytes (P2-217): when a target's own queue plus the next frame passes it, that target is closed with close code `1013` and the reason `consumidor lento: buffer de saida acima do teto` instead of buffering forever. Ceiling `67108864` (64 MiB); a non-numeric, zero, negative, fractional or above-ceiling value refuses the boot (fail-closed). Raise it only on an instance whose peers legitimately buffer multi-megabyte bursts. |
+| `RELAY_ROOM_BUDGET_WINDOW_MS` | `3600000` | Length of the per-room volume-budget window (P2-243): a tumbling window per room; the first forwarded frame after a reset starts the next one. Ceiling `86400000` (24 h); a non-numeric, zero, negative, fractional or above-ceiling value refuses the boot (fail-closed). See the room-budget section below. |
+| `RELAY_ROOM_BUDGET_BYTES` | `1073741824` | Per-room ceiling on accumulated forwarded-frame bytes within the window (P2-243): crossing half the cap warns once per window, crossing the cap closes every socket of the room. Ceiling `17179869184` (16 GiB); the documented disable value is `-1`; a non-numeric, zero, negative (other than `-1`), fractional or above-ceiling value refuses the boot (fail-closed). See the room-budget section below. |
 | `RELAY_METRICS_PORT` | unset (off) | Leave unset in containers unless a scraper needs it. When set, the endpoint serves counters on `/metrics` (JSON, or Prometheus text with `?format=prom`). |
 | `RELAY_METRICS_BIND` | `127.0.0.1` | Keep the loopback default unless your scraper sits outside the container (k8s sidecars share the network namespace and don't need it). Any non-loopback address **requires** `RELAY_METRICS_TOKEN` — the relay refuses to boot the metrics endpoint on a network-exposed interface without one (fail-closed) and logs the reason instead. |
 | `RELAY_METRICS_TOKEN` | unset (no auth) | Required whenever `RELAY_METRICS_BIND` leaves loopback. Scrapers must send `Authorization: Bearer <token>`; every other request gets an empty `401`. The endpoint exposes envelope counters only — no plaintext, no key material, no room ids. |
@@ -264,6 +266,48 @@ ceiling is one hour. `-1` disables the reaper entirely — sensible only for a
 private, allowlisted relay where every peer provably joins. A non-numeric,
 zero, negative (other than `-1`), fractional or above-ceiling value refuses
 the boot (fail-closed).
+
+### One room cannot eat the link: the per-room volume budget (P2-243)
+
+Every traffic control above is instantaneous: the per-frame cap bounds one
+frame (P2-141), the token bucket bounds frames per second per connection
+(P3-004) and the backpressure cap bounds bytes queued on one socket
+(P2-217). A room whose peers stayed comfortably inside all three could
+still move bytes forever — the hosted relay's traffic bill had no ceiling,
+and no log line said which room grew. The per-room budget is the missing
+accumulated dimension: within a tumbling window (`RELAY_ROOM_BUDGET_WINDOW_MS`,
+default one hour), a room may forward at most
+`RELAY_ROOM_BUDGET_BYTES` (default 1 GiB, ~3.8x the heaviest legitimate
+room-hour of the product: chat + voice + file transfers + screenshots). Two
+lines are the whole operator surface:
+
+- **One warn per window, at half the cap**: `room nearing the window volume
+  budget` — an early signal while the room can still finish the window
+  legitimately. At most one line per room per window.
+- **Terminate at the cap**: `room closed: volume above the window budget` —
+  every socket of the room is closed (close code `1013`, reason `sala
+  encerrada: volume acima do teto da janela`) through the same policy-close
+  path as a full room or a slow consumer; endpoints reconnect with backoff
+  and a fresh window. A total exactly AT the cap is still serviceable — only
+  strictly above it terminates.
+
+The accounting is honest about what the relay can see: only the serialized
+frame's byte count is accumulated per room — never payload content, never an
+envelope field, never an identity (the blind-router contract is untouched).
+Log lines carry at most an 8-character room-id prefix, the same convention
+as every other relay rejection line. The state dies with the room (the
+moment its last peer leaves), so there is no map growth and no new timer:
+the verdict is consulted on the forwarding path, where the rate bucket and
+the backpressure verdict already sit. The additive `roomsBudgetTerminated`
+field on `/healthz` counts terminated rooms since boot.
+
+To adjust: set `RELAY_ROOM_BUDGET_BYTES` (ceiling 16 GiB) and/or
+`RELAY_ROOM_BUDGET_WINDOW_MS` (ceiling 24 h) — both validated fail-closed at
+boot like every other knob (`invalid relay room budget, refusing to start`,
+exit 1, no listener), and the resolved values ride the `relay listening`
+line as additive `roomBudgetWindowMs`/`roomBudgetCapBytes` fields. To turn
+the budget off entirely (a private, allowlisted relay), set
+`RELAY_ROOM_BUDGET_BYTES=-1` — the only accepted non-positive value.
 
 ### The TLS pair is mandatory together and fail-closed (P2-154)
 
@@ -561,7 +605,7 @@ changed. No other relay log line ever carries a client address.
 expose publicly (no room ids, no per-peer metadata):
 
 ```json
-{"ok":true,"version":"0.2.0","uptimeS":42,"rooms":1,"roomsRejected":0}
+{"ok":true,"version":"0.2.0","uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0}
 ```
 
 The image's `HEALTHCHECK` polls it locally every 30s; load balancers should
@@ -574,7 +618,7 @@ When the relay receives `SIGTERM` it enters a drain window (≤3s) and
 `draining:true` field — every pre-existing field keeps its name and meaning:
 
 ```json
-{"ok":false,"version":"0.2.0","uptimeS":42,"rooms":1,"roomsRejected":0,"draining":true}
+{"ok":false,"version":"0.2.0","uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0,"draining":true}
 ```
 
 The 503 tells the load balancer to stop routing NEW daemons and phones to

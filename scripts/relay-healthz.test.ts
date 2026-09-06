@@ -303,6 +303,50 @@ drainFlag.active = false;
 check("drain: probe returns 200 once draining ends", (await probe()).status === 200);
 drainServer.close();
 
+// --- 6b. room-budget counter (P2-243): additive payload field ------------------
+const budgetState = {
+  version: "0.2.0",
+  startedAt: START,
+  rooms: () => 1,
+  roomsRejected: () => 0,
+  roomsBudgetTerminated: () => 3,
+};
+const withBudget = healthzPayload(budgetState, START + 90_000);
+check("budget-counter: payload carries the additive roomsBudgetTerminated field", withBudget.roomsBudgetTerminated === 3);
+check(
+  "budget-counter: payload keeps every pre-existing field untouched",
+  withBudget.ok === true &&
+    withBudget.version === "0.2.0" &&
+    withBudget.uptimeS === 90 &&
+    withBudget.rooms === 1 &&
+    withBudget.roomsRejected === 0,
+);
+check(
+  "budget-counter: absent getter keeps the exact pre-P2-243 five-field body",
+  (() => {
+    const p = healthzPayload({ version: "0.2.0", startedAt: START, rooms: () => 0, roomsRejected: () => 0 }, START);
+    return (
+      JSON.stringify(Object.keys(p).sort()) ===
+        JSON.stringify(["ok", "rooms", "roomsRejected", "uptimeS", "version"])
+    );
+  })(),
+);
+const budgetServer: Server = createServer(healthzHandler(budgetState));
+await new Promise<void>((r) => budgetServer.listen(0, "127.0.0.1", r));
+const budgetPort = (budgetServer.address() as { port: number }).port;
+const budgetProbe = await new Promise<string>((resolve) => {
+  get(`http://127.0.0.1:${budgetPort}/healthz`, (res) => {
+    let body = "";
+    res.on("data", (c) => (body += c));
+    res.on("end", () => resolve(body));
+  });
+});
+check(
+  "budget-counter: real /healthz body carries the counter as a number",
+  (JSON.parse(budgetProbe) as { roomsBudgetTerminated?: number }).roomsBudgetTerminated === 3,
+);
+budgetServer.close();
+
 // --- 7. ws upgrade refused while draining (P2-145) -----------------------------
 // Real server wired exactly like apps/relay/src/index.ts: noServer WSS with
 // an explicit upgrade gate that consults the injected drain reader.
