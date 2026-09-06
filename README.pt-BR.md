@@ -426,6 +426,14 @@ right-click → **Open**, então o caminho de release sem secrets continua verde
 Quem prefere Homebrew usa o `Formula/opencode-remote.rb` (AGPL-3.0-only,
 checksum fixado automaticamente pelo pipeline de release a cada tag).
 
+No Windows, o pacote winget `caiovicentino.opencode-remote` segue o mesmo
+caminho (P2-245): cada release anexa os três manifestos exigidos (versão,
+instalador e locale en-US), gerados e verificados pelo próprio pipeline a
+partir do sha256 publicado no `checksums.txt` — baixe os três `.yaml` da
+página de releases e rode `winget install --manifest caiovicentino.opencode-remote.yaml`
+na pasta deles; é um caminho de instalação alternativo ao instalador solto,
+igual à fórmula do Homebrew no Mac.
+
 **Instale uma vez a partir do DMG (P2-211).** O atualizador só consegue trocar
 um bundle que vive na pasta **Aplicativos** — um app aberto direto do DMG
 montado (ou da pasta de downloads) roda somente leitura num caminho aleatório

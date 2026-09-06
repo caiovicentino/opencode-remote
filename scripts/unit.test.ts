@@ -729,6 +729,13 @@ import { applyGuide, downloadGuide, GUIDE_END, GUIDE_START } from "./release-not
 import { archFeedProblems, archOfFileName, feedProblems } from "./feed-consistency";
 
 import { BUNDLE_BUDGETS, budgetProblems, type BundleEntry } from "./bundle-budget";
+import {
+  buildWingetManifests,
+  wingetProblems,
+  WINGET_PACKAGE_ID,
+  WINGET_RELEASES_BASE,
+  type WingetManifestDoc,
+} from "./wingetmanifest";
 
 
 let failures = 0;
@@ -19383,6 +19390,234 @@ check("P2-241: the save plan sets the path without any dialog", dlBlock.includes
 check("P2-241: the done path reveals the file and never executes or opens it", dlBlock.includes("shell.showItemInFolder(") && !/shell\.openItem|shell\.openPath|shell\.openExternal|\.exec\(|spawn\(/.test(dlBlock));
 check("P2-241: at most one notification is sent per download", (dlBlock.match(/new Notification\(/g) || []).length === 1);
 check("P2-241: no new periodic timer was introduced by the handler", !dlBlock.includes("setInterval(") && !dlBlock.includes("setTimeout("));
+
+// --- P2-245: wingetmanifest — buildWingetManifests full table -----------------
+{
+  const sha = "a".repeat(64);
+  const setup = "OpenCode Remote Setup 0.3.0.exe";
+  const url = `${WINGET_RELEASES_BASE}v0.3.0/${encodeURIComponent(setup)}`;
+  const threw = (fn: () => unknown): boolean => {
+    try {
+      fn();
+      return false;
+    } catch {
+      return true;
+    }
+  };
+  const docs: WingetManifestDoc[] = buildWingetManifests(WINGET_PACKAGE_ID, "0.3.0", url, sha);
+  check(
+    "P2-245: valid input builds exactly three docs in stable file-name order",
+    docs.length === 3 &&
+      JSON.stringify(docs.map((d) => d.fileName)) ===
+        JSON.stringify([
+          `${WINGET_PACKAGE_ID}.installer.yaml`,
+          `${WINGET_PACKAGE_ID}.locale.en-US.yaml`,
+          `${WINGET_PACKAGE_ID}.yaml`,
+        ]),
+    JSON.stringify(docs.map((d) => d.fileName)),
+  );
+  check(
+    "P2-245: the installer doc carries the URL and the lowercase sha256 verbatim",
+    docs[0]!.text.includes(`InstallerUrl: ${url}`) && docs[0]!.text.includes(`InstallerSha256: ${sha}`),
+    docs[0]!.text,
+  );
+  check(
+    "P2-245: the version doc pins the package id, the version and the default locale",
+    docs[2]!.text.includes(`PackageIdentifier: ${WINGET_PACKAGE_ID}`) &&
+      docs[2]!.text.includes("PackageVersion: 0.3.0") &&
+      docs[2]!.text.includes("DefaultLocale: en-US"),
+    docs[2]!.text,
+  );
+  check(
+    "P2-245: empty version is refused",
+    threw(() => buildWingetManifests(WINGET_PACKAGE_ID, "", url, sha)),
+  );
+  check(
+    "P2-245: malformed version is refused",
+    threw(() => buildWingetManifests(WINGET_PACKAGE_ID, "banana", url, sha)) &&
+      threw(() => buildWingetManifests(WINGET_PACKAGE_ID, "0.3", url, sha)),
+  );
+  check(
+    "P2-245: a non-https installer address is refused",
+    threw(() =>
+      buildWingetManifests(
+        WINGET_PACKAGE_ID,
+        "0.3.0",
+        `http://github.com/caiovicentino/opencode-remote/releases/download/v0.3.0/${setup}`,
+        sha,
+      ),
+    ),
+  );
+  check(
+    "P2-245: an installer address outside the project's releases page is refused",
+    threw(() =>
+      buildWingetManifests(WINGET_PACKAGE_ID, "0.3.0", "https://evil.example.com/downloads/setup.exe", sha),
+    ) &&
+      threw(() =>
+        buildWingetManifests(
+          WINGET_PACKAGE_ID,
+          "0.3.0",
+          `https://github.com/other/repo/releases/download/v0.3.0/${setup}`,
+          sha,
+        ),
+      ),
+  );
+  check(
+    "P2-245: a short sha256 is refused",
+    threw(() => buildWingetManifests(WINGET_PACKAGE_ID, "0.3.0", url, "a".repeat(63))),
+  );
+  check(
+    "P2-245: a sha256 with a non-hex character is refused",
+    threw(() => buildWingetManifests(WINGET_PACKAGE_ID, "0.3.0", url, `${"a".repeat(63)}g`)),
+  );
+}
+
+// --- P2-245: wingetmanifest — wingetProblems full table -----------------------
+{
+  const sha = "a".repeat(64);
+  const setup = "OpenCode Remote Setup 0.3.0.exe";
+  const url = `${WINGET_RELEASES_BASE}v0.3.0/${encodeURIComponent(setup)}`;
+  const tag = "v0.3.0";
+  const assets = [setup, "opencode-remote-v0.3.0.tar.gz"];
+  const checksums = `${sha}  ${setup}\n${"b".repeat(64)}  opencode-remote-v0.3.0.tar.gz\n`;
+  const docs = buildWingetManifests(WINGET_PACKAGE_ID, "0.3.0", url, sha);
+  const clean = wingetProblems(docs, tag, assets, checksums);
+  check(
+    "P2-245: a consistent manifest set against the release facts returns zero problems",
+    clean.length === 0,
+    JSON.stringify(clean),
+  );
+  check(
+    "P2-245: empty lists return zero problems",
+    wingetProblems([], tag, [], "").length === 0,
+  );
+
+  const causeOf = (problems: readonly string[]) => problems.join(" | ");
+  const badVersion = wingetProblems(
+    buildWingetManifests(WINGET_PACKAGE_ID, "0.3.1", url, sha),
+    tag,
+    assets,
+    checksums,
+  );
+  check(
+    "P2-245: a declared version different from the tag is a problem naming the cause",
+    badVersion.length === 1 && badVersion[0]!.includes("0.3.1") && badVersion[0]!.includes(tag),
+    causeOf(badVersion),
+  );
+
+  const absent = wingetProblems(docs, tag, ["opencode-remote-v0.3.0.tar.gz"], checksums);
+  check(
+    "P2-245: an installer address pointing at an absent asset is a problem",
+    absent.length === 1 && absent[0]!.includes(setup) && absent[0]!.includes("does not carry"),
+    causeOf(absent),
+  );
+
+  const otherSha = "c".repeat(64);
+  const divergent = wingetProblems(
+    buildWingetManifests(WINGET_PACKAGE_ID, "0.3.0", url, otherSha),
+    tag,
+    assets,
+    checksums,
+  );
+  check(
+    "P2-245: a declared sha256 diverging from checksums.txt is a problem",
+    divergent.length === 1 && divergent[0]!.includes(otherSha) && divergent[0]!.includes("checksums.txt"),
+    causeOf(divergent),
+  );
+
+  const wrongId = wingetProblems(
+    buildWingetManifests("other.publisher.app", "0.3.0", url, sha),
+    tag,
+    assets,
+    checksums,
+  );
+  check(
+    "P2-245: a package identifier different from the documented one is a problem",
+    wrongId.length === 1 && wrongId[0]!.includes("other.publisher.app") && wrongId[0]!.includes(WINGET_PACKAGE_ID),
+    causeOf(wrongId),
+  );
+
+  const twoCauses = wingetProblems(
+    buildWingetManifests(WINGET_PACKAGE_ID, "0.3.1", url, otherSha),
+    tag,
+    assets,
+    checksums,
+  );
+  check(
+    "P2-245: two simultaneous causes return two problems, never a single verdict",
+    twoCauses.length === 2 && twoCauses[0]!.includes("version") && twoCauses[1]!.includes("sha256"),
+    causeOf(twoCauses),
+  );
+
+  const again = wingetProblems(
+    buildWingetManifests(WINGET_PACKAGE_ID, "0.3.1", url, otherSha),
+    tag,
+    assets,
+    checksums,
+  );
+  check(
+    "P2-245: the problem order is stable between two calls with the same input",
+    JSON.stringify(twoCauses) === JSON.stringify(again),
+  );
+  check(
+    "P2-245: no problem text carries an absolute file path or a secret",
+    twoCauses.every(
+      (p) =>
+        !p.includes("/Users/") &&
+        !p.includes("/home/") &&
+        !p.includes("GH_TOKEN") &&
+        !p.includes("secrets."),
+    ),
+    causeOf(twoCauses),
+  );
+}
+
+// --- P2-245: real-repo assertion — release.yml wires the winget step ---------
+{
+  const root = join(import.meta.dirname, "..");
+  const release = readFileSync(join(root, ".github", "workflows", "release.yml"), "utf8");
+  const jobStart = release.indexOf("\n  release-publish:");
+  const job = jobStart === -1 ? "" : release.slice(jobStart);
+  const stepName = "Attach the winget manifests to the release";
+  const wingetIdx = job.indexOf(stepName);
+  const checksumIdx = job.indexOf("Attach the SHA-256 checksum manifest");
+  const publishIdx = job.indexOf("Publish the draft release only when every required asset is attached");
+  const nextStep = job.indexOf("\n      - name:", wingetIdx);
+  const step = wingetIdx === -1 ? "" : job.slice(wingetIdx, nextStep);
+  check(
+    "P2-245: release.yml declares the winget step exactly once inside release-publish",
+    jobStart !== -1 && (job.split(stepName).length - 1) === 1,
+  );
+  check(
+    "P2-245: the winget step runs after the checksum manifest and before the publish step",
+    checksumIdx !== -1 && wingetIdx !== -1 && publishIdx !== -1 && checksumIdx < wingetIdx && wingetIdx < publishIdx,
+  );
+  check(
+    "P2-245: the winget step declares shell: bash and its own timeout (P2-126/P2-164 lessons)",
+    step.includes("shell: bash") && step.includes("timeout-minutes:"),
+  );
+  check(
+    "P2-245: the winget step builds, verifies and uploads via the pure module, committing nothing",
+    step.includes("winget-driver.mts") &&
+      step.includes("scripts/wingetmanifest") &&
+      step.includes("wingetProblems") &&
+      step.includes("gh release upload") &&
+      !step.includes("git commit") &&
+      !step.includes("git push"),
+  );
+  check(
+    "P2-245: the winget step references no secret beyond the job's github.token",
+    step.includes("${{ github.token }}") && !step.includes("secrets."),
+    step,
+  );
+  const wingetSrc = readFileSync(join(root, "scripts", "wingetmanifest.ts"), "utf8");
+  check(
+    "P2-245: wingetmanifest stays pure — no node:fs, no child process, no fetch",
+    !wingetSrc.includes("node:fs") &&
+      !wingetSrc.includes("node:child_process") &&
+      !wingetSrc.includes("fetch("),
+  );
+}
 
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);
