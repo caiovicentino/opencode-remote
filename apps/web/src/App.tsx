@@ -53,6 +53,12 @@ import ReconnectButton from "./components/ReconnectButton";
 import { degradedKind, sawHealthyDaemon, sidecarExitNotice, upstreamNotice, type SidecarExitHealth, type UpstreamHealth } from "./lib/degraded";
 import { WELCOME_DONE, WELCOME_KEY, shouldShowWelcome } from "./lib/welcome";
 import {
+  INSTALL_HINT_DISMISSED_KEY,
+  installHintVerdict,
+  parseInstallHintDismissed,
+  serializeInstallHintDismissed,
+} from "./lib/installhint";
+import {
   IconAlert,
   IconChat,
   IconFolder,
@@ -298,6 +304,37 @@ export default function App() {
     }
     return shouldShowWelcome(flag, loadPairings().length > 0 || !!loadState());
   });
+
+  // P2-220: iOS Safari sweeps the script-writable storage (IndexedDB +
+  // localStorage) of a website that was never installed to the Home Screen
+  // after ~7 days of no use — the private key in IndexedDB dies with it.
+  // The risky context is detected ONCE on mount, inside this initializer:
+  // no new listeners, no timers, no per-render reads (pinned by
+  // scripts/unit.test.ts).
+  const [installHintEnv] = useState(() => {
+    const standalone =
+      window.matchMedia("(display-mode: standalone)").matches ||
+      (navigator as { standalone?: boolean }).standalone === true;
+    let dismissed = false;
+    try {
+      dismissed = parseInstallHintDismissed(localStorage.getItem(INSTALL_HINT_DISMISSED_KEY));
+    } catch {
+      dismissed = false;
+    }
+    return {
+      userAgent: navigator.userAgent,
+      // P2-220 reviewer round 3: iPadOS 13+ defaults to a Macintosh UA — the
+      // touch indicator is what makes the hint reach default-config iPads.
+      maxTouchPoints: navigator.maxTouchPoints,
+      standalone,
+      dismissed,
+      desktopShell: desktopBridge() !== null,
+      // documented test hatch (P2-220): ?installhint=1 forces the hint so
+      // visual evidence is deterministic; persists nothing
+      forced: new URLSearchParams(location.search).get("installhint") === "1",
+    };
+  });
+  const [installHintDismissed, setInstallHintDismissed] = useState(installHintEnv.dismissed);
 
   // P2-148: finishing (or skipping) stamps the flag in the renderer's
   // localStorage — no IPC, no main-process change, no second banner.
@@ -1023,6 +1060,29 @@ export default function App() {
       }}
     />
   ) : null;
+  // P2-220: the calm install hint — verdict recomputed from state that is
+  // already in React (machines, dismissed flag); the environment probes it
+  // wraps were read once at mount. ?installhint=1 forces it on for the
+  // deterministic screenshot evidence, whatever the verdict says.
+  const hint = installHintVerdict({
+    userAgent: installHintEnv.userAgent,
+    maxTouchPoints: installHintEnv.maxTouchPoints,
+    standalone: installHintEnv.standalone,
+    desktopShell: installHintEnv.desktopShell,
+    hasPairing: machines.length > 0,
+    dismissed: installHintDismissed,
+  });
+  // P2-220 reviewer round 3 (BLOCKING): the copy must follow the app locale —
+  // the verdict's pt-BR message stays a pure-module constant; what renders is
+  // the dict key (dict.pt.installHintBody is exactly that constant).
+  const installHint = installHintEnv.forced || hint.show ? t("installHintBody") : null;
+  function dismissInstallHint() {
+    setInstallHintDismissed(true);
+    try {
+      localStorage.setItem(INSTALL_HINT_DISMISSED_KEY, serializeInstallHintDismissed());
+    } catch {}
+  }
+
   const sessionsNode = (
     <SessionsView
       request={request}
@@ -1040,6 +1100,8 @@ export default function App() {
         dispatchView({ type: "openChat", sessionId: id });
       }}
       onDisconnect={disconnect}
+      installHint={installHint}
+      onDismissInstallHint={dismissInstallHint}
       onEnablePush={async () => {
         const { enablePush } = await import("./lib/push");
         await enablePush(request);

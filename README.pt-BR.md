@@ -258,6 +258,27 @@ O origin do PWA no celular é servido pelo serviço launchd `com.ocr.pwa`
 (`apps/web/dist` estático em `127.0.0.1:5173`, P2-075) — nunca um dev server.
 O daemon vigia `/healthz` e sinaliza no dashboard se o origin cair.
 
+### Mantenha o pareamento no iPhone: adicione à Tela de Início (P2-220)
+
+Se o celular abre o app como **aba comum do Safari** (sem instalar na Tela de
+Início), o iOS pode apagar o armazenamento desse site — incluindo a chave de
+pareamento — depois de cerca de uma semana sem uso, e a única recuperação
+seria voltar até o Mac para ler outro QR. Para evitar essa perda silenciosa, o
+app mostra um **aviso calmo de uma linha** acima da lista de conversas
+explicando como adicioná-lo à Tela de Início (botão Compartilhar → Adicionar
+à Tela de Início). O aviso:
+
+- aparece **somente no navegador de iPhone/iPad**, fora do modo instalado
+  (standalone), enquanto existir um pareamento salvo;
+- nunca aparece no app desktop (o armazenamento dele não é varrido) nem na
+  primeira tela, quando não há nada a perder;
+- pode ser dispensado — **dispensar é definitivo** naquele dispositivo; e
+- nunca bloqueia nada: é um elemento normal do fluxo da página, não cobre o
+  campo de mensagem nem desabilita controle algum.
+
+`?installhint=1` no endereço força o aviso a aparecer para screenshots e
+reprodução de suporte (hatch só de teste; nada é gravado por ele).
+
 ## Instalar como terceiro (sem tailnet — modo LAN)
 
 O `wss://…ts.net` do Quick Start é só um jeito de alcançar o relay. Qualquer

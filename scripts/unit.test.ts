@@ -149,6 +149,13 @@ import { recencyGroup, groupByRecency, startOfLocalDay } from "../apps/web/src/l
 import { accountInitial, accountPlanKey } from "../apps/web/src/lib/account";
 
 import { toggleArchived, ARCHIVED_MAX } from "../apps/web/src/lib/archive";
+import {
+  INSTALL_HINT_DISMISSED_KEY,
+  INSTALL_HINT_MESSAGE,
+  installHintVerdict,
+  parseInstallHintDismissed,
+  serializeInstallHintDismissed,
+} from "../apps/web/src/lib/installhint";
 
 import { previewFromEvents, clipPreview } from "../apps/web/src/lib/sessionPreview";
 
@@ -8127,6 +8134,101 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check("preview: long text clipped with an ellipsis", pv.s2.length === 90 && pv.s2.endsWith("…"));
   check("preview: sessions without text have no entry", !("s-idle" in pv));
   check("preview: clipPreview trims the edges", clipPreview("  a   b  ") === "a b");
+}
+
+// --- P2-220: iOS install hint (pure verdict + tolerant dismissal flag) --------
+{
+  const IOS_IPHONE =
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1";
+  const IOS_IPAD =
+    "Mozilla/5.0 (iPad; CPU OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1";
+  const IOS_IPAD_MAC_UA =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1";
+  const ANDROID =
+    "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36";
+  const DESKTOP =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
+  // every row that favors the hint: regular iOS tab, pairing saved, not dismissed
+  const show = (over: Partial<Parameters<typeof installHintVerdict>[0]> = {}) =>
+    installHintVerdict({
+      userAgent: IOS_IPHONE,
+      standalone: false,
+      desktopShell: false,
+      hasPairing: true,
+      dismissed: false,
+      ...over,
+    });
+
+  // full verdict table, rules in contract order
+  check("p2-220: desktop shell hides even with every other condition favorable", show({ desktopShell: true }).show === false);
+  check("p2-220: dismissed hides even in a regular iOS tab with a pairing", show({ dismissed: true }).show === false);
+  check("p2-220: standalone (installed) hides", show({ standalone: true }).show === false);
+  check("p2-220: android UA with a saved pairing hides (own install prompt + storage policy)", show({ userAgent: ANDROID }).show === false);
+  check("p2-220: desktop UA hides", show({ userAgent: DESKTOP }).show === false);
+  check("p2-220: iOS with no saved pairing hides (first screen stays quiet)", show({ hasPairing: false }).show === false);
+  check("p2-220: iphone regular tab with pairing and no dismissal shows", show().show === true);
+  check("p2-220: ipad regular tab with pairing and no dismissal shows", show({ userAgent: IOS_IPAD }).show === true);
+  check("p2-220: empty UA hides", show({ userAgent: "" }).show === false);
+  check("p2-220: iPadOS 13+ Mac UA is recognized only with the touch indicator", show({ userAgent: IOS_IPAD_MAC_UA, maxTouchPoints: 5 }).show === true);
+  check("p2-220: Mac UA without the touch indicator stays quiet", show({ userAgent: IOS_IPAD_MAC_UA }).show === false);
+  check("p2-220: Mac UA with a zero touch count stays quiet", show({ userAgent: IOS_IPAD_MAC_UA, maxTouchPoints: 0 }).show === false);
+
+  // every generated message is the constant, clean phrase — no file path, no
+  // URL scheme, no room/key/credential material
+  const pathOrScheme = /[A-Za-z]:\\|\/[A-Za-z0-9_.-]+\/|:\/\//;
+  const rows: Parameters<typeof installHintVerdict>[0][] = [
+    { userAgent: IOS_IPHONE, standalone: false, desktopShell: false, hasPairing: true, dismissed: false },
+    { userAgent: IOS_IPHONE, standalone: false, desktopShell: true, hasPairing: true, dismissed: false },
+    { userAgent: IOS_IPHONE, standalone: true, desktopShell: false, hasPairing: true, dismissed: true },
+    { userAgent: ANDROID, standalone: false, desktopShell: false, hasPairing: true, dismissed: false },
+    { userAgent: DESKTOP, standalone: false, desktopShell: false, hasPairing: false, dismissed: true },
+    { userAgent: "", standalone: false, desktopShell: false, hasPairing: false, dismissed: false },
+  ];
+  check(
+    "p2-220: every verdict carries the same clean message",
+    rows.every((r) => {
+      const v = installHintVerdict(r);
+      return v.message === INSTALL_HINT_MESSAGE && v.message.length > 0 && !pathOrScheme.test(v.message);
+    }),
+  );
+  check("p2-220: dict.pt.installHintBody is exactly the module phrase", dict.pt.installHintBody === INSTALL_HINT_MESSAGE);
+  check("p2-220: dict.en carries the bilingual copy", typeof dict.en.installHintBody === "string" && dict.en.installHintBody.length > 0 && !pathOrScheme.test(dict.en.installHintBody));
+  check("p2-220: dismissal key is a quiet flag name (no room/key/relay)", INSTALL_HINT_DISMISSED_KEY === "ocr.installhint.dismissed");
+
+  // dismissal flag table: absent key, wrong type or corrupted JSON → not
+  // dismissed, NEVER an exception
+  check("p2-220: dismissed parse — absent is false", parseInstallHintDismissed(null) === false && parseInstallHintDismissed(undefined) === false);
+  check("p2-220: dismissed parse — wrong JSON type (array) is false", parseInstallHintDismissed("[]") === false);
+  check("p2-220: dismissed parse — wrong JSON type (object) is false", parseInstallHintDismissed('{"a":1}') === false);
+  check("p2-220: dismissed parse — corrupted JSON is false", parseInstallHintDismissed("{oops") === false);
+  check("p2-220: dismissed parse — numbers/strings-of-wrong-type are false", parseInstallHintDismissed("5") === false && parseInstallHintDismissed('"true"') === false);
+  check("p2-220: dismissed parse — bare true is true", parseInstallHintDismissed("true") === true);
+  check("p2-220: dismissed parse — serialize/parse round-trips", parseInstallHintDismissed(serializeInstallHintDismissed()) === true);
+  const serialized = serializeInstallHintDismissed();
+  check("p2-220: serialized flag carries no room/key/relay/scheme", !/room|k=|relay|:\/\//.test(serialized));
+
+  // App.tsx source pins: the environment is probed exactly once, on mount,
+  // and no new listeners or timers snuck in
+  const appSrc = readFileSync(new URL("../apps/web/src/App.tsx", import.meta.url), "utf8");
+  const uaCount = (appSrc.match(/navigator\.userAgent/g) ?? []).length;
+  const dmCount = (appSrc.match(/\(display-mode: standalone\)/g) ?? []).length;
+  check("p2-220: App reads the user agent exactly once", uaCount === 1);
+  check("p2-220: App reads the standalone display-mode exactly once", dmCount === 1);
+  const uaAt = appSrc.indexOf("navigator.userAgent");
+  const dmAt = appSrc.indexOf("(display-mode: standalone)");
+  check(
+    "p2-220: both probes live inside useState(() => initializers (mount-only)",
+    uaAt > -1 && dmAt > -1 && appSrc.slice(Math.max(0, uaAt - 400), uaAt).includes("useState(() =>") && appSrc.slice(Math.max(0, dmAt - 400), dmAt).includes("useState(() =>"),
+  );
+  check("p2-220: no new listeners in App.tsx (count stays 3)", (appSrc.match(/addEventListener\(/g) ?? []).length === 3);
+  check("p2-220: no timers in App.tsx", (appSrc.match(/setInterval\(/g) ?? []).length === 0 && (appSrc.match(/setTimeout\(/g) ?? []).length === 0);
+  check("p2-220: no install-prompt event hooks", !appSrc.includes("beforeinstallprompt") && !appSrc.includes("appinstalled"));
+  // round-3 review pins: locale-following copy + iPad touch indicator wired
+  check(
+    "p2-220: App renders the localized dict key, never the raw pt-BR constant",
+    appSrc.includes('t("installHintBody")') && !appSrc.includes("hint.message") && !appSrc.includes("installHint={INSTALL_HINT_MESSAGE}"),
+  );
+  check("p2-220: App wires navigator.maxTouchPoints into the verdict (iPadOS 13+ Mac UA)", /maxTouchPoints:\s*navigator\.maxTouchPoints/.test(appSrc));
 }
 
 
