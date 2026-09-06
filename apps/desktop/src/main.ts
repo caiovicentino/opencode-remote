@@ -45,6 +45,12 @@ import {
   type QuitVerdict,
 } from "./quithint";
 import { quitAskFile, readQuitDontAsk, writeQuitDontAsk } from "./quitstore";
+import {
+  accelerationPlan,
+  gpuVerdict,
+  NOTIFY_GPU_DISABLED_BODY,
+} from "./gpuplan";
+import { gpuStateFile, readGpuState, writeGpuState } from "./gpustore";
 import { WAKE_EVENT_TYPES, wakePlan } from "./wakeplan";
 import { HOTKEY_USER_ENV, hotkeyPlan, type HotkeyPlan } from "./hotkey";
 import { initDesktopLog, log, logError } from "./desktop-log";
@@ -167,6 +173,15 @@ let quitDialogShown = false;
 // reused by every surface: the registration, the Help menu item and the tray
 // item. null only before ready — nothing consults it that early.
 let hotkey: HotkeyPlan | null = null;
+
+// P2-244: GPU-crash policy state. `gpuDisabledThisBoot` mirrors the boot
+// plan's action so the tray hint can fire once the notification surface is
+// actually available (inside onReady); `gpuHintShown` caps the tip at ONE per
+// start, no matter how many GPU crashes or which path asked for it. No new
+// timer, no new IPC — only the boot block and the single crash listener
+// below ever touch them.
+let gpuDisabledThisBoot = false;
+let gpuHintShown = false;
 
 // P3-012: file logging installed before anything can log — console.* in the
 // packaged app is invisible to the stage-5 user (no terminal), so every
@@ -355,6 +370,22 @@ if (!gotLock) {
     // the single-instance winner receives it here.
     handleDeepLink(deepLinkFromArgv(argv));
   });
+  // P2-244: the GPU-crash plan is consulted BEFORE the app is ready — the
+  // only point where Electron still honors disableHardwareAcceleration. The
+  // harness-session rule inside accelerationPlan keeps every test session on
+  // "enable" with nothing written to disk. The crash watch below registers
+  // the shell's ONE child-process-gone listener; the verdict is persisted
+  // through the same tolerant store (a failed write is log-only).
+  const gpuFile = gpuStateFile(app.getPath("userData"));
+  const gpuPlan = accelerationPlan({
+    harnessSession: HERMETIC_E2E,
+    state: readGpuState(gpuFile, Date.now()),
+    nowMs: Date.now(),
+  });
+  gpuDisabledThisBoot = gpuPlan.action === "disable";
+  if (gpuDisabledThisBoot) app.disableHardwareAcceleration();
+  log(`[desktop] gpu acceleration: ${gpuPlan.action} (${gpuPlan.reason})`);
+  registerGpuCrashWatch(gpuFile, gpuPlan.persist);
   app
     .whenReady()
     .then(() => onReady())
@@ -411,6 +442,42 @@ function startKeeperLeash(keeperPid: number): void {
       app.exit(0);
     }, LEASH_GRACE_MS).unref();
   }, WATCHDOG_MS);
+}
+
+// --- GPU crash watch (P2-244) ---------------------------------------------------
+// The shell's ONE "child-process-gone" listener, registered once at boot right
+// after the acceleration plan. Each event produces exactly one static log line
+// (the pure verdict's reason — no paths, no URL schemes, no secrets) and, when
+// the verdict reaches the ceiling, ONE tray tip per start. Renderer crashes
+// keep flowing through their own render-process-gone path (P3-011) — this
+// watch never accumulates them.
+
+/** Registers the single child-process-gone listener. `persistable` is the
+ * boot plan's flag — a harness session never writes the state to disk. */
+function registerGpuCrashWatch(file: string, persistable: boolean): void {
+  app.on("child-process-gone", (_event, details) => {
+    const nowMs = Date.now();
+    const verdict = gpuVerdict(readGpuState(file, nowMs), nowMs, details?.type ?? "");
+    log(`[desktop] ${verdict.reason}`);
+    if (verdict.plan === "ignore") return;
+    if (persistable) writeGpuState(file, verdict.state);
+    if (verdict.plan === "disable") showGpuDisabledHint();
+  });
+}
+
+/** The at-most-one-per-start tray tip for a disabled acceleration. Best-effort
+ * and silent in hermetic runs (defense in depth — a harness plan is always
+ * "enable" anyway); no native dialog, no new IPC, no timer. */
+function showGpuDisabledHint(): void {
+  if (gpuHintShown) return;
+  try {
+    if (HERMETIC_E2E) return;
+    if (!Notification.isSupported()) return;
+    gpuHintShown = true;
+    new Notification({ title: NOTIFY_TITLE, body: NOTIFY_GPU_DISABLED_BODY, silent: true }).show();
+  } catch (err) {
+    logError("[desktop] gpu hint failed:", err);
+  }
 }
 
 // --- auto-update flow (P1-050) ------------------------------------------------
@@ -592,6 +659,11 @@ function setLoginItemEnabled(enabled: boolean): void {
 }
 
 async function onReady(): Promise<void> {
+  // P2-244: when the boot plan disabled the acceleration before ready, say so
+  // now that the notification surface exists — the lay user's only visible
+  // trace of the decision (at most one tip per start, shared with the crash
+  // watch's own cap).
+  if (gpuDisabledThisBoot) showGpuDisabledHint();
   logInstanceBoot();
   // P2-229: the global-hotkey plan is resolved ONCE after the app is ready,
   // before the first menu/tray build — both surfaces display its outcome.

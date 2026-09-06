@@ -1253,6 +1253,19 @@ desktop.log (`[desktop] hang watch: …`) e no bundle de diagnóstico
 `OCR_DESKTOP_HANG_DIALOG_ANSWER=reload|wait` responde no lugar para fluxos
 determinísticos.
 
+**Janela preta ganha caminho de recuperação em vez de beco sem saída
+(P2-244)**: numa máquina com driver de vídeo defeituoso, o processo de GPU
+caía a cada boot sem ninguém olhando — janela preta, reabrir, repetir. O
+shell agora conta quedas do processo de vídeo numa janela de uma hora (a
+contagem sobrevive a reinícios, em `userData/gpu-state.json`): as primeiras
+quedas só viram uma linha de log, e a terceira dentro da janela desliga a
+aceleração de vídeo no próximo início (decidida antes de o app ficar pronto,
+único ponto em que o Electron ainda honra o desligamento), com no máximo uma
+dica pela bandeja por início. Sem diálogos nativos, sem timers novos; sessão
+de teste nunca desliga nada e nunca grava o estado. A política se cura
+sozinha: uma hora sem queda nova religa a aceleração no boot seguinte. Detalhes em
+[docs/troubleshooting.md](docs/troubleshooting.md#black-window-video-acceleration-turns-itself-off-p2-244).
+
 ## Roadmap
 
 Próximos: wizard de onboarding, compartilhamento de skills, push nativo iOS.

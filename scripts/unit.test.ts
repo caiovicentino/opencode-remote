@@ -112,6 +112,16 @@ import {
   HANG_WARN_THRESHOLD_MS,
 } from "../apps/desktop/src/hangwatch";
 import { quitAskFile, readQuitDontAsk, writeQuitDontAsk } from "../apps/desktop/src/quitstore";
+import {
+  accelerationPlan,
+  GPU_CRASH_CEILING,
+  GPU_CRASH_WINDOW_MS,
+  GPU_STATE_ZEROED,
+  gpuVerdict,
+  isGpuProcess,
+  sanitizeGpuState,
+  NOTIFY_GPU_DISABLED_BODY,
+} from "../apps/desktop/src/gpuplan";
 import { installBlocksUpdate } from "../apps/desktop/src/update";
 import {
   isWakeEventType,
@@ -5826,6 +5836,158 @@ check(
   check(
     "P2-238: menu.ts no longer carries the native zoom roles",
     !menuTsSource.includes('"resetZoom"') && !menuTsSource.includes('"zoomIn"') && !menuTsSource.includes('"zoomOut"'),
+  );
+}
+
+
+// --- P2-244: GPU crash plan (apps/desktop/src/gpuplan.ts) ------------------------
+{
+  const now = 1_700_000_000_000;
+  const st = (count: number, windowStart: number) => ({ count, windowStart });
+  const noSlash = (s: string) => !s.includes("/") && !s.includes("://") && !s.includes("\\\\");
+  const json = (v: unknown) => JSON.stringify(v);
+
+  // 1. sanitizeGpuState full table: whatever the disk yields, a valid state
+  //    comes out and nothing ever throws.
+  check("P2-244: sanitizeGpuState — absent state becomes zeroed", json(sanitizeGpuState(undefined, now)) === json(GPU_STATE_ZEROED) && json(sanitizeGpuState(null, now)) === json(GPU_STATE_ZEROED));
+  check("P2-244: sanitizeGpuState — text becomes zeroed", json(sanitizeGpuState("corrupt", now)) === json(GPU_STATE_ZEROED) && json(sanitizeGpuState("3", now)) === json(GPU_STATE_ZEROED));
+  check(
+    "P2-244: sanitizeGpuState — non-finite values become zeroed",
+    json(sanitizeGpuState(st(Number.NaN, now), now)) === json(GPU_STATE_ZEROED) &&
+      json(sanitizeGpuState(st(Number.POSITIVE_INFINITY, now), now)) === json(GPU_STATE_ZEROED) &&
+      json(sanitizeGpuState(st(1, Number.NEGATIVE_INFINITY), now)) === json(GPU_STATE_ZEROED),
+  );
+  check(
+    "P2-244: sanitizeGpuState — negative values become zeroed",
+    json(sanitizeGpuState(st(-1, now), now)) === json(GPU_STATE_ZEROED) && json(sanitizeGpuState(st(2, -5), now)) === json(GPU_STATE_ZEROED),
+  );
+  check(
+    "P2-244: sanitizeGpuState — wrong-typed fields become zeroed",
+    json(sanitizeGpuState(st("2", now), now)) === json(GPU_STATE_ZEROED) &&
+      json(sanitizeGpuState(st(2, "now"), now)) === json(GPU_STATE_ZEROED) &&
+      json(sanitizeGpuState(true, now)) === json(GPU_STATE_ZEROED) &&
+      json(sanitizeGpuState([2], now)) === json(GPU_STATE_ZEROED),
+  );
+  check(
+    "P2-244: sanitizeGpuState — missing fields become zeroed",
+    json(sanitizeGpuState({}, now)) === json(GPU_STATE_ZEROED) &&
+      json(sanitizeGpuState({ count: 2 }, now)) === json(GPU_STATE_ZEROED) &&
+      json(sanitizeGpuState({ windowStart: now }, now)) === json(GPU_STATE_ZEROED),
+  );
+  check(
+    "P2-244: sanitizeGpuState — a window starting in the future becomes zeroed",
+    json(sanitizeGpuState(st(2, now + 1), now)) === json(GPU_STATE_ZEROED) && json(sanitizeGpuState(st(2, now + 9_999), now)) === json(GPU_STATE_ZEROED),
+  );
+  check(
+    "P2-244: sanitizeGpuState — a valid state passes through unchanged",
+    json(sanitizeGpuState(st(2, now - 100), now)) === json(st(2, now - 100)) && json(sanitizeGpuState(st(0, now), now)) === json(st(0, now)),
+  );
+
+  // 2. gpuVerdict table: rules in the documented order, one plan per call.
+  check(
+    "P2-244: gpuVerdict — a non-GPU child process always ignores and accumulates nothing",
+    gpuVerdict(st(2, now), now, "renderer").plan === "ignore" &&
+      gpuVerdict(st(2, now), now, "utility").plan === "ignore" &&
+      gpuVerdict(st(2, now), now, "GPU").plan !== "ignore" &&
+      isGpuProcess("GPU") &&
+      !isGpuProcess("renderer"),
+  );
+  const ignored = gpuVerdict(st(2, now), now, "renderer");
+  check("P2-244: gpuVerdict — ignore leaves the state untouched", json(ignored.state) === json(st(2, now)));
+  const first = gpuVerdict(GPU_STATE_ZEROED, now, "GPU");
+  check(
+    "P2-244: gpuVerdict — the first GPU crash only logs, counting one",
+    first.plan === "log" && first.state.count === 1 && first.state.windowStart === now,
+  );
+  // Walk the window: the crash that lands the count EXACTLY on the ceiling
+  // (GPU_CRASH_CEILING, explicit here) is the one that orders the disable.
+  let walk = GPU_STATE_ZEROED;
+  let walkPlans: string[] = [];
+  for (let i = 0; i < GPU_CRASH_CEILING; i++) {
+    const v = gpuVerdict(walk, now, "GPU");
+    walkPlans.push(v.plan);
+    walk = v.state;
+  }
+  check(
+    `P2-244: gpuVerdict — exactly ${GPU_CRASH_CEILING} crashes in the window end in disable, the last at the ceiling`,
+    walkPlans[0] === "log" && walkPlans[1] === "log" && walkPlans[GPU_CRASH_CEILING - 1] === "disable" && walk.count === GPU_CRASH_CEILING,
+  );
+  check(
+    "P2-244: gpuVerdict — a count above the ceiling disables as well",
+    gpuVerdict(st(GPU_CRASH_CEILING + 2, now), now, "GPU").plan === "disable",
+  );
+  const expired = gpuVerdict(st(99, now - GPU_CRASH_WINDOW_MS - 1), now, "GPU");
+  check(
+    "P2-244: gpuVerdict — an expired window zeroes the count BEFORE any comparison",
+    expired.plan === "log" && expired.state.count === 1 && expired.state.windowStart === now,
+  );
+  const inWindow = gpuVerdict(st(99, now - GPU_CRASH_WINDOW_MS + 1), now, "GPU");
+  check("P2-244: gpuVerdict — a live window keeps counting toward the disable", inWindow.plan === "disable");
+  check(
+    "P2-244: gpuVerdict — the returned count is never negative",
+    gpuVerdict(GPU_STATE_ZEROED, now, "GPU").state.count >= 0 && gpuVerdict(st(-5, now), now, "GPU").state.count >= 0,
+  );
+  check(
+    "P2-244: gpuVerdict — stable between two calls with the same input",
+    json(gpuVerdict(st(1, now), now, "GPU")) === json(gpuVerdict(st(1, now), now, "GPU")) &&
+      json(gpuVerdict(st(9, now), now, "renderer")) === json(gpuVerdict(st(9, now), now, "renderer")),
+  );
+  check(
+    "P2-244: gpuVerdict — every generated phrase is path-free and scheme-free",
+    [first.reason, expired.reason, inWindow.reason, NOTIFY_GPU_DISABLED_BODY].every(noSlash),
+  );
+
+  // 3. accelerationPlan table: the harness rule is FIRST — enable even with a
+  //    state above the ceiling — then absent/zeroed enables, at/above the
+  //    ceiling inside the window disables.
+  const aboveCeiling = st(GPU_CRASH_CEILING + 6, now);
+  const harnessPlan = accelerationPlan({ harnessSession: true, state: aboveCeiling, nowMs: now });
+  check(
+    "P2-244: accelerationPlan — harness session enables and persists nothing even above the ceiling",
+    harnessPlan.action === "enable" && harnessPlan.persist === false,
+  );
+  check(
+    "P2-244: accelerationPlan — rule order proven: harness beats an above-ceiling state in the same call",
+    accelerationPlan({ harnessSession: true, state: st(99, now), nowMs: now }).action === "enable",
+  );
+  check(
+    "P2-244: accelerationPlan — absent/zeroed state enables",
+    accelerationPlan({ harnessSession: false, state: GPU_STATE_ZEROED, nowMs: now }).action === "enable",
+  );
+  check(
+    "P2-244: accelerationPlan — a count at the ceiling inside the window disables",
+    accelerationPlan({ harnessSession: false, state: st(GPU_CRASH_CEILING, now), nowMs: now }).action === "disable" &&
+      accelerationPlan({ harnessSession: false, state: st(1, now), nowMs: now }).action === "enable",
+  );
+  check(
+    "P2-244: accelerationPlan — an expired window enables (the machine may have been fixed)",
+    accelerationPlan({ harnessSession: false, state: st(99, now - GPU_CRASH_WINDOW_MS - 1), nowMs: now }).action === "enable",
+  );
+  check(
+    "P2-244: accelerationPlan — phrases are path-free and scheme-free",
+    [harnessPlan.reason, accelerationPlan({ harnessSession: false, state: GPU_STATE_ZEROED, nowMs: now }).reason, accelerationPlan({ harnessSession: false, state: aboveCeiling, nowMs: now }).reason].every(noSlash),
+  );
+
+  // 4. The real main.ts: ONE child-process-gone listener, the acceleration
+  //    decision consulted BEFORE the app is ready, and no new periodic timer.
+  const listenerCount = mainTsSource.split("app.on(\"child-process-gone\"").length - 1;
+  check("P2-244: main.ts registers exactly one child-process-gone listener", listenerCount === 1);
+  const planAt = mainTsSource.indexOf("accelerationPlan({");
+  const readyAt = mainTsSource.indexOf("app.whenReady()");
+  check(
+    "P2-244: main.ts consults the acceleration plan before the app is ready",
+    planAt >= 0 && readyAt > planAt && mainTsSource.slice(planAt, planAt + 160).includes("harnessSession: HERMETIC_E2E"),
+  );
+  check(
+    "P2-244: main.ts calls disableHardwareAcceleration on the boot plan, before ready",
+    mainTsSource.indexOf("app.disableHardwareAcceleration()") > planAt && mainTsSource.indexOf("app.disableHardwareAcceleration()") < readyAt,
+  );
+  const gpuLines = mainTsSource
+    .split("\n")
+    .filter((l) => l.includes("Gpu") || l.includes("gpu") || l.includes("GPU"));
+  check(
+    "P2-244: the GPU wiring introduces no periodic timer",
+    gpuLines.every((l) => !l.includes("setInterval") && !l.includes("setTimeout")),
   );
 }
 
