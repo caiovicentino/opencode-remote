@@ -2306,6 +2306,50 @@ button.desk-new:hover:not(:disabled) {
 .daemon-reconnect-btn:hover {
   background: var(--banner-danger-bg);
 }
+/* P2-266: update-ready strip — same calm warn family as the daemon banners
+   (a ready version is a recoverable, non-incident state), one line + one
+   explicit action. Sits above the daemon strips (z-index 61) so both being
+   visible at once still reads in order; the only animation is the entrance,
+   neutralized by the global prefers-reduced-motion query. */
+.sw-update-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 61;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 9px 14px;
+  font-size: 0.85rem;
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  border-bottom: 1px solid var(--warn);
+  animation: sw-banner-in 200ms ease-out;
+}
+.sw-update-btn {
+  padding: 2px 12px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--warn);
+  background: transparent;
+  border: 1px solid var(--warn);
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.sw-update-btn:hover {
+  background: color-mix(in srgb, var(--warn) 18%, transparent);
+}
+@keyframes sw-banner-in {
+  from {
+    transform: translateY(-100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
 .has-daemon-down {
   padding-top: 38px;
 }

@@ -466,6 +466,10 @@ export const dict = {
     installHintBody:
       "Add the app to your Home Screen to keep this pairing saved — in the browser, tap the Share button and choose Add to Home Screen.",
     installHintDismiss: "Dismiss",
+    // P2-266: update-ready strip — one calm line + explicit action; the
+    // button is the only path that swaps the waiting worker in.
+    swUpdateReady: "A new version of the app is ready.",
+    swUpdateAction: "Update now",
     // P2-232: machine-state section (Settings) — labels resolve per locale;
     // the rows' phrases themselves come from the daemon, never from here.
     machineStateTitle: "Machine state",
@@ -883,6 +887,10 @@ export const dict = {
     // EXATAMENTE a frase do módulo puro (afirmado por scripts/unit.test.ts).
     installHintBody: INSTALL_HINT_MESSAGE,
     installHintDismiss: "Dispensar",
+    // P2-266: faixa de versão nova — uma linha calma + ação explícita; o
+    // botão é o único caminho que troca o worker esperado.
+    swUpdateReady: "Uma versão nova do app está pronta.",
+    swUpdateAction: "Atualizar agora",
     // P2-232: seção Estado da máquina (Configurações) — rótulos por idioma;
     // as frases das linhas vêm da própria máquina, nunca daqui.
     machineStateTitle: "Estado da máquina",

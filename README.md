@@ -377,6 +377,16 @@ service worker waits while a window from the previous publication is live and
 takes over on the next app opening, so the assets that document still requests
 are never swept from the cache mid-conversation.
 
+The installed app no longer waits for that closing to happen (P2-266): when
+the app is opened again, the shell checks for a published update (at most once
+every 30 minutes, never while an answer is streaming or a draft is unsent) and,
+when a new version is already waiting, shows a one-line banner whose
+"Update now" action swaps it in and reloads the app — no uninstall, no
+re-pairing, nothing else to do. `?swupdate=demo` on the address forces the
+banner for screenshots and support reproduction, and is honored only inside
+the desktop shell during an automation-driven harness session — every normal
+boot ignores it.
+
 - With nothing cached yet (the first visit happened offline or the precache
   was interrupted), the app shows a minimal static page in Portuguese — "Você
   está sem conexão … recarregue a página" — instead of a white screen or the

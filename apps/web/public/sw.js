@@ -70,6 +70,15 @@ self.addEventListener("activate", (event) => {
   self.clients.claim();
 });
 
+// P2-266: the page's only lever over this worker — the documented swap
+// message posted by the update banner's explicit action. Any other message
+// payload is ignored; skipWaiting never fires for it. The literal must stay
+// in sync with SW_SWAP_MESSAGE in apps/web/src/lib/swupdate.ts (pinned by
+// scripts/unit.test.ts).
+self.addEventListener("message", (event) => {
+  if (event.data === "ocr-sw-swap") self.skipWaiting();
+});
+
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
   if (url.origin !== self.location.origin) return;
