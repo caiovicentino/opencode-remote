@@ -1164,7 +1164,14 @@ próprio item de status da bandeja acompanha o progresso — "Downloading
 update… 42%" (ou "Downloading update…" sem número quando o feed não anuncia o
 total) — e, se a rede morrer no meio, no próximo tique de reverificação o
 rótulo vira "Update download stalled — check for updates", apenas informativo:
-nada é cancelado, rebaixado ou baixado de novo por causa do rótulo. Checagens
+nada é cancelado, rebaixado ou baixado de novo por causa do rótulo. Desde a
+P2-264, antes de a reverificação agendada começar um download o shell mede o
+espaço livre do volume que hospeda o diretório de dados: quando não cabe o
+pacote mais a cópia descompactada (com uma folga documentada), ou o espaço
+não pôde ser medido, a checagem é adiada — a bandeja mostra `Update postponed
+— not enough disk space`, uma linha cai no `desktop.log` e **liberar espaço em
+disco (ou clicar em Check for updates) destrava a atualização** no próximo
+tique; nada é cancelado, apagado ou instalado pelas suas costas. Checagens
 repetidas nunca empilham
 ofertas velhas. Desde a P2-146, todo release do GitHub também publica os
 feeds JSON do Squirrel.Mac, gerados por

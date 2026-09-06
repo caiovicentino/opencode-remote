@@ -1,6 +1,6 @@
 import { app, autoUpdater, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, powerMonitor, screen, session, Tray, shell } from "electron";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statfsSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import QRCode from "qrcode";
@@ -74,6 +74,7 @@ import { menuSpec, type MenuItemSpec } from "./menu";
 import { contextMenuSpec, SPELLING_SUGGESTIONS_MAX } from "./ctxmenu";
 import { nextCheckDelayMs } from "./updateschedule";
 import { UPDATE_PROGRESS_LIMITS, updateProgressView, type UpdateProgressView } from "./updateprogress";
+import { UPDATE_SPACE_LIMITS, updateSpaceVerdict } from "./updatespace";
 import { loadWindowBounds, saveWindowBounds, WINDOW_MIN, windowStateFile } from "./window-state";
 import { DEFAULT_ZOOM_LEVEL, zoomStartupPlan, zoomVerdict, type ZoomAction } from "./zoomlevel";
 import {
@@ -532,6 +533,12 @@ const updateDialogSinks: UpdateDialogSinks = {
 };
 
 function runUpdateCheck(source: string): void {
+  // P2-264: the disk-space gate rides the SAME tick updateschedule.ts feeds —
+  // only the scheduled recheck consults it (never boot, never the user's
+  // explicit "Check for updates"). A postpone skips this check entirely: the
+  // download is not started, one static line lands in the log and the tray
+  // label explains why until the next tick re-evaluates the space.
+  if (source === "scheduled" && updateSpaceGateSkip()) return;
   void checkForUpdatesOnBoot({
     dialog: updateDialogSinks,
     // P2-211: the boot verdict gates the consent dialog — a bundle the
@@ -585,6 +592,9 @@ function runUpdateCheck(source: string): void {
         status === "disabled"
       ) {
         clearUpdateProgress();
+        // P2-264: with no download pending, a postpone label is stale — the
+        // tray goes back to the status the new state speaks for itself.
+        setUpdateSpaceLabel(null);
       }
       refreshTrayMenu();
       // P2-176: the Help menu carries the same status label — rebuild it at
@@ -720,9 +730,12 @@ let updateProgressTotal = 0;
 let updateProgressAt = 0;
 /** The label the tray currently shows for the download — the dedup key. */
 let lastUpdateProgressLabel: string | null = null;
+/** The last progress verdict ("downloading" = a download is in flight). */
+let lastUpdateProgressVerdict: UpdateProgressView["verdict"] | null = null;
 
 function setUpdateProgress(view: UpdateProgressView | null): void {
   const label = view ? view.label : null;
+  lastUpdateProgressVerdict = view?.verdict ?? null;
   if (lastUpdateProgressLabel === label) return;
   lastUpdateProgressLabel = label;
   if (view?.verdict === "stuck") {
@@ -740,6 +753,9 @@ function onUpdateProgress(info: unknown): void {
   updateProgressBytes = bytes;
   updateProgressTotal = total;
   updateProgressAt = now;
+  // P2-264: a download is factually running — a postpone label from an older
+  // tick must never outlive it (the live progress label takes the tray).
+  setUpdateSpaceLabel(null);
   // At event time the age is zero by construction: the view can only answer
   // "downloading" or "unknown" here — exactly the live label the user needs.
   setUpdateProgress(updateProgressView(bytes, total, now, now, UPDATE_PROGRESS_LIMITS));
@@ -760,6 +776,78 @@ function evaluateUpdateProgressSilence(): void {
   if (updateProgressAt <= 0) return;
   const now = Date.now();
   setUpdateProgress(updateProgressView(updateProgressBytes, updateProgressTotal, updateProgressAt, now, UPDATE_PROGRESS_LIMITS));
+}
+
+// --- disk-space gate for the scheduled update (P2-264) -------------------------
+// The download used to start without ever looking at how much free space the
+// machine has: on a nearly full volume it died at the very end and the tray
+// went back to inviting a new check as if nothing had happened. The pure
+// verdict lives in src/updatespace.ts; here only the wiring: ONE statfs read
+// of the volume hosting userData per decision, on the SAME tick
+// updateschedule.ts feeds (see scheduleNextUpdateCheck) — no new timer, no
+// new IPC channel, no new network request (a postpone SKIPS the scheduled
+// fetch instead of adding one). Postpone means: the download is not started,
+// one static log line is written and the tray label changes — it NEVER
+// cancels a download in flight, never deletes a file to free space and never
+// installs anything; the same timer simply re-evaluates on the next tick, so
+// freed space (or the existing "Check for updates" item) unlocks the update.
+// Harness-session rule (OCR_DESKTOP_SESSION): this path opens no window, no
+// dialog and steals no focus by construction — it computes a verdict, writes
+// a log line and rewrites an operating-system tray label, a surface that
+// never appears in an evidence screenshot (same reasoning as
+// src/updateprogress.ts) — so nothing is opened and no framing changes in a
+// hermetic run.
+
+/** The postpone label currently in the tray (null = none); the dedup key. */
+let updateSpaceLabel: string | null = null;
+
+function setUpdateSpaceLabel(label: string | null): void {
+  if (updateSpaceLabel === label) return;
+  updateSpaceLabel = label;
+  refreshTrayMenu();
+}
+
+/**
+ * The scheduled tick's disk-space gate. Returns true when the check — and
+ * with it the background download — must be skipped. Only the SCHEDULED
+ * recheck consults it: the boot check and the user's explicit "Check for
+ * updates" are untouched (P1-050 consent flow intact), exactly the seam
+ * where a download is STARTED by the shell itself.
+ */
+function updateSpaceGateSkip(): boolean {
+  // A download in flight owns this tick — the gate only refuses to START one
+  // (and without live progress there is no announced size but the updater's
+  // own, which the in-flight events are the source of).
+  if (lastUpdateProgressVerdict === "downloading") return false;
+  let freeBytes: number | null = null;
+  try {
+    const stats = statfsSync(app.getPath("userData"));
+    freeBytes = stats.bavail * stats.bsize;
+  } catch {
+    freeBytes = null; // unreadable volume → the pure verdict fails closed
+  }
+  // The announced size is the updater's own announcement for the release this
+  // decision is about: a STALLED download is the same release the scheduled
+  // check would restart, so its total is the best size knowledge there is.
+  // Any other progress state (no download this session, unknown total, or a
+  // release the feed may have moved past) reads as unknown — the pure verdict
+  // then answers "warn" and the update proceeds (never refused for a missing
+  // size), so a stale total cannot postpone a fitting new release.
+  const announced = lastUpdateProgressVerdict === "stuck" && updateProgressTotal > 0 ? updateProgressTotal : null;
+  const view = updateSpaceVerdict(freeBytes, announced, UPDATE_SPACE_LIMITS);
+  if (view.verdict === "download") {
+    setUpdateSpaceLabel(null);
+    return false;
+  }
+  // warn and postpone both say why, once per decision, in one static line.
+  log(`[desktop] update space: ${view.phrase}`);
+  if (view.verdict === "postpone") {
+    setUpdateSpaceLabel(view.label);
+    scheduleNextUpdateCheck("update-available");
+    return true;
+  }
+  setUpdateSpaceLabel(null);
+  return false;
 }
 
 // --- deferred-update reminder (P2-257) ----------------------------------------
@@ -2411,6 +2499,12 @@ function toElectronItems(
  * "restart to install" is false under the consent flow). */
 function currentUpdateLabel(): string | null {
   if (lastUpdateStatus === "update-downloaded") return UPDATE_DOWNLOADED_TRAY_LABEL;
+  // P2-264: a postponed download explains itself. The label outranks the
+  // progress label in every reachable state: a live download clears it on
+  // its first progress event (onUpdateProgress), so when it is set the gate
+  // has in fact refused to (re)start the download — the deeper truth over a
+  // stalled-download invite it would otherwise keep showing.
+  if (updateSpaceLabel) return updateSpaceLabel;
   // P2-258: while the background download is in flight (or stalled) the
   // progress label replaces the "check for updates" invite that the mere
   // availability status would keep showing for the whole download.

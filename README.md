@@ -1317,7 +1317,14 @@ folder served by the same local daemon, no new network surface) at boot and on
 demand from the tray (**Check for updates**). P2-155: while the app stays open
 (even with the window closed to the tray) it also rechecks on its own roughly
 every 6 h — ±10% jitter — and backs off from 15 min up to the 6 h cap while
-the feed is unreachable. P2-098: when that staged feed is
+the feed is unreachable. P2-264: before that scheduled recheck starts a
+download, the shell measures the free space of the volume hosting its data
+directory — when it cannot fit the package plus the unpacked copy (plus a
+documented headroom), or the space cannot be measured at all, the check is
+postponed: the tray says `Update postponed — not enough disk space`, one line
+lands in `desktop.log`, and **freeing disk space (or clicking Check for
+updates) unlocks the update** on the next tick — nothing is cancelled,
+deleted or installed behind your back. P2-098: when that staged feed is
 absent — the normal case on a plain DMG install — the shell falls back to the
 public yml feed attached to the latest GitHub release, so the tray still
 reports "update available" on third-party machines. P2-131: that fallback is
