@@ -983,6 +983,18 @@ pasta de logs** and **Copiar diagnóstico** — the tray's support actions,
 reachable from the menu bar too (the update items appear only when an update
 feed is configured).
 
+**Right-click menu (P2-235)**: right-clicking the window opens a native
+context menu with the lay-user basics — **Recortar / Copiar / Colar / Selecionar
+tudo** in editable fields, **Copiar** for selected text anywhere, **Abrir link /
+Copiar endereço do link** for links (opening follows the same
+http/https/mailto scheme gate as every other external open — a refused scheme
+offers only "copy address", never "open") and up to four spelling suggestions
+for a misspelled word. Dev (unpackaged) builds also offer **Inspecionar
+elemento**; packaged builds never do. When there is nothing to act on, no menu
+opens at all. Automated test sessions never open the menu — a native popup
+would steal focus from the gate (same harness-session rule as every other
+native surface).
+
 **Living home (P2-123)**: with no conversation selected the cockpit shows a
 real home instead of a dead end — a serif greeting ("Back in action, &lt;machine&gt;",
 from the same EN/pt-BR dictionary), a central composer with placeholder, a

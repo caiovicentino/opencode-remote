@@ -583,6 +583,7 @@ import { versionMismatch } from "../apps/desktop/src/versions";
 import { daemonTooltip, loginItemSupported, logsDirPath, openLogsFolder, trayIconSource } from "../apps/desktop/src/tray";
 
 import { HOTKEY_MENU_LABEL, menuSpec, type MenuItemSpec } from "../apps/desktop/src/menu";
+import { contextMenuSpec, SPELLING_SUGGESTIONS_MAX } from "../apps/desktop/src/ctxmenu";
 import {
   acceleratorProblem,
   defaultHotkeyFor,
@@ -861,7 +862,7 @@ check("main.ts routes every shell.openExternal through the extlink decision", op
 
 check("main.ts imports externalOpenDecision", mainTsSource.includes('from "./extlink"'));
 
-check("main.ts consults externalOpenDecision twice (window-open + release page)", (mainTsSource.match(/externalOpenDecision\(/g) ?? []).length === 2);
+check("main.ts consults externalOpenDecision three times (window-open + release page + context menu)", (mainTsSource.match(/externalOpenDecision\(/g) ?? []).length === 3);
 
 
 
@@ -18051,6 +18052,233 @@ check(
       .split("\n")
       .filter((l) => l.includes("setInterval"))
       .every((l) => !/identity/i.test(l)),
+  );
+}
+
+
+// --- P2-235: right-click context menu (ctxmenu.ts) ---------------------------
+{
+  const allow = externalOpenDecision("https://example.com/docs");
+  const refuse = externalOpenDecision("file:///etc/passwd");
+  const base: Parameters<typeof contextMenuSpec>[3] = {
+    editable: false,
+    canCut: false,
+    canCopy: false,
+    canPaste: false,
+    canSelectAll: false,
+    selectionText: "",
+    linkUrl: "",
+    misspelledWord: "",
+    suggestions: [],
+  };
+  const spec = (
+    harnessSession: boolean,
+    packaged: boolean,
+    decision: ReturnType<typeof externalOpenDecision>,
+    over: Partial<typeof base> = {},
+  ) => contextMenuSpec(harnessSession, packaged, decision, { ...base, ...over });
+
+  // rule 1 — the harness-session rule is FIRST: selection, editable field,
+  // link, misspelling and dev mode together still produce an empty list.
+  check(
+    "P2-235: harness session with selection and link → empty list",
+    spec(true, false, allow, { selectionText: "trecho", canCopy: true, linkUrl: "https://example.com/x" }).length === 0,
+  );
+  check(
+    "P2-235: harness session is empty even fully loaded in a dev build",
+    spec(true, false, allow, {
+      editable: true,
+      canCut: true,
+      canCopy: true,
+      canPaste: true,
+      canSelectAll: true,
+      selectionText: "x",
+      linkUrl: "https://example.com/x",
+      misspelledWord: "errro",
+      suggestions: ["erro"],
+    }).length === 0,
+  );
+
+  // rule 2 — packaged NEVER renders Inspect Element; dev (unpackaged,
+  // non-harness) does.
+  check(
+    "P2-235: packaged never renders Inspecionar elemento",
+    spec(false, true, allow, { editable: true, canPaste: true }).every((i) => i.id !== "ctx-inspect"),
+  );
+  const devOnly = spec(false, false, allow, {});
+  check(
+    "P2-235: unpackaged outside harness renders Inspecionar elemento",
+    devOnly.length === 1 && devOnly[0]?.id === "ctx-inspect" && devOnly[0]?.label === "Inspecionar elemento",
+  );
+
+  // editable field: paste flag on → Colar; paste flag off → no Colar at all
+  const editablePaste = spec(false, true, allow, {
+    editable: true,
+    canCut: true,
+    canCopy: true,
+    canPaste: true,
+    canSelectAll: true,
+  });
+  check(
+    "P2-235: editable with canPaste renders Colar",
+    editablePaste.some((i) => i.id === "ctx-paste" && i.label === "Colar"),
+  );
+  const editableNoPaste = spec(false, true, allow, {
+    editable: true,
+    canCut: true,
+    canCopy: true,
+    canSelectAll: true,
+  });
+  check(
+    "P2-235: editable with canPaste off renders no Colar",
+    editableNoPaste.every((i) => i.id !== "ctx-paste"),
+  );
+
+  // selection outside an editable field: Copiar, never Colar
+  const sel = spec(false, true, allow, { canCopy: true, selectionText: "trecho selecionado" });
+  check(
+    "P2-235: selection outside editable renders Copiar and never Colar",
+    sel.some((i) => i.id === "ctx-copy" && i.label === "Copiar") && sel.every((i) => i.id !== "ctx-paste"),
+  );
+
+  // nothing selected, not editable, packaged: only the documented items (none)
+  check(
+    "P2-235: nothing selected and not editable renders no edit items",
+    spec(false, true, allow, {}).every(
+      (i) => !["ctx-cut", "ctx-copy", "ctx-paste", "ctx-select-all"].includes(i.id ?? ""),
+    ),
+  );
+
+  // link actions follow the extlink verdict: approved → open + copy address,
+  // refused → at most copy address, never open.
+  const openLink = spec(false, true, allow, { linkUrl: "https://example.com/docs" });
+  check(
+    "P2-235: approved link renders Abrir link + Copiar endereço do link",
+    openLink.some((i) => i.id === "ctx-open-link" && i.label === "Abrir link") &&
+      openLink.some((i) => i.id === "ctx-copy-link" && i.label === "Copiar endereço do link"),
+  );
+  const refusedLink = spec(false, true, refuse, { linkUrl: "file:///etc/passwd" });
+  check(
+    "P2-235: refused link renders only copy address, never open",
+    refusedLink.some((i) => i.id === "ctx-copy-link") && refusedLink.every((i) => i.id !== "ctx-open-link"),
+  );
+
+  // spelling suggestions: capped at the documented ceiling, never above;
+  // an empty suggestion list renders no suggestion item at all.
+  const capped = spec(false, true, allow, {
+    misspelledWord: "errro",
+    suggestions: ["erro", "terra", "erros", "terro", "retro", "erro3"],
+  });
+  const spellItems = capped.filter((i) => (i.id ?? "").startsWith("ctx-spell-"));
+  check(
+    "P2-235: suggestions are capped at the documented ceiling",
+    spellItems.length === SPELLING_SUGGESTIONS_MAX && spellItems.length < 6,
+  );
+  check(
+    "P2-235: empty suggestion list renders no suggestion item",
+    spec(false, true, allow, { misspelledWord: "errro", suggestions: [] }).every(
+      (i) => !(i.id ?? "").startsWith("ctx-spell-"),
+    ),
+  );
+
+  // stable ordering between two calls with the same input
+  const stable: Parameters<typeof contextMenuSpec>[3] = {
+    editable: true,
+    canCut: true,
+    canCopy: true,
+    canPaste: true,
+    canSelectAll: true,
+    selectionText: "x",
+    linkUrl: "https://example.com/x",
+    misspelledWord: "errro",
+    suggestions: ["erro", "terra"],
+  };
+  check(
+    "P2-235: item order is stable between two calls with the same input",
+    JSON.stringify(contextMenuSpec(false, false, allow, stable)) ===
+      JSON.stringify(contextMenuSpec(false, false, allow, stable)),
+  );
+
+  // copy discipline: short pt-BR labels, no emoji (P2-118/P2-107), no absolute
+  // file path, no URL scheme in any label
+  const kitchen = contextMenuSpec(false, false, allow, stable);
+  const BANNED = /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{2300}-\u{23FF}\u{2500}-\u{25FF}\u{FE0F}]/u;
+  check(
+    "P2-235: labels are path-free, scheme-free and emoji-free",
+    kitchen
+      .filter((i) => typeof i.label === "string")
+      .every(
+        (i) =>
+          (i.label as string).length > 0 &&
+          !i.label!.includes("/") &&
+          !i.label!.includes("\\") &&
+          !i.label!.includes("://") &&
+          !i.label!.includes("file:") &&
+          !i.label!.includes("http:") &&
+          !BANNED.test(i.label as string),
+      ),
+  );
+  check(
+    "P2-235: no dangling separator and none as first or last item",
+    (() => {
+      const kinds = kitchen.map((i) => (i.type === "separator" ? "sep" : "item"));
+      return kinds[0] === "item" && kinds[kinds.length - 1] === "item" && kinds.every((k, i) => k === "item" || kinds[i - 1] === "item");
+    })(),
+  );
+
+  // module purity: same hygiene as menu.ts/hotkey.ts (no electron, no node
+  // builtins, no I/O, no timers — comments stripped before the check)
+  const ctxSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "ctxmenu.ts"), "utf8");
+  const ctxCode = ctxSrc.replace(/\/\/.*$/gm, "");
+  check(
+    "P2-235: ctxmenu.ts is pure — no electron/node builtins/timers",
+    !/electron|node:|require\(|setInterval|setTimeout|\bfetch\(/.test(ctxCode),
+  );
+
+  // the scheme verdict type comes from the existing extlink module
+  check(
+    "P2-235: ctxmenu.ts takes the link verdict from extlink.ts (P2-178)",
+    ctxCode.includes('from "./extlink"'),
+  );
+
+  // real main.ts: ONE context-menu listener, harness flag consulted first, the
+  // verdict from extlink, an empty list meaning no menu, and no new timer or
+  // IPC channel anywhere in the block.
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  check(
+    "P2-235: main.ts registers exactly one context-menu listener",
+    (mainSrc.match(/on\("context-menu"/g) ?? []).length === 1,
+  );
+  check(
+    "P2-235: main.ts feeds HERMETIC_E2E (harness session) as the first spec input",
+    /win\.webContents\.on\("context-menu", \(_event, params\) => \{[\s\S]*?contextMenuSpec\(HERMETIC_E2E, app\.isPackaged, decision,/.test(mainSrc),
+  );
+  check(
+    "P2-235: main.ts resolves the context-menu link verdict through externalOpenDecision",
+    mainSrc.includes("externalOpenDecision(params.linkURL)"),
+  );
+  check(
+    "P2-235: main.ts shows no menu when the spec list is empty",
+    mainSrc.includes("if (items.length === 0) return;"),
+  );
+  const ctxListenerAt = mainSrc.indexOf('win.webContents.on("context-menu"');
+  const ctxListenerBlock = ctxListenerAt >= 0 ? mainSrc.slice(ctxListenerAt, ctxListenerAt + 2400) : "";
+  check(
+    "P2-235: the context-menu block introduces no timer and no IPC channel",
+    ctxListenerBlock.length > 0 &&
+      !ctxListenerBlock.includes("setInterval") &&
+      !ctxListenerBlock.includes("setTimeout") &&
+      !ctxListenerBlock.includes("ipcMain"),
+  );
+
+  // in the pure module the harness rule is literally the first consulted rule,
+  // before the packaged rule and before any label is emitted
+  const specBody = ctxSrc.slice(ctxSrc.indexOf("export function contextMenuSpec"));
+  check(
+    "P2-235: in the pure spec the harness-session rule is the first consulted",
+    specBody.indexOf("if (harnessSession) return [];") >= 0 &&
+      specBody.indexOf("if (harnessSession) return [];") < specBody.indexOf("packaged ?") &&
+      specBody.indexOf("if (harnessSession) return [];") < specBody.indexOf("Recortar"),
   );
 }
 

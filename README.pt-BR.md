@@ -890,6 +890,19 @@ português desde a P2-176 (mesmo idioma da UI) e ganhou o menu **Ajuda** com
 as ações de suporte do tray, agora também na barra de menus (os itens de
 update só aparecem quando há feed configurado).
 
+**Menu de clique direito (P2-235)**: o clique com o botão direito na janela
+abre um menu de contexto nativo com o básico que um usuário leigo procura —
+**Recortar / Copiar / Colar / Selecionar tudo** em campos editáveis, **Copiar**
+para texto selecionado em qualquer lugar, **Abrir link / Copiar endereço do
+link** para links (abrir segue o mesmo gate de esquema http/https/mailto de
+toda abertura externa — esquema recusado só oferece "copiar endereço", nunca
+"abrir") e até quatro sugestões de ortografia para palavra com erro. Builds de
+desenvolvimento (não empacotados) também oferecem **Inspecionar elemento**;
+builds empacotados nunca. Quando não há nada o que oferecer, nenhum menu abre.
+Sessões de teste automatizado nunca abrem o menu — um popup nativo roubaria o
+foco do gate (a mesma regra de sessão de harness das demais superfícies
+nativas).
+
 **Home viva (P2-123)**: sem conversa selecionada, o cockpit mostra uma home de
 verdade no lugar do beco antigo — greeting serifado ("De volta à ação, &lt;máquina&gt;",
 do mesmo dicionário EN/pt-BR), composer central com placeholder, toggle de modo
