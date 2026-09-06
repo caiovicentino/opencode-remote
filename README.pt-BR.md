@@ -193,7 +193,10 @@ remoto, zero confiança**.
   prefixo de chave — dá pra revogar um celular perdido sem adivinhar entre
   prefixos. O carimbo é gravado no máximo uma vez por dispositivo por hora
   (`DEVICE_TOUCH_INTERVAL_MS`): propositalmente aproximado, nunca a frame, e não
-  muda nenhuma decisão de admissão
+  muda nenhuma decisão de admissão. Cada entrada também ganha um veredito de
+  uso derivado (`ativo`, `ocioso`, `dormente`, `nunca visto`, com uma frase
+  curta de ajuda) calculado apenas por leitura desses carimbos — o produto
+  nunca revoga sozinho; revogar continua sendo ação explícita do dono.
 - **BYOM** — opencode suporta qualquer provider; escolha o modelo por sessão
 - **API + SDK** — dirija sessões por código (`packages/sdk`)
 - **Artifacts** — o agente escreve documentos (html, md, csv, pdf) em
