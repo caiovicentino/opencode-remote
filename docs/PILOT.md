@@ -1640,3 +1640,12 @@ gate, cadeia `test:unit` ou CI — ou estar declarado em `scripts/test-registry.
 `scripts/unit.test.ts` roda `scripts/testreachability.ts` (puro, sem I/O) contra o
 repositório real: script declarado no package.json e nunca invocado não conta como
 cobertura, e qualquer teste órfão futuro reprova o gate.
+
+## Cobertura da bateria portátil (P2-237)
+
+Quem escreve um teste novo em `scripts/` precisa classificá-lo na hora: todo
+arquivo de teste entra na lista portátil (`PORTABLE_TESTS`) ou na lista de
+exclusões (`PORTABLE_EXCLUSIONS`) com uma causa documentada — não existe
+terceira opção; `scripts/portablecoverage.ts` (puro, sem I/O) cruza as duas
+listas com a listagem real do diretório e qualquer arquivo sem classificação
+reprova o gate no `test:unit` e no job `verify-win`.

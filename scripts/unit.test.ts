@@ -685,6 +685,8 @@ import { touchesDesktop, touchesRelayImage } from "./ci-scope";
 
 import { PORTABLE_TESTS, portableSuitePlan } from "./portable-suite";
 
+import { PORTABLE_EXCLUSION_CAUSES, PORTABLE_EXCLUSIONS, portableCoverage } from "./portablecoverage";
+
 import { imageTags } from "./relay-image";
 
 import { imageSmokeVerdict } from "./relay-image-smoke";
@@ -17268,6 +17270,115 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       verifyJob.includes("scripts/smoke.ts") &&
       verifyJob.includes("scripts/integration.ts") &&
       !verifyJob.includes("test:unit-win"),
+  );
+}
+
+// --- P2-237: portable-suite coverage guard --------------------------------------
+
+{
+  check("P2-237: empty lists and no existing files yield zero problems", portableCoverage([], [], []).length === 0);
+
+  const r1 = portableCoverage(["brand-new.test.ts"], [], []);
+  check(
+    "P2-237: an existing test file in neither list is one fail-closed problem naming the file",
+    r1.length === 1 && r1[0].includes("brand-new.test.ts") && r1[0].includes("neither"),
+    JSON.stringify(r1),
+  );
+
+  const r2 = portableCoverage(["both.test.ts"], ["both.test.ts"], [{ file: "both.test.ts", cause: "electron" }]);
+  check(
+    "P2-237: a file declared in both lists at the same time is one problem naming the file",
+    r2.length === 1 && r2[0].includes("both.test.ts"),
+    JSON.stringify(r2),
+  );
+
+  const r3p = portableCoverage([], ["ghost.test.ts"], []);
+  check(
+    "P2-237: a portable entry missing from disk is one problem naming the file",
+    r3p.length === 1 && r3p[0].includes("ghost.test.ts"),
+    JSON.stringify(r3p),
+  );
+
+  const r3e = portableCoverage([], [], [{ file: "ghost.test.ts", cause: "electron" }]);
+  check(
+    "P2-237: an exclusion entry missing from disk is one problem naming the file",
+    r3e.length === 1 && r3e[0].includes("ghost.test.ts"),
+    JSON.stringify(r3e),
+  );
+
+  const r4 = portableCoverage(["odd.test.ts"], [], [{ file: "odd.test.ts", cause: "vibes" }]);
+  check(
+    "P2-237: an exclusion cause outside the documented set is one problem naming the file and the cause",
+    r4.length === 1 && r4[0].includes("odd.test.ts") && r4[0].includes("vibes"),
+    JSON.stringify(r4),
+  );
+
+  const r5 = portableCoverage(["dup.test.ts"], [], [
+    { file: "dup.test.ts", cause: "electron" },
+    { file: "dup.test.ts", cause: "chmod" },
+  ]);
+  check(
+    "P2-237: a repeated exclusion is one problem naming the file",
+    r5.length === 1 && r5[0].includes("dup.test.ts"),
+    JSON.stringify(r5),
+  );
+
+  const two = portableCoverage([], [], [{ file: "ghost.test.ts", cause: "vibes" }]);
+  check(
+    "P2-237: two simultaneous causes yield two problems, never one merged verdict",
+    two.length === 2 && two[0].includes("ghost.test.ts") && two[1].includes("vibes"),
+    JSON.stringify(two),
+  );
+
+  const stableA = portableCoverage(
+    ["a.test.ts", "b.test.ts"],
+    ["c.test.ts"],
+    [{ file: "d.test.ts", cause: "electron" }, { file: "d.test.ts", cause: "electron" }],
+  );
+  const stableB = portableCoverage(
+    ["a.test.ts", "b.test.ts"],
+    ["c.test.ts"],
+    [{ file: "d.test.ts", cause: "electron" }, { file: "d.test.ts", cause: "electron" }],
+  );
+  check("P2-237: problem order is stable across calls with the same input", JSON.stringify(stableA) === JSON.stringify(stableB));
+
+  check(
+    "P2-237: no problem text contains an absolute file path",
+    [...r1, ...r2, ...r3p, ...r3e, ...r4, ...r5, ...two, ...stableA].every(
+      (p) => !p.startsWith("/") && !/^[A-Za-z]:[\\]/.test(p) && !p.includes(import.meta.dirname),
+    ),
+  );
+
+  check(
+    "P2-237: every PORTABLE_EXCLUSIONS entry uses a documented cause",
+    PORTABLE_EXCLUSIONS.every((e) => Object.prototype.hasOwnProperty.call(PORTABLE_EXCLUSION_CAUSES, e.cause)),
+  );
+
+  check(
+    "P2-237: no PORTABLE_EXCLUSIONS entry has an empty file name",
+    PORTABLE_EXCLUSIONS.every((e) => typeof e.file === "string" && e.file.trim().length > 0),
+  );
+
+  // Real-repo assertion: the scripts directory itself is fully classified —
+  // creating a new test file without classifying it fails the gate right here,
+  // not months later on a user's Windows machine.
+  const onDiskTests = readdirSync(import.meta.dirname).filter((f) => f.endsWith(".test.ts")).sort();
+  const realCoverage = portableCoverage(onDiskTests, PORTABLE_TESTS, PORTABLE_EXCLUSIONS);
+  check("P2-237: the real scripts/ directory is fully classified (zero coverage problems)", realCoverage.length === 0, JSON.stringify(realCoverage));
+
+  // The portable CLI must run this guard before executing any test and must
+  // derive the real file list from a directory read, not a second hand-written list.
+  const portableSuiteSrc = readFileSync(join(import.meta.dirname, "portable-suite.ts"), "utf8");
+  const guardAt = portableSuiteSrc.indexOf("portableCoverage(");
+  const execAt = portableSuiteSrc.indexOf("spawnSync(");
+  check(
+    "P2-237: portable-suite.ts runs the coverage guard before executing any test",
+    guardAt > -1 && execAt > -1 && guardAt < execAt,
+  );
+  const dirListVar = portableSuiteSrc.match(/const (\w+) = readdirSync\(/)?.[1];
+  check(
+    "P2-237: portable-suite.ts builds the test-file list from a directory read, not a second hand-written list",
+    typeof dirListVar === "string" && portableSuiteSrc.includes(`portableCoverage(${dirListVar},`),
   );
 }
 
