@@ -75,7 +75,7 @@ const json = (v: unknown) => JSON.stringify(v);
   const first = gpuVerdict(GPU_STATE_ZEROED, now, "GPU");
   check("verdict: the first GPU crash only logs, counting one", first.plan === "log" && first.state.count === 1 && first.state.windowStart === now);
   let walk = GPU_STATE_ZEROED;
-  let walkPlans: string[] = [];
+  const walkPlans: string[] = [];
   for (let i = 0; i < GPU_CRASH_CEILING; i++) {
     const v = gpuVerdict(walk, now, "GPU");
     walkPlans.push(v.plan);
