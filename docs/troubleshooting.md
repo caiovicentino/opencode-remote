@@ -83,6 +83,33 @@ What it means:
 The same phrase rides the audit log (`identity.unreadable`, no file content)
 and the desktop status card's generic daemon-down diagnosis.
 
+## A routine stopped running after a restart (P2-236)
+
+A fired routine stays "in flight" (marked with `lastSessionID` in
+`routines.json`) until the opencode session reports back. If the daemon is
+restarted mid-run, opencode closes, or the session event simply never arrives,
+that marker used to be written forever — and since the periodic sweep skips
+routines with a live marker, the routine silently stopped firing on every
+following day, with no log line and no notification.
+
+The daemon now carries a **run lease**: during the same 30 s routine sweep, any
+run still in flight after the lease expires is released automatically.
+
+- **Default lease: 2 hours** (`OCR_RUN_LEASE_MS=7200000` is the equivalent
+  explicit value). A routine run is one prompt → answer session; two hours is
+  far beyond any legitimate run.
+- **Adjust it** with the `OCR_RUN_LEASE_MS` environment variable (whole number
+  of milliseconds, up to the 24 h ceiling). `OCR_RUN_LEASE_MS=off` disables the
+  automatic release entirely; an invalid value (zero, negative, fractional,
+  non-numeric or above the ceiling) refuses the boot at startup, like every
+  other `OCR_*` knob.
+- **Nothing is lost**: the release clears the stuck marker, marks the routine
+  as errored with a calm message, writes one warn line (no session ids) and
+  sends at most one notification — and the routine fires again at its **next
+  scheduled time** (the same day's slot is not re-run). A run with no known
+  start instant is never killed: it gets stamped on first observation, so the
+  lease only ever counts forward.
+
 ## Staging a desktop update release (P1-050)
 
 The packaged desktop app checks `http://127.0.0.1:8792/__ocr/updates/feed.json`
