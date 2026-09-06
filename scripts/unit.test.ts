@@ -212,6 +212,8 @@ import {
   PAGE_LIMIT_MAX,
 } from "../apps/daemon/src/paginate";
 
+import { backlogSections, queueView } from "../apps/daemon/src/backlogview";
+
 import {
   dropCachedSession,
   getCachedSession,
@@ -18856,6 +18858,177 @@ check(
     policyCode.includes('"network-first"') &&
     policyCode.includes('"network-first-nosave"'),
 );
+
+// --- P2-240: honest queue view (backlogview.ts) ---------------------------------
+{
+  const s = (text: string) => backlogSections(text);
+
+  // backlogSections — full table
+  check("P2-240: backlogSections — empty text yields no sections without throwing", JSON.stringify(s("")) === "[]");
+  check(
+    "P2-240: backlogSections — text without any heading yields no sections",
+    JSON.stringify(s("just prose\nmore prose\n- [ ] (P9-9) [P2] not a section\n")) === "[]",
+  );
+  check(
+    "P2-240: backlogSections — a section ends at the NEXT heading of the same level",
+    (() => {
+      const r = s("# Top\nintro\n## Ready\n- [ ] (P1-1) [P1] a — t\n### deep\nstill ready\n## Blocked\n- [ ] (P1-2) [P1] b — t\n# Tail\ntail body");
+      return (
+        r.length === 5 &&
+        r[0]!.heading === "Top" && r[0]!.level === 1 && JSON.stringify(r[0]!.lines) === JSON.stringify(["intro", "## Ready", "- [ ] (P1-1) [P1] a — t", "### deep", "still ready", "## Blocked", "- [ ] (P1-2) [P1] b — t"]) &&
+        r[1]!.heading === "Ready" && r[1]!.level === 2 && JSON.stringify(r[1]!.lines) === JSON.stringify(["- [ ] (P1-1) [P1] a — t", "### deep", "still ready"]) &&
+        r[2]!.heading === "deep" && r[2]!.level === 3 &&
+        r[3]!.heading === "Blocked" && r[3]!.level === 2 && JSON.stringify(r[3]!.lines) === JSON.stringify(["- [ ] (P1-2) [P1] b — t", "# Tail", "tail body"]) &&
+        r[4]!.heading === "Tail" && r[4]!.level === 1 && JSON.stringify(r[4]!.lines) === JSON.stringify(["tail body"])
+      );
+    })(),
+  );
+  check(
+    "P2-240: backlogSections — repeated same-level headings each start their own section, read order preserved",
+    (() => {
+      const r = s("## Blocked\none\n## Blocked\ntwo\n## Done\nx");
+      return (
+        r.length === 3 &&
+        r[0]!.heading === "Blocked" && JSON.stringify(r[0]!.lines) === JSON.stringify(["one"]) &&
+        r[1]!.heading === "Blocked" && JSON.stringify(r[1]!.lines) === JSON.stringify(["two"]) &&
+        r[2]!.heading === "Done" && r[2]!.lines.length === 1
+      );
+    })(),
+  );
+
+  // queueView — full table
+  const q = (text: string) => queueView(text);
+  check("P2-240: queueView — empty text yields empty lists without throwing", q("").ready.length === 0 && q("").blocked.length === 0 && q("").misplaced === 0);
+  check(
+    "P2-240: queueView — text without any heading yields empty lists (all unmarked lines are misplaced ground)",
+    (() => {
+      const r = q("loose\n- [ ] (P9-1) [P2] orphan — t\n");
+      return r.ready.length === 0 && r.blocked.length === 0 && r.misplaced === 1;
+    })(),
+  );
+  check(
+    "P2-240: queueView — empty Ready with a full Blocked section yields zero ready",
+    (() => {
+      const r = q("## Ready\n\n## Blocked\n- [ ] (P2-109) [P2] parked — spec: x (area: web)\n");
+      return r.ready.length === 0 && r.blocked.length === 1 && r.blocked[0]!.id === "P2-109" && r.blocked[0]!.area === "web";
+    })(),
+  );
+  check(
+    "P2-240: queueView — three repeated Blocked sections sum every line exactly once",
+    (() => {
+      const r = q("## Ready\n\n## Blocked\n- [ ] (P1-1) [P2] a — t\n\n## Blocked\n- [ ] (P1-2) [P2] b — t\n\n## Blocked\n- [ ] (P1-3) [P2] c — t\n");
+      return (
+        r.ready.length === 0 &&
+        r.blocked.length === 3 &&
+        JSON.stringify(r.blocked.map((x) => x.id)) === JSON.stringify(["P1-1", "P1-2", "P1-3"])
+      );
+    })(),
+  );
+  check(
+    "P2-240: queueView — unmarked line inside Done stays out of both lists and counts as misplaced",
+    (() => {
+      const r = q("## Ready\n\n## Done\n- [ ] (P0-9) [P1] ghost line quoted in a done spec — t\n");
+      return r.ready.length === 0 && r.blocked.length === 0 && r.misplaced === 1;
+    })(),
+  );
+  check(
+    "P2-240: queueView — a done-marked line never enters either list",
+    (() => {
+      const r = q("## Ready\n- [x] (P1-1) [P1] finished — t\n## Blocked\n- [x] (P1-2) [P1] also done — t\n");
+      return r.ready.length === 0 && r.blocked.length === 0 && r.misplaced === 0;
+    })(),
+  );
+  check(
+    "P2-240: queueView — a line without an area tag yields an empty area",
+    (() => {
+      const r = q("## Ready\n- [ ] (P2-5) [P2] no tag here — t\n");
+      return r.ready.length === 1 && r.ready[0]!.area === "";
+    })(),
+  );
+  check(
+    "P2-240: queueView — a line that does not match the format degrades without throwing",
+    (() => {
+      const r = q("## Ready\n- [ ] free-form line nobody can parse\n");
+      return r.ready.length === 1 && r.ready[0]!.id === "?" && r.ready[0]!.title === "- [ ] free-form line nobody can parse" && r.ready[0]!.area === "";
+    })(),
+  );
+  check(
+    "P2-240: queueView — read order is preserved in both lists",
+    (() => {
+      const r = q("## Ready\n- [ ] (P1-9) [P1] first — t\n- [ ] (P1-2) [P1] second — t\n## Blocked\n- [ ] (P1-8) [P2] third — t\n- [ ] (P1-3) [P2] fourth — t\n");
+      return (
+        JSON.stringify(r.ready.map((x) => x.id)) === JSON.stringify(["P1-9", "P1-2"]) &&
+        JSON.stringify(r.blocked.map((x) => x.id)) === JSON.stringify(["P1-8", "P1-3"])
+      );
+    })(),
+  );
+  check(
+    "P2-240: queueView — the same identifier never appears in both lists (first occurrence wins)",
+    (() => {
+      const r = q("## Ready\n- [ ] (P1-1) [P1] live — t\n## Blocked\n- [ ] (P1-1) [P1] same id again — t\n- [ ] (P1-2) [P1] blocked — t\n## Ready\n- [ ] (P1-2) [P1] echo — t\n");
+      return (
+        r.ready.length === 1 && r.ready[0]!.id === "P1-1" &&
+        r.blocked.length === 1 && r.blocked[0]!.id === "P1-2"
+      );
+    })(),
+  );
+  check(
+    "P2-240: queueView — stable result across two calls with the same input",
+    (() => {
+      const text = "## Ready\n- [ ] (P1-1) [P1] a — t (area: daemon)\n## Blocked\n- [ ] (P1-2) [P2] b — t\n## Done\n- [ ] ghost\n";
+      return JSON.stringify(q(text)) === JSON.stringify(q(text));
+    })(),
+  );
+
+  // Real-repo assertions against today's BACKLOG.md: the panel must never
+  // again report a ready task that lives outside ## Ready.
+  const backlogText = readFileSync(new URL("../BACKLOG.md", import.meta.url), "utf8");
+  const backlog = q(backlogText);
+  const readyIds = new Set(backlog.ready.map((t) => t.id));
+  check(
+    "P2-240: real BACKLOG.md — no identifier appears in both lists at once",
+    backlog.ready.every((t) => !backlog.blocked.some((b) => b.id === t.id)) &&
+      new Set([...backlog.ready, ...backlog.blocked].map((t) => t.id)).size === backlog.ready.length + backlog.blocked.length,
+  );
+  check(
+    "P2-240: real BACKLOG.md — no line living under ## Done leaks into ready",
+    (() => {
+      const doneIdx = backlogText.split("\n").lastIndexOf("## Done");
+      if (doneIdx < 0) return true;
+      const doneIds = new Set(
+        backlogText
+          .split("\n")
+          .slice(doneIdx)
+          .filter((l) => l.startsWith("- [x]"))
+          .map((l) => l.match(/\(([P\d][\w.-]*)\)/)?.[1]),
+      );
+      return backlog.ready.every((t) => !doneIds.has(t.id)) && !readyIds.has("?");
+    })(),
+  );
+
+  // Source pins on the real route: section-aware module, unchanged body, no new timers.
+  const backlogViewSrc = readFileSync(new URL("../apps/daemon/src/backlogview.ts", import.meta.url), "utf8");
+  const routeSrc = readFileSync(new URL("../apps/daemon/src/index.ts", import.meta.url), "utf8");
+  check(
+    "P2-240: backlogview stays pure — no node: builtins, no child_process, no fetch",
+    !backlogViewSrc.includes("node:") && !backlogViewSrc.includes("child_process") && !backlogViewSrc.includes("fetch("),
+  );
+  check(
+    "P2-240: the route consumes the module and no longer slices the file by heading",
+    routeSrc.includes("const view = queueView(md);") &&
+      !routeSrc.includes('md.split("\\n## Ready\\n")') &&
+      !routeSrc.includes('md.split("## Ready\\n")') &&
+      !routeSrc.includes('md.split("\\n## Blocked\\n")'),
+  );
+  check(
+    "P2-240: the response body is byte-identical in shape ({ ready, blocked } of { id, title, area })",
+    routeSrc.includes("send(200, { ready, blocked });") && !routeSrc.includes("view.misplaced"),
+  );
+  check(
+    "P2-240: no new periodic timer was introduced by the route change",
+    (routeSrc.match(/setInterval\(/g) || []).length === 5,
+  );
+}
 
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);

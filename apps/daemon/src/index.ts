@@ -77,6 +77,7 @@ import { parseRelayUrl, redactRelayUrl } from "./relayurl.js";
 import { bodyLimit, isBodyLimitError, readLimitedBody, type BodyLimitError } from "./bodylimit.js";
 import { pairWindow, bootstrapDecision } from "./pairwindow.js";
 import { leaseVerdict, parseRunLease, RUN_LEASE_KILL_MESSAGE } from "./routinelease.js";
+import { queueView } from "./backlogview.js";
 import { DEVICE_TOUCH_INTERVAL_MS, nextDeviceLabel, touchDecision } from "./devicetouch.js";
 import {
   admitNewUpload,
@@ -2951,23 +2952,18 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       send(200, { done });
       return true;
     }
-    // GET /api/pilot-ready — pending queue from BACKLOG.md (## Ready + ## Blocked)
+    // GET /api/pilot-ready — pending queue from BACKLOG.md (## Ready + ## Blocked).
+    // P2-240: the queue comes from the pure backlogview module, which stops each
+    // section at the next heading — unmarked lines in ## Done (or any later
+    // section) no longer leak into both lists. Body shape is unchanged.
     if (seg[1] === "pilot-ready") {
       let ready: { id: string; title: string; area: string }[] = [];
       let blocked: { id: string; title: string; area: string }[] = [];
       try {
         const md = readFileSync(new URL("../../../BACKLOG.md", import.meta.url), "utf8");
-        const parse = (chunk: string) =>
-          chunk
-            .split("\n")
-            .filter((l) => l.startsWith("- [ ]"))
-            .map((l) => {
-              const m = l.match(/\(([P\d][\w.-]*)\)\s*\[.*?\]\s*([^—]+)/);
-              const area = (l.match(/\(area:\s*(\w+)\)/)?.[1] ?? "").toLowerCase();
-              return { id: m?.[1] ?? "?", title: (m?.[2] ?? l).trim(), area };
-            });
-        ready = parse(md.split("\n## Ready\n")[1] ?? md.split("## Ready\n")[1] ?? "");
-        blocked = parse(md.split("\n## Blocked\n")[1] ?? "");
+        const view = queueView(md);
+        ready = view.ready;
+        blocked = view.blocked;
       } catch {}
       send(200, { ready, blocked });
       return true;

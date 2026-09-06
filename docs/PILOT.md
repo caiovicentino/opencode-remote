@@ -668,6 +668,9 @@ A linha da task no BACKLOG.md pode carregar a tag opcional `(size: S|M|L)` (defa
   (evidence/typecheck/build/…/invariants/review) calculado sobre os eventos
   `gate-fail` que o `recordGateFail` emite; o botão **FILA** mostra na face
   `n prontos ⛔m bloqueadas` (seções `## Ready`/`## Blocked` do BACKLOG.md).
+  A rota lê seções de verdade (`backlogview.ts`, P2-240): cada título delimita
+  a seção até o próximo título, e linha não marcada dentro de `## Done` nunca
+  conta como pronta.
 - **Chip AUDIT MODE**: quando o circuit breaker de febre (P2-032) pausa a fila,
   um chip vermelho no topo do painel mostra o motivo e, no tooltip, o resumo
   do `buildDiagnosis` (api + top steps + top tasks) persistido em
