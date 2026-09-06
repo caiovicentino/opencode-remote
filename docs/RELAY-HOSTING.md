@@ -27,6 +27,21 @@ docker run -d --name relay \
   ghcr.io/caiovicentino/opencode-remote:0.2.0
 ```
 
+Since P2-222 the same build + smoke gate also runs on every pull request that
+touches the relay surface (`apps/relay`, `deploy/relay/Dockerfile`,
+`.dockerignore`, `package-lock.json`): the PR-scoped `relay-image` job of
+`.github/workflows/ci.yml` builds the image with an ephemeral local tag,
+boots it on an ephemeral loopback port and runs the identical smoke battery —
+never logging in to a registry, pushing, publishing or reading secrets.
+Reproduce it locally:
+
+```bash
+docker build -f deploy/relay/Dockerfile -t relay-smoke:pr .
+docker run -d --name relay-smoke -p "127.0.0.1:8787:8787" relay-smoke:pr
+npx tsx scripts/relay-image-smoke.ts http://127.0.0.1:8787 "$(docker exec relay-smoke whoami)"
+docker rm -f relay-smoke
+```
+
 Pin the version tag instead of `latest`: `latest` moves with every release
 and a casual `pull` can land you on a version you never tested. Publishing
 is opt-in fail-closed — the workflow only pushes when the repository variable

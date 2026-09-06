@@ -127,6 +127,17 @@ empacota somente o alvo `dir` do Windows — sem instalador NSIS, sem
 assinatura — e roda o mesmo smoke `--no-installer`, de modo que regressão
 de empacotamento Windows reprove o PR em vez de estourar no dia da
 publicação.
+Desde a P2-222 a imagem do relay também é construída e testada no CI, além do
+release: todo PR que toca a superfície relay (`apps/relay`,
+`deploy/relay/Dockerfile`, `.dockerignore`, `package-lock.json` — classificado
+pela função irmã `touchesRelayImage` do mesmo `scripts/ci-scope.ts`) roda o
+job `relay-image` (ubuntu-latest, indicador `relay-image` do job scope), que
+constrói a imagem com tag local efêmera, sobe o contêiner numa porta de
+loopback efêmera, espera `/healthz` com o mesmo teto de 30 tentativas × 1s do
+release e roda o mesmo `scripts/relay-image-smoke.ts` — sem login em registro,
+sem push e sem segredo. Reproduza localmente:
+`docker build -f deploy/relay/Dockerfile -t relay-smoke:pr .` e o smoke
+conforme docs/RELAY-HOSTING.md.
 Desde a P2-204 o desktop-dmg também **abre o app empacotado de verdade**
 antes de anexar o DMG (`apps/desktop/scripts/packaged-boot.mjs`, passo
 "Smoke-boot the packaged app"): launch hermético pelo Playwright do binário

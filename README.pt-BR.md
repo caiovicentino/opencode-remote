@@ -523,6 +523,14 @@ tag).
 
 ## Relay hospedado (Docker)
 
+Todo PR que toca a superfície do relay (`apps/relay`, `deploy/relay/Dockerfile`,
+`.dockerignore`, `package-lock.json`) também constrói e faz smoke da imagem no
+CI (job `relay-image`, P2-222) — mesma construção e mesmos probes do release,
+sem login em registro e sem push. Para reproduzir localmente:
+`docker build -f deploy/relay/Dockerfile -t relay-smoke:pr .` e
+`npx tsx scripts/relay-image-smoke.ts http://127.0.0.1:<porta> "$(docker exec relay-smoke whoami)"`
+num contêiner iniciado dessa tag.
+
 Não quer hospedar o relay no seu Mac? `deploy/relay/Dockerfile` gera uma imagem
 multi-stage enxuta (node 22 slim, compilada com tsc, usuário não-root,
 `HEALTHCHECK` no `/healthz`) para qualquer plataforma de containers — aponte o

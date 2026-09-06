@@ -558,6 +558,14 @@ the tag still proves the image builds and boots, but publishes nothing):
 docker pull ghcr.io/caiovicentino/opencode-remote:0.2.0   # pin the version, not latest
 ```
 
+Every PR that touches the relay surface (`apps/relay`,
+`deploy/relay/Dockerfile`, `.dockerignore`, `package-lock.json`) also builds
+and smoke-boots the image in CI (`relay-image` job, P2-222) — same build and
+probes as the release, no registry login and no push. Reproduce locally:
+`docker build -f deploy/relay/Dockerfile -t relay-smoke:pr .`, then
+`npx tsx scripts/relay-image-smoke.ts http://127.0.0.1:<port> "$(docker exec relay-smoke whoami)"`
+against a container started from that tag.
+
 Hosted, the relay also protects its own memory (P2-217): a peer that stops
 reading has its outgoing buffer capped by `RELAY_BUFFER_CAP_BYTES` (default
 4 MiB per socket) and is closed alone — with close code `1013` and an

@@ -59,6 +59,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       desktop: ${{ steps.scope.outputs.desktop }}
+      relay-image: ${{ steps.scope.outputs.relay-image }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -154,3 +155,59 @@ jobs:
         shell: bash
         timeout-minutes: 10
         run: npm run dist:smoke --workspace @ocr/desktop -- --no-installer
+
+  # P2-222: the relay image surface (deploy/relay/Dockerfile, the embedded
+  # bundle dir the P2-188 stage serves, the boot preflight, the non-root
+  # container user) was only exercised by the relay-image job of release.yml —
+  # a Dockerfile regression arrived as a red job on tag day, with the release
+  # already drafted (the exact cost P2-219 removed for the Windows packaging).
+  # This PR-scoped job mirrors that gate on every PR touching the relay
+  # surface: same build, same ephemeral loopback port, same 30×1s /healthz
+  # wait ceiling and the same scripts/relay-image-smoke.ts battery, so an
+  # image that compiles but does not boot fails the pull request.
+  #
+  # PUBLISHING PROHIBITION (deliberate): this job does NOT log in to any
+  # registry, does NOT use any third-party login/push action, does NOT push
+  # or publish the image, does NOT attach artifacts and does NOT read any
+  # secret — building on a PR must never become an accidental publishing
+  # path. Publication stays exclusively with the release workflow.
+  relay-image:
+    runs-on: ubuntu-latest
+    needs: scope
+    if: needs.scope.outputs.relay-image == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image (ephemeral local tag only — never a registry ref)
+        shell: bash
+        timeout-minutes: 15
+        run: |
+          docker build -f deploy/relay/Dockerfile -t relay-smoke:pr .
+
+      # Same shape as the release relay-image smoke (P2-196): boot on an
+      # ephemeral loopback port, wait at most 30 attempts × 1s for /healthz,
+      # run the probe battery, remove the container no matter how the step
+      # ends. shell: bash (P2-126/P2-164 lessons).
+      - name: Boot the built image and smoke it (same battery as release)
+        shell: bash
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          PORT=$(( (RANDOM % 20000) + 30000 ))
+          docker run -d --name relay-smoke \
+            -p "127.0.0.1:${PORT}:8787" \
+            relay-smoke:pr
+          trap 'docker rm -f relay-smoke >/dev/null 2>&1 || true' EXIT
+          for i in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:${PORT}/healthz" >/dev/null 2>&1; then
+              break
+            fi
+            if [ "$i" = 30 ]; then
+              echo "relay-image-smoke: /healthz never answered after 30 attempts — the image does not boot"
+              docker logs relay-smoke
+              exit 1
+            fi
+            sleep 1
+          done
+          CONTAINER_USER="$(docker exec relay-smoke whoami)"
+          npx --yes tsx@4.23.12 scripts/relay-image-smoke.ts "http://127.0.0.1:${PORT}" "$CONTAINER_USER"
