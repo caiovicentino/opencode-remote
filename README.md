@@ -116,6 +116,16 @@ private. That is the product: **local power, remote control, zero trust**.
 - **Files** — upload from the phone, preview anything, export a conversation
   as markdown with one tap; every file card has a ⧉ button that copies the
   file's full path (Clipboard API with an execCommand fallback)
+- **Document → PDF conversion** — send a document (docx/doc/rtf/html/csv/xlsx/pptx)
+  and the agent converts it locally: LibreOffice gives full fidelity and is
+  discovered from PATH plus the default install paths (macOS app bundle,
+  `C:\Program Files\LibreOffice\program\soffice.exe` on Windows); on macOS a
+  native textutil+cupsfilter fallback covers doc/docx/rtf/html/csv without
+  preserving formatting. The machine's readiness is announced by `GET /api/health`
+  (`docConvertState` / `docConvertMessage` / `docConvertExts`, probed once at
+  boot) before you send anything; with no converter installed the tool answers
+  with one short sentence asking for LibreOffice — never a raw English error —
+  and the original file is never modified
 - **Handoff** — continue the exact session on your Mac (laptop icon in the
   chat header)
 - **Live board** — every session's state at a glance: working, waiting for

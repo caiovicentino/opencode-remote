@@ -16,6 +16,16 @@ import { isLoopbackAddr, localOriginAllowed, localUpgradeAllowed } from "../apps
 
 import { classifyRelayClose, effectiveRetryDelayMs } from "../apps/daemon/src/relayclose";
 import { sttVerdict } from "../apps/daemon/src/voicecap";
+import {
+  CONVERTER_PREFERENCE,
+  CUPSFILTER_PATHS,
+  NATIVE_EXTS,
+  SOFFICE_EXTS,
+  SOFFICE_PATHS,
+  TEXTUTIL_PATHS,
+  docConvertProbe,
+  docConvertVerdict,
+} from "../apps/daemon/src/doccap";
 import { modelReadyVerdict, providerSummary } from "../apps/daemon/src/modelready";
 import { MIN_OPENCODE_VERSION, parseVersion, versionVerdict } from "../apps/daemon/src/opencodever";
 import {
@@ -17353,6 +17363,165 @@ check(
   check(
     "P2-229: hotkey.ts is pure — zero imports (no electron, no node:fs, no fetch, no I/O)",
     !/^import /m.test(hotkeyCode) && !hotkeyCode.includes("node:") && !/\bfetch\b/.test(hotkeyCode),
+  );
+}
+
+// --- P2-231: document→PDF conversion capability (doccap.ts) + wiring ----------
+
+{
+  const src = (rel: string[]) => readFileSync(join(import.meta.dirname, "..", ...rel), "utf8");
+  const doccapSrc = src(["apps", "daemon", "src", "doccap.ts"]);
+  const indexSrc = src(["apps", "daemon", "src", "index.ts"]);
+  const doc2pdfSrc = src(["tools", "doc2pdf.mjs"]);
+
+  const FULL = { soffice: true, textutil: true, cupsfilter: true };
+  const NATIVE_ONLY = { soffice: false, textutil: true, cupsfilter: true };
+  const NOTHING = { soffice: false, textutil: false, cupsfilter: false };
+
+  // verdict matrix — full fidelity wins, everywhere
+  const fullMac = docConvertVerdict("darwin", FULL);
+  const fullWin = docConvertVerdict("win32", FULL);
+  check(
+    "P2-231: full-fidelity converter on macOS is complete with every documented extension",
+    fullMac.state === "complete" &&
+      JSON.stringify(fullMac.exts) === JSON.stringify(SOFFICE_EXTS) &&
+      SOFFICE_EXTS.join(" ") === "docx doc rtf html csv xlsx pptx",
+  );
+  check(
+    "P2-231: full-fidelity converter on Windows is complete too",
+    fullWin.state === "complete" && fullWin.exts.length === SOFFICE_EXTS.length,
+  );
+  check(
+    "P2-231: both candidates present picks full fidelity by the documented order",
+    docConvertVerdict("darwin", FULL).state === "complete" && CONVERTER_PREFERENCE[0] === "soffice",
+  );
+
+  // native-only: partial with the exact covered list, nothing more
+  const nativeMac = docConvertVerdict("darwin", NATIVE_ONLY);
+  check(
+    "P2-231: native-only on macOS is partial with exactly the native extensions",
+    nativeMac.state === "partial" &&
+      JSON.stringify(nativeMac.exts) === JSON.stringify(NATIVE_EXTS) &&
+      !nativeMac.exts.includes("xlsx") &&
+      !nativeMac.exts.includes("pptx"),
+  );
+
+  // native declared off macOS is ignored (that pipeline does not exist there)
+  check(
+    "P2-231: native declared on Windows is ignored and the verdict is unavailable",
+    docConvertVerdict("win32", NATIVE_ONLY).state === "unavailable" &&
+      docConvertVerdict("win32", NATIVE_ONLY).exts.length === 0,
+  );
+  check(
+    "P2-231: half a native pipeline is not a usable converter",
+    docConvertVerdict("darwin", { soffice: false, textutil: true, cupsfilter: false }).state === "unavailable" &&
+      docConvertVerdict("darwin", { soffice: false, textutil: false, cupsfilter: true }).state === "unavailable",
+  );
+
+  // nothing: unavailable with the install phrase
+  const none = docConvertVerdict("linux", NOTHING);
+  check(
+    "P2-231: no candidate is unavailable with an install phrase",
+    none.state === "unavailable" && /instal/i.test(none.message) && none.exts.length === 0,
+  );
+
+  // extension lists: documented order, no repetitions
+  check(
+    "P2-231: every verdict extension list is ordered and repetition-free",
+    [fullMac.exts, fullWin.exts, nativeMac.exts, none.exts].every(
+      (exts) => new Set(exts).size === exts.length,
+    ),
+  );
+
+  // message hygiene: short, actionable, no absolute path, no URL scheme
+  const verdicts = [
+    docConvertVerdict("darwin", FULL),
+    docConvertVerdict("win32", FULL),
+    nativeMac,
+    docConvertVerdict("win32", NATIVE_ONLY),
+    none,
+  ];
+  check(
+    "P2-231: every verdict message is non-empty and free of paths and URL schemes",
+    verdicts.every(
+      (v) =>
+        v.message.trim().length > 0 &&
+        !/[\\/]/.test(v.message) &&
+        !/[A-Za-z]:/.test(v.message) &&
+        !/https?:/i.test(v.message),
+    ),
+  );
+
+  // probe helper injects the existence check (pure module, I/O stays outside)
+  check(
+    "P2-231: probe reads the platform's own list and takes an injected exists()",
+    docConvertProbe("darwin", (p) => p === "/usr/bin/textutil").textutil === true &&
+      docConvertProbe("win32", () => true).textutil === false &&
+      docConvertProbe("win32", () => true).soffice === true,
+  );
+
+  // known-location lists: Windows default + macOS paths present, no empty entries
+  const allPaths = Object.values(SOFFICE_PATHS)
+    .concat(Object.values(TEXTUTIL_PATHS))
+    .concat(Object.values(CUPSFILTER_PATHS))
+    .flat();
+  check(
+    "P2-231: path lists carry the macOS app-bundle path and the Windows default install path",
+    SOFFICE_PATHS.darwin.includes("/Applications/LibreOffice.app/Contents/MacOS/soffice") &&
+      SOFFICE_PATHS.win32.includes("C:\\Program Files\\LibreOffice\\program\\soffice.exe") &&
+      allPaths.every((p) => typeof p === "string" && p.trim().length > 0),
+  );
+  check(
+    "P2-231: the native pipeline is declared macOS-only in the path lists",
+    TEXTUTIL_PATHS.darwin.length > 0 &&
+      TEXTUTIL_PATHS.win32.length === 0 &&
+      CUPSFILTER_PATHS.win32.length === 0,
+  );
+
+  // doccap stays pure: unit tests must never boot a daemon on import
+  // (strip line comments first — the header prose names the banned modules)
+  const doccapCode = doccapSrc.replace(/\/\/.*$/gm, "");
+  check(
+    "P2-231: doccap.ts is pure (no node:fs/child_process/path/os/fetch imports)",
+    !/node:(fs|child_process|path|os|http)/.test(doccapCode) && !/\bfetch\(/.test(doccapCode),
+  );
+
+  // real-repo assertion: the daemon probes ONCE, on the existing boot readiness
+  // hook (next to whisper/edge-tts), with no periodic timer and no per-request
+  // probing — failures degrade to unavailable instead of throwing.
+  check(
+    "P2-231: the daemon probes doc conversion exactly once, inside main()'s readiness hook",
+    (indexSrc.match(/docConvertProbe\(/g) || []).length === 1 &&
+      indexSrc.includes("probeDocConvert();") &&
+      indexSrc.indexOf("async function main") < indexSrc.indexOf("probeDocConvert();"),
+  );
+  check(
+    "P2-231: no periodic doc-conversion timer was introduced",
+    indexSrc
+      .split("\n")
+      .filter((l) => l.includes("setInterval"))
+      .every((l) => !/docconvert/i.test(l)),
+  );
+  check(
+    "P2-231: /api/health carries the additive docConvert readiness block",
+    indexSrc.includes("docConvertState: docConvert.state") &&
+      indexSrc.includes("docConvertMessage: docConvert.message") &&
+      indexSrc.includes("docConvertExts: docConvert.exts"),
+  );
+
+  // real-repo assertion: the tool consumes doccap's lists (no local copy) and
+  // fails with the pt-BR verdict phrase instead of the old English dead end.
+  check(
+    "P2-231: doc2pdf.mjs consumes the doccap lists and keeps no own path list",
+    /apps\/daemon\/src\/doccap\.ts/.test(doc2pdfSrc) &&
+      !doc2pdfSrc.includes("/Applications/LibreOffice.app") &&
+      !doc2pdfSrc.includes("/usr/bin/textutil") &&
+      !/const (SOFFICE|TEXTUTIL|CUPSFILTER)_PATHS\s*=/.test(doc2pdfSrc),
+  );
+  check(
+    "P2-231: doc2pdf.mjs failure is the pt-BR verdict phrase, not the English terminal error",
+    !doc2pdfSrc.includes("no converter available") &&
+      /docConvertVerdict\(process\.platform/.test(doc2pdfSrc),
   );
 }
 

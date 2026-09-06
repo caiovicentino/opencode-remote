@@ -117,6 +117,30 @@ curl '127.0.0.1:8792/metrics?format=prom'
 curl 127.0.0.1:8790/metrics            # relay, localhost only, same contract
 ```
 
+## Document → PDF conversion unavailable (P2-231)
+
+The agent converts documents locally with LibreOffice (full fidelity, all of
+docx/doc/rtf/html/csv/xlsx/pptx). The converter is discovered from PATH plus
+the default install locations — the macOS app bundle
+(`/Applications/LibreOffice.app/Contents/MacOS/soffice`) and the Windows
+default install path (`C:\Program Files\LibreOffice\program\soffice.exe`).
+
+What you see when the machine has no converter:
+
+- `node tools/doc2pdf.mjs <file>` answers with one short sentence (in
+  Portuguese) asking to install LibreOffice — never a raw English terminal
+  error — and the original file stays intact.
+- `GET /api/health` reports `docConvertState: "unavailable"` with
+  `docConvertMessage` carrying the same sentence. On a macOS machine without
+  LibreOffice the verdict is `"partial"`: the native textutil+cupsfilter
+  fallback still converts doc/docx/rtf/html/csv but loses formatting
+  (`docConvertExts` lists exactly what is covered).
+
+Fix: install LibreOffice (macOS: `brew install --cask libreoffice`; Windows:
+the default installer works) and retry — the tool needs no daemon restart;
+the health verdict refreshes on the next daemon boot (the probe runs once,
+at boot).
+
 ## Local daemon port fallback (P2-143)
 
 The desktop shell's local daemon prefers port 8792. If another program already

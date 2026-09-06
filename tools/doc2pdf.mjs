@@ -6,16 +6,28 @@
 // Prefers LibreOffice (`soffice --headless --convert-to pdf`) for full fidelity;
 // on macOS falls back to the native textutil+cupsfilter pipeline (textutil
 // normalizes doc/docx/rtf/html to plain text, cupsfilter prints it to PDF).
+// P2-231: the known install locations, the preference order and the extensions
+// each converter covers are the single source of truth in
+// apps/daemon/src/doccap.ts — consumed below instead of a local list, so the
+// Windows default LibreOffice path works too and failures come out as the
+// module's short pt-BR verdict phrase (never an English terminal dead end).
+// The original input file is never modified.
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import {
+  SOFFICE_EXTS as ALLOWED_EXTS,
+  NATIVE_EXTS,
+  SOFFICE_PATHS,
+  TEXTUTIL_PATHS,
+  CUPSFILTER_PATHS,
+  docConvertProbe,
+  docConvertVerdict,
+} from "../apps/daemon/src/doccap.ts";
 
-export const ALLOWED_EXTS = ["docx", "doc", "rtf", "html", "csv", "xlsx", "pptx"];
-const NATIVE_EXTS = ["doc", "docx", "rtf", "html", "csv"];
-const SOFFICE_PATHS = ["/Applications/LibreOffice.app/Contents/MacOS/soffice"];
-const TEXTUTIL_PATHS = ["/usr/bin/textutil"];
-const CUPSFILTER_PATHS = ["/usr/sbin/cupsfilter", "/usr/bin/cupsfilter"];
+// the allowlist IS the full-fidelity converter's coverage (single source of truth)
+export { ALLOWED_EXTS };
 
 /** Lowercased extension of `file` ("" when none; dotfiles are not extensions). */
 export function extOf(file) {
@@ -55,15 +67,32 @@ function findBin(name, extraPaths) {
 }
 
 function discoverConverters() {
+  // P2-231: candidate locations come from apps/daemon/src/doccap.ts, keyed by
+  // platform (macOS app bundle path, Windows default install path, PATH lookup
+  // still covers everything else).
+  const known = (list) => list[process.platform] ?? [];
   const out = [];
-  const soffice = findBin("soffice", SOFFICE_PATHS);
+  const soffice = findBin("soffice", known(SOFFICE_PATHS));
   if (soffice) out.push({ kind: "soffice", bin: soffice, exts: [...ALLOWED_EXTS] });
-  const textutil = findBin("textutil", TEXTUTIL_PATHS);
-  const cupsfilter = findBin("cupsfilter", CUPSFILTER_PATHS);
+  const textutil = findBin("textutil", known(TEXTUTIL_PATHS));
+  const cupsfilter = findBin("cupsfilter", known(CUPSFILTER_PATHS));
   if (textutil && cupsfilter) {
     out.push({ kind: "native", textutil, cupsfilter, exts: [...NATIVE_EXTS] });
   }
   return out;
+}
+
+/** P2-231: raw probe of what discovery actually found, for the verdict phrase. */
+function probeOf(converters) {
+  const probe = { soffice: false, textutil: false, cupsfilter: false };
+  for (const c of converters) {
+    if (c?.kind === "soffice") probe.soffice = true;
+    if (c?.kind === "native") {
+      probe.textutil = true;
+      probe.cupsfilter = true;
+    }
+  }
+  return probe;
 }
 
 function run(bin, args, opts = {}) {
@@ -124,9 +153,9 @@ function convert(file, converters) {
   }
   const conv = pickConverter(process.platform, converters.filter((c) => c.exts.includes(ext)));
   if (!conv) {
-    throw new Error(
-      `no converter available for .${ext} — install LibreOffice (brew install --cask libreoffice)`,
-    );
+    // P2-231: the failure is the verdict's short pt-BR phrase (what to install)
+    // instead of an English terminal dead end — the original file stays intact.
+    throw new Error(docConvertVerdict(process.platform, probeOf(converters)).message);
   }
   return conv.kind === "soffice" ? convertWithSoffice(conv, input) : convertNative(conv, input, ext);
 }
