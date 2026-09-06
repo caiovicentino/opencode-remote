@@ -25,6 +25,7 @@
 // download is logged and swallowed — it must never block or crash the shell.
 import { app, autoUpdater } from "electron";
 import { activeDaemonPort } from "./daemon";
+import { assetUrlFrom, parseWindowsFeed } from "./winupdate";
 
 /** Shape of the subset of Electron's autoUpdater we need (tests inject fakes). */
 export interface UpdaterLike {
@@ -48,6 +49,7 @@ export type UpdateStatus =
   | "disabled"
   | "update-available"
   | "update-available-manual"
+  | "update-installer-ready"
   | "update-not-available"
   | "update-downloaded"
   | "unrecognized-feed"
@@ -70,6 +72,11 @@ export function updateMenuLabel(status: UpdateStatus): string | null {
       // P2-131: yml feeds have no download engine (spike finding) — the shell
       // opens the release page instead of downloading anything in background.
       return "Update available — open release page";
+    case "update-installer-ready":
+      // P2-233: Windows explicit-action path — the installer listed by
+      // latest.yml was downloaded, digest-verified and revealed in the file
+      // manager. The app NEVER runs it; the user does, from that folder.
+      return "Update downloaded — installer ready";
     case "update-downloaded":
       return "Update ready — restart to install";
     case "update-not-available":
@@ -266,6 +273,19 @@ function parseYmlNotes(text: string): string {
   return "";
 }
 
+/** P2-233: one Windows installer download request, already validated — the
+ * file name passed the winupdate hygiene (no separators, no "..", no ":") and
+ * the URL was resolved next to the feed by assetUrlFrom. */
+export interface WinInstallerRequest {
+  version: string;
+  /** Installer file name as announced by the feed (sanitized). */
+  file: string;
+  /** Absolute installer URL, same directory as the feed document. */
+  url: string;
+  /** Digest the download must verify against (sha512, base64). */
+  expectedDigest: string;
+}
+
 export interface UpdateCheckOptions {
   /** Overrides the resolved feed URL (tests); undefined uses resolvedFeedUrl(). */
   feedUrl?: string | null;
@@ -300,6 +320,16 @@ export interface UpdateCheckOptions {
    * check never auto-opens a browser, and each version opens at most once per
    * session. */
   openReleasePage?: (url: string) => void;
+  /** P2-233: Windows explicit-action installer download. When wired (main.ts
+   * does it ONLY for a user-initiated tray/Help re-check — never boot, never
+   * the P2-155 scheduled recheck) and the platform is win32, a latest.yml
+   * body that parses as a Windows feed offers the sink the installer URL
+   * resolved next to the feed plus the digest to verify against. Resolving to
+   * true means "handled" (the shell finishes with update-installer-ready);
+   * every other outcome — sink absent, non-win32 platform, unparseable feed,
+   * unresolvable asset URL, sink returning false — falls through to the
+   * manual release-page flow below, which stays the fallback. */
+  winInstallerDownload?: (info: WinInstallerRequest) => Promise<boolean>;
 }
 
 // --- consent flow -------------------------------------------------------------
@@ -565,6 +595,29 @@ export async function checkForUpdatesOnBoot(opts: UpdateCheckOptions = {}): Prom
   // does that for user-initiated tray re-checks, never for the boot check —
   // an outdated install must not auto-open a browser at every launch) and at
   // most once per version per session.
+  //
+  // P2-233: on Windows the same yml feed (latest.yml) carries everything a
+  // verified download needs. ONLY for a caller-wired sink (explicit user
+  // action — main.ts never wires it for boot or the scheduled recheck) and
+  // only on win32, parse the feed body and hand the sink the asset URL
+  // resolved next to the feed plus the announced digest. A sink verdict of
+  // true finishes with update-installer-ready; any other outcome — including
+  // an unparseable body or an unresolvable asset URL — falls through to the
+  // manual release-page flow, which stays the fallback. macOS is untouched:
+  // the gate below keeps this branch byte-for-byte inert on darwin.
+  if (opts.winInstallerDownload && platform === "win32") {
+    const winFeed = parseWindowsFeed(body);
+    const assetUrl = winFeed ? assetUrlFrom(feedUrl, winFeed.file) : null;
+    if (winFeed && assetUrl) {
+      const handled = await opts.winInstallerDownload({
+        version: winFeed.version,
+        file: winFeed.file,
+        url: assetUrl,
+        expectedDigest: winFeed.digest,
+      });
+      if (handled) return finish("update-installer-ready", winFeed.version);
+    }
+  }
   log("update check: yml feed has no download engine — update is manual, opening the release page");
   if (opts.openReleasePage && !manualOpened.has(feed.version)) {
     manualOpened.add(feed.version);
