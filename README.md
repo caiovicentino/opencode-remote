@@ -200,12 +200,28 @@ private. That is the product: **local power, remote control, zero trust**.
   first, until the folder fits within **1 GB** total. The **48 h** grace
   period keeps freshly written artifacts safe no matter what, and the **3
   most recently modified** session dirs are always preserved even when every
-  ceiling is blown. Only the artifacts root is ever touched — `uploads/`
-  (user-requested download material), `clips/` and every other state dir are
-  never scanned or deleted. Set `OCR_ARTIFACT_RETENTION=off` in the daemon
+  ceiling is blown. Only the artifacts root is ever touched by this janitor —
+  `clips/` and every other state dir are never scanned or deleted (`uploads/`
+  has its own retention janitor, next bullet). Set `OCR_ARTIFACT_RETENTION=off` in the daemon
   environment to disable the janitor entirely (default: on). Each sweep logs
   one line with the deleted count and bytes and bumps the
   `ocr_artifact_retention_deleted_total` metric
+- **Uploads retention** — `~/.opencode-remote/uploads/` (videos and documents
+  sent from the phone, plus files generated for download) is bounded by the
+  same janitor sweep and cadence (once at boot, then every **6 h**): files
+  older than **30 days** are deleted and, oldest first, enough of the rest
+  goes to keep the folder within **2 GB**. Files written in the last **24 h**
+  are never touched and the **5 most recently modified** files always
+  survive, even when every ceiling is blown — and anything deleted here still
+  exists on the phone that sent it. Only the uploads root is scanned (flat
+  regular files; subdirectories, hidden files and symlinks are ignored). Each
+  sweep logs one line with the deleted count and bytes (never file names) and
+  bumps the `ocr_upload_retention_deleted_total` metric. Set
+  `OCR_UPLOAD_RETENTION=off` in the daemon environment to disable it entirely
+  (default: on); the ceilings are overridable via
+  `OCR_UPLOAD_RETENTION_GRACE_HOURS`, `OCR_UPLOAD_RETENTION_MAX_AGE_DAYS`,
+  `OCR_UPLOAD_RETENTION_MAX_BYTES` and `OCR_UPLOAD_RETENTION_MIN_FILES`
+  (invalid values fail the boot, fail-closed)
 - **Desktop shell (early)** — Electron app wrapping the same UI, with tray and native menu;
   includes a **Browser pane**: in the desktop shell it renders a real sandboxed Electron
   `<webview>` (scroll, click and edit work like in a browser; `contextIsolation`/`sandbox` on,
