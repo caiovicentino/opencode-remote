@@ -156,6 +156,50 @@ jobs:
         timeout-minutes: 10
         run: npm run dist:smoke --workspace @ocr/desktop -- --no-installer
 
+  # P2-224: the unit battery only ever ran on ubuntu-latest, so the Windows
+  # half of the path logic (relay webroot, installloc, loginitem, desktop-log,
+  # tray logsDirPath, sidecar-log, ci-scope, versions) was exercised solely
+  # against the POSIX separator and a regression surfaced on the machine of a
+  # non-technical user, after the signed installer shipped. This job runs the
+  # typecheck plus the portable, Windows-safe subset of the unit battery
+  # (scripts/portable-suite.ts) on windows-latest for every PR touching the
+  # desktop surface — same scope indicator as the packaging jobs above.
+  #
+  # PUBLISHING PROHIBITION (deliberate): this job does NOT log in to any
+  # registry, does NOT use any third-party login/push action, does NOT
+  # publish anything, does NOT attach artifacts and does NOT read any
+  # secret — a pure verification job, publication stays with release.yml.
+  verify-win:
+    runs-on: windows-latest
+    needs: scope
+    if: needs.scope.outputs.desktop == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # P2-126/P2-164 lessons: pwsh (the windows-latest default shell) does
+      # not expand globs and can break a run silently — every step below
+      # declares shell: bash explicitly, heavy steps carry their own timeout
+      # so a hung runner cannot hold the CI queue.
+      - name: Install dependencies
+        shell: bash
+        timeout-minutes: 15
+        run: npm ci
+
+      - name: Typecheck
+        shell: bash
+        timeout-minutes: 20
+        run: npm run typecheck
+
+      - name: Portable unit tests (Windows-safe subset)
+        shell: bash
+        timeout-minutes: 20
+        run: npm run test:unit-win
+
   # P2-222: the relay image surface (deploy/relay/Dockerfile, the embedded
   # bundle dir the P2-188 stage serves, the boot preflight, the non-root
   # container user) was only exercised by the relay-image job of release.yml —

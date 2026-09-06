@@ -427,6 +427,16 @@ O primeiro comando gera `apps/desktop/dist/win-unpacked`; o segundo valida o
 layout do bundle de forma determinística (web UI, sidecar do daemon,
 executável).
 
+Desde a P2-224 o mesmo PR roda também o job `verify-win` no windows-latest,
+que faz typecheck e roda o subconjunto portátil da bateria de unit
+(`scripts/portable-suite.ts` — sem Electron, sockets, chmod, spawns nem
+portas de rede), de modo que regressão de separador ou normalização de
+caminho em módulos como `webroot.ts`, `installloc.ts`, `desktop-log.ts`,
+`sidecar-log.ts`, `tray.ts` e `versions.ts` reprova o PR em vez de estourar
+na máquina de quem usa. Rode a mesma sub-bateria localmente em qualquer SO:
+
+    npm run test:unit-win
+
 **Release**: a tag `vX.Y.Z` precisa ter a mesma versão nos **dois**
 `package.json` (raiz e `apps/desktop`). O workflow de release roda
 `scripts/release-preflight.ts` como primeiro passo e bloqueia o release em
