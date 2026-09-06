@@ -127,6 +127,27 @@ import {
   quitVerdict,
 } from "../apps/desktop/src/quithint";
 import {
+  dataWipeVerdict,
+  isAbsoluteDataRoot,
+  isFilesystemRoot,
+  WIPE_BUTTON_CANCEL,
+  WIPE_BUTTON_INDEX,
+  WIPE_BUTTON_NEXT,
+  WIPE_BUTTON_WIPE,
+  WIPE_DIALOG_TITLE,
+  WIPE_REASON_HARNESS,
+  WIPE_REASON_NOTHING,
+  WIPE_REASON_ROOT,
+  WIPE_REASON_UNCONFIRMED,
+  WIPE_REASON_WIPE,
+  WIPE_STEP1_DETAIL,
+  WIPE_STEP1_MESSAGE,
+  WIPE_STEP2_DETAIL,
+  WIPE_STEP2_MESSAGE,
+  wipePlannedChildren,
+  type WipeReport,
+} from "../apps/desktop/src/datawipe";
+import {
   hangVerdict,
   HANG_BUTTON_INDEX,
   HANG_BUTTON_RELOAD,
@@ -23058,6 +23079,271 @@ check("P2-241: no new periodic timer was introduced by the handler", !dlBlock.in
   check(
     "P2-264: existing tray items keep their order",
     positions264.every((p, i) => p >= 0 && (i === 0 || p > positions264[i - 1])),
+  );
+}
+
+// --- P2-267: macOS data wipe (datawipe.ts + menu.ts + main.ts wiring) --------
+
+{
+  const GOOD_ROOT = "/Users/ze/Library/Application Support/OpenCode Remote";
+  const FULL = ["daemon.json", "logs", "startup.json"];
+  const verdict = (harnessSession: boolean, dataRoot: string | null | undefined, confirmed: boolean, removable: readonly string[]) =>
+    dataWipeVerdict({ harnessSession, dataRoot, confirmed, removableNames: removable });
+
+  // --- the complete verdict table, rules in the documented order ------------
+  // 1. harness session refuses BEFORE any other decision — even with the
+  //    confirmation present and a full removable list.
+  check(
+    "P2-267: harness session refuses even with confirmation present and a full list",
+    verdict(true, GOOD_ROOT, true, FULL).action === "refuse",
+  );
+  check(
+    "P2-267: the harness refusal is the harness reason (rule order: first)",
+    verdict(true, GOOD_ROOT, true, FULL).reason === WIPE_REASON_HARNESS &&
+      verdict(true, null, false, []).reason === WIPE_REASON_HARNESS,
+  );
+  // 2. an invalid data root refuses even with confirmation present (two rules
+  //    true at the same time — the root rule must win over the wipe).
+  check(
+    "P2-267: an invalid root with confirmation present still refuses (rule order)",
+    verdict(false, "./dados relativos", true, FULL).action === "refuse" &&
+      verdict(false, "./dados relativos", true, FULL).reason === WIPE_REASON_ROOT,
+  );
+  for (const bad of [null, undefined, ""] as (string | null | undefined)[]) {
+    check(
+      `P2-267: an absent or empty root refuses fail-closed (${String(bad)})`,
+      verdict(false, bad, true, FULL).action === "refuse" && verdict(false, bad, true, FULL).reason === WIPE_REASON_ROOT,
+    );
+  }
+  for (const relative of ["dados do app", "./dados", "../sub", "OpenCode Remote"]) {
+    check(
+      `P2-267: a relative root refuses (${JSON.stringify(relative)})`,
+      verdict(false, relative, true, FULL).action === "refuse",
+    );
+  }
+  for (const volume of ["/", "C:\\", "C:/", "C:", "\\\\srv", "\\\\srv\\"]) {
+    check(
+      `P2-267: a bare filesystem root refuses (${JSON.stringify(volume)})`,
+      verdict(false, volume, true, FULL).action === "refuse",
+    );
+  }
+  check(
+    "P2-267: isAbsoluteDataRoot accepts the documented absolute shapes only",
+    isAbsoluteDataRoot("/Users/ze/dados") && isAbsoluteDataRoot("C:\\Users\\ze") && isAbsoluteDataRoot("C:/x") &&
+      !isAbsoluteDataRoot("dados") && !isAbsoluteDataRoot("./dados") && !isAbsoluteDataRoot("C:"),
+  );
+  // 3. a missing explicit confirmation refuses — nothing is deleted without a
+  //    deliberate click.
+  check(
+    "P2-267: a missing confirmation refuses",
+    verdict(false, GOOD_ROOT, false, FULL).action === "refuse" &&
+      verdict(false, GOOD_ROOT, false, FULL).reason === WIPE_REASON_UNCONFIRMED,
+  );
+  // 4. an empty removable list is nothing-to-do (confirmed, good root).
+  check(
+    "P2-267: an empty removable list becomes nothing-to-do",
+    verdict(false, GOOD_ROOT, true, []).action === "noop" &&
+      verdict(false, GOOD_ROOT, true, []).reason === WIPE_REASON_NOTHING,
+  );
+  // 5. the happy case wipes and carries the static confirmation text.
+  const happy = verdict(false, GOOD_ROOT, true, FULL);
+  check(
+    "P2-267: the happy case wipes with a non-empty confirmation text",
+    happy.action === "wipe" && happy.confirmText === WIPE_STEP1_MESSAGE && happy.confirmText.length > 0,
+  );
+  check(
+    "P2-267: refuse and noop verdicts carry no confirmation text",
+    [verdict(true, GOOD_ROOT, true, FULL), verdict(false, GOOD_ROOT, false, FULL), verdict(false, GOOD_ROOT, true, [])].every(
+      (v) => v.action !== "wipe" && v.confirmText === "",
+    ),
+  );
+
+  // Purity: the same input in two calls yields an identical verdict.
+  check(
+    "P2-267: the same input in two calls yields an identical verdict",
+    JSON.stringify(verdict(false, GOOD_ROOT, true, FULL)) === JSON.stringify(dataWipeVerdict({ harnessSession: false, dataRoot: GOOD_ROOT, confirmed: true, removableNames: FULL })),
+  );
+
+  // Text hygiene: every generated string is static, path-free, volume-free
+  // and secret-free — categories, never paths, drives or keys.
+  const texts = [
+    verdict(true, GOOD_ROOT, true, FULL).reason,
+    verdict(false, "./x", true, FULL).reason,
+    verdict(false, GOOD_ROOT, false, FULL).reason,
+    verdict(false, GOOD_ROOT, true, []).reason,
+    happy.reason,
+    happy.confirmText,
+    WIPE_DIALOG_TITLE,
+    WIPE_STEP1_MESSAGE,
+    WIPE_STEP1_DETAIL,
+    WIPE_STEP2_MESSAGE,
+    WIPE_STEP2_DETAIL,
+    WIPE_BUTTON_NEXT,
+    WIPE_BUTTON_WIPE,
+    WIPE_BUTTON_CANCEL,
+  ];
+  const clean = (s: string): boolean =>
+    s.length > 0 &&
+    !s.includes("/") &&
+    !s.includes("\\") &&
+    !s.includes("://") &&
+    !/[A-Za-z]:[\\/]/.test(s) &&
+    !s.includes("Users") &&
+    !s.includes("~") &&
+    !/[A-Za-z0-9+/_-]{40,}/.test(s);
+  check(
+    "P2-267: every reason and dialog copy is static, path-free, volume-free and secret-free",
+    texts.every(clean),
+  );
+  check(
+    "P2-267: the step-1 copy lists what goes and what stays; step 2 warns the paired phones",
+    WIPE_STEP1_MESSAGE.includes("identidade") &&
+      WIPE_STEP1_MESSAGE.includes("celulares pareados") &&
+      WIPE_STEP1_DETAIL.includes("O que fica") &&
+      WIPE_STEP2_MESSAGE.includes("todos os celulares pareados perdem o acesso"),
+  );
+  check(
+    "P2-267: both dialog steps put Cancel last (Escape) at the fixed index",
+    WIPE_BUTTON_INDEX.primary === 0 && WIPE_BUTTON_INDEX.cancel === 1 && WIPE_BUTTON_CANCEL.length > 0 &&
+      WIPE_BUTTON_NEXT.length > 0 && WIPE_BUTTON_WIPE.length > 0,
+  );
+
+  // --- executor against a fake fs (the real disk is never touched) ----------
+  const planOf = (observed: string[]) => uninstallCleanupPlan("OpenCode Remote", observed);
+  const fakeFs = (failFor: readonly string[] = []): { calls: string[]; fs: { rmSync(path: string, opts: { recursive: boolean; force: boolean }): void } } => {
+    const calls: string[] = [];
+    return {
+      calls,
+      fs: {
+        rmSync: (p) => {
+          if (failFor.some((n) => p.endsWith(n))) {
+            const err = new Error("permission denied") as NodeJS.ErrnoException;
+            err.code = "EPERM";
+            throw err;
+          }
+          calls.push(p);
+        },
+      },
+    };
+  };
+
+  {
+    // only the plan's removable names are deleted, joined under the root
+    const { calls, fs } = fakeFs();
+    const report = wipePlannedChildren("/dados", planOf(["daemon.json", "logs", "Notes.txt", "", "../escape"]), fs, "/");
+    check(
+      "P2-267: the executor deletes exactly the removable immediate children under the root",
+      JSON.stringify(calls) === JSON.stringify(["/dados/daemon.json", "/dados/logs"]) &&
+        JSON.stringify(report.removed) === JSON.stringify(["daemon.json", "logs"]) &&
+        report.failed.length === 0,
+    );
+    check(
+      "P2-267: a preserved or plan-refused name is never touched",
+      calls.every((p) => !p.includes("Notes.txt") && !p.includes("escape")),
+    );
+  }
+  {
+    // defense in depth: even a hand-built plan with a refused name in remove
+    // cannot make the executor act on it
+    const smuggled: UninstallCleanupPlan = {
+      dataRootName: "OpenCode Remote",
+      remove: ["daemon.json", "..", "a\\b", "/etc", "C:\\Users"],
+      preserve: [],
+      refused: [],
+    };
+    const { calls, fs } = fakeFs();
+    const report = wipePlannedChildren("/dados", smuggled, fs, "/");
+    check(
+      "P2-267: a structurally unsafe name is skipped even when smuggled into the plan",
+      JSON.stringify(report.removed) === JSON.stringify(["daemon.json"]) && JSON.stringify(calls) === JSON.stringify(["/dados/daemon.json"]),
+    );
+  }
+  {
+    // a removal failure is a report line, never an exception, and never stops
+    // the remaining removals; the report carries names + stable codes only
+    const { calls, fs } = fakeFs(["logs"]);
+    const report: WipeReport = wipePlannedChildren("/dados", planOf(["daemon.json", "logs", "startup.json"]), fs, "/");
+    check(
+      "P2-267: a removal failure becomes a report entry and the other removals continue",
+      JSON.stringify(report.removed) === JSON.stringify(["daemon.json", "startup.json"]) &&
+        report.failed.length === 1 &&
+        report.failed[0].name === "logs" &&
+        report.failed[0].code === "EPERM" &&
+        calls.length === 2,
+    );
+    check(
+      "P2-267: the report carries no path — bare names and stable codes only",
+      !JSON.stringify(report).includes("/") && !JSON.stringify(report).includes("permission"),
+    );
+  }
+  check(
+    "P2-267: the executor is deterministic for the same plan in two calls",
+    JSON.stringify(wipePlannedChildren("/dados", planOf(["daemon.json", "logs"]), fakeFs().fs, "/")) ===
+      JSON.stringify({ removed: ["daemon.json", "logs"], failed: [] }),
+  );
+
+  // --- real-source assertions ----------------------------------------------
+  const wipeSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "datawipe.ts"), "utf8");
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  check(
+    "P2-267: datawipe.ts imports only the pure uninstallplan vocabulary — no electron, node:fs, node:path, fetch",
+    wipeSrc.split("\n").filter((l) => l.trim().startsWith("import ") || l.includes("require(")).length === 1 &&
+      wipeSrc.includes('from "./uninstallplan"') &&
+      !/from\s+"electron"/.test(wipeSrc) &&
+      !/from\s+"node:fs"/.test(wipeSrc) &&
+      !/from\s+"node:path"/.test(wipeSrc) &&
+      !wipeSrc.includes("fetch("),
+  );
+
+  // The wipe section of the real main.ts: verdict (harness rule) BEFORE any
+  // dialog, no new periodic timer, executor gated by the final verdict.
+  const wipeAt = mainSrc.indexOf("data wipe (P2-267, datawipe.ts)");
+  const trayFnAt = mainSrc.indexOf("function trayMenuItems");
+  const wipeBlock = wipeAt >= 0 && trayFnAt > wipeAt ? mainSrc.slice(wipeAt, trayFnAt) : "";
+  check("P2-267: main.ts has the data-wipe wiring block", wipeBlock.length > 0);
+  check(
+    "P2-267: the verdict is consulted exactly twice (gate + final authorization)",
+    (wipeBlock.match(/dataWipeVerdict\(/g) ?? []).length === 2,
+  );
+  check(
+    "P2-267: the harness rule is evaluated before any dialog opening",
+    wipeBlock.indexOf("dataWipeVerdict(") > -1 &&
+      wipeBlock.indexOf("dataWipeVerdict(") < wipeBlock.indexOf("askDataWipeDialog()") &&
+      wipeBlock.indexOf("harnessSession: HERMETIC_E2E") > -1 &&
+      wipeBlock.indexOf("harnessSession: HERMETIC_E2E") < wipeBlock.indexOf("askDataWipeDialog()"),
+  );
+  check(
+    "P2-267: the executor runs only after the final verdict and ends in a quit",
+    wipeBlock.indexOf("wipePlannedChildren(") > wipeBlock.lastIndexOf("dataWipeVerdict(") &&
+      wipeBlock.indexOf("realQuit()") > wipeBlock.indexOf("wipePlannedChildren("),
+  );
+  check(
+    "P2-267: the wipe flow adds no timer",
+    !wipeBlock.includes("setInterval") && !wipeBlock.includes("setTimeout"),
+  );
+  check(
+    "P2-267: no new periodic timer in main.ts (the two pre-existing setInterval calls stay alone)",
+    (mainSrc.match(/setInterval/g) ?? []).length === 2,
+  );
+  check(
+    "P2-267: the menu item is wired to runDataWipe",
+    mainSrc.includes('"help-wipe-data": () => void runDataWipe()'),
+  );
+
+  // The Help submenu carries the explicit item, behind its own separator.
+  const help = menuSpec("darwin", null, false).find((i) => i.label === "Ajuda");
+  const helpItems = help?.submenu ?? [];
+  const logsAt = helpItems.findIndex((i) => i.id === "help-logs");
+  const diagAt = helpItems.findIndex((i) => i.id === "help-diagnostics");
+  const sepAt = helpItems.findIndex((i) => i.type === "separator");
+  const wipeItemAt = helpItems.findIndex((i) => i.id === "help-wipe-data");
+  check(
+    "P2-267: the Help submenu gains the explicit data-wipe item behind a separator",
+    logsAt > -1 && diagAt > logsAt && sepAt > diagAt && wipeItemAt === sepAt + 1 && helpItems[wipeItemAt]?.label === "Apagar dados do app…",
+  );
+  check(
+    "P2-267: the wipe item carries no renderer action (shell-wired by id only)",
+    helpItems[wipeItemAt]?.action === undefined,
   );
 }
 

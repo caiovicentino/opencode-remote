@@ -45,6 +45,7 @@ export const PORTABLE_TESTS: readonly string[] = [
   "bubble-merge.test.ts",
   "client-ready.test.ts",
   "composer.test.ts",
+  "datawipe.test.ts",
   "desktop-log.test.ts",
   "gpuplan.test.ts",
   "home.test.ts",

@@ -2,7 +2,7 @@ import { app, autoUpdater, BrowserWindow, clipboard, dialog, globalShortcut, ipc
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statfsSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import QRCode from "qrcode";
 import {
   activeDaemonPort,
@@ -45,6 +45,22 @@ import {
   type QuitVerdict,
 } from "./quithint";
 import { quitAskFile, readQuitDontAsk, writeQuitDontAsk } from "./quitstore";
+import { uninstallCleanupPlan, type UninstallCleanupPlan } from "./uninstallplan";
+import {
+  dataWipeVerdict,
+  wipePlannedChildren,
+  WIPE_BUTTON_CANCEL,
+  WIPE_BUTTON_INDEX,
+  WIPE_BUTTON_NEXT,
+  WIPE_BUTTON_WIPE,
+  WIPE_DIALOG_TITLE,
+  WIPE_REASON_UNCONFIRMED,
+  WIPE_STEP1_DETAIL,
+  WIPE_STEP1_MESSAGE,
+  WIPE_STEP2_DETAIL,
+  WIPE_STEP2_MESSAGE,
+  type WipeFs,
+} from "./datawipe";
 import {
   accelerationPlan,
   gpuVerdict,
@@ -2453,6 +2469,9 @@ const menuShellHandlers: Record<string, () => void> = {
   "view-zoom-in": () => applyZoomAction("increase"),
   "view-zoom-out": () => applyZoomAction("decrease"),
   "view-zoom-reset": () => applyZoomAction("restore"),
+  // P2-267: the macOS data wipe — two-step native confirmation, then the
+  // plan-scoped deletion, then a quit (running on wiped state serves nobody).
+  "help-wipe-data": () => void runDataWipe(),
 };
 
 // P2-238: one menu click = one Chromium zoom step, clamped by the pure
@@ -2702,6 +2721,94 @@ async function explicitQuit(): Promise<void> {
   } finally {
     quitDialogShown = false;
   }
+}
+
+// --- data wipe (P2-267, datawipe.ts) -------------------------------------------
+// On macOS there is no uninstaller: dragging the bundle to the Trash leaves
+// daemon.json (the machine ECDH identity and the VAPID keys), the
+// paired-phone list, the shell state files and the logs folder on a disk that
+// may be sold or shared. The Help menu item below is the owner's way to erase
+// exactly the app's own data. The pure plan is uninstallplan.ts's (the P2-249
+// vocabulary) and the verdict is datawipe.ts's — whose FIRST rule is the
+// harness session, consulted here BEFORE any dialog can open, so no test path
+// ever reaches a modal or deletes operator files (P2-235/P2-238). The
+// executor deletes only the plan's removable immediate children with the fs
+// injected (same pattern as LogFs) and reports failures instead of throwing;
+// the flow is click-driven end to end — no new probe, no new timer.
+
+const nodeWipeFs: WipeFs = {
+  rmSync: (p, opts) => rmSync(p, opts),
+};
+
+function dataWipePlan(): UninstallCleanupPlan {
+  let observed: string[] = [];
+  try {
+    observed = readdirSync(app.getPath("userData"));
+  } catch {
+    observed = []; // unreadable root → empty plan → the verdict says noop
+  }
+  return uninstallCleanupPlan("OpenCode Remote", observed);
+}
+
+/** Help → "Apagar dados do app…". Two verdict consultations, one pure plan:
+ * the gate call (confirmed: false) runs the harness and root rules before any
+ * dialog and only lets the unconfirmed-refusal through to the confirmation
+ * flow; the final call — now with the user's real confirmation — is the only
+ * path that reaches the executor. Afterwards the app quits instead of
+ * running on top of state that just disappeared. */
+async function runDataWipe(): Promise<void> {
+  const dataRoot = app.getPath("userData");
+  const plan = dataWipePlan();
+  const gate = dataWipeVerdict({
+    harnessSession: HERMETIC_E2E,
+    dataRoot,
+    confirmed: false,
+    removableNames: plan.remove,
+  });
+  log(`[desktop] data wipe: ${gate.action} (${gate.reason})`);
+  if (gate.action !== "refuse" || gate.reason !== WIPE_REASON_UNCONFIRMED) return;
+  if (!(await askDataWipeDialog())) {
+    log("[desktop] data wipe cancelled at the confirmation");
+    return;
+  }
+  const verdict = dataWipeVerdict({
+    harnessSession: HERMETIC_E2E,
+    dataRoot,
+    confirmed: true,
+    removableNames: plan.remove,
+  });
+  log(`[desktop] data wipe: ${verdict.action} (${verdict.reason})`);
+  if (verdict.action !== "wipe") return;
+  const report = wipePlannedChildren(dataRoot, plan, nodeWipeFs, sep);
+  log(`[desktop] data wipe: ${report.removed.length} item(ns) apagado(s)`);
+  for (const f of report.failed) {
+    // Bare name + stable code only — never the error text (it carries paths).
+    log(`[desktop] data wipe: falha ao remover ${f.name} (${f.code})`);
+  }
+  realQuit();
+}
+
+/** The two-step native confirmation: step 1 lists what goes and what stays,
+ * step 2 warns that every paired phone loses access. Reached only after the
+ * verdict's harness rule already gated the flow; each step needs a deliberate
+ * click — Cancel (or Escape) at either step ends the wipe. */
+async function askDataWipeDialog(): Promise<boolean> {
+  const options = (message: string, detail: string, primary: string): Electron.MessageBoxOptions => ({
+    type: "warning",
+    title: WIPE_DIALOG_TITLE,
+    message,
+    detail,
+    buttons: [primary, WIPE_BUTTON_CANCEL],
+    defaultId: WIPE_BUTTON_INDEX.primary,
+    cancelId: WIPE_BUTTON_INDEX.cancel,
+    noLink: true,
+  });
+  const show = (opts: Electron.MessageBoxOptions) =>
+    mainWindow && !mainWindow.isDestroyed() ? dialog.showMessageBox(mainWindow, opts) : dialog.showMessageBox(opts);
+  const step1 = await show(options(WIPE_STEP1_MESSAGE, WIPE_STEP1_DETAIL, WIPE_BUTTON_NEXT));
+  if (step1.response !== WIPE_BUTTON_INDEX.primary) return false;
+  const step2 = await show(options(WIPE_STEP2_MESSAGE, WIPE_STEP2_DETAIL, WIPE_BUTTON_WIPE));
+  return step2.response === WIPE_BUTTON_INDEX.primary;
 }
 
 function trayMenuItems(): Electron.MenuItemConstructorOptions[] {
