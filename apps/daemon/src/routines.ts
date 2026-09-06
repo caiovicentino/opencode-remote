@@ -14,6 +14,7 @@ export interface Routine {
   lastRun?: string; // local YYYY-MM-DD of the last fire (daily/days)
   lastFiredAt?: number; // epoch ms of the last fire (interval pacing)
   lastSessionID?: string; // session awaiting result persistence
+  runStartedAt?: number; // epoch ms when the current in-flight run was first observed (run lease basis, P2-236)
   lastStatus?: "ok" | "error";
   lastError?: string;
 }
