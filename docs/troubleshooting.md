@@ -474,6 +474,28 @@ app now watches the GPU process the way the renderer already had its watch:
   timestamp). A test session (harness) never disables the acceleration and
   never writes the file.
 
+## The window never finishes loading (P2-247)
+
+If the app window opens **white and stays white** — no spinner, no error —
+the load itself failed. That used to be a silent dead end; the shell now
+recovers on its own and, when it cannot, says so:
+
+- **What you see**: up to **3 automatic reloads** happen by themselves, one
+  every 1.5s (a transient cause — an antivirus scan, a slow disk — is
+  usually gone by then). If the load keeps failing after the third reload,
+  the window stops flashing white and shows a short message instead: the
+  load failed, reopening the app is the next step, and a reinstall is worth
+  it if it persists (a damaged install, a partially written update or an
+  antivirus quarantine are the usual causes).
+- **Where to look**: desktop.log (the app's folder under logs) carries one
+  line per decision, tagged `[desktop] load watch:` — the reason in words
+  plus the error code and the **URL scheme only** ("esquema file"), never the
+  full address of what you were doing, so the shared log stays safe to share.
+- **What resets it**: the first load that completes successfully refills the
+  reload budget — an isolated failure never consumes the budget of the next
+  episode. Deliberate cancellations (the shell's own navigation guards) and
+  failures inside embedded browser panes never count against it.
+
 ## The phone asked to be added to the Home Screen (P2-220)
 
 When the phone opens the web app as a **regular browser tab** (iPhone or iPad,

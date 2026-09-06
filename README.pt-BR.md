@@ -1279,6 +1279,20 @@ de teste nunca desliga nada e nunca grava o estado. A política se cura
 sozinha: uma hora sem queda nova religa a aceleração no boot seguinte. Detalhes em
 [docs/troubleshooting.md](docs/troubleshooting.md#black-window-video-acceleration-turns-itself-off-p2-244).
 
+**Carga que não termina deixa de ser janela branca em silêncio (P2-247)**: um
+asset danificado dentro do pacote, uma atualização parcialmente escrita, um
+arquivo posto em quarentena por antivírus ou um volume lento deixavam o app
+numa janela branca permanente, sem uma palavra e sem uma linha de log. O
+shell agora observa a falha de carga da janela principal: até **3 recarregamentos
+automáticos** (um a cada 1,5s) seguem as primeiras falhas, cada decisão
+registra uma linha estática no desktop.log (`[desktop] load watch: …`, só com
+o código de erro e o esquema da URL — nunca a sua navegação) e, quando os
+recarregamentos se esgotam, a própria janela mostra uma frase curta explicando
+o que aconteceu e como recuperar (reabrir; reinstalar se persistir). Sem
+diálogo nativo, sem timers novos; uma carga bem-sucedida reabre o orçamento.
+Veja
+[docs/troubleshooting.md](docs/troubleshooting.md#the-window-never-finishes-loading-p2-247).
+
 ## Roadmap
 
 Próximos: wizard de onboarding, compartilhamento de skills, push nativo iOS.

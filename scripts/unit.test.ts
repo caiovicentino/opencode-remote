@@ -122,6 +122,16 @@ import {
   sanitizeGpuState,
   NOTIFY_GPU_DISABLED_BODY,
 } from "../apps/desktop/src/gpuplan";
+import {
+  CHROMIUM_ERR_ABORTED,
+  LOAD_FAIL_MAX_ATTEMPTS,
+  LOAD_FAIL_RETRY_DELAY_MS,
+  LOAD_FAILURE_ZEROED,
+  LOAD_FAIL_USER_MESSAGE,
+  loadFailMessage,
+  loadFailVerdict,
+  sanitizeLoadFailure,
+} from "../apps/desktop/src/loadfail";
 import { installBlocksUpdate } from "../apps/desktop/src/update";
 import {
   isWakeEventType,
@@ -5909,7 +5919,7 @@ check(
   // Walk the window: the crash that lands the count EXACTLY on the ceiling
   // (GPU_CRASH_CEILING, explicit here) is the one that orders the disable.
   let walk = GPU_STATE_ZEROED;
-  let walkPlans: string[] = [];
+  const walkPlans: string[] = [];
   for (let i = 0; i < GPU_CRASH_CEILING; i++) {
     const v = gpuVerdict(walk, now, "GPU");
     walkPlans.push(v.plan);
@@ -5998,6 +6008,188 @@ check(
   check(
     "P2-244: the GPU wiring introduces no periodic timer",
     gpuLines.every((l) => !l.includes("setInterval") && !l.includes("setTimeout")),
+  );
+}
+
+// --- P2-247: load-failure plan (apps/desktop/src/loadfail.ts) ---------------------
+{
+  const now = 1_700_000_000_000;
+  const json = (v: unknown) => JSON.stringify(v);
+  const noSlash = (s: string) => !s.includes("/") && !s.includes("://") && !s.includes("\\\\");
+  const rec = (code = -6, description = "ERR_FILE_NOT_FOUND", address = "file:///App/resources/index.html", isMainFrame = true) =>
+    sanitizeLoadFailure({ code, description, address, isMainFrame });
+
+  // 1. sanitizeLoadFailure full table: whatever Electron yields, a valid
+  //    record comes out and nothing ever throws.
+  check(
+    "P2-247: sanitizeLoadFailure — absent input becomes the zeroed record",
+    json(sanitizeLoadFailure(undefined)) === json(LOAD_FAILURE_ZEROED) && json(sanitizeLoadFailure(null)) === json(LOAD_FAILURE_ZEROED),
+  );
+  check(
+    "P2-247: sanitizeLoadFailure — non-object input becomes zeroed",
+    json(sanitizeLoadFailure("boom")) === json(LOAD_FAILURE_ZEROED) &&
+      json(sanitizeLoadFailure(42)) === json(LOAD_FAILURE_ZEROED) &&
+      json(sanitizeLoadFailure(["a"])) === json(LOAD_FAILURE_ZEROED),
+  );
+  check(
+    "P2-247: sanitizeLoadFailure — a text error code becomes zeroed",
+    json(sanitizeLoadFailure({ code: "-6", description: "ERR_FILE_NOT_FOUND", address: "file:///a", isMainFrame: true })) ===
+      json(LOAD_FAILURE_ZEROED),
+  );
+  check(
+    "P2-247: sanitizeLoadFailure — non-finite codes become zeroed",
+    json(sanitizeLoadFailure({ code: Number.NaN, description: "E", address: "file:///a", isMainFrame: true })) === json(LOAD_FAILURE_ZEROED) &&
+      json(sanitizeLoadFailure({ code: Number.POSITIVE_INFINITY, description: "E", address: "file:///a", isMainFrame: true })) ===
+        json(LOAD_FAILURE_ZEROED) &&
+      json(sanitizeLoadFailure({ code: Number.NEGATIVE_INFINITY, description: "E", address: "file:///a", isMainFrame: true })) ===
+        json(LOAD_FAILURE_ZEROED),
+  );
+  check(
+    "P2-247: sanitizeLoadFailure — a wrong-typed description becomes zeroed",
+    json(sanitizeLoadFailure({ code: -6, description: 6, address: "file:///a", isMainFrame: true })) === json(LOAD_FAILURE_ZEROED) &&
+      json(sanitizeLoadFailure({ code: -6, description: null, address: "file:///a", isMainFrame: true })) === json(LOAD_FAILURE_ZEROED) &&
+      json(sanitizeLoadFailure({ code: -6, address: "file:///a", isMainFrame: true })) === json(LOAD_FAILURE_ZEROED),
+  );
+  check(
+    "P2-247: sanitizeLoadFailure — a missing or empty address becomes zeroed",
+    json(sanitizeLoadFailure({ code: -6, description: "E", isMainFrame: true })) === json(LOAD_FAILURE_ZEROED) &&
+      json(sanitizeLoadFailure({ code: -6, description: "E", address: "", isMainFrame: true })) === json(LOAD_FAILURE_ZEROED) &&
+      json(sanitizeLoadFailure({ code: -6, description: "E", address: 42, isMainFrame: true })) === json(LOAD_FAILURE_ZEROED),
+  );
+  const missingFrame = sanitizeLoadFailure({ code: -6, description: "ERR_FAILED", address: "https://localhost:5173" });
+  check(
+    "P2-247: sanitizeLoadFailure — a missing frame field is treated as a secondary frame",
+    missingFrame.ok === true && missingFrame.isMainFrame === false && missingFrame.scheme === "https",
+  );
+  const good = rec();
+  check(
+    "P2-247: sanitizeLoadFailure — a valid main-frame failure passes through with the scheme only",
+    good.ok === true && good.code === -6 && good.description === "ERR_FILE_NOT_FOUND" && good.isMainFrame === true && good.scheme === "file",
+  );
+  check(
+    "P2-247: sanitizeLoadFailure — a schemeless or garbage address carries no scheme",
+    sanitizeLoadFailure({ code: -6, description: "E", address: "C:\\Users\\x\\app", isMainFrame: true }).scheme === "" &&
+      sanitizeLoadFailure({ code: -6, description: "E", address: "no-scheme-here", isMainFrame: true }).scheme === "" &&
+      sanitizeLoadFailure({ code: -6, description: "E", address: "://broken", isMainFrame: true }).scheme === "",
+  );
+  check(
+    "P2-247: sanitizeLoadFailure — never throws on any input",
+    [undefined, null, 1, "x", {}, { code: -3 }, { code: -3, description: "E" }, { isMainFrame: true }].every(
+      (input) => json(sanitizeLoadFailure(input)) === json(sanitizeLoadFailure(input)),
+    ),
+  );
+
+  // 2. loadFailVerdict table: rules in the documented order, one plan per
+  //    call — non-main frame, then deliberate abort, then the budget.
+  const secondary = loadFailVerdict(rec(-6, "E", "file:///a", false), 99, now);
+  check(
+    "P2-247: loadFailVerdict — a secondary frame always ignores and accumulates nothing",
+    secondary.plan === "ignore" && secondary.count === 99,
+  );
+  check(
+    "P2-247: loadFailVerdict — the zeroed record ignores (it is never a main frame)",
+    loadFailVerdict(LOAD_FAILURE_ZEROED, 2, now).plan === "ignore",
+  );
+  const aborted = loadFailVerdict(rec(CHROMIUM_ERR_ABORTED, "ERR_ABORTED"), LOAD_FAIL_MAX_ATTEMPTS + 5, now);
+  check(
+    "P2-247: loadFailVerdict — rule order proven: abort and above-ceiling count at once still ignore",
+    aborted.plan === "ignore" && aborted.count === LOAD_FAIL_MAX_ATTEMPTS + 5,
+  );
+  const first = loadFailVerdict(rec(), 0, now);
+  check(
+    "P2-247: loadFailVerdict — the first failure retries, counts one and schedules the documented wait",
+    first.plan === "retry" &&
+      first.count === 1 &&
+      first.waitMs === LOAD_FAIL_RETRY_DELAY_MS &&
+      first.retryAtMs === now + LOAD_FAIL_RETRY_DELAY_MS,
+  );
+  check(
+    `P2-247: loadFailVerdict — a count exactly at the ceiling (${LOAD_FAIL_MAX_ATTEMPTS}) gives up with the warning`,
+    loadFailVerdict(rec(), LOAD_FAIL_MAX_ATTEMPTS, now).plan === "giveup",
+  );
+  check(
+    "P2-247: loadFailVerdict — a count above the ceiling gives up as well",
+    loadFailVerdict(rec(), LOAD_FAIL_MAX_ATTEMPTS + 1, now).plan === "giveup",
+  );
+  const walk: string[] = [];
+  for (let done = 0; done <= LOAD_FAIL_MAX_ATTEMPTS; done++) walk.push(loadFailVerdict(rec(), done, now).plan);
+  check(
+    "P2-247: loadFailVerdict — every count below the ceiling retries, only the ceiling gives up",
+    walk.every((plan, i) => (i < LOAD_FAIL_MAX_ATTEMPTS ? plan === "retry" : plan === "giveup")),
+  );
+  check(
+    "P2-247: loadFailVerdict — the returned count is never negative",
+    loadFailVerdict(rec(), -4, now).count >= 0 && loadFailVerdict(LOAD_FAILURE_ZEROED, -9, now).count === 0,
+  );
+  check(
+    "P2-247: loadFailVerdict — stable between two calls with the same input",
+    json(loadFailVerdict(rec(), 1, now)) === json(loadFailVerdict(rec(), 1, now)),
+  );
+  check(
+    "P2-247: loadFailVerdict — every reason is path-free and scheme-free",
+    [secondary.reason, aborted.reason, first.reason, loadFailVerdict(rec(), LOAD_FAIL_MAX_ATTEMPTS, now).reason].every(noSlash),
+  );
+
+  // 3. loadFailMessage: the in-window phrase and the log line, both stable,
+  //    with only the scheme of the address ever appearing (P2-182).
+  const leaked = "file:///Users/caio/App/resources/index.html";
+  const msg = loadFailMessage(rec(-6, "ERR_FILE_NOT_FOUND", leaked));
+  check("P2-247: loadFailMessage — the user phrase and the log line are non-empty", msg.user.length > 0 && msg.log.length > 0);
+  check(
+    "P2-247: loadFailMessage — no absolute path, no full address and no secret in either phrase",
+    [msg.user, msg.log, LOAD_FAIL_USER_MESSAGE].every(
+      (phrase) =>
+        !phrase.includes(leaked) &&
+        !phrase.includes("file:///") &&
+        !phrase.includes("/Users") &&
+        !phrase.includes("index.html") &&
+        !phrase.includes("://") &&
+        !phrase.includes("SECRET-TOKEN"),
+    ),
+  );
+  check(
+    "P2-247: loadFailMessage — only the scheme may appear from the address",
+    msg.log.includes("esquema file") && !msg.log.includes("file:") && !msg.user.includes("file"),
+  );
+  check(
+    "P2-247: loadFailMessage — an unknown scheme degrades to a fixed word without leaking the address",
+    loadFailMessage(sanitizeLoadFailure({ code: -12, description: "E", address: "weird\\raw\\path", isMainFrame: true })).log.includes(
+      "esquema desconhecido",
+    ) &&
+      !loadFailMessage(sanitizeLoadFailure({ code: -12, description: "E", address: "weird\\raw\\path", isMainFrame: true })).log.includes("weird"),
+  );
+  check("P2-247: loadFailMessage — stable between two calls with the same input", json(msg) === json(loadFailMessage(rec(-6, "ERR_FILE_NOT_FOUND", leaked))));
+
+  // 4. The real main.ts: ONE did-fail-load listener bound only to the main
+  //    window, the reset on success, no periodic timer in the wiring.
+  const failListeners = mainTsSource.split('win.webContents.on("did-fail-load"').length - 1;
+  check("P2-247: main.ts registers exactly one did-fail-load listener", failListeners === 1);
+  check(
+    "P2-247: main.ts binds did-fail-load only to the main window (no other target registers it)",
+    (mainTsSource.match(/on\("did-fail-load"/g) ?? []).length === 1,
+  );
+  const failAt = mainTsSource.indexOf('win.webContents.on("did-fail-load"');
+  const finishAt = mainTsSource.indexOf('win.webContents.on("did-finish-load"');
+  const finishBlock = mainTsSource.slice(finishAt, finishAt + 200);
+  check(
+    "P2-247: main.ts resets the load-fail counter on every successful load",
+    finishAt > failAt && finishBlock.includes("loadFailAttempts = 0"),
+  );
+  const loadFailLines = mainTsSource
+    .split("\n")
+    .filter((l) => l.includes("loadFail") || l.includes("load watch") || l.includes("did-fail-load"));
+  check(
+    "P2-247: the load-fail wiring introduces no periodic timer",
+    loadFailLines.every((l) => !l.includes("setInterval")),
+  );
+  check(
+    "P2-247: main.ts reloads through the same webContents.reload() path as the P3-011 recovery",
+    mainTsSource.slice(failAt, mainTsSource.indexOf("loadUi(win)", failAt)).includes("win.webContents.reload()"),
+  );
+  const loadfailSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "loadfail.ts"), "utf8");
+  check(
+    "P2-247: loadfail.ts is pure — no electron, no node:fs, no fetch",
+    !/from\s+"electron"/.test(loadfailSrc) && !/from\s+"node:fs"/.test(loadfailSrc) && !loadfailSrc.includes("fetch("),
   );
 }
 

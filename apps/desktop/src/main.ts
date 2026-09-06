@@ -93,6 +93,11 @@ import {
   HANG_DIALOG_TITLE,
   HANG_NOTIFY_TITLE,
 } from "./hangwatch";
+import {
+  loadFailMessage,
+  loadFailVerdict,
+  sanitizeLoadFailure,
+} from "./loadfail";
 import { clientLogsDir, writeCrashReport } from "./crash-log";
 import {
   instanceRecordPath,
@@ -2004,11 +2009,55 @@ function createWindow(): BrowserWindow {
     });
     Menu.buildFromTemplate(toElectronItems(items, handlers)).popup({ window: win });
   });
+  // P2-247: a load that never completes (corrupted packaged asset, partially
+  // written update, antivirus quarantine, slow volume) used to leave the
+  // definitive white window with no word, no log line and no recovery. ONE
+  // "did-fail-load" listener beside the "did-finish-load" one, bound only to
+  // the main window's webContents — guest frames keep their own P2-092/P2-184
+  // guards. loadfail.ts owns the verdict (secondary frames and deliberate
+  // ERR_ABORTED navigations never count); a retry reloads through the same
+  // webContents.reload() path as the P3-011 recovery after the documented
+  // one-shot wait (no periodic timer, no IPC, no native dialog); every
+  // decision writes exactly one log line; the give-up plan paints the message
+  // into the window itself, same data:-URL pattern as loadUi's fallback.
+  let loadFailAttempts = 0;
+  win.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    const record = sanitizeLoadFailure({
+      code: errorCode,
+      description: errorDescription,
+      address: validatedURL,
+      isMainFrame,
+    });
+    const verdict = loadFailVerdict(record, loadFailAttempts, Date.now());
+    loadFailAttempts = verdict.count;
+    if (verdict.plan === "retry") {
+      log(`[desktop] load watch: ${verdict.reason}`);
+      setTimeout(() => {
+        if (!win.isDestroyed() && !win.webContents.isDestroyed()) win.webContents.reload();
+      }, verdict.waitMs ?? 0);
+      return;
+    }
+    if (verdict.plan === "giveup") {
+      const messages = loadFailMessage(record);
+      log(`[desktop] load watch: ${messages.log}`);
+      void win.loadURL(
+        "data:text/html," +
+          encodeURIComponent(
+            `<body style="font-family:-apple-system,sans-serif;background:#111;color:#eee;display:grid;place-items:center;height:100dvh;margin:0"><div style="text-align:center;max-width:34em;padding:0 24px"><p style="font-size:15px;line-height:1.6">${messages.user}</p></div></body>`,
+          ),
+      );
+      return;
+    }
+    log(`[desktop] load watch: ${verdict.reason}`);
+  });
   // P2-238: apply the remembered level after every finished load — the first
   // boot with the persisted value and every manual reload with the level the
   // session already moved to (zoomLevel is updated in place by the menu).
+  // P2-247: a completed load also ends the failure episode — the load-fail
+  // budget refills on every success.
   win.webContents.on("did-finish-load", () => {
     if (win.isDestroyed()) return;
+    loadFailAttempts = 0;
     win.webContents.setZoomLevel(zoomLevel);
   });
   loadUi(win);
