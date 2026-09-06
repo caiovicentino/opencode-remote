@@ -547,7 +547,14 @@ import { versionMismatch } from "../apps/desktop/src/versions";
 
 import { daemonTooltip, loginItemSupported, logsDirPath, openLogsFolder, trayIconSource } from "../apps/desktop/src/tray";
 
-import { menuSpec, type MenuItemSpec } from "../apps/desktop/src/menu";
+import { HOTKEY_MENU_LABEL, menuSpec, type MenuItemSpec } from "../apps/desktop/src/menu";
+import {
+  acceleratorProblem,
+  defaultHotkeyFor,
+  hotkeyPlan,
+  HOTKEY_DISABLE_ENV,
+  HOTKEY_MAX_LEN,
+} from "../apps/desktop/src/hotkey";
 
 import { badgePlan } from "../apps/desktop/src/badge";
 
@@ -17150,6 +17157,204 @@ check(
     webrootImports.includes("node:path") &&
     webrootSrc.includes("no plaintext, no key material, no room ids"),
 );
+
+// --- P2-229: global reopen hotkey (hotkey.ts) ------------------------------------
+
+{
+  const plan = (over: Partial<Parameters<typeof hotkeyPlan>[0]> = {}) =>
+    hotkeyPlan({
+      harnessSession: false,
+      env: {},
+      userAccelerator: undefined,
+      platform: "darwin",
+      ...over,
+    });
+
+  // rule 1 — the harness-session rule is FIRST: a valid accelerator and a
+  // favorable environment still register nothing in a test session
+  const harness = plan({ harnessSession: true, userAccelerator: "Alt+Shift+R" });
+  check(
+    "P2-229: harness session with a valid accelerator and favorable env → not registered",
+    !harness.register && harness.accelerator === null && harness.reason.length > 0,
+  );
+  check(
+    "P2-229: harness session also refuses with a kill-switch-free, accelerator-free env",
+    !plan({ harnessSession: true, platform: "win32" }).register,
+  );
+
+  // rule 2 — the documented kill switch, outside harness
+  check(
+    "P2-229: the documented kill switch outside harness → not registered",
+    !plan({ env: { [HOTKEY_DISABLE_ENV]: "1" }, userAccelerator: "Alt+Shift+R" }).register,
+  );
+  check(
+    "P2-229: only the exact value 1 disables — anything else keeps the hotkey alive",
+    plan({ env: { [HOTKEY_DISABLE_ENV]: "0" } }).register && plan({ env: { [HOTKEY_DISABLE_ENV]: "yes" } }).register,
+  );
+
+  // rule 3 — an invalid owner accelerator refuses WITHOUT falling back to the
+  // default (fail-closed: the reason travels, silence would lie)
+  const invalid = plan({ userAccelerator: "Ctrl++" });
+  check(
+    "P2-229: invalid owner accelerator → not registered with a reason, never a silent default",
+    !invalid.register && invalid.accelerator === null && invalid.reason.length > 0,
+  );
+
+  // rule 4 — empty environment → the documented platform default
+  check(
+    "P2-229: empty environment → the documented platform default, registered",
+    plan({}).register && plan({}).accelerator === defaultHotkeyFor("darwin"),
+  );
+
+  // rule 5 — Windows and macOS each return their own documented default
+  check(
+    "P2-229: Windows and macOS defaults are distinct and honored per platform",
+    defaultHotkeyFor("win32") !== defaultHotkeyFor("darwin") &&
+      plan({ platform: "win32" }).accelerator === defaultHotkeyFor("win32") &&
+      plan({ platform: "darwin" }).accelerator === defaultHotkeyFor("darwin") &&
+      plan({ platform: "win32" }).accelerator !== plan({ platform: "darwin" }).accelerator,
+  );
+
+  // rule 6 — a valid owner accelerator beats the platform default
+  const owner = plan({ userAccelerator: "Alt+Shift+R" });
+  check(
+    "P2-229: a valid owner accelerator wins over the platform default",
+    owner.register && owner.accelerator === "Alt+Shift+R" && owner.accelerator !== defaultHotkeyFor("darwin"),
+  );
+
+  // every generated phrase: static, non-empty, no file path, no URL scheme
+  const reasons = [
+    plan({ harnessSession: true }).reason,
+    plan({ env: { [HOTKEY_DISABLE_ENV]: "1" } }).reason,
+    plan({ userAccelerator: "Ctrl++" }).reason,
+    plan({ userAccelerator: "Alt+Shift+R" }).reason,
+    plan({}).reason,
+    plan({ platform: "win32" }).reason,
+  ];
+  check(
+    "P2-229: every hotkey phrase is non-empty, path-free and scheme-free",
+    reasons.every(
+      (r) =>
+        r.length > 0 &&
+        !r.includes("/") &&
+        !r.includes("\\") &&
+        !r.includes("://") &&
+        !r.includes("http:") &&
+        !r.includes("file:") &&
+        !r.includes(":~"),
+    ),
+  );
+
+  // -- acceleratorProblem: the full fail-closed table -------------------------
+
+  check(
+    "P2-229: acceleratorProblem — empty text is a problem",
+    typeof acceleratorProblem("") === "string" && typeof acceleratorProblem("   ") === "string",
+  );
+  check(
+    "P2-229: acceleratorProblem — a wrong-type value is a problem",
+    [undefined, null, 42, ["Ctrl+A"], {}].every((v) => typeof acceleratorProblem(v) === "string"),
+  );
+  check(
+    "P2-229: acceleratorProblem — a bare key without modifier is a problem (keyjacking is hostile)",
+    typeof acceleratorProblem("A") === "string" &&
+      typeof acceleratorProblem("Space") === "string" &&
+      typeof acceleratorProblem("F5") === "string",
+  );
+  check(
+    "P2-229: acceleratorProblem — a token outside the allowlist is a problem",
+    typeof acceleratorProblem("Ctrl+Emoji") === "string" &&
+      typeof acceleratorProblem("Cat+A") === "string" &&
+      typeof acceleratorProblem("Ctrl++") === "string",
+  );
+  check(
+    "P2-229: acceleratorProblem — above the documented ceiling is a problem",
+    acceleratorProblem(`Ctrl+${"A".repeat(HOTKEY_MAX_LEN)}`) !== null &&
+      acceleratorProblem(`Ctrl+Shift+${"A".repeat(HOTKEY_MAX_LEN)}`) !== null,
+  );
+  check(
+    "P2-229: acceleratorProblem — valid combinations across modifier/key shapes pass with no problem",
+    ["Ctrl+Shift+O", "Command+Shift+O", "CommandOrControl+Shift+O", "Alt+F9", "Ctrl+Space", "ctrl+shift+o"].every(
+      (a) => acceleratorProblem(a) === null,
+    ),
+  );
+
+  // -- the menu surfaces the plan's truth (P2-229 × P2-176 contract) ----------
+
+  const helpItemsOf = (p: Parameters<typeof menuSpec>[3]) => {
+    const spec = menuSpec("darwin", null, false, p);
+    return spec.find((i) => i.label === "Ajuda")?.submenu ?? [];
+  };
+  const hotkeyItem = (p: ReturnType<typeof hotkeyPlan>) => helpItemsOf(p).find((i) => i.id === "help-hotkey");
+  const activeItem = hotkeyItem(plan({}));
+  const refusedItem = hotkeyItem(plan({ harnessSession: true }));
+  check(
+    "P2-229: Help menu shows the active accelerator as a disabled informational item",
+    activeItem?.label === HOTKEY_MENU_LABEL &&
+      activeItem?.accelerator === defaultHotkeyFor("darwin") &&
+      activeItem?.enabled === false,
+  );
+  check(
+    "P2-229: Help menu shows the plan's reason instead of a lying combination when refused",
+    refusedItem?.label === plan({ harnessSession: true }).reason &&
+      refusedItem?.accelerator === undefined &&
+      refusedItem?.enabled === false,
+  );
+  check(
+    "P2-229: three-arg menuSpec calls (the P2-176 contract) still produce no hotkey item",
+    !helpItemsOf(undefined).some((i) => i.id === "help-hotkey"),
+  );
+
+  // -- real-source assertions over the REAL main.ts ---------------------------
+
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  // registration goes through the plan, once, after the app is ready
+  check(
+    "P2-229: the real main.ts resolves hotkeyPlan and registers through the plan verdict",
+    mainSrc.includes("hotkeyPlan({") &&
+      mainSrc.includes("globalShortcut.register(hotkey.accelerator, showMainWindow)") &&
+      /if \(!hotkey\?\.register \|\| !hotkey\.accelerator\) return;/.test(mainSrc),
+  );
+  // the harness-session rule is the first input consulted: HERMETIC_E2E leads
+  // the plan call, and the pure plan checks it before env/accelerator shapes
+  check(
+    "P2-229: the real main.ts feeds the harness flag first into the plan call",
+    /hotkeyPlan\(\{\s*\n\s*harnessSession: HERMETIC_E2E,/.test(mainSrc),
+  );
+  const hotkeySrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "hotkey.ts"), "utf8");
+  const planBody = hotkeySrc.slice(hotkeySrc.indexOf("export function hotkeyPlan"));
+  check(
+    "P2-229: in the pure plan the harness rule is the first consulted, before env and accelerator shape",
+    planBody.includes("input.harnessSession") &&
+      planBody.indexOf("input.harnessSession") < planBody.indexOf("HOTKEY_DISABLE_ENV") &&
+      planBody.indexOf("HOTKEY_DISABLE_ENV") < planBody.indexOf("acceleratorProblem("),
+  );
+  // everything is unregistered in will-quit
+  const willQuitAt = mainSrc.indexOf('app.on("will-quit"');
+  const willQuitBlock = willQuitAt >= 0 ? mainSrc.slice(willQuitAt, willQuitAt + 700) : "";
+  check(
+    "P2-229: the real main.ts unregisters every shortcut in will-quit",
+    willQuitBlock.includes("globalShortcut.unregisterAll()"),
+  );
+  // no new timer anywhere in the hotkey block
+  const hotkeyBlockAt = mainSrc.indexOf("// --- global reopen hotkey");
+  const hotkeyBlock =
+    hotkeyBlockAt >= 0
+      ? mainSrc.slice(hotkeyBlockAt, mainSrc.indexOf("function buildTray", hotkeyBlockAt))
+      : "";
+  check(
+    "P2-229: the hotkey block introduces no timer (no setInterval, no setTimeout)",
+    hotkeyBlock.length > 0 && !hotkeyBlock.includes("setInterval") && !hotkeyBlock.includes("setTimeout"),
+  );
+
+  // hotkey.ts stays pure: unit tests must never boot electron on import
+  // (strip line comments first — the header prose names the banned modules)
+  const hotkeyCode = hotkeySrc.replace(/\/\/.*$/gm, "");
+  check(
+    "P2-229: hotkey.ts is pure — zero imports (no electron, no node:fs, no fetch, no I/O)",
+    !/^import /m.test(hotkeyCode) && !hotkeyCode.includes("node:") && !/\bfetch\b/.test(hotkeyCode),
+  );
+}
 
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);
