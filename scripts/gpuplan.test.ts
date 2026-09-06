@@ -129,7 +129,9 @@ const json = (v: unknown) => JSON.stringify(v);
   const src = readFileSync(new URL("../apps/desktop/src/main.ts", import.meta.url), "utf8");
   check("wiring: exactly one child-process-gone listener", src.split('app.on("child-process-gone"').length - 1 === 1);
   const planAt = src.indexOf("accelerationPlan({");
-  const readyAt = src.indexOf("app.whenReady()");
+  // First ".whenReady(" in the file is the real readiness call (main.ts splits
+  // it across lines; the only "app.whenReady()" literal is a later comment).
+  const readyAt = src.search(/\.whenReady\(/);
   check("wiring: the acceleration decision is consulted before the app is ready", planAt >= 0 && readyAt > planAt);
   check("wiring: no periodic timer in the GPU lines", src.split("\n").filter((l) => l.includes("gpu") || l.includes("Gpu") || l.includes("GPU")).every((l) => !l.includes("setInterval") && !l.includes("setTimeout")));
 }

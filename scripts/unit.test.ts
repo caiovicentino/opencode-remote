@@ -5973,7 +5973,10 @@ check(
   const listenerCount = mainTsSource.split("app.on(\"child-process-gone\"").length - 1;
   check("P2-244: main.ts registers exactly one child-process-gone listener", listenerCount === 1);
   const planAt = mainTsSource.indexOf("accelerationPlan({");
-  const readyAt = mainTsSource.indexOf("app.whenReady()");
+  // The real readiness call is split across lines ("app" newline ".whenReady()"),
+  // so match the call shape, not the "app.whenReady()" literal — the only literal
+  // occurrence in main.ts lives in a comment far below the wiring block.
+  const readyAt = mainTsSource.search(/\.whenReady\(/);
   check(
     "P2-244: main.ts consults the acceleration plan before the app is ready",
     planAt >= 0 && readyAt > planAt && mainTsSource.slice(planAt, planAt + 160).includes("harnessSession: HERMETIC_E2E"),

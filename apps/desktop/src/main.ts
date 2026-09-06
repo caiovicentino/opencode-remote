@@ -473,8 +473,10 @@ function showGpuDisabledHint(): void {
   try {
     if (HERMETIC_E2E) return;
     if (!Notification.isSupported()) return;
-    gpuHintShown = true;
     new Notification({ title: NOTIFY_TITLE, body: NOTIFY_GPU_DISABLED_BODY, silent: true }).show();
+    // Stamped only after the tip went out — a failed construction/show keeps
+    // the one-per-start chance available for the next crash event.
+    gpuHintShown = true;
   } catch (err) {
     logError("[desktop] gpu hint failed:", err);
   }
