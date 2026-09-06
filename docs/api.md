@@ -62,6 +62,16 @@ reconnect wait at 30s/60s respectively, so a saturated relay is not hammered
 as if the network had dropped; `transient` keeps the bare P2-129 curve. The
 raw close reason is never exposed.
 
+Since P2-260 the same object also carries an additive `lastDial`: `null`
+until the first dial failure, otherwise `{ kind, hint }` — the classified
+cause of the most recent failed dial to the relay (`unresolved-name`,
+`refused`, `timed-out`, `cert-expired`, `cert-untrusted`,
+`cert-name-mismatch`, `cert-other` or `transient`) plus one static pt-BR
+operator hint. A permanent cause floors the next reconnect wait at 60s (bad
+address) or 5min (bad certificate); `transient` keeps the P2-129 curve. The
+raw Node error message, which embeds the relay host and port, is neither
+logged in free text nor exposed here.
+
 ### `/api/health` — upstream agent state (P2-135)
 
 `GET /api/health` keeps the legacy `opencodeHealthy` boolean untouched and

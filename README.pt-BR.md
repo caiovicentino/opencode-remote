@@ -927,6 +927,19 @@ aditivos `closeCode`/`closeKind` na linha de log `relay connection lost` e como
 `lastClose: { code, kind }` dentro do objeto `relayRetry` do `/api/health` —
 a reason bruta nunca é exposta.
 
+**Reconexão consciente do erro de discagem (P2-260)**: quando o relay nem
+chega a ser alcançado — o nome não resolve, a conexão é recusada, o tempo
+esgota ou o certificado TLS do relay está vencido, sem confiança ou para
+outro hostname — o daemon classifica o erro de discagem do mesmo jeito que
+classifica os códigos de fechamento e registra uma dica curta e estática em
+pt-BR no lugar da mensagem crua do Node (que embute host e porta do relay).
+Causas permanentes de configuração passam a esperar no mínimo 60s e causas de
+certificado no mínimo 5min antes de re-discar — endereço ou certificado errado
+não melhoram sozinhos, então a máquina para de martelar — enquanto soluços
+transitórios mantêm a curva com jitter da P2-129 intocada. O veredito aparece
+como `lastDial: { kind, hint }` aditivo dentro do objeto `relayRetry` do
+`/api/health`, ao lado de `lastClose`.
+
 ## CLI
 
 ```bash
