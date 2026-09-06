@@ -166,7 +166,18 @@ Desde a P2-242 o mesmo boot real do pacote roda também no CI além do release
 (passo `Smoke-boot the packaged app` nos dois jobs de empacotamento do ci.yml,
 depois do smoke de inspeção, com `shell: bash` explícito e timeout próprio —
 paridade guardada por `scripts/bootsmokeparity.ts` em `scripts/unit.test.ts`) e
-segue FORA do gate determinístico por design.
+segue FORA do gate determinístico por design. Desde a P2-251 os dois jobs de
+empacotamento do release também executam o lado que o boot smoke desliga de
+propósito — o passo `Smoke the packaged daemon sidecar`
+(`apps/desktop/scripts/packaged-daemon-smoke.mjs`, depois do boot do pacote e
+antes do upload, exigido dos dois lados por `scripts/bootsmokeparity.ts`) sobe
+o `resources/daemon/index.js` empacotado com o próprio Electron do pacote como
+runtime via `ELECTRON_RUN_AS_NODE` (mesmo spawn da produção), hermético (HOME
+temporário, relay desligado pelo preflight fail-closed do daemon, porta de
+métricas efêmera, stdout do pairing URI descartado sem ler) e só aprova com
+`/api/health` respondendo 2xx autenticado com o filho vivo — prova que o
+sidecar empacotado sobe e serve no runtime empacotado; não prova que o shell
+chega a ele ponta a ponta.
 Na mesma ponta de distribuição, o job `release-feeds` do workflow confere o
 CONTEÚDO dos quatro feeds de update antes da publicação (P2-157, estendido
 pela P2-212): `update-mac-arm64.json` e `update-mac-x64.json` — os dois que

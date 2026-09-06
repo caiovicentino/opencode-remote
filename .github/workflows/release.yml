@@ -117,6 +117,27 @@ jobs:
           echo "packaged-boot: booting $APP"
           node apps/desktop/scripts/packaged-boot.mjs "$APP"
 
+      # P2-251: the boot smoke above deliberately never spawns the sidecar
+      # (OCR_DAEMON_ENTRY points nowhere), so the daemon bundle that
+      # bundle-daemon.mjs builds used to reach the release without ever
+      # executing. Run the packaged resources/daemon/index.js the way
+      # daemon.ts runs it in production (packaged Electron as the Node
+      # runtime), hermetically (temp HOME, relay off, ephemeral metrics
+      # port) and require an authenticated /api/health 2xx BEFORE the upload
+      # below. Proves the sidecar boots and serves on the packaged runtime;
+      # does NOT prove the desktop shell reaches it end to end. Fail closed
+      # with every problem listed. shell: bash (P2-126 lesson) and its own
+      # timeout (P2-245 lesson).
+      - name: Smoke the packaged daemon sidecar
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          ARCH_DIR="$(uname -m | sed 's/x86_64/x64/')"
+          APP="$(find apps/desktop/dist -maxdepth 3 -type d -name '*.app' | grep -F "$ARCH_DIR" | head -1)"
+          [ -n "$APP" ] || APP="$(find apps/desktop/dist -maxdepth 3 -type d -name '*.app' | head -1)"
+          [ -n "$APP" ] || { echo "packaged-daemon-smoke: no .app under apps/desktop/dist — nothing to boot"; exit 1; }
+          node apps/desktop/scripts/packaged-daemon-smoke.mjs "$APP"
+
       # P2-170: a DMG whose notarization ticket never got stapled, whose
       # identity expired, or whose profile silently fell back to ad-hoc used
       # to be published as if signed — users opened it and got "app is
@@ -262,6 +283,20 @@ jobs:
           [ -n "$DIR" ] || { echo "packaged-boot: no win-unpacked dir under apps/desktop/dist — nothing to boot"; exit 1; }
           echo "packaged-boot: booting $DIR"
           node apps/desktop/scripts/packaged-boot.mjs "$DIR"
+
+      # P2-251: same daemon-sidecar smoke the mac job runs — the boot smoke
+      # above never spawns the sidecar, so the packaged resources/daemon/
+      # index.js must prove it boots and serves /api/health on the packaged
+      # Electron-as-Node runtime BEFORE the upload below. Hermetic (temp
+      # HOME, relay off, ephemeral port), fail closed. shell: bash (P2-126
+      # lesson) and its own timeout (P2-245 lesson).
+      - name: Smoke the packaged daemon sidecar
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          DIR="$(find apps/desktop/dist -maxdepth 2 -type d -name 'win-unpacked' | head -1)"
+          [ -n "$DIR" ] || { echo "packaged-daemon-smoke: no win-unpacked dir under apps/desktop/dist — nothing to boot"; exit 1; }
+          node apps/desktop/scripts/packaged-daemon-smoke.mjs "$DIR"
 
       - name: Attach setup exe + update metadata to the GitHub release
         env:

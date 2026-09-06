@@ -740,6 +740,8 @@ import { findWindowsInstaller, listProblems, smokeFlags, windowsInstallerProblem
 import { bootVerdict } from "../apps/desktop/scripts/packaged-boot-verdict.mjs";
 import { candidatePaths } from "../apps/desktop/scripts/packaged-boot-layout.mjs";
 
+import { daemonVerdict, MODULE_RESOLUTION_RE } from "../apps/desktop/scripts/packaged-daemon-verdict.mjs";
+
 import {
   AUDIO_ENTITLEMENT,
   BUILDER_LABEL,
@@ -19952,6 +19954,8 @@ check(
   const pkg = wfStep("npm run dist --workspace @ocr/desktop -- --mac --dir", { name: "Package mac bundle" });
   const boot = (extra: Partial<WorkflowStep> = {}): WorkflowStep =>
     wfStep('node apps/desktop/scripts/packaged-boot.mjs "$APP"', { name: "Smoke-boot the packaged app", shell: "bash", timeoutMinutes: 10, ...extra });
+  const daemon = (extra: Partial<WorkflowStep> = {}): WorkflowStep =>
+    wfStep('node apps/desktop/scripts/packaged-daemon-smoke.mjs "$APP"', { name: "Smoke the packaged daemon sidecar", shell: "bash", timeoutMinutes: 5, ...extra });
 
   // parseWorkflowJobs — the full table.
   check("P2-242: parseWorkflowJobs — empty text yields an empty job list", parseWorkflowJobs("").length === 0 && parseWorkflowJobs("   \n\n").length === 0);
@@ -20064,10 +20068,10 @@ check(
     nonPackaging.join(" | "),
   );
   const happyCi = [wfJob("desktop-package", "macos-14", [wfStep("npm ci", { name: "Install" }), pkg, boot()])];
-  const happyRelease = [wfJob("desktop-dmg", "macos-14", [pkg, boot()])];
+  const happyRelease = [wfJob("desktop-dmg", "macos-14", [pkg, boot(), daemon()])];
   check("P2-242: bootSmokeParity — packaging jobs with a proper boot after packaging yield zero problems", bootSmokeParity(happyCi, happyRelease).length === 0);
-  const stableA = bootSmokeParity(happyCi, [wfJob("desktop-win", "windows-latest", [pkg, boot({ shell: null, timeoutMinutes: null })])]);
-  const stableB = bootSmokeParity(happyCi, [wfJob("desktop-win", "windows-latest", [pkg, boot({ shell: null, timeoutMinutes: null })])]);
+  const stableA = bootSmokeParity(happyCi, [wfJob("desktop-win", "windows-latest", [pkg, boot({ shell: null, timeoutMinutes: null }), daemon()])]);
+  const stableB = bootSmokeParity(happyCi, [wfJob("desktop-win", "windows-latest", [pkg, boot({ shell: null, timeoutMinutes: null }), daemon()])]);
   check(
     "P2-242: bootSmokeParity — the problem order is stable between two calls with the same input",
     JSON.stringify(stableA) === JSON.stringify(stableB) && stableA.length === 2,
@@ -20146,6 +20150,161 @@ check(
       return job && bootStep && bootStep.shell === "bash" && typeof bootStep.timeoutMinutes === "number";
     }),
   );
+}
+
+// --- P2-251: packaged daemon smoke — daemonVerdict table + release wiring -----
+
+{
+  const src = (rel: string[]) => readFileSync(join(import.meta.dirname, "..", ...rel), "utf8");
+  const verdictSrc = src(["apps", "desktop", "scripts", "packaged-daemon-verdict.mjs"]);
+  const smokeSrc = src(["apps", "desktop", "scripts", "packaged-daemon-smoke.mjs"]);
+
+  const OK = { exitCode: null, signal: null, elapsedMs: 1500, healthAnswered: true, healthStatus: 200, stderrTail: "" };
+  const v = (over: Partial<typeof OK>) => daemonVerdict({ ...OK, ...over });
+  const reasons = (over: Partial<typeof OK>) => v(over).problems.map((p) => p.reason);
+
+  // full verdict table
+  check("P2-251: all facts good → ok with no reason and no problems", v(OK).ok === true && v(OK).reason === null && v(OK).problems.length === 0);
+  check(
+    "P2-251: child dead before health answered → daemon-exited with the error tail cited",
+    (() => {
+      const r = v({ exitCode: 1, healthAnswered: false, healthStatus: null, stderrTail: "ReferenceError: boom at main" });
+      return r.ok === false && r.reason === "daemon-exited" && r.problems[0].message.includes("boom") && r.problems[0].message.includes("código 1");
+    })(),
+  );
+  check(
+    "P2-251: a signal death is cited too",
+    v({ signal: "SIGKILL", healthAnswered: false, healthStatus: null }).problems[0].message.includes("SIGKILL"),
+  );
+  check(
+    "P2-251: module-resolution tail → its own named problem",
+    (() => {
+      const r = v({ exitCode: 1, healthAnswered: false, healthStatus: null, stderrTail: "Error: Cannot find module 'ws'" });
+      return r.problems.some((p) => p.reason === "module-resolution") && r.reason !== null;
+    })(),
+  );
+  check(
+    "P2-251: health that never answered within the deadline → health-unreachable citing the wait",
+    (() => {
+      const r = v({ healthAnswered: false, healthStatus: null, elapsedMs: 45_000 });
+      return r.ok === false && r.reason === "health-unreachable" && r.problems[0].message.includes("45s");
+    })(),
+  );
+  check(
+    "P2-251: health answered outside the success range → health-status citing the code",
+    v({ healthStatus: 401 }).reason === "health-status" && v({ healthStatus: 401 }).problems[0].message.includes("401"),
+  );
+  check("P2-251: every 2xx code approves; 3xx/4xx/5xx do not", [200, 204, 299].every((s) => v({ healthStatus: s }).ok === true) && [301, 401, 500].every((s) => v({ healthStatus: s }).ok === false));
+  check(
+    "P2-251: no short-circuit — dead child with a module-resolution tail and no health answer yields ALL three problems in order",
+    JSON.stringify(reasons({ exitCode: 1, healthAnswered: false, healthStatus: null, stderrTail: "Error: MODULE_NOT_FOUND" })) ===
+      JSON.stringify(["daemon-exited", "module-resolution", "health-unreachable"]),
+    JSON.stringify(v({ exitCode: 1, healthAnswered: false, healthStatus: null, stderrTail: "Error: MODULE_NOT_FOUND" }.problems)),
+  );
+  check(
+    "P2-251: health answered but the child died afterwards is still a rejection (only alive+healthy passes)",
+    v({ exitCode: 1 }).ok === false && reasons({ exitCode: 1 }).includes("daemon-exited"),
+  );
+  check(
+    "P2-251: the verdict is identical for the same input in two calls",
+    (() => {
+      const facts = { exitCode: 1, signal: null, elapsedMs: 9000, healthAnswered: false, healthStatus: null, stderrTail: "Cannot find module 'x'" };
+      return JSON.stringify(daemonVerdict(facts)) === JSON.stringify(daemonVerdict(facts));
+    })(),
+  );
+  check(
+    "P2-251: MODULE_RESOLUTION_RE covers the three shapes esbuild/node emit",
+    MODULE_RESOLUTION_RE.test("Cannot find module './x'") && MODULE_RESOLUTION_RE.test("code: 'MODULE_NOT_FOUND'") && MODULE_RESOLUTION_RE.test("ERR_MODULE_NOT_FOUND"),
+  );
+
+  // message hygiene: the tail citation is bounded, one line, and the module
+  // stays pure (P2-194 lesson) — no fs, no process spawn, no network.
+  check(
+    "P2-251: the cited tail is bounded to 240 chars and flattened to one line",
+    (() => {
+      const long = "a".repeat(500) + "\n" + "b".repeat(500);
+      const msg = v({ exitCode: 1, stderrTail: long }).problems[0].message;
+      return !msg.includes("\n") && msg.length < 500;
+    })(),
+  );
+  check(
+    "P2-251: packaged-daemon-verdict.mjs is pure — no node:fs, no node:child_process, no fetch anywhere in the source",
+    !/node:(fs|child_process)|fetch/.test(verdictSrc),
+  );
+
+  // the driver script carries the production-spawn + hermetic contract
+  check(
+    "P2-251: packaged-daemon-smoke.mjs spawns the packaged Electron as Node exactly like daemon.ts does",
+    smokeSrc.includes("ELECTRON_RUN_AS_NODE") && smokeSrc.includes("OCR_METRICS_PORT") && smokeSrc.includes("resolveExecutable"),
+  );
+  check(
+    "P2-251: the driver is hermetic — temp HOME, relay off via the daemon's own fail-closed preflight, temp state dir removed on exit",
+    smokeSrc.includes("HOME: tempHome") && smokeSrc.includes("USERPROFILE: tempHome") && smokeSrc.includes('RELAY_URL: "off"') && smokeSrc.includes("rmSync(tempHome"),
+  );
+  check(
+    "P2-251: the driver never prints the pairing URI (stdout discarded unread) and resolves the entry the resolveEntry way",
+    smokeSrc.includes("child.stdout?.resume()") && smokeSrc.includes('"daemon", "index.js"') && smokeSrc.includes("packaged-daemon-verdict.mjs"),
+  );
+
+  // bootsmokeparity: the new release-only requirement
+  const wfJob = (name: string, steps: WorkflowStep[]): WorkflowJob => ({ name, platform: "x", steps });
+  const pkgStep: WorkflowStep = { name: "Package", run: "npm run dist --workspace @ocr/desktop -- --mac --dir", shell: null, timeoutMinutes: null };
+  const bootStep: WorkflowStep = { name: "Boot", run: 'node apps/desktop/scripts/packaged-boot.mjs "$APP"', shell: "bash", timeoutMinutes: 10 };
+  const daemonStep: WorkflowStep = { name: "Smoke the packaged daemon sidecar", run: 'node apps/desktop/scripts/packaged-daemon-smoke.mjs "$APP"', shell: "bash", timeoutMinutes: 5 };
+  check(
+    "P2-251: a release packaging job without the daemon smoke yields exactly one problem naming the job",
+    (() => {
+      const problems = bootSmokeParity([], [wfJob("desktop-dmg", [pkgStep, bootStep])]);
+      return problems.length === 1 && problems[0].includes('"desktop-dmg"') && problems[0].includes("packaged daemon sidecar");
+    })(),
+  );
+  check(
+    "P2-251: a ci.yml packaging job is exempt from the daemon-smoke requirement (out of the task's scope)",
+    bootSmokeParity([wfJob("desktop-package", [pkgStep, bootStep])], []).length === 0,
+  );
+  check(
+    "P2-251: a daemon smoke with bad shell/timeout/position yields one problem per cause",
+    (() => {
+      const problems = bootSmokeParity([], [wfJob("desktop-win", [pkgStep, daemonStep, { ...daemonStep, shell: null, timeoutMinutes: null }, bootStep])]);
+      return problems.length === 2 && problems.some((p) => p.includes("shell: bash")) && problems.some((p) => p.includes("timeout-minutes"));
+    })(),
+  );
+  check(
+    "P2-251: a release packaging job with both steps after packaging yields zero problems",
+    bootSmokeParity([], [wfJob("desktop-dmg", [pkgStep, bootStep, daemonStep])]).length === 0,
+  );
+
+  // real-repo assertion: release.yml runs the daemon smoke in BOTH packaging
+  // jobs, after the packaged boot and before the artifact upload, with
+  // shell: bash and its own timeout.
+  const release = src([".github", "workflows", "release.yml"]);
+  const dmgStart = release.indexOf("\n  desktop-dmg:");
+  const dmgEnd = release.indexOf("\n  desktop-win:");
+  const dmg = dmgStart > -1 && dmgEnd > dmgStart ? release.slice(dmgStart, dmgEnd) : "";
+  const winStart = release.indexOf("\n  desktop-win:");
+  const winEnd = release.indexOf("\n  release-verify:");
+  const win = winStart > -1 && winEnd > winStart ? release.slice(winStart, winEnd) : "";
+  for (const [label, jobYml, uploadMarker] of [
+    ["desktop-dmg", dmg, "Attach DMG + update metadata"],
+    ["desktop-win", win, "Attach setup exe + update metadata"],
+  ] as const) {
+    const bootAt = jobYml.indexOf("Smoke-boot the packaged app");
+    const smokeAt = jobYml.indexOf("Smoke the packaged daemon sidecar");
+    const uploadAt = jobYml.indexOf(uploadMarker);
+    const stepSlice = smokeAt > -1 ? jobYml.slice(smokeAt, jobYml.indexOf("\n      - name:", smokeAt)) : "";
+    check(
+      `P2-251: release.yml ${label} runs the daemon smoke between the packaged boot and the upload`,
+      smokeAt > -1 && bootAt > -1 && smokeAt > bootAt && uploadAt > smokeAt,
+    );
+    check(
+      `P2-251: release.yml ${label} declares shell: bash and its own timeout on the daemon smoke`,
+      stepSlice.includes("shell: bash") && /timeout-minutes:/.test(stepSlice),
+    );
+    check(
+      `P2-251: release.yml ${label} invokes packaged-daemon-smoke.mjs against the resolved bundle`,
+      stepSlice.includes("node apps/desktop/scripts/packaged-daemon-smoke.mjs"),
+    );
+  }
 }
 
 // --- download plan (P2-241) ---------------------------------------------------
