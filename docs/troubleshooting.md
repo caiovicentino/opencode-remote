@@ -124,6 +124,20 @@ run still in flight after the lease expires is released automatically.
   start instant is never killed: it gets stamped on first observation, so the
   lease only ever counts forward.
 
+## The routines file is unreadable (P2-256)
+
+`routines.json` is written atomically — the same tmp+rename write, created
+0600, that protects the daemon state file — so a power loss mid-write can no
+longer truncate it. If the file is ever illegible anyway (an old damaged
+file, a failed manual edit), the daemon logs one calm line and keeps running
+with an empty routine list while **preserving the original bytes** in a
+`routines.json.<timestamp>.quarantine` copy beside it — nothing is ever
+deleted and the next save never touches that copy; put the copy back in
+place to recover the schedules, or delete both files to start empty. A read
+failure (permission, file busy) moves nothing: fix the permission and
+restart — a transient read failure is never treated as an empty list, so it
+can never silently wipe your routines.
+
 ## Staging a desktop update release (P1-050)
 
 The packaged desktop app checks `http://127.0.0.1:8792/__ocr/updates/feed.json`

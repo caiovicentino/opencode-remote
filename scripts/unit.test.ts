@@ -45,6 +45,14 @@ import {
   type IdentityVerdict,
 } from "../apps/daemon/src/identityfile";
 import {
+  ROUTINES_FIRST_RUN_MESSAGE,
+  ROUTINES_REFUSE_CONTENT_MESSAGE,
+  ROUTINES_REFUSE_READ_MESSAGE,
+  ROUTINES_USE_MESSAGE,
+  routinesVerdict,
+  type RoutinesVerdict,
+} from "../apps/daemon/src/routinesfile";
+import {
   backupName,
   backupWritePlan,
   identityRecoveryPlan,
@@ -21779,6 +21787,197 @@ check("P2-241: no new periodic timer was introduced by the handler", !dlBlock.in
     !caskSrc.includes("node:fs") &&
       !caskSrc.includes("node:child_process") &&
       !caskSrc.includes("fetch("),
+  );
+}
+
+// --- P2-256: routines-file load verdict (routinesfile.ts) + atomic wiring ---
+
+{
+  const src = (rel: string[]) => readFileSync(join(import.meta.dirname, "..", ...rel), "utf8");
+  const routinesFileSrc = src(["apps", "daemon", "src", "routinesfile.ts"]);
+  const routinesModSrc = src(["apps", "daemon", "src", "routines.ts"]);
+  const daemonIndexSrc = src(["apps", "daemon", "src", "index.ts"]);
+
+  const GOOD = JSON.stringify([
+    { id: "a", name: "Café", prompt: "resuma o dia", hour: 7, minute: 30, mode: "daily" },
+    { id: "b", name: "Relatório", prompt: "gere o relatório", hour: 8, minute: 0, mode: "days", days: [1, 3] },
+  ]);
+
+  // full verdict table — [exists, content, readFailure, expected plan]
+  const table: Array<[boolean, string | null, string | null, RoutinesVerdict["plan"]]> = [
+    [false, null, null, "first-run"], // missing file → first run
+    [true, "isto não é json {", null, "refuse"], // unparseable text
+    [true, "", null, "refuse"], // empty text does not parse either
+    [true, "42", null, "refuse"], // parses, not a list
+    [true, '{"a":1}', null, "refuse"], // object, not a list
+    [true, '"texto"', null, "refuse"], // JSON string, not a list
+    [true, "[]", null, "use"], // well-formed empty list
+    [true, GOOD, null, "use"], // well-formed list
+    [true, null, "EACCES", "refuse"], // read failure with the file present
+    [false, null, "EBUSY", "refuse"], // read failure with the file absent — never first-run
+  ];
+  const verdicts = table.map(([ex, c, fail]) => routinesVerdict(ex, c, fail));
+  check(
+    "P2-256: verdict table — every row lands on the documented plan",
+    verdicts.every((v, i) => v.plan === table[i][3]),
+  );
+  check(
+    "P2-256: a missing file is a first run and never a quarantine",
+    routinesVerdict(false, null, null).plan === "first-run" &&
+      routinesVerdict(false, null, null).quarantine === false &&
+      routinesVerdict(false, null, null).routines.length === 0,
+  );
+  check(
+    "P2-256: a read failure is a refusal, never an empty list and never a quarantine — even when an empty text is present at the same time",
+    routinesVerdict(true, "", "EACCES").plan === "refuse" &&
+      routinesVerdict(true, "", "EACCES").quarantine === false &&
+      routinesVerdict(true, "  \n\t ", "EACCES").quarantine === false &&
+      routinesVerdict(false, null, "EBUSY").plan === "refuse" &&
+      routinesVerdict(false, null, "EBUSY").quarantine === false,
+  );
+  check(
+    "P2-256: unreadable content and non-list JSON refuse with the quarantine mark",
+    routinesVerdict(true, "{", null).quarantine === true &&
+      routinesVerdict(true, "", null).quarantine === true &&
+      routinesVerdict(true, "42", null).quarantine === true &&
+      routinesVerdict(true, '{"a":1}', null).quarantine === true &&
+      routinesVerdict(true, '"texto"', null).quarantine === true,
+  );
+  check(
+    "P2-256: a well-formed empty list is used with zero routines",
+    (() => {
+      const v = routinesVerdict(true, "[]", null);
+      return v.plan === "use" && v.routines.length === 0 && v.discarded === 0 && v.quarantine === false;
+    })(),
+  );
+  const midInvalid = JSON.stringify([
+    { id: "a", name: "ok", prompt: "p", hour: 1, minute: 0 },
+    "entrada estragada",
+    42,
+    null,
+    { id: "", name: "sem id", prompt: "p", hour: 1, minute: 0 },
+    { id: "b", name: "ok2", prompt: "p2", hour: 2, minute: 15 },
+  ]);
+  check(
+    "P2-256: an invalid entry in the middle is discarded and counted instead of dropping the list",
+    (() => {
+      const v = routinesVerdict(true, midInvalid, null);
+      return (
+        v.plan === "use" &&
+        v.discarded === 4 &&
+        v.routines.length === 2 &&
+        v.routines[0].id === "a" &&
+        v.routines[1].id === "b"
+      );
+    })(),
+  );
+  check(
+    "P2-256: a well-formed list is used with every entry, optional fields untouched",
+    (() => {
+      const v = routinesVerdict(true, GOOD, null);
+      return (
+        v.plan === "use" &&
+        v.discarded === 0 &&
+        v.routines.length === 2 &&
+        v.routines[1].days?.join() === "1,3" &&
+        v.routines[0].mode === "daily"
+      );
+    })(),
+  );
+  check(
+    "P2-256: the same input always yields an identical verdict",
+    [GOOD, "[]", "{", "", null].every(
+      (c) => JSON.stringify(routinesVerdict(true, c, null)) === JSON.stringify(routinesVerdict(true, c, null)),
+    ) &&
+      JSON.stringify(routinesVerdict(false, null, "EBUSY")) ===
+        JSON.stringify(routinesVerdict(false, null, "EBUSY")),
+  );
+
+  // message hygiene: static, short, no path, no URL scheme, never content
+  const hostile = JSON.stringify([
+    { id: "x", name: "NOME-SEGREDO-XYZ", prompt: "PROMPT-SECRETO-123456", hour: 1, minute: 0 },
+  ]);
+  const all = [
+    ...verdicts,
+    routinesVerdict(true, hostile, null),
+    routinesVerdict(true, hostile.slice(0, 9), null),
+    routinesVerdict(true, null, "EACCES"),
+    routinesVerdict(false, null, null),
+    routinesVerdict(true, midInvalid, null),
+  ];
+  check(
+    "P2-256: every message is non-empty and free of paths and URL schemes",
+    all.every(
+      (v) =>
+        v.message.trim().length > 0 && !/[\\/]/.test(v.message) && !v.message.includes("://"),
+    ),
+  );
+  check(
+    "P2-256: no message echoes a file name, a routine prompt or a secret",
+    all.every(
+      (v) =>
+        !v.message.includes(".json") &&
+        !v.message.includes("NOME-SEGREDO") &&
+        !v.message.includes("PROMPT-SECRETO") &&
+        !v.message.includes("opencode-remote"),
+    ),
+  );
+  check(
+    "P2-256: messages are the static exported phrases",
+    verdicts.every((v, i) => {
+      const expected =
+        v.plan === "refuse"
+          ? table[i][2] !== null
+            ? ROUTINES_REFUSE_READ_MESSAGE
+            : ROUTINES_REFUSE_CONTENT_MESSAGE
+          : v.plan === "first-run"
+            ? ROUTINES_FIRST_RUN_MESSAGE
+            : ROUTINES_USE_MESSAGE;
+      return v.message === expected;
+    }),
+  );
+
+  // purity: unit tests must never boot a daemon on import
+  // (strip line comments first — the header prose names the banned modules)
+  const routinesFileCode = routinesFileSrc.replace(/\/\/.*$/gm, "");
+  check(
+    "P2-256: routinesfile.ts is pure (no node:fs/path/child_process/os/fetch imports)",
+    !/node:(fs|path|child_process|os|http|crypto)/.test(routinesFileCode) &&
+      !/\bfetch\(/.test(routinesFileCode),
+  );
+
+  // real-repo wiring: the save path is the same atomic 0600 write as the
+  // state file — the mode comes from the write itself, never a chmod after,
+  // and no raw writeFileSync survives anywhere in the module.
+  check(
+    "P2-256: routines.ts saves through writeStateAtomic — no raw writeFileSync, no chmod after the write",
+    routinesModSrc.includes("writeStateAtomic(") &&
+      !routinesModSrc.includes("writeFileSync") &&
+      !routinesModSrc.includes("chmodSync(FILE"),
+  );
+  check(
+    "P2-256: routines.ts loads through the pure verdict and preserves an illegible file beside the original, never deleting",
+    routinesModSrc.includes("routinesVerdict(") &&
+      routinesModSrc.includes("quarantineName(") &&
+      routinesModSrc.includes("renameSync(") &&
+      !/unlink|rmsync|rm\(/i.test(routinesModSrc),
+  );
+
+  // real-repo wiring: no new periodic timer, one boot read, and every
+  // routine persistence still rides saveRoutines.
+  const routineTimerLines = daemonIndexSrc
+    .split("\n")
+    .filter((l) => /setInterval|setTimeout/.test(l) && /routin/i.test(l));
+  check(
+    "P2-256: the only periodic routine timers are the pre-existing 30 s sweep + 10 s first kick",
+    routineTimerLines.length === 2 &&
+      routineTimerLines.every((l) => /checkRoutines,\s*(30_000|10_000)/.test(l)),
+  );
+  check(
+    "P2-256: the existing routine write points are unchanged — one boot read, every save through saveRoutines",
+    (daemonIndexSrc.match(/saveRoutines\(/g) || []).length === 11 &&
+      (daemonIndexSrc.match(/loadRoutines\(/g) || []).length === 1 &&
+      !daemonIndexSrc.includes("routines.json"),
   );
 }
 

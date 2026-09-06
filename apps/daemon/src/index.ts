@@ -1665,8 +1665,10 @@ function checkRoutines() {
   }
 }
 
-// retry pending routine completions after a restart
-for (const r of loadRoutines()) {
+// retry pending routine completions after a restart (P2-256: the same list
+// already loaded above — one read, one verdict and at most one refusal log
+// per boot, and never a second look at a file the first load quarantined)
+for (const r of routines) {
   if (r.lastSessionID) pendingRuns.set(r.lastSessionID, r.id);
 }
 setInterval(checkRoutines, 30_000);
