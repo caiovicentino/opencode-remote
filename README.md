@@ -201,7 +201,10 @@ private. That is the product: **local power, remote control, zero trust**.
   so a lost phone can be revoked without guessing between public-key prefixes.
   The stamp is throttled to one `daemon.json` write per device per hour
   (`DEVICE_TOUCH_INTERVAL_MS`): deliberately coarse, never per frame, and it
-  never changes admission decisions
+  never changes admission decisions. Each entry also carries a derived
+  staleness verdict (`ativo`, `ocioso`, `dormente`, `nunca visto`, with a short
+  pt-BR hint) computed read-only from those stamps — the product never revokes
+  a device on its own; revocation stays an explicit owner action.
 - **BYOM** — opencode supports any provider; pick the model per session
 - **API + SDK** — drive sessions from code (`packages/sdk`)
 - **Artifacts** — the agent writes documents (html, md, csv, pdf) to

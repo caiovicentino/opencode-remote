@@ -89,6 +89,14 @@ import { pairWindow, bootstrapDecision } from "./pairwindow.js";
 import { leaseVerdict, parseRunLease, RUN_LEASE_KILL_MESSAGE } from "./routinelease.js";
 import { queueView } from "./backlogview.js";
 import { DEVICE_TOUCH_INTERVAL_MS, nextDeviceLabel, touchDecision } from "./devicetouch.js";
+// P2-268: derived, read-only staleness verdicts for the devices routes —
+// classification only; this import never writes the allowlist.
+import {
+  DEVICE_STALE_LONG_WINDOW_MS,
+  DEVICE_STALE_SHORT_WINDOW_MS,
+  deviceStaleVerdict,
+  type StaleVerdictReport,
+} from "./devicestale.js";
 import {
   admitNewUpload,
   chunkIndexProblem,
@@ -884,7 +892,26 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
     return { id: req.id, status: 200, body: { data: buf.subarray(0, read).toString("base64") } };
   }
   if (req.path === "/__ocr/devices" && req.method === "GET") {
-    return { id: req.id, status: 200, body: { devices: readAllowlist() } };
+    // P2-268: additive staleness verdict per device (spread keeps every
+    // pre-existing field byte-for-byte, verdict/phrase appended last). Read
+    // only — no allowlist write, no new route, no timer.
+    const now = Date.now();
+    return {
+      id: req.id,
+      status: 200,
+      body: {
+        devices: readAllowlist().map((client) => ({
+          ...client,
+          ...deviceStaleVerdict(
+            client.lastSeenAt,
+            client.addedAt,
+            now,
+            DEVICE_STALE_SHORT_WINDOW_MS,
+            DEVICE_STALE_LONG_WINDOW_MS,
+          ),
+        })),
+      },
+    };
   }
   if (req.path === "/__ocr/audit" && req.method === "GET") {
     try {
@@ -3131,9 +3158,21 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       if (pairingUri !== null) pairWindowOpenedAt = Date.now();
       res.end(JSON.stringify({ uri: pairingUri }));
     } else {
-      let devices: PairedClient[] = [];
+      // P2-268: same additive verdict as the E2E /__ocr/devices route (the
+      // two stay identical); strictly read-only.
+      let devices: Array<PairedClient & StaleVerdictReport> = [];
       try {
-        devices = readAllowlist();
+        const now = Date.now();
+        devices = readAllowlist().map((client) => ({
+          ...client,
+          ...deviceStaleVerdict(
+            client.lastSeenAt,
+            client.addedAt,
+            now,
+            DEVICE_STALE_SHORT_WINDOW_MS,
+            DEVICE_STALE_LONG_WINDOW_MS,
+          ),
+        }));
       } catch {
         // state file missing/unreadable: report an empty allowlist rather than
         // letting the exception escape into an unhandled rejection

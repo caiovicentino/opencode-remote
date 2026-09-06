@@ -41,6 +41,12 @@ identity servers, no accounts.
    forcing a write loop, and the field is purely informational — admission
    decisions, E2E crypto and replay protection are untouched. Old allowlists
    without the field read back as "never seen" and keep every existing field.
+   The devices routes additionally attach a derived, read-only staleness
+   verdict per entry (`ativo`, `ocioso`, `dormente`, `nunca visto`, plus a
+   short static pt-BR hint) computed from the stamps alone by a pure module
+   (`devicestale.ts`): classification is insight for the owner, never an
+   action — nothing in that path revokes a device or rewrites `daemon.json`,
+   and revocation stays an explicit owner decision.
 7. **Least-privilege file delivery.** Downloads are restricted to explicit
    roots (`~/.opencode-remote/uploads`, Desktop, Downloads, Documents, repo
    cwd) and resolved against real paths before serving.

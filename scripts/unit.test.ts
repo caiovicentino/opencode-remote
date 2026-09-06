@@ -208,6 +208,11 @@ import {
   nextDeviceLabel,
   touchDecision,
 } from "../apps/daemon/src/devicetouch";
+import {
+  DEVICE_STALE_LONG_WINDOW_MS,
+  DEVICE_STALE_SHORT_WINDOW_MS,
+  deviceStaleVerdict,
+} from "../apps/daemon/src/devicestale";
 
 import {
   admitNewUpload,
@@ -15648,6 +15653,125 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     bootstrapLabelAt > -1 &&
       daemonIndexSrc.slice(bootstrapLabelAt, bootstrapLabelAt + 600).includes("nextDeviceLabel(") &&
       !daemonIndexSrc.includes('label: "first"'),
+  );
+}
+
+// --- P2-268: stale-device classifier (devicestale.ts) ------------------------
+
+{
+  const base = 1_700_000_000_000; // arbitrary fixed "now" anchor (pure: no clock reads)
+  const iso = (t: number) => new Date(t).toISOString();
+  const v = (lastSeenAt: unknown, now: number, addedAt: unknown = iso(base - 60_000)) =>
+    deviceStaleVerdict(lastSeenAt, addedAt, now, DEVICE_STALE_SHORT_WINDOW_MS, DEVICE_STALE_LONG_WINDOW_MS);
+
+  // full verdict table
+  check(
+    "P2-268: missing stamp (undefined/null/empty/blank) → nunca visto (fail-closed, never active)",
+    v(undefined, base).verdict === "nunca visto" &&
+      v(null, base).verdict === "nunca visto" &&
+      v("", base).verdict === "nunca visto" &&
+      v("   ", base).verdict === "nunca visto",
+  );
+  check(
+    "P2-268: numeric stamp and invalid text stamp → nunca visto",
+    v(123, base).verdict === "nunca visto" &&
+      v({ t: base }, base).verdict === "nunca visto" &&
+      v("not-a-date", base).verdict === "nunca visto",
+  );
+  check(
+    "P2-268: fresh stamp (1 minute old) → ativo",
+    v(iso(base - 60_000), base).verdict === "ativo",
+  );
+  check(
+    "P2-268: age exactly at the short window → still ativo (flip is strictly above)",
+    v(iso(base - DEVICE_STALE_SHORT_WINDOW_MS), base).verdict === "ativo",
+  );
+  check(
+    "P2-268: one millisecond above the short window → ocioso",
+    v(iso(base - DEVICE_STALE_SHORT_WINDOW_MS - 1), base).verdict === "ocioso",
+  );
+  check(
+    "P2-268: age exactly at the long window → still ocioso (flip is strictly above)",
+    v(iso(base - DEVICE_STALE_LONG_WINDOW_MS), base).verdict === "ocioso",
+  );
+  check(
+    "P2-268: one millisecond above the long window → dormente",
+    v(iso(base - DEVICE_STALE_LONG_WINDOW_MS - 1), base).verdict === "dormente",
+  );
+  check(
+    "P2-268: future stamp (clock ahead of the host) → treated as now → ativo, never dormente",
+    v(iso(base + 60_000), base).verdict === "ativo" &&
+      v(iso(base + DEVICE_STALE_LONG_WINDOW_MS * 10), base).verdict === "ativo",
+  );
+  check(
+    "P2-268: non-finite 'now' is refused, never guessed",
+    (() => {
+      let threw = false;
+      try {
+        deviceStaleVerdict(iso(base - 60_000), iso(base - 60_000), Number.NaN, DEVICE_STALE_SHORT_WINDOW_MS, DEVICE_STALE_LONG_WINDOW_MS);
+      } catch {
+        threw = true;
+      }
+      let threwInf = false;
+      try {
+        deviceStaleVerdict(iso(base - 60_000), iso(base - 60_000), Number.POSITIVE_INFINITY, DEVICE_STALE_SHORT_WINDOW_MS, DEVICE_STALE_LONG_WINDOW_MS);
+      } catch {
+        threwInf = true;
+      }
+      return threw && threwInf;
+    })(),
+  );
+  check(
+    "P2-268: rule order — invalid stamp wins over a recent pairing instant → nunca visto",
+    v("garbage", base, iso(base - 1)).verdict === "nunca visto",
+  );
+  check(
+    "P2-268: deterministic — identical inputs give an identical verdict + phrase on every call",
+    (() => {
+      const a = v(iso(base - DEVICE_STALE_SHORT_WINDOW_MS - 1), base);
+      const b = v(iso(base - DEVICE_STALE_SHORT_WINDOW_MS - 1), base);
+      return a.verdict === b.verdict && a.phrase === b.phrase && JSON.stringify(a) === JSON.stringify(b);
+    })(),
+  );
+
+  // phrases are static and leak nothing: no digits (ports), no "/", ":" or "@"
+  // (addresses, URLs, paths), no key/label material, no base64-ish runs
+  const verdicts = [
+    v(undefined, base),
+    v(iso(base - 60_000), base),
+    v(iso(base - DEVICE_STALE_SHORT_WINDOW_MS - 1), base),
+    v(iso(base - DEVICE_STALE_LONG_WINDOW_MS - 1), base),
+  ];
+  check(
+    "P2-268: every phrase is a static sentence with no key/label/address/port/secret material",
+    verdicts.every((r) => /^[\p{L}\s.—-]+$/u.test(r.phrase) && r.phrase.length > 0),
+  );
+
+  // real-source assertion 1: the module stays pure — zero import statements
+  // (so no node:fs/node:http/node:crypto/ws/fetch) and no state-writing calls.
+  const staleSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "devicestale.ts"), "utf8");
+  check(
+    "P2-268: real devicestale.ts has no imports and no state-writing calls",
+    !/^import\s/m.test(staleSrc) &&
+      !/require\(/.test(staleSrc) &&
+      !/writeFileSync|appendFile|mkdir|rename\(|rm\(|unlink/.test(staleSrc),
+  );
+
+  // real-source assertion 2: the wiring in index.ts is additive and read-only
+  // — every deviceStaleVerdict site spreads the original client (all previous
+  // fields kept) and no site writes the allowlist or starts a timer.
+  const daemonIndexSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  let sites = 0;
+  let at = -1;
+  let wiringOk = true;
+  while ((at = daemonIndexSrc.indexOf("deviceStaleVerdict(", at + 1)) > -1) {
+    sites++;
+    const slice = daemonIndexSrc.slice(Math.max(0, at - 300), at + 400);
+    if (!slice.includes("...client") || slice.includes("saveAllowlist") || slice.includes("setInterval")) wiringOk = false;
+  }
+  check(
+    "P2-268: real index.ts wires the verdict in both devices routes additively — all previous fields kept, no allowlist write, no new timer",
+    sites === 2 && wiringOk && daemonIndexSrc.includes("type StaleVerdictReport"),
   );
 }
 
