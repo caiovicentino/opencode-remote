@@ -98,6 +98,13 @@ function helpSubmenu(updateLabel: string | null, updatesEnabled: boolean, hotkey
   }
   items.push({ id: "help-logs", label: "Abrir pasta de logs" });
   items.push({ id: "help-diagnostics", label: "Copiar diagnóstico" });
+  // P2-267: the macOS owner has no uninstaller — this item is how the app's
+  // own data (identity, paired phones, state, logs) leaves the disk before a
+  // machine is sold or shared. Destructive, so it lives behind its own
+  // separator; the click runs the two-step native confirmation in main.ts
+  // (the verdict's harness rule gates every dialog).
+  items.push({ type: "separator" });
+  items.push({ id: "help-wipe-data", label: "Apagar dados do app…" });
   return items;
 }
 

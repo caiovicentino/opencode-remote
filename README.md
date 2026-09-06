@@ -894,6 +894,14 @@ longer exists) and the app's own data folder under your user profile — state
 files and logs included, since the install is per-user — and never touches
 Documents, Desktop, Downloads or anything outside the app's own data.
 
+**macOS data wipe (P2-267)**: macOS has no uninstaller — dragging the app to
+the Trash leaves the machine identity (ECDH and VAPID keys), the paired-phone
+list, the shell state files and the logs folder on disk. The Help menu's
+**"Apagar dados do app…"** item erases exactly the app's own data folder
+(identity, paired phones, state files, logs) after a two-step confirmation —
+the second step warning that every paired phone loses access — and then quits
+the app; nothing outside the app's own data is ever touched.
+
 The image carries no secrets and the relay stays a blind
 router: it never sees plaintext or keys. The optional metrics endpoint
 (`RELAY_METRICS_PORT`) binds loopback by default; setting

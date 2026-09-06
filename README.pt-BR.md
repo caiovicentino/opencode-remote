@@ -925,6 +925,15 @@ arquivos de estado e logs incluídos, já que a instalação é por usuário —
 nunca toca Documentos, Área de Trabalho, Downloads nem nada fora dos dados do
 próprio app.
 
+**Apagamento de dados no macOS (P2-267)**: o macOS não tem desinstalador —
+arrastar o app para o Lixo deixa no disco a identidade da máquina (chaves
+ECDH e VAPID), a lista de celulares pareados, os arquivos de estado do shell e
+a pasta de logs. O item **"Apagar dados do app…"** no menu Ajuda apaga
+exatamente a pasta de dados do próprio app (identidade, celulares pareados,
+estado e logs) após uma confirmação em duas etapas — a segunda avisa que todos
+os celulares pareados perdem o acesso — e encerra o app em seguida; nada fora
+dos dados do próprio app é tocado.
+
 **Reconexão guiada pelo código de fechamento (P2-156)**: quando o socket do
 relay fecha, o daemon classifica o código em vez de tratar qualquer queda como
 problema de rede. `1013` (server busy / too many connections / room full) o

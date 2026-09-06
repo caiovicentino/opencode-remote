@@ -104,6 +104,15 @@ identity servers, no accounts.
   the approval card previews the first lines of the requested
   command/patch, and the diff button opens the full file changes.
 
+12. **macOS data wipe (P2-267).** macOS has no uninstaller, so the desktop
+    shell's Help menu carries an explicit data-wipe item: after a two-step
+    native confirmation it deletes exactly the app's own immediate children
+    in its data root — `daemon.json` (ECDH identity, VAPID keys, paired
+    clients), the shell state files and the logs folder — and quits, so a
+    sold or shared computer never keeps holding the machine identity.
+    Nothing outside the app's own data is touched, and a test-harness
+    session refuses the wipe before any dialog can open.
+
 ## Key rotation
 
 Delete `~/.opencode-remote/daemon.json` (or `manage.ts revoke-all`) and
