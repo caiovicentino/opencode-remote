@@ -105,6 +105,7 @@ builds this same image (the `caddy` profile adds TLS termination on top).
 | `RELAY_PORT` | `8787` | Keep `8787` on the container's private network and publish it only to the TLS terminator. Set it if you map a different host port. |
 | `RELAY_MAX_SOCKETS` | `1000` | Total concurrent websocket ceiling. Raise it only on an instance sized for the load (a stage-4 scale-out can grow this without recompiling). |
 | `RELAY_MAX_SOCKETS_GLOBAL` | `1000` | Process-wide live-socket capacity enforced at admission (P2-227): once the live count reaches it, every new upgrade is refused — close code `1013` ("server busy"), additive `capacity_refused_total` counter — instead of accepting one more socket into a process that may be near its file-descriptor limit. Ceiling `10000`; a non-numeric, zero, negative, fractional or above-ceiling value refuses the boot (fail-closed). See the capacity section below. |
+| `RELAY_JOIN_DEADLINE_MS` | `60000` | Deadline for a connection to enter its first room (P2-230): a socket that never sends a frame is closed with close code `4001` (`socket ocioso: nunca entrou em quarto`) and frees its global-cap and per-IP slot — the automatic pong would otherwise keep it alive forever. Ceiling `3600000` (1 h); the documented disable value is `-1`; a non-numeric, zero, negative (other than `-1`), fractional or above-ceiling value refuses the boot (fail-closed). See the join-deadline section below. |
 | `RELAY_MAX_PER_ROOM` | `10` | Peer ceiling per room. Must not exceed `RELAY_MAX_SOCKETS`. |
 | `RELAY_MAX_FRAME_BYTES` | `1000000` | Largest accepted frame in bytes (ws `maxPayload`). Hard ceiling is `16777216` (16 MiB, the int32 `maxPayload` bound); sealed op payloads are far smaller. |
 | `RELAY_BUFFER_CAP_BYTES` | `4194304` | Per-socket ceiling on accumulated outgoing bytes (P2-217): when a target's own queue plus the next frame passes it, that target is closed with close code `1013` and the reason `consumidor lento: buffer de saida acima do teto` instead of buffering forever. Ceiling `67108864` (64 MiB); a non-numeric, zero, negative, fractional or above-ceiling value refuses the boot (fail-closed). Raise it only on an instance whose peers legitimately buffer multi-megabyte bursts. |
@@ -233,6 +234,36 @@ instance must legitimately hold more peers — and remember the ws-level
 validated fail-closed at boot (`invalid relay socket capacity, refusing to
 start`, exit 1, no listener) and the `relay listening` line carries the
 resolved value as an additive `maxSocketsGlobal` field.
+
+### Connections must earn their slot: the join deadline (P2-230)
+
+A socket that connects and never sends a frame used to hold its capacity
+slot forever: the ws pong is emitted by the browser protocol layer
+automatically, with no action from the client, so the liveness sweep judged
+the idle peer perfectly alive. On a multi-tenant relay a handful of such
+sockets exhausts `RELAY_MAX_SOCKETS_GLOBAL` and the per-IP cap and every
+real phone gets "server busy" with no line explaining why.
+
+Now the same sweep that reaps silent peers also closes connections that
+never entered any room: after `RELAY_JOIN_DEADLINE_MS` (default `60000` ms)
+a roomless socket is closed alone with close code `4001` and the fixed
+reason `socket ocioso: nunca entrou em quarto`. Established conversations
+are never touched, the additive `idle_unjoined_closed` counter
+(`relay_idle_unjoined_closed` in the Prometheus text format) increments, and
+one `warn` JSONL line carries only the counter and the reason — never a room
+id, a client address or any payload content. The verdict rides the existing
+`RELAY_PING_INTERVAL_S` sweep (no new timer) and the resolved value is
+advertised on the `relay listening` line as an additive `joinDeadlineMs`
+field.
+
+Sizing: keep the default 60 s — a real phone needs one round-trip after the
+handshake, and even a cold radio, fresh TLS and a captive portal finish
+seconds inside it. Raise it only if you serve networks with minutes-long
+connection setups (satellite, heavily throttled mobile gateways); the
+ceiling is one hour. `-1` disables the reaper entirely — sensible only for a
+private, allowlisted relay where every peer provably joins. A non-numeric,
+zero, negative (other than `-1`), fractional or above-ceiling value refuses
+the boot (fail-closed).
 
 ### The TLS pair is mandatory together and fail-closed (P2-154)
 

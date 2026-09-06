@@ -621,7 +621,11 @@ Admission is capped process-wide too (P2-227): once the live socket count
 reaches `RELAY_MAX_SOCKETS_GLOBAL` (default 1000, ceiling 10000), new
 upgrades are refused with close `1013` and a `capacity_refused_total` metric —
 the relay says no to new sockets instead of dying from file-descriptor
-exhaustion and dropping every tenant's conversations.
+exhaustion and dropping every tenant's conversations. And a connection has to
+earn its slot (P2-230): a socket that never enters a room is closed after
+`RELAY_JOIN_DEADLINE_MS` (default 60s, ceiling 1h, `-1` disables) with an
+`idle_unjoined_closed` metric — the automatic pong alone no longer holds a
+capacity slot forever.
 
 On the desktop shell you do not need to export `RELAY_URL` by hand: Settings
 has a **Phone relay** card (desktop-only section) where you paste the hosted

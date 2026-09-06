@@ -41,6 +41,12 @@ import {
   SLOW_CONSUMER_CLOSE_REASON,
 } from "./backpressure.js";
 import { acceptVerdict, parseMaxSockets } from "./capacity.js";
+import {
+  idleUnjoined,
+  parseJoinDeadline,
+  JOIN_UNJOINED_CLOSE_CODE,
+  JOIN_UNJOINED_CLOSE_REASON,
+} from "./joindeadline.js";
 
 /**
  * Relay: a blind router.
@@ -262,6 +268,20 @@ if (CAPACITY.problems.length > 0) {
   process.exit(1);
 }
 const maxSocketsGlobal = CAPACITY.maxSockets;
+// P2-230: the join deadline (RELAY_JOIN_DEADLINE_MS) resolves fail-closed
+// like every knob above — a non-numeric, zero, negative, fractional or
+// above-ceiling value refuses the boot (one log line per reason, exit 1, no
+// listener) instead of serving with an unvalidated deadline. Absent or blank
+// keeps the documented default; the documented disable value (-1) turns the
+// reaper off entirely.
+const JOIN_DEADLINE = parseJoinDeadline(process.env);
+if (JOIN_DEADLINE.problems.length > 0) {
+  for (const reason of JOIN_DEADLINE.problems) {
+    ev("warn", "invalid relay join deadline, refusing to start (fail-closed)", { reason });
+  }
+  process.exit(1);
+}
+const joinDeadlineMs = JOIN_DEADLINE.deadlineMs;
 // The only fs touches of the static route: existence/file checks per request
 // and a streamed body (empty for HEAD). isFile canonicalizes the target with
 // realpath before the containment comparison — with a separator boundary, so
@@ -342,6 +362,10 @@ interface Socket extends WebSocket {
   ip?: string;
   released?: boolean;
   lastSeen?: number;
+  // P2-230: when the connection was accepted and whether it ever entered a
+  // room — the join-deadline reaper's only two inputs (joindeadline.ts).
+  openedAt?: number;
+  joinedRoom?: boolean;
 }
 
 const rooms = new Map<string, Set<Socket>>();
@@ -363,6 +387,8 @@ const m = {
   staleTerminated: 0,
   slowConsumers: 0,
   capacityRefused: 0,
+  // P2-230: sockets closed for never having joined any room.
+  idleUnjoinedClosed: 0,
   startedAt: Date.now(),
 };
 if (METRICS.port && METRICS.problems.length === 0) {
@@ -394,6 +420,8 @@ if (METRICS.port && METRICS.problems.length === 0) {
           `relay_slow_consumers_total ${m.slowConsumers}`,
           "# TYPE relay_capacity_refused_total counter",
           `relay_capacity_refused_total ${m.capacityRefused}`,
+          "# TYPE relay_idle_unjoined_closed counter",
+          `relay_idle_unjoined_closed ${m.idleUnjoinedClosed}`,
           "# TYPE relay_rooms_active gauge",
           `relay_rooms_active ${rooms.size}`,
         ];
@@ -416,6 +444,7 @@ if (METRICS.port && METRICS.problems.length === 0) {
             stale_terminated: m.staleTerminated,
             slow_consumers_total: m.slowConsumers,
             capacity_refused_total: m.capacityRefused,
+            idle_unjoined_closed: m.idleUnjoinedClosed,
             rooms_active: rooms.size,
           },
           null,
@@ -440,6 +469,9 @@ if (METRICS.port && METRICS.problems.length === 0) {
 }
 
 function join(socket: Socket, room: string) {
+  // P2-230: marks the peer as established for the join-deadline reaper —
+  // once a socket entered any room it is never closed for idleness.
+  socket.joinedRoom = true;
   socket.rooms ??= new Set();
   socket.rooms.add(room);
   let set = rooms.get(room);
@@ -549,6 +581,10 @@ server.listen(PORT, () => {
     // P2-227: additive provenance field — the resolved process-wide live
     // socket capacity. No pre-existing field changed name or meaning.
     maxSocketsGlobal,
+    // P2-230: additive provenance field — the resolved join deadline in ms
+    // (JOIN_DEADLINE_MS_DISABLED when the reaper is disabled). No
+    // pre-existing field changed name or meaning.
+    joinDeadlineMs,
     // P2-177: additive provenance field — the resolved log level this
     // process writes at. No pre-existing field changed name or meaning.
     logLevel: LOG.level,
@@ -615,6 +651,9 @@ wss.on("connection", (socket: Socket, req) => {
   socket.id = `s${Date.now().toString(36)}${(counter++).toString(36)}`;
   socket.rooms = new Set();
   socket.lastSeen = Date.now();
+  // P2-230: the join-deadline baseline — stamped only after every admission
+  // check passed, so a socket without this stamp is never reaped.
+  socket.openedAt = Date.now();
   ev("info", "connection open", { id: socket.id, total: wss.clients.size });
 
   // every pong proves the peer is alive at the transport level (ws clients
@@ -743,6 +782,24 @@ if (PING_INTERVAL_S > 0) {
       m.staleTerminated++;
       ev("info", "stale socket terminated", { id: dead.id, silentS: PING_INTERVAL_S * 2 });
       dead.terminate();
+    }
+    // P2-230: reap sockets that connected but never entered any room — the
+    // browser's automatic pong keeps them "alive" for the liveness verdict
+    // while they hold a global-cap and per-IP slot forever. Consulted inside
+    // the SAME periodic sweep as the liveness verdict: no new timer. The
+    // only effect is closing that one socket with the policy code below;
+    // established rooms, the frame grammar, the admission caps and the
+    // slow-consumer verdict are untouched, and the normal close path (per-IP
+    // slot release) runs exactly as on any other hangup. The warn line
+    // carries the counter and the fixed reason only — never a room id, a
+    // client address or a payload excerpt (P2-174/P2-177).
+    for (const idle of idleUnjoined(now, wss.clients as Set<Socket>, joinDeadlineMs)) {
+      m.idleUnjoinedClosed++;
+      ev("warn", "connection closed: never joined a room", {
+        count: m.idleUnjoinedClosed,
+        reason: JOIN_UNJOINED_CLOSE_REASON,
+      });
+      idle.close(JOIN_UNJOINED_CLOSE_CODE, JOIN_UNJOINED_CLOSE_REASON);
     }
     for (const c of wss.clients) {
       if (c.readyState === c.OPEN) c.ping();

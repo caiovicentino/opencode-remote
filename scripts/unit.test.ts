@@ -450,6 +450,18 @@ import {
 } from "../apps/relay/src/capacity";
 
 import {
+  idleUnjoined,
+  parseJoinDeadline,
+  JOIN_DEADLINE_MS_CEILING,
+  JOIN_DEADLINE_MS_DEFAULT,
+  JOIN_DEADLINE_MS_DISABLED,
+  JOIN_DEADLINE_MS_ENV,
+  JOIN_UNJOINED_CLOSE_CODE,
+  JOIN_UNJOINED_CLOSE_REASON,
+  type JoinDeadlinePeer,
+} from "../apps/relay/src/joindeadline";
+
+import {
   assetIntegrityPlan,
   indexAssetPlan,
   WEB_INDEX_MAX_BYTES,
@@ -11825,6 +11837,159 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     capacityIndexSrc.includes("const CAPACITY = parseMaxSockets(process.env);") &&
       capacityIndexSrc.includes('ev("warn", "invalid relay socket capacity, refusing to start (fail-closed)"') &&
       capacityIndexSrc.includes("maxSocketsGlobal,"),
+  );
+}
+
+// --- P2-230: join-deadline reaper — idleUnjoined + parseJoinDeadline -------------
+{
+  const now = 10_000_000;
+  const peer = (openedAgoMs: number, joined = false): JoinDeadlinePeer => ({
+    openedAt: now - openedAgoMs,
+    joinedRoom: joined,
+  });
+
+  // -- idleUnjoined: the full verdict table -----------------------------------
+
+  check(
+    "P2-230: empty collection → empty list",
+    idleUnjoined(now, [] as JoinDeadlinePeer[], JOIN_DEADLINE_MS_DEFAULT).length === 0,
+  );
+
+  // the threshold, explicit: a peer open exactly the documented default
+  // deadline survives; one millisecond more is closed
+  const atThreshold = idleUnjoined(now, [peer(JOIN_DEADLINE_MS_DEFAULT)], JOIN_DEADLINE_MS_DEFAULT);
+  const pastThreshold = idleUnjoined(now, [peer(JOIN_DEADLINE_MS_DEFAULT + 1)], JOIN_DEADLINE_MS_DEFAULT);
+  check(
+    "P2-230: peer open exactly the deadline survives; one ms past it is closed (strict bound)",
+    atThreshold.length === 0 && pastThreshold.length === 1,
+  );
+
+  const young = idleUnjoined(now, [peer(JOIN_DEADLINE_MS_DEFAULT - 1)], JOIN_DEADLINE_MS_DEFAULT);
+  check("P2-230: peer open less than the deadline survives", young.length === 0);
+
+  const ancient = idleUnjoined(now, [peer(JOIN_DEADLINE_MS_CEILING * 10, true)], JOIN_DEADLINE_MS_DEFAULT);
+  check(
+    "P2-230: peer that joined a room survives no matter how long ago it opened",
+    ancient.length === 0,
+  );
+
+  const unstamped = idleUnjoined(now, [{}], JOIN_DEADLINE_MS_DEFAULT);
+  check(
+    "P2-230: peer without an open stamp survives (mid-admission prudence, same as liveness lastSeen)",
+    unstamped.length === 0,
+  );
+
+  const disabled = idleUnjoined(now, [peer(JOIN_DEADLINE_MS_CEILING * 10)], JOIN_DEADLINE_MS_DISABLED);
+  const disabledZero = idleUnjoined(now, [peer(JOIN_DEADLINE_MS_CEILING * 10)], 0);
+  check(
+    "P2-230: disabled deadline returns an empty list even with an old roomless peer",
+    disabled.length === 0 && disabledZero.length === 0,
+  );
+
+  // order + identity: only expected items, in input order, all from the input
+  const p1 = peer(1);
+  const p2 = peer(JOIN_DEADLINE_MS_DEFAULT + 5_000);
+  const p3 = peer(JOIN_DEADLINE_MS_DEFAULT + 6_000, true);
+  const p4 = peer(JOIN_DEADLINE_MS_DEFAULT + 7_000);
+  const p5: JoinDeadlinePeer = {};
+  const input = [p1, p2, p3, p4, p5];
+  const verdict = idleUnjoined(now, input, JOIN_DEADLINE_MS_DEFAULT);
+  check(
+    "P2-230: iteration order is preserved and every returned item is from the received collection",
+    verdict.length === 2 && verdict[0] === p2 && verdict[1] === p4,
+    JSON.stringify(verdict.map((p) => p.openedAt)),
+  );
+
+  // -- parseJoinDeadline: the fail-closed table --------------------------------
+
+  const absent = parseJoinDeadline({});
+  const blank = parseJoinDeadline({ [JOIN_DEADLINE_MS_ENV]: "   " });
+  check(
+    `P2-230: empty env → the documented default ${JOIN_DEADLINE_MS_DEFAULT} with zero problems (blank too)`,
+    absent.deadlineMs === JOIN_DEADLINE_MS_DEFAULT &&
+      absent.problems.length === 0 &&
+      blank.deadlineMs === JOIN_DEADLINE_MS_DEFAULT &&
+      blank.problems.length === 0,
+    JSON.stringify([...absent.problems, ...blank.problems]),
+  );
+
+  const valid = parseJoinDeadline({ [JOIN_DEADLINE_MS_ENV]: "30000" });
+  const atCeiling = parseJoinDeadline({ [JOIN_DEADLINE_MS_ENV]: String(JOIN_DEADLINE_MS_CEILING) });
+  check(
+    "P2-230: a valid whole deadline at or below the ceiling is accepted verbatim",
+    valid.deadlineMs === 30_000 &&
+      valid.problems.length === 0 &&
+      atCeiling.deadlineMs === JOIN_DEADLINE_MS_CEILING &&
+      atCeiling.problems.length === 0,
+  );
+
+  const off = parseJoinDeadline({ [JOIN_DEADLINE_MS_ENV]: String(JOIN_DEADLINE_MS_DISABLED) });
+  check(
+    "P2-230: the documented disable value is accepted verbatim (reaper off)",
+    off.deadlineMs === JOIN_DEADLINE_MS_DISABLED && off.problems.length === 0,
+  );
+
+  const nonNumeric = parseJoinDeadline({ [JOIN_DEADLINE_MS_ENV]: "abc" });
+  check(
+    "P2-230: non-numeric value is a problem citing the variable (fail-closed, no silent default)",
+    nonNumeric.problems.length === 1 &&
+      nonNumeric.problems[0]!.includes(JOIN_DEADLINE_MS_ENV) &&
+      nonNumeric.deadlineMs === JOIN_DEADLINE_MS_DEFAULT,
+    JSON.stringify(nonNumeric.problems),
+  );
+
+  const zero = parseJoinDeadline({ [JOIN_DEADLINE_MS_ENV]: "0" });
+  check(
+    "P2-230: zero is a problem — it would close mid-admission sockets",
+    zero.problems.length === 1 && zero.problems[0]!.includes(JOIN_DEADLINE_MS_ENV),
+  );
+
+  const negative = parseJoinDeadline({ [JOIN_DEADLINE_MS_ENV]: "-5" });
+  check(
+    "P2-230: a negative value other than the disable sentinel is a problem citing the variable",
+    negative.problems.length === 1 && negative.problems[0]!.includes(JOIN_DEADLINE_MS_ENV),
+  );
+
+  const fractional = parseJoinDeadline({ [JOIN_DEADLINE_MS_ENV]: "1.5" });
+  check(
+    "P2-230: fractional value is a problem citing the variable",
+    fractional.problems.length === 1 && fractional.problems[0]!.includes(JOIN_DEADLINE_MS_ENV),
+  );
+
+  const aboveCeiling = parseJoinDeadline({ [JOIN_DEADLINE_MS_ENV]: String(JOIN_DEADLINE_MS_CEILING + 1) });
+  check(
+    "P2-230: above-ceiling value is a problem citing the variable and the ceiling",
+    aboveCeiling.problems.length === 1 &&
+      aboveCeiling.problems[0]!.includes(JOIN_DEADLINE_MS_ENV) &&
+      aboveCeiling.problems[0]!.includes(String(JOIN_DEADLINE_MS_CEILING)),
+  );
+
+  // every rule is checked independently: a value violating several rules
+  // reports ALL its reasons at once, no short-circuit
+  const many = parseJoinDeadline({ [JOIN_DEADLINE_MS_ENV]: "-1.5" });
+  check(
+    "P2-230: several problems are returned at once without short-circuit",
+    many.problems.length === 2 &&
+      many.problems.every((p) => p.includes(JOIN_DEADLINE_MS_ENV)) &&
+      many.deadlineMs === JOIN_DEADLINE_MS_DEFAULT,
+    JSON.stringify(many.problems),
+  );
+
+  // -- purity + policy constants ------------------------------------------------
+
+  const deadlineSrc = readFileSync(join(import.meta.dirname, "..", "apps", "relay", "src", "joindeadline.ts"), "utf8");
+  check(
+    "P2-230: joindeadline.ts stays pure — zero imports (no ws, node:net, node:http, node:fs)",
+    !/^import /m.test(deadlineSrc),
+  );
+  check(
+    "P2-230: the policy close code/reason are fixed constants free of room/address/payload shapes",
+    JOIN_UNJOINED_CLOSE_CODE >= 4000 &&
+      JOIN_UNJOINED_CLOSE_CODE <= 4999 &&
+      !JOIN_UNJOINED_CLOSE_REASON.includes("/") &&
+      !/[0-9a-f]{8}-[0-9a-f]{4}/i.test(JOIN_UNJOINED_CLOSE_REASON) &&
+      JOIN_UNJOINED_CLOSE_REASON.length < 100,
+    JOIN_UNJOINED_CLOSE_REASON,
   );
 }
 

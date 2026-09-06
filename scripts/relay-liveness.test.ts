@@ -8,10 +8,12 @@
  * Run: npx tsx scripts/relay-liveness.test.ts
  */
 import { spawn, type ChildProcess } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { get } from "node:http";
 import { join } from "node:path";
 import WebSocket from "ws";
 import { decideStale, type LivenessPeer } from "../apps/relay/src/liveness";
+import { JOIN_UNJOINED_CLOSE_CODE } from "../apps/relay/src/joindeadline";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -171,6 +173,78 @@ const offExit = new Promise<number | null>((r) => off.proc.on("exit", (c) => r(c
 check("liveness: zero RELAY_PING_INTERVAL_S refuses the boot with exit 1 (fail-closed)", (await offExit) === 1);
 check("liveness: refused boot never opens the listener", (await tryOpen(`ws://127.0.0.1:${off.port}`)) === null);
 off.proc.kill("SIGTERM");
+
+// --- 5. P2-230: join-deadline reaper — idle socket closed, joined socket holds --
+// 1s sweep + 1s deadline: a socket that never sends a frame is closed even
+// though its ws pong answers every ping automatically.
+const joinRelay = startRelay({ RELAY_PING_INTERVAL_S: "1", RELAY_JOIN_DEADLINE_MS: "1000" });
+await waitReady(joinRelay.port);
+const joinUrl = `ws://127.0.0.1:${joinRelay.port}`;
+
+// doomed shape: connects and stays silent — the browser-protocol pong keeps
+// it "alive" for the liveness verdict; only the join deadline closes it
+const idle = await open(joinUrl);
+const idleClosed = new Promise<number>((r) => idle.on("close", (c) => r(c)));
+
+// healthy shape: sends a frame and enters a room
+const joined = await open(joinUrl);
+const jdRoom = `lv-join-${Date.now()}`;
+joinRoom(joined, jdRoom, "joined-1");
+
+const idleCode = await Promise.race([idleClosed, sleep(9_000).then(() => -1)]);
+check("join-deadline: socket that never sends a frame is closed with the policy code", idleCode === JOIN_UNJOINED_CLOSE_CODE);
+await sleep(2_500); // several sweep cycles past the deadline
+check("join-deadline: socket that joined a room stays open past the deadline", joined.readyState === WebSocket.OPEN);
+
+const joinMetrics = JSON.parse(await fetchMetrics(joinRelay.port + 1)) as {
+  idle_unjoined_closed?: number;
+  connections_active?: number;
+};
+check("join-deadline: idle_unjoined_closed counter incremented", (joinMetrics.idle_unjoined_closed ?? 0) >= 1);
+check("join-deadline: only the joined peer remains connected", joinMetrics.connections_active === 1);
+
+const promJoin = await fetchMetrics(joinRelay.port + 1, "?format=prom");
+check("join-deadline: relay_idle_unjoined_closed exposed in prom format", /relay_idle_unjoined_closed \d+/.test(promJoin));
+
+joined.close();
+joinRelay.proc.kill("SIGTERM");
+
+// zero deadline is refused at boot like every other invalid knob (fail-closed)
+const zeroJoin = startRelay({ RELAY_JOIN_DEADLINE_MS: "0" });
+const zeroJoinExit = new Promise<number | null>((r) => zeroJoin.proc.on("exit", (c) => r(c)));
+check("join-deadline: zero RELAY_JOIN_DEADLINE_MS refuses the boot with exit 1 (fail-closed)", (await zeroJoinExit) === 1);
+zeroJoin.proc.kill("SIGTERM");
+
+// --- 6. wiring pins against the real index.ts source -----------------------------
+{
+  const relayIndexSrc = readFileSync(
+    join(import.meta.dirname, "..", "apps", "relay", "src", "index.ts"),
+    "utf8",
+  );
+  // open stamp is marked at the connection event, joined flag inside join()
+  check(
+    "join-deadline: index.ts marks openedAt on the connection event and joinedRoom in join()",
+    relayIndexSrc.includes("socket.openedAt = Date.now();") &&
+      relayIndexSrc.includes("socket.joinedRoom = true;") &&
+      relayIndexSrc.indexOf("function join(") < relayIndexSrc.indexOf("socket.joinedRoom = true;"),
+  );
+  // the verdict is consulted inside the existing liveness sweep, and no new
+  // periodic timer was introduced
+  const sweepAt = relayIndexSrc.indexOf("setInterval(() => {");
+  const verdictAt = relayIndexSrc.indexOf("idleUnjoined(now, wss.clients");
+  const sweepEndAt = relayIndexSrc.indexOf("}, PING_INTERVAL_S * 1000);");
+  check(
+    "join-deadline: idleUnjoined is consulted inside the existing sweep — no new periodic timer",
+    sweepAt > -1 && verdictAt > sweepAt && verdictAt < sweepEndAt &&
+      (relayIndexSrc.match(/setInterval\(/g) ?? []).length === 1,
+  );
+  check(
+    "join-deadline: index.ts resolves the deadline fail-closed and advertises it on `relay listening`",
+    relayIndexSrc.includes("const JOIN_DEADLINE = parseJoinDeadline(process.env);") &&
+      relayIndexSrc.includes('ev("warn", "invalid relay join deadline, refusing to start (fail-closed)"') &&
+      relayIndexSrc.includes("joinDeadlineMs,"),
+  );
+}
 
 if (failures) process.exit(1);
 console.log("relay-liveness: ALL OK");
