@@ -55,6 +55,7 @@ export const PORTABLE_TESTS: readonly string[] = [
   "permission-cards.test.ts",
   "qr-feed.test.ts",
   "relay-backoff.test.ts",
+  "relay-knobnames.test.ts",
   "release-watch.test.ts",
   "sidecar-log.test.ts",
   "thinking.test.ts",

@@ -563,6 +563,24 @@ pure `webcond.ts` module — no new dependency:
   web root participate in this path — no plaintext, no keys, no room ids,
   and no sealed frame is ever cached or validated.
 
+### An unknown RELAY_ variable warns at boot (P2-263)
+
+The table and subsections above are the canonical registry of every `RELAY_`
+variable the relay reads, and the unit battery locks that registry to this
+document in both directions. At boot, before any listener opens, the relay
+checks the environment for `RELAY_`-prefixed keys outside the registry and
+writes **one `warn` line per unknown key**, naming the key and — when a
+documented name sits within two edits of it (a swapped, missing, extra or
+doubled letter) — the closest documented name as a suggestion. The line never
+carries the value: one of these variables holds the metrics bearer token and
+others hold certificate paths.
+
+The check is advisory by design. A hosting platform injects variables of its
+own, so an unknown `RELAY_` key never refuses the boot — it only stops being
+silent. If the line appears, fix the spelling in your deployment
+configuration: up to that point the relay was running with the documented
+default, not with the value you believed you had set.
+
 ## Behind a proxy: `x-forwarded-for` and the per-IP cap
 
 `x-forwarded-for` is forgeable by any client, so the relay ignores it by
