@@ -427,6 +427,15 @@ import {
 } from "../apps/relay/src/backpressure";
 
 import {
+  acceptVerdict,
+  parseMaxSockets,
+  CAPACITY_REFUSE_REASON,
+  MAX_SOCKETS_GLOBAL_CEILING,
+  MAX_SOCKETS_GLOBAL_DEFAULT,
+  MAX_SOCKETS_GLOBAL_ENV,
+} from "../apps/relay/src/capacity";
+
+import {
   assetIntegrityPlan,
   indexAssetPlan,
   WEB_INDEX_MAX_BYTES,
@@ -11592,6 +11601,216 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     relayIndexSrc.includes("const BUFFER_CAP = parseBufferCap(process.env);") &&
       relayIndexSrc.includes('ev("warn", "invalid relay buffer cap, refusing to start (fail-closed)"') &&
       relayIndexSrc.includes("bufferCapBytes,"),
+  );
+}
+
+// --- P2-227: relay process-wide socket capacity — admission verdict + knob ------
+{
+  const cap = MAX_SOCKETS_GLOBAL_DEFAULT;
+
+  // -- acceptVerdict: the full table -----------------------------------------
+
+  // live counts well below the ceiling accept
+  const wellBelow: string[] = [];
+  for (const live of [0, 1, Math.floor(cap / 2), cap - 2]) {
+    wellBelow.push(acceptVerdict(live, cap).action);
+  }
+  check(
+    "P2-227: live counts well below the ceiling always accept",
+    wellBelow.every((a) => a === "accept"),
+    JSON.stringify(wellBelow),
+  );
+
+  // exactly one below the ceiling still accepts — the documented limit: a
+  // live count AT the ceiling is the first refusal, cap-1 is the last admit
+  const justUnder = acceptVerdict(cap - 1, cap);
+  check(
+    "P2-227: live count exactly one below the ceiling accepts (documented limit: cap-1 admits, cap refuses)",
+    justUnder.action === "accept" && cap === MAX_SOCKETS_GLOBAL_DEFAULT,
+  );
+
+  // at and above the ceiling refuse, with the fixed reason
+  const at = acceptVerdict(cap, cap);
+  const above = acceptVerdict(cap + 1, cap);
+  const wayAbove = acceptVerdict(cap * 10, cap);
+  check(
+    "P2-227: live count at or above the ceiling refuses with the fixed reason",
+    at.action === "refuse" &&
+      at.reason === CAPACITY_REFUSE_REASON &&
+      above.action === "refuse" &&
+      above.reason === CAPACITY_REFUSE_REASON &&
+      wayAbove.action === "refuse",
+    JSON.stringify([at, above, wayAbove]),
+  );
+
+  // ceiling of one with an empty process accepts (the first socket gets in)
+  check(
+    "P2-227: ceiling of one with an empty process accepts",
+    acceptVerdict(0, 1).action === "accept",
+  );
+
+  // fail-open by design: a broken count never refuses a good connection
+  const absent = acceptVerdict(undefined, cap);
+  const negative = acceptVerdict(-1, cap);
+  const notANumber = acceptVerdict(NaN, cap);
+  const infinite = acceptVerdict(Infinity, cap);
+  const nullCount = acceptVerdict(null, cap);
+  check(
+    "P2-227: missing, negative or non-finite live counts fail OPEN (accept)",
+    absent.action === "accept" &&
+      negative.action === "accept" &&
+      notANumber.action === "accept" &&
+      infinite.action === "accept" &&
+      nullCount.action === "accept",
+    JSON.stringify([absent, negative, notANumber, infinite, nullCount]),
+  );
+
+  // exactly two outcomes — a refusal never touches anything but this socket
+  const actions = new Set(
+    [acceptVerdict(0, cap), acceptVerdict(cap, cap), acceptVerdict(undefined, cap)].map((v) => v.action),
+  );
+  check(
+    "P2-227: acceptVerdict has exactly two outcomes — accept and refuse",
+    actions.size === 2 && actions.has("accept") && actions.has("refuse"),
+  );
+
+  // privacy: the reason is a fixed short Portuguese sentence with no path,
+  // URL scheme or room-id shape
+  check(
+    "P2-227: the refusal reason has no path, no URL scheme and no room-id shape",
+    !CAPACITY_REFUSE_REASON.includes("/") &&
+      !CAPACITY_REFUSE_REASON.includes("://") &&
+      !/[0-9a-f]{8}-[0-9a-f]{4}/i.test(CAPACITY_REFUSE_REASON) &&
+      CAPACITY_REFUSE_REASON.length < 100,
+    CAPACITY_REFUSE_REASON,
+  );
+
+  // -- parseMaxSockets: the fail-closed table ---------------------------------
+
+  const empty = parseMaxSockets({});
+  check(
+    `P2-227: empty env → the documented default ${MAX_SOCKETS_GLOBAL_DEFAULT} with zero problems`,
+    empty.maxSockets === MAX_SOCKETS_GLOBAL_DEFAULT && empty.problems.length === 0,
+    JSON.stringify(empty.problems),
+  );
+
+  const blank = parseMaxSockets({ [MAX_SOCKETS_GLOBAL_ENV]: "   " });
+  check(
+    "P2-227: blank value keeps the documented default without a problem (same as knobs.ts)",
+    blank.maxSockets === MAX_SOCKETS_GLOBAL_DEFAULT && blank.problems.length === 0,
+  );
+
+  const valid = parseMaxSockets({ [MAX_SOCKETS_GLOBAL_ENV]: String(MAX_SOCKETS_GLOBAL_CEILING) });
+  const valid2 = parseMaxSockets({ [MAX_SOCKETS_GLOBAL_ENV]: "500" });
+  check(
+    "P2-227: a valid whole count at or below the ceiling is accepted verbatim",
+    valid.maxSockets === MAX_SOCKETS_GLOBAL_CEILING &&
+      valid.problems.length === 0 &&
+      valid2.maxSockets === 500 &&
+      valid2.problems.length === 0,
+  );
+
+  const nonNumeric = parseMaxSockets({ [MAX_SOCKETS_GLOBAL_ENV]: "abc" });
+  check(
+    "P2-227: non-numeric value is a problem citing the variable (fail-closed, no silent default)",
+    nonNumeric.problems.length === 1 &&
+      nonNumeric.problems[0]!.includes(MAX_SOCKETS_GLOBAL_ENV) &&
+      nonNumeric.maxSockets === MAX_SOCKETS_GLOBAL_DEFAULT,
+    JSON.stringify(nonNumeric.problems),
+  );
+
+  const zero = parseMaxSockets({ [MAX_SOCKETS_GLOBAL_ENV]: "0" });
+  check(
+    "P2-227: zero is a problem — it would disable the capacity gate outright",
+    zero.problems.length === 1 && zero.problems[0]!.includes(MAX_SOCKETS_GLOBAL_ENV),
+  );
+
+  const negativeKnob = parseMaxSockets({ [MAX_SOCKETS_GLOBAL_ENV]: "-5" });
+  check(
+    "P2-227: negative value is a problem citing the variable",
+    negativeKnob.problems.length === 1 && negativeKnob.problems[0]!.includes(MAX_SOCKETS_GLOBAL_ENV),
+  );
+
+  const fractional = parseMaxSockets({ [MAX_SOCKETS_GLOBAL_ENV]: "1.5" });
+  check(
+    "P2-227: fractional value is a problem citing the variable",
+    fractional.problems.length === 1 && fractional.problems[0]!.includes(MAX_SOCKETS_GLOBAL_ENV),
+  );
+
+  const aboveCeiling = parseMaxSockets({ [MAX_SOCKETS_GLOBAL_ENV]: String(MAX_SOCKETS_GLOBAL_CEILING + 1) });
+  check(
+    "P2-227: above-ceiling value is a problem citing the variable and the ceiling",
+    aboveCeiling.problems.length === 1 &&
+      aboveCeiling.problems[0]!.includes(MAX_SOCKETS_GLOBAL_ENV) &&
+      aboveCeiling.problems[0]!.includes(String(MAX_SOCKETS_GLOBAL_CEILING)),
+  );
+
+  // every rule is checked independently: a value violating several rules
+  // reports ALL its reasons at once, no short-circuit
+  const many = parseMaxSockets({ [MAX_SOCKETS_GLOBAL_ENV]: "-1.5" });
+  check(
+    "P2-227: several problems are returned at once without short-circuit",
+    many.problems.length === 2 &&
+      many.problems.every((p) => p.includes(MAX_SOCKETS_GLOBAL_ENV)) &&
+      many.maxSockets === MAX_SOCKETS_GLOBAL_DEFAULT,
+    JSON.stringify(many.problems),
+  );
+
+  // -- purity + real-wiring pins ----------------------------------------------
+
+  const capacitySrc = readFileSync(join(import.meta.dirname, "..", "apps", "relay", "src", "capacity.ts"), "utf8");
+  check(
+    "P2-227: capacity.ts stays pure — zero imports (no ws, node:net, node:http, node:fs)",
+    !/^import /m.test(capacitySrc),
+  );
+
+  const capacityIndexSrc = readFileSync(
+    join(import.meta.dirname, "..", "apps", "relay", "src", "index.ts"),
+    "utf8",
+  );
+  // order pin: per-IP cap → capacity verdict → accepted connection
+  const ipCapAt = capacityIndexSrc.indexOf("if (!ipCap.admit(ip))");
+  const verdictAt = capacityIndexSrc.indexOf("const capacity = acceptVerdict(wss.clients.size");
+  const acceptedAt = capacityIndexSrc.indexOf("socket.ip = ip;");
+  check(
+    "P2-227: index.ts consults acceptVerdict after the per-IP cap and before the connection is accepted",
+    ipCapAt > -1 && verdictAt > ipCapAt && acceptedAt > verdictAt,
+  );
+  const branch = verdictAt > -1 && acceptedAt > verdictAt ? capacityIndexSrc.slice(verdictAt, acceptedAt) : "";
+  check(
+    "P2-227: the only effect of a capacity refusal is closing that one socket — no room touch, exactly one 1013 close",
+    branch.includes("ipCap.release(ip)") &&
+      (branch.match(/socket\.close\(/g) ?? []).length === 1 &&
+      branch.includes('socket.close(1013, "server busy")') &&
+      !branch.includes("leaveAll") &&
+      !branch.includes("rooms"),
+    branch,
+  );
+
+  // additive counter + one warn line carrying only the counter and the reason
+  check(
+    "P2-227: each refusal increments one new additive counter and logs one warn line with counter + reason only",
+    (capacityIndexSrc.match(/m\.capacityRefused\+\+/g) ?? []).length === 1 &&
+      capacityIndexSrc.includes(
+        'ev("warn", "connection refused: process at socket capacity", { count: m.capacityRefused, reason: capacity.reason })',
+      ),
+  );
+
+  // both metric formats expose the new counter without renaming anything
+  check(
+    "P2-227: metrics route serves capacity_refused_total in JSON and relay_capacity_refused_total in Prometheus text",
+    capacityIndexSrc.includes("capacity_refused_total: m.capacityRefused,") &&
+      capacityIndexSrc.includes("# TYPE relay_capacity_refused_total counter") &&
+      capacityIndexSrc.includes("`relay_capacity_refused_total ${m.capacityRefused}`") &&
+      capacityIndexSrc.includes("slow_consumers_total: m.slowConsumers"),
+  );
+
+  // boot resolves the knob fail-closed before anything listens, like every knob
+  check(
+    "P2-227: index.ts resolves the socket capacity fail-closed and advertises it on `relay listening`",
+    capacityIndexSrc.includes("const CAPACITY = parseMaxSockets(process.env);") &&
+      capacityIndexSrc.includes('ev("warn", "invalid relay socket capacity, refusing to start (fail-closed)"') &&
+      capacityIndexSrc.includes("maxSocketsGlobal,"),
   );
 }
 
