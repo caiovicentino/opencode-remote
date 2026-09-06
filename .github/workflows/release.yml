@@ -556,6 +556,76 @@ jobs:
           rm -f winget-driver.mts winget-assets.txt
           gh release upload "$GITHUB_REF_NAME" winget/*.yaml --clobber
 
+      # P2-255: the Mac gets the same package-manager install path winget gave
+      # Windows. This step builds the Homebrew cask of the documented
+      # opencode-remote token from the tag and the two per-arch DMG assets,
+      # with the sha256 each one carries in checksums.txt above, verifies the
+      # cask against the release facts (scripts/caskmanifest.ts — pure:
+      # declared version, both DMG addresses, both hashes, both download
+      # targets) and attaches the cask file as a release asset, so a Mac user
+      # can run `brew install --cask ./opencode-remote-cask.rb` instead of
+      # dragging a DMG by hand. Any problem fails the job and the release
+      # stays a draft under the P2-179 contract. Nothing is committed by CI,
+      # no tap and no third-party repository is touched, and no credential
+      # beyond the job's github.token is read. shell: bash (P2-126/P2-164
+      # lessons) and its own timeout (P2-245 lesson).
+      - name: Attach the Homebrew cask to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' > cask-assets.txt
+          cat > cask-driver.mts <<'DRIVER'
+          import { readFileSync, writeFileSync } from "node:fs";
+          import {
+            buildCaskManifest,
+            caskProblems,
+            CASK_RELEASES_BASE,
+          } from "./scripts/caskmanifest";
+
+          const tag = process.argv[2] ?? "";
+          const assets = readFileSync("cask-assets.txt", "utf8")
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter(Boolean);
+          const checksums = readFileSync("checksums.txt", "utf8");
+          const version = tag.startsWith("v") ? tag.slice(1) : tag;
+          const dmg = (arch: string): { name: string; sha: string } => {
+            const name = assets.find((n) => n.endsWith(".dmg") && n.includes(version) && n.includes(arch));
+            if (!name) {
+              console.error(`cask: no macOS DMG carrying ${version} for ${arch} in the published asset list`);
+              process.exit(1);
+            }
+            const line = checksums.split(/\r?\n/).find((l) => l.endsWith(`  ${name}`));
+            if (!line) {
+              console.error(`cask: checksums.txt carries no sha256 line for ${name}`);
+              process.exit(1);
+            }
+            return { name, sha: line.split("  ")[0] ?? "" };
+          };
+          const arm = dmg("arm64");
+          const intel = dmg("x64");
+          const cask = buildCaskManifest(
+            version,
+            `${CASK_RELEASES_BASE}${tag}/${encodeURIComponent(arm.name)}`,
+            `${CASK_RELEASES_BASE}${tag}/${encodeURIComponent(intel.name)}`,
+            arm.sha,
+            intel.sha,
+          );
+          writeFileSync(cask.fileName, cask.text, "utf8");
+          const problems = caskProblems(cask, tag, assets, checksums);
+          if (problems.length > 0) {
+            for (const problem of problems) console.error(`  - ${problem}`);
+            console.error(`cask: ${problems.length} problem(s) found — the release stays a draft`);
+            process.exit(1);
+          }
+          console.log(`cask: OK ${tag} — ${cask.fileName} verified against the published assets`);
+          DRIVER
+          npx --yes tsx@4.23.12 cask-driver.mts "$GITHUB_REF_NAME"
+          rm -f cask-driver.mts cask-assets.txt
+          gh release upload "$GITHUB_REF_NAME" opencode-remote-cask.rb --clobber
+
       # P2-216: the auto-generated body is a wall of pilot commit titles — a
       # stage-5 user cannot tell which file fits their machine. This step
       # writes a short download guide into the DRAFT body

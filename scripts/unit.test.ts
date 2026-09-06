@@ -791,6 +791,14 @@ import {
   WINGET_RELEASES_BASE,
   type WingetManifestDoc,
 } from "./wingetmanifest";
+import {
+  buildCaskManifest,
+  caskProblems,
+  CASK_FILE_NAME,
+  CASK_IDENTIFIER,
+  CASK_RELEASES_BASE,
+  type CaskManifest,
+} from "./caskmanifest";
 
 
 let failures = 0;
@@ -21511,6 +21519,266 @@ check("P2-241: no new periodic timer was introduced by the handler", !dlBlock.in
       yml.includes("title: OpenCode Remote ${version}") &&
       yml.includes("target: dir") &&
       yml.indexOf("target:") < nsisAt,
+  );
+}
+
+// --- P2-255: caskmanifest — buildCaskManifest full table ----------------------
+{
+  const armSha = "a".repeat(64);
+  const x64Sha = "b".repeat(64);
+  const armDmg = "OpenCode-Remote-0.3.0-arm64.dmg";
+  const x64Dmg = "OpenCode-Remote-0.3.0-x64.dmg";
+  const armUrl = `${CASK_RELEASES_BASE}v0.3.0/${armDmg}`;
+  const x64Url = `${CASK_RELEASES_BASE}v0.3.0/${x64Dmg}`;
+  const threw = (fn: () => unknown): boolean => {
+    try {
+      fn();
+      return false;
+    } catch {
+      return true;
+    }
+  };
+  const cask: CaskManifest = buildCaskManifest("0.3.0", armUrl, x64Url, armSha, x64Sha);
+  check(
+    "P2-255: the valid cask carries the documented file name and cask token",
+    cask.fileName === CASK_FILE_NAME &&
+      cask.fileName === "opencode-remote-cask.rb" &&
+      cask.text.includes(`cask "${CASK_IDENTIFIER}" do`) &&
+      CASK_IDENTIFIER === "opencode-remote",
+    cask.text,
+  );
+  check(
+    "P2-255: the valid cask declares both architecture blocks with their url and sha256",
+    cask.text.includes("on_arm do") &&
+      cask.text.includes("on_intel do") &&
+      cask.text.includes(`url "${armUrl}"`) &&
+      cask.text.includes(`url "${x64Url}"`) &&
+      cask.text.includes(`sha256 "${armSha}"`) &&
+      cask.text.includes(`sha256 "${x64Sha}"`),
+    cask.text,
+  );
+  check(
+    "P2-255: the same input builds byte-identical cask text in two calls",
+    JSON.stringify(cask) === JSON.stringify(buildCaskManifest("0.3.0", armUrl, x64Url, armSha, x64Sha)),
+  );
+  check(
+    "P2-255: empty and malformed versions are refused",
+    threw(() => buildCaskManifest("", armUrl, x64Url, armSha, x64Sha)) &&
+      threw(() => buildCaskManifest("banana", armUrl, x64Url, armSha, x64Sha)) &&
+      threw(() => buildCaskManifest("0.3", armUrl, x64Url, armSha, x64Sha)),
+  );
+  check(
+    "P2-255: a non-https DMG address is refused (either architecture)",
+    threw(() =>
+      buildCaskManifest(
+        "0.3.0",
+        `http://github.com/caiovicentino/opencode-remote/releases/download/v0.3.0/${armDmg}`,
+        x64Url,
+        armSha,
+        x64Sha,
+      ),
+    ) &&
+      threw(() =>
+        buildCaskManifest(
+          "0.3.0",
+          armUrl,
+          `http://github.com/caiovicentino/opencode-remote/releases/download/v0.3.0/${x64Dmg}`,
+          armSha,
+          x64Sha,
+        ),
+      ),
+  );
+  check(
+    "P2-255: a DMG address outside the project's releases page is refused",
+    threw(() => buildCaskManifest("0.3.0", "https://evil.example.com/downloads/app.dmg", x64Url, armSha, x64Sha)) &&
+      threw(() =>
+        buildCaskManifest(
+          "0.3.0",
+          armUrl,
+          "https://github.com/other/repo/releases/download/v0.3.0/app.dmg",
+          armSha,
+          x64Sha,
+        ),
+      ),
+  );
+  check(
+    "P2-255: a sha256 of the wrong size is refused",
+    threw(() => buildCaskManifest("0.3.0", armUrl, x64Url, "a".repeat(63), x64Sha)) &&
+      threw(() => buildCaskManifest("0.3.0", armUrl, x64Url, armSha, "b".repeat(65))),
+  );
+  check(
+    "P2-255: a sha256 with a non-hex character is refused",
+    threw(() => buildCaskManifest("0.3.0", armUrl, x64Url, `${"a".repeat(63)}g`, x64Sha)) &&
+      threw(() => buildCaskManifest("0.3.0", armUrl, x64Url, armSha, `${"b".repeat(63)}G`)),
+  );
+}
+
+// --- P2-255: caskmanifest — caskProblems full table ----------------------------
+{
+  const tag = "v0.3.0";
+  const armSha = "a".repeat(64);
+  const x64Sha = "b".repeat(64);
+  const armDmg = "OpenCode-Remote-0.3.0-arm64.dmg";
+  const x64Dmg = "OpenCode-Remote-0.3.0-x64.dmg";
+  const armUrl = `${CASK_RELEASES_BASE}v0.3.0/${armDmg}`;
+  const x64Url = `${CASK_RELEASES_BASE}v0.3.0/${x64Dmg}`;
+  const tarball = "opencode-remote-v0.3.0.tar.gz";
+  const assets = [armDmg, x64Dmg, tarball];
+  const checksums = `${armSha}  ${armDmg}\n${x64Sha}  ${x64Dmg}\n${"c".repeat(64)}  ${tarball}\n`;
+  const clean = caskProblems(buildCaskManifest("0.3.0", armUrl, x64Url, armSha, x64Sha), tag, assets, checksums);
+  check(
+    "P2-255: a consistent cask against the release facts returns zero problems",
+    clean.length === 0,
+    JSON.stringify(clean),
+  );
+  const causeOf = (problems: readonly string[]) => problems.join(" | ");
+
+  const badVersion = caskProblems(
+    buildCaskManifest("0.3.1", armUrl, x64Url, armSha, x64Sha),
+    tag,
+    assets,
+    checksums,
+  );
+  check(
+    "P2-255: a declared version different from the tag is one problem naming the cause",
+    badVersion.length === 1 && badVersion[0]!.includes("0.3.1") && badVersion[0]!.includes(tag),
+    causeOf(badVersion),
+  );
+
+  const noArm = caskProblems(
+    buildCaskManifest("0.3.0", armUrl, x64Url, armSha, x64Sha),
+    tag,
+    [x64Dmg, tarball],
+    checksums,
+  );
+  check(
+    "P2-255: an absent Apple Silicon DMG is one problem naming the asset",
+    noArm.length === 1 && noArm[0]!.includes(armDmg) && noArm[0]!.includes("Apple Silicon"),
+    causeOf(noArm),
+  );
+
+  const noIntel = caskProblems(
+    buildCaskManifest("0.3.0", armUrl, x64Url, armSha, x64Sha),
+    tag,
+    [armDmg, tarball],
+    checksums,
+  );
+  check(
+    "P2-255: an absent Intel DMG is one problem naming the asset",
+    noIntel.length === 1 && noIntel[0]!.includes(x64Dmg) && noIntel[0]!.includes("Intel"),
+    causeOf(noIntel),
+  );
+
+  const otherArmSha = "d".repeat(64);
+  const divergent = caskProblems(
+    buildCaskManifest("0.3.0", armUrl, x64Url, otherArmSha, x64Sha),
+    tag,
+    assets,
+    checksums,
+  );
+  check(
+    "P2-255: a declared sha256 diverging from checksums.txt is one problem",
+    divergent.length === 1 &&
+      divergent[0]!.includes(otherArmSha) &&
+      divergent[0]!.includes("checksums.txt"),
+    causeOf(divergent),
+  );
+
+  const otherVersionUrl = `${CASK_RELEASES_BASE}v0.4.0/OpenCode-Remote-0.4.0-x64.dmg`;
+  const otherVersion = caskProblems(
+    buildCaskManifest("0.3.0", armUrl, otherVersionUrl, armSha, x64Sha),
+    tag,
+    [armDmg, x64Dmg, tarball, "OpenCode-Remote-0.4.0-x64.dmg"],
+    `${checksums}${x64Sha}  OpenCode-Remote-0.4.0-x64.dmg\n`,
+  );
+  check(
+    "P2-255: an Intel address pointing at another release's version is one problem",
+    otherVersion.length === 1 && otherVersion[0]!.includes("v0.4.0") && otherVersion[0]!.includes(tag),
+    causeOf(otherVersion),
+  );
+
+  const multi = caskProblems(
+    buildCaskManifest("0.3.1", armUrl, otherVersionUrl, otherArmSha, x64Sha),
+    tag,
+    [x64Dmg, tarball],
+    checksums,
+  );
+  check(
+    "P2-255: several simultaneous causes return several problems, never a single verdict",
+    multi.length === 6 &&
+      multi[0]!.includes("version") &&
+      multi[1]!.includes("Apple Silicon") &&
+      multi[2]!.includes("Intel") &&
+      multi[3]!.includes("sha256") &&
+      multi[4]!.includes("sha256") &&
+      multi[5]!.includes("v0.4.0"),
+    causeOf(multi),
+  );
+  const again = caskProblems(
+    buildCaskManifest("0.3.1", armUrl, otherVersionUrl, otherArmSha, x64Sha),
+    tag,
+    [x64Dmg, tarball],
+    checksums,
+  );
+  check(
+    "P2-255: the problem order is stable between two calls with the same input",
+    JSON.stringify(multi) === JSON.stringify(again),
+  );
+  check(
+    "P2-255: no problem text carries an absolute file path or a secret",
+    multi.every(
+      (p) =>
+        !p.includes("/Users/") && !p.includes("/home/") && !p.includes("GH_TOKEN") && !p.includes("secrets."),
+    ),
+    causeOf(multi),
+  );
+}
+
+// --- P2-255: real-repo assertion — release.yml wires the cask step ------------
+{
+  const root = join(import.meta.dirname, "..");
+  const release = readFileSync(join(root, ".github", "workflows", "release.yml"), "utf8");
+  const jobStart = release.indexOf("\n  release-publish:");
+  const job = jobStart === -1 ? "" : release.slice(jobStart);
+  const stepName = "Attach the Homebrew cask to the release";
+  const caskIdx = job.indexOf(stepName);
+  const checksumIdx = job.indexOf("Attach the SHA-256 checksum manifest");
+  const wingetIdx = job.indexOf("Attach the winget manifests to the release");
+  const publishIdx = job.indexOf("Publish the draft release only when every required asset is attached");
+  const nextStep = job.indexOf("\n      - name:", caskIdx);
+  const step = caskIdx === -1 ? "" : job.slice(caskIdx, nextStep);
+  check(
+    "P2-255: release.yml declares the cask step exactly once inside release-publish",
+    jobStart !== -1 && (job.split(stepName).length - 1) === 1,
+  );
+  check(
+    "P2-255: the cask step runs after the winget manifests and before the publish step",
+    checksumIdx !== -1 && wingetIdx !== -1 && caskIdx !== -1 && publishIdx !== -1 && checksumIdx < wingetIdx && wingetIdx < caskIdx && caskIdx < publishIdx,
+  );
+  check(
+    "P2-255: the cask step declares shell: bash and its own timeout (P2-126/P2-164 lessons)",
+    step.includes("shell: bash") && step.includes("timeout-minutes:"),
+  );
+  check(
+    "P2-255: the cask step builds, verifies and uploads via the pure module, committing nothing",
+    step.includes("cask-driver.mts") &&
+      step.includes("scripts/caskmanifest") &&
+      step.includes("caskProblems") &&
+      step.includes("gh release upload") &&
+      !step.includes("git commit") &&
+      !step.includes("git push"),
+  );
+  check(
+    "P2-255: the cask step references no secret beyond the job's github.token",
+    step.includes("${{ github.token }}") && !step.includes("secrets."),
+    step,
+  );
+  const caskSrc = readFileSync(join(root, "scripts", "caskmanifest.ts"), "utf8");
+  check(
+    "P2-255: caskmanifest stays pure — no node:fs, no child process, no fetch",
+    !caskSrc.includes("node:fs") &&
+      !caskSrc.includes("node:child_process") &&
+      !caskSrc.includes("fetch("),
   );
 }
 
