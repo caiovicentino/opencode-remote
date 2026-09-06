@@ -251,6 +251,21 @@ until the app is opened again (for example at the next login, P2-218).
   `OCR_DESKTOP_QUIT_DIALOG_ANSWER=quit|stay|never` auto-answers it on the
   desktop shell (test-only hatches for deterministic screenshots/flows).
 
+## The window stopped responding (P2-223)
+
+If the app window freezes, the shell tells you instead of leaving you staring
+at a dead app: first a notification ("the window stopped responding — it may
+recover on its own"), then — if the freeze keeps going — a native box offering
+**Recarregar** and **Aguardar**; reloading is safe and **does not lose the
+conversation** (it lives in the daemon, so the page reload simply brings it
+back). The third renderer crash in a row (the reload budget is 3 per 60s)
+also stops being silent: the definitive white screen logs
+(`[desktop] hang watch: …` in desktop.log), tips the tray and offers the same
+box. The last episode's duration and outcome show up in the diagnostics
+bundle (`last hang:`). Test sessions never see the box, and
+`OCR_DESKTOP_HANG_DIALOG_ANSWER=reload|wait` auto-answers it (test-only
+hatch).
+
 ## The phone asked to be added to the Home Screen (P2-220)
 
 When the phone opens the web app as a **regular browser tab** (iPhone or iPad,

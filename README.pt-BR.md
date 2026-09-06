@@ -1056,6 +1056,16 @@ jamais com caminhos ou tokens. Dois hatches só de teste deixam o fluxo
 determinístico: `OCR_DESKTOP_FORCE_QUIT_CONFIRM=1` força a confirmação e
 `OCR_DESKTOP_QUIT_DIALOG_ANSWER=quit|stay|never` responde a caixa na hora.
 
+**Janela travada avisa em vez de silêncio (P2-223)**: quando a janela do app
+para de responder, o shell avisa — primeiro uma notificação calma ("a janela
+parou de responder; pode voltar sozinha") e, se o travamento continuar, uma
+caixa nativa oferece **Recarregar** ou **Aguardar**. Recarregar não perde a
+conversa (ela vive no daemon). O veredito, a duração e o desfecho aparecem no
+desktop.log (`[desktop] hang watch: …`) e no bundle de diagnóstico
+(`last hang:`). Sessões de teste nunca veem a caixa, e
+`OCR_DESKTOP_HANG_DIALOG_ANSWER=reload|wait` responde no lugar para fluxos
+determinísticos.
+
 ## Roadmap
 
 Próximos: wizard de onboarding, compartilhamento de skills, push nativo iOS.
