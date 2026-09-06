@@ -999,6 +999,24 @@ rodando — na barra de menus no macOS, na bandeja do sistema no Windows/Linux
 — e como reabrir (clique no ícone da bandeja ou abra o app de novo). A dica
 aparece uma única vez; fechar de novo, ou reabrir depois, não notifica.
 
+**Sair pede confirmação quando o celular perderia o acesso (P2-221)**: o item
+**Quit** da bandeja e o **Encerrar OpenCode Remote** do menu do app (ou
+`Cmd+Q`) fazem um quit de verdade com limpeza completa do daemon — e como o
+app agora abre no login (P2-218) justamente para o telefone sempre encontrar
+esta máquina, sair sem dizer nada virou o jeito silencioso de derrubar o
+acesso remoto. Por isso, num app empacotado com daemon saudável e celular
+pareado, a saída antes confirma numa caixa nativa com três caminhos: **Sair**
+(encerra de verdade), **Continuar na bandeja** (o app segue vivo e o celular
+mantém o acesso) e **Não perguntar de novo** (sai agora, e toda saída futura
+fica silenciosa — a escolha é definitiva e fica registrada só como um flag
+booleano no `userData`). Sair nunca pergunta quando não há nada a perder:
+builds de desenvolvimento, daemon não saudável, nenhum celular pareado ou
+escolha já registrada. O veredito e o motivo aparecem no desktop.log
+(`[desktop] quit confirm: …`) e no bundle de diagnóstico (`quit confirm:`) —
+jamais com caminhos ou tokens. Dois hatches só de teste deixam o fluxo
+determinístico: `OCR_DESKTOP_FORCE_QUIT_CONFIRM=1` força a confirmação e
+`OCR_DESKTOP_QUIT_DIALOG_ANSWER=quit|stay|never` responde a caixa na hora.
+
 ## Roadmap
 
 Próximos: wizard de onboarding, compartilhamento de skills, push nativo iOS.

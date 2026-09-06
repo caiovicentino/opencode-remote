@@ -63,6 +63,17 @@ import { linkVerdict, type RelayLinkFacts } from "../apps/desktop/src/relaylink"
 import { installMessage, installVerdict } from "../apps/desktop/src/installloc";
 import { loginItemMessage, loginItemPlan } from "../apps/desktop/src/loginitem";
 import { readStartupDecided, startupSettingFile, writeStartupDecided } from "../apps/desktop/src/startupstore";
+import {
+  QUIT_BUTTON_INDEX,
+  QUIT_BUTTON_NEVER,
+  QUIT_BUTTON_QUIT,
+  QUIT_BUTTON_STAY,
+  QUIT_DIALOG_DETAIL,
+  QUIT_DIALOG_MESSAGE,
+  QUIT_DIALOG_TITLE,
+  quitVerdict,
+} from "../apps/desktop/src/quithint";
+import { quitAskFile, readQuitDontAsk, writeQuitDontAsk } from "../apps/desktop/src/quitstore";
 import { installBlocksUpdate } from "../apps/desktop/src/update";
 import {
   isWakeEventType,
@@ -5427,12 +5438,13 @@ check(
     check(`P2-176: ${id} is labeled "${label}"`, byId(go, id)?.label === label);
   }
 
-  // 3. the macOS app submenu: darwin-only, quit keeps its role with the
-  //    pt-BR label, and no other platform carries it.
+  // 3. the macOS app submenu: darwin-only, quit is the P2-221 id-wired item
+  //    (same explicitQuit path as the tray) with the pt-BR label, and no
+  //    other platform carries an app submenu.
   const appMenu = mac[0];
-  const quitItem = appMenu?.submenu?.find((i) => i.role === "quit");
+  const quitItem = appMenu?.submenu?.find((i) => i.id === "app-quit");
   check(
-    "P2-176: darwin app submenu with about/hide/quit and pt-BR quit label",
+    "P2-176: darwin app submenu with about/hide and the pt-BR quit item",
     appMenu?.label === "OpenCode Remote" &&
       appMenu.submenu?.some((i) => i.role === "about") === true &&
       appMenu.submenu?.some((i) => i.role === "hide") === true &&
@@ -15672,6 +15684,169 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       mac.includes("npm run dist --workspace @ocr/desktop -- --mac --dir") &&
       mac.includes("CSC_IDENTITY_AUTO_DISCOVERY: false") &&
       mac.includes("dist:smoke --workspace @ocr/desktop -- --no-installer"),
+  );
+}
+
+// --- P2-221: quit confirmation (quithint.ts + quitstore.ts) + wiring ------------
+
+{
+  // full truth table, rules applied in the documented order
+  const verdict = (packaged: boolean, harnessSession: boolean, daemonHealthy: boolean, phonePaired: boolean, dontAskAgain: boolean) =>
+    quitVerdict({ packaged, harnessSession, daemonHealthy, phonePaired, dontAskAgain });
+
+  // 1. harness test session always quits silently — even with every other
+  //    condition begging for a confirmation (the gate must never see a modal).
+  check(
+    "P2-221: harness session → quit even when all other conditions ask for confirmation",
+    verdict(true, true, true, true, false).action === "quit",
+  );
+  check(
+    "P2-221: harness session beats every other rule (reason names the session)",
+    verdict(true, true, true, true, true).reason.includes("harness"),
+  );
+  // 2. dev build always quits silently
+  check("P2-221: unpackaged build → quit", verdict(false, false, true, true, false).action === "quit");
+  // 3. recorded "don't ask again" always quits silently
+  check("P2-221: recorded dont-ask request → quit", verdict(true, false, true, true, true).action === "quit");
+  // 4. unhealthy daemon → quit (no remote access left to lose)
+  check("P2-221: unhealthy daemon → quit", verdict(true, false, false, true, false).action === "quit");
+  // 5. no paired phone → quit (same reason)
+  check("P2-221: no paired phone → quit", verdict(true, false, true, false, false).action === "quit");
+  // 6. the whole point: packaged + healthy daemon + paired phone + no request
+  check(
+    "P2-221: packaged + healthy daemon + paired phone + no request → confirm",
+    verdict(true, false, true, true, false).action === "confirm",
+  );
+
+  // every generated reason: non-empty, no file path, no URL scheme, no secret
+  const verdicts = [
+    verdict(true, true, true, true, false),
+    verdict(false, false, true, true, false),
+    verdict(true, false, true, true, true),
+    verdict(true, false, false, true, false),
+    verdict(true, false, true, false, false),
+    verdict(true, false, true, true, false),
+  ];
+  const clean = (s: string): boolean =>
+    s.length > 0 &&
+    !s.includes("/") &&
+    !s.includes("\\") &&
+    !s.includes("http:") &&
+    !s.includes("https:") &&
+    !s.includes("file:") &&
+    !s.includes("Users") &&
+    !s.includes("~");
+  check(
+    "P2-221: every reason is non-empty, path-free and scheme-free",
+    verdicts.every((v) => clean(v.reason)),
+  );
+  const dialogCopy = [QUIT_DIALOG_TITLE, QUIT_DIALOG_MESSAGE, QUIT_DIALOG_DETAIL, QUIT_BUTTON_QUIT, QUIT_BUTTON_STAY, QUIT_BUTTON_NEVER];
+  check("P2-221: dialog copy is non-empty, path-free and scheme-free", dialogCopy.every(clean));
+  check(
+    "P2-221: the dialog offers exactly the three documented buttons in the fixed order",
+    QUIT_BUTTON_INDEX.quit === 0 && QUIT_BUTTON_INDEX.stay === 1 && QUIT_BUTTON_INDEX.never === 2,
+  );
+
+  // --- store table (quitstore.ts): tolerant read, atomic private write -------
+  const dir = mkdtempSync(join(tmpdir(), "quitstore-"));
+  const file = join(dir, "quit-ask.json");
+  check("P2-221: missing file → no request recorded", readQuitDontAsk(file) === false);
+  writeFileSync(file, "{not json at all", { mode: 0o600 });
+  check("P2-221: corrupted JSON → no request recorded (never an exception)", readQuitDontAsk(file) === false);
+  writeFileSync(file, '{"dontAsk":"sim"}', { mode: 0o600 });
+  check("P2-221: wrong field type → no request recorded", readQuitDontAsk(file) === false);
+  check(
+    "P2-221: write → read round-trip records the dont-ask request",
+    writeQuitDontAsk(file, true) === true && readQuitDontAsk(file) === true,
+  );
+  check("P2-221: the decision file is private (0600)", (statSync(file).mode & 0o777) === 0o600);
+  check("P2-221: the store names the file quit-ask.json under userData", quitAskFile("/d").endsWith("quit-ask.json"));
+  rmSync(dir, { recursive: true, force: true });
+
+  // --- real-source assertions over the REAL main.ts --------------------------
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  const quithintSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "quithint.ts"), "utf8");
+  const menuSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "menu.ts"), "utf8");
+  check(
+    "P2-221: the verdict is consulted exactly once in the real main.ts",
+    (mainSrc.match(/quitVerdict\(/g) ?? []).length === 1,
+  );
+  const quitAt = mainSrc.indexOf("async function explicitQuit");
+  const trayFnAt = mainSrc.indexOf("function trayMenuItems");
+  const explicitBlock = quitAt >= 0 && trayFnAt > quitAt ? mainSrc.slice(quitAt, trayFnAt) : "";
+  check(
+    "P2-221: the verdict (with the first-rule harness session) precedes any dialog opening",
+    explicitBlock.includes("quitVerdict(") &&
+      explicitBlock.indexOf("quitVerdict(") < explicitBlock.indexOf("askQuitDialog()"),
+  );
+  check(
+    "P2-221: the explicit path quits only through realQuit — no direct app.quit()",
+    explicitBlock.length > 0 && !explicitBlock.includes("app.quit()"),
+  );
+  check(
+    "P2-221: the verdict receives the harness-session indicator (HERMETIC_E2E)",
+    explicitBlock.includes("harnessSession: HERMETIC_E2E"),
+  );
+  check(
+    "P2-221: quithint.ts is pure — no electron, no node:fs, no fetch",
+    !/from\s+"electron"/.test(quithintSrc) &&
+      !/from\s+"node:fs"/.test(quithintSrc) &&
+      !quithintSrc.includes("fetch("),
+  );
+  check(
+    "P2-221: the harness rule is the FIRST one in quithint.ts (documented contract)",
+    quithintSrc.indexOf("input.harnessSession") > -1 &&
+      quithintSrc.indexOf("input.harnessSession") < quithintSrc.indexOf("input.packaged") &&
+      quithintSrc.indexOf("input.packaged") < quithintSrc.indexOf("input.dontAskAgain"),
+  );
+  // The will-quit hook stays byte-for-byte in charge of the sidecar cleanup.
+  const willQuitAt = mainSrc.indexOf('app.on("will-quit"');
+  const willQuitBlock = willQuitAt >= 0 ? mainSrc.slice(willQuitAt, mainSrc.indexOf("});", willQuitAt)) : "";
+  check(
+    "P2-221: the will-quit hook is unchanged — recheck cleanup + sidecar stop, no verdict, no dialog",
+    willQuitBlock.includes("clearTimeout(updateRecheckTimer)") &&
+      willQuitBlock.includes("stopDaemonSidecar()") &&
+      !willQuitBlock.includes("quitVerdict") &&
+      !willQuitBlock.includes("showMessageBox"),
+  );
+  check(
+    "P2-221: explicitQuit never touches the sidecar cleanup or the signal ladder",
+    explicitBlock.length > 0 && !explicitBlock.includes("stopDaemonSidecar") && !explicitBlock.includes("will-quit"),
+  );
+  check(
+    "P2-221: no new periodic timer was introduced",
+    (mainSrc.match(/setInterval\(/g) ?? []).length === 2,
+  );
+  const trayAt = mainSrc.indexOf("function trayMenuItems");
+  const trayBlock = trayAt >= 0 ? mainSrc.slice(trayAt, mainSrc.indexOf("return items;", trayAt)) : "";
+  check(
+    "P2-221: the tray Quit item goes through the explicit-quit path",
+    trayBlock.includes("void explicitQuit()"),
+  );
+  check(
+    "P2-221: the menu quit item is id-wired (no bare quit role) with the Cmd+Q accelerator kept",
+    menuSrc.includes('{ id: "app-quit", label: "Encerrar OpenCode Remote", accelerator: "CmdOrCtrl+Q" }') &&
+      !menuSrc.includes('role: "quit"'),
+  );
+  check(
+    "P2-221: the menu quit handler wires app-quit to the explicit-quit path",
+    mainSrc.includes('"app-quit": () => void explicitQuit()'),
+  );
+  check(
+    "P2-221: both documented test hatches exist in main.ts",
+    mainSrc.includes("OCR_DESKTOP_FORCE_QUIT_CONFIRM") && mainSrc.includes("OCR_DESKTOP_QUIT_DIALOG_ANSWER"),
+  );
+  check(
+    "P2-221: the never-ask request is written through the store on the never choice",
+    explicitBlock.includes("writeQuitDontAsk(quitAskFile(app.getPath(\"userData\")), true)"),
+  );
+  // diagnostics: one additive line, action + reason only, never the path
+  const diagSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "diagnostics.ts"), "utf8");
+  check(
+    "P2-221: the diagnostics bundle gains exactly one quit-confirm line (action + reason only)",
+    (diagSrc.match(/quit confirm:/g) ?? []).length === 1 &&
+      diagSrc.includes("d.quitConfirm?.state") &&
+      diagSrc.includes("d.quitConfirm?.reason"),
   );
 }
 
