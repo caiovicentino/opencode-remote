@@ -8223,6 +8223,12 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check("p2-220: no new listeners in App.tsx (count stays 3)", (appSrc.match(/addEventListener\(/g) ?? []).length === 3);
   check("p2-220: no timers in App.tsx", (appSrc.match(/setInterval\(/g) ?? []).length === 0 && (appSrc.match(/setTimeout\(/g) ?? []).length === 0);
   check("p2-220: no install-prompt event hooks", !appSrc.includes("beforeinstallprompt") && !appSrc.includes("appinstalled"));
+  // round-3 review pins: locale-following copy + iPad touch indicator wired
+  check(
+    "p2-220: App renders the localized dict key, never the raw pt-BR constant",
+    appSrc.includes('t("installHintBody")') && !appSrc.includes("hint.message") && !appSrc.includes("installHint={INSTALL_HINT_MESSAGE}"),
+  );
+  check("p2-220: App wires navigator.maxTouchPoints into the verdict (iPadOS 13+ Mac UA)", /maxTouchPoints:\s*navigator\.maxTouchPoints/.test(appSrc));
 }
 
 

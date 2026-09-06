@@ -323,6 +323,9 @@ export default function App() {
     }
     return {
       userAgent: navigator.userAgent,
+      // P2-220 reviewer round 3: iPadOS 13+ defaults to a Macintosh UA — the
+      // touch indicator is what makes the hint reach default-config iPads.
+      maxTouchPoints: navigator.maxTouchPoints,
       standalone,
       dismissed,
       desktopShell: desktopBridge() !== null,
@@ -1063,12 +1066,16 @@ export default function App() {
   // deterministic screenshot evidence, whatever the verdict says.
   const hint = installHintVerdict({
     userAgent: installHintEnv.userAgent,
+    maxTouchPoints: installHintEnv.maxTouchPoints,
     standalone: installHintEnv.standalone,
     desktopShell: installHintEnv.desktopShell,
     hasPairing: machines.length > 0,
     dismissed: installHintDismissed,
   });
-  const installHint = installHintEnv.forced || hint.show ? hint.message : null;
+  // P2-220 reviewer round 3 (BLOCKING): the copy must follow the app locale —
+  // the verdict's pt-BR message stays a pure-module constant; what renders is
+  // the dict key (dict.pt.installHintBody is exactly that constant).
+  const installHint = installHintEnv.forced || hint.show ? t("installHintBody") : null;
   function dismissInstallHint() {
     setInstallHintDismissed(true);
     try {
