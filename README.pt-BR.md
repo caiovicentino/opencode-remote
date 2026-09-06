@@ -220,9 +220,29 @@ remoto, zero confiança**.
   registra uma linha com quantidade e bytes apagados (nunca nomes de arquivo)
   e incrementa a métrica `ocr_upload_retention_deleted_total`. Para desligar
   por completo, use `OCR_UPLOAD_RETENTION=off` no ambiente do daemon (padrão:
-  ligado); os tetos são ajustáveis por `OCR_UPLOAD_RETENTION_GRACE_HOURS`,
+  ligado); os tetos são ajustáveis por   `OCR_UPLOAD_RETENTION_GRACE_HOURS`,
   `OCR_UPLOAD_RETENTION_MAX_AGE_DAYS`, `OCR_UPLOAD_RETENTION_MAX_BYTES` e
   `OCR_UPLOAD_RETENTION_MIN_FILES` (valores inválidos derrubam o boot,
+  fail-closed)
+- **Retenção de clips** — `~/.opencode-remote/clips/` (os clipes verticais
+  renderizados mais o áudio extraído para transcrição — os arquivos mais
+  pesados que o produto produz) é limitada pela mesma varredura e cadência do
+  janitor (uma vez no boot, depois a cada **6 h**): a unidade de decisão é o
+  **grupo** — a pasta de um vídeo de origem, ou um arquivo de trabalho solto
+  na raiz — apagado inteiro, nunca pela metade. Grupos com mais de **30 dias**
+  vão embora e, do mais antigo pro mais novo, o necessário para a pasta caber
+  em **4 GB**. Grupos modificados nas últimas **24 h** nunca são tocados, e os
+  **3 grupos modificados mais recentemente** sempre sobrevivem, mesmo com
+  qualquer teto estourado. Só a raiz de clips é varrida (filhos imediatos;
+  symlinks nunca são seguidos e uploads, artifacts e qualquer outro
+  diretório de estado ficam fora de alcance). Cada varredura registra uma
+  linha com quantidade e bytes apagados (nunca nomes de arquivo ou pasta —
+  eles vêm do título dos seus vídeos) e incrementa a métrica
+  `ocr_clip_retention_deleted_total`. Para desligar por completo, use
+  `OCR_CLIP_RETENTION=off` no ambiente do daemon (padrão: ligado); os tetos
+  são ajustáveis por `OCR_CLIP_RETENTION_GRACE_HOURS`,
+  `OCR_CLIP_RETENTION_MAX_AGE_DAYS`, `OCR_CLIP_RETENTION_MAX_BYTES` e
+  `OCR_CLIP_RETENTION_MIN_GROUPS` (valores inválidos derrubam o boot,
   fail-closed)
 - **App desktop (inicial)** — shell Electron com a mesma UI, com tray e menu nativo;
   inclui um **pane Browser**: no shell desktop ele renderiza um `<webview>` Electron real e
