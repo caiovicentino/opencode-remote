@@ -704,6 +704,17 @@ Addresses are validated by the app before anything is saved (ws/wss only,
 saved address is shown as an error in Settings, never silently replaced by the
 default.
 
+And a room cannot eat the link by volume either (P2-243): within a tumbling
+window (`RELAY_ROOM_BUDGET_WINDOW_MS`, default 1 h) a room may forward at
+most `RELAY_ROOM_BUDGET_BYTES` (default 1 GiB, ~3.8x the heaviest legitimate
+room-hour of chat + voice + files + screenshots) before its sockets are
+closed — crossing half the cap writes one warn line per window, crossing the
+cap closes the room with a `roomsBudgetTerminated` counter on `/healthz`.
+Only frame byte counts are accumulated (the relay stays blind: no content,
+no envelope fields, no identities); `RELAY_ROOM_BUDGET_BYTES=-1` disables
+the budget for a private, allowlisted relay. Runbook:
+[docs/RELAY-HOSTING.md](docs/RELAY-HOSTING.md).
+
 **Two-step pairing (P2-189)**: the phone needs an address before there is a
 pairing QR to scan, so the desktop pairing screen shows two labeled steps.
 Step one is the **app address** — `https://…` derived from the relay address

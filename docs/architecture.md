@@ -75,8 +75,9 @@ or zero value (zero is valid only for the proxy hops) or a value above the
 knob's documented ceiling refuses to start the relay instead of silently
 keeping the default. `GET /healthz` is the one
 public HTTP endpoint on the relay port — an unauthenticated liveness probe
-answering `{ok, version, uptimeS, rooms, roomsRejected}` (counters only,
-never room ids) for load balancers in the hosted stage; `/metrics` stays
+answering `{ok, version, uptimeS, rooms, roomsRejected, roomsBudgetTerminated}`
+(counters only, never room ids; the P2-243 room-budget counter is additive)
+for load balancers in the hosted stage; `/metrics` stays
 loopback-only. Optional TLS (`wss://`)
 or termination via Caddy.
 Note the per-IP cap reads (a normalized form of) `req.socket.remoteAddress`

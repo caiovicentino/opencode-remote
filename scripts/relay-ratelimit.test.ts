@@ -7,10 +7,27 @@
  * Run: npx tsx scripts/relay-ratelimit.test.ts
  */
 import { spawn, type ChildProcess } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { get } from "node:http";
 import { join } from "node:path";
 import WebSocket from "ws";
 import { TokenBucket } from "../apps/relay/src/ratelimit";
+import {
+  budgetVerdict,
+  initialRoomBudgetState,
+  parseRoomBudget,
+  ROOM_BUDGET_BYTES_CEILING,
+  ROOM_BUDGET_BYTES_DEFAULT,
+  ROOM_BUDGET_BYTES_DISABLED,
+  ROOM_BUDGET_BYTES_ENV,
+  ROOM_BUDGET_CLOSE_REASON,
+  ROOM_BUDGET_WARN_REASON,
+  ROOM_BUDGET_WINDOW_MS_CEILING,
+  ROOM_BUDGET_WINDOW_MS_DEFAULT,
+  ROOM_BUDGET_WINDOW_MS_ENV,
+  type RoomBudgetLimits,
+  type RoomBudgetState,
+} from "../apps/relay/src/roombudget";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -48,6 +65,235 @@ for (let i = 0; i < 100; i++) {
   clock += 2_500; // 24 msgs/min < 30 msgs/min
 }
 check("bucket: legitimate rate never exhausts", steady);
+
+// --- 1b. per-room volume budget (P2-243, pure verdict) ------------------------
+// Tiny limits make every boundary explicit: window 1000 ms, cap 100 bytes —
+// the documented threshold is the cap itself and only a total STRICTLY above
+// it terminates (exactly at the cap the room stays serviceable).
+const LIMITS: RoomBudgetLimits = { windowMs: 1_000, capBytes: 100 };
+
+const fresh = (bytes = 0, windowStart = 0, warned = false): RoomBudgetState => ({
+  ...initialRoomBudgetState(windowStart),
+  bytes,
+  warned,
+});
+
+check("budget: zeroed state follows and accumulates", (() => {
+  const v = budgetVerdict(fresh(), 10, 10, LIMITS);
+  return v.plan.action === "follow" && v.state.bytes === 10 && v.state.windowStart === 0;
+})());
+check("budget: accumulated below the cap follows", (() => {
+  // 40 total stays under half the cap, so no warn either: plain follow
+  const v = budgetVerdict(fresh(20), 10, 20, LIMITS);
+  return v.plan.action === "follow" && v.state.bytes === 40;
+})());
+check(
+  "budget: accumulated exactly at the cap follows (the documented limit itself is serviceable)",
+  (() => {
+    // warned=true isolates the cap boundary from the half-cap warn plan
+    const v = budgetVerdict(fresh(90, 0, true), 10, 10, LIMITS);
+    return v.plan.action === "follow" && v.state.bytes === 100;
+  })(),
+);
+check("budget: accumulated above the cap terminates", (() => {
+  const v = budgetVerdict(fresh(95), 10, 10, LIMITS);
+  return v.plan.action === "terminate" && v.state.bytes === 105;
+})());
+check("budget: terminated room carries the fixed close reason", (() => {
+  const v = budgetVerdict(fresh(101), 10, 0, LIMITS);
+  return v.plan.action === "terminate" && v.plan.reason === ROOM_BUDGET_CLOSE_REASON;
+})());
+check("budget: expired window zeroes the accumulated before any comparison", (() => {
+  // 200 bytes accumulated would terminate, but the window (1000 ms) has
+  // expired: the reset happens first, so the frame alone is compared
+  const v = budgetVerdict(fresh(200), 1_000, 10, LIMITS);
+  return v.plan.action === "follow" && v.state.bytes === 10 && v.state.windowStart === 1_000;
+})());
+check("budget: warn fires once at half the cap within the same window", (() => {
+  // 49 -> follow (below half); +1 -> 50 (half of 100) -> warn; +40 -> follow,
+  // no second warn because the window's warn already fired
+  const a = budgetVerdict(fresh(), 10, 49, LIMITS);
+  const b = budgetVerdict(a.state, 11, 1, LIMITS);
+  const c = budgetVerdict(b.state, 12, 40, LIMITS);
+  return (
+    a.plan.action === "follow" &&
+    b.plan.action === "warn" &&
+    b.plan.reason === ROOM_BUDGET_WARN_REASON &&
+    b.state.warned === true &&
+    c.plan.action === "follow" &&
+    c.state.bytes === 90 &&
+    c.state.warned === true
+  );
+})());
+check("budget: warn fires again in the next window", (() => {
+  const warned = budgetVerdict(fresh(60, 0, true), 2_000, 0, LIMITS);
+  const again = budgetVerdict(warned.state, 2_001, 50, LIMITS);
+  return (
+    warned.state.windowStart === 2_000 && // expired window reset
+    warned.state.warned === false && // warn flag died with the window
+    again.plan.action === "warn" &&
+    again.state.warned === true
+  );
+})());
+check("budget: non-numeric frame size follows without accumulating", (() => {
+  const v = budgetVerdict(fresh(10), 10, "big" as unknown as number, LIMITS);
+  return v.plan.action === "follow" && v.state.bytes === 10;
+})());
+check("budget: negative frame size follows without accumulating", (() => {
+  const v = budgetVerdict(fresh(10), 10, -5, LIMITS);
+  return v.plan.action === "follow" && v.state.bytes === 10;
+})());
+check("budget: non-finite frame size follows without accumulating", (() => {
+  const a = budgetVerdict(fresh(10), 10, Infinity, LIMITS);
+  const b = budgetVerdict(fresh(10), 10, NaN, LIMITS);
+  return a.plan.action === "follow" && a.state.bytes === 10 && b.state.bytes === 10;
+})());
+check("budget: disabled cap always follows, even with an absurd accumulated total", (() => {
+  const v = budgetVerdict(fresh(1e15), 10, 999, { windowMs: 1_000, capBytes: ROOM_BUDGET_BYTES_DISABLED });
+  return v.plan.action === "follow" && v.state.bytes === 1e15;
+})());
+check("budget: returned accumulated is never negative", (() => {
+  const v = budgetVerdict(fresh(0), 10, -7, LIMITS);
+  return v.state.bytes === 0;
+})());
+check("budget: undefined state starts a fresh window at the current instant", (() => {
+  const v = budgetVerdict(undefined, 5, 10, LIMITS);
+  return v.plan.action === "follow" && v.state.bytes === 10 && v.state.windowStart === 5;
+})());
+check("budget: verdict is stable between two calls with the same input", (() => {
+  const one = budgetVerdict(fresh(40), 100, 20, LIMITS);
+  const two = budgetVerdict(fresh(40), 100, 20, LIMITS);
+  return (
+    JSON.stringify(one) === JSON.stringify(two) &&
+    one.state !== two.state // new objects: the input state is never mutated
+  );
+})());
+check("budget: every generated phrase is free of addresses, paths and secrets", (() => {
+  const phrases = [ROOM_BUDGET_CLOSE_REASON, ROOM_BUDGET_WARN_REASON];
+  const plans = [
+    budgetVerdict(undefined, 0, 999, LIMITS).plan, // terminate
+    budgetVerdict(fresh(60, 0, false), 0, 0, LIMITS).plan, // warn
+  ];
+  for (const p of plans) if (p.action !== "follow" && p.reason) phrases.push(p.reason);
+  return phrases.every(
+    (r) =>
+      !r.includes("://") &&
+      !r.includes("127.0.0.1") &&
+      !r.includes("\n") &&
+      !r.startsWith("/") &&
+      !r.includes("\\") &&
+      r.length < 200,
+  );
+})());
+
+// --- 1c. per-room budget env parsing (P2-243, fail-closed problems format) ----
+check("roombudget: empty env resolves the documented defaults with zero problems", (() => {
+  const p = parseRoomBudget({});
+  return (
+    p.windowMs === ROOM_BUDGET_WINDOW_MS_DEFAULT &&
+    p.capBytes === ROOM_BUDGET_BYTES_DEFAULT &&
+    p.problems.length === 0
+  );
+})());
+check("roombudget: blank variables keep the documented defaults too", (() => {
+  const p = parseRoomBudget({ [ROOM_BUDGET_WINDOW_MS_ENV]: "  ", [ROOM_BUDGET_BYTES_ENV]: "" });
+  return p.windowMs === ROOM_BUDGET_WINDOW_MS_DEFAULT && p.capBytes === ROOM_BUDGET_BYTES_DEFAULT && p.problems.length === 0;
+})());
+check("roombudget: valid overrides are accepted verbatim", (() => {
+  const p = parseRoomBudget({ [ROOM_BUDGET_WINDOW_MS_ENV]: "7200000", [ROOM_BUDGET_BYTES_ENV]: "2147483648" });
+  return p.windowMs === 7_200_000 && p.capBytes === 2_147_483_648 && p.problems.length === 0;
+})());
+check("roombudget: values at the documented ceilings are fine", (() => {
+  const p = parseRoomBudget({
+    [ROOM_BUDGET_WINDOW_MS_ENV]: String(ROOM_BUDGET_WINDOW_MS_CEILING),
+    [ROOM_BUDGET_BYTES_ENV]: String(ROOM_BUDGET_BYTES_CEILING),
+  });
+  return p.windowMs === ROOM_BUDGET_WINDOW_MS_CEILING && p.capBytes === ROOM_BUDGET_BYTES_CEILING && p.problems.length === 0;
+})());
+check("roombudget: the documented disable value (-1 bytes) is accepted", (() => {
+  const p = parseRoomBudget({ [ROOM_BUDGET_BYTES_ENV]: String(ROOM_BUDGET_BYTES_DISABLED) });
+  return p.capBytes === ROOM_BUDGET_BYTES_DISABLED && p.problems.length === 0 && p.windowMs === ROOM_BUDGET_WINDOW_MS_DEFAULT;
+})());
+check("roombudget: disable value on the window knob is NOT accepted", (() => {
+  const p = parseRoomBudget({ [ROOM_BUDGET_WINDOW_MS_ENV]: "-1" });
+  return p.problems.length === 1 && p.problems[0].includes(ROOM_BUDGET_WINDOW_MS_ENV);
+})());
+check("roombudget: non-numeric values are problems, per variable", (() => {
+  const w = parseRoomBudget({ [ROOM_BUDGET_WINDOW_MS_ENV]: "soon" });
+  const b = parseRoomBudget({ [ROOM_BUDGET_BYTES_ENV]: "much" });
+  return (
+    w.problems.length === 1 && w.problems[0].includes(ROOM_BUDGET_WINDOW_MS_ENV) &&
+    b.problems.length === 1 && b.problems[0].includes(ROOM_BUDGET_BYTES_ENV)
+  );
+})());
+check("roombudget: zero values are problems", (() => {
+  const w = parseRoomBudget({ [ROOM_BUDGET_WINDOW_MS_ENV]: "0" });
+  const b = parseRoomBudget({ [ROOM_BUDGET_BYTES_ENV]: "0" });
+  return w.problems.length > 0 && b.problems.length > 0;
+})());
+check("roombudget: negative values (other than -1 bytes) are problems", (() => {
+  const w = parseRoomBudget({ [ROOM_BUDGET_WINDOW_MS_ENV]: "-5" });
+  const b = parseRoomBudget({ [ROOM_BUDGET_BYTES_ENV]: "-5" });
+  return w.problems.length > 0 && b.problems.length > 0;
+})());
+check("roombudget: fractional values are problems", (() => {
+  const w = parseRoomBudget({ [ROOM_BUDGET_WINDOW_MS_ENV]: "1.5" });
+  const b = parseRoomBudget({ [ROOM_BUDGET_BYTES_ENV]: "1.5" });
+  return w.problems.length > 0 && b.problems.length > 0;
+})());
+check("roombudget: values above each ceiling are problems", (() => {
+  const w = parseRoomBudget({ [ROOM_BUDGET_WINDOW_MS_ENV]: String(ROOM_BUDGET_WINDOW_MS_CEILING + 1) });
+  const b = parseRoomBudget({ [ROOM_BUDGET_BYTES_ENV]: String(ROOM_BUDGET_BYTES_CEILING + 1) });
+  return w.problems.length === 1 && b.problems.length === 1;
+})());
+check("roombudget: several problems come back at once, without short-circuiting", (() => {
+  // -1.5 is negative AND fractional: two problems for one value...
+  const single = parseRoomBudget({ [ROOM_BUDGET_BYTES_ENV]: "-1.5" });
+  // ...and two bad variables yield two problems, each naming its variable
+  const both = parseRoomBudget({ [ROOM_BUDGET_WINDOW_MS_ENV]: "abc", [ROOM_BUDGET_BYTES_ENV]: "0" });
+  return (
+    single.problems.length === 2 &&
+    single.problems.every((x) => x.includes(ROOM_BUDGET_BYTES_ENV)) &&
+    both.problems.length === 2 &&
+    both.problems.some((x) => x.includes(ROOM_BUDGET_WINDOW_MS_ENV)) &&
+    both.problems.some((x) => x.includes(ROOM_BUDGET_BYTES_ENV))
+  );
+})());
+check("roombudget: one bad variable never forces the other off its resolved value", (() => {
+  const p = parseRoomBudget({ [ROOM_BUDGET_WINDOW_MS_ENV]: "abc", [ROOM_BUDGET_BYTES_ENV]: "2147483648" });
+  return p.problems.length === 1 && p.capBytes === 2_147_483_648;
+})());
+
+// --- 1d. index.ts wiring (P2-243, source assertions) ---------------------------
+{
+  const relayIndexSrc = readFileSync(
+    join(import.meta.dirname, "..", "apps", "relay", "src", "index.ts"),
+    "utf8",
+  );
+  // the verdict is consulted at the SAME forwarding point as the token bucket
+  // and the backpressure verdict: after the room join, before any target send
+  const joinAt = relayIndexSrc.indexOf("join(socket, frame.room)");
+  const budgetAt = relayIndexSrc.indexOf("budgetVerdict(roomBudgets.get");
+  const sendAt = relayIndexSrc.indexOf("sendVerdict(");
+  check(
+    "roombudget: index.ts consults the verdict at the existing forwarding point (after join, before sends)",
+    joinAt > -1 && budgetAt > joinAt && sendAt > budgetAt,
+  );
+  // the accumulated state dies together with the room itself
+  const leaveAll = relayIndexSrc.slice(
+    relayIndexSrc.indexOf("function leaveAll("),
+    relayIndexSrc.indexOf("P2-177: entries below"),
+  );
+  check(
+    "roombudget: index.ts discards the room state inside leaveAll when the room is removed",
+    leaveAll.includes("rooms.delete(room)") && leaveAll.includes("roomBudgets.delete(room)"),
+  );
+  // no new periodic timer: the relay still has exactly the liveness sweep
+  check(
+    "roombudget: no new periodic timer was introduced",
+    (relayIndexSrc.match(/setInterval\(/g) ?? []).length === 1,
+  );
+}
 
 // --- 2. integration helpers ---------------------------------------------------
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
