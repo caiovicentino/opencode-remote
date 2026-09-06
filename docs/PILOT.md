@@ -126,7 +126,13 @@ release: todo PR que toca o desktop roda o job `desktop-package-win`
 empacota somente o alvo `dir` do Windows — sem instalador NSIS, sem
 assinatura — e roda o mesmo smoke `--no-installer`, de modo que regressão
 de empacotamento Windows reprove o PR em vez de estourar no dia da
-publicação.
+publicação. Desde a P2-224 o mesmo indicador `desktop` aciona também o job
+`verify-win` (windows-latest), que roda typecheck e a sub-bateria portátil
+`npm run test:unit-win` (`scripts/portable-suite.ts`, só node puro: sem
+Electron, socket, chmod, spawn ou porta) para que a lógica de caminho
+(webroot, installloc, loginitem, desktop-log, logsDirPath do tray,
+sidecar-log, ci-scope, versions) seja verificada contra o separador
+Windows a cada PR; localmente, em qualquer SO: `npm run test:unit-win`.
 Desde a P2-222 a imagem do relay também é construída e testada no CI, além do
 release: todo PR que toca a superfície relay (`apps/relay`,
 `deploy/relay/Dockerfile`, `.dockerignore`, `package-lock.json` — classificado

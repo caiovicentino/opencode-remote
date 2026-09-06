@@ -589,6 +589,8 @@ import {
 
 import { touchesDesktop, touchesRelayImage } from "./ci-scope";
 
+import { PORTABLE_TESTS, portableSuitePlan } from "./portable-suite";
+
 import { imageTags } from "./relay-image";
 
 import { imageSmokeVerdict } from "./relay-image-smoke";
@@ -16047,6 +16049,126 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       ci.includes("-- --mac --dir") &&
       ci.includes("-- --win --dir") &&
       (ci.match(/dist:smoke --workspace @ocr\/desktop -- --no-installer/g) ?? []).length === 2,
+  );
+}
+
+// --- P2-224: portable (Windows-safe) unit suite --------------------------------
+
+{
+  check("P2-224: the real PORTABLE_TESTS list validates clean", portableSuitePlan(PORTABLE_TESTS).length === 0);
+
+  check(
+    "P2-224: every file in PORTABLE_TESTS exists on disk under scripts/",
+    PORTABLE_TESTS.length > 0 && PORTABLE_TESTS.every((f) => existsSync(join(import.meta.dirname, f))),
+  );
+
+  check(
+    "P2-224: package.json exposes test:unit-win pointing at the portable CLI",
+    (JSON.parse(readFileSync(join(import.meta.dirname, "..", "package.json"), "utf8")) as { scripts: Record<string, string> }).scripts[
+      "test:unit-win"
+    ] === "tsx scripts/portable-suite.ts",
+  );
+
+  const good = portableSuitePlan(["bubble-merge.test.ts", "desktop-log.test.ts", "sidecar-log.test.ts"]);
+  check("P2-224: portableSuitePlan accepts a well-formed list with no problem", good.length === 0, JSON.stringify(good));
+
+  const badExt = portableSuitePlan(["portable-suite.ts"]);
+  check(
+    "P2-224: a non-.test.ts item is one problem naming the extension rule",
+    badExt.length === 1 && badExt[0].includes(".test.ts"),
+    JSON.stringify(badExt),
+  );
+
+  const dup = portableSuitePlan(["a.test.ts", "b.test.ts", "a.test.ts"]);
+  check(
+    "P2-224: a duplicate item is one problem naming the file twice-listed",
+    dup.length === 1 && dup[0].includes("a.test.ts") && dup[0].includes("twice"),
+    JSON.stringify(dup),
+  );
+
+  const outside = portableSuitePlan(["../apps/evil.test.ts"]);
+  check(
+    "P2-224: an item outside scripts/ is one problem naming the directory rule",
+    outside.length === 1 && outside[0].includes("outside scripts"),
+    JSON.stringify(outside),
+  );
+
+  const empty = portableSuitePlan([]);
+  check(
+    "P2-224: an empty list is one problem (the battery would run nothing)",
+    empty.length === 1 && empty[0].includes("empty"),
+    JSON.stringify(empty),
+  );
+
+  const both = portableSuitePlan(["..\\evil.ts"]);
+  check(
+    "P2-224: two simultaneous causes yield two problems in the established order (extension, then directory)",
+    both.length === 2 && both[0].includes(".test.ts") && both[1].includes("outside scripts"),
+    JSON.stringify(both),
+  );
+
+  // Real-repo assertion over the workflow: the verify-win job must exist,
+  // mirror the scope gating and never become a publishing path.
+  const ciWin = readFileSync(join(import.meta.dirname, "..", ".github", "workflows", "ci.yml"), "utf8");
+  const winStart = ciWin.indexOf("\n  verify-win:\n");
+  const winEnd = ciWin.indexOf("\n  relay-image:");
+  const winJob = winStart > -1 && winEnd > winStart ? ciWin.slice(winStart, winEnd) : "";
+
+  check("P2-224: ci.yml has the verify-win job on windows-latest", winStart > -1 && winJob.includes("runs-on: windows-latest"));
+
+  check(
+    "P2-224: verify-win depends on scope and is conditioned on the desktop output (P2-219 indicator)",
+    winJob.includes("needs: scope") && winJob.includes("if: needs.scope.outputs.desktop == 'true'"),
+  );
+
+  const typecheckAt = winJob.indexOf("run: npm run typecheck");
+  const portableAt = winJob.indexOf("run: npm run test:unit-win");
+  check(
+    "P2-224: verify-win runs typecheck and then test:unit-win, in that order",
+    typecheckAt > -1 && portableAt > typecheckAt,
+  );
+
+  // Steps are indented with 6 spaces; slice per step for per-step invariants.
+  const winSteps = winJob.split(/\n      - /).slice(1);
+  const winRunSteps = winSteps.filter((step) => step.includes("run:"));
+  check(
+    "P2-224: every run step of verify-win declares shell: bash (P2-126/P2-164 lessons)",
+    winRunSteps.length >= 3 && winRunSteps.every((step) => step.includes("shell: bash")),
+  );
+  check(
+    "P2-224: every heavy verify-win step carries its own timeout",
+    winRunSteps.length >= 3 && winRunSteps.every((step) => step.includes("timeout-minutes:")),
+  );
+  check(
+    "P2-224: verify-win uploads nothing, reads no secrets and logs in to no registry",
+    !winJob.includes("actions/upload-artifact") &&
+      !winJob.includes("secrets.") &&
+      !winJob.includes("docker/login-action") &&
+      !winJob.includes("ghcr.io"),
+  );
+
+  check(
+    "P2-224: no step of the whole ci.yml logs in to a registry or pushes an image",
+    !ciWin.includes("docker login") &&
+      !ciWin.includes("docker push") &&
+      !ciWin.includes("docker/login-action") &&
+      !ciWin.includes("ghcr.io") &&
+      !ciWin.includes("secrets."),
+  );
+
+  const verifyStart = ciWin.indexOf("\n  verify:\n");
+  const verifyEnd = ciWin.indexOf("\n  scope:");
+  const verifyJob = verifyStart > -1 && verifyEnd > verifyStart ? ciWin.slice(verifyStart, verifyEnd) : "";
+  check(
+    "P2-224: the ubuntu verify job keeps its original steps on ubuntu-latest, untouched",
+    verifyJob.includes("runs-on: ubuntu-latest") &&
+      verifyJob.includes("npx eslint apps packages scripts --quiet") &&
+      verifyJob.includes("run: npm run typecheck") &&
+      verifyJob.includes("run: npm run test:unit") &&
+      verifyJob.includes("run: npm run build") &&
+      verifyJob.includes("scripts/smoke.ts") &&
+      verifyJob.includes("scripts/integration.ts") &&
+      !verifyJob.includes("test:unit-win"),
   );
 }
 

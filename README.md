@@ -449,6 +449,16 @@ Reproduce the same run locally on a Windows machine:
 The first command produces `apps/desktop/dist/win-unpacked`; the second
 validates its layout deterministically (web UI, daemon sidecar, executable).
 
+Since P2-224 the same PR also runs the `verify-win` job on windows-latest,
+which typechecks and runs the portable, Windows-safe subset of the unit
+battery (`scripts/portable-suite.ts` — no Electron, sockets, chmod, spawns or
+listening ports), so a separator or path-normalization regression in modules
+like `webroot.ts`, `installloc.ts`, `desktop-log.ts`, `sidecar-log.ts`,
+`tray.ts` or `versions.ts` fails the PR instead of the user's machine. Run
+the same sub-battery locally on any OS:
+
+    npm run test:unit-win
+
 **Releasing**: a tag `vX.Y.Z` must carry the same version in **both**
 `package.json` files (repo root and `apps/desktop`) plus `apps/web/src/version.ts`.
 The release workflow runs `scripts/release-preflight.ts` as its first step and
