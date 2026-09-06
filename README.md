@@ -613,6 +613,20 @@ Run the boot smoke locally against an already-built package too:
     node apps/desktop/scripts/packaged-boot.mjs "apps/desktop/dist/mac-arm64/OpenCode Remote.app"
     node apps/desktop/scripts/packaged-boot.mjs "apps/desktop/dist/win-unpacked"
 
+Since P2-251 both packaging jobs also execute the sidecar the boot smoke
+deliberately never spawns (`Smoke the packaged daemon sidecar` step, right
+after the boot smoke): the packaged `resources/daemon/index.js` is run with the
+package's own Electron binary as the Node runtime — the exact production
+spawn — under a temp `HOME` with the relay disabled and an ephemeral metrics
+port, and the job only passes when an authenticated `/api/health` answers 2xx
+while the child is still alive (all verdict problems listed, fail closed).
+This proves the packaged daemon boots and serves on the packaged runtime; it
+does **not** prove the desktop shell reaches it end to end. Run it locally
+against an already-built package:
+
+    node apps/desktop/scripts/packaged-daemon-smoke.mjs "apps/desktop/dist/mac-arm64/OpenCode Remote.app"
+    node apps/desktop/scripts/packaged-daemon-smoke.mjs "apps/desktop/dist/win-unpacked"
+
 One command stamps all three from the tag — never bump by
 hand:
 

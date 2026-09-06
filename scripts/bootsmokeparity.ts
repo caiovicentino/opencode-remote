@@ -178,6 +178,9 @@ const PACKAGING_RUN = /npm run dist(?![\w:.-])/;
 /** A step that boots the real packaged bundle via the release boot script. */
 const BOOT_RUN = /packaged-boot\.mjs/;
 
+/** A step that boots the packaged daemon sidecar via the P2-251 smoke. */
+const DAEMON_SMOKE_RUN = /packaged-daemon-smoke\.mjs/;
+
 /**
  * Cross-check the packaging jobs of the integration (ci) and release
  * workflows, returning one problem per cause in the established problems
@@ -187,18 +190,24 @@ const BOOT_RUN = /packaged-boot\.mjs/;
  * - a job that packages the app but never runs the real packaged boot;
  * - a real-boot step positioned before the packaging step it validates;
  * - a real-boot step without shell: bash declared explicitly;
- * - a real-boot step without its own timeout-minutes.
+ * - a real-boot step without its own timeout-minutes;
+ * - a release-workflow packaging job that never runs the packaged daemon
+ *   sidecar smoke (P2-251 — release-only: the ci.yml packaging jobs predate
+ *   the daemon smoke and are out of its scope);
+ * - a daemon-smoke step positioned before the packaging step it validates;
+ * - a daemon-smoke step without shell: bash declared explicitly;
+ * - a daemon-smoke step without its own timeout-minutes.
  * A job that packages nothing is never flagged. Every problem names the job
  * and says in one sentence what to do; the order is stable for the same
  * input, and no problem ever embeds a file path from the input.
  */
 export function bootSmokeParity(ciJobs: readonly WorkflowJob[], releaseJobs: readonly WorkflowJob[]): string[] {
   const problems: string[] = [];
-  const groups: ReadonlyArray<readonly [string, readonly WorkflowJob[]]> = [
-    ["ci", ciJobs],
-    ["release", releaseJobs],
+  const groups: ReadonlyArray<readonly [string, readonly WorkflowJob[], boolean]> = [
+    ["ci", ciJobs, false],
+    ["release", releaseJobs, true],
   ];
-  for (const [workflow, jobs] of groups) {
+  for (const [workflow, jobs, releaseGrade] of groups) {
     for (const job of jobs) {
       const packagingAt = job.steps.findIndex((s) => PACKAGING_RUN.test(s.run));
       if (packagingAt < 0) continue; // a job that packages nothing is never flagged
@@ -207,23 +216,51 @@ export function bootSmokeParity(ciJobs: readonly WorkflowJob[], releaseJobs: rea
         problems.push(
           `boot-smoke-parity: job "${job.name}" of the ${workflow} workflow packages the app but never boots the real package — add a step after packaging that runs the packaged boot (packaged-boot.mjs) against the resolved bundle`,
         );
-        continue;
+      } else {
+        for (const boot of boots) {
+          if (job.steps.indexOf(boot) < packagingAt) {
+            problems.push(
+              `boot-smoke-parity: job "${job.name}" of the ${workflow} workflow boots the package before the packaging step it validates — move the real-boot step after packaging`,
+            );
+          }
+          if (boot.shell !== "bash") {
+            problems.push(
+              `boot-smoke-parity: job "${job.name}" of the ${workflow} workflow boots the package without declaring shell: bash — declare shell: bash explicitly (pwsh does not expand globs)`,
+            );
+          }
+          if (boot.timeoutMinutes === null) {
+            problems.push(
+              `boot-smoke-parity: job "${job.name}" of the ${workflow} workflow boots the package without its own timeout-minutes — add one so a hung boot cannot hold the runner`,
+            );
+          }
+        }
       }
-      for (const boot of boots) {
-        if (job.steps.indexOf(boot) < packagingAt) {
+      // P2-251: the release workflow also has to prove the packaged daemon
+      // sidecar actually boots — same hygiene bar as the boot step above.
+      if (releaseGrade) {
+        const smokes = job.steps.filter((s) => DAEMON_SMOKE_RUN.test(s.run));
+        if (smokes.length === 0) {
           problems.push(
-            `boot-smoke-parity: job "${job.name}" of the ${workflow} workflow boots the package before the packaging step it validates — move the real-boot step after packaging`,
+            `boot-smoke-parity: job "${job.name}" of the ${workflow} workflow never boots the packaged daemon sidecar — add a step after packaging that runs the daemon smoke (packaged-daemon-smoke.mjs) against the resolved bundle`,
           );
-        }
-        if (boot.shell !== "bash") {
-          problems.push(
-            `boot-smoke-parity: job "${job.name}" of the ${workflow} workflow boots the package without declaring shell: bash — declare shell: bash explicitly (pwsh does not expand globs)`,
-          );
-        }
-        if (boot.timeoutMinutes === null) {
-          problems.push(
-            `boot-smoke-parity: job "${job.name}" of the ${workflow} workflow boots the package without its own timeout-minutes — add one so a hung boot cannot hold the runner`,
-          );
+        } else {
+          for (const smoke of smokes) {
+            if (job.steps.indexOf(smoke) < packagingAt) {
+              problems.push(
+                `boot-smoke-parity: job "${job.name}" of the ${workflow} workflow smokes the daemon sidecar before the packaging step it validates — move the daemon smoke after packaging`,
+              );
+            }
+            if (smoke.shell !== "bash") {
+              problems.push(
+                `boot-smoke-parity: job "${job.name}" of the ${workflow} workflow smokes the daemon sidecar without declaring shell: bash — declare shell: bash explicitly (pwsh does not expand globs)`,
+              );
+            }
+            if (smoke.timeoutMinutes === null) {
+              problems.push(
+                `boot-smoke-parity: job "${job.name}" of the ${workflow} workflow smokes the daemon sidecar without its own timeout-minutes — add one so a hung daemon cannot hold the runner`,
+              );
+            }
+          }
         }
       }
     }
