@@ -458,6 +458,69 @@ jobs:
           npx --yes tsx@4.23.12 scripts/release-checksums.ts "$GITHUB_REF_NAME" entries.json checksums.txt
           gh release upload "$GITHUB_REF_NAME" checksums.txt --clobber
 
+      # P2-245: Windows gets the same reproducible install path the Homebrew
+      # formula gives the Mac. This step builds the three winget manifests of
+      # the documented caiovicentino.opencode-remote package from the tag and
+      # the sha256 already hashed into checksums.txt above, verifies them
+      # against the release facts (scripts/wingetmanifest.ts — pure: declared
+      # version, installer URL, hash and package id) and attaches them as
+      # assets. Any problem fails the job and the release stays a draft under
+      # the P2-179 contract. Nothing is committed by CI, nothing is pushed to
+      # any Microsoft manifest repository, and no credential beyond the job's
+      # github.token is read. shell: bash (P2-126/P2-164 lessons): the step
+      # writes a throwaway driver and handles asset names with spaces
+      # verbatim.
+      - name: Attach the winget manifests to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' > winget-assets.txt
+          cat > winget-driver.mts <<'DRIVER'
+          import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+          import { join } from "node:path";
+          import {
+            buildWingetManifests,
+            wingetProblems,
+            WINGET_PACKAGE_ID,
+            WINGET_RELEASES_BASE,
+          } from "./scripts/wingetmanifest";
+
+          const tag = process.argv[2] ?? "";
+          const assets = readFileSync("winget-assets.txt", "utf8")
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter(Boolean);
+          const checksums = readFileSync("checksums.txt", "utf8");
+          const version = tag.startsWith("v") ? tag.slice(1) : tag;
+          const setup = assets.find((name) => name.endsWith(".exe") && name.includes(version));
+          if (!setup) {
+            console.error(`winget: no Windows setup exe for ${version} in the published asset list`);
+            process.exit(1);
+          }
+          const line = checksums.split(/\r?\n/).find((l) => l.endsWith(`  ${setup}`));
+          if (!line) {
+            console.error(`winget: checksums.txt carries no sha256 line for ${setup}`);
+            process.exit(1);
+          }
+          const sha = line.split("  ")[0] ?? "";
+          const url = `${WINGET_RELEASES_BASE}${tag}/${encodeURIComponent(setup)}`;
+          const manifests = buildWingetManifests(WINGET_PACKAGE_ID, version, url, sha);
+          mkdirSync("winget", { recursive: true });
+          for (const doc of manifests) writeFileSync(join("winget", doc.fileName), doc.text, "utf8");
+          const problems = wingetProblems(manifests, tag, assets, checksums);
+          if (problems.length > 0) {
+            for (const problem of problems) console.error(`  - ${problem}`);
+            console.error(`winget: ${problems.length} problem(s) found — the release stays a draft`);
+            process.exit(1);
+          }
+          console.log(`winget: OK ${tag} — ${manifests.length} manifest(s) verified against the published assets`);
+          DRIVER
+          npx --yes tsx@4.23.12 winget-driver.mts "$GITHUB_REF_NAME"
+          rm -f winget-driver.mts winget-assets.txt
+          gh release upload "$GITHUB_REF_NAME" winget/*.yaml --clobber
+
       # P2-216: the auto-generated body is a wall of pilot commit titles — a
       # stage-5 user cannot tell which file fits their machine. This step
       # writes a short download guide into the DRAFT body

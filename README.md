@@ -430,6 +430,15 @@ Homebrew users get the same code via the `Formula/opencode-remote.rb` formula
 (AGPL-3.0-only, checksum pinned automatically by the release pipeline at tag
 time).
 
+On Windows, the `caiovicentino.opencode-remote` winget package follows the
+same path (P2-245): every release attaches the three required manifests
+(version, installer and en-US locale), generated and verified by the release
+pipeline itself from the sha256 published in `checksums.txt` — download the
+three `.yaml` files from the releases page and run
+`winget install --manifest caiovicentino.opencode-remote.yaml` in their
+folder; this is an alternative install path to the loose setup exe, just like
+the Homebrew formula on the Mac.
+
 Since P2-146 the macOS packaging also produces the zip artifacts Squirrel.Mac
 needs (one per architecture, additive to the DMGs) and the release workflow
 publishes the Squirrel.Mac JSON feeds built from `latest-mac.yml` by
