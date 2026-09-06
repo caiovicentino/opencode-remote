@@ -178,12 +178,30 @@ remoto, zero confiança**.
   antigo pro mais novo, até a pasta caber em **1 GB** no total. O período de
   graça de **48 h** protege artifacts recém-escritos, e os **3 diretórios de
   sessão modificados mais recentemente** são sempre preservados, mesmo com
-  qualquer teto estourado. Só a raiz de artifacts é tocada — `uploads/`
-  (material que o próprio usuário pediu para baixar), `clips/` e qualquer
-  outro diretório de estado nunca são varridos ou apagados. Para desligar o
+  qualquer teto estourado. Só a raiz de artifacts é tocada por este janitor —
+  `clips/` e qualquer outro diretório de estado nunca são varridos ou apagados
+  (a pasta `uploads/` tem janitor de retenção próprio, no próximo item). Para
+  desligar o
   janitor por completo, use `OCR_ARTIFACT_RETENTION=off` no ambiente do daemon
   (padrão: ligado). Cada varredura registra uma linha de log com quantidade e
   bytes apagados e incrementa a métrica `ocr_artifact_retention_deleted_total`
+- **Retenção de uploads** — `~/.opencode-remote/uploads/` (vídeos e documentos
+  enviados do telefone, além de arquivos gerados para download) é limitada
+  pela mesma varredura e cadência do janitor (uma vez no boot, depois a cada
+  **6 h**): arquivos com mais de **30 dias** são apagados e, do mais antigo
+  pro mais novo, o necessário para a pasta caber em **2 GB**. Arquivos
+  escritos nas últimas **24 h** nunca são tocados, e os **5 arquivos
+  modificados mais recentemente** sempre sobrevivem, mesmo com qualquer teto
+  estourado — e o que for apagado aqui continua no telefone que enviou o
+  arquivo. Só a raiz de uploads é varrida (arquivos comuns e rasos;
+  subdiretórios, arquivos ocultos e symlinks são ignorados). Cada varredura
+  registra uma linha com quantidade e bytes apagados (nunca nomes de arquivo)
+  e incrementa a métrica `ocr_upload_retention_deleted_total`. Para desligar
+  por completo, use `OCR_UPLOAD_RETENTION=off` no ambiente do daemon (padrão:
+  ligado); os tetos são ajustáveis por `OCR_UPLOAD_RETENTION_GRACE_HOURS`,
+  `OCR_UPLOAD_RETENTION_MAX_AGE_DAYS`, `OCR_UPLOAD_RETENTION_MAX_BYTES` e
+  `OCR_UPLOAD_RETENTION_MIN_FILES` (valores inválidos derrubam o boot,
+  fail-closed)
 - **App desktop (inicial)** — shell Electron com a mesma UI, com tray e menu nativo;
   inclui um **pane Browser**: no shell desktop ele renderiza um `<webview>` Electron real e
   sandboxed (scroll, click e edit funcionam como num navegador; `contextIsolation`/`sandbox`

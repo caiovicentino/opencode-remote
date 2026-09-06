@@ -334,6 +334,20 @@ import {
 } from "../apps/daemon/src/artifactretention";
 
 import {
+  UPLOAD_RETENTION_DEFAULTS,
+  UPLOAD_RETENTION_DISABLE_ENV,
+  UPLOAD_RETENTION_GRACE_HOURS,
+  UPLOAD_RETENTION_MAX_AGE_DAYS,
+  UPLOAD_RETENTION_MAX_BYTES_CEILING,
+  UPLOAD_RETENTION_MAX_TOTAL_BYTES,
+  UPLOAD_RETENTION_MIN_FILES,
+  parseUploadRetention,
+  uploadRetentionDisabled,
+  uploadRetentionPlan,
+  type UploadEntry,
+} from "../apps/daemon/src/uploadretention";
+
+import {
   ARTIFACTS_MARKER,
   buildArtifactsPathLine,
   buildArtifactsPrompt,
@@ -14493,16 +14507,17 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   // real-repo assertion: the reading fires once at boot, before the janitor
   // block, and then rides the SAME interval the P2-207 sweep already uses —
   // no new periodic timer was introduced anywhere in index.ts (baseline: the
-  // five pre-existing setInterval( call sites).
+  // five pre-existing setInterval( call sites). P2-228 taught that shared
+  // interval to sweep uploads too — still exactly one timer, two janitors.
   const bootAt = indexSrc.indexOf("refreshDiskState();");
-  const janitorAt = indexSrc.indexOf("if (!retentionDisabled(process.env)) {");
+  const janitorAt = indexSrc.indexOf("if (artifactsSweepOn || uploadsSweepOn) {");
   check(
     "P2-215: the disk reading fires once at boot, before the janitor block",
     bootAt >= 0 && janitorAt > bootAt,
   );
   check(
     "P2-215: the reading rides the existing janitor interval and no new periodic timer exists",
-    /const retentionTimer = setInterval\(\(\) => \{\s*\n\s*refreshDiskState\(\);\s*\n\s*sweepArtifactRetention\(\);\s*\n\s*\}, RETENTION_INTERVAL_MS\)/.test(
+    /const retentionTimer = setInterval\(\(\) => \{\s*\n\s*refreshDiskState\(\);\s*\n\s*if \(artifactsSweepOn\) sweepArtifactRetention\(\);\s*\n\s*if \(uploadsSweepOn\) sweepUploadRetention\(\);\s*\n\s*\}, RETENTION_INTERVAL_MS\)/.test(
       indexSrc,
     ) &&
       (indexSrc.match(/setInterval\(/g) ?? []).length === 5,
@@ -14936,6 +14951,295 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     scanBody.includes("readdirSync(ARTIFACTS_ROOT") &&
       !scanBody.includes("uploads") &&
       !scanBody.includes("clips"),
+  );
+}
+
+// --- P2-228: uploads retention (uploadretention.ts) ---------------------------
+
+{
+  const HOUR = 3_600_000;
+  const DAY = 24 * HOUR;
+  const NOW = 1_800_000_000_000; // arbitrary fixed "now" anchor (pure: no clock reads)
+  const MB = 1_000_000;
+
+  const file = (name: string, bytes: number, ageMs: number): UploadEntry => ({
+    path: join(tmpdir(), "p2-228-uploads", name),
+    bytes,
+    mtime: NOW - ageMs,
+  });
+  const namesOf = (plan: { paths: string[] }) => plan.paths.map((p) => p.split("/").pop());
+
+  // empty folder → empty plan
+  check(
+    "P2-228: empty entry list yields an empty plan",
+    uploadRetentionPlan([], NOW).paths.length === 0 && uploadRetentionPlan([], NOW).bytes === 0,
+  );
+
+  // roomy recent folder: the 6-day-old candidate is neither past the age
+  // ceiling nor part of a byte excess, so nothing is planned
+  {
+    const plan = uploadRetentionPlan([
+      file("d1.pdf", 10, 1 * DAY),
+      file("d2.pdf", 10, 2 * DAY),
+      file("d3.pdf", 10, 3 * DAY),
+      file("d4.pdf", 10, 4 * DAY),
+      file("d5.pdf", 10, 5 * DAY),
+      file("d6.pdf", 10, 6 * DAY),
+    ], NOW);
+    check(
+      "P2-228: roomy, recent folder yields an empty plan",
+      plan.paths.length === 0 && plan.bytes === 0,
+    );
+  }
+
+  // rule order: grace outranks age — with grace 48 h and max age 24 h, files
+  // 30 h and 47 h old are past the age ceiling but still inside the grace
+  // period, so only the 100 h-old file is planned
+  {
+    const plan = uploadRetentionPlan([
+      file("fresh3.mp4", 100, 10 * HOUR),
+      file("fresh.mp4", 100, 30 * HOUR),
+      file("fresh2.mp4", 100, 47 * HOUR),
+      file("old.mp4", 100, 100 * HOUR),
+    ], NOW, { graceMs: 48 * HOUR, maxAgeMs: 24 * HOUR, maxTotalBytes: 2_000_000_000, minFiles: 1 });
+    check(
+      "P2-228: file inside the grace period survives even past the max age",
+      namesOf(plan).join(",") === "old.mp4" && plan.bytes === 100,
+    );
+  }
+
+  // age ceiling with the documented defaults: past-age files go oldest-first;
+  // a 29-day file is not yet deletable and survives next to the fresh ones
+  {
+    const plan = uploadRetentionPlan([
+      file("p1.pdf", 10, 1 * DAY),
+      file("p2.pdf", 10, 2 * DAY),
+      file("p3.pdf", 10, 3 * DAY),
+      file("p4.pdf", 10, 4 * DAY),
+      file("p5.pdf", 10, 5 * DAY),
+      file("young.mp4", 10, 29 * DAY),
+      file("m1.mp4", 100, 31 * DAY),
+      file("m2.mp4", 200, 40 * DAY),
+    ], NOW);
+    check(
+      "P2-228: age ceiling deletes only what passed the max age in days, oldest first",
+      namesOf(plan).join(",") === "m2.mp4,m1.mp4" && plan.bytes === 300,
+    );
+  }
+
+  // byte ceiling with the documented defaults: the five most recent files
+  // survive even with the folder above 2 GB; from the deletable pool the
+  // oldest goes first, only until the pool fits, and no more than that
+  {
+    const plan = uploadRetentionPlan([
+      file("c3.mp4", 900 * MB, 8 * DAY),
+      file("c2.mp4", 900 * MB, 7 * DAY),
+      file("c1.mp4", 900 * MB, 6 * DAY),
+      file("p5.pdf", 10, 5 * DAY),
+      file("p4.pdf", 10, 4 * DAY),
+      file("p3.pdf", 10, 3 * DAY),
+      file("p2.pdf", 10, 2 * DAY),
+      file("p1.pdf", 10, 20 * HOUR),
+    ], NOW);
+    check(
+      "P2-228: byte excess deletes the oldest candidates until the pool fits and the newest N always survive",
+      namesOf(plan).join(",") === "c3.mp4" && plan.bytes === 900 * MB,
+    );
+  }
+
+  // one single giant file is one of the N most recent: it survives even though
+  // it alone blows the byte ceiling and the age ceiling
+  {
+    const plan = uploadRetentionPlan([file("huge.mp4", 3_000_000_000, 40 * DAY)], NOW);
+    check(
+      "P2-228: a single giant file survives for being one of the N most recent",
+      plan.paths.length === 0 && plan.bytes === 0,
+    );
+  }
+
+  // determinism: two candidates with the exact same mtime are ordered (and
+  // deleted) by lexicographic path ascending, regardless of the input order
+  {
+    const thresholds = { graceMs: 1, maxAgeMs: 100 * DAY, maxTotalBytes: 2_000_000_000, minFiles: 1 };
+    const base = (): UploadEntry[] => [
+      file("newest.bin", 1, 1 * HOUR),
+      file("b.bin", 1_500 * MB, 2 * DAY),
+      file("a.bin", 1_500 * MB, 2 * DAY),
+    ];
+    const plan1 = uploadRetentionPlan(base(), NOW, thresholds);
+    const plan2 = uploadRetentionPlan([...base()].reverse(), NOW, thresholds);
+    check(
+      "P2-228: mtime ties are broken deterministically by path, whichever the input order",
+      namesOf(plan1).join(",") === "a.bin" &&
+        namesOf(plan2).join(",") === "a.bin" &&
+        plan1.bytes === 1_500 * MB,
+    );
+  }
+
+  // the plan never contains a path that was not received
+  {
+    const inputs = [
+      file("keep.bin", 10, 1 * HOUR),
+      file("gone.bin", 2_000_000_000 + 1, 40 * DAY),
+      file("gone2.bin", 100, 40 * DAY),
+      { path: join(tmpdir(), "elsewhere", "x.mp4"), bytes: 10, mtime: NOW - 40 * DAY },
+    ];
+    const plan = uploadRetentionPlan(inputs, NOW, { ...UPLOAD_RETENTION_DEFAULTS, minFiles: 1 });
+    check(
+      "P2-228: no planned path is outside the received list",
+      plan.paths.every((p) => inputs.some((e) => e.path === p)) && plan.paths.length === 3,
+    );
+  }
+
+  // fail-safe: entries the module cannot reason about are never planned
+  {
+    const plan = uploadRetentionPlan([
+      file("r1.bin", 10, 1 * DAY),
+      file("r2.bin", 10, 2 * DAY),
+      file("r3.bin", 10, 3 * DAY),
+      file("r4.bin", 10, 4 * DAY),
+      file("r5.bin", 10, 5 * DAY),
+      file("ok.bin", 10, 40 * DAY),
+      { path: join(tmpdir(), "p2-228-uploads", "nan.bin"), bytes: Number.NaN, mtime: NOW - 40 * DAY },
+      { path: join(tmpdir(), "p2-228-uploads", "inf.bin"), bytes: 10, mtime: Number.POSITIVE_INFINITY },
+    ], NOW);
+    check(
+      "P2-228: entries with non-finite bytes or mtime are never planned",
+      namesOf(plan).join(",") === "ok.bin",
+    );
+  }
+
+  // documented thresholds stay conservative (a drift here is a doc change)
+  check(
+    "P2-228: documented thresholds are the conservative defaults",
+    UPLOAD_RETENTION_GRACE_HOURS === 24 &&
+      UPLOAD_RETENTION_MAX_AGE_DAYS === 30 &&
+      UPLOAD_RETENTION_MAX_TOTAL_BYTES === 2_000_000_000 &&
+      UPLOAD_RETENTION_MIN_FILES === 5,
+  );
+
+  // parseUploadRetention: empty environment reproduces the documented defaults
+  {
+    const cfg = parseUploadRetention({});
+    check(
+      "P2-228: empty environment reproduces the documented defaults",
+      !cfg.disabled &&
+        cfg.problems.length === 0 &&
+        cfg.thresholds.graceMs === UPLOAD_RETENTION_DEFAULTS.graceMs &&
+        cfg.thresholds.maxAgeMs === UPLOAD_RETENTION_DEFAULTS.maxAgeMs &&
+        cfg.thresholds.maxTotalBytes === UPLOAD_RETENTION_DEFAULTS.maxTotalBytes &&
+        cfg.thresholds.minFiles === UPLOAD_RETENTION_DEFAULTS.minFiles,
+    );
+  }
+
+  // the documented kill switch: default on, off/0/false disables
+  check(
+    "P2-228: retention is enabled by default and only off/0/false disables it",
+    uploadRetentionDisabled({}) === false &&
+      uploadRetentionDisabled({ [UPLOAD_RETENTION_DISABLE_ENV]: "on" }) === false &&
+      uploadRetentionDisabled({ [UPLOAD_RETENTION_DISABLE_ENV]: "off" }) === true &&
+      uploadRetentionDisabled({ [UPLOAD_RETENTION_DISABLE_ENV]: "0" }) === true &&
+      uploadRetentionDisabled({ [UPLOAD_RETENTION_DISABLE_ENV]: "FALSE" }) === true,
+  );
+
+  // blank values are the only other no-problem case (missing keeps defaults)
+  check(
+    "P2-228: blank values keep the documented defaults with no problem",
+    parseUploadRetention({ OCR_UPLOAD_RETENTION_GRACE_HOURS: "   " }).problems.length === 0 &&
+      parseUploadRetention({ OCR_UPLOAD_RETENTION_GRACE_HOURS: "   " }).thresholds.graceMs ===
+        UPLOAD_RETENTION_DEFAULTS.graceMs,
+  );
+
+  // fail-closed table: each bad shape is a problem, thresholds fall back
+  check(
+    "P2-228: non-numeric value is a fail-closed problem",
+    parseUploadRetention({ OCR_UPLOAD_RETENTION_GRACE_HOURS: "abc" }).problems.length === 1 &&
+      parseUploadRetention({ OCR_UPLOAD_RETENTION_GRACE_HOURS: "abc" }).thresholds.graceMs ===
+        UPLOAD_RETENTION_DEFAULTS.graceMs,
+  );
+  check(
+    "P2-228: zero, negative, fractional and above-ceiling values are problems",
+    parseUploadRetention({ OCR_UPLOAD_RETENTION_MAX_AGE_DAYS: "0" }).problems.length === 1 &&
+      parseUploadRetention({ OCR_UPLOAD_RETENTION_MAX_BYTES: "-5" }).problems.length === 1 &&
+      parseUploadRetention({ OCR_UPLOAD_RETENTION_MIN_FILES: "1.5" }).problems.length === 1 &&
+      parseUploadRetention({ OCR_UPLOAD_RETENTION_MAX_BYTES: String(UPLOAD_RETENTION_MAX_BYTES_CEILING + 1) })
+        .problems.length === 1,
+  );
+  check(
+    "P2-228: several bad variables return ALL problems at once (no short-circuit)",
+    parseUploadRetention({
+      OCR_UPLOAD_RETENTION_GRACE_HOURS: "abc",
+      OCR_UPLOAD_RETENTION_MAX_BYTES: "-1",
+      OCR_UPLOAD_RETENTION_MIN_FILES: "2.5",
+    }).problems.length === 3,
+  );
+  {
+    const cfg = parseUploadRetention({
+      OCR_UPLOAD_RETENTION_GRACE_HOURS: "48",
+      OCR_UPLOAD_RETENTION_MAX_AGE_DAYS: "60",
+      OCR_UPLOAD_RETENTION_MAX_BYTES: "5000000000",
+      OCR_UPLOAD_RETENTION_MIN_FILES: "10",
+    });
+    check(
+      "P2-228: valid overrides are honored with no problem",
+      cfg.problems.length === 0 &&
+        cfg.thresholds.graceMs === 48 * HOUR &&
+        cfg.thresholds.maxAgeMs === 60 * DAY &&
+        cfg.thresholds.maxTotalBytes === 5_000_000_000 &&
+        cfg.thresholds.minFiles === 10,
+    );
+  }
+
+  // real-source assertions: the sweep rides the EXISTING janitor hook and no
+  // new periodic timer exists anywhere in index.ts
+  const daemonSrc228 = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  const hookAt = daemonSrc228.indexOf("if (artifactsSweepOn || uploadsSweepOn) {");
+  const hookEnd = hookAt > -1 ? daemonSrc228.indexOf("}, RETENTION_INTERVAL_MS)", hookAt) : -1;
+  const hookBody = hookAt > -1 && hookEnd > -1 ? daemonSrc228.slice(hookAt, hookEnd) : "";
+  check(
+    "P2-228: the uploads sweep runs on the existing janitor hook with no new periodic timer",
+    hookAt > -1 &&
+      hookBody.includes("sweepUploadRetention()") &&
+      hookBody.includes("setTimeout(sweepUploadRetention, 0)") &&
+      (daemonSrc228.match(/setInterval\(/g) ?? []).length === 5,
+  );
+  const scanUpAt = daemonSrc228.indexOf("function scanUploadEntries");
+  const scanUpBody = scanUpAt > -1 ? daemonSrc228.slice(scanUpAt, scanUpAt + 700) : "";
+  check(
+    "P2-228: the scanner reads only the uploads root (never artifacts, clips, staging, state or audit)",
+    scanUpBody.includes("readdirSync(UPLOADS_ROOT") &&
+      scanUpBody.includes("isFile") &&
+      scanUpBody.includes('startsWith(".")') &&
+      !scanUpBody.includes("ARTIFACTS_ROOT") &&
+      !scanUpBody.includes("clips") &&
+      !scanUpBody.includes("STATE_FILE") &&
+      !scanUpBody.includes("audit"),
+  );
+  const sweepUpAt = daemonSrc228.indexOf("function sweepUploadRetention");
+  const sweepUpBody = sweepUpAt > -1 ? daemonSrc228.slice(sweepUpAt, sweepUpAt + 800) : "";
+  check(
+    "P2-228: the sweep deletes exactly the planned flat files and logs one name-free line",
+    sweepUpBody.includes("uploadRetentionPlan(scanUploadEntries()") &&
+      sweepUpBody.includes("rmSync(path, { force: true })") &&
+      !sweepUpBody.includes("recursive: true") &&
+      sweepUpBody.includes("deleted: plan.paths.length, bytes: plan.bytes"),
+  );
+  check(
+    "P2-228: a new additive counter joins the metrics block (existing ones untouched)",
+    daemonSrc228.includes('metrics.inc("ocr_upload_retention_deleted_total", plan.paths.length)') &&
+      daemonSrc228.includes('metrics.inc("ocr_artifact_retention_deleted_total", plan.paths.length)'),
+  );
+
+  // uploadretention.ts stays pure: unit tests must never boot a daemon on
+  // import (strip line comments first — the header prose names banned modules)
+  const uploadRetentionSrc = readFileSync(
+    join(import.meta.dirname, "..", "apps", "daemon", "src", "uploadretention.ts"),
+    "utf8",
+  );
+  const pureCode = uploadRetentionSrc.replace(/\/\/.*$/gm, "");
+  check(
+    "P2-228: uploadretention.ts is pure (no node:fs/path/child_process/http/os or fetch imports)",
+    !/node:(fs|path|child_process|http|os)/.test(pureCode) && !/\bfetch\b/.test(pureCode),
   );
 }
 

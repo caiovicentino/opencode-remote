@@ -63,6 +63,7 @@ import { metrics, startMetricsServer, VERSION } from "./metrics.js";
 import { loadRoutines, saveRoutines, type Routine } from "./routines.js";
 import { ARTIFACTS_ROOT, artifactMime, capArtifacts, kindFor, listArtifacts, readArtifact, sessionTitleMap } from "./artifacts.js";
 import { RETENTION_INTERVAL_MS, retentionDisabled, retentionPlan, type RetentionEntry } from "./artifactretention.js";
+import { parseUploadRetention, uploadRetentionPlan, type UploadEntry as UploadFile } from "./uploadretention.js";
 import { diskVerdict, type DiskVerdict } from "./diskguard.js";
 import { WindowCache, contextPct, sessionTokenTotal } from "./contextgauge.js";
 import { ArtifactWatcher } from "./artifactwatch.js";
@@ -1484,6 +1485,13 @@ metrics.describe(
   "counter",
 );
 
+// P2-228: uploads retention sweep counter help (counter self-registers on inc).
+metrics.describe(
+  "ocr_upload_retention_deleted_total",
+  "files deleted by the uploads retention sweep",
+  "counter",
+);
+
 // P2-075: PWA origin watchdog — probes the static origin's /healthz and, on
 // flip, appends a dashboard event (`[pwa] origin`), lights the red chip and
 // pushes the phone. Only on hosts that actually serve the PWA.
@@ -1786,15 +1794,75 @@ function sweepArtifactRetention(): void {
   }
 }
 
+// --- P2-228: uploads retention -----------------------------------------------
+// ~/.opencode-remote/uploads/ is where videos and documents sent from the
+// phone land and where files generated for download are written — the only
+// state dir without a ceiling until now. The sweep reads ONLY UPLOADS_ROOT
+// (flat regular files; no subdirectories, no hidden files, symlinks never
+// followed) and NEVER touches the artifacts root, clips/, the chunk-staging
+// area, the state file, the audit log or anything outside UPLOADS_ROOT —
+// the prohibition is written in uploadretention.ts's header and pinned by
+// the real-source assertions in scripts/unit.test.ts.
+
+const UPLOADS_ROOT = join(STATE_DIR, "uploads");
+
+function scanUploadEntries(): UploadFile[] {
+  const entries: UploadFile[] = [];
+  for (const ent of readdirSync(UPLOADS_ROOT, { withFileTypes: true })) {
+    if (!ent.isFile()) continue; // regular files only; dirs and symlinks are ignored
+    if (ent.name.startsWith(".")) continue; // hidden files are ignored
+    const path = join(UPLOADS_ROOT, ent.name);
+    let st;
+    try {
+      st = statSync(path);
+    } catch {
+      continue; // vanished between readdir and stat — skip, never plan it
+    }
+    entries.push({ path, bytes: st.size, mtime: st.mtimeMs });
+  }
+  return entries;
+}
+
+function sweepUploadRetention(): void {
+  try {
+    // the ONLY root this sweep ever scans or deletes under is UPLOADS_ROOT
+    const plan = uploadRetentionPlan(scanUploadEntries(), Date.now(), uploadRetention.thresholds);
+    for (const path of plan.paths) {
+      rmSync(path, { force: true });
+    }
+    // one log line per sweep, count and bytes only — never a file name
+    log("info", "upload retention sweep", { deleted: plan.paths.length, bytes: plan.bytes });
+    metrics.inc("ocr_upload_retention_deleted_total", plan.paths.length);
+  } catch (err) {
+    // a filesystem error aborts this cycle only — one log line, no immediate
+    // retry; the next scheduled sweep picks it up
+    log("warn", "upload retention sweep failed", { error: (err as Error).message });
+  }
+}
+
 // P2-215: the disk reading fires once at boot (unconditionally — the verdict
 // must exist even with the janitor disabled) and then rides the SAME
 // RETENTION_INTERVAL_MS interval the sweep already uses; no new timer exists.
+// P2-228: the uploads janitor shares this exact hook and interval — ONE timer
+// drives both sweeps, each honoring its own kill switch, so no new periodic
+// timer exists here either. An invalid OCR_UPLOAD_RETENTION_* keeps the sweep
+// off: main() exits fail-closed before any listener opens.
 refreshDiskState();
-if (!retentionDisabled(process.env)) {
-  sweepArtifactRetention();
+const artifactsSweepOn = !retentionDisabled(process.env);
+const uploadRetention = parseUploadRetention(process.env);
+const uploadsSweepOn = uploadRetention.problems.length === 0 && !uploadRetention.disabled;
+if (artifactsSweepOn || uploadsSweepOn) {
+  if (artifactsSweepOn) sweepArtifactRetention();
+  if (uploadsSweepOn) {
+    // first sweep is fire-and-forget one tick after boot: boot is never
+    // blocked or delayed by the uploads scan
+    const bootSweep = setTimeout(sweepUploadRetention, 0);
+    bootSweep.unref?.();
+  }
   const retentionTimer = setInterval(() => {
     refreshDiskState();
-    sweepArtifactRetention();
+    if (artifactsSweepOn) sweepArtifactRetention();
+    if (uploadsSweepOn) sweepUploadRetention();
   }, RETENTION_INTERVAL_MS);
   retentionTimer.unref?.();
 }
@@ -3212,6 +3280,13 @@ async function main() {
   // invalid OCR_PAIR_WINDOW_MS never falls back to the default silently.
   if (pairWindowCfg.problems.length > 0) {
     for (const problem of pairWindowCfg.problems) log("error", problem);
+    process.exit(1);
+    return;
+  }
+  // P2-228: same fail-closed contract for the uploads retention thresholds —
+  // an invalid OCR_UPLOAD_RETENTION_* never falls back to the default silently.
+  if (uploadRetention.problems.length > 0) {
+    for (const problem of uploadRetention.problems) log("error", problem);
     process.exit(1);
     return;
   }
