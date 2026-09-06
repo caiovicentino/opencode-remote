@@ -747,7 +747,13 @@ no traversal, no dotfiles, symlink-safe containment, SPA fallback to
 the static route answers `503` during the drain. A configured
 `RELAY_WEB_DIR` whose directory is missing, not a directory, unreadable or
 without a readable `index.html` refuses the boot — reasons logged once,
-exit 1, no listener; unset keeps the old 404-for-everything behavior. Every
+exit 1, no listener; unset keeps the old 404-for-everything behavior. An
+incomplete bundle is caught too (P2-225): the boot verifies every local
+script/style the entry document references exists and is readable next to
+it, so a partial or stale volume-mounted copy exits 1 with a log line per
+missing asset instead of serving a white screen — boot the container once
+against the directory you plan to publish and confirm it reaches the
+`relay listening` line. Every
 200 document the static route serves is locked down (P2-192): a
 same-origin-only `Content-Security-Policy` (inline style allowed — the
 generated bundle injects style — plus `data:`/`blob:` images and

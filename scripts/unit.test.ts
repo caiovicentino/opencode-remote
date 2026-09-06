@@ -416,6 +416,13 @@ import {
   SLOW_CONSUMER_CLOSE_REASON,
 } from "../apps/relay/src/backpressure";
 
+import {
+  assetIntegrityPlan,
+  indexAssetPlan,
+  WEB_INDEX_MAX_BYTES,
+  type AssetProbe,
+} from "../apps/relay/src/webroot";
+
 import { touchedUiFromDiff, needsEscalation, parseFindings, verifyFindings, isTaskMergeSha, parseVerdict, reviewerOk, tagUnverified, isBlockingFinding, findingsRepeat, writeAuxSandboxConfig , CONSTITUTION, PR_MERGE_CONFIRM_DELAY_MS, PR_MERGE_CONFIRM_POLLS, PrMergeIo, RESUME_MAX_TASK_IDS, TASK_ID_RE, builderPrompt, codeChanges, commitSpec, commitSpecWithReason, crashRoundDecision, lessonsBlock, mergeBlockReason, mergePrForTask, needsPlanner, parseScribeLessons, plannerPrompt, plannerRetryPolicy, rebaseOutcome, resumeBlock, reviewerPrompt, setupTaskBranch, specPathFor, specRejectReason, updateResumeState, validateSpec } from "../apps/pilot/src/pipeline";
 
 
@@ -16171,6 +16178,161 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       !verifyJob.includes("test:unit-win"),
   );
 }
+
+// --- P2-225: boot-time asset integrity for the relay's static entry document ---
+// indexAssetPlan: full truth table of the text scan.
+check(
+  "P2-225: indexAssetPlan — script with a src yields one item",
+  JSON.stringify(indexAssetPlan('<html><body><script src="/assets/app.js"></script></body></html>')) ===
+    JSON.stringify(["/assets/app.js"]),
+);
+check(
+  "P2-225: indexAssetPlan — stylesheet link yields one item",
+  JSON.stringify(indexAssetPlan('<link rel="stylesheet" href="/assets/app.css">')) ===
+    JSON.stringify(["/assets/app.css"]),
+);
+check(
+  "P2-225: indexAssetPlan — modulepreload link yields one item",
+  JSON.stringify(indexAssetPlan('<link rel="modulepreload" href="/assets/chunk.js" crossorigin>')) ===
+    JSON.stringify(["/assets/chunk.js"]),
+);
+check(
+  "P2-225: indexAssetPlan — icon (and other non-asset) links are ignored",
+  JSON.stringify(
+    indexAssetPlan(
+      '<link rel="icon" href="/icon.svg"><link rel="manifest" href="/manifest.webmanifest"><link rel="preconnect" href="/x">',
+    ),
+  ) === JSON.stringify([]),
+);
+check(
+  "P2-225: indexAssetPlan — repeated reference appears once, order of appearance preserved",
+  JSON.stringify(
+    indexAssetPlan(
+      '<script src="/b.js"></script><script src="/a.js"></script><script src="/b.js"></script>' +
+        '<link rel="stylesheet" href="/a.css"><link rel="modulepreload" href="/a.js">',
+    ),
+  ) === JSON.stringify(["/b.js", "/a.js", "/a.css"]),
+);
+check(
+  "P2-225: indexAssetPlan — explicit scheme ignored",
+  JSON.stringify(
+    indexAssetPlan('<script src="https://cdn.example/x.js"></script><script src="data:text/javascript,1"></script>'),
+  ) === JSON.stringify([]),
+);
+check(
+  "P2-225: indexAssetPlan — protocol-relative reference ignored",
+  JSON.stringify(indexAssetPlan('<script src="//cdn.example/x.js"></script>')) === JSON.stringify([]),
+);
+check(
+  "P2-225: indexAssetPlan — pure anchor ignored",
+  JSON.stringify(indexAssetPlan('<script src="#local"></script>')) === JSON.stringify([]),
+);
+check(
+  "P2-225: indexAssetPlan — single and double quotes give the same result",
+  JSON.stringify(indexAssetPlan("<script src='/a.js'></script><link rel='stylesheet' href='/b.css'>")) ===
+    JSON.stringify(indexAssetPlan('<script src="/a.js"></script><link rel="stylesheet" href="/b.css">')) &&
+    JSON.stringify(indexAssetPlan("<script src='/a.js'>")) === JSON.stringify(["/a.js"]),
+);
+check(
+  "P2-225: indexAssetPlan — attribute order inside the tag does not matter",
+  JSON.stringify(indexAssetPlan('<link href="/a.css" rel="stylesheet">')) === JSON.stringify(["/a.css"]),
+);
+check("P2-225: indexAssetPlan — empty text yields an empty list", indexAssetPlan("").length === 0);
+check(
+  "P2-225: indexAssetPlan — text without any tag yields an empty list",
+  indexAssetPlan("hello world, no tags here").length === 0,
+);
+
+// assetIntegrityPlan: full truth table of the boot probe.
+const probeOk: (p: string) => AssetProbe = () => "ok";
+check(
+  "P2-225: assetIntegrityPlan — every asset readable yields no problems",
+  assetIntegrityPlan(["/assets/app.js", "/assets/app.css"], "/srv/web", probeOk).length === 0,
+);
+const missingProblems = assetIntegrityPlan(["/assets/app.js"], "/srv/web", () => "missing");
+check(
+  "P2-225: assetIntegrityPlan — one missing asset yields exactly one problem",
+  missingProblems.length === 1 && missingProblems[0]?.includes("/assets/app.js"),
+);
+check(
+  "P2-225: assetIntegrityPlan — two missing assets yield two problems in index order",
+  JSON.stringify(
+    assetIntegrityPlan(["/assets/one.js", "/assets/two.js"], "/srv/web", () => "missing").map((p) =>
+      ["/assets/one.js", "/assets/two.js"].findIndex((ref) => p.includes(ref)),
+    ),
+  ) === JSON.stringify([0, 1]),
+);
+check(
+  "P2-225: assetIntegrityPlan — unreadable asset yields a problem",
+  assetIntegrityPlan(["/assets/app.js"], "/srv/web", () => "unreadable").length === 1,
+);
+check(
+  "P2-225: assetIntegrityPlan — document-relative references (the real vite shape) resolve against the root",
+  assetIntegrityPlan(["./assets/index-AbCdE123.js", "assets/x.css"], "/srv/web", (p) =>
+    p.endsWith(".js") || p.endsWith(".css") ? "ok" : "missing",
+  ).length === 0 &&
+    assetIntegrityPlan(["./assets/index-AbCdE123.js"], "/srv/web", () => "missing").length === 1,
+);
+check(
+  "P2-225: assetIntegrityPlan — path escaping the root is refused even though the probe would pass",
+  assetIntegrityPlan(["/assets/../../etc/passwd"], "/srv/web", probeOk).length === 1 &&
+    assetIntegrityPlan(["../secret.js"], "/srv/web", probeOk).length === 1,
+);
+check(
+  "P2-225: assetIntegrityPlan — a throwing probe becomes a problem instead of killing the boot",
+  assetIntegrityPlan(["/assets/app.js"], "/srv/web", () => {
+    throw new Error("boom");
+  }).length === 1,
+);
+check(
+  "P2-225: assetIntegrityPlan — problems appear in index order across causes",
+  JSON.stringify(
+    assetIntegrityPlan(
+      ["/gone.js", "../bad.js", "/secret.js"],
+      "/srv/web",
+      (p) => (p.endsWith("gone.js") ? "missing" : p.endsWith("secret.js") ? "unreadable" : "ok"),
+    ).map((p) => (p.includes("/gone.js") ? "missing" : p.includes("../bad.js") ? "rigid" : "unreadable")),
+  ) === JSON.stringify(["missing", "rigid", "unreadable"]),
+);
+check("P2-225: the boot ceiling for the entry document is 512 KiB", WEB_INDEX_MAX_BYTES === 512 * 1024);
+
+// Real-source assertions: the relay boot applies both plans inside the same
+// fail-closed web-root block, before any listener can open.
+const relayIndexSrc = readFileSync(new URL("../apps/relay/src/index.ts", import.meta.url), "utf8");
+const webRootAt = relayIndexSrc.indexOf("webRootPlan(");
+const idxPlanAt = relayIndexSrc.indexOf("indexAssetPlan(");
+const assetPlanAt = relayIndexSrc.indexOf("assetIntegrityPlan(");
+const webRefusalAt = relayIndexSrc.indexOf("invalid relay web root, refusing to start");
+const listenAt = relayIndexSrc.indexOf("server.listen(");
+check(
+  "P2-225: relay boot applies indexAssetPlan + assetIntegrityPlan to the entry document",
+  webRootAt > -1 && idxPlanAt > webRootAt && assetPlanAt > webRootAt,
+);
+check(
+  "P2-225: asset problems join the same fail-closed web-root block (exit 1, one line per cause)",
+  relayIndexSrc.includes("WEB.problems.push") && webRefusalAt > assetPlanAt,
+);
+check(
+  "P2-225: the asset check completes before the listener opens",
+  listenAt > webRefusalAt && listenAt > assetPlanAt,
+);
+check(
+  "P2-225: the boot-time index.html read is capped and overflow is a problem",
+  relayIndexSrc.includes("WEB_INDEX_MAX_BYTES") &&
+    relayIndexSrc.includes("stat.size > WEB_INDEX_MAX_BYTES") &&
+    relayIndexSrc.includes("Buffer.byteLength(text) > WEB_INDEX_MAX_BYTES"),
+);
+const webrootSrc = readFileSync(new URL("../apps/relay/src/webroot.ts", import.meta.url), "utf8");
+const webrootImports = webrootSrc
+  .split("\n")
+  .filter((l) => l.trim().startsWith("import "))
+  .join("\n");
+check(
+  "P2-225: webroot.ts stays pure (no node:fs/node:http/node:ws imports) and the new functions stay blind",
+  !/node:(fs|http|ws)/.test(webrootImports) &&
+    webrootImports.includes("node:path") &&
+    webrootSrc.includes("no plaintext, no key material, no room ids"),
+);
 
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);

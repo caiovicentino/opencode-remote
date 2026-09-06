@@ -590,7 +590,12 @@ ficam intocados, e a rota estática responde `503` durante o dreno. Um
 `RELAY_WEB_DIR` apontando pra diretório inexistente, que não é diretório,
 ilegível ou sem `index.html` legível recusa o boot — motivos logados uma vez,
 exit 1, sem listener; sem a variável, o comportamento antigo (404 pra todo o
-resto) é preservado. Todo documento 200 da rota estática chega travado
+resto) é preservado. Bundle incompleto também é barrado (P2-225): o boot
+confere que todo script/estilo local referenciado pelo `index.html` existe e
+é legível no mesmo diretório, então uma cópia montada pela metade (ou
+desatualizada) sai com código 1 e uma linha de log por asset ausente, em vez
+de servir tela branca — suba o container uma vez apontando pro diretório que
+vai publicar e confirme que a linha `relay listening` aparece. Todo documento 200 da rota estática chega travado
 (P2-192): `Content-Security-Policy` só permitindo a própria origem (estilo
 inline liberado — o bundle gerado injeta estilo — além de imagens
 `data:`/`blob:` e conexões `wss:`/`https:` porque o app disca pro relay),
