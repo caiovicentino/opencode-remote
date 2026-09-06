@@ -156,6 +156,12 @@ the packaged loopback default only: a feed explicitly set via
 `OCR_UPDATE_FEED` (dev/staging) fails with "feed unreachable" instead of
 making a surprise outbound request.
 
+Since P2-257, answering "Later" to the consent dialog does not bury the
+offer: it comes back up to two times (one reminder every 4 h, three offers
+per version in total, on the same timer as the recheck), the tray item for a
+downloaded release reopens the same dialog on click, and the update applies
+only by accepting the offer ("Restart now") — never by a plain restart.
+
 ## Windows installer signing (P2-159)
 
 The Windows installer is signed only from the `WIN_CSC_LINK` /
