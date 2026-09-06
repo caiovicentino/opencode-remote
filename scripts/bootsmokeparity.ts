@@ -1,15 +1,19 @@
 /**
- * P2-242 — boot-smoke parity between the CI packaging jobs and the release
- * workflow. The CI packaging jobs (desktop-package, desktop-package-win) only
- * INSPECT the packaged bundle (scripts/dist-smoke.mjs); the only real boot of
- * the package — main throwing at boot, an asar missing an asset the renderer
- * asks for, a blank window — used to live exclusively in .github/workflows/
- * release.yml, so a runtime regression crossed every green pull request and
+ * P2-242/P2-253 — boot- and daemon-smoke parity between the CI packaging
+ * jobs and the release workflow. The CI packaging jobs (desktop-package,
+ * desktop-package-win) only INSPECT the packaged bundle
+ * (scripts/dist-smoke.mjs); the real executions of the package — the app
+ * booting (main throwing at boot, an asar missing an asset the renderer asks
+ * for, a blank window) and the daemon sidecar serving on the packaged
+ * runtime — used to live exclusively in .github/workflows/release.yml, so a
+ * runtime or packaging regression crossed every green pull request and
  * surfaced on publication day, with the release already drafted. This module
  * is the deterministic guard: it reads workflow text through a deliberately
  * narrow reader and demands that every job that packages the app also boots
- * the real package, after packaging, with shell: bash declared (P2-126/P2-164
- * lessons: pwsh does not expand globs) and its own timeout.
+ * the real package AND runs the packaged daemon sidecar smoke
+ * (P2-251/P2-253) — after packaging, with shell: bash declared
+ * (P2-126/P2-164 lessons: pwsh does not expand globs) and its own timeout —
+ * in BOTH workflows.
  *
  * Pure by construction: no node:fs, no node:child_process, no fetch, no
  * network — the caller reads the real-world inputs (the workflow files) and
@@ -191,9 +195,9 @@ const DAEMON_SMOKE_RUN = /packaged-daemon-smoke\.mjs/;
  * - a real-boot step positioned before the packaging step it validates;
  * - a real-boot step without shell: bash declared explicitly;
  * - a real-boot step without its own timeout-minutes;
- * - a release-workflow packaging job that never runs the packaged daemon
- *   sidecar smoke (P2-251 — release-only: the ci.yml packaging jobs predate
- *   the daemon smoke and are out of its scope);
+ * - a packaging job of EITHER workflow that never runs the packaged daemon
+ *   sidecar smoke (P2-251 release, P2-253 ci — both packaging surfaces are
+ *   held to the same bar);
  * - a daemon-smoke step positioned before the packaging step it validates;
  * - a daemon-smoke step without shell: bash declared explicitly;
  * - a daemon-smoke step without its own timeout-minutes.
@@ -203,11 +207,11 @@ const DAEMON_SMOKE_RUN = /packaged-daemon-smoke\.mjs/;
  */
 export function bootSmokeParity(ciJobs: readonly WorkflowJob[], releaseJobs: readonly WorkflowJob[]): string[] {
   const problems: string[] = [];
-  const groups: ReadonlyArray<readonly [string, readonly WorkflowJob[], boolean]> = [
-    ["ci", ciJobs, false],
-    ["release", releaseJobs, true],
+  const groups: ReadonlyArray<readonly [string, readonly WorkflowJob[]]> = [
+    ["ci", ciJobs],
+    ["release", releaseJobs],
   ];
-  for (const [workflow, jobs, releaseGrade] of groups) {
+  for (const [workflow, jobs] of groups) {
     for (const job of jobs) {
       const packagingAt = job.steps.findIndex((s) => PACKAGING_RUN.test(s.run));
       if (packagingAt < 0) continue; // a job that packages nothing is never flagged
@@ -235,31 +239,29 @@ export function bootSmokeParity(ciJobs: readonly WorkflowJob[], releaseJobs: rea
           }
         }
       }
-      // P2-251: the release workflow also has to prove the packaged daemon
+      // P2-251/P2-253: BOTH workflows have to prove the packaged daemon
       // sidecar actually boots — same hygiene bar as the boot step above.
-      if (releaseGrade) {
-        const smokes = job.steps.filter((s) => DAEMON_SMOKE_RUN.test(s.run));
-        if (smokes.length === 0) {
-          problems.push(
-            `boot-smoke-parity: job "${job.name}" of the ${workflow} workflow never boots the packaged daemon sidecar — add a step after packaging that runs the daemon smoke (packaged-daemon-smoke.mjs) against the resolved bundle`,
-          );
-        } else {
-          for (const smoke of smokes) {
-            if (job.steps.indexOf(smoke) < packagingAt) {
-              problems.push(
-                `boot-smoke-parity: job "${job.name}" of the ${workflow} workflow smokes the daemon sidecar before the packaging step it validates — move the daemon smoke after packaging`,
-              );
-            }
-            if (smoke.shell !== "bash") {
-              problems.push(
-                `boot-smoke-parity: job "${job.name}" of the ${workflow} workflow smokes the daemon sidecar without declaring shell: bash — declare shell: bash explicitly (pwsh does not expand globs)`,
-              );
-            }
-            if (smoke.timeoutMinutes === null) {
-              problems.push(
-                `boot-smoke-parity: job "${job.name}" of the ${workflow} workflow smokes the daemon sidecar without its own timeout-minutes — add one so a hung daemon cannot hold the runner`,
-              );
-            }
+      const smokes = job.steps.filter((s) => DAEMON_SMOKE_RUN.test(s.run));
+      if (smokes.length === 0) {
+        problems.push(
+          `boot-smoke-parity: job "${job.name}" of the ${workflow} workflow never boots the packaged daemon sidecar — add a step after packaging that runs the daemon smoke (packaged-daemon-smoke.mjs) against the resolved bundle`,
+        );
+      } else {
+        for (const smoke of smokes) {
+          if (job.steps.indexOf(smoke) < packagingAt) {
+            problems.push(
+              `boot-smoke-parity: job "${job.name}" of the ${workflow} workflow smokes the daemon sidecar before the packaging step it validates — move the daemon smoke after packaging`,
+            );
+          }
+          if (smoke.shell !== "bash") {
+            problems.push(
+              `boot-smoke-parity: job "${job.name}" of the ${workflow} workflow smokes the daemon sidecar without declaring shell: bash — declare shell: bash explicitly (pwsh does not expand globs)`,
+            );
+          }
+          if (smoke.timeoutMinutes === null) {
+            problems.push(
+              `boot-smoke-parity: job "${job.name}" of the ${workflow} workflow smokes the daemon sidecar without its own timeout-minutes — add one so a hung daemon cannot hold the runner`,
+            );
           }
         }
       }

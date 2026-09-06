@@ -177,7 +177,12 @@ temporário, relay desligado pelo preflight fail-closed do daemon, porta de
 métricas efêmera, stdout do pairing URI descartado sem ler) e só aprova com
 `/api/health` respondendo 2xx autenticado com o filho vivo — prova que o
 sidecar empacotado sobe e serve no runtime empacotado; não prova que o shell
-chega a ele ponta a ponta.
+chega a ele ponta a ponta. Desde a P2-253 os dois jobs de empacotamento do
+ci.yml também rodam o `Smoke the packaged daemon sidecar` (depois do boot do
+pacote, mesmo script e mesmo contrato hermético do release, exigido por
+`scripts/bootsmokeparity.ts` nos dois workflows) — a regressão de
+empacotamento do daemon passa a ser pega no pull request, não mais somente na
+tag.
 Na mesma ponta de distribuição, o job `release-feeds` do workflow confere o
 CONTEÚDO dos quatro feeds de update antes da publicação (P2-157, estendido
 pela P2-212): `update-mac-arm64.json` e `update-mac-x64.json` — os dois que
