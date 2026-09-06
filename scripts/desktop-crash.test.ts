@@ -313,4 +313,3 @@ function fakeWindow(): { win: ReloadableWindow; reloads: () => number; destroy()
 
 console.log(failures === 0 ? "\ndesktop crash tests: all green" : `\nFAILURES: ${failures}`);
 process.exit(failures === 0 ? 0 : 1);
-process.exit(failures === 0 ? 0 : 1);

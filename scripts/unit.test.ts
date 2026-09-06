@@ -16054,6 +16054,11 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     mainSrc.includes('win.webContents.on("unresponsive"') && mainSrc.includes('win.webContents.on("responsive"'),
   );
   check(
+    "P2-223: each hang listener is registered exactly once (no double-fire merge artifact)",
+    (mainSrc.match(/win\.webContents\.on\("unresponsive"/g) ?? []).length === 1 &&
+      (mainSrc.match(/win\.webContents\.on\("responsive"/g) ?? []).length === 1,
+  );
+  check(
     "P2-223: the harness-session rule is the FIRST one in hangVerdict (documented contract)",
     hangwatchSrc.indexOf("input.harnessSession") > -1 &&
       hangwatchSrc.indexOf("input.harnessSession") < hangwatchSrc.indexOf("input.unresponsiveMs") &&
