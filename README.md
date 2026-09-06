@@ -168,7 +168,10 @@ private. That is the product: **local power, remote control, zero trust**.
   purpose), an inline **agent · model** dropdown replaces the old header
   select and the full-width model list, the textarea auto-grows up to ~6 lines
   and then scrolls internally, Enter sends / Shift+Enter breaks the line
-- **Routines** — real cron: daily, specific weekdays, or interval loop
+- **Routines** — real cron: daily, specific weekdays, or interval loop; a run
+  stuck in flight (daemon restarted mid-execution, lost session event) is
+  released automatically after a 2 h run lease (`OCR_RUN_LEASE_MS`, `off` to
+  disable) and the routine fires again at its next scheduled time
 - **Secure by construction** — passkey (WebAuthn) gate, ECDH P-256 + AES-256-GCM,
   replay protection, device allowlist, audit log, biometric unlock
 - **Distinguishable devices** — every pairing gets a stable, personal-data-free

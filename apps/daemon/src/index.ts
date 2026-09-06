@@ -76,6 +76,7 @@ import { classifyRelayClose, effectiveRetryDelayMs, type RelayCloseKind } from "
 import { parseRelayUrl, redactRelayUrl } from "./relayurl.js";
 import { bodyLimit, isBodyLimitError, readLimitedBody, type BodyLimitError } from "./bodylimit.js";
 import { pairWindow, bootstrapDecision } from "./pairwindow.js";
+import { leaseVerdict, parseRunLease, RUN_LEASE_KILL_MESSAGE } from "./routinelease.js";
 import { DEVICE_TOUCH_INTERVAL_MS, nextDeviceLabel, touchDecision } from "./devicetouch.js";
 import {
   admitNewUpload,
@@ -135,6 +136,10 @@ const chunkLimits = chunkStoreLimits(process.env);
 // to the default; main() logs one line per problem and exits 1 with no
 // listener.
 const pairWindowCfg = pairWindow(process.env);
+// P2-236: the routine run lease is resolved exactly once at boot — same
+// fail-closed contract: an invalid OCR_RUN_LEASE_MS never falls back to the
+// default; main() logs one line per problem and exits 1 with no listener.
+const runLease = parseRunLease(process.env);
 const OPENCODE_URL = process.env.OPENCODE_URL ?? "http://127.0.0.1:4096";
 const OPENCODE_USER = process.env.OPENCODE_SERVER_USERNAME ?? "opencode";
 const OPENCODE_PASS = process.env.OPENCODE_SERVER_PASSWORD ?? "";
@@ -1392,6 +1397,9 @@ async function fireRoutine(r: Routine) {
     if (!created.id) throw new Error("session create failed");
     registerArtifactSession(created);
     r.lastSessionID = created.id;
+    // P2-236: stamp the run start where the in-flight marker is written, for
+    // every mode (daily, days, interval) — the lease counts from here.
+    r.runStartedAt = Date.now();
     saveRoutines(routines);
     pendingRuns.set(created.id, r.id);
     // P1-068: routine sessions get the artifacts protocol too (their fetches
@@ -1475,12 +1483,53 @@ async function failRoutine(routineId: string, sessionID: string, why: string) {
   log("warn", "routine run errored", { routine: r.name, why });
 }
 
+// P2-236: a run whose session event never arrived (daemon restart mid-run,
+// opencode closed, lost session) would hold the in-flight marker forever and
+// silently kill the routine. The release mirrors the existing failure path:
+// marker cleared, routine marked as errored with the static lease phrase,
+// persisted through the same write path, ONE warn line without session ids
+// and at most ONE notification per released routine. The routine itself is
+// never deleted; the next sweep makes it eligible again, so it fires
+// normally at its next scheduled time.
+function releaseStuckRun(r: Routine) {
+  if (r.lastSessionID) pendingRuns.delete(r.lastSessionID);
+  r.lastSessionID = undefined;
+  r.runStartedAt = undefined;
+  r.lastStatus = "error";
+  r.lastError = RUN_LEASE_KILL_MESSAGE;
+  saveRoutines(routines);
+  void pushToSubscribers(`⏰ ${r.name} falhou`, RUN_LEASE_KILL_MESSAGE, { url: "#/" });
+  log("warn", RUN_LEASE_KILL_MESSAGE, { routine: r.name });
+}
+
 function checkRoutines() {
   const now = new Date();
   const today = now.toLocaleDateString("sv"); // local YYYY-MM-DD
   const nowMin = now.getHours() * 60 + now.getMinutes();
   const dow = now.getDay();
+  const nowMs = now.getTime();
+  // P2-236: consult the run lease inside the same periodic sweep — no new
+  // timer, no per-request probing, no boot delay. A stuck run (marker left
+  // behind by a restart or a lost session event) is stamped on first
+  // observation and released once the lease is exceeded; everything else is
+  // untouched.
+  const leasePlans = new Map(
+    leaseVerdict(
+      nowMs,
+      runLease.leaseMs,
+      routines.map((r) => ({ id: r.id, inFlight: Boolean(r.lastSessionID), startedAt: r.runStartedAt })),
+    ).map((v) => [v.id, v.plan]),
+  );
   for (const r of routines) {
+    const leasePlan = leasePlans.get(r.id) ?? "none";
+    if (leasePlan === "kill") {
+      releaseStuckRun(r);
+      continue;
+    }
+    if (leasePlan === "stamp") {
+      r.runStartedAt = nowMs; // lease starts counting from the first observation
+      saveRoutines(routines);
+    }
     if (r.lastSessionID) continue; // a run is already in flight
     const mode = r.mode ?? "daily";
     if (mode === "interval") {
@@ -3359,6 +3408,13 @@ async function main() {
   // an invalid OCR_UPLOAD_RETENTION_* never falls back to the default silently.
   if (uploadRetention.problems.length > 0) {
     for (const problem of uploadRetention.problems) log("error", problem);
+    process.exit(1);
+    return;
+  }
+  // P2-236: same fail-closed contract for the routine run lease — an invalid
+  // OCR_RUN_LEASE_MS never falls back to the default silently.
+  if (runLease.problems.length > 0) {
+    for (const problem of runLease.problems) log("error", problem);
     process.exit(1);
     return;
   }

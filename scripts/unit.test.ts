@@ -15,6 +15,15 @@ import { parsePairingUri, localWsUrl, shouldFailoverToRelay } from "../apps/web/
 import { isLoopbackAddr, localOriginAllowed, localUpgradeAllowed } from "../apps/daemon/src/localws";
 
 import { classifyRelayClose, effectiveRetryDelayMs } from "../apps/daemon/src/relayclose";
+import {
+  DEFAULT_RUN_LEASE_MS,
+  RUN_LEASE_CEILING_MS,
+  RUN_LEASE_KILL_MESSAGE,
+  RUN_LEASE_OFF_MS,
+  leaseVerdict,
+  parseRunLease,
+  type RoutineRunFacts,
+} from "../apps/daemon/src/routinelease";
 import { sttVerdict } from "../apps/daemon/src/voicecap";
 import {
   CONVERTER_PREFERENCE,
@@ -17931,6 +17940,184 @@ check(
       .split("\n")
       .filter((l) => l.includes("setInterval"))
       .every((l) => !/identity/i.test(l)),
+  );
+}
+
+// --- P2-236: routine run lease (routinelease.ts) + wiring -------------------
+
+{
+  const src = (rel: string[]) => readFileSync(join(import.meta.dirname, "..", ...rel), "utf8");
+  const leaseSrc = src(["apps", "daemon", "src", "routinelease.ts"]);
+  const routinesSrc = src(["apps", "daemon", "src", "routines.ts"]);
+  const daemonIndexSrc = src(["apps", "daemon", "src", "index.ts"]);
+
+  // --- parseRunLease table -------------------------------------------------
+
+  check(
+    "P2-236: parseRunLease — an empty env keeps the documented default with no problem",
+    parseRunLease({}).leaseMs === DEFAULT_RUN_LEASE_MS &&
+      parseRunLease({}).problems.length === 0 &&
+      parseRunLease({ OCR_RUN_LEASE_MS: "   " }).leaseMs === DEFAULT_RUN_LEASE_MS &&
+      parseRunLease({ OCR_RUN_LEASE_MS: "   " }).problems.length === 0,
+  );
+  check(
+    "P2-236: parseRunLease — a valid whole positive ms value is accepted as-is",
+    parseRunLease({ OCR_RUN_LEASE_MS: "3600000" }).leaseMs === 3_600_000 &&
+      parseRunLease({ OCR_RUN_LEASE_MS: "3600000" }).problems.length === 0,
+  );
+  check(
+    "P2-236: parseRunLease — the documented off keyword disables the lease",
+    parseRunLease({ OCR_RUN_LEASE_MS: "off" }).leaseMs === RUN_LEASE_OFF_MS &&
+      parseRunLease({ OCR_RUN_LEASE_MS: "off" }).problems.length === 0 &&
+      parseRunLease({ OCR_RUN_LEASE_MS: " OFF " }).leaseMs === RUN_LEASE_OFF_MS,
+  );
+  const badLeases: Array<[string, string]> = [
+    ["abc", "non-numeric"],
+    ["0", "zero"],
+    ["-5", "negative"],
+    ["1500.5", "fractional"],
+    [String(RUN_LEASE_CEILING_MS + 1), "above ceiling"],
+  ];
+  check(
+    "P2-236: parseRunLease — non-numeric, zero, negative, fractional and above-ceiling are all problems",
+    badLeases.every(
+      ([raw]) =>
+        parseRunLease({ OCR_RUN_LEASE_MS: raw }).problems.length === 1 &&
+        parseRunLease({ OCR_RUN_LEASE_MS: raw }).leaseMs === DEFAULT_RUN_LEASE_MS,
+    ),
+  );
+  check(
+    "P2-236: parseRunLease — several problems accumulate from one value without short-circuit",
+    parseRunLease({ OCR_RUN_LEASE_MS: "-2.5" }).problems.length === 2,
+  );
+
+  // --- leaseVerdict table --------------------------------------------------
+
+  const LEASE = DEFAULT_RUN_LEASE_MS; // the documented 2 h default, explicit here
+  const NOW = 1_000_000_000_000;
+
+  check("P2-236: leaseVerdict — an empty list yields nothing to do", leaseVerdict(NOW, LEASE, []).length === 0);
+
+  const scenarios: Array<[string, RoutineRunFacts, string]> = [
+    ["not in flight with an ancient start stamp survives", { id: "r", inFlight: false, startedAt: NOW - LEASE * 10 }, "none"],
+    ["in flight within the lease survives", { id: "r", inFlight: true, startedAt: NOW - LEASE + 1 }, "none"],
+    // the documented threshold: a run exactly at the lease boundary is NOT killed
+    ["in flight exactly at the lease threshold survives", { id: "r", inFlight: true, startedAt: NOW - LEASE }, "none"],
+    ["in flight strictly older than the lease is killed", { id: "r", inFlight: true, startedAt: NOW - LEASE - 1 }, "kill"],
+    ["in flight without a start stamp is stamped", { id: "r", inFlight: true }, "stamp"],
+  ];
+  check(
+    "P2-236: leaseVerdict — the full plan table lands on the documented plan",
+    scenarios.every(([, facts, plan]) => leaseVerdict(NOW, LEASE, [facts])[0].plan === plan),
+  );
+
+  const pass1 = leaseVerdict(1000, LEASE, [{ id: "r1", inFlight: true }])[0];
+  const pass2 = leaseVerdict(1000 + LEASE + 1, LEASE, [{ id: "r1", inFlight: true, startedAt: 1000 }])[0];
+  check(
+    "P2-236: leaseVerdict — the same routine is killed only on a later pass, after stamp + lease",
+    pass1.plan === "stamp" && pass2.plan === "kill",
+  );
+  check(
+    "P2-236: leaseVerdict — a stamped run is never killed in the same pass it got the stamp",
+    leaseVerdict(1000, LEASE, [{ id: "r1", inFlight: true }]).every((v) => v.plan !== "kill"),
+  );
+  check(
+    "P2-236: leaseVerdict — a disabled lease returns nothing to do even for an ancient in-flight run",
+    leaseVerdict(NOW, RUN_LEASE_OFF_MS, [
+      { id: "old", inFlight: true, startedAt: NOW - LEASE * 10 },
+      { id: "nostamp", inFlight: true },
+      { id: "idle", inFlight: false },
+    ]).every((v) => v.plan === "none"),
+  );
+
+  const mixed: RoutineRunFacts[] = [
+    { id: "a", inFlight: true, startedAt: NOW - LEASE - 1 },
+    { id: "b", inFlight: false, startedAt: NOW - LEASE * 10 },
+    { id: "c", inFlight: true },
+    { id: "d", inFlight: true, startedAt: NOW },
+  ];
+  check(
+    "P2-236: leaseVerdict — iteration order is preserved and every id comes from the input list",
+    JSON.stringify(leaseVerdict(NOW, LEASE, mixed)) ===
+      JSON.stringify([
+        { id: "a", plan: "kill" },
+        { id: "b", plan: "none" },
+        { id: "c", plan: "stamp" },
+        { id: "d", plan: "none" },
+      ]) &&
+      leaseVerdict(NOW, LEASE, mixed).every((v) => mixed.some((m) => m.id === v.id)),
+  );
+
+  // --- kill phrase hygiene --------------------------------------------------
+
+  check(
+    "P2-236: the kill phrase is static, short, path-free, URL-scheme-free and session-free",
+    RUN_LEASE_KILL_MESSAGE.length > 0 &&
+      RUN_LEASE_KILL_MESSAGE.length <= 200 &&
+      RUN_LEASE_KILL_MESSAGE === RUN_LEASE_KILL_MESSAGE.trim() &&
+      !/[\\/]/.test(RUN_LEASE_KILL_MESSAGE) &&
+      !/[A-Za-z]:/.test(RUN_LEASE_KILL_MESSAGE) &&
+      !/https?:/i.test(RUN_LEASE_KILL_MESSAGE) &&
+      !/\bses[a-z0-9]{6,}/i.test(RUN_LEASE_KILL_MESSAGE),
+  );
+
+  // --- purity + real-repo wiring --------------------------------------------
+
+  // strip block + line comments first — the header prose names the banned modules
+  const leaseCode = leaseSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  check(
+    "P2-236: routinelease.ts is pure (no node:fs/child_process/path/os/http imports, no fetch)",
+    !/node:(fs|child_process|path|os|http)/.test(leaseCode) && !/\bfetch\(/.test(leaseCode),
+  );
+  check(
+    "P2-236: Routine gains runStartedAt additively — the on-disk marker fields are untouched",
+    routinesSrc.includes("runStartedAt?: number;") &&
+      routinesSrc.includes("lastSessionID?: string;") &&
+      routinesSrc.includes("lastStatus?:") &&
+      routinesSrc.includes("lastError?:"),
+  );
+
+  const fireAt = daemonIndexSrc.indexOf("async function fireRoutine");
+  const stampAt = daemonIndexSrc.indexOf("r.runStartedAt = Date.now();");
+  check(
+    "P2-236: the run start is stamped where the in-flight marker is written (fireRoutine, all modes)",
+    stampAt > fireAt && stampAt < fireAt + 800 && daemonIndexSrc.includes("r.lastSessionID = created.id;"),
+  );
+
+  const sweepAt = daemonIndexSrc.indexOf("function checkRoutines");
+  const sweepEnd = daemonIndexSrc.indexOf("setInterval(checkRoutines");
+  check(
+    "P2-236: the lease verdict is consulted inside the existing periodic sweep",
+    sweepAt >= 0 &&
+      sweepEnd > sweepAt &&
+      daemonIndexSrc.indexOf("leaseVerdict(") > sweepAt &&
+      daemonIndexSrc.indexOf("leaseVerdict(") < sweepEnd,
+  );
+
+  const releaseAt = daemonIndexSrc.indexOf("function releaseStuckRun");
+  const releaseBlock = releaseAt >= 0 ? daemonIndexSrc.slice(releaseAt, sweepAt) : "";
+  check(
+    "P2-236: the release path clears the in-flight marker and never deletes the routine",
+    releaseBlock.includes("pendingRuns.delete(") &&
+      releaseBlock.includes("r.lastSessionID = undefined;") &&
+      releaseBlock.includes('r.lastError = RUN_LEASE_KILL_MESSAGE;') &&
+      releaseBlock.includes("saveRoutines(routines);") &&
+      !/splice|\.filter\(|\.pop\(/.test(releaseBlock),
+  );
+
+  const mainAt = daemonIndexSrc.indexOf("async function main");
+  check(
+    "P2-236: an invalid OCR_RUN_LEASE_MS refuses the boot next to the other knobs (fail-closed)",
+    daemonIndexSrc.includes("const runLease = parseRunLease(process.env);") &&
+      mainAt >= 0 &&
+      daemonIndexSrc.indexOf("if (runLease.problems.length > 0)") > mainAt,
+  );
+  check(
+    "P2-236: no periodic lease timer was introduced",
+    daemonIndexSrc
+      .split("\n")
+      .filter((l) => l.includes("setInterval"))
+      .every((l) => !/lease|stuck/i.test(l)),
   );
 }
 
