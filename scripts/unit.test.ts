@@ -705,6 +705,18 @@ import { UPDATE_DOWNLOADED_TRAY_LABEL, UPDATE_REMIND_LIMITS, updateReminderPlan 
 
 import { UPDATE_PROGRESS_LABEL_DOWNLOADING, UPDATE_PROGRESS_LABEL_STUCK, UPDATE_PROGRESS_LIMITS, updateProgressView } from "../apps/desktop/src/updateprogress";
 
+import {
+  UPDATE_SPACE_HEADROOM_BYTES,
+  UPDATE_SPACE_LABEL_DOWNLOAD,
+  UPDATE_SPACE_LABEL_POSTPONED,
+  UPDATE_SPACE_LABEL_POSTPONED_UNKNOWN,
+  UPDATE_SPACE_LABEL_SIZE_UNKNOWN,
+  UPDATE_SPACE_LABEL_WARN,
+  UPDATE_SPACE_LIMITS,
+  UPDATE_SPACE_SIZE_MULTIPLIER,
+  updateSpaceVerdict,
+} from "../apps/desktop/src/updatespace";
+
 import { appIdForPlatform, applyAppUserModelId, daemonNotify, NOTIFY_BACK_BODY, NOTIFY_DOWN_BODY, WINDOWS_APP_ID } from "../apps/desktop/src/notify";
 
 import { DEEP_LINK_QUERY_MAX, deepLinkFromArgv, parseDeepLink } from "../apps/desktop/src/deeplink";
@@ -22870,6 +22882,182 @@ check("P2-241: no new periodic timer was introduced by the handler", !dlBlock.in
   check(
     "P2-258: existing tray items keep their order",
     positions258.every((p, i) => p >= 0 && (i === 0 || p > positions258[i - 1])),
+  );
+}
+
+// --- P2-264: disk-space gate for the update download (updatespace.ts) --------------
+{
+  const root = join(import.meta.dirname, "..");
+  const limits = { sizeMultiplier: UPDATE_SPACE_LIMITS.sizeMultiplier, headroomBytes: UPDATE_SPACE_LIMITS.headroomBytes };
+  const size = 500_000_000; // 500 MB announced release
+  // The threshold, explicit: necessary = size × multiplier + headroom.
+  const necessary = size * UPDATE_SPACE_SIZE_MULTIPLIER + UPDATE_SPACE_HEADROOM_BYTES;
+
+  // Rule 1: free bytes that are absent, text, non-finite or negative postpone
+  // fail-closed — downloading without knowing is exactly what breaks today.
+  for (const free of [null, undefined, "500000000", Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1]) {
+    const view = updateSpaceVerdict(free as number, size, limits);
+    check(
+      `P2-264: free bytes ${String(free)} → postpone (fail-closed)`,
+      view.verdict === "postpone" && view.reason === "invalid-free-bytes" && view.label === UPDATE_SPACE_LABEL_POSTPONED_UNKNOWN,
+    );
+  }
+
+  // Rule 2: an announced size that is absent or <= 0 warns and NEVER
+  // postpones — the feed may omit the size and refusing for that would stop
+  // the whole product. Even a nearly full volume warns here, not postpones.
+  for (const announced of [null, undefined, 0, -1, "500000000", Number.NaN, Number.POSITIVE_INFINITY]) {
+    const view = updateSpaceVerdict(100, announced as number, limits);
+    check(
+      `P2-264: announced size ${String(announced)} → warn (never refuse the update)`,
+      view.verdict === "warn" && view.reason === "invalid-release-size" && view.label === UPDATE_SPACE_LABEL_SIZE_UNKNOWN,
+    );
+  }
+
+  // Rule 3 with the threshold explicit: free exactly AT the necessary is not
+  // below it (warn band); one byte below postpones.
+  const atThreshold = updateSpaceVerdict(necessary, size, limits);
+  check(
+    "P2-264: free exactly at the necessary (size × multiplier + headroom) is NOT postponed",
+    atThreshold.verdict === "warn" && atThreshold.reason === "low-space-warning",
+  );
+  const oneByteBelow = updateSpaceVerdict(necessary - 1, size, limits);
+  check(
+    "P2-264: one byte below the necessary postpones",
+    oneByteBelow.verdict === "postpone" && oneByteBelow.reason === "insufficient-space" && oneByteBelow.label === UPDATE_SPACE_LABEL_POSTPONED,
+  );
+  // The multiplier is part of the threshold: free above size × 1 + headroom
+  // but below size × 2 + headroom still postpones — the unpacked copy needs
+  // room at the same time as the downloaded package.
+  const halfWay = updateSpaceVerdict(size + UPDATE_SPACE_HEADROOM_BYTES + 1, size, limits);
+  check("P2-264: free above the plain size but below size × multiplier postpones", halfWay.verdict === "postpone");
+
+  // Rule 4: inside the warning headroom above the necessary → warn.
+  const inBand = updateSpaceVerdict(necessary + 1, size, limits);
+  check(
+    "P2-264: free above the necessary but inside the warning headroom warns",
+    inBand.verdict === "warn" && inBand.reason === "low-space-warning" && inBand.label === UPDATE_SPACE_LABEL_WARN,
+  );
+  // Rule 5: at the end of the warning band and comfortably above → download.
+  const atBandEnd = updateSpaceVerdict(necessary + UPDATE_SPACE_HEADROOM_BYTES, size, limits);
+  check(
+    "P2-264: free at the end of the warning band downloads",
+    atBandEnd.verdict === "download" && atBandEnd.reason === "enough-space" && atBandEnd.label === UPDATE_SPACE_LABEL_DOWNLOAD,
+  );
+  const roomy = updateSpaceVerdict(necessary * 4, size, limits);
+  check("P2-264: comfortable free space downloads", roomy.verdict === "download");
+
+  // Rule order proven: non-finite free bytes AND an absent announced size at
+  // the same time — the free-bytes rule wins and the result is postpone.
+  const order = updateSpaceVerdict(Number.NaN, null, limits);
+  check(
+    "P2-264: invalid free bytes beat an absent size (rule order)",
+    order.verdict === "postpone" && order.reason === "invalid-free-bytes",
+  );
+
+  // Determinism: same input → identical verdict in two calls.
+  const first = updateSpaceVerdict(necessary, size, limits);
+  const second = updateSpaceVerdict(necessary, size, limits);
+  check("P2-264: same input → identical verdict in two calls", JSON.stringify(first) === JSON.stringify(second));
+
+  // Label hygiene: every reason's label is static, carries no path, no volume
+  // name, no address, no port and no secret, and fits the documented tray
+  // text budget.
+  const views = [
+    updateSpaceVerdict(null, size, limits),
+    updateSpaceVerdict(100, null, limits),
+    updateSpaceVerdict(necessary - 1, size, limits),
+    updateSpaceVerdict(necessary + 1, size, limits),
+    updateSpaceVerdict(necessary * 4, size, limits),
+  ];
+  for (const view of views) {
+    const clean =
+      !view.label.includes("/") &&
+      !view.label.includes("://") &&
+      !view.label.includes("127.") &&
+      !view.label.includes("localhost") &&
+      !view.label.includes("Macintosh") &&
+      !view.label.includes("HD") &&
+      !/[A-Za-z0-9_]{24,}/.test(view.label) &&
+      view.label.length <= TRAY_TIP_MAX_CHARS;
+    check(`P2-264: "${view.label}" is static, volume-free and secret-free within the tray budget`, clean);
+  }
+
+  // The documented constants themselves.
+  check("P2-264: the documented multiplier is 2 (package + unpacked copy)", UPDATE_SPACE_SIZE_MULTIPLIER === 2);
+  check(
+    "P2-264: the documented headroom is positive and finite",
+    Number.isFinite(UPDATE_SPACE_HEADROOM_BYTES) && UPDATE_SPACE_HEADROOM_BYTES > 0,
+  );
+
+  // Source hygiene: the module stays pure — no electron, no node:fs, no fetch.
+  const spaceSrc = readFileSync(join(root, "apps", "desktop", "src", "updatespace.ts"), "utf8");
+  check(
+    "P2-264: updatespace.ts stays pure — no electron, no node:fs, no fetch",
+    !spaceSrc.includes("from \"electron\"") && !spaceSrc.includes("node:fs") && !spaceSrc.includes("fetch("),
+  );
+  check("P2-264: the harness-session reason is documented in the module header", spaceSrc.includes("OCR_DESKTOP_SESSION"));
+
+  // Source wiring: main.ts reads the real free space exactly once per
+  // decision, on the SAME tick updateschedule.ts feeds, opens nothing, adds
+  // no timer, no IPC channel, and never cancels, deletes or installs.
+  const mainSrc = readFileSync(join(root, "apps", "desktop", "src", "main.ts"), "utf8");
+  const blockStart = mainSrc.indexOf("disk-space gate for the scheduled update (P2-264)");
+  const blockEnd = mainSrc.indexOf("deferred-update reminder (P2-257)");
+  const block = blockStart >= 0 && blockEnd > blockStart ? mainSrc.slice(blockStart, blockEnd) : "";
+  check("P2-264: main.ts has the disk-space gate block", blockStart >= 0 && blockEnd > blockStart);
+  check(
+    "P2-264: the gate reads the real free space exactly once per decision (one statfsSync)",
+    block.includes("statfsSync") && (block.match(/statfsSync/g) ?? []).length === 1,
+  );
+  check(
+    "P2-264: the gate block opens no window, dialog or focus — nothing for the harness rule to gate",
+    block.length > 0 &&
+      !block.includes("dialog.") &&
+      !block.includes("shell.") &&
+      !block.includes("showMainWindow") &&
+      !block.includes("new BrowserWindow") &&
+      !block.includes("openExternal"),
+  );
+  check(
+    "P2-264: the gate block adds no timer and no IPC channel",
+    block.length > 0 && !block.includes("setTimeout") && !block.includes("setInterval") && !block.includes("ipcMain"),
+  );
+  check(
+    "P2-264: postpone re-arms the SAME schedule instead of adding one",
+    block.includes("scheduleNextUpdateCheck(\"update-available\")"),
+  );
+  check(
+    "P2-264: the gate never cancels, deletes or installs",
+    !block.includes("rmSync") && !block.includes("unlink") && !block.includes("quitAndInstall") && !block.includes("cancelUpdate"),
+  );
+  check(
+    "P2-264: no new periodic timer in main.ts (the two pre-existing setInterval calls stay alone)",
+    (mainSrc.match(/setInterval/g) ?? []).length === 2,
+  );
+  check(
+    "P2-264: the gate is consulted before any check for updates is started in runUpdateCheck",
+    mainSrc.indexOf("updateSpaceGateSkip()") > 0 &&
+      mainSrc.indexOf("updateSpaceGateSkip()") < mainSrc.indexOf("void checkForUpdatesOnBoot({"),
+  );
+  check(
+    "P2-264: only the scheduled recheck consults the gate — boot and the explicit tray check are untouched",
+    mainSrc.includes("if (source === \"scheduled\" && updateSpaceGateSkip()) return;"),
+  );
+  check(
+    "P2-264: the postpone label outranks the stalled invite but not the downloaded release",
+    mainSrc.indexOf("UPDATE_DOWNLOADED_TRAY_LABEL") < mainSrc.indexOf("if (updateSpaceLabel) return updateSpaceLabel;") &&
+      mainSrc.indexOf("if (updateSpaceLabel) return updateSpaceLabel;") < mainSrc.indexOf("if (lastUpdateStatus === \"update-available\" && lastUpdateProgressLabel) return lastUpdateProgressLabel;"),
+  );
+
+  const trayStart264 = mainSrc.indexOf("function trayMenuItems");
+  const trayEnd264 = mainSrc.indexOf("function ", trayStart264 + 10);
+  const traySrc264 = mainSrc.slice(trayStart264, trayEnd264);
+  const markers264 = ["trayMenuLine", "Open OpenCode Remote", "Check for updates", "Restart daemon", "Start at login", "Open logs folder", "Quit"];
+  const positions264 = markers264.map((m) => traySrc264.indexOf(m));
+  check(
+    "P2-264: existing tray items keep their order",
+    positions264.every((p, i) => p >= 0 && (i === 0 || p > positions264[i - 1])),
   );
 }
 
