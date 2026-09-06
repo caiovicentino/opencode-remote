@@ -44,6 +44,11 @@ import {
   quarantineName,
   type IdentityVerdict,
 } from "../apps/daemon/src/identityfile";
+import {
+  backupName,
+  backupWritePlan,
+  identityRecoveryPlan,
+} from "../apps/daemon/src/identitybackup";
 import { modelReadyVerdict, providerSummary } from "../apps/daemon/src/modelready";
 import { MIN_OPENCODE_VERSION, parseVersion, versionVerdict } from "../apps/daemon/src/opencodever";
 import {
@@ -19188,6 +19193,228 @@ check(
       .split("\n")
       .filter((l) => l.includes("setInterval"))
       .every((l) => !/identity/i.test(l)),
+  );
+}
+
+// --- P2-254: automatic identity backup copy (identitybackup.ts) + wiring -----
+
+{
+  const src = (rel: string[]) => readFileSync(join(import.meta.dirname, "..", ...rel), "utf8");
+  const modSrc = src(["apps", "daemon", "src", "identitybackup.ts"]);
+  const statefileSrc = src(["apps", "daemon", "src", "statefile.ts"]);
+  const daemonIndexSrc = src(["apps", "daemon", "src", "index.ts"]);
+
+  const DAY = 24 * 60 * 60 * 1000;
+  const T0 = 1_000_000;
+  type WritePlanInput = Parameters<typeof backupWritePlan>[0];
+  const writePlan = (over: Partial<WritePlanInput>) =>
+    backupWritePlan({
+      contentUsable: true,
+      backupExists: true,
+      lastBackupAt: T0,
+      now: T0 + DAY,
+      minIntervalMs: DAY,
+      ...over,
+    });
+
+  // backupName — full table
+  const bnInputs = ["daemon.json", "x", "", "   ", "daemon.json.backup"];
+  check(
+    "P2-254: backupName is never empty and never equals the original",
+    bnInputs.every(
+      (n) => backupName(n).trim().length > 0 && backupName(n) !== n && backupName(n) !== n.trim(),
+    ),
+  );
+  check(
+    "P2-254: backupName is always a sibling bare name in the state dir (no separators, no travel)",
+    bnInputs.every((n) => !/[\\/]/.test(backupName(n)) && !backupName(n).includes("..")),
+  );
+  check(
+    "P2-254: backupName is deterministic and documented for daemon.json",
+    backupName("daemon.json") === "daemon.json.backup" &&
+      backupName("daemon.json") === backupName("daemon.json"),
+  );
+  check(
+    "P2-254: backupName strips directory components — always a bare sibling name",
+    backupName("a/b.json") === "b.json.backup" &&
+      backupName("..\\..\\x.json") === "x.json.backup" &&
+      backupName("a/b/") === "b.backup" &&
+      backupName("dir/.") === "dir.backup" &&
+      backupName("dir/..") === "dir.backup" &&
+      backupName("///") === "daemon.json.backup" &&
+      !backupName("a/b.json").includes("/") &&
+      !backupName("a\\b.json").includes("\\") &&
+      !backupName("dir/..").includes(".."),
+  );
+
+  // backupWritePlan — full table, rules in the documented order
+  const garbage = { contentUsable: false, backupExists: false, lastBackupAt: null } as const;
+  check(
+    "P2-254: unusable content is never copied even with no backup at all — rule 1 beats rule 2",
+    writePlan(garbage).decision === "skip" && writePlan(garbage).reason === "unusable-content",
+  );
+  check(
+    "P2-254: unusable content never overwrites an existing good copy either",
+    writePlan({ contentUsable: false }).decision === "skip" &&
+      writePlan({ contentUsable: false }).reason === "unusable-content",
+  );
+  check(
+    "P2-254: a nonexistent backup with usable content is always written",
+    writePlan({ backupExists: false, lastBackupAt: null }).decision === "write" &&
+      writePlan({ backupExists: false, lastBackupAt: null }).reason === "no-backup-yet",
+  );
+  check(
+    "P2-254: a copy exactly at the minimum interval is written (explicit threshold)",
+    writePlan({ lastBackupAt: T0, now: T0 + DAY }).decision === "write",
+  );
+  check(
+    "P2-254: a copy older than the interval is written",
+    writePlan({ lastBackupAt: T0 - DAY, now: T0 + DAY }).decision === "write" &&
+      writePlan({ lastBackupAt: T0 - DAY, now: T0 + DAY }).reason === "backup-stale",
+  );
+  check(
+    "P2-254: a copy newer than the interval is skipped",
+    writePlan({ lastBackupAt: T0, now: T0 + 1 }).decision === "skip" &&
+      writePlan({ lastBackupAt: T0, now: T0 + 1 }).reason === "backup-fresh",
+  );
+  check(
+    "P2-254: an instant in the future is treated as now — the age is never negative",
+    writePlan({ lastBackupAt: T0 + 10 * DAY, now: T0 + DAY }).decision === "skip" &&
+      writePlan({ lastBackupAt: T0 + 10 * DAY, now: T0 + DAY }).reason === "backup-fresh",
+  );
+  check(
+    "P2-254: a non-finite instant is refused instead of guessed",
+    [Number.NaN, Number.POSITIVE_INFINITY].every((bad) =>
+      [
+        writePlan({ now: bad }),
+        writePlan({ lastBackupAt: bad }),
+      ].every((p) => p.decision === "skip" && p.reason === "non-finite-instant"),
+    ),
+  );
+  check(
+    "P2-254: the write plan is deterministic for the same input",
+    JSON.stringify(writePlan({})) === JSON.stringify(writePlan({})),
+  );
+
+  // identityRecoveryPlan — verdicts built exactly as identityVerdict returns them
+  const VALID =
+    '{"room":"abc","ecdhPub":"pub","ecdhPriv":"priv","vapid":{"publicKey":"a","privateKey":"b"},"clients":[]}';
+  const mainUse = identityVerdict(true, VALID, null);
+  const mainMissing = identityVerdict(false, null, null);
+  const mainReadFail = identityVerdict(true, null, "EACCES");
+  const mainContentRefuse = identityVerdict(true, "{", null);
+  const backupUse = identityVerdict(true, VALID, null);
+  const backupRefuse = identityVerdict(true, "{", null);
+  check(
+    "P2-254: a usable main wins over everything — the copy is never even consulted",
+    identityRecoveryPlan(mainUse, true, backupUse) === "use-main" &&
+      identityRecoveryPlan(mainUse, false, null) === "use-main",
+  );
+  check(
+    "P2-254: a main read failure never restores, even with a usable copy present",
+    identityRecoveryPlan(mainReadFail, true, backupUse) === "refuse",
+  );
+  check(
+    "P2-254: a missing main file stays a first run and never restores",
+    identityRecoveryPlan(mainMissing, true, backupUse) === "first-run" &&
+      identityRecoveryPlan(mainMissing, false, null) === "first-run",
+  );
+  check(
+    "P2-254: a content refusal with a usable copy restores from it",
+    identityRecoveryPlan(mainContentRefuse, true, backupUse) === "restore-from-backup",
+  );
+  check(
+    "P2-254: a content refusal with an unusable copy refuses with the existing message path",
+    identityRecoveryPlan(mainContentRefuse, true, backupRefuse) === "refuse",
+  );
+  check(
+    "P2-254: a content refusal without any copy refuses",
+    identityRecoveryPlan(mainContentRefuse, false, null) === "refuse",
+  );
+  check(
+    "P2-254: the recovery plan is identical for the same input in two calls",
+    (
+      [
+        [mainUse, true, backupUse],
+        [mainReadFail, true, backupUse],
+        [mainMissing, false, null],
+        [mainContentRefuse, true, backupUse],
+        [mainContentRefuse, true, backupRefuse],
+        [mainContentRefuse, false, null],
+      ] as Array<[IdentityVerdict, boolean, IdentityVerdict | null]>
+    ).every(
+      ([m, ex, b]) =>
+        JSON.stringify(identityRecoveryPlan(m, ex, b)) ===
+        JSON.stringify(identityRecoveryPlan(m, ex, b)),
+    ),
+  );
+
+  // purity: unit tests must never boot a daemon on import
+  // (strip line comments first — the header prose names the banned modules)
+  const modCode = modSrc.replace(/\/\/.*$/gm, "");
+  check(
+    "P2-254: identitybackup.ts is pure (no node:fs/path/child_process/fetch imports)",
+    !/node:(fs|path|child_process|crypto|os|http)/.test(modCode) && !/\bfetch\(/.test(modCode),
+  );
+
+  // real-repo wiring: the copy is written by writeStateAtomic (same atomic
+  // 0600 write as the main file), only as a persistence side effect — no new
+  // timers — and the P2-234 quarantine path stays untouched.
+  const helperAt = daemonIndexSrc.indexOf("function persistIdentityBackup");
+  const loadAt = daemonIndexSrc.indexOf("async function loadIdentity");
+  const helperSlice = helperAt >= 0 && loadAt > helperAt ? daemonIndexSrc.slice(helperAt, loadAt) : "";
+  check(
+    "P2-254: the backup copy is written by writeStateAtomic, the same atomic 0600 write",
+    helperSlice.includes("writeStateAtomic(backupPath") &&
+      !helperSlice.includes("writeFileSync(") &&
+      !helperSlice.includes("chmodSync(") &&
+      /mode:\s*0o600/.test(statefileSrc),
+  );
+  check(
+    "P2-254: every successful state persistence triggers the backup exactly once per site",
+    (daemonIndexSrc.match(/persistIdentityBackup\(serialized\)/g) || []).length === 4,
+  );
+  check(
+    "P2-254: no new periodic timer was introduced for the backup copy",
+    !/setInterval|setTimeout/.test(helperSlice) &&
+      daemonIndexSrc
+        .split("\n")
+        .filter((l) => l.includes("setInterval"))
+        .every((l) => !/backup/i.test(l)),
+  );
+  check(
+    "P2-254: the boot restore preserves the illegible file via the P2-234 quarantine path first, then restores",
+    daemonIndexSrc.includes("identityRecoveryPlan(") &&
+      daemonIndexSrc.indexOf("quarantineName(basename(STATE_FILE") > -1 &&
+      daemonIndexSrc.indexOf("renameSync(STATE_FILE, qfile)") <
+        daemonIndexSrc.indexOf("writeStateAtomic(STATE_FILE, backupContent)") &&
+      daemonIndexSrc.includes('audit("identity.restored-from-backup")'),
+  );
+  const recoveryAt = daemonIndexSrc.indexOf("let restoredContent: string | null = null;");
+  const refuseIfAt = daemonIndexSrc.indexOf('verdict.plan === "refuse"');
+  const recoverySlice =
+    recoveryAt >= 0 && refuseIfAt > recoveryAt ? daemonIndexSrc.slice(recoveryAt, refuseIfAt) : "";
+  check(
+    "P2-254: a failed restore write rolls the preserved bytes back and refuses — never a missing main",
+    recoverySlice.includes("writeStateAtomic(STATE_FILE, backupContent)") &&
+      recoverySlice.indexOf("renameSync(preserved, STATE_FILE)") >
+        recoverySlice.indexOf("writeStateAtomic(STATE_FILE, backupContent)") &&
+      recoverySlice.includes("restoredContent = backupContent") &&
+      recoverySlice.indexOf("writeStateAtomic(STATE_FILE, backupContent)") <
+        recoverySlice.indexOf("restored = true"),
+  );
+  check(
+    "P2-254: boot and persistence derive the backup path from one single source",
+    (daemonIndexSrc.match(/identityBackupPath\(\)/g) || []).length >= 2 &&
+      (daemonIndexSrc.match(/join\((?:dir|STATE_DIR), backupName\(basename\(STATE_FILE\)\)\)/g) || [])
+        .length === 1,
+  );
+  check(
+    "P2-254: the P2-234 refuse path stays intact — one verdict read, quarantine move, exit 78",
+    (daemonIndexSrc.match(/identityVerdict\(/g) || []).length === 1 &&
+      daemonIndexSrc.includes("quarantineName(basename(STATE_FILE") &&
+        daemonIndexSrc.includes("process.exit(78)") &&
+      daemonIndexSrc.includes('audit("identity.unreadable"'),
   );
 }
 

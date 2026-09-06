@@ -38,6 +38,13 @@ import { log } from "./log.js";
 import { IdempotencyCache } from "./idempotency.js";
 import { writeStateAtomic } from "./statefile.js";
 import { identityVerdict, quarantineName } from "./identityfile.js";
+import {
+  backupContentVerdict,
+  backupName,
+  backupWritePlan,
+  IDENTITY_BACKUP_RESTORED_LOG,
+  identityRecoveryPlan,
+} from "./identitybackup.js";
 import { appendAudit, readAuditTail } from "./auditlog.js";
 import { capMessagePage, parsePageLimit, shouldPaginateMessages, type HistoryRowLike } from "./paginate.js";
 import { handleBrowse } from "./browse.js";
@@ -203,7 +210,9 @@ function saveAllowlist(clients: PairedClient[]) {
   raw.clients = clients;
   // P2-165: atomic + 0600-from-creation (tmp + rename) — a crash mid-write
   // used to truncate daemon.json and lose every pairing.
-  writeStateAtomic(STATE_FILE, JSON.stringify(raw, null, 2));
+  const serialized = JSON.stringify(raw, null, 2);
+  writeStateAtomic(STATE_FILE, serialized);
+  persistIdentityBackup(serialized);
 }
 
 function assertPrivateMode(file: string) {
@@ -211,6 +220,41 @@ function assertPrivateMode(file: string) {
   if (mode !== 0o600) {
     chmodSync(file, 0o600);
     log("warn", "state file permissions tightened to 0600", { file, previousMode: mode.toString(8) });
+  }
+}
+
+// P2-254: automatic backup copy of the identity file. Written through the
+// same atomic 0600 write as the main file, only as a side effect of a
+// successful persistence (no timers, no periodic scheduling), at most once
+// per minimum interval. Failure is strictly log-only: it never brings the
+// daemon down and never invalidates the main write it follows.
+const IDENTITY_BACKUP_MIN_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+// One single source for the backup path: every consumer derives it from
+// STATE_DIR here, so boot and persistence can never drift apart.
+function identityBackupPath(): string {
+  return join(STATE_DIR, backupName(basename(STATE_FILE)));
+}
+
+function persistIdentityBackup(serialized: string) {
+  try {
+    const backupPath = identityBackupPath();
+    let backupExists = false;
+    let lastBackupAt: number | null = null;
+    try {
+      lastBackupAt = statSync(backupPath).mtimeMs;
+      backupExists = true;
+    } catch {}
+    const plan = backupWritePlan({
+      contentUsable: backupContentVerdict(serialized).plan === "use",
+      backupExists,
+      lastBackupAt,
+      now: Date.now(),
+      minIntervalMs: IDENTITY_BACKUP_MIN_INTERVAL_MS,
+    });
+    if (plan.decision === "write") writeStateAtomic(backupPath, serialized);
+  } catch {
+    log("warn", "identity backup copy skipped: write failed");
   }
 }
 
@@ -247,7 +291,65 @@ async function loadIdentity(): Promise<DaemonIdentity> {
     else readFailure = code || "EUNKNOWN";
   }
   const verdict = identityVerdict(exists, content, readFailure);
-  if (verdict.plan === "refuse") {
+
+  // P2-254: an illegible identity file may be recoverable from the automatic
+  // backup copy. Only a content refusal (the quarantine mark) is ever
+  // recoverable — identityRecoveryPlan owns the rule order: a usable main
+  // wins, a read failure never restores, a missing file stays a first run.
+  let restoredContent: string | null = null;
+  if (verdict.quarantine) {
+    const backupPath = identityBackupPath();
+    let backupContent: string | null = null;
+    let backupExists = false;
+    try {
+      backupContent = readFileSync(backupPath, "utf8");
+      backupExists = true;
+    } catch {
+      backupExists = existsSync(backupPath);
+    }
+    const recovery = identityRecoveryPlan(
+      verdict,
+      backupExists,
+      backupContentVerdict(backupContent),
+    );
+    if (recovery === "restore-from-backup" && backupContent !== null) {
+      // Preserve the illegible file beside the original first (the P2-234
+      // quarantine path — nothing is ever deleted); only then put the copy
+      // in place through the same atomic 0600 write. If the preservation
+      // itself fails the bytes stay put and the boot refuses as before.
+      let preserved: string | null = null;
+      try {
+        const qfile = join(dir, quarantineName(basename(STATE_FILE), new Date()));
+        renameSync(STATE_FILE, qfile);
+        chmodSync(qfile, 0o600);
+        preserved = qfile;
+      } catch {}
+      let restored = false;
+      if (preserved !== null) {
+        try {
+          writeStateAtomic(STATE_FILE, backupContent);
+          restored = true;
+        } catch {
+          // The restore write itself failed (a full disk — the exact
+          // scenario this task exists for). Never die with the main file
+          // missing while a good backup survives: put the preserved
+          // illegible bytes back over the main path and fall through to
+          // the refuse branch below (exit 78, backup copy intact).
+          try {
+            renameSync(preserved, STATE_FILE);
+          } catch {}
+        }
+      }
+      if (restored) {
+        log("info", IDENTITY_BACKUP_RESTORED_LOG);
+        audit("identity.restored-from-backup");
+        content = backupContent;
+        restoredContent = backupContent;
+      }
+    }
+  }
+
+  if (verdict.plan === "refuse" && restoredContent === null) {
     // Rule-order contract (identityfile.ts header): a filesystem read
     // failure NEVER quarantines — the file stays exactly where it is. For
     // unreadable content, preserve it beside the original (0600, never
@@ -269,7 +371,7 @@ async function loadIdentity(): Promise<DaemonIdentity> {
     process.exit(78);
   }
   let raw: Partial<IdentityFile> =
-    verdict.plan === "use" ? (JSON.parse(content!) as Partial<IdentityFile>) : {};
+    restoredContent !== null || verdict.plan === "use" ? (JSON.parse(content!) as Partial<IdentityFile>) : {};
 
   if (!raw.ecdhPub || !raw.ecdhPriv) {
     // v1 -> v2 migration (or first run)
@@ -285,8 +387,10 @@ async function loadIdentity(): Promise<DaemonIdentity> {
   }
 
   // P2-165: atomic write — the identity must survive a power loss mid-write.
-  writeStateAtomic(STATE_FILE, JSON.stringify(raw, null, 2));
+  const serialized = JSON.stringify(raw, null, 2);
+  writeStateAtomic(STATE_FILE, serialized);
   assertPrivateMode(STATE_FILE);
+  persistIdentityBackup(serialized);
 
   const identity = await importPrivateIdentity(raw.ecdhPub!, fromB64(raw.ecdhPriv!));
   return {
@@ -489,7 +593,9 @@ function writeSettings(s: AppSettings) {
   raw.name = s.name;
   raw.notify = s.notify;
   raw.autoMode = s.autoMode;
-  writeStateAtomic(STATE_FILE, JSON.stringify(raw, null, 2));
+  const serialized = JSON.stringify(raw, null, 2);
+  writeStateAtomic(STATE_FILE, serialized);
+  persistIdentityBackup(serialized);
 }
 
 // --- file delivery: which paths the phone may download ----------------------
@@ -2772,7 +2878,9 @@ function apiToken(): string {
   if (raw.apiToken) return raw.apiToken;
   const token = randomUUID().replace(/-/g, "") + randomUUID().replace(/-/g, "");
   raw.apiToken = token;
-  writeStateAtomic(STATE_FILE, JSON.stringify(raw, null, 2));
+  const serialized = JSON.stringify(raw, null, 2);
+  writeStateAtomic(STATE_FILE, serialized);
+  persistIdentityBackup(serialized);
   log("info", "api token generated (see apiToken in daemon.json)");
   return token;
 }

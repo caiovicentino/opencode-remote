@@ -77,6 +77,14 @@ What it means:
 - **Restoring the file restores the pairings.** Rename the quarantine file
   back over `daemon.json` (fix what made it unreadable first) and restart the
   app — every pairing comes back exactly as it was.
+- **There is an automatic backup that restores itself (P2-254).** The daemon
+  keeps a recovery copy carrying the full identity and the paired-devices list
+  as the sibling `daemon.json.backup` in the same state directory, born with
+  the same restricted 0600 permission as the original (written at most once a
+  day right after a state save, never in any downloadable folder), and when
+  the main file is illegible at boot the daemon preserves it in quarantine and
+  puts that copy in its place automatically — pairings survive with no manual
+  work; it only refuses as below when no usable copy exists.
 - **Deleting both files starts the machine over.** Remove `daemon.json` and
   its quarantine copy and the next boot is a fresh first run: a new identity
   is created and every phone must pair again by scanning the QR.
