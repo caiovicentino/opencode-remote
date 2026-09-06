@@ -466,6 +466,18 @@ export const dict = {
     installHintBody:
       "Add the app to your Home Screen to keep this pairing saved — in the browser, tap the Share button and choose Add to Home Screen.",
     installHintDismiss: "Dismiss",
+    // P2-232: machine-state section (Settings) — labels resolve per locale;
+    // the rows' phrases themselves come from the daemon, never from here.
+    machineStateTitle: "Machine state",
+    machineStateEmpty: "Nothing to show yet — the machine hasn't reported its state.",
+    machineStateAllOkTitle: "Everything is fine on this machine.",
+    machineStateAttentionTitle: "One or more items need attention on this machine.",
+    machineStateUnavailableTitle: "Something is unavailable on this machine.",
+    machineLabelRelay: "Remote connection",
+    machineLabelAgent: "Agent server",
+    machineLabelVersion: "Agent version",
+    machineLabelDisk: "Disk space",
+    machineLabelDocs: "Document conversion",
   },
   pt: {
     search: "Buscar conversas…",
@@ -871,5 +883,17 @@ export const dict = {
     // EXATAMENTE a frase do módulo puro (afirmado por scripts/unit.test.ts).
     installHintBody: INSTALL_HINT_MESSAGE,
     installHintDismiss: "Dispensar",
+    // P2-232: seção Estado da máquina (Configurações) — rótulos por idioma;
+    // as frases das linhas vêm da própria máquina, nunca daqui.
+    machineStateTitle: "Estado da máquina",
+    machineStateEmpty: "Nada a mostrar ainda — a máquina ainda não informou o estado.",
+    machineStateAllOkTitle: "Tudo certo nesta máquina.",
+    machineStateAttentionTitle: "Um ou mais itens pedem atenção nesta máquina.",
+    machineStateUnavailableTitle: "Algo está indisponível nesta máquina.",
+    machineLabelRelay: "Conexão remota",
+    machineLabelAgent: "Servidor do agente",
+    machineLabelVersion: "Versão do agente",
+    machineLabelDisk: "Espaço em disco",
+    machineLabelDocs: "Conversão de documentos",
   },
 } satisfies Record<Lang, Record<string, string>>;

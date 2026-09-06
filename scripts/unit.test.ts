@@ -155,6 +155,13 @@ import { sessionTitleOf } from "../apps/web/src/lib/title";
 import { dict, translate } from "../apps/web/src/lib/i18n";
 
 import { degradedKind, sawHealthyDaemon, sidecarExitNotice, upstreamNotice, type SidecarExitHealth, type UpstreamHealth } from "../apps/web/src/lib/degraded";
+import {
+  MACHINE_ROW_ORDER,
+  MACHINE_SEVERITY_DOT,
+  readinessRows,
+  summarize,
+  type MachineReadinessRow,
+} from "../apps/web/src/lib/machinestate";
 
 import { WELCOME_DONE, shouldShowWelcome } from "../apps/web/src/lib/welcome";
 
@@ -7699,6 +7706,239 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       const s = translate(lang, k);
       return s !== k && s.trim() !== "";
     })),
+  );
+}
+
+
+// --- P2-232: machine-state readiness rows (pure module) -------------------------
+{
+  // The daemon's own phrases, exactly as /api/health and /__ocr/settings serve
+  // them (no paths, no URL schemes — that contract is asserted below too).
+  const PHRASES = {
+    relayReason: "O endereço do relay não passou na validação desta máquina.",
+    versionTooOld: "O opencode instalado nesta máquina é mais antigo do que este app espera.",
+    diskOk: "Espaço em disco suficiente nesta máquina.",
+    diskLow: "O disco desta máquina está ficando sem espaço.",
+    diskCritical: "O disco desta máquina está quase cheio.",
+    docsComplete: "Esta máquina converte documentos com fidelidade completa.",
+  };
+  const FULL = {
+    relay: { ok: false, reason: PHRASES.relayReason },
+    opencode: {
+      binaryFound: true,
+      binarySource: "path",
+      versionState: "too-old",
+      versionMessage: PHRASES.versionTooOld,
+    },
+    diskState: "ok",
+    diskMessage: PHRASES.diskOk,
+    docConvertState: "complete",
+    docConvertMessage: PHRASES.docsComplete,
+  };
+
+  // Empty / null / non-object payloads → empty list, never a throw.
+  check(
+    "machinestate: empty, null, undefined and non-object payloads yield an empty list",
+    readinessRows({}).length === 0 &&
+      readinessRows(null).length === 0 &&
+      readinessRows(undefined).length === 0 &&
+      readinessRows("junk").length === 0 &&
+      readinessRows([1, 2, 3]).length === 0,
+  );
+  check(
+    "machinestate: a malformed payload yields an empty list without throwing",
+    (() => {
+      try {
+        return (
+          readinessRows({ diskState: 42, relay: "x", opencode: 7, docConvertState: true }).length === 0 &&
+          readinessRows({ relay: { ok: null, reason: 9 } }).length === 0
+        );
+      } catch {
+        return false;
+      }
+    })(),
+  );
+
+  // Partial payload → only the known rows.
+  const partial = readinessRows({ diskState: "low", diskMessage: PHRASES.diskLow });
+  check(
+    "machinestate: a partial payload renders only the known row with the daemon's verbatim phrase",
+    partial.length === 1 &&
+      partial[0].key === "disk" &&
+      partial[0].severity === "attention" &&
+      partial[0].message === PHRASES.diskLow &&
+      partial[0].labelKey === "machineLabelDisk",
+  );
+
+  // The three severities, each with the correct marker class.
+  const all = readinessRows(FULL);
+  const byKey = new Map(all.map((r) => [r.key, r]));
+  check(
+    "machinestate: all three severity levels appear with the correct marker",
+    byKey.get("relay")?.severity === "unavailable" &&
+      MACHINE_SEVERITY_DOT[byKey.get("relay")!.severity] === "err" &&
+      byKey.get("version")?.severity === "attention" &&
+      MACHINE_SEVERITY_DOT[byKey.get("version")!.severity] === "wait" &&
+      byKey.get("disk")?.severity === "ok" &&
+      MACHINE_SEVERITY_DOT[byKey.get("disk")!.severity] === "ok" &&
+      byKey.get("docs")?.severity === "ok" &&
+      byKey.get("agent")?.severity === "ok",
+  );
+  check(
+    "machinestate: the daemon's phrases ride verbatim (never rewritten)",
+    byKey.get("relay")?.message === PHRASES.relayReason &&
+      byKey.get("version")?.message === PHRASES.versionTooOld &&
+      byKey.get("disk")?.message === PHRASES.diskOk,
+  );
+
+  // Ordering: unavailable before attention before ok.
+  const ordered = readinessRows({
+    ...FULL,
+    diskState: "critical",
+    diskMessage: PHRASES.diskCritical,
+    docConvertState: "complete",
+  });
+  check(
+    "machinestate: ordering puts unavailable before attention and attention before ok",
+    ordered.map((r) => r.key).join(",") === "relay,disk,version,agent,docs" &&
+      ordered[0].severity === "unavailable" &&
+      ordered[1].severity === "unavailable" &&
+      ordered[2].key === "version" &&
+      ordered[2].severity === "attention" &&
+      ordered[3].severity === "ok",
+  );
+
+  // Tie-break: same severity keeps the fixed, documented key order — and the
+  // result is stable across two calls with the same input.
+  const tie = readinessRows({
+    opencode: { binaryFound: true, versionState: "ok", versionMessage: PHRASES.diskOk },
+    diskState: "ok",
+    diskMessage: PHRASES.diskOk,
+  });
+  const tieKeys = tie.map((r) => r.key);
+  const fixedOrder = MACHINE_ROW_ORDER.filter((k) => tieKeys.includes(k));
+  check(
+    "machinestate: same-severity ties follow the fixed key order",
+    JSON.stringify(tieKeys) === JSON.stringify(fixedOrder) &&
+      JSON.stringify(tie) === JSON.stringify(readinessRows({
+        opencode: { binaryFound: true, versionState: "ok", versionMessage: PHRASES.diskOk },
+        diskState: "ok",
+        diskMessage: PHRASES.diskOk,
+      })),
+  );
+
+  // Wrong-typed fields are ignored, never turned into invented rows.
+  const wrongTyped = readinessRows({
+    diskState: 123,
+    relay: { ok: "yes", reason: PHRASES.relayReason },
+    opencode: { binaryFound: "yes", versionState: 7 },
+    docConvertState: "complete",
+    docConvertMessage: 5,
+  });
+  check(
+    "machinestate: wrong-typed fields are ignored without becoming rows",
+    wrongTyped.length === 1 &&
+      wrongTyped[0].key === "docs" &&
+      wrongTyped[0].message === "",
+  );
+
+  // Unknown verdicts stay silent (neutral, never accusatory — P2-213/P2-215).
+  check(
+    "machinestate: unknown verdicts yield no row",
+    readinessRows({ diskState: "unknown", diskMessage: PHRASES.diskOk }).length === 0 &&
+      readinessRows({ opencode: { versionState: "unknown", versionMessage: PHRASES.diskOk } }).length === 0,
+  );
+
+  // No absolute path and no URL scheme in any returned phrase.
+  const everyMessage = (rows: MachineReadinessRow[]) => rows.map((r) => r.message);
+  const allMessages = [
+    ...everyMessage(all),
+    ...everyMessage(partial),
+    ...everyMessage(ordered),
+    PHRASES.relayReason,
+    PHRASES.versionTooOld,
+  ];
+  check(
+    "machinestate: no returned phrase contains an absolute path or a URL scheme",
+    allMessages.every((m) => !m.includes("://") && !m.startsWith("/") && !m.startsWith("\\\\") && !/^[A-Za-z]:\\/.test(m)),
+  );
+
+  // summarize: empty → calm documented state; worst severity wins the header.
+  check(
+    "machinestate: summarize over an empty list is the calm state",
+    summarize([]).severity === "ok" &&
+      summarize([]).titleKey === "machineStateEmpty" &&
+      summarize(null).titleKey === "machineStateEmpty",
+  );
+  const okRows = readinessRows({ diskState: "ok", diskMessage: PHRASES.diskOk });
+  const attentionRows = readinessRows({ opencode: { versionState: "too-old", versionMessage: PHRASES.versionTooOld } });
+  const unavailableRows = readinessRows({ diskState: "critical", diskMessage: PHRASES.diskCritical });
+  check(
+    "machinestate: summarize picks the worst severity with one short header key",
+    summarize(okRows).titleKey === "machineStateAllOkTitle" &&
+      summarize(okRows).severity === "ok" &&
+      summarize(attentionRows).titleKey === "machineStateAttentionTitle" &&
+      summarize(attentionRows).severity === "attention" &&
+      summarize(unavailableRows).titleKey === "machineStateUnavailableTitle" &&
+      summarize(unavailableRows).severity === "unavailable",
+  );
+  check(
+    "machinestate: summarize over a mixed list picks unavailable over attention",
+    summarize(all).severity === "unavailable",
+  );
+
+  // Labels resolve in both locales (P2-118: one locale per screen, no raw keys).
+  const machineKeys = [
+    "machineStateTitle",
+    "machineStateEmpty",
+    "machineStateAllOkTitle",
+    "machineStateAttentionTitle",
+    "machineStateUnavailableTitle",
+    "machineLabelRelay",
+    "machineLabelAgent",
+    "machineLabelVersion",
+    "machineLabelDisk",
+    "machineLabelDocs",
+  ];
+  check(
+    "machinestate: labels and empty state resolve per locale (no raw-key fallback)",
+    (["en", "pt"] as const).every((lang) =>
+      machineKeys.every((k) => {
+        const s = translate(lang, k);
+        return s !== k && s.trim() !== "";
+      }),
+    ),
+  );
+  check(
+    "machinestate: every row's labelKey resolves in the pt dictionary",
+    all.every((r) => {
+      const s = translate("pt", r.labelKey);
+      return s !== r.labelKey && s.trim() !== "";
+    }),
+  );
+
+  // Real-repo assertion: the Settings section consumes the pure module and the
+  // module stays pure (no React import, no fetch) with no new health fields.
+  const machineStateSrc = readFileSync(new URL("../apps/web/src/lib/machinestate.ts", import.meta.url), "utf8");
+  const settingsViewSrc = readFileSync(new URL("../apps/web/src/components/SettingsView.tsx", import.meta.url), "utf8");
+  const daemonIndexSrc = readFileSync(new URL("../apps/daemon/src/index.ts", import.meta.url), "utf8");
+  check(
+    "P2-232: SettingsView renders the machine-state section from readinessRows + summarize",
+    settingsViewSrc.includes("readinessRows(") &&
+      settingsViewSrc.includes("summarize(") &&
+      settingsViewSrc.includes('className="card machine-state"'),
+  );
+  check(
+    "P2-232: machinestate stays pure — no React, no fetch, no I/O imports",
+    !machineStateSrc.includes("from \"react\"") &&
+      !machineStateSrc.includes("fetch(") &&
+      !machineStateSrc.includes("node:"),
+  );
+  check(
+    "P2-232: the daemon payload is untouched (no new health fields, apps/daemon unchanged)",
+    daemonIndexSrc.includes("docConvertState: docConvert.state") &&
+      !daemonIndexSrc.includes("machineLabel") &&
+      (daemonIndexSrc.match(/machinestate/g) || []).length === 0,
   );
 }
 
