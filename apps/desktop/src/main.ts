@@ -63,7 +63,8 @@ import { externalOpenDecision } from "./extlink";
 import { downloadVerdict, DOWNLOAD_LIMITS, uniqueDownloadName } from "./downloadplan";
 import { guestAttachDecision, guestNavigationDecision } from "./webviewguard";
 import { permissionDecision, requestingScheme } from "./permissions";
-import { daemonTooltip, loginItemSupported, logsDirPath, openLogsFolder, trayIconSource } from "./tray";
+import { loginItemSupported, logsDirPath, openLogsFolder, trayIconSource } from "./tray";
+import { trayStatus } from "./traystatus";
 import { badgePlan, type BadgePlan } from "./badge";
 import { CLOSE_HINT_LOG, closeHintPlan, hintFlagPath, readHintFlag, writeHintFlag } from "./closehint";
 import { checkForUpdatesOnBoot, updatesEnabled, updateMenuLabel, type UpdateDialogSinks, type UpdateStatus, type WinInstallerRequest } from "./update";
@@ -1326,18 +1327,32 @@ function setPairingState(next: PairingState | null): void {
   }
 }
 
-// --- tray tooltip as sidecar health indicator (P3-007) -----------------------
-// Fed by the pairing watcher's 3s poll below: the last authenticated request
-// against the daemon decides ok/down. Deduplicated so the tooltip is only
-// rewritten on actual transitions.
+// --- tray status: tooltip + menu line (P3-007, P2-252) ------------------------
+// Fed by the pairing watcher's 3s poll below. Since P2-252 the tray speaks
+// about the whole journey — sidecar health, the daemon↔relay link verdict the
+// same tick already computed (P2-199) and the paired-phone count from the
+// devices route — not just the local process. Decision logic is pure
+// (src/traystatus.ts) and tested in scripts/unit.test.ts. ONE write path
+// below: updateTrayStatus is the only place that touches setToolTip, and the
+// dedup key (tooltip + menu line) keeps the tray from being rewritten unless
+// the text actually changed.
 
 let trayHealthy: boolean | null = null;
+let trayStatusKey: string | null = null;
+let trayMenuLine = trayStatus(false, null, 0).menuLine;
 
-function setTrayHealthy(healthy: boolean): void {
-  if (trayHealthy === healthy) return;
+function updateTrayStatus(healthy: boolean, linkState: string | null, phones: number): void {
+  const status = trayStatus(healthy, linkState, phones);
+  const key = `${status.tooltip}\u0000${status.menuLine}`;
+  if (trayStatusKey === key) return;
+  trayStatusKey = key;
   trayHealthy = healthy;
-  tray?.setToolTip(daemonTooltip(healthy));
-  log(`[desktop] tray tooltip: ${daemonTooltip(healthy)}`);
+  trayMenuLine = status.menuLine;
+  tray?.setToolTip(status.tooltip);
+  log(`[desktop] tray status: ${status.tooltip}`);
+  // Rebuilds the context menu in place so the status line at the top follows
+  // the tooltip — same dedup: only real text changes reach the menu.
+  refreshTrayMenu();
 }
 
 // --- native daemon notifications (P3-013) -------------------------------------
@@ -1529,7 +1544,7 @@ async function refreshPairingState(): Promise<void> {
   const token = readApiToken();
   if (!token) {
     // Cannot prove health without the token — report down until proven ok.
-    setTrayHealthy(false);
+    updateTrayStatus(false, null, 0);
     observeDaemonHealth(isDaemonDown());
     if (isDaemonDown()) {
       setPairingState(withLocalMode(daemonDownState()));
@@ -1547,7 +1562,6 @@ async function refreshPairingState(): Promise<void> {
     if (!devRes.ok) throw new Error(`devices ${devRes.status}`);
     const { devices } = (await devRes.json()) as { devices?: { pub: string; label?: string }[] };
     if (!Array.isArray(devices)) throw new Error("malformed devices payload");
-    setTrayHealthy(true);
     // The daemon answers (adopted or sidecar) — control is back.
     observeDaemonHealth(false);
 
@@ -1661,6 +1675,11 @@ async function refreshPairingState(): Promise<void> {
       relayLink = linkVerdict({ ...relay, localMode: quietLocal });
       log(`[desktop] relay link: ${relayLink.state}`);
     }
+    // P2-252: the tray rides the SAME tick and the SAME verdict — local mode
+    // maps to the link's "local" state (what linkVerdict would mint from it),
+    // a tick without a computed verdict degrades to the neutral phrase. No new
+    // request, no new timer, no new IPC channel.
+    updateTrayStatus(true, quietLocal ? "local" : relayLink?.state ?? null, devices.length);
     setPairingState({
       mode: quietLocal ? "local" : remotePairingRequested ? "remote" : undefined,
       uri,
@@ -1709,7 +1728,7 @@ async function refreshPairingState(): Promise<void> {
     // rebuilds everything from scratch. When the sidecar exhausted its
     // respawn budget (P2-017), tell the renderer instead of staying silent.
     logError(`[desktop] pairing poll failed: ${err instanceof Error ? err.message : err}`);
-    setTrayHealthy(false);
+    updateTrayStatus(false, null, 0);
     observeDaemonHealth(isDaemonDown());
     if (isDaemonDown()) {
       setPairingState(withLocalMode(daemonDownState()));
@@ -2234,10 +2253,12 @@ function registerGlobalHotkey(): void {
 function buildTray(): void {
   tray = new Tray(trayImage());
   // P3-007: tooltip doubles as the sidecar health indicator; starts pessimistic
-  // and is corrected by the first pairing-watcher poll (see setTrayHealthy).
-  trayHealthy = false;
-  tray.setToolTip(daemonTooltip(false));
-  tray.setContextMenu(Menu.buildFromTemplate(trayMenuItems()));
+  // and is corrected by the first pairing-watcher poll (see updateTrayStatus).
+  // P2-252: the pessimistic start flows through the SAME single write path —
+  // the only setToolTip call site in this file — so tooltip, dedup key and the
+  // menu's status line can never drift apart.
+  trayStatusKey = null;
+  updateTrayStatus(false, null, 0);
   tray.on("click", showMainWindow);
 }
 
@@ -2376,6 +2397,10 @@ async function explicitQuit(): Promise<void> {
 
 function trayMenuItems(): Electron.MenuItemConstructorOptions[] {
   const items: Electron.MenuItemConstructorOptions[] = [
+    // P2-252: the journey status at the very top — disabled and non-clickable
+    // (informational only, same pattern as the update-status line), fed by the
+    // pairing tick through updateTrayStatus. Every item below keeps its order.
+    { label: trayMenuLine, enabled: false },
     { label: "Open OpenCode Remote", click: showMainWindow },
   ];
   // P2-229: the same truth the Help menu carries — the active accelerator as

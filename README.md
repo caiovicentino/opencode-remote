@@ -1465,7 +1465,14 @@ it.
 **Tray: daemon health + start at login**: the tray tooltip doubles as a
 sidecar health indicator — it reads `OpenCode Remote — daemon ok` /
 `OpenCode Remote — daemon down`, refreshed by the same 3s poll that feeds the
-pairing overlay. The context menu also has a **Start at login** checkbox
+pairing overlay. Since P2-252 the tray tells the whole journey and not just the
+local process: the tooltip and a disabled status line at the top of the menu
+also cover the daemon↔relay link and whether any phone is paired — from
+`OpenCode Remote — processo local fora do ar: nenhum telefone alcança esta
+máquina` while the sidecar is down, through `o relay recusou a conexão` /
+`conectando ao relay` / `nenhum telefone pareado: escaneie o código no celular`,
+to `tudo pronto: o celular alcança esta máquina` when the phone can indeed
+reach the machine. The context menu also has a **Start at login** checkbox
 (macOS/Windows) backed by `app.setLoginItemSettings`, so the toggle persists
 across app restarts and OS reboots; since P2-218 a packaged build turns it on
 by itself on the very first boot (the phone must keep finding this machine

@@ -337,6 +337,19 @@ vanished.
   forces the announce for deterministic screenshots (test-only hatch; the
   machine's setting is never touched under it).
 
+## What the tray says (P2-252)
+
+The tray tooltip and the disabled status line at the top of the tray menu tell
+the whole journey, refreshed by the same 3s pairing poll with no new requests:
+`processo local fora do ar: nenhum telefone alcança esta máquina` (sidecar
+down — it wins over every other fact), the relay-link phrases (`o relay
+recusou a conexão`, `endereço do relay recusado na partida`, `conectando ao
+relay`, `sem informação do relay por enquanto`), `nenhum telefone pareado:
+escaneie o código no celular` (sidecar up, link fine, zero phones) and `tudo
+pronto: o celular alcança esta máquina` — static pt-BR sentences that never
+echo the daemon's raw reason and never carry paths, addresses, ports or
+secrets.
+
 ## Quitting and the phone's access (P2-221)
 
 Closing the window is **not** quitting: the app keeps running in the
