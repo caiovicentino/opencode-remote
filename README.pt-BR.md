@@ -601,7 +601,11 @@ no processo inteiro (P2-227): quando o número de sockets vivos chega a
 `RELAY_MAX_SOCKETS_GLOBAL` (padrão 1000, teto 10000), novos upgrades são
 recusados com close `1013` e métrica `capacity_refused_total` — o relay diz
 não pra conexão nova em vez de morrer por esgotamento de descritor de arquivo
-e derrubar as conversas de todos os inquilinos.
+e derrubar as conversas de todos os inquilinos. E a conexão precisa se
+habilitar pra vaga (P2-230): socket que nunca entra em quarto é fechado após
+`RELAY_JOIN_DEADLINE_MS` (padrão 60s, teto 1h, `-1` desliga) com métrica
+`idle_unjoined_closed` — o pong automático sozinho não segura vaga pra
+sempre.
 
 A imagem também entrega a PWA do celular (P2-188): ela define
 `RELAY_WEB_DIR=/app/apps/web/dist`, então a URL do relay no navegador do
