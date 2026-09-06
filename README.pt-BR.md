@@ -426,7 +426,9 @@ gerados o relay sobe em ws puro na 8788, então use `RELAY_URL="ws://$LAN_IP:878
 e deixe de fora `PWA_TLS_*`/`NODE_EXTRA_CA_CERTS` também. `RELAY_TLS_CERT`/`RELAY_TLS_KEY`
 são um par obrigatório: defina os dois para terminação `wss://` direta ou nenhum —
 definir só um, valor em branco ou arquivo ilegível faz o relay recusar o boot
-(exit 1) em vez de servir `ws://` puro sem avisar. Portas e certificados
+(exit 1) em vez de servir `ws://` puro sem avisar. O relay também olha a validade
+do certificado: recusa o boot quando vencido ou ainda não válido por mais de 24 h
+e avisa a partir de 14 dias antes do vencimento. Portas e certificados
 são variáveis de ambiente. O serviço do pilot segue a mesma regra:
 `deploy/install-pilot.sh` não tem hostname fixo — defina `RELAY_URL` (e
 `NODE_EXTRA_CA_CERTS` para wss com CA local; na reinstalação os dois são

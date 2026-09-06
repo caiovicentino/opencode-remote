@@ -335,6 +335,14 @@ host-local detail. The `relay listening` line carries an additive
 a terminator); no pre-existing field changed meaning, and no log line ever
 prints certificate or key material.
 
+The certificate's validity window is checked too (P2-259): the relay **refuses
+to boot** when the certificate is expired or not yet valid by more than 24
+hours (a clock tolerance, so a skewed host clock never takes a healthy relay
+down), and it **only warns** — at boot and on each liveness sweep afterwards,
+without dropping a single connection — starting **14 days before expiry**
+(`relay TLS certificate nearing expiry`), so renew the certificate when the
+warning shows up instead of waiting for the phones to lose access.
+
 ### The log level is fail-closed too (P2-177)
 
 `RELAY_LOG_LEVEL` selects which JSONL lines the relay writes. The four

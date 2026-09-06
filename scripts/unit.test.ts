@@ -515,6 +515,7 @@ import {
 } from "../apps/relay/src/shutdown";
 
 import { tlsPlan } from "../apps/relay/src/tlsconfig";
+import { certExpiryVerdict, CERT_CLOCK_TOLERANCE_MS, CERT_WARN_WINDOW_MS } from "../apps/relay/src/certexpiry";
 
 import { makeIpTagger, UNKNOWN_IP_TAG, IP_TAG_LENGTH } from "../apps/relay/src/iptag";
 
@@ -10969,6 +10970,158 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P2-154: only the failing side is blamed when one file is unreadable",
     halfUnreadable.problems.length === 1 && halfUnreadable.problems[0]!.includes("RELAY_TLS_CERT"),
+  );
+}
+
+
+// --- P2-259: relay certificate expiry verdict table ---------------------------
+{
+  const TOL = CERT_CLOCK_TOLERANCE_MS; // documented clock tolerance (24 h)
+  const WIN = CERT_WARN_WINDOW_MS; // documented warning window (14 days)
+  const NOW = 1_800_000_000_000;
+  const DAY = 86_400_000;
+
+  // 1. comfortable certificate → use
+  const comfy = certExpiryVerdict(NOW - 30 * DAY, NOW + 60 * DAY, NOW, TOL, WIN);
+  check("P2-259: comfortable certificate → use", comfy.verdict === "use", comfy.reason);
+
+  // 2. end of validity exactly at the warning-window threshold (explicit
+  // threshold: notAfter - now === WIN) → warn
+  const atThreshold = certExpiryVerdict(NOW - 30 * DAY, NOW + WIN, NOW, TOL, WIN);
+  check(
+    "P2-259: end of validity exactly at the warning-window threshold → warn",
+    atThreshold.verdict === "warn" && NOW + WIN - NOW === WIN,
+    atThreshold.reason,
+  );
+
+  // 3. end of validity inside the window → warn
+  const insideWindow = certExpiryVerdict(NOW - 30 * DAY, NOW + WIN - 1000, NOW, TOL, WIN);
+  check("P2-259: end of validity inside the warning window → warn", insideWindow.verdict === "warn");
+
+  // 4. expired within the clock tolerance → warn, never refuse (exactly at
+  // the tolerance edge and one millisecond inside it)
+  const expiredAtEdge = certExpiryVerdict(NOW - 30 * DAY, NOW - TOL, NOW, TOL, WIN);
+  const expiredInside = certExpiryVerdict(NOW - 30 * DAY, NOW - TOL + 1, NOW, TOL, WIN);
+  check(
+    "P2-259: expired within the clock tolerance (edge included) → warn and never refuse",
+    expiredAtEdge.verdict === "warn" && expiredInside.verdict === "warn",
+    `${expiredAtEdge.reason} | ${expiredInside.reason}`,
+  );
+
+  // 5. expired beyond the tolerance → refuse-expired
+  const expired = certExpiryVerdict(NOW - 30 * DAY, NOW - TOL - 1, NOW, TOL, WIN);
+  check("P2-259: expired beyond the clock tolerance → refuse-expired", expired.verdict === "refuse-expired");
+
+  // 6. validity start in the future within the tolerance → warn (edge included)
+  const futureAtEdge = certExpiryVerdict(NOW + TOL, NOW + 60 * DAY, NOW, TOL, WIN);
+  const futureInside = certExpiryVerdict(NOW + TOL - 1, NOW + 60 * DAY, NOW, TOL, WIN);
+  check(
+    "P2-259: not-yet-valid within the clock tolerance (edge included) → warn and never refuse",
+    futureAtEdge.verdict === "warn" && futureInside.verdict === "warn",
+  );
+
+  // 7. validity start in the future beyond the tolerance → refuse-not-yet-valid
+  const future = certExpiryVerdict(NOW + TOL + 1, NOW + 60 * DAY, NOW, TOL, WIN);
+  check(
+    "P2-259: not yet valid beyond the clock tolerance → refuse-not-yet-valid",
+    future.verdict === "refuse-not-yet-valid",
+  );
+
+  // 8. rule order: a non-finite instant wins over a comfortable end of
+  // validity — the result is a refusal, never a use
+  const orderCase = certExpiryVerdict(Number.NaN, NOW + 60 * DAY, NOW, TOL, WIN);
+  check(
+    "P2-259: rule order — non-finite instant plus comfortable end → refuse",
+    orderCase.verdict === "refuse-not-yet-valid",
+  );
+  const missingStart = certExpiryVerdict(undefined as unknown as number, NOW + 60 * DAY, NOW, TOL, WIN);
+  check(
+    "P2-259: missing validity start refuses fail-closed instead of guessing",
+    missingStart.verdict === "refuse-not-yet-valid",
+  );
+  const unreadableEnd = certExpiryVerdict(NOW - 30 * DAY, Number.NaN, NOW, TOL, WIN);
+  check(
+    "P2-259: non-finite validity end refuses fail-closed as refuse-expired",
+    unreadableEnd.verdict === "refuse-expired",
+  );
+
+  // 9. non-finite current instant → refuse
+  const badNow = certExpiryVerdict(NOW - 30 * DAY, NOW + 60 * DAY, Number.NaN, TOL, WIN);
+  check("P2-259: non-finite current instant → refuse", badNow.verdict === "refuse-not-yet-valid");
+  const infiniteNow = certExpiryVerdict(NOW - 30 * DAY, NOW + 60 * DAY, Number.POSITIVE_INFINITY, TOL, WIN);
+  check("P2-259: infinite current instant → refuse too", infiniteNow.verdict === "refuse-not-yet-valid");
+
+  // 10. determinism: the same input twice produces an identical result
+  const a = certExpiryVerdict(NOW - 30 * DAY, NOW + WIN - 1000, NOW, TOL, WIN);
+  const b = certExpiryVerdict(NOW - 30 * DAY, NOW + WIN - 1000, NOW, TOL, WIN);
+  check(
+    "P2-259: same input twice → identical verdict and reason",
+    a.verdict === b.verdict && a.reason === b.reason,
+  );
+
+  // 11. every phrase is static and blind: no digits (ports), no path
+  // separators, no host, no subject/issuer/serial/fingerprint, no secrets
+  const phrases = [comfy, atThreshold, insideWindow, expiredAtEdge, expiredInside, expired, futureAtEdge, futureInside, future, orderCase, missingStart, unreadableEnd, badNow, infiniteNow, a].map((o) => o.reason);
+  const forbidden = ["localhost", "127.0.0.1", "https", "pem", ".key", "issuer", "serial", "fingerprint", "CN=", "subject"];
+  check(
+    "P2-259: every reason phrase is static and free of path, host, port, subject, issuer or secret material",
+    phrases.every(
+      (r) =>
+        !/[\d]/.test(r) &&
+        !r.includes("/") &&
+        !r.includes("\\") &&
+        !r.includes(":\\") &&
+        forbidden.every((f) => !r.includes(f)),
+    ),
+  );
+
+  // 12. the real module stays pure: no node:fs, node:crypto, node:http, no
+  // network call and no import statement at all
+  const root = join(import.meta.dirname, "..");
+  const certSrc = readFileSync(join(root, "apps", "relay", "src", "certexpiry.ts"), "utf8");
+  check(
+    "P2-259: certexpiry.ts imports nothing (no node:fs, node:crypto, node:http, no network)",
+    !certSrc.includes("node:fs") &&
+      !certSrc.includes("node:crypto") &&
+      !certSrc.includes("node:http") &&
+      !certSrc.includes("fetch") &&
+      !/^import /m.test(certSrc) &&
+      !certSrc.includes("require("),
+  );
+
+  // 13. the real index.ts consults the verdict before any listener opens,
+  // adds no periodic timer, and the runtime re-evaluation is log-only
+  const relayIndex = readFileSync(join(root, "apps", "relay", "src", "index.ts"), "utf8");
+  const consultAt = relayIndex.indexOf("certExpiryVerdict(");
+  const listenPositions = [...relayIndex.matchAll(/\.listen\(/g)].map((m) => m.index);
+  check(
+    "P2-259: the verdict is consulted before any listener opens (metrics and relay included)",
+    consultAt > 0 && listenPositions.length >= 2 && listenPositions.every((p) => consultAt < p),
+  );
+  check(
+    "P2-259: no new periodic timer — the sweep is still the only setInterval",
+    (relayIndex.match(/setInterval\(/g) ?? []).length === 1,
+  );
+  const reevalAt = relayIndex.indexOf("P2-259 runtime re-evaluation");
+  const reevalBlock = relayIndex.slice(reevalAt, reevalAt + 900);
+  check(
+    "P2-259: the runtime re-evaluation is log-only — no exit, no close, no terminate",
+    reevalAt > 0 &&
+        reevalBlock.includes("ev(") &&
+        !reevalBlock.includes("process.exit") &&
+        !reevalBlock.includes(".close(") &&
+        !reevalBlock.includes(".terminate(") &&
+        !reevalBlock.includes(".listen("),
+  );
+
+  // 14. the healthz body keeps its exact P2-145 shape and knows nothing
+  // about the certificate expiry decision
+  const healthzSrc = readFileSync(join(root, "apps", "relay", "src", "healthz.ts"), "utf8");
+  check(
+    "P2-259: the healthz body is untouched (healthy and drain shapes intact, no expiry coupling)",
+    healthzSrc.includes("draining ? 503 : 200") &&
+      healthzSrc.includes("ok: !draining") &&
+      !healthzSrc.includes("certExpiry"),
   );
 }
 

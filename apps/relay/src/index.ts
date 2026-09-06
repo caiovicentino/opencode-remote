@@ -2,7 +2,7 @@ import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import { accessSync, constants as fsConstants, createReadStream, readFileSync, realpathSync, statSync } from "node:fs";
 import { join as joinPath, sep } from "node:path";
-import { randomBytes } from "node:crypto";
+import { randomBytes, X509Certificate } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
 // relative imports carry .js specifiers so plain `node` can run the tsc emit
 // (deploy/relay/Dockerfile + tsconfig.build.json) — tsx resolves them too
@@ -17,6 +17,12 @@ import { relayLimits } from "./limits.js";
 import { relayKnobs } from "./knobs.js";
 import { resolveLogLevel, shouldLog, type LogLevel } from "./loglevel.js";
 import { tlsPlan } from "./tlsconfig.js";
+import {
+  certExpiryVerdict,
+  CERT_CLOCK_TOLERANCE_MS,
+  CERT_WARN_WINDOW_MS,
+  type CertExpiryVerdict,
+} from "./certexpiry.js";
 import { makeIpTagger } from "./iptag.js";
 import {
   assetIntegrityPlan,
@@ -119,6 +125,46 @@ if (TLS.problems.length > 0) {
   }
   process.exit(1);
 }
+// P2-259: an expired (or not-yet-valid) certificate used to be discovered
+// only when every phone failed its handshake — the P2-154 preflight probed
+// file readability alone. While the pair is in tls mode, the certificate's
+// two validity instants are extracted here with the standard Node
+// X509Certificate API (no new dependency; the key file is never read) and
+// the verdict is consulted BEFORE any listener opens — metrics included,
+// same refusal shape as the tlsPlan problems above: reason logged once,
+// exit 1. A warn logs a single line and boot continues. Plain mode has no
+// pair and therefore no validity to check — untouched. The relay stays
+// blind: only the two instants are extracted, no certificate or key
+// material ever reaches a log line (the phrases come from certexpiry.ts),
+// and an unparseable certificate becomes NaN instants so the verdict
+// refuses fail-closed instead of crashing with a stack trace.
+const CERT_EXPIRY = (() => {
+  if (TLS.mode !== "tls") return undefined;
+  let notBefore = Number.NaN;
+  let notAfter = Number.NaN;
+  try {
+    const cert = new X509Certificate(readFileSync(TLS.certPath));
+    notBefore = Date.parse(cert.validFrom);
+    notAfter = Date.parse(cert.validTo);
+  } catch {
+    // NaN instants: the verdict below refuses fail-closed
+  }
+  return {
+    notBefore,
+    notAfter,
+    ...certExpiryVerdict(notBefore, notAfter, Date.now(), CERT_CLOCK_TOLERANCE_MS, CERT_WARN_WINDOW_MS),
+  };
+})();
+if (CERT_EXPIRY && (CERT_EXPIRY.verdict === "refuse-expired" || CERT_EXPIRY.verdict === "refuse-not-yet-valid")) {
+  ev("warn", "invalid relay TLS certificate, refusing to start (fail-closed)", { reason: CERT_EXPIRY.reason });
+  process.exit(1);
+}
+if (CERT_EXPIRY && CERT_EXPIRY.verdict === "warn") {
+  ev("warn", "relay TLS certificate nearing expiry", { reason: CERT_EXPIRY.reason });
+}
+// P2-259: the boot verdict is the baseline for the runtime deduplication —
+// only transitions away from the last seen verdict ever log a line.
+let lastCertExpiryVerdict: CertExpiryVerdict | undefined = CERT_EXPIRY?.verdict;
 // P2-171: the remaining tuning knobs — per-connection rate limit, per-IP cap,
 // trusted proxy hops and liveness sweep — resolve fail-closed like the P2-141
 // limits above: a typo, a negative, fractional or zero value (zero is
@@ -852,6 +898,27 @@ wss.on("connection", (socket: Socket, req) => {
 if (PING_INTERVAL_S > 0) {
   setInterval(() => {
     const now = Date.now();
+    // P2-259 runtime re-evaluation: the boot decision is re-checked on the
+    // SAME sweep tick the ping interval already schedules — no new timer,
+    // and only while a TLS pair exists. Strictly log-only: it never closes
+    // a socket, never exits the process, never refuses a connection and
+    // never alters the healthz body (byte-for-byte the same in the healthy
+    // and the P2-145 drain case) — dropping live conversations over a date
+    // would be worse than the problem. One deduplicated line per verdict
+    // transition.
+    if (CERT_EXPIRY) {
+      const nextCert = certExpiryVerdict(
+        CERT_EXPIRY.notBefore,
+        CERT_EXPIRY.notAfter,
+        now,
+        CERT_CLOCK_TOLERANCE_MS,
+        CERT_WARN_WINDOW_MS,
+      );
+      if (nextCert.verdict !== lastCertExpiryVerdict) {
+        lastCertExpiryVerdict = nextCert.verdict;
+        ev("warn", "relay TLS certificate validity changed state", { reason: nextCert.reason });
+      }
+    }
     for (const dead of decideStale(now, wss.clients as Set<Socket>, PING_INTERVAL_S, PING_INTERVAL_S)) {
       m.staleTerminated++;
       ev("info", "stale socket terminated", { id: dead.id, silentS: PING_INTERVAL_S * 2 });
