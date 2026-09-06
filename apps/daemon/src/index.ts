@@ -230,9 +230,15 @@ function assertPrivateMode(file: string) {
 // daemon down and never invalidates the main write it follows.
 const IDENTITY_BACKUP_MIN_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
+// One single source for the backup path: every consumer derives it from
+// STATE_DIR here, so boot and persistence can never drift apart.
+function identityBackupPath(): string {
+  return join(STATE_DIR, backupName(basename(STATE_FILE)));
+}
+
 function persistIdentityBackup(serialized: string) {
   try {
-    const backupPath = join(STATE_DIR, backupName(basename(STATE_FILE)));
+    const backupPath = identityBackupPath();
     let backupExists = false;
     let lastBackupAt: number | null = null;
     try {
@@ -292,7 +298,7 @@ async function loadIdentity(): Promise<DaemonIdentity> {
   // wins, a read failure never restores, a missing file stays a first run.
   let restoredContent: string | null = null;
   if (verdict.quarantine) {
-    const backupPath = join(dir, backupName(basename(STATE_FILE)));
+    const backupPath = identityBackupPath();
     let backupContent: string | null = null;
     let backupExists = false;
     try {
@@ -311,15 +317,30 @@ async function loadIdentity(): Promise<DaemonIdentity> {
       // quarantine path — nothing is ever deleted); only then put the copy
       // in place through the same atomic 0600 write. If the preservation
       // itself fails the bytes stay put and the boot refuses as before.
-      let preserved = false;
+      let preserved: string | null = null;
       try {
         const qfile = join(dir, quarantineName(basename(STATE_FILE), new Date()));
         renameSync(STATE_FILE, qfile);
         chmodSync(qfile, 0o600);
-        preserved = true;
+        preserved = qfile;
       } catch {}
-      if (preserved) {
-        writeStateAtomic(STATE_FILE, backupContent);
+      let restored = false;
+      if (preserved !== null) {
+        try {
+          writeStateAtomic(STATE_FILE, backupContent);
+          restored = true;
+        } catch {
+          // The restore write itself failed (a full disk — the exact
+          // scenario this task exists for). Never die with the main file
+          // missing while a good backup survives: put the preserved
+          // illegible bytes back over the main path and fall through to
+          // the refuse branch below (exit 78, backup copy intact).
+          try {
+            renameSync(preserved, STATE_FILE);
+          } catch {}
+        }
+      }
+      if (restored) {
         log("info", IDENTITY_BACKUP_RESTORED_LOG);
         audit("identity.restored-from-backup");
         content = backupContent;

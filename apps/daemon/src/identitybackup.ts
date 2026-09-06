@@ -50,14 +50,18 @@ import { identityVerdict, type IdentityVerdict } from "./identityfile.js";
 
 /**
  * Derive the backup file name from the original one. Always a bare sibling
- * name (no directory components — the caller joins it with the state
- * directory), never empty and never equal to the original. The copy must
- * never live in temp/uploads/artifacts/clips: those are served for download
- * and the copy carries the private key (see the header).
+ * name: any directory components in the input are stripped (the caller joins
+ * the result with the state directory), the result is never empty and never
+ * equals the original. The copy must never live in temp/uploads/artifacts/
+ * clips: those are served for download and the copy carries the private key
+ * (see the header).
  */
 export function backupName(original: string): string {
-  const base = original.trim();
-  const name = base.length > 0 ? base : "daemon.json";
+  const parts = original
+    .trim()
+    .split(/[\\/]+/)
+    .filter((p) => p.length > 0 && p !== "." && p !== "..");
+  const name = parts.pop() ?? "daemon.json";
   return `${name}.backup`;
 }
 

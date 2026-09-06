@@ -19071,6 +19071,18 @@ check(
     backupName("daemon.json") === "daemon.json.backup" &&
       backupName("daemon.json") === backupName("daemon.json"),
   );
+  check(
+    "P2-254: backupName strips directory components — always a bare sibling name",
+    backupName("a/b.json") === "b.json.backup" &&
+      backupName("..\\..\\x.json") === "x.json.backup" &&
+      backupName("a/b/") === "b.backup" &&
+      backupName("dir/.") === "dir.backup" &&
+      backupName("dir/..") === "dir.backup" &&
+      backupName("///") === "daemon.json.backup" &&
+      !backupName("a/b.json").includes("/") &&
+      !backupName("a\\b.json").includes("\\") &&
+      !backupName("dir/..").includes(".."),
+  );
 
   // backupWritePlan — full table, rules in the documented order
   const garbage = { contentUsable: false, backupExists: false, lastBackupAt: null } as const;
@@ -19214,6 +19226,25 @@ check(
       daemonIndexSrc.indexOf("renameSync(STATE_FILE, qfile)") <
         daemonIndexSrc.indexOf("writeStateAtomic(STATE_FILE, backupContent)") &&
       daemonIndexSrc.includes('audit("identity.restored-from-backup")'),
+  );
+  const recoveryAt = daemonIndexSrc.indexOf("let restoredContent: string | null = null;");
+  const refuseIfAt = daemonIndexSrc.indexOf('verdict.plan === "refuse"');
+  const recoverySlice =
+    recoveryAt >= 0 && refuseIfAt > recoveryAt ? daemonIndexSrc.slice(recoveryAt, refuseIfAt) : "";
+  check(
+    "P2-254: a failed restore write rolls the preserved bytes back and refuses — never a missing main",
+    recoverySlice.includes("writeStateAtomic(STATE_FILE, backupContent)") &&
+      recoverySlice.indexOf("renameSync(preserved, STATE_FILE)") >
+        recoverySlice.indexOf("writeStateAtomic(STATE_FILE, backupContent)") &&
+      recoverySlice.includes("restoredContent = backupContent") &&
+      recoverySlice.indexOf("writeStateAtomic(STATE_FILE, backupContent)") <
+        recoverySlice.indexOf("restored = true"),
+  );
+  check(
+    "P2-254: boot and persistence derive the backup path from one single source",
+    (daemonIndexSrc.match(/identityBackupPath\(\)/g) || []).length >= 2 &&
+      (daemonIndexSrc.match(/join\((?:dir|STATE_DIR), backupName\(basename\(STATE_FILE\)\)\)/g) || [])
+        .length === 1,
   );
   check(
     "P2-254: the P2-234 refuse path stays intact — one verdict read, quarantine move, exit 78",
