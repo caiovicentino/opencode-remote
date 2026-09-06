@@ -838,6 +838,18 @@ veja [docs/security.md](docs/security.md).
 - [docs/troubleshooting.md](docs/troubleshooting.md)
 - [docs/capacitor.md](docs/capacitor.md) — shell nativo iOS
 
+**Arquivo de identidade se protege sozinho (P2-234).** O `daemon.json` carrega
+a identidade da máquina e a lista de aparelhos pareados, então um arquivo
+ilegível (escrita truncada de antes do P2-165, disco cheio, edição manual que
+deu errado) não derruba mais o daemon com um erro cru de sintaxe que faz a
+máquina sumir do telefone sem explicação. O boot recusa com uma única linha
+calma em português, move o arquivo ilegível para uma cópia de quarentena 0600
+ao lado do original e sai com o código documentado 78 — nada é apagado e a
+identidade nunca é recriada pelas suas costas. Restaurar o arquivo de
+quarentena no lugar do `daemon.json` devolve todos os pareamentos; apagar os
+dois arquivos recomeça a máquina do zero, exigindo novo pareamento. Veja
+[docs/troubleshooting.md](docs/troubleshooting.md).
+
 ## App desktop (inicial)
 
 O primeiro estágio da [visão desktop](docs/VISION.md): um shell Electron
