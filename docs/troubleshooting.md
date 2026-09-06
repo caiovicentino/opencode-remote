@@ -353,6 +353,30 @@ can always see what is registered and why.
   your machine must not steal system-wide keys, so the harness-session rule
   comes first in the decision and disables the feature entirely.
 
+## Right-click menu (P2-235)
+
+Right-clicking the window opens a native context menu with the basics a lay
+user looks for: **Recortar**, **Copiar**, **Colar** and **Selecionar tudo** in
+editable fields, **Copiar** for selected text anywhere, **Abrir link / Copiar
+endereço do link** for links and spelling suggestions (up to four) for a
+misspelled word. Opening a link goes through the same scheme gate as every
+other external open — only http/https/mailto; a refused scheme offers only
+**Copiar endereço do link**, never **Abrir link**.
+
+- **Dev vs packaged builds**: **Inspecionar elemento** exists only in
+  unpackaged (dev) builds — a packaged app never offers it.
+- **Nothing to act on, no menu**: when the click lands somewhere with no edit
+  action, no selection and no link, the shell opens no menu at all instead of
+  a dead list.
+- **Test sessions never open the menu**: under the desktop test harness
+  (`tools/desktop.mjs`, `npm run test:desktop-flow`) the menu spec comes back
+  empty by design — a native popup would steal focus from the gate and stall
+  the interaction flow. This is the same harness-session-first rule every
+  other native surface follows.
+- **Right-click inside a Browser pane page** keeps the guest page's own
+  behavior (the pane is a sandboxed webview with its own navigation policy);
+  the context menu belongs to the app shell around it.
+
 ## The window stopped responding (P2-223)
 
 If the app window freezes, the shell tells you instead of leaving you staring

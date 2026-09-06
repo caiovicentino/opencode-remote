@@ -62,6 +62,7 @@ import { CLOSE_HINT_LOG, closeHintPlan, hintFlagPath, readHintFlag, writeHintFla
 import { checkForUpdatesOnBoot, updatesEnabled, updateMenuLabel, type UpdateDialogSinks, type UpdateStatus, type WinInstallerRequest } from "./update";
 import { installerNameIsSafe, integrityVerdict, winDownloadDecision } from "./winupdate";
 import { menuSpec, type MenuItemSpec } from "./menu";
+import { contextMenuSpec, SPELLING_SUGGESTIONS_MAX } from "./ctxmenu";
 import { nextCheckDelayMs } from "./updateschedule";
 import { loadWindowBounds, saveWindowBounds, WINDOW_MIN, windowStateFile } from "./window-state";
 import {
@@ -1806,6 +1807,50 @@ function createWindow(): BrowserWindow {
   win.webContents.on("will-navigate", (event, url) => {
     if (url !== win.webContents.getURL()) event.preventDefault();
   });
+  // P2-235: the lay user's most basic gesture — right-click — gets a native
+  // context menu: edit actions in editable fields, copy for selected text,
+  // open/copy link and spelling suggestions. The ordered spec is pure
+  // (src/ctxmenu.ts, unit-tested): the harness-session rule is FIRST (an empty
+  // list — tools/desktop.mjs and test:desktop-flow must never have a native
+  // popup steal focus) and the packaged rule is second (never Inspect
+  // Element). A link opens only through the P2-178 extlink verdict — a
+  // refused scheme offers at most "copy address", never open. One listener,
+  // no new IPC channel, no timer; an empty spec renders no menu at all.
+  win.webContents.on("context-menu", (_event, params) => {
+    const decision = externalOpenDecision(params.linkURL);
+    const selection = params.selectionText ?? "";
+    const suggestions = params.dictionarySuggestions.slice(0, SPELLING_SUGGESTIONS_MAX);
+    const items = contextMenuSpec(HERMETIC_E2E, app.isPackaged, decision, {
+      editable: params.isEditable,
+      canCut: params.isEditable && selection.length > 0,
+      canCopy: selection.length > 0,
+      canPaste: params.isEditable,
+      canSelectAll: params.isEditable,
+      selectionText: selection,
+      linkUrl: params.linkURL ?? "",
+      misspelledWord: params.misspelledWord ?? "",
+      suggestions,
+    });
+    // Nothing to offer — no menu at all (the spec never returns a dangling
+    // separator, so a non-empty list is always popup-safe).
+    if (items.length === 0) return;
+    const handlers: Record<string, () => void> = {
+      "ctx-cut": () => win.webContents.cut(),
+      "ctx-copy": () => win.webContents.copy(),
+      "ctx-paste": () => win.webContents.paste(),
+      "ctx-select-all": () => win.webContents.selectAll(),
+      "ctx-open-link": () => {
+        if (!decision.allow) return;
+        void shell.openExternal(decision.href);
+      },
+      "ctx-copy-link": () => clipboard.writeText(params.linkURL ?? ""),
+      "ctx-inspect": () => win.webContents.openDevTools({ mode: "detach" }),
+    };
+    suggestions.forEach((word, index) => {
+      handlers[`ctx-spell-${index}`] = () => win.webContents.replaceMisspelling(word);
+    });
+    Menu.buildFromTemplate(toElectronItems(items, handlers)).popup({ window: win });
+  });
   loadUi(win);
   return win;
 }
@@ -1880,7 +1925,13 @@ const menuShellHandlers: Record<string, () => void> = {
   "app-quit": () => void explicitQuit(),
 };
 
-function toElectronItems(items: MenuItemSpec[]): Electron.MenuItemConstructorOptions[] {
+function toElectronItems(
+  items: MenuItemSpec[],
+  // P2-235: per-event click wiring for the context menu (suggestion words and
+  // the link verdict change with every context-menu event). The application
+  // menu path passes nothing and keeps the menuShellHandlers contract.
+  extraHandlers?: Record<string, () => void>,
+): Electron.MenuItemConstructorOptions[] {
   return items.map((item) => {
     const entry: Electron.MenuItemConstructorOptions = {};
     if (item.id) entry.id = item.id;
@@ -1890,7 +1941,9 @@ function toElectronItems(items: MenuItemSpec[]): Electron.MenuItemConstructorOpt
     if (item.enabled !== undefined) entry.enabled = item.enabled;
     if (item.type) entry.type = item.type;
     const action = item.action;
+    const extra = item.id !== undefined && extraHandlers ? extraHandlers[item.id] : undefined;
     if (action) entry.click = () => sendMenuAction(action);
+    else if (extra) entry.click = extra;
     else if (item.id && menuShellHandlers[item.id]) entry.click = menuShellHandlers[item.id];
     if (item.submenu) entry.submenu = toElectronItems(item.submenu);
     return entry;
