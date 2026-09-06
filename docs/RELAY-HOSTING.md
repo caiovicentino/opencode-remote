@@ -289,6 +289,14 @@ text cites `RELAY_WEB_DIR` and never the configured path — log shippers get
 no host-local detail. The `relay listening` line carries an additive
 `webRoot: true|false` field; no path is ever logged.
 
+Since P2-225 the boot also verifies the entry document's own references: an
+`index.html` whose scripts or styles are missing or unreadable next to it —
+a partial or stale volume-mounted copy — refuses the boot the same way (one
+`invalid relay web root` line per missing asset, exit 1, no listener), so
+before publishing a bundle boot the image once with `RELAY_WEB_DIR` pointed
+at the exact directory you are about to ship and confirm it reaches the
+`relay listening` line.
+
 ### The served page ships locked down: security headers (P2-192)
 
 The document the static route serves is the page where the user's end-to-end

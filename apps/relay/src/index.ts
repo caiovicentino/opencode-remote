@@ -18,7 +18,15 @@ import { relayKnobs } from "./knobs.js";
 import { resolveLogLevel, shouldLog, type LogLevel } from "./loglevel.js";
 import { tlsPlan } from "./tlsconfig.js";
 import { makeIpTagger } from "./iptag.js";
-import { webRootPlan, type DirProbe } from "./webroot.js";
+import {
+  assetIntegrityPlan,
+  indexAssetPlan,
+  webRootPlan,
+  WEB_INDEX_FILE,
+  WEB_INDEX_MAX_BYTES,
+  type AssetProbe,
+  type DirProbe,
+} from "./webroot.js";
 import { resolveWebCsp } from "./webheaders.js";
 import {
   resolveWebBudget,
@@ -125,13 +133,71 @@ const WEB = webRootPlan(
   },
   (dir) => {
     try {
-      accessSync(joinPath(dir, "index.html"), fsConstants.R_OK);
+      accessSync(joinPath(dir, WEB_INDEX_FILE), fsConstants.R_OK);
       return true;
     } catch {
       return false;
     }
   },
 );
+// P2-225: a web root that passes the checks above can still be a partial or
+// stale copy — exactly what a volume-mounted deploy that copies the bundle
+// in two steps (or gets interrupted) looks like. The relay used to boot
+// green, answer 200 on / and 404 on the entry document's JavaScript, and the
+// phone showed a permanent white screen with no diagnostic anywhere. While
+// the web root is enabled, the entry document is read (with an explicit
+// 512 KiB ceiling — an overflow is a problem, never an unbounded read) and
+// every local asset it references is probed with the same rigidity the
+// static route enforces. The problems join the web-root ones in the SAME
+// fail-closed block below, so an incomplete bundle logs one line per cause
+// and exits 1 before any listener opens.
+if (WEB.enabled) {
+  const indexProblems: string[] = [];
+  let html: string | undefined;
+  try {
+    const indexPath = joinPath(WEB.root, WEB_INDEX_FILE);
+    const stat = statSync(indexPath);
+    if (!stat.isFile()) {
+      indexProblems.push(
+        "RELAY_WEB_DIR contains an index.html that is not a regular file: " +
+          "refusing to boot with an unusable web root (fail-closed)",
+      );
+    } else if (stat.size > WEB_INDEX_MAX_BYTES) {
+      indexProblems.push(
+        "RELAY_WEB_DIR index.html is above the boot ceiling of " +
+          `${WEB_INDEX_MAX_BYTES} bytes: refusing to boot instead of reading an oversized entry document (fail-closed)`,
+      );
+    } else {
+      const text = readFileSync(indexPath, "utf8");
+      if (Buffer.byteLength(text) > WEB_INDEX_MAX_BYTES) {
+        indexProblems.push(
+          "RELAY_WEB_DIR index.html is above the boot ceiling of " +
+            `${WEB_INDEX_MAX_BYTES} bytes: refusing to boot instead of reading an oversized entry document (fail-closed)`,
+        );
+      } else {
+        html = text;
+      }
+    }
+  } catch {
+    indexProblems.push(
+      "RELAY_WEB_DIR index.html could not be read at boot: " +
+        "refusing to boot with an unverifiable entry document (fail-closed)",
+    );
+  }
+  if (html !== undefined) {
+    indexProblems.push(
+      ...assetIntegrityPlan(indexAssetPlan(html), WEB.root, (abs): AssetProbe => {
+        try {
+          accessSync(abs, fsConstants.R_OK);
+          return "ok";
+        } catch (e) {
+          return (e as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "unreadable";
+        }
+      }),
+    );
+  }
+  WEB.problems.push(...indexProblems);
+}
 if (WEB.problems.length > 0) {
   for (const reason of WEB.problems) {
     ev("warn", "invalid relay web root, refusing to start (fail-closed)", { reason });
