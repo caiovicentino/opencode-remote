@@ -1320,7 +1320,9 @@ every 6 h — ±10% jitter — and backs off from 15 min up to the 6 h cap while
 the feed is unreachable. P2-264: before that scheduled recheck starts a
 download, the shell measures the free space of the volume hosting its data
 directory — when it cannot fit the package plus the unpacked copy (plus a
-documented headroom), or the space cannot be measured at all, the check is
+documented headroom), when the space cannot be measured at all, or when the
+release does not announce its size and the free space is below a
+conservative 2 GB floor, the check is
 postponed: the tray says `Update postponed — not enough disk space`, one line
 lands in `desktop.log`, and **freeing disk space (or clicking Check for
 updates) unlocks the update** on the next tick — nothing is cancelled,

@@ -11,6 +11,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { TRAY_TIP_MAX_CHARS } from "../apps/desktop/src/traystatus";
 import {
+  UPDATE_SPACE_FLOOR_BYTES,
   UPDATE_SPACE_HEADROOM_BYTES,
   UPDATE_SPACE_LABEL_DOWNLOAD,
   UPDATE_SPACE_LABEL_POSTPONED,
@@ -49,16 +50,39 @@ const here = dirname(fileURLToPath(import.meta.url));
   }
 
   // Rule 2: an announced size that is absent or <= 0 warns and NEVER
-  // postpones — the feed may omit the size and refusing for that would stop
-  // the whole product.
+  // postpones for the missing size alone — the feed may omit the size and
+  // refusing for that would stop the whole product. With roomy free space
+  // (above the documented conservative floor) the verdict is warn.
+  const roomyFree = 10_000_000_000; // 10 GB — above the 2 GB floor
   const badSizes: unknown[] = [null, undefined, 0, -1, "500000000", Number.NaN, Number.POSITIVE_INFINITY];
   for (const announced of badSizes) {
-    const view = updateSpaceVerdict(100, announced as number, limits);
+    const view = updateSpaceVerdict(roomyFree, announced as number, limits);
     check(
       `P2-264: announced size ${String(announced)} → warn (never refuse the update)`,
       view.verdict === "warn" && view.reason === "invalid-release-size" && view.label === UPDATE_SPACE_LABEL_SIZE_UNKNOWN,
     );
   }
+  // Rule 2's floor exception (the verified round-2 finding): a release that
+  // does not announce its size on a disk below the conservative floor is the
+  // exact blind download this gate exists to stop — it postpones.
+  const belowFloor = updateSpaceVerdict(UPDATE_SPACE_FLOOR_BYTES - 1, null, limits);
+  check(
+    "P2-264: unknown size below the conservative floor postpones (no blind download)",
+    belowFloor.verdict === "postpone" && belowFloor.reason === "unknown-size-low-space" && belowFloor.label === UPDATE_SPACE_LABEL_POSTPONED,
+  );
+  const atFloor = updateSpaceVerdict(UPDATE_SPACE_FLOOR_BYTES, null, limits);
+  check(
+    "P2-264: unknown size exactly at the conservative floor warns (free >= floor proceeds)",
+    atFloor.verdict === "warn" && atFloor.reason === "invalid-release-size",
+  );
+  // The floor governs the UNKNOWN-size case only: a release whose size is
+  // announced is judged by rules 3–5 alone — a proven fit downloads even
+  // below the floor.
+  const provenFit = updateSpaceVerdict(UPDATE_SPACE_FLOOR_BYTES - 100_000_000, size, limits);
+  check(
+    "P2-264: a known size that provably fits downloads even below the conservative floor",
+    provenFit.verdict === "download" && provenFit.reason === "enough-space",
+  );
 
   // Rule 3 with the threshold explicit: free exactly AT the necessary is not
   // below it (warn band); one byte below postpones.
@@ -108,7 +132,8 @@ const here = dirname(fileURLToPath(import.meta.url));
   // text budget.
   const views = [
     updateSpaceVerdict(null, size, limits),
-    updateSpaceVerdict(100, null, limits),
+    updateSpaceVerdict(roomyFree, null, limits),
+    updateSpaceVerdict(UPDATE_SPACE_FLOOR_BYTES - 1, null, limits),
     updateSpaceVerdict(necessary - 1, size, limits),
     updateSpaceVerdict(necessary + 1, size, limits),
     updateSpaceVerdict(necessary * 4, size, limits),
@@ -131,6 +156,10 @@ const here = dirname(fileURLToPath(import.meta.url));
   check(
     "P2-264: the documented headroom is positive and finite",
     Number.isFinite(UPDATE_SPACE_HEADROOM_BYTES) && UPDATE_SPACE_HEADROOM_BYTES > 0,
+  );
+  check(
+    "P2-264: the documented conservative floor is the daemon's 2 GB warn threshold",
+    UPDATE_SPACE_FLOOR_BYTES === 2_000_000_000,
   );
 }
 
