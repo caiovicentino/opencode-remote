@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { normalizeLang, spokenNumbers, type SpeechLang } from "./spoken.js";
+import { isAbsoluteToolPath } from "./ttscap.js";
 
 const TTS_TIMEOUT_MS = 30_000;
 /** Upper bound on a single request: replies are spoken briefly (the client
@@ -31,9 +32,20 @@ export function resolveVoice(lang: unknown, ptOverride?: string): { lang: Speech
 
 export function detectEdgeTts(): string | null {
   try {
-    const out = execSync("command -v edge-tts", { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
-    const p = out.trim();
-    return p.startsWith("/") ? p : null;
+    // P2-298: the probe is per platform — `where` (the native Windows
+    // locator) on Windows, `command -v` everywhere else. The old POSIX-only
+    // probe plus the "must start with a slash" check never matched on
+    // Windows, so a correctly installed tool read as missing forever.
+    const windows = process.platform === "win32";
+    const out = execSync(windows ? "where edge-tts" : "command -v edge-tts", {
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    // `where` lists every match, one per line — the first one wins.
+    const first = out.split(/\r?\n/).map((l) => l.trim()).find((l) => l.length > 0) ?? "";
+    // form validated by the pure ttscap rule (fail-closed on anything that is
+    // not an absolute path for the platform)
+    return isAbsoluteToolPath(first, windows ? "windows" : "posix") ? first : null;
   } catch {
     return null;
   }

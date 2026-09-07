@@ -76,6 +76,16 @@ remoto, zero confiança**.
   `./scripts/setup-whisper.sh`.
   `OCR_STT_BLOCK=1` no daemon é um hatch de teste que força o veredito
   missing-binary para evidência visual determinística
+- **Respostas faladas** — a resposta do agente pode ser lida em voz alta por
+  uma ferramenta opcional do host (edge-tts): desde a P2-298 a recusa é uma
+  frase curta e acionável em português, do mesmo veredito que a rota de status
+  serve (sem mais instrução crua em inglês pra instalar no host), o daemon
+  acha a ferramenta no Windows também (localizador nativo `where` no lugar da
+  sonda só POSIX) e uma instalação feita depois do boot vale pela re-sondagem
+  preguiçosa; a publicação desse veredito em `GET /api/health` e no canal de
+  settings segue como continuação declarada.
+  `OCR_TTS_BLOCK=1` no daemon é um hatch de teste que força o veredito
+  missing-tool para evidência visual determinística
 - **Prontidão de modelo** — o composer avisa antes do primeiro envio quando a
   máquina que hospeda o daemon não tem nenhum modelo utilizável configurado
   (nenhuma credencial de provider, ou credenciais sem modelos): uma linha

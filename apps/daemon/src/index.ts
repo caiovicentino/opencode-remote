@@ -66,6 +66,7 @@ import {
 } from "./pilotforensic.js";
 import { detectWhisperDetail, transcribeAudio, type WhisperTool } from "./whisper.js";
 import { sttVerdict } from "./voicecap.js";
+import { ttsVerdict } from "./ttscap.js";
 import { modelReadyVerdict, providerSummary, type ProviderSummary } from "./modelready.js";
 import { MIN_OPENCODE_VERSION, versionVerdict, type OpencodeVersionVerdict } from "./opencodever.js";
 import { parseReadinessKnobs, readinessRefreshPlan } from "./readiness.js";
@@ -535,6 +536,21 @@ async function probeBrowseCap(): Promise<void> {
 // local TTS replies (optional; edge-tts CLI) — P2-125 voice mode
 let edgeTtsBin: string | null = null;
 const TTS_PT_VOICE = process.env.OCR_TTS_VOICE;
+
+/**
+ * P2-298: spoken-reply capability verdict for the status route and the 501
+ * body, judged by the pure ttscap.ts verdict from the resolved tool path.
+ * OCR_TTS_BLOCK=1 is a documented test hatch (same spirit as OCR_STT_BLOCK):
+ * it forces the missing-tool verdict so the unavailable state can be
+ * evidenced deterministically on hosts that DO have edge-tts.
+ */
+function ttsStatus(): { available: boolean; state: string; message: string } {
+  const verdict =
+    process.env.OCR_TTS_BLOCK === "1"
+      ? ttsVerdict(null, "posix")
+      : ttsVerdict(edgeTtsBin, process.platform === "win32" ? "windows" : "posix");
+  return { available: verdict.state === "ready", state: verdict.state, message: verdict.message };
+}
 
 interface UploadEntry {
   parts: string[];
@@ -1213,7 +1229,13 @@ end tell`;
   // answer to mp3. The client speaks at most a couple of sentences — the full
   // text stays in the chat.
   if (req.path === "/__ocr/voice/tts-status" && req.method === "GET") {
-    return { id: req.id, status: 200, body: { available: !!edgeTtsBin, voice: resolveVoice("pt-BR", TTS_PT_VOICE).voice, voices: TTS_VOICES, langs: SPEECH_LANGS } };
+    // P2-298: the verdict (state + actionable pt-BR phrase) rides additively;
+    // available/voice/voices/langs stay exactly as they were. P2-250: lazy
+    // re-probe before the verdict is served — edge-tts installed after boot
+    // is picked up here instead of needing a daemon restart.
+    maybeReprobeTts();
+    const tts = ttsStatus();
+    return { id: req.id, status: 200, body: { available: !!edgeTtsBin, voice: resolveVoice("pt-BR", TTS_PT_VOICE).voice, voices: TTS_VOICES, langs: SPEECH_LANGS, state: tts.state, message: tts.message } };
   }
   // P2-201: speech-to-text capability status, mirroring the tts-status shape
   // (available boolean + verdict state and actionable pt-BR message). Same
@@ -1234,7 +1256,12 @@ end tell`;
       return { id: req.id, status: 400, body: { error: "text required (1..2000 chars)" } };
     }
     if (!edgeTtsBin) {
-      return { id: req.id, status: 501, body: { error: "voice replies unavailable; install edge-tts on the host" } };
+      // P2-298: the actionable capability phrase (pt-BR, no tool names or
+      // paths) from the same verdict the status route serves — never the raw
+      // English install instruction. P2-250: lazy re-probe right before the
+      // refusal, same as the transcription route.
+      maybeReprobeTts();
+      return { id: req.id, status: 501, body: { error: ttsStatus().message } };
     }
     try {
       const t0 = Date.now();
@@ -2012,8 +2039,9 @@ const readinessKnobs = parseReadinessKnobs(process.env);
 
 /** Per-capability probe bookkeeping: when the cached verdict was established
  * and whether a probe is currently running (never duplicated). */
-const readinessState: Record<"transcription" | "doc-convert" | "opencode-version" | "browse", { probedAt: number; inFlight: boolean }> = {
+const readinessState: Record<"transcription" | "tts" | "doc-convert" | "opencode-version" | "browse", { probedAt: number; inFlight: boolean }> = {
   transcription: { probedAt: 0, inFlight: false },
+  tts: { probedAt: 0, inFlight: false },
   "doc-convert": { probedAt: 0, inFlight: false },
   "opencode-version": { probedAt: 0, inFlight: false },
   browse: { probedAt: 0, inFlight: false },
@@ -2045,6 +2073,28 @@ async function maybeReprobeTranscription(): Promise<void> {
     st.probedAt = Date.now();
     // one line per re-done probe: capability name + resulting state only
     log("info", "readiness re-probe", { capability: "transcription", state: sttStatus().state });
+  }
+}
+
+/** Lazy spoken-reply re-probe: reuses detectEdgeTts() as-is. Ready never
+ * re-probes (happy path costs zero); a missing capability re-probes at most
+ * once per interval, right before the refusal or the status verdict is
+ * served — an edge-tts installed after boot is picked up without a restart.
+ * The documented OCR_TTS_BLOCK=1 hatch keeps its forced verdict (the cached
+ * module state is never overwritten while it is on). */
+function maybeReprobeTts(): void {
+  if (process.env.OCR_TTS_BLOCK === "1") return;
+  const st = readinessState.tts;
+  const plan = readinessRefreshPlan(edgeTtsBin !== null, st.probedAt, Date.now(), st.inFlight, readinessKnobs);
+  if (readinessKnobs.disabled || plan.action !== "redo") return;
+  st.inFlight = true;
+  try {
+    edgeTtsBin = detectEdgeTts();
+  } finally {
+    st.inFlight = false;
+    st.probedAt = Date.now();
+    // one line per re-done probe: capability name + resulting state only
+    log("info", "readiness re-probe", { capability: "tts", state: ttsStatus().state });
   }
 }
 
@@ -4062,6 +4112,7 @@ async function main() {
   // P2-250: stamp the boot instants of the cached verdicts — the lazy
   // re-probes count their interval from here. No additional boot probe.
   readinessState.transcription.probedAt = Date.now();
+  readinessState.tts.probedAt = Date.now();
   readinessState["doc-convert"].probedAt = Date.now();
   readinessState.browse.probedAt = Date.now();
 
