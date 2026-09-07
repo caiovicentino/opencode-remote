@@ -119,6 +119,7 @@ jobs:
     outputs:
       desktop: ${{ steps.scope.outputs.desktop }}
       relay-image: ${{ steps.scope.outputs.relay-image }}
+      portable-suite: ${{ steps.scope.outputs.portable-suite }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -293,6 +294,11 @@ jobs:
   # typecheck plus the portable, Windows-safe subset of the unit battery
   # (scripts/portable-suite.ts) on windows-latest for every PR touching the
   # desktop surface — same scope indicator as the packaging jobs above.
+  # P2-317: the battery also exercises apps/daemon and apps/relay path logic
+  # (agent binary resolution, document-converter install locations, the relay
+  # webroot), so the job now runs when the portable-suite indicator is true
+  # too — a daemon- or relay-only PR can no longer stay green with zero
+  # Windows-specific lines executed on Windows (the P2-299 failure mode).
   #
   # PUBLISHING PROHIBITION (deliberate): this job does NOT log in to any
   # registry, does NOT use any third-party login/push action, does NOT
@@ -304,7 +310,7 @@ jobs:
     permissions:
       contents: read
     needs: scope
-    if: needs.scope.outputs.desktop == 'true'
+    if: needs.scope.outputs.desktop == 'true' || needs.scope.outputs.portable-suite == 'true'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 

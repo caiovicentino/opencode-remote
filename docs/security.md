@@ -194,8 +194,18 @@ identity servers, no accounts.
     once while the release is still a draft — the Windows app refuses an
     installer whose digest diverges, so a hash-mismatched feed would
     otherwise block every installed machine from updating forever; the
-    Squirrel.Mac JSON feeds declare no digest, so only the feeds that
+    Squirrel.Mac JSON feeds     declare no digest, so only the feeds that
     declare a sha512 (today `latest.yml`) are hash-checked.
+
+19. **Scope-gated Windows verification (P2-317).** The `verify-win` job
+    (windows-latest) runs typecheck and the portable path-logic battery
+    whenever the scope job's `desktop` **or** `portable-suite` output is
+    true — the latter classifies every app code directory, shared package,
+    script and the root lockfile, but never a docs-only or media-only
+    changeset — so Windows-specific daemon or relay logic (agent binary
+    resolution, document-converter install locations, relay webroot) is
+    exercised on Windows in the PR instead of surfacing on a user's machine
+    after the signed installer ships.
 
 ## Key rotation
 
