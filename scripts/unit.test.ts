@@ -917,6 +917,7 @@ import { actionPinsVerdict, COMMIT_SHA_PATTERN, type ActionRef } from "./actionp
 import { parseWorkflowActionRefs } from "./check-action-pins";
 import {
   INTEGRITY_ALGORITHM,
+  isInternalOrigin,
   lockIntegrityVerdict,
   originAccepted,
   type LockEntry,
@@ -25313,6 +25314,48 @@ check("P2-241: no new periodic timer was introduced by the handler", !dlBlock.in
         NOW,
       ).lines.length === 0,
   );
+  // Rule 3 is strict: an origin counts as this repository's own only when
+  // it is provably a repo-relative path — every other shape fails closed
+  // and crosses the registry checks (rule 4).
+  check(
+    "P2-283: isInternalOrigin accepts only provably repo-relative origins",
+    isInternalOrigin("apps/web") &&
+      isInternalOrigin("packages/protocol") &&
+      isInternalOrigin("./apps/web") &&
+      !isInternalOrigin("") &&
+      !isInternalOrigin("//evil.example/x.tgz") &&
+      !isInternalOrigin("git@github.com:evil/x.git#1abc2def") &&
+      !isInternalOrigin("github.com:evil/x.git") &&
+      !isInternalOrigin("file:../outside.tgz") &&
+      !isInternalOrigin("https://registry.npmjs.org/x") &&
+      !isInternalOrigin("/abs/path") &&
+      !isInternalOrigin("~/path") &&
+      !isInternalOrigin("../outside"),
+  );
+  check(
+    "P2-283: hostile scheme-less origins are not internal and reject through the verdict",
+    (() => {
+      const hostile = normalizeLockEntries({
+        packages: {
+          "node_modules/@ocr/web": { resolved: "apps/web", link: true },
+          "node_modules/scp": { resolved: "git@github.com:evil/x.git#1abc2def", integrity: SHA512 },
+          "node_modules/proto": { resolved: "//evil.example/x.tgz", integrity: SHA512 },
+        },
+      });
+      const byPath = new Map(hostile.map((e) => [e.path, e]));
+      const scp = byPath.get("node_modules/scp");
+      const proto = byPath.get("node_modules/proto");
+      const report = lockIntegrityVerdict(hostile, REGISTRIES, [], NOW);
+      return (
+        byPath.get("node_modules/@ocr/web")?.internal === true &&
+        scp?.internal === false &&
+        proto?.internal === false &&
+        report.outcome === "reject" &&
+        report.lines.length === 2 &&
+        report.lines.every((l) => l.includes("origin outside the documented public registries"))
+      );
+    })(),
+  );
 
   // Rule 4: the case the gate exists for — an origin outside the documented
   // public registries rejects before any other consideration.
@@ -25330,6 +25373,33 @@ check("P2-241: no new periodic timer was introduced by the handler", !dlBlock.in
     "P2-283: a registry origin without an integrity hash rejects",
     lockIntegrityVerdict([mkEntry("node_modules/left-pad", REG, "")], REGISTRIES, [], NOW)
       .outcome === "reject",
+  );
+  // An integrity string that declares no usable hash material — no dash, no
+  // payload after the dash — is no hash at all and must reject, never ride
+  // the documented-algorithm approval.
+  check(
+    "P2-283: an integrity string without hash material rejects instead of approving",
+    lockIntegrityVerdict([mkEntry("node_modules/left-pad", REG, "sha512")], REGISTRIES, [], NOW)
+      .outcome === "reject" &&
+      lockIntegrityVerdict([mkEntry("node_modules/left-pad", REG, "sha512-")], REGISTRIES, [], NOW)
+        .outcome === "reject" &&
+      lockIntegrityVerdict([mkEntry("node_modules/left-pad", REG, "-abc")], REGISTRIES, [], NOW)
+        .outcome === "reject" &&
+      lockIntegrityVerdict(
+        [mkEntry("node_modules/left-pad", REG, "sha512")],
+        REGISTRIES,
+        [],
+        NOW,
+      ).lines[0]?.includes("no integrity hash declared"),
+  );
+  check(
+    "P2-283: a still-valid exemption downgrades a hash-material-less integrity string too",
+    lockIntegrityVerdict(
+      [mkEntry("node_modules/left-pad", REG, "sha512-")],
+      REGISTRIES,
+      expires("2027-01-01T00:00:00.000Z"),
+      NOW,
+    ).outcome === "warn",
   );
 
   // Rule order proof: an origin outside the registries rejects even when an

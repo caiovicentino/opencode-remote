@@ -23,6 +23,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
+  isInternalOrigin,
   lockIntegrityVerdict,
   type LockEntry,
   type LockExemption,
@@ -38,8 +39,12 @@ export const EXEMPTIONS_FILE = "scripts/lock-exemptions.json";
 /**
  * Normalize one entry of the `packages` map. A package of this very
  * repository is the root key "", a workspace directory (any path outside
- * `node_modules/`) or a `node_modules/<name>` link whose origin is a
- * relative path into the repository — never a registry URL.
+ * `node_modules/`) or a `node_modules/<name>` link whose origin is provably
+ * a repo-relative path (isInternalOrigin — a shape the gate cannot prove
+ * internal, such as a scheme'd or protocol-relative URL or an scp-style
+ * remote, fails closed and crosses the registry checks). An absent origin
+ * never counts as internal — a package nobody can vouch for is not the
+ * repo's own.
  */
 function normalizeEntry(path: string, doc: unknown): LockEntry {
   const pkg = (doc ?? {}) as { resolved?: unknown; integrity?: unknown };
@@ -52,10 +57,9 @@ function normalizeEntry(path: string, doc: unknown): LockEntry {
     // "apps/desktop/node_modules/@esbuild/linux-arm" still contains one and
     // stays subject to the registry checks.
     !path.includes("node_modules/") ||
-    // A node_modules link whose origin is a relative path into this very
-    // repository (e.g. "apps/daemon"). An absent origin never counts as
-    // internal — a package nobody can vouch for is not the repo's own.
-    (resolved !== "" && !resolved.includes("://"));
+    // A node_modules link whose origin is provably a relative path into this
+    // very repository (e.g. "apps/daemon").
+    isInternalOrigin(resolved);
   return { path, resolved, integrity, internal };
 }
 

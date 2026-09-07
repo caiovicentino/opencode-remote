@@ -25,7 +25,11 @@
  *    refuses rather than pretending.
  * 3. A package of this very repository (the root, a workspace directory or
  *    the node_modules link to one) is ignored and never becomes a problem or
- *    a report line.
+ *    a report line. An origin counts as this repository's own only when it
+ *    is provably a repo-relative path (isInternalOrigin): any other shape —
+ *    a scheme'd URL, a protocol-relative "//host/path", an scp-style
+ *    "git@host:owner/repo", a "host:owner/repo" prefix, an absolute path or
+ *    a parent escape — fails closed and crosses the registry checks.
  * 4. An origin outside the documented public registries becomes REJECT
  *    before any other consideration — a git dependency, an arbitrary tarball
  *    or a missing origin — this is the case the gate exists to prevent.
@@ -111,7 +115,33 @@ export function originAccepted(origin: string, registries: readonly string[]): b
 /** The algorithm prefix of an `alg-hash` integrity string ("" when absent). */
 function algorithmOf(integrity: string): string {
   const dash = integrity.indexOf("-");
-  return dash > 0 ? integrity.slice(0, dash) : integrity;
+  // Both halves must exist: "sha512" and "sha512-" declare no hash material
+  // at all, so they are no hash — never a documented-algorithm hash.
+  if (dash <= 0) return "";
+  const algorithm = integrity.slice(0, dash);
+  if (algorithm === "" || integrity.slice(dash + 1) === "") return "";
+  return algorithm;
+}
+
+/**
+ * True only when the written origin is provably a repo-relative path into
+ * this very repository (a workspace link such as "apps/web"). Everything
+ * else fails closed: a scheme'd URL ("https://…", "file:…"), a
+ * protocol-relative origin ("//host/path"), an scp-style remote
+ * ("git@host:owner/repo"), a "host:owner/repo" prefix, an absolute path or
+ * a parent escape is an origin the gate cannot prove internal, so it must
+ * cross the registry checks like any third-party origin.
+ */
+export function isInternalOrigin(origin: string): boolean {
+  if (origin === "") return false;
+  if (origin.includes("//")) return false; // scheme'd or protocol-relative URL
+  if (origin.includes("git@")) return false; // scp-style git remote
+  // Any "scheme:"-style prefix — including a bare "host:" one such as
+  // "github.com:owner/repo" — is not a plain repo-relative path.
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(origin)) return false;
+  if (origin.startsWith("/") || origin.startsWith("~/")) return false; // absolute paths
+  if (origin.startsWith("../")) return false; // escapes the repository root
+  return true;
 }
 
 /**
@@ -136,7 +166,10 @@ function entryLine(
   }
   // Rules 7 and 8: a still-valid exemption downgrades a hashless registry
   // entry to warn; an expired one stopped applying and lands here in full.
-  if (entry.integrity === "") {
+  // An integrity string that declares no usable hash material ("", "sha512",
+  // "sha512-", "-abc") is exactly the same as no hash at all.
+  const algorithm = algorithmOf(entry.integrity);
+  if (entry.integrity === "" || algorithm === "") {
     const exemption = exempt.get(entry.path);
     if (exemption !== undefined && Date.parse(exemption.expiresAt) > now) {
       return {
@@ -152,7 +185,6 @@ function entryLine(
   // Rule 6: a hash from another algorithm only warns — the origin is a
   // documented registry and a hash is declared, but the gate cannot verify
   // the documented algorithm was the one applied.
-  const algorithm = algorithmOf(entry.integrity);
   if (algorithm !== INTEGRITY_ALGORITHM) {
     return {
       line: `lock-integrity: WARN ${entry.path} ${shown} — integrity algorithm ${algorithm} differs from the documented ${INTEGRITY_ALGORITHM}`,
