@@ -1,4 +1,4 @@
-import { app, autoUpdater, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, powerMonitor, screen, session, Tray, shell } from "electron";
+import { app, autoUpdater, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, powerMonitor, screen, session, systemPreferences, Tray, shell } from "electron";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statfsSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
@@ -103,6 +103,7 @@ import { externalOpenDecision } from "./extlink";
 import { downloadVerdict, DOWNLOAD_LIMITS, uniqueDownloadName } from "./downloadplan";
 import { guestAttachDecision, guestNavigationDecision } from "./webviewguard";
 import { permissionDecision, requestingScheme } from "./permissions";
+import { micAccessVerdict } from "./micaccess";
 import { loginItemSupported, logsDirPath, openLogsFolder, trayIconSource, updateGuardReleaseLabel } from "./tray";
 import { trayStatus } from "./traystatus";
 import { shellLang, shellLabels, SUPPORTED_SHELL_LANGS, type ShellLangDecision, type ShellLabels } from "./shelllang";
@@ -1825,6 +1826,22 @@ async function onReady(): Promise<void> {
   session.defaultSession.setPermissionCheckHandler(
     (_wc, permission, requestingOrigin) => permissionDecision(permission, requestingOrigin, permissionCtx).allow,
   );
+
+  // P2-312: the microphone verdict the composer shows when the OS refuses
+  // media. Same form as the app:proxySetting handler beside the other app
+  // reads — and the state is read at REQUEST time, never at boot, because
+  // the user can flip the permission while the app is open. The P2-117 test
+  // hatch (cameraBlocked) answers denied: a system-level refusal is exactly
+  // what that hatch simulates, so the flow is reproducible in the harness.
+  ipcMain.handle("app:micAccess", () => {
+    let status: unknown = "unknown";
+    try {
+      status = systemPreferences.getMediaAccessStatus("microphone");
+    } catch {
+      // Unsupported platform — the pure verdict fails closed to "unknown".
+    }
+    return micAccessVerdict(process.platform, permissionCtx.cameraBlocked ? "denied" : status);
+  });
 
   // P2-241: the single download policy for the whole shell, registered
   // unconditionally on the default session — the one session every surface

@@ -282,4 +282,11 @@ P2-117 adicionou os beats da tela Scan-QR: boot camera-blocked
 (`OCR_DESKTOP_CAMERA_BLOCK=1`) prova o estado indisponível com CTA de colar
 código e boot com câmera fake (`OCR_DESKTOP_MEDIA_FAKE=1`, switches
 `--use-fake-device-for-media-stream` no harness) prova preview ativo em 390px
-e feed morto → "NO SIGNAL" → indisponível.
+e feed morto → "NO SIGNAL" → indisponível. P2-312 reaproveita o mesmo hatch
+pro veredito de microfone: o IPC `app:micAccess` (módulo puro
+`apps/desktop/src/micaccess.ts`, lido a cada pedido, nunca no boot) responde
+`denied` quando o hatch está ligado, e o ChatView troca o conselho de iOS pela
+frase estática em português do veredito com a ação "Abrir ajustes do sistema"
+— o alvo do painel (macOS `x-apple.systempreferences:` / Windows
+`ms-settings:`) abre pelo mesmo portão de link externo de `extlink.ts`, que
+agora admite esses dois esquemas inertes de ajustes do sistema.
