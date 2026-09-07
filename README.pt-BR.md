@@ -1183,7 +1183,15 @@ pacote mais a cópia descompactada (com uma folga documentada), ou o espaço
 não pôde ser medido, a checagem é adiada — a bandeja mostra `Update postponed
 — not enough disk space`, uma linha cai no `desktop.log` e **liberar espaço em
 disco (ou clicar em Check for updates) destrava a atualização** no próximo
-tique; nada é cancelado, apagado ou instalado pelas suas costas. Checagens
+tique; nada é cancelado, apagado ou instalado pelas suas costas. Desde a
+P2-270, quando a versão instalada em si morre antes de abrir janela — a única
+falha que nenhum diálogo sobrevive — o shell conta as aberturas seguidas que
+nunca chegaram a uma janela útil e, passado um piso documentado, suspende a
+verificação automática de atualização naquela execução, sinaliza a bandeja e
+pergunta ao dono uma única vez pelas saídas que já existem (**Copiar
+diagnóstico** ou **Seguir assim mesmo**); ele nunca volta versão, desinstala
+ou apaga nada, e o registro se cura sozinho na primeira vez em que a janela
+abre de verdade. Checagens
 repetidas nunca empilham
 ofertas velhas. Desde a P2-146, todo release do GitHub também publica os
 feeds JSON do Squirrel.Mac, gerados por

@@ -67,6 +67,23 @@ import {
   NOTIFY_GPU_DISABLED_BODY,
 } from "./gpuplan";
 import { gpuStateFile, readGpuState, writeGpuState } from "./gpustore";
+import {
+  bootHealthVerdict,
+  BOOT_HEALTH_BUTTON_CONTINUE,
+  BOOT_HEALTH_BUTTON_DIAGNOSTIC,
+  BOOT_HEALTH_BUTTON_INDEX,
+  BOOT_HEALTH_DIALOG_DETAIL,
+  BOOT_HEALTH_DIALOG_MESSAGE,
+  BOOT_HEALTH_DIALOG_TITLE,
+  BOOT_HEALTH_OPENING_FLOOR,
+} from "./boothealth";
+import {
+  bootHealthRecordFile,
+  markOpeningInProgress,
+  nodeBootHealthFs,
+  promoteHealthyOpening,
+  readBootHealthRecord,
+} from "./boothealthstore";
 import { WAKE_EVENT_TYPES, wakePlan } from "./wakeplan";
 import { HOTKEY_USER_ENV, hotkeyPlan, type HotkeyPlan } from "./hotkey";
 import { initDesktopLog, log, logError } from "./desktop-log";
@@ -358,6 +375,21 @@ const hangContext: HangContext = {
   now: () => Date.now(),
 };
 
+// --- boot health (P2-270) ------------------------------------------------------
+// The shell's memory of which version last truly opened a useful window. The
+// verdict is computed once at boot, BEFORE the app is ready (a crash during
+// startup is exactly an opening that never reached a window); the record is
+// read and written through boothealthstore.ts with the fs injected, and the
+// harness-session rule inside bootHealthVerdict keeps every test session on
+// "normal" with nothing written, nothing opened and no screenshot framing
+// changed. The "recuperar" verdict is non-destructive by contract: it only
+// suspends the AUTOMATIC update check for this execution, swaps the tray
+// label and asks the owner one question.
+let bootHealthFile = "";
+let bootRecoveryActive = false;
+let bootHealthAlarmLabel: string | null = null;
+let bootHealthPromoted = false;
+
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   // P2-069: a second real instance must never paint its own (white) window on
@@ -419,6 +451,36 @@ if (!gotLock) {
   if (gpuDisabledThisBoot) app.disableHardwareAcceleration();
   log(`[desktop] gpu acceleration: ${gpuPlan.action} (${gpuPlan.reason})`);
   registerGpuCrashWatch(gpuFile, gpuPlan.persist);
+  // P2-270: the boot-health decision rides the same pre-ready point — the
+  // record read from disk describes the PAST openings, the mark below adds
+  // the one in progress (which has not reached a useful window yet), and the
+  // promotion to "healthy" only happens when the main window truly finishes
+  // loading (the did-finish-load path). Every store failure is a log line.
+  bootHealthFile = bootHealthRecordFile(app.getPath("userData"));
+  const bootHealth = bootHealthVerdict({
+    harnessSession: HERMETIC_E2E,
+    runningVersion: app.getVersion(),
+    record: readBootHealthRecord(bootHealthFile, nodeBootHealthFs),
+    nowMs: Date.now(),
+    floor: BOOT_HEALTH_OPENING_FLOOR,
+  });
+  if (bootHealth.verdict === "recuperar") {
+    bootRecoveryActive = true;
+    bootHealthAlarmLabel = bootHealth.label;
+  }
+  log(`[desktop] boot health: ${bootHealth.verdict} (${bootHealth.phrase})`);
+  const bootHealthMark = markOpeningInProgress({
+    file: bootHealthFile,
+    fs: nodeBootHealthFs,
+    harnessSession: HERMETIC_E2E,
+    runningVersion: app.getVersion(),
+    base: bootHealth.record,
+    effectiveCount: bootHealth.count,
+    nowMs: Date.now(),
+  });
+  if (!bootHealthMark.written && bootHealthMark.reason !== "harness") {
+    log(`[desktop] boot health mark not written (${bootHealthMark.reason})`);
+  }
   app
     .whenReady()
     .then(() => onReady())
@@ -515,6 +577,43 @@ function showGpuDisabledHint(): void {
   }
 }
 
+// --- boot-health recovery dialog (P2-270) ---------------------------------------
+// One native question for the "recuperar" verdict, offering the outputs that
+// already exist: the P2-163 diagnostic bundle (copied to the clipboard by the
+// same handler as the Help-menu "Copiar diagnóstico" item) or "continue
+// anyway" — valid for this execution only, never persisted. Non-destructive
+// by contract: no rollback, no uninstall, no data deletion, no install. The
+// harness-session rule runs BEFORE any dialog opening (the verdict already
+// returned "normal" for it — this guard is defense in depth, same shape as
+// showGpuDisabledHint above).
+
+async function showBootHealthRecoveryDialog(): Promise<void> {
+  if (!bootRecoveryActive) return;
+  if (HERMETIC_E2E) return;
+  const options: Electron.MessageBoxOptions = {
+    type: "warning",
+    title: BOOT_HEALTH_DIALOG_TITLE,
+    message: BOOT_HEALTH_DIALOG_MESSAGE,
+    detail: BOOT_HEALTH_DIALOG_DETAIL,
+    buttons: [BOOT_HEALTH_BUTTON_DIAGNOSTIC, BOOT_HEALTH_BUTTON_CONTINUE],
+    defaultId: BOOT_HEALTH_BUTTON_INDEX.diagnostic,
+    cancelId: BOOT_HEALTH_BUTTON_INDEX.continue,
+    noLink: true,
+  };
+  try {
+    const { response } =
+      mainWindow && !mainWindow.isDestroyed()
+        ? await dialog.showMessageBox(mainWindow, options)
+        : await dialog.showMessageBox(options);
+    if (response === BOOT_HEALTH_BUTTON_INDEX.diagnostic) {
+      clipboard.writeText(buildDiagnostics());
+      log("[desktop] boot health: diagnostic bundle copied to the clipboard");
+    }
+  } catch (err) {
+    logError("[desktop] boot health dialog failed:", err);
+  }
+}
+
 // --- auto-update flow (P1-050) ------------------------------------------------
 // One entry point shared by the boot check and the tray's "Check for updates"
 // item. The heavy lifting (feed fetch, decision, download wiring, consent
@@ -549,6 +648,14 @@ const updateDialogSinks: UpdateDialogSinks = {
 };
 
 function runUpdateCheck(source: string): void {
+  // P2-270: boot-health recovery suspends the AUTOMATIC checks (boot and the
+  // scheduled recheck) for this execution — the owner's explicit "Check for
+  // updates" stays available, as does the whole P1-050 consent flow: nothing
+  // here touches quitAndInstall, the Windows installer path or any dialog.
+  if (bootRecoveryActive && source !== "tray") {
+    log(`[desktop] update check (${source}) skipped: boot-health recovery active for this execution`);
+    return;
+  }
   // P2-264: the disk-space gate rides the SAME tick updateschedule.ts feeds —
   // only the scheduled recheck consults it (never boot, never the user's
   // explicit "Check for updates"). A postpone skips this check entirely: the
@@ -1000,6 +1107,10 @@ async function onReady(): Promise<void> {
   registerGlobalHotkey();
   buildMenu();
   buildTray();
+  // P2-270: the boot-health recovery question — fire-and-forget; the
+  // harness-session rule and the verdict itself keep it silent except on a
+  // real machine that really needs it.
+  void showBootHealthRecoveryDialog();
 
   // P3-009: real app icon (build/icon.png, generated by scripts/make-icon.mjs)
   // for the macOS dock — on Windows/Linux the BrowserWindow icon below does
@@ -2389,6 +2500,20 @@ function createWindow(): BrowserWindow {
     if (win.isDestroyed()) return;
     loadFailAttempts = 0;
     win.webContents.setZoomLevel(zoomLevel);
+    // P2-270: the running version is promoted to "healthy" ONLY here — a
+    // main-window load that truly finished. One promotion per process is
+    // enough; a failed write retries on the next finished load.
+    if (!bootHealthPromoted) {
+      const promote = promoteHealthyOpening({
+        file: bootHealthFile,
+        fs: nodeBootHealthFs,
+        harnessSession: HERMETIC_E2E,
+        runningVersion: app.getVersion(),
+        nowMs: Date.now(),
+      });
+      if (promote.written) bootHealthPromoted = true;
+      else if (promote.reason !== "harness") log(`[desktop] boot health promotion not written (${promote.reason})`);
+    }
   });
   loadUi(win);
   return win;
@@ -2817,6 +2942,11 @@ function trayMenuItems(): Electron.MenuItemConstructorOptions[] {
     // (informational only, same pattern as the update-status line), fed by the
     // pairing tick through updateTrayStatus. Every item below keeps its order.
     { label: trayMenuLine, enabled: false },
+    // P2-270: the recovery alarm, present only while this execution runs with
+    // the automatic update check suspended — one disabled informational line
+    // (static label from the pure verdict; the tray never appears in a
+    // window screenshot).
+    ...(bootHealthAlarmLabel ? [{ label: bootHealthAlarmLabel, enabled: false }] : []),
     { label: "Open OpenCode Remote", click: showMainWindow },
   ];
   // P2-229: the same truth the Help menu carries — the active accelerator as

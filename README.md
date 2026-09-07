@@ -1342,7 +1342,15 @@ documented headroom), or the space cannot be measured at all, the check is
 postponed: the tray says `Update postponed — not enough disk space`, one line
 lands in `desktop.log`, and **freeing disk space (or clicking Check for
 updates) unlocks the update** on the next tick — nothing is cancelled,
-deleted or installed behind your back. P2-098: when that staged feed is
+deleted or installed behind your back. P2-270: when the installed version
+itself keeps dying before its window — the one failure no dialog can survive
+— the shell counts the consecutive openings that never reached a useful
+window and, past a documented floor, suspends the automatic update check for
+that execution, flags the tray and asks the owner one question offering the
+existing ways out (**Copiar diagnóstico** or **Seguir assim mesmo**); it
+never rolls back, uninstalls, deletes or installs anything, and the record
+heals itself the first time the window truly opens again.
+P2-098: when that staged feed is
 absent — the normal case on a plain DMG install — the shell falls back to the
 public yml feed attached to the latest GitHub release, so the tray still
 reports "update available" on third-party machines. P2-131: that fallback is

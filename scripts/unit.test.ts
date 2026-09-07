@@ -169,6 +169,24 @@ import {
   NOTIFY_GPU_DISABLED_BODY,
 } from "../apps/desktop/src/gpuplan";
 import {
+  bootHealthVerdict,
+  BOOT_HEALTH_BUTTON_CONTINUE,
+  BOOT_HEALTH_BUTTON_DIAGNOSTIC,
+  BOOT_HEALTH_DIALOG_DETAIL,
+  BOOT_HEALTH_DIALOG_MESSAGE,
+  BOOT_HEALTH_DIALOG_TITLE,
+  BOOT_HEALTH_OPENING_FLOOR,
+  normalizeBootHealthRecord,
+  type BootHealthRecord,
+} from "../apps/desktop/src/boothealth";
+import {
+  bootHealthRecordFile,
+  markOpeningInProgress,
+  promoteHealthyOpening,
+  readBootHealthRecord,
+  type BootHealthFs,
+} from "../apps/desktop/src/boothealthstore";
+import {
   CHROMIUM_ERR_ABORTED,
   LOAD_FAIL_MAX_ATTEMPTS,
   LOAD_FAIL_RETRY_DELAY_MS,
@@ -6288,6 +6306,297 @@ check(
   check(
     "P2-244: the GPU wiring introduces no periodic timer",
     gpuLines.every((l) => !l.includes("setInterval") && !l.includes("setTimeout")),
+  );
+}
+
+// --- P2-270: boot-health plan (apps/desktop/src/boothealth.ts) --------------------
+{
+  const now = 1_700_000_000_000;
+  const json = (v: unknown) => JSON.stringify(v);
+  const noSlash = (s: string) => !s.includes("/") && !s.includes("://") && !s.includes("\\");
+  const FLOOR = 3;
+  const rec = (over: Partial<BootHealthRecord> = {}): BootHealthRecord => ({
+    lastSeenVersion: "1.2.0",
+    lastHealthyVersion: "1.1.0",
+    unmatchedOpenings: 0,
+    lastOpeningAt: now,
+    ...over,
+  });
+  const verdict = (over: Partial<Parameters<typeof bootHealthVerdict>[0]> = {}) =>
+    bootHealthVerdict({
+      harnessSession: false,
+      runningVersion: "1.2.0",
+      record: rec(),
+      nowMs: now,
+      floor: FLOOR,
+      ...over,
+    });
+
+  // 1. The verdict table, in the documented rule order.
+  const harness = verdict({ harnessSession: true, record: rec({ unmatchedOpenings: 99 }) });
+  check(
+    "P2-270: an active harness session is normal even with a count above the floor",
+    harness.verdict === "normal" && harness.count === 0 && harness.record === null,
+  );
+  check(
+    "P2-270: an absent record is normal and zeroes the count, never recuperar",
+    verdict({ record: undefined }).verdict === "normal" &&
+      verdict({ record: undefined }).count === 0 &&
+      verdict({ record: null }).verdict === "normal" &&
+      verdict({ record: null }).reason === "registro",
+  );
+  check(
+    "P2-270: an empty or non-object record is normal, never recuperar",
+    verdict({ record: {} }).verdict === "normal" &&
+      verdict({ record: [] }).verdict === "normal" &&
+      verdict({ record: 42 }).verdict === "normal" &&
+      verdict({ record: "corrupt" }).verdict === "normal",
+  );
+  check(
+    "P2-270: rule order — an illegible count inside an otherwise high-count record cannot accuse",
+    verdict({ record: { lastSeenVersion: "1.2.0", unmatchedOpenings: "99", lastOpeningAt: now } }).verdict === "normal" &&
+      verdict({ record: { lastSeenVersion: "1.2.0", unmatchedOpenings: Number.NaN, lastOpeningAt: now } }).verdict === "normal",
+  );
+  const changed = verdict({
+    record: rec({ lastSeenVersion: "1.1.0", lastHealthyVersion: "1.0.0", unmatchedOpenings: 99 }),
+    runningVersion: "1.2.0",
+  });
+  check(
+    "P2-270: a running version different from the last seen one zeroes the count before any comparison",
+    changed.verdict === "suspeito" && changed.count === 0 && changed.reason === "versao",
+  );
+  check(
+    "P2-270: the running version already considered healthy is normal even with a high count",
+    verdict({ record: rec({ lastHealthyVersion: "1.2.0", unmatchedOpenings: 99 }) }).verdict === "normal" &&
+      verdict({ record: rec({ lastHealthyVersion: "1.2.0", unmatchedOpenings: 99 }) }).reason === "saudavel",
+  );
+  check(
+    "P2-270: a count exactly at the explicit floor is recuperar",
+    verdict({ record: rec({ unmatchedOpenings: 4, lastHealthyVersion: "1.0.0" }), floor: 4 }).verdict === "recuperar" &&
+      verdict({ record: rec({ unmatchedOpenings: BOOT_HEALTH_OPENING_FLOOR, lastHealthyVersion: "1.0.0" }) }).verdict === "recuperar",
+  );
+  check(
+    "P2-270: one below the explicit floor is suspeito and only registers",
+    verdict({ record: rec({ unmatchedOpenings: 3, lastHealthyVersion: "1.0.0" }), floor: 4 }).verdict === "suspeito" &&
+      verdict({ record: rec({ unmatchedOpenings: 3, lastHealthyVersion: "1.0.0" }), floor: 4 }).reason === "abaixo",
+  );
+  const future = verdict({ record: rec({ unmatchedOpenings: 99, lastOpeningAt: now + 60_000, lastHealthyVersion: "1.0.0" }) });
+  check(
+    "P2-270: an opening instant in the future is treated as now — the record stays usable and the instant is clamped",
+    future.verdict === "recuperar" && future.record?.lastOpeningAt === now,
+  );
+  check(
+    "P2-270: a non-finite current instant is refused instead of guessed",
+    verdict({ nowMs: Number.NaN, record: rec({ unmatchedOpenings: 99 }) }).verdict === "normal" &&
+      verdict({ nowMs: Number.NaN, record: rec({ unmatchedOpenings: 99 }) }).reason === "relogio" &&
+      verdict({ nowMs: Number.POSITIVE_INFINITY, record: rec({ unmatchedOpenings: 99 }) }).verdict === "normal",
+  );
+  check(
+    "P2-270: the same input in two calls yields an identical view",
+    json(verdict({ record: rec({ unmatchedOpenings: 2 }) })) === json(verdict({ record: rec({ unmatchedOpenings: 2 }) })),
+  );
+
+  // 2. Label hygiene: static pt-BR, tray-budget-sized, path/volume/address/
+  //    port/secret-free across every branch the verdict can mint.
+  const allViews = [
+    verdict({ harnessSession: true }),
+    verdict({ record: null }),
+    verdict({ nowMs: Number.NaN }),
+    verdict(),
+    verdict({ record: rec({ lastHealthyVersion: "1.2.0", unmatchedOpenings: 99 }) }),
+    verdict({ record: rec({ lastSeenVersion: "1.1.0" }), runningVersion: "1.2.0" }),
+    verdict({ record: rec({ unmatchedOpenings: 99, lastHealthyVersion: "1.0.0" }) }),
+  ];
+  const allCopy = [
+    ...allViews.flatMap((v) => [v.label, v.phrase]),
+    BOOT_HEALTH_DIALOG_TITLE,
+    BOOT_HEALTH_DIALOG_MESSAGE,
+    BOOT_HEALTH_DIALOG_DETAIL,
+    BOOT_HEALTH_BUTTON_DIAGNOSTIC,
+    BOOT_HEALTH_BUTTON_CONTINUE,
+  ];
+  check(
+    "P2-270: every label and sentence is static, path-free, volume-free and secret-free",
+    allCopy.every((s) => noSlash(s) && !/[A-Za-z]:[\\/]/.test(s) && !s.includes("localhost") && !s.includes("127.0.0.1") && !/Bearer|apiToken|token/i.test(s)),
+  );
+  check(
+    "P2-270: every tray label fits inside the documented tray text budget",
+    allViews.every((v) => v.label.length <= TRAY_TIP_MAX_CHARS && v.phrase.length <= TRAY_TIP_MAX_CHARS),
+  );
+
+  // 3. normalizeBootHealthRecord: the tolerant reader behind rule 2.
+  check(
+    "P2-270: normalizeBootHealthRecord keeps a valid record and drops everything else",
+    json(normalizeBootHealthRecord(rec(), now)) === json(rec()) &&
+      normalizeBootHealthRecord(undefined, now) === null &&
+      normalizeBootHealthRecord("x", now) === null &&
+      normalizeBootHealthRecord({ lastSeenVersion: "", unmatchedOpenings: 0, lastOpeningAt: now }, now) === null &&
+      normalizeBootHealthRecord({ lastSeenVersion: "1", lastHealthyVersion: 7, unmatchedOpenings: 0, lastOpeningAt: now }, now) === null,
+  );
+
+  // 4. The executor against a fake fs (the real disk is never touched):
+  //    mark the opening in progress at boot, promote ONLY on a finished
+  //    main-window load, report failures instead of throwing, write nothing
+  //    in a harness session.
+  const memoryFs = () => {
+    const files = new Map<string, string>();
+    const failWritesFor = new Set<string>();
+    const fs: BootHealthFs = {
+      readFileSync: (file) => {
+        const value = files.get(file);
+        if (value === undefined) {
+          const err = new Error("ENOENT") as NodeJS.ErrnoException;
+          err.code = "ENOENT";
+          throw err;
+        }
+        return value;
+      },
+      writeFileSync: (file, data, opts) => {
+        if (failWritesFor.has(file)) {
+          const err = new Error("EACCES") as NodeJS.ErrnoException;
+          err.code = "EACCES";
+          throw err;
+        }
+        files.set(file, data);
+      },
+      renameSync: (from, to) => {
+        const value = files.get(from);
+        if (value === undefined) throw new Error("missing tmp");
+        files.delete(from);
+        files.set(to, value);
+      },
+      unlinkSync: (file) => {
+        files.delete(file);
+      },
+    };
+    return { files, fs, failWritesFor };
+  };
+  const filePath = bootHealthRecordFile("/ud");
+  check("P2-270: the record file lives beside the other shell state files", filePath.endsWith("boothealth.json") && filePath.includes("ud"));
+  {
+    const { files, fs } = memoryFs();
+    const stored = readBootHealthRecord(filePath, fs);
+    const first = bootHealthVerdict({ harnessSession: false, runningVersion: "1.2.0", record: stored, nowMs: now, floor: 3 });
+    const mark = markOpeningInProgress({
+      file: filePath,
+      fs,
+      harnessSession: false,
+      runningVersion: "1.2.0",
+      base: first.record,
+      effectiveCount: first.count,
+      nowMs: now,
+    });
+    const afterMark = JSON.parse(files.get(filePath) ?? "null") as BootHealthRecord;
+    check(
+      "P2-270: the opening in progress is marked at boot with no promotion yet",
+      mark.written &&
+        afterMark.lastSeenVersion === "1.2.0" &&
+        afterMark.unmatchedOpenings === 1 &&
+        afterMark.lastHealthyVersion === undefined,
+    );
+    const promote = promoteHealthyOpening({ file: filePath, fs, harnessSession: false, runningVersion: "1.2.0", nowMs: now });
+    const afterPromote = JSON.parse(files.get(filePath) ?? "null") as BootHealthRecord;
+    check(
+      "P2-270: the version is promoted to healthy only when the main window finished loading for real",
+      promote.written &&
+        afterPromote.lastHealthyVersion === "1.2.0" &&
+        afterPromote.unmatchedOpenings === 0 &&
+        afterPromote.lastOpeningAt === now &&
+        ![...files.keys()].some((k) => k.includes(".tmp")),
+    );
+  }
+  {
+    const { files, fs, failWritesFor } = memoryFs();
+    failWritesFor.add(`${filePath}.tmp`);
+    let threw = false;
+    let mark: { written: boolean; reason: string } | null = null;
+    try {
+      mark = markOpeningInProgress({ file: filePath, fs, harnessSession: false, runningVersion: "1.2.0", base: null, effectiveCount: 2, nowMs: now });
+    } catch {
+      threw = true;
+    }
+    check(
+      "P2-270: a write failure becomes a report line and never an exception",
+      !threw && mark !== null && !mark.written && mark.reason === "escrita" && ![...files.keys()].some((k) => k.includes(".tmp")),
+    );
+    let promote: { written: boolean; reason: string } | null = null;
+    try {
+      promote = promoteHealthyOpening({ file: filePath, fs, harnessSession: false, runningVersion: "1.2.0", nowMs: now });
+    } catch {
+      threw = true;
+    }
+    check("P2-270: a promotion write failure is also a report, never an exception", !threw && promote !== null && !promote.written && promote.reason === "escrita");
+  }
+  {
+    const { files, fs } = memoryFs();
+    const mark = markOpeningInProgress({ file: filePath, fs, harnessSession: true, runningVersion: "1.2.0", base: null, effectiveCount: 99, nowMs: now });
+    const promote = promoteHealthyOpening({ file: filePath, fs, harnessSession: true, runningVersion: "1.2.0", nowMs: now });
+    check(
+      "P2-270: with a harness session nothing is written at all",
+      !mark.written && mark.reason === "harness" && !promote.written && promote.reason === "harness" && files.size === 0,
+    );
+    const clock = markOpeningInProgress({ file: filePath, fs, harnessSession: false, runningVersion: "1.2.0", base: null, effectiveCount: 1, nowMs: Number.NaN });
+    check("P2-270: a non-finite instant refuses the write instead of guessing", !clock.written && clock.reason === "relogio" && files.size === 0);
+  }
+  check(
+    "P2-270: readBootHealthRecord degrades a missing or corrupted file to null",
+    readBootHealthRecord(filePath, memoryFs().fs) === null,
+  );
+
+  // 5. The real boothealth.ts source: no electron, no node:fs, no node:path.
+  const bootHealthSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "boothealth.ts"), "utf8");
+  check(
+    "P2-270: boothealth.ts imports no electron, node:fs nor node:path",
+    !/^\s*import\b.*(?:electron|node:fs|node:path)/m.test(bootHealthSrc) && !bootHealthSrc.includes("require("),
+  );
+
+  // 6. The real main.ts wiring: harness rule before any dialog opening, no
+  //    new periodic timer, tray order unchanged, promotion only in the
+  //    did-finish-load path, suspension only of the automatic checks.
+  const verdictAt = mainTsSource.indexOf("bootHealthVerdict({");
+  const recDialogAt = mainTsSource.indexOf("function showBootHealthRecoveryDialog");
+  const recHarnessAt = mainTsSource.indexOf("HERMETIC_E2E", recDialogAt);
+  const recShowAt = mainTsSource.indexOf("dialog.showMessageBox", recDialogAt);
+  check(
+    "P2-270: main.ts evaluates the harness-session rule before any dialog opening",
+    verdictAt >= 0 &&
+      verdictAt < recDialogAt &&
+      mainTsSource.slice(verdictAt, verdictAt + 200).includes("harnessSession: HERMETIC_E2E") &&
+      recHarnessAt > recDialogAt &&
+      recHarnessAt < recShowAt,
+  );
+  const bootHealthLines = mainTsSource
+    .split("\n")
+    .filter((l) => /BootHealth|bootHealth|boot-health|bootRecovery/.test(l));
+  check(
+    "P2-270: the boot-health wiring introduces no periodic timer",
+    bootHealthLines.length > 0 && bootHealthLines.every((l) => !l.includes("setInterval") && !l.includes("setTimeout")),
+  );
+  const traySlice = mainTsSource.slice(mainTsSource.indexOf("function trayMenuItems"));
+  const traySeq = [
+    "trayMenuLine, enabled: false",
+    "bootHealthAlarmLabel",
+    '"Open OpenCode Remote"',
+    '"Check for updates"',
+    '"Restart daemon"',
+    '"Start at login"',
+    '"Open logs folder"',
+    'label: "Quit"',
+  ].map((needle) => traySlice.indexOf(needle));
+  check(
+    "P2-270: the existing tray menu item order stayed unchanged",
+    traySeq.every((idx) => idx >= 0) && traySeq.every((idx, i) => i === 0 || idx > traySeq[i - 1]),
+  );
+  const finishLoadAt = mainTsSource.indexOf('webContents.on("did-finish-load"');
+  const promoteCallAt = mainTsSource.indexOf("promoteHealthyOpening({");
+  check(
+    "P2-270: the promotion runs only in the did-finish-load path, exactly once",
+    finishLoadAt >= 0 && promoteCallAt > finishLoadAt && promoteCallAt < mainTsSource.indexOf("function loadUi(") && mainTsSource.split("promoteHealthyOpening({").length === 2,
+  );
+  const gateAt = mainTsSource.indexOf('bootRecoveryActive && source !== "tray"');
+  check(
+    "P2-270: recovery suspends only the automatic checks, before any updater call",
+    gateAt >= 0 && gateAt < mainTsSource.indexOf("checkForUpdatesOnBoot({"),
   );
 }
 
