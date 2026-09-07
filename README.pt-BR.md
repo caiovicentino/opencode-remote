@@ -197,6 +197,13 @@ remoto, zero confiança**.
   uso derivado (`ativo`, `ocioso`, `dormente`, `nunca visto`, com uma frase
   curta de ajuda) calculado apenas por leitura desses carimbos — o produto
   nunca revoga sozinho; revogar continua sendo ação explícita do dono.
+- **Push limitado e redigido (P2-272)** — no máximo **10 telefones** guardam
+  assinatura de notificação ao mesmo tempo (telefone novo depois do teto é
+  recusado; nenhum aparelho funcionando é descartado em silêncio), e a tela de
+  diagnóstico de push mostra só um rótulo curto com o host de cada endpoint,
+  nunca o endereço completo — o endpoint de push é por si só a credencial que
+  notifica aquele telefone. O arquivo de assinaturas é gravado de forma
+  atômica (mesmo contrato tmp+rename 0600 do estado do daemon).
 - **BYOM** — opencode suporta qualquer provider; escolha o modelo por sessão
 - **API + SDK** — dirija sessões por código (`packages/sdk`)
 - **Artifacts** — o agente escreve documentos (html, md, csv, pdf) em

@@ -37,6 +37,7 @@ import type {
 import { log } from "./log.js";
 import { IdempotencyCache } from "./idempotency.js";
 import { writeStateAtomic } from "./statefile.js";
+import { pushSubscriptionVerdict, redactPushEndpoint } from "./pushsubs.js";
 import { identityVerdict, quarantineName } from "./identityfile.js";
 import {
   backupContentVerdict,
@@ -1243,14 +1244,21 @@ end tell`;
     }
   }
   if (req.path === "/__ocr/push-subscription" && req.method === "POST") {
-    const sub = req.body as PushSub;
-    if (!sub?.endpoint || !sub?.keys?.p256dh || !sub?.keys?.auth) {
+    // P2-272: admission rules (shape, https-only, size and list ceilings) live
+    // in the pure pushsubs verdict — a push endpoint is a bearer credential,
+    // so everything fails closed.
+    const subs = loadSubscriptions();
+    const v = pushSubscriptionVerdict(req.body, subs);
+    if (v.verdict === "recusar") {
       return { id: req.id, status: 400, body: { error: "invalid subscription" } };
     }
-    const subs = loadSubscriptions();
-    const existing = subs.findIndex((s) => s.endpoint === sub.endpoint);
-    if (existing >= 0) subs[existing] = sub;
-    else subs.push(sub);
+    const sub = req.body as PushSub;
+    if (v.verdict === "substituir") {
+      const existing = subs.findIndex((s) => s.endpoint === sub.endpoint);
+      subs[existing] = sub;
+    } else {
+      subs.push(sub);
+    }
     saveSubscriptions(subs);
     return { id: req.id, status: 200, body: { ok: true } };
   }
@@ -1426,12 +1434,20 @@ function loadSubscriptions(): PushSub[] {
   }
 }
 
+// P2-272: same atomic tmp+rename write (created 0600) as daemon.json (P2-165)
+// — a power loss mid-write used to wipe every phone's subscription. The
+// existing 404/410 removal below is untouched: no subscription is ever
+// dropped for any other reason.
 function saveSubscriptions(subs: PushSub[]) {
-  writeFileSync(subscriptionsFile(), JSON.stringify(subs, null, 2));
-  chmodSync(subscriptionsFile(), 0o600);
+  writeStateAtomic(subscriptionsFile(), JSON.stringify(subs, null, 2));
 }
 
 interface PushAttempt {
+  /**
+   * P2-272: carries the SHORT REDACTED LABEL (pushsubs.redactPushEndpoint),
+   * never the raw endpoint — a push endpoint is a bearer credential, so the
+   * diagnostics/status surfaces describe state without handing it out.
+   */
   endpoint: string;
   ok: boolean;
   status?: number;
@@ -1449,13 +1465,18 @@ async function pushToSubscribers(title: string, body: string, data?: unknown) {
         TTL: 3600,
         urgency: "high",
       });
-      results.push({ endpoint: sub.endpoint, ok: true });
+      results.push({ endpoint: redactPushEndpoint(sub.endpoint), ok: true });
     } catch (err) {
       const status = (err as { statusCode?: number }).statusCode;
       const message = (err as Error).message;
-      results.push({ endpoint: sub.endpoint, ok: false, status, error: message });
+      results.push({ endpoint: redactPushEndpoint(sub.endpoint), ok: false, status, error: message });
       if (status === 404 || status === 410) dead.push(sub.endpoint);
-      else log("warn", "push delivery failed", { error: message });
+      // P2-272: no log line ever prints the whole endpoint — the label only.
+      else
+        log("warn", "push delivery failed", {
+          endpoint: redactPushEndpoint(sub.endpoint),
+          error: message.split(sub.endpoint).join(redactPushEndpoint(sub.endpoint)),
+        });
     }
   }
   if (dead.length) saveSubscriptions(subs.filter((s) => !dead.includes(s.endpoint)));
@@ -1469,10 +1490,10 @@ async function pushDiagnostics() {
   for (const sub of subs) {
     try {
       await webpush.sendNotification(sub, JSON.stringify({ title: "opencode-remote", body: "Test notification — push works 🎉" }), { TTL: 300 });
-      res.push({ endpoint: sub.endpoint, ok: true });
+      res.push({ endpoint: redactPushEndpoint(sub.endpoint), ok: true });
     } catch (err) {
       res.push({
-        endpoint: sub.endpoint,
+        endpoint: redactPushEndpoint(sub.endpoint),
         ok: false,
         status: (err as { statusCode?: number }).statusCode,
         error: (err as Error).message,

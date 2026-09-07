@@ -141,6 +141,18 @@ identity servers, no accounts.
     the workflow and register its scopes under its `"file/job"` key in
     `scripts/workflow-scopes.json`.
 
+15. **Push subscriptions are bounded and redacted (P2-272).** The phones that
+    receive web push live in `subscriptions.json`, capped at 10 at once and
+    admitted only through a pure verdict: the payload must be a well-formed
+    subscription and the endpoint an absolute `https://` URL within a
+    documented size ceiling (fail-closed — a push endpoint is itself the
+    bearer credential to notify that phone, so clear-text schemes are never
+    accepted and a new phone past the ceiling is refused instead of silently
+    evicting a working one). The file is written with the same atomic
+    tmp+rename 0600 contract as `daemon.json`, and the push diagnostics
+    surface (and every log line) shows only a short host-based label — never
+    the full endpoint.
+
 ## Key rotation
 
 Delete `~/.opencode-remote/daemon.json` (or `manage.ts revoke-all`) and
