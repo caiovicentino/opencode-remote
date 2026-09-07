@@ -173,6 +173,9 @@ private. That is the product: **local power, remote control, zero trust**.
 - **Per-conversation drafts (P1-088)** — the composer keeps one draft per
   conversation: switch sessions mid-typing and each chat holds its own text;
   sending clears only the conversation you sent from
+- **Paste to attach (P2-277)** — pasting into the composer attaches a copied
+  screenshot, image or file directly (up to 4 items per paste, 25 MB each);
+  pasting text keeps pasting text
 - **Complete composer (P3-086)** — the chat input is one raised card: a "+"
   button attaches files with an inline preview chip (thumbnail, name, one-tap
   remove), a mic button sits next to it (functional placeholder — disabled,

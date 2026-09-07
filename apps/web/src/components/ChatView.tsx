@@ -3,6 +3,7 @@ import {
   useReducer,
   useRef,
   useState,
+  type ClipboardEvent as ReactClipboardEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
@@ -40,6 +41,12 @@ import { appendDraft, getDraft, setDraft } from "../lib/drafts";
 import { firstSentence, pressureLevel } from "../lib/context";
 import { getTtsLang, speakBrief } from "../lib/voice";
 import { clampComposerHeight, composerSelectorLabel } from "../lib/composer";
+import {
+  pastePlan,
+  PASTE_FALLBACK_FILE_NAME,
+  PASTE_FALLBACK_IMAGE_NAME,
+  type PasteItem,
+} from "../lib/pasteattach";
 import { mergeBubbles, rowsToBubbles, type Bubble, type HistoryRow } from "../lib/bubbleMerge";
 import {
   reduceThinking,
@@ -1939,6 +1946,47 @@ export default function ChatView({
     };
   }, []);
 
+  // P2-277: paste-to-attach lives on the composer textarea only — never on
+  // window — so no other paste target on the screen is robbed. The decision
+  // is lib/pasteattach (pure, unit-tested): this only converts the DOM items
+  // into the module's plain shape and, on "attach", reuses the exact
+  // attachFile path drag & drop already uses — no new upload path.
+  function onComposerPaste(e: ReactClipboardEvent<HTMLTextAreaElement>) {
+    const data = e.clipboardData;
+    if (!data) return;
+    const text = data.getData("text/plain");
+    const files: File[] = [];
+    const items: PasteItem[] = [];
+    if (text) {
+      items.push({ type: "text", name: "", size: new TextEncoder().encode(text).length });
+    }
+    for (const it of Array.from(data.items)) {
+      if (it.kind !== "file") continue;
+      const f = it.getAsFile();
+      if (!f) continue;
+      files.push(f);
+      items.push({
+        type: f.type.startsWith("image/") ? "image" : f.type ? "file" : "unknown",
+        name: f.name,
+        size: f.size,
+      });
+    }
+    const plan = pastePlan(items);
+    if (plan.verdict === "ignore") return; // text gesture — let the field paste it
+    e.preventDefault();
+    if (plan.verdict === "refuse") {
+      setError(t(plan.reason));
+      return;
+    }
+    for (const it of plan.attach) {
+      const f = files[items.indexOf(it)];
+      if (!f) continue;
+      const name =
+        f.name || (it.type === "image" ? PASTE_FALLBACK_IMAGE_NAME : PASTE_FALLBACK_FILE_NAME);
+      void attachRef.current(name === f.name ? f : new File([f], name, { type: f.type }));
+    }
+  }
+
   function toggleTts() {
     if (speaking) {
       stopSpeaking();
@@ -2563,6 +2611,7 @@ export default function ChatView({
                 void send();
               }
             }}
+            onPaste={onComposerPaste}
           />
           <div className="composer-bar">
             <button
