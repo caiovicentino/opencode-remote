@@ -623,7 +623,13 @@ publicado no `latest.yml` é comparado com o digest medido nos bytes baixados
 apaga o arquivo baixado e mantém a página de release como fallback, e falha
 de rede ou feed sem digest também deixa o caminho manual de sempre — abrir a
 página de release no GitHub — intacto. Nada baixa no boot, por temporizador
-nem no recheck periódico de fundo; só o seu clique explícito baixa.
+nem no recheck periódico de fundo; só o seu clique explícito baixa. Desde a
+P2-301 o clique explícito também se recusa a baixar qualquer coisa quando o
+executável em execução não pode ser trocado pelo instalador — uma extração
+temporária de zip baixado ou um compartilhamento de rede (uma linha
+`update install not offered` no `desktop.log`, a mesma proteção que o fluxo
+de consentimento do macOS já tinha) — então rode o setup exe uma vez e reabra
+o app pela cópia instalada para voltar a receber atualizações.
 
 Os dois caminhos de release continuam propositalmente distintos. Quando o
 perfil decide mode=authenticode, o job `desktop-win` também verifica a

@@ -652,7 +652,12 @@ base64), a mismatch deletes the downloaded file and keeps the release page as
 the fallback, and a network failure or a feed without a digest likewise leaves
 the old manual flow — opening the GitHub release page — untouched. Nothing
 downloads at boot, on a timer, or from the periodic background re-check; only
-your explicit click does.
+your explicit click does. Since P2-301 the explicit click also refuses to
+download anything when the running executable cannot be replaced by the
+installer — a temporary extraction of a downloaded zip or a network share
+(one `update install not offered` line in `desktop.log`, the same protection
+the macOS consent flow already had) — so run the setup exe once and reopen
+the app from the installed copy to receive updates again.
 
 The two release paths stay visibly different on purpose. When the profile
 decides mode=authenticode, the `desktop-win` job additionally verifies the

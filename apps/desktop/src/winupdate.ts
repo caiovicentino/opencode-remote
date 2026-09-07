@@ -119,14 +119,28 @@ export function integrityVerdict(expected: string | null, measured: string | nul
 
 // --- download decision ---------------------------------------------------------
 //
-// RULE-ORDER CONTRACT (the gate reads this): the harness-session rule is the
-// FIRST consulted and stays first, before any platform, packaged or version
+// RULE-ORDER CONTRACT (the gate reads this): FIVE rules, consulted top to
+// bottom, first match decides. The harness-session rule is the FIRST consulted
+// and stays first, before any platform, packaged, version or location
 // consideration (the P2-221 lesson) — tools/desktop.mjs, the
 // npm run test:desktop-flow battery and the packaged-boot smokes must never
-// download a byte from the internet. The second rule keeps unpackaged dev
-// runs download-free as well. Only after both may a packaged Windows build
-// act — and even then only on an explicit user action: never at boot, never
-// from a timer, never from the P2-155 periodic recheck.
+// download a byte from the internet. The full order:
+//   1. harness-session — the hermetic harness never downloads, period.
+//   2. not-packaged — unpackaged dev runs stay download-free as well.
+//   3. platform-not-windows — this download path is Windows-only; macOS keeps
+//      Squirrel.Mac.
+//   4. no-explicit-action — even a packaged Windows build acts ONLY on an
+//      explicit user action: never at boot, never from a timer, never from
+//      the P2-155 periodic recheck.
+//   5. install-location-blocks (P2-301, additive) — the shell hands over the
+//      boot install-location verdict it already resolved (no new disk access,
+//      no new system call, no new timer). When the running copy provably
+//      cannot be replaced by the installer (dmg-volume, translocated,
+//      zip-temp, unc-share — the same table installBlocksUpdate encodes in
+//      update.ts), downloading hundreds of megabytes would only produce an
+//      installer whose result the person can never reopen: skip. An absent or
+//      non-object verdict is fail-open: download (blocking on doubt would
+//      freeze the fleet on a defective release — the P2-291 lesson).
 
 export type WinDownloadAction = "download" | "skip";
 
@@ -139,6 +153,9 @@ export interface WinDownloadDecisionInput {
   platform: string;
   /** True only for an explicit user action on the existing update item. */
   explicitAction: boolean;
+  /** P2-301: the boot install-location verdict (installloc.ts, resolved once
+   * by main.ts and handed over ready). Missing or non-object → download. */
+  installLocation?: { state: string; message: string } | null;
 }
 
 export interface WinDownloadDecision {
@@ -152,5 +169,16 @@ export function winDownloadDecision(input: WinDownloadDecisionInput): WinDownloa
   if (!input.packaged) return { action: "skip", reason: "not-packaged" };
   if (input.platform !== "win32") return { action: "skip", reason: "platform-not-windows" };
   if (!input.explicitAction) return { action: "skip", reason: "no-explicit-action" };
+  // P2-301: the fifth rule — a bundle the installer can never replace (the
+  // same blocking table installBlocksUpdate encodes in update.ts) is not
+  // offered a download at all. Fail-open on absent/non-object verdicts.
+  if (
+    input.installLocation?.state === "dmg-volume" ||
+    input.installLocation?.state === "translocated" ||
+    input.installLocation?.state === "zip-temp" ||
+    input.installLocation?.state === "unc-share"
+  ) {
+    return { action: "skip", reason: "install-location-blocks" };
+  }
   return { action: "download", reason: "explicit-action" };
 }

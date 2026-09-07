@@ -954,14 +954,25 @@ async function downloadWinInstaller(info: WinInstallerRequest): Promise<boolean>
   // consulted, and inside it the harness-session rule comes before any
   // platform/packaged consideration — the hermetic harness (tools/desktop.mjs,
   // test:desktop-flow, packaged-boot smokes) must never fetch internet bytes.
+  // P2-301: the boot install-location verdict resolved once at boot rides
+  // along — no new disk access, no new system call, no new timer.
   const decision = winDownloadDecision({
     harnessSession: HERMETIC_E2E,
     packaged: app.isPackaged,
     platform: process.platform,
     explicitAction: true,
+    installLocation: bootInstallLocation,
   });
   if (decision.action !== "download") {
-    log(`[desktop] win update: download skipped (${decision.reason}) — release page stays the fallback`);
+    // P2-301: the location refusal speaks the SAME one-line format the
+    // install route already logs (update.ts offerInstall) — state + the
+    // verdict's static phrase, never a path, port, address or secret. No new
+    // dialog, no new menu item, no new tray label, no new surface.
+    if (decision.reason === "install-location-blocks" && bootInstallLocation) {
+      log(`[desktop] update install not offered (${bootInstallLocation.state}): ${bootInstallLocation.message}`);
+    } else {
+      log(`[desktop] win update: download skipped (${decision.reason}) — release page stays the fallback`);
+    }
     return false;
   }
   if (!installerNameIsSafe(info.file)) {
