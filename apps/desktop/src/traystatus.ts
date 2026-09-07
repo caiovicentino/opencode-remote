@@ -6,7 +6,9 @@
 // the three facts the pairing-watcher tick already holds — sidecar health,
 // the daemon↔relay link verdict computed by linkVerdict (P2-199) and the
 // paired-phone count from the devices route — into the tray tooltip plus the
-// menu status line, both static pt-BR.
+// menu status line. P2-276: the phrases come from the shelllang.ts table in
+// the resolved shell language (pt table by default — byte-identical to the
+// static pt-BR copy this module spoke before the selector existed).
 //
 // Rule order (the rules below are evaluated exactly in this order):
 //   1. Sidecar down wins over everything — without the local process nothing
@@ -38,6 +40,8 @@
 // node:fs, no fetch, no I/O of any kind — scripts/unit.test.ts exercises every
 // branch in plain Node.
 
+import { shellLabels, type ShellLabels } from "./shelllang";
+
 /** Windows truncates tray tooltips at 128 chars (NOTIFYICONDATA szTip) — every
  * tooltip this module produces must fit under this budget. */
 export const TRAY_TIP_MAX_CHARS = 128;
@@ -56,57 +60,40 @@ const KNOWN_LINK_STATES = new Set(["connected", "local", "dialing", "refused", "
 /**
  * Map (sidecar health, link state, paired-phone count) to the tray tooltip and
  * the menu status line. Deterministic, static and secret-free by construction.
+ * `labels` (P2-276) is the shelllang.ts vocabulary for the resolved shell
+ * language; the default keeps the pt phrases this module always spoke.
  */
-export function trayStatus(sidecarHealthy: boolean, linkState: string | null | undefined, phones: unknown): TrayStatusText {
+export function trayStatus(
+  sidecarHealthy: boolean,
+  linkState: string | null | undefined,
+  phones: unknown,
+  labels: ShellLabels = shellLabels("pt"),
+): TrayStatusText {
   // Rule 1: without the local process nothing works — no other fact matters.
   if (!sidecarHealthy) {
-    return {
-      tooltip: "OpenCode Remote — processo local fora do ar: nenhum telefone alcança esta máquina",
-      menuLine: "Processo local fora do ar — nenhum telefone alcança esta máquina agora",
-    };
+    return { tooltip: labels.tray.down.tooltip, menuLine: labels.tray.down.menuLine };
   }
   // Rule 2: the link verdict already computed by linkVerdict — an unknown or
   // unrecognized state falls to the neutral phrase, never an accusation.
   const state = typeof linkState === "string" && KNOWN_LINK_STATES.has(linkState) ? linkState : "unknown";
   switch (state) {
     case "refused":
-      return {
-        tooltip: "OpenCode Remote — o relay recusou a conexão: o celular não alcança a máquina",
-        menuLine: "O relay recusou a conexão — o celular não alcança a máquina agora",
-      };
+      return { tooltip: labels.tray.refused.tooltip, menuLine: labels.tray.refused.menuLine };
     case "misconfigured":
-      return {
-        tooltip: "OpenCode Remote — endereço do relay recusado na partida: confira as configurações",
-        menuLine: "Endereço do relay recusado na partida — confira as configurações",
-      };
+      return { tooltip: labels.tray.misconfigured.tooltip, menuLine: labels.tray.misconfigured.menuLine };
     case "dialing":
-      return {
-        tooltip: "OpenCode Remote — conectando ao relay: aguarde um instante",
-        menuLine: "Conectando ao relay — aguarde um instante",
-      };
+      return { tooltip: labels.tray.dialing.tooltip, menuLine: labels.tray.dialing.menuLine };
     case "unknown":
-      return {
-        tooltip: "OpenCode Remote — sem informação do relay por enquanto",
-        menuLine: "Sem informação do relay por enquanto — o pareamento pode seguir normalmente",
-      };
+      return { tooltip: labels.tray.unknown.tooltip, menuLine: labels.tray.unknown.menuLine };
   }
   // Rules 3–4 need a real phone count: anything that is not a safe integer is
   // treated as zero (fail-closed — a nonsense count must never read as "ready").
   const paired = typeof phones === "number" && Number.isSafeInteger(phones) && phones > 0 ? phones : 0;
   if (paired === 0) {
-    return {
-      tooltip: "OpenCode Remote — nenhum telefone pareado: escaneie o código no celular",
-      menuLine: "Nenhum telefone pareado — escaneie o código no celular para começar",
-    };
+    return { tooltip: labels.tray.invite.tooltip, menuLine: labels.tray.invite.menuLine };
   }
   if (state === "local") {
-    return {
-      tooltip: "OpenCode Remote — o celular alcança esta máquina pela rede local, sem relay",
-      menuLine: "O celular alcança esta máquina pela rede local, sem relay",
-    };
+    return { tooltip: labels.tray.local.tooltip, menuLine: labels.tray.local.menuLine };
   }
-  return {
-    tooltip: "OpenCode Remote — tudo pronto: o celular alcança esta máquina",
-    menuLine: "Tudo pronto — o celular alcança esta máquina",
-  };
+  return { tooltip: labels.tray.ready.tooltip, menuLine: labels.tray.ready.menuLine };
 }

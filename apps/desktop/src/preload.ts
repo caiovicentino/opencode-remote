@@ -163,6 +163,11 @@ contextBridge.exposeInMainWorld("ocrDesktop", {
   // getter exists so tests can verify the IPC round-trip via the harness.
   sendUnread: (n: number): void => ipcRenderer.send("ocr:unread", n),
   getUnreadBadge: (): Promise<number> => ipcRenderer.invoke("app:unreadBadge"),
+  // P2-276: the shell (menu bar + tray) follows the language chosen in the
+  // app — one-way push, same pattern as sendUnread above. Main resolves it
+  // through shelllang.ts (an invalid payload counts as no preference) and
+  // rebuilds both OS surfaces on the change.
+  sendLang: (lang: string): void => ipcRenderer.send("ocr:shell-lang", lang),
   // P1-050: Settings "Copy diagnostic" — support bundle (versions, daemon
   // state, desktop.log tail, crash-file names). Text only, no secrets.
   getDiagnostics: (): Promise<string> => ipcRenderer.invoke("app:diagnostics"),

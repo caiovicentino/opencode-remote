@@ -707,7 +707,8 @@ import { versionMismatch } from "../apps/desktop/src/versions";
 
 import { daemonTooltip, loginItemSupported, logsDirPath, openLogsFolder, trayIconSource } from "../apps/desktop/src/tray";
 
-import { HOTKEY_MENU_LABEL, menuSpec, type MenuItemSpec } from "../apps/desktop/src/menu";
+import { menuSpec, type MenuItemSpec } from "../apps/desktop/src/menu";
+import { shellLang, shellLabels, SUPPORTED_SHELL_LANGS, type ShellLabels } from "../apps/desktop/src/shelllang";
 import {
   DEFAULT_ZOOM_LEVEL,
   MAX_ZOOM_LEVEL,
@@ -5965,6 +5966,175 @@ check(
   check(
     "P2-176: main.ts buildMenu consumes menuSpec with no inline labels",
     buildMenuSrc.includes("menuSpec(") && !buildMenuSrc.includes("label:") && !buildMenuSrc.includes("accelerator:"),
+  );
+}
+
+
+// --- P2-276: shell language (apps/desktop/src/shelllang.ts) ---------------------
+{
+  const en = shellLabels("en");
+  const pt = shellLabels("pt");
+
+  const tableValues = (t: ShellLabels): string[] => [
+    ...Object.values(t.menu),
+    ...Object.values(t.tray).flatMap((p) => [p.tooltip, p.menuLine]),
+  ];
+
+  // 1. the full shellLang rule table, in the documented rule order.
+  // Rule 1+3: a missing preference lets the system decide — Portuguese prefix → pt.
+  check(
+    "P2-276: absent preference + pt system (pt, pt-BR, PT-BR) → pt by system",
+    shellLang(null, "pt-BR", SUPPORTED_SHELL_LANGS).lang === "pt" &&
+      shellLang(null, "pt", SUPPORTED_SHELL_LANGS).lang === "pt" &&
+      shellLang(undefined, "PT-br", SUPPORTED_SHELL_LANGS).lang === "pt",
+  );
+  check(
+    "P2-276: absent preference + pt system reports the system origin",
+    shellLang(null, "pt-BR", SUPPORTED_SHELL_LANGS).origin === "system",
+  );
+  // Rule 1+4: a missing preference with an unknown system language → en (safe default).
+  check(
+    "P2-276: absent preference + unknown system (es-ES, empty, non-text) → en by default",
+    shellLang(null, "es-ES", SUPPORTED_SHELL_LANGS).lang === "en" &&
+      shellLang(undefined, "", SUPPORTED_SHELL_LANGS).lang === "en" &&
+      shellLang(null, null, SUPPORTED_SHELL_LANGS).lang === "en" &&
+      shellLang(null, 42, SUPPORTED_SHELL_LANGS).lang === "en",
+  );
+  // Rule 1: a non-textual or out-of-list preference is discarded, never guessed —
+  // the system language decides afterwards (or the default takes over).
+  check(
+    "P2-276: non-textual preferences (number, object, array, bool) are discarded",
+    shellLang(1, "pt-BR", SUPPORTED_SHELL_LANGS).origin === "system" &&
+      shellLang({}, "pt-BR", SUPPORTED_SHELL_LANGS).origin === "system" &&
+      shellLang(["pt"], "en-US", SUPPORTED_SHELL_LANGS).origin === "default" &&
+      shellLang(true, "en-US", SUPPORTED_SHELL_LANGS).origin === "default",
+  );
+  check(
+    "P2-276: empty, blank and out-of-list textual preferences are discarded",
+    shellLang("", "pt-BR", SUPPORTED_SHELL_LANGS).lang === "pt" &&
+      shellLang("   ", "en-US", SUPPORTED_SHELL_LANGS).lang === "en" &&
+      shellLang("es", "en-US", SUPPORTED_SHELL_LANGS).lang === "en" &&
+      // Case-sensitive by design: "PT" is not the documented code — no guessing.
+      shellLang("PT", "en-US", SUPPORTED_SHELL_LANGS).lang === "en",
+  );
+  // Rule 2: a supported preference wins over the system — both directions.
+  check(
+    "P2-276: supported preference wins over the system (en pref + pt system → en)",
+    shellLang("en", "pt-BR", SUPPORTED_SHELL_LANGS).lang === "en" &&
+      shellLang("en", "pt-BR", SUPPORTED_SHELL_LANGS).origin === "preference",
+  );
+  check(
+    "P2-276: supported preference wins over the system (pt pref + en system → pt)",
+    shellLang("pt", "en-US", SUPPORTED_SHELL_LANGS).lang === "pt" &&
+      shellLang("pt", "en-US", SUPPORTED_SHELL_LANGS).origin === "preference",
+  );
+  // Rule 5: deterministic — same inputs, same decision, twice.
+  check(
+    "P2-276: identical inputs produce an identical decision across two calls",
+    JSON.stringify(shellLang("en", "pt-BR", SUPPORTED_SHELL_LANGS)) ===
+      JSON.stringify(shellLang("en", "pt-BR", SUPPORTED_SHELL_LANGS)) &&
+      JSON.stringify(shellLang(null, "pt", SUPPORTED_SHELL_LANGS)) ===
+        JSON.stringify(shellLang(null, "pt", SUPPORTED_SHELL_LANGS)),
+  );
+
+  // 2. shellLabels: exact key parity between en and pt, locked.
+  check(
+    "P2-276: shellLabels menu tables have exact key parity between en and pt",
+    JSON.stringify(Object.keys(en.menu)) === JSON.stringify(Object.keys(pt.menu)),
+  );
+  check(
+    "P2-276: shellLabels tray tables have exact key parity between en and pt",
+    JSON.stringify(Object.keys(en.tray)) === JSON.stringify(Object.keys(pt.tray)),
+  );
+  check(
+    "P2-276: every tray state carries both a tooltip and a menu line in both languages",
+    ["en", "pt"].every((l) => Object.values(shellLabels(l as "en" | "pt").tray).every((p) => p.tooltip.length > 0 && p.menuLine.length > 0)),
+  );
+
+  // 3. no empty label, no emoji, no label over the documented ceiling, and
+  //    no path, address, port or secret anywhere in the vocabulary.
+  const allLabels = [...tableValues(en), ...tableValues(pt)];
+  check(
+    "P2-276: no label is empty and none exceeds the documented tray ceiling",
+    allLabels.every((s) => s.length > 0 && s.length <= TRAY_TIP_MAX_CHARS),
+  );
+  check(
+    "P2-276: no label carries an emoji (P2-107)",
+    allLabels.every((s) => !/\p{Extended_Pictographic}/u.test(s)),
+  );
+  check(
+    "P2-276: no label carries a path, URL scheme, address, port or secret",
+    allLabels.every(
+      (s) =>
+        !s.includes("/") &&
+        !s.includes("\\") &&
+        !/:\d/.test(s) &&
+        !/localhost|127\.0\.0\.1|0x[0-9a-f]/i.test(s) &&
+        !/token|secret|password|api[- ]?key/i.test(s),
+    ),
+  );
+
+  // 4. menuSpec consumes the table: the en spec is the pt spec, translated —
+  //    same ids, same order, same accelerators, same actions (P1-046 contract).
+  const specIds = (items: MenuItemSpec[]): string[] =>
+    items.flatMap((i) => (i.id ? [i.id] : i.submenu ? specIds(i.submenu) : []));
+  const specAccel = (items: MenuItemSpec[]): string[] =>
+    items.flatMap((i) => (i.accelerator ? [i.accelerator] : i.submenu ? specAccel(i.submenu) : []));
+  for (const platform of ["darwin", "win32", "linux"]) {
+    const ptSpec = menuSpec(platform, null, false, null, undefined, pt);
+    const enSpec = menuSpec(platform, null, false, null, undefined, en);
+    check(
+      `P2-276: en and pt specs share ids and order on ${platform}`,
+      JSON.stringify(specIds(ptSpec)) === JSON.stringify(specIds(enSpec)),
+    );
+    check(
+      `P2-276: en and pt specs share accelerators on ${platform}`,
+      JSON.stringify(specAccel(ptSpec)) === JSON.stringify(specAccel(enSpec)),
+    );
+    check(
+      `P2-276: en and pt specs differ in the actual labels on ${platform}`,
+      JSON.stringify(ptSpec.map((i) => i.label)) !== JSON.stringify(enSpec.map((i) => i.label)),
+    );
+  }
+
+  // 5. real-source: no visible phrase remains literal in menu.ts — every
+  //    quoted string in the file must be an id/accelerator/action, never a
+  //    label from either table.
+  const menuSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "menu.ts"), "utf8");
+  const literals = (menuSrc.match(/"([^"\\\n]|\\.)*"/g) ?? []).map((s) => s.slice(1, -1));
+  check(
+    "P2-276: the real menu.ts carries no visible phrase as a literal — labels come from the table",
+    literals.length > 0 && literals.every((lit) => !allLabels.includes(lit)),
+  );
+  check(
+    "P2-276: the real menu.ts consumes the shell vocabulary (labels param)",
+    menuSrc.includes("labels.menu.") && menuSrc.includes("labels: ShellLabels"),
+  );
+
+  // 6. real-source: shelllang.ts stays pure — no electron, no node:fs, no
+  //    node:path, no I/O, so the same blocks run anywhere plain Node runs.
+  const shellLangSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "shelllang.ts"), "utf8");
+  check(
+    "P2-276: the real shelllang.ts imports no electron, no node:fs and no node:path",
+    shellLangSrc
+      .split("\n")
+      .filter((line) => line.trimStart().startsWith("import "))
+      .every((line) => !line.includes("electron") && !line.includes("node:fs") && !line.includes("node:path")),
+  );
+
+  // 7. real-source: main.ts wiring — the one-way push rebuilds both OS
+  //    surfaces through the existing single write paths (no new timers).
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  check(
+    "P2-276: main.ts listens on ocr:shell-lang and rebuilds menu + tray via applyShellLanguage",
+    mainSrc.includes('ipcMain.on("ocr:shell-lang"') &&
+      mainSrc.includes("applyShellLanguage()") &&
+      mainSrc.includes("shellLang(raw, app.getLocale(), SUPPORTED_SHELL_LANGS)"),
+  );
+  check(
+    "P2-276: main.ts feeds the resolved table to both surfaces",
+    mainSrc.includes("currentShellLabels()") &&
+      (mainSrc.match(/currentShellLabels\(\)/g) ?? []).length >= 2,
   );
 }
 
@@ -19061,7 +19231,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
   check(
     "P2-221: the menu quit item is id-wired (no bare quit role) with the Cmd+Q accelerator kept",
-    menuSrc.includes('{ id: "app-quit", label: "Encerrar OpenCode Remote", accelerator: "CmdOrCtrl+Q" }') &&
+    menuSrc.includes('{ id: "app-quit", label: labels.menu.quit, accelerator: "CmdOrCtrl+Q" }') &&
       !menuSrc.includes('role: "quit"'),
   );
   check(
@@ -19819,7 +19989,7 @@ check(
   const refusedItem = hotkeyItem(plan({ harnessSession: true }));
   check(
     "P2-229: Help menu shows the active accelerator as a disabled informational item",
-    activeItem?.label === HOTKEY_MENU_LABEL &&
+    activeItem?.label === shellLabels("pt").menu.hotkeyLine &&
       activeItem?.accelerator === defaultHotkeyFor("darwin") &&
       activeItem?.enabled === false,
   );

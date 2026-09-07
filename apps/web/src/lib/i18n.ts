@@ -21,6 +21,21 @@ function detect(): Lang {
 let lang: Lang = detect();
 const listeners = new Set<() => void>();
 
+// P2-276: the native shell (menu bar + tray) follows the language chosen
+// here — a one-way push over the existing preload bridge, same pattern as
+// the unread badge (lib/unread.ts). Absent in plain browsers; any bridge
+// failure is swallowed — the push is cosmetic and must never break the UI.
+function publishLangToShell(l: Lang): void {
+  try {
+    const bridge = (window as unknown as { ocrDesktop?: { sendLang?: (lang: string) => void } }).ocrDesktop;
+    bridge?.sendLang?.(l);
+  } catch {
+    // no shell, or the bridge rejected — the shell keeps its current language
+  }
+}
+
+publishLangToShell(lang);
+
 export function getLang(): Lang {
   return lang;
 }
@@ -30,6 +45,7 @@ export function setLang(l: Lang) {
   try {
     localStorage.setItem(KEY, l);
   } catch {}
+  publishLangToShell(l);
   listeners.forEach((fn) => fn());
 }
 
