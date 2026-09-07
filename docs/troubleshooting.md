@@ -262,11 +262,9 @@ its health verdicts on `GET /__ocr/settings`) — no new request, no new poll.
   `apps/web/src/lib/machinestate.ts`: ready → normal, no-browser → red,
   disabled → amber (the machine's owner turned it off) and unknown → amber,
   never green — announcing a readiness that was never measured is worse than
-  admitting we do not know. The daemon mirrors the verdict onto the same
-  settings read (`browseState` / `browseMessage`, additive since P2-287) and
-  re-probes it lazily, so installing the Playwright browser flips the row
-  without a daemon restart; a daemon too old to mirror it simply renders no
-  row.
+  admitting we do not know. The row renders only when the connected daemon
+  reports the verdict on the channel the screen already reads; until that
+  continuation lands, a daemon that does not report it simply renders no row.
 - Deterministic screenshots: `OCR_OPENCODE_OLD=1` forces the too-old agent
   version (amber row) and `OCR_DISK_FULL=1` the critical disk verdict (red
   row) on the daemon — the same hatches documented for the single-line
@@ -275,9 +273,7 @@ its health verdicts on `GET /__ocr/settings`) — no new request, no new poll.
   verdict in the app itself (values: `no-browser`, `disabled`, `unknown` —
   deliberately NOT `ready`, so the hatch can never fabricate a green row;
   anything else is ignored, the real payload always wins and no phrase is
-  ever invented — the label alone carries the row). With the settings mirror
-  in place the hatch is only needed to photograph a state the machine being
-  photographed does not currently report.
+  ever invented — the label alone carries the row).
 
 ## Local daemon port fallback (P2-143)
 

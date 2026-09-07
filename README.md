@@ -170,11 +170,12 @@ private. That is the product: **local power, remote control, zero trust**.
 - **Site-opening readiness (P2-284)** — the machine announces in
   `GET /api/health` (`browseState` / `browseMessage` / `browseCheckedAt`)
   whether it knows how to open sites, before you ask; the Settings
-  **Machine state** panel carries the same verdict as its red/amber/green
-  "Web browsing" row, mirrored on the settings read the screen already
-  performs (P2-287). Installing the Playwright browser is optional, and when
-  it is missing the agent answers with one short pt-BR sentence instead of a
-  raw English error
+  **Machine state** panel renders that verdict as its red/amber/green
+  "Web browsing" row whenever the connected daemon reports it on the
+  settings channel the screen already reads (P2-287; mirroring the verdict
+  onto that channel is the registered continuation task). Installing the
+  Playwright browser is optional, and when it is missing the agent answers
+  with one short pt-BR sentence instead of a raw English error
 - **Handoff** — continue the exact session on your Mac (laptop icon in the
   chat header)
 - **Live board** — every session's state at a glance: working, waiting for

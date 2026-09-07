@@ -203,9 +203,11 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
   // P2-215: disk-space verdict for the volume hosting the daemon's state dir —
   // same channel as above (additive `disk` field on /__ocr/settings).
   const [disk, setDisk] = useState<{ state?: string; message?: string } | null>(null);
-  // P2-287: browse-readiness verdict (site opening) — same channel as above
-  // (additive fields on /__ocr/settings, mirrored by daemons since P2-287);
-  // older daemons send no field, the read simply yields no browse row.
+  // P2-287: browse-readiness verdict (site opening) — additive fields on
+  // /__ocr/settings; daemons do not send them yet (the daemon-side mirror is
+  // the registered continuation), so the read yields no browse row until
+  // then and only the documented evidence hatch below can force one,
+  // fail-closed.
   const [browse, setBrowse] = useState<{ state?: string; message?: string } | null>(null);
   const [nrMode, setNrMode] = useState<"daily" | "days" | "interval">("daily");
   const [nrDays, setNrDays] = useState<number[]>([1, 2, 3, 4, 5]);
@@ -382,10 +384,11 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
   // or malformed verdicts, so a legacy daemon yields the calm empty state.
   // The daemon's phrases render verbatim; the app never rewrites them and
   // never invents its own.
-  // P2-287: the browse verdict rides the same read (additive mirror, live on
-  // daemons since P2-287) and turns into the site-browsing row — still no new
-  // route, no new request, no new poll. The real payload always wins over the
-  // evidence hatch below.
+  // P2-287: the browse verdict turns into the site-browsing row from the
+  // same read — still no new route, no new request, no new poll. Daemons do
+  // not carry the field yet (registered continuation), so on today's daemons
+  // only the fail-closed hatch below produces the row; the real payload
+  // always wins once a daemon does send it.
   const machineRows = readinessRows({
     opencode: {
       versionState: opencodeVersion?.state,

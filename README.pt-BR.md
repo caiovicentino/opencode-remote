@@ -153,11 +153,12 @@ remoto, zero confiança**.
   derrubam o boot, fail-closed)
 - **Prontidão de abrir sites (P2-284)** — a máquina anuncia em `GET /api/health`
   (`browseState` / `browseMessage` / `browseCheckedAt`) se sabe navegar, antes
-  de você pedir; o painel **Estado da máquina** das Configurações traz o mesmo
-  veredito na linha "Navegação de sites" (verde/âmbar/vermelho, espelhado na
-  leitura de settings que a tela já faz, P2-287). Instalar o navegador do
-  Playwright é opcional, e quando ele falta o agente responde com uma frase
-  curta em português em vez de um erro cru em inglês
+  de você pedir; o painel **Estado da máquina** das Configurações renderiza
+  esse veredito na linha "Navegação de sites" (verde/âmbar/vermelho) sempre
+  que o daemon conectado o informa no canal de settings que a tela já lê
+  (P2-287; espelhar o veredito nesse canal é a continuação registrada).
+  Instalar o navegador do Playwright é opcional, e quando ele falta o agente
+  responde com uma frase curta em português em vez de um erro cru em inglês
 - **Handoff** — continue a sessão exata no Mac (ícone de laptop no header do chat)
 - **Painel ao vivo** — estado de cada sessão: trabalhando, esperando aprovação,
   fez pergunta, pronto, erro; cards mostram o tempo relativo da última
