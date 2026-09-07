@@ -1,0 +1,17 @@
+{
+  "jobs": {
+    "ci.yml/verify": ["contents:read"],
+    "ci.yml/scope": ["contents:read"],
+    "ci.yml/desktop-package": ["contents:read"],
+    "ci.yml/desktop-package-win": ["contents:read"],
+    "ci.yml/verify-win": ["contents:read"],
+    "ci.yml/relay-image": ["contents:read"],
+    "release.yml/release": ["contents:write"],
+    "release.yml/desktop-dmg": ["contents:write"],
+    "release.yml/desktop-win": ["contents:write"],
+    "release.yml/release-verify": ["contents:read"],
+    "release.yml/relay-image": ["contents:read", "packages:write"],
+    "release.yml/release-feeds": ["contents:read"],
+    "release.yml/release-publish": ["contents:write"]
+  }
+}
