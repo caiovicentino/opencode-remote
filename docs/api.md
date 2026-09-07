@@ -79,7 +79,13 @@ variables, a loopback relay, a `NO_PROXY` match or a discarded address) or
 CONNECT tunnel — over a TLS session when the proxy address is `https://`),
 and `relayProxyReason` is one static pt-BR phrase for the
 state. The proxy address itself never rides — the reason is address-free
-copy, and the tunnel's host/port stay inside the daemon.
+copy, and the tunnel's host/port stay inside the daemon. Since P2-311 the
+same object also carries the additive `relayProxyAuth` with exactly two
+values, `none` and `basic`: only the PRESENCE of a usable proxy credential.
+The credential's secret never rides this surface, is never logged and is
+never persisted — a proxy that answers the CONNECT with 407 surfaces through
+the existing `lastDial` classification with its own pt-BR hint ("o proxy
+pediu autenticação e recusou a credencial"), still classified `refused`.
 
 ### `/api/health` — upstream agent state (P2-135)
 
