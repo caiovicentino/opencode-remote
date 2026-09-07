@@ -207,6 +207,15 @@ identity servers, no accounts.
     exercised on Windows in the PR instead of surfacing on a user's machine
     after the signed installer ships.
 
+20. **Job timeouts (P2-322).** Every job of both workflows declares its own
+    job-level `timeout-minutes` within the documented ceiling of **120
+    minutes** (GitHub's undeclared default is 360), and `npm run
+    check:job-timeouts` (`scripts/check-job-timeouts.ts`, verdict in the
+    pure `scripts/jobtimeouts.ts`) runs in the `verify` job beside the
+    permissions and action-pinning gates, failing it when a job declares no
+    timeout, one that is not a positive integer, one above the ceiling — or
+    when a workflow file is missing, unreadable or unparseable (fail closed).
+
 ## Key rotation
 
 Delete `~/.opencode-remote/daemon.json` (or `manage.ts revoke-all`) and

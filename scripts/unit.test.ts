@@ -926,6 +926,10 @@ import { PORTABLE_EXCLUSION_CAUSES, PORTABLE_EXCLUSIONS, portableCoverage } from
 
 import { bootSmokeParity, feedHashParity, parseWorkflowJobs, type WorkflowJob, type WorkflowStep } from "./bootsmokeparity";
 
+import { JOB_TIMEOUT_CEILING_MINUTES, jobTimeoutProblems, type JobTimeoutDeclaration, type JobTimeoutFacts } from "./jobtimeouts";
+
+import { collectJobTimeouts, normalizeTimeoutDeclaration } from "./check-job-timeouts";
+
 import { feedHashProblems, parseLatestYmlEntries } from "./feedhash";
 
 import { imageTags } from "./relay-image";
@@ -22216,7 +22220,10 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       winJob.includes("actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4") &&
       winJob.includes("actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4") &&
       (winJob.match(/^ {8}shell: bash$/gm) ?? []).length === 3 &&
-      (winJob.match(/timeout-minutes:/g) ?? []).length === 3,
+      // P2-322: the three step timeouts stay intact, plus the new job-level
+      // declaration (40 at four-space indent — step timeouts sit deeper).
+      (winJob.match(/^ {4}timeout-minutes: 40$/gm) ?? []).length === 1 &&
+      (winJob.match(/timeout-minutes:/g) ?? []).length === 4,
   );
 
   // The other scope-gated jobs keep today's conditions, unchanged.
@@ -31155,6 +31162,196 @@ import { settingsMirror } from "../apps/daemon/src/settingsmirror";
     "P2-308: cli refuses non-JSON stdin (fail-closed)",
     cliGarbage.code === 1 && cliGarbage.out.includes("invalid JSON on stdin"),
     cliGarbage.out,
+  );
+}
+
+// --- P2-322: job-level timeouts — pure verifier + collector + real gate -----
+
+{
+  const root = join(import.meta.dirname, "..");
+  const minutes = (n: number): JobTimeoutDeclaration => ({ kind: "minutes", minutes: n });
+  const factsOf = (list: Array<[string, JobTimeoutDeclaration]>): JobTimeoutFacts[] =>
+    list.map(([job, timeout]) => ({ file: "ci.yml", job, timeout }));
+
+  // Verifier table: each cause with its own input, no short-circuit.
+  check("P2-322: an empty job list yields zero problems", jobTimeoutProblems([]).length === 0);
+  check(
+    "P2-322: jobs with positive-integer timeouts within the ceiling (boundaries included) yield zero problems",
+    jobTimeoutProblems(factsOf([["a", minutes(1)], ["b", minutes(JOB_TIMEOUT_CEILING_MINUTES)]])).length === 0,
+  );
+  const absent = jobTimeoutProblems(factsOf([["verify", { kind: "absent" }]]));
+  check(
+    "P2-322: a job without a declared timeout yields exactly one problem naming the job and the 360-minute default",
+    absent.length === 1 && absent[0]?.includes('"verify"') && absent[0]?.includes("no job-level timeout-minutes") && absent[0]?.includes("360"),
+  );
+  const zero = jobTimeoutProblems(factsOf([["z", minutes(0)]]));
+  const negative = jobTimeoutProblems(factsOf([["n", minutes(-5)]]));
+  const fractional = jobTimeoutProblems(factsOf([["f", minutes(2.5)]]));
+  const nonNumeric = jobTimeoutProblems(factsOf([["s", { kind: "invalid", raw: "forever" }]]));
+  check(
+    "P2-322: zero, negative, fractional and non-numeric timeouts all yield the not-a-positive-integer cause",
+    zero.length === 1 &&
+      negative.length === 1 &&
+      fractional.length === 1 &&
+      nonNumeric.length === 1 &&
+      [zero[0], negative[0], fractional[0], nonNumeric[0]].every((p) => p?.includes("not a positive integer")),
+  );
+  const above = jobTimeoutProblems(factsOf([["h", minutes(JOB_TIMEOUT_CEILING_MINUTES + 1)]]));
+  check(
+    "P2-322: a timeout above the documented ceiling yields exactly one problem citing the ceiling",
+    above.length === 1 && above[0]?.includes(String(JOB_TIMEOUT_CEILING_MINUTES)),
+  );
+  const multiCause = jobTimeoutProblems(
+    factsOf([
+      ["a", minutes(5)],
+      ["b", { kind: "absent" }],
+      ["c", minutes(5)],
+      ["h", minutes(JOB_TIMEOUT_CEILING_MINUTES + 1)],
+    ]),
+  );
+  check(
+    "P2-322: no short-circuit — every cause is reported in one run, in input order",
+    multiCause.length === 2 && multiCause[0]?.includes('"b"') && multiCause[1]?.includes('"h"'),
+  );
+  const unreadable = jobTimeoutProblems([
+    { file: "ci.yml", job: "(unreadable)", timeout: { kind: "unreadable", reason: "file missing or unreadable" } },
+  ]);
+  check(
+    "P2-322: a failed read is fail-closed — its own problem, never a silent approval",
+    unreadable.length === 1 && unreadable[0]?.includes("unreadable") && unreadable[0]?.includes("fail closed"),
+  );
+  const deterministic = factsOf([["b", { kind: "absent" }], ["h", minutes(JOB_TIMEOUT_CEILING_MINUTES + 1)]]);
+  check(
+    "P2-322: the same input in two calls returns an identical problem list",
+    JSON.stringify(jobTimeoutProblems(deterministic)) === JSON.stringify(jobTimeoutProblems(deterministic)) &&
+      jobTimeoutProblems(deterministic).length === 2,
+  );
+
+  // Collector normalization table: valid, zero, negative, non-numeric, absent.
+  check(
+    "P2-322: the collector normalizes valid, zero, negative, non-numeric and absent declarations",
+    (() => {
+      const yml = [
+        "name: T",
+        "jobs:",
+        "  ok:",
+        "    runs-on: ubuntu-latest",
+        "    timeout-minutes: 30",
+        "    steps:",
+        "      - run: echo ok",
+        "        timeout-minutes: 5",
+        "  zero:",
+        "    runs-on: ubuntu-latest",
+        "    timeout-minutes: 0",
+        "    steps:",
+        "      - run: echo zero",
+        "  neg:",
+        "    runs-on: ubuntu-latest",
+        "    timeout-minutes: -5",
+        "    steps:",
+        "      - run: echo neg",
+        "  word:",
+        "    runs-on: ubuntu-latest",
+        "    timeout-minutes: forever",
+        "    steps:",
+        "      - run: echo word",
+        "  none:",
+        "    runs-on: ubuntu-latest",
+        "    steps:",
+        "      - run: echo none",
+      ].join("\n");
+      const entries = collectJobTimeouts(yml, "t.yml");
+      const byJob = new Map(entries.map((e) => [e.job, e.timeout]));
+      const ok = byJob.get("ok");
+      const zeroDecl = byJob.get("zero");
+      const negDecl = byJob.get("neg");
+      const wordDecl = byJob.get("word");
+      const noneDecl = byJob.get("none");
+      return (
+        entries.length === 5 &&
+        ok?.kind === "minutes" &&
+        ok.minutes === 30 &&
+        zeroDecl?.kind === "minutes" &&
+        zeroDecl.minutes === 0 &&
+        negDecl?.kind === "invalid" &&
+        negDecl.raw === "-5" &&
+        wordDecl?.kind === "invalid" &&
+        wordDecl.raw === "forever" &&
+        noneDecl?.kind === "absent" &&
+        // the step-level timeout of the ok job never leaks into the job level
+        jobTimeoutProblems(entries).length === 4
+      );
+    })(),
+  );
+  check(
+    "P2-322: normalizeTimeoutDeclaration maps digit strings to minutes and everything else to invalid",
+    normalizeTimeoutDeclaration(" 45 ").kind === "minutes" &&
+      normalizeTimeoutDeclaration(" 45 ").minutes === 45 &&
+      normalizeTimeoutDeclaration("2.5").kind === "invalid" &&
+      normalizeTimeoutDeclaration("${{ env.T }}").kind === "invalid",
+  );
+  check(
+    "P2-322: the collector fails closed on text that is not a workflow",
+    (() => {
+      const entries = collectJobTimeouts("not: a workflow\n", "fake.yml");
+      return entries.length === 1 && entries[0]?.timeout.kind === "unreadable" && jobTimeoutProblems(entries).length === 1;
+    })(),
+  );
+
+  // Real-repo fail-closed assertions: every job of BOTH real workflows
+  // declares a positive-integer timeout within the ceiling.
+  const ciText = readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8");
+  const releaseText = readFileSync(join(root, ".github", "workflows", "release.yml"), "utf8");
+  const realEntries = [...collectJobTimeouts(ciText, "ci.yml"), ...collectJobTimeouts(releaseText, "release.yml")];
+  check("P2-322: the real workflows expose exactly thirteen jobs to the gate", realEntries.length === 13);
+  check(
+    "P2-322: real ci.yml + release.yml through the gate — zero problems (every job declares its timeout)",
+    jobTimeoutProblems(realEntries).length === 0,
+  );
+  check(
+    "P2-322: every real job timeout is a whole number of minutes from 1 to the ceiling",
+    realEntries.every(
+      (e) =>
+        e.timeout.kind === "minutes" &&
+        Number.isInteger(e.timeout.minutes) &&
+        e.timeout.minutes >= 1 &&
+        e.timeout.minutes <= JOB_TIMEOUT_CEILING_MINUTES,
+    ),
+  );
+
+  // The gate step: unique, beside the permissions and action-pins gates,
+  // bash shell and own timeout (P2-245/P2-255 lessons), wired through
+  // package.json.
+  const verifyJob = ciText.slice(0, ciText.indexOf("\n  scope:"));
+  const gateName = "- name: Job timeouts gate";
+  const gateAt = verifyJob.indexOf(gateName);
+  const gateEnd = verifyJob.indexOf("- name:", gateAt + 10);
+  const gateBlock = gateAt >= 0 && gateEnd > gateAt ? verifyJob.slice(gateAt, gateEnd) : "";
+  const permsAt = verifyJob.indexOf("- name: Workflow permissions gate");
+  const pinsAt = verifyJob.indexOf("- name: Action pins gate");
+  check("P2-322: the job-timeouts step exists exactly once in ci.yml", ciText.split(gateName).length === 2);
+  check(
+    "P2-322: the step sits beside the permissions and action-pins gates (after both, inside the verify job)",
+    permsAt > -1 && pinsAt > -1 && gateAt > permsAt && gateAt > pinsAt,
+  );
+  check(
+    "P2-322: the step declares shell bash and its own timeout-minutes",
+    gateBlock.includes("shell: bash") && gateBlock.includes("timeout-minutes:"),
+  );
+  check(
+    "P2-322: the step runs the script via the package.json entry",
+    gateBlock.includes("npm run check:job-timeouts") &&
+      (JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { scripts: Record<string, string> }).scripts[
+        "check:job-timeouts"
+      ] === "tsx scripts/check-job-timeouts.ts",
+  );
+
+  // Purity: the verifier module imports no file system, no process access
+  // and no network vocabulary at all.
+  const verifierSrc = readFileSync(join(root, "scripts", "jobtimeouts.ts"), "utf8");
+  check(
+    "P2-322: jobtimeouts.ts is pure — no node:fs, no node:process, no fetch anywhere in the source",
+    !/node:(fs|process|child_process)/.test(verifierSrc) && !verifierSrc.includes("fetch("),
   );
 }
 
