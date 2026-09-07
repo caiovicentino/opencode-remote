@@ -787,7 +787,13 @@ carrying `x64` (an Intel Mac must never be handed the arm64 zip — the exact
 feeds real machines consult are the ones checked), and the legacy
 `update-mac.json` — which exists only for the pre-P2-191 installed base — must
 stay identical to the arm64 document. Publication stays blocked until every
-feed points at a present, right-architecture artifact.
+feed points at a present, right-architecture artifact. Integrity is verified
+too (P2-308): the same `release-feeds` job downloads the release artifacts,
+measures their sha512 (base64) and byte size with `node:crypto` and confronts
+every digest the feed declares through `scripts/feedhash.ts`, failing the
+release while it is still a draft instead of publishing a feed the app would
+refuse forever — and because the Squirrel.Mac JSON feeds declare no digest,
+only the feeds that declare a sha512 (today `latest.yml`) are hash-checked.
 
 **Releases are born as drafts** (P2-179): `gh release create` runs with
 `--draft`, so nothing is visible to the installed base while the packaging

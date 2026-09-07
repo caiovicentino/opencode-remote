@@ -489,6 +489,52 @@ jobs:
                 feeds/update-mac.json feeds/latest.yml \
                 feeds/update-mac-arm64.json feeds/update-mac-x64.json
 
+      # P2-308: names and versions are not integrity. The Windows app
+      # (apps/desktop/src/winupdate.ts) fail-closed refuses any installer whose
+      # measured sha512 diverges from the digest the feed announces — so a
+      # published feed with a mismatched hash used to block every installed
+      # Windows machine from updating forever while the release sailed green,
+      # because this job never hashed a single byte. This step downloads the
+      # release artifacts, measures sha512 (base64) and byte size with
+      # node:crypto and confronts declaration vs measurement through the pure
+      # module scripts/feedhash.ts, printing every problem at once; any problem
+      # fails the job and the release stays a draft under the P2-179 contract
+      # (release-publish needs this job). The Squirrel.Mac JSON feeds declare
+      # no digest (documented in the README), so only feeds that declare
+      # sha512 — today latest.yml, read from the feeds/ dir the consistency
+      # step downloaded — are confronted; everything else is measured but has
+      # nothing to be confronted against. Position (after the consistency
+      # step), single occurrence, shell: bash (P2-126 lesson) and timeout are
+      # pinned by scripts/bootsmokeparity.ts via the unit battery.
+      - name: Verify the feeds' declared sha512 digests against the published artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          gh release download "$GITHUB_REF_NAME" --dir artifacts
+          node - <<'NODE'
+            const { readFileSync, writeFileSync, readdirSync, statSync } = require("node:fs");
+            const { createHash } = require("node:crypto");
+            const measured = [];
+            for (const name of readdirSync("artifacts").sort()) {
+              const bytes = readFileSync("artifacts/" + name);
+              measured.push({
+                fileName: name,
+                sha512: createHash("sha512").update(bytes).digest("base64"),
+                size: statSync("artifacts/" + name).size,
+              });
+            }
+            const input = {
+              feeds: [{ label: "latest.yml", yml: readFileSync("feeds/latest.yml", "utf8") }],
+              measured,
+            };
+            writeFileSync("feedhash-input.json", JSON.stringify(input));
+          NODE
+          npx --yes tsx@4.23.12 scripts/feedhash.ts < feedhash-input.json
+
   # P2-179: the draft only goes public here, after release-verify AND
   # release-feeds passed. scripts/release-publish.ts reads the draft flag +
   # asset list from `gh release view` and refuses (exit 1, every problem at

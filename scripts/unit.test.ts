@@ -890,7 +890,9 @@ import { PORTABLE_TESTS, portableSuitePlan } from "./portable-suite";
 
 import { PORTABLE_EXCLUSION_CAUSES, PORTABLE_EXCLUSIONS, portableCoverage } from "./portablecoverage";
 
-import { bootSmokeParity, parseWorkflowJobs, type WorkflowJob, type WorkflowStep } from "./bootsmokeparity";
+import { bootSmokeParity, feedHashParity, parseWorkflowJobs, type WorkflowJob, type WorkflowStep } from "./bootsmokeparity";
+
+import { feedHashProblems, parseLatestYmlEntries } from "./feedhash";
 
 import { imageTags } from "./relay-image";
 
@@ -28939,6 +28941,312 @@ import { settingsMirror } from "../apps/daemon/src/settingsmirror";
       mirror300Src.includes("NOT voiceState") &&
       mirror300Src.includes("ttsState?: string") &&
       mirror300Src.includes("ttsMessage?: string"),
+  );
+}
+
+// --- P2-308: feedhash — feed-declared sha512 vs published bytes --------------
+{
+  const DIGEST = createHash("sha512").update("installer bytes").digest("base64");
+  const OTHER = createHash("sha512").update("other bytes").digest("base64");
+  const EXE = "OpenCode Remote Setup 0.3.0.exe";
+  const ymlText = (digest: string, size: unknown): string =>
+    `version: 0.3.0\nfiles:\n  - url: ${EXE}\n    sha512: ${digest}\n    size: ${size}\npath: '${EXE}'\nsha512: ${digest}\nreleaseDate: '2026-09-01'\n`;
+
+  // parseLatestYmlEntries — the narrow electron-builder latest.yml reader.
+  const parsed = parseLatestYmlEntries(ymlText(DIGEST, 74374398));
+  check(
+    "P2-308: parseLatestYmlEntries reads the files: block into one entry carrying digest and size",
+    parsed.length === 1 && parsed[0].fileName === EXE && parsed[0].sha512 === DIGEST && parsed[0].size === 74374398,
+    JSON.stringify(parsed),
+  );
+  check(
+    "P2-308: parseLatestYmlEntries — empty and shape-drifted texts yield zero entries (itself a fail-closed problem)",
+    parseLatestYmlEntries("").length === 0 && parseLatestYmlEntries("not: a: feed").length === 0,
+  );
+  check(
+    "P2-308: parseLatestYmlEntries keeps a non-numeric size non-numeric so the confrontation refuses it",
+    parseLatestYmlEntries(ymlText(DIGEST, "abc"))[0].size === "abc",
+  );
+  check(
+    "P2-308: parseLatestYmlEntries survives CRLF feeds",
+    parseLatestYmlEntries(ymlText(DIGEST, 12).replace(/\n/g, "\r\n"))[0].size === 12,
+  );
+
+  // The closed problem table — one static phrase per cause.
+  const green = feedHashProblems(
+    [{ label: "latest.yml", entries: [{ fileName: EXE, sha512: DIGEST, size: 74374398 }] }],
+    [{ fileName: EXE, sha512: DIGEST, size: 74374398 }],
+  );
+  check(
+    "P2-308: a declared entry matching the measurement yields zero problems (the all-green case)",
+    green.length === 0,
+    JSON.stringify(green),
+  );
+
+  const noFile = feedHashProblems(
+    [{ label: "latest.yml", entries: [{ fileName: "Ghost.exe", sha512: DIGEST, size: 10 }] }],
+    [{ fileName: EXE, sha512: DIGEST, size: 10 }],
+  );
+  check(
+    "P2-308: a declared entry without a corresponding measured file is a problem",
+    noFile.length === 1 && noFile[0].includes("no corresponding published file"),
+    JSON.stringify(noFile),
+  );
+
+  const divergedDigest = feedHashProblems(
+    [{ label: "latest.yml", entries: [{ fileName: EXE, sha512: DIGEST, size: 74374398 }] }],
+    [{ fileName: EXE, sha512: OTHER, size: 74374398 }],
+  );
+  check(
+    "P2-308: a divergent digest is a problem",
+    divergedDigest.length === 1 && divergedDigest[0].includes("digests diverge"),
+    JSON.stringify(divergedDigest),
+  );
+
+  const divergedSize = feedHashProblems(
+    [{ label: "latest.yml", entries: [{ fileName: EXE, sha512: DIGEST, size: 74374398 }] }],
+    [{ fileName: EXE, sha512: DIGEST, size: 1 }],
+  );
+  check(
+    "P2-308: a divergent byte size is a problem",
+    divergedSize.length === 1 && divergedSize[0].includes("byte size") && divergedSize[0].includes("74374398"),
+    JSON.stringify(divergedSize),
+  );
+
+  const absentDigest = feedHashProblems(
+    [{ label: "latest.yml", entries: [{ fileName: EXE, size: 74374398 }] }],
+    [{ fileName: EXE, sha512: DIGEST, size: 74374398 }],
+  );
+  check(
+    "P2-308: an absent digest is a problem (fail-closed)",
+    absentDigest.length === 1 && absentDigest[0].includes("base64 format"),
+    JSON.stringify(absentDigest),
+  );
+
+  const malformedDigest = feedHashProblems(
+    [{ label: "latest.yml", entries: [{ fileName: EXE, sha512: "not-base64!", size: 74374398 }] }],
+    [{ fileName: EXE, sha512: DIGEST, size: 74374398 }],
+  );
+  check(
+    "P2-308: a digest outside the base64 format is a problem, never compared",
+    malformedDigest.length === 1 && malformedDigest[0].includes("base64 format"),
+    JSON.stringify(malformedDigest),
+  );
+
+  const absentSize = feedHashProblems(
+    [{ label: "latest.yml", entries: [{ fileName: EXE, sha512: DIGEST }] }],
+    [{ fileName: EXE, sha512: DIGEST, size: 74374398 }],
+  );
+  check(
+    "P2-308: an absent byte size is a problem (fail-closed)",
+    absentSize.length === 1 && absentSize[0].includes("numeric format"),
+    JSON.stringify(absentSize),
+  );
+
+  const nonNumericSize = feedHashProblems(
+    [{ label: "latest.yml", entries: [{ fileName: EXE, sha512: DIGEST, size: "74374398" }] }],
+    [{ fileName: EXE, sha512: DIGEST, size: 74374398 }],
+  );
+  check(
+    "P2-308: a non-numeric byte size is a problem even when the bytes match",
+    nonNumericSize.length === 1 && nonNumericSize[0].includes("numeric format"),
+    JSON.stringify(nonNumericSize),
+  );
+
+  const emptyFeed = feedHashProblems([{ label: "drifted.yml", entries: [] }], [{ fileName: EXE, sha512: DIGEST, size: 1 }]);
+  check(
+    "P2-308: a feed that declares no entries is a problem",
+    emptyFeed.length === 1 && emptyFeed[0].includes("declares no entries") && emptyFeed[0].includes("drifted.yml"),
+    JSON.stringify(emptyFeed),
+  );
+
+  const unmeasurable = feedHashProblems(
+    [{ label: "latest.yml", entries: [{ fileName: EXE, sha512: DIGEST, size: 74374398 }] }],
+    [{ fileName: EXE, sha512: null, size: null }],
+  );
+  check(
+    "P2-308: an unmeasurable published file refuses on both fields (fail-closed)",
+    unmeasurable.length === 2 &&
+      unmeasurable[0].includes("no sha512 was measured") &&
+      unmeasurable[1].includes("no byte size was measured"),
+    JSON.stringify(unmeasurable),
+  );
+
+  // P2-146 lesson: every problem prints at once — no short-circuit between
+  // feeds, entries or the two compared fields.
+  const allFeeds = [
+    { label: "empty.yml", entries: [] },
+    { label: "latest.yml", entries: [{ fileName: "Ghost.exe", sha512: DIGEST, size: 1 }, { fileName: EXE, sha512: OTHER, size: 2 }] },
+  ];
+  const allMeasured = [{ fileName: EXE, sha512: DIGEST, size: 74374398 }];
+  const all = feedHashProblems(allFeeds, allMeasured);
+  check(
+    "P2-308: every problem is reported at once (empty feed, missing file, divergent digest, divergent size)",
+    all.length === 4,
+    JSON.stringify(all),
+  );
+  const twiceA = feedHashProblems(allFeeds, allMeasured);
+  const twiceB = feedHashProblems(allFeeds, allMeasured);
+  check(
+    "P2-308: the same input yields an identical problem list in two calls (determinism)",
+    JSON.stringify(twiceA) === JSON.stringify(twiceB) && twiceA.length === 4,
+  );
+  check(
+    "P2-308: no problem text contains an absolute path",
+    all.every((p) => !p.startsWith("/") && !p.includes("/Users/") && !p.includes("/home/") && !p.includes("C:\\")),
+  );
+
+  // feedHashParity — the wiring assertion over parsed workflow text.
+  const consistencyStepText =
+    "      - run: |\n          npx --yes tsx@4.23.12 scripts/feed-consistency.ts v0.3.0 feeds/update-mac.json";
+  const hashStepText = (over: { shell?: string; timeout?: number; run?: string } = {}): string => {
+    const lines = [
+      "      - run: |",
+      `          ${over.run ?? "npx --yes tsx@4.23.12 scripts/feedhash.ts < feedhash-input.json"}`,
+    ];
+    if (over.shell !== undefined) lines.push(`        shell: ${over.shell}`);
+    if (over.timeout !== undefined) lines.push(`        timeout-minutes: ${over.timeout}`);
+    return lines.join("\n");
+  };
+  const wfText = (steps: string[]): string =>
+    ["name: release", "on: push", "jobs:", "  release-feeds:", "    runs-on: ubuntu-latest", "    steps:", ...steps].join("\n") + "\n";
+
+  const missing = feedHashParity(parseWorkflowJobs(wfText([consistencyStepText])));
+  check(
+    "P2-308: feedHashParity — a job that checks feed names but never confronts digests yields the problem",
+    missing.length === 1 && missing[0].includes("release-feeds") && missing[0].includes("feedhash.ts"),
+    missing.join(" | "),
+  );
+  check(
+    "P2-308: feedHashParity — a job without the consistency step is never flagged",
+    feedHashParity(parseWorkflowJobs("jobs:\n  other:\n    steps:\n      - run: echo hi\n")).length === 0,
+  );
+  const before = feedHashParity(
+    parseWorkflowJobs(wfText([hashStepText({ shell: "bash", timeout: 15 }), consistencyStepText])),
+  );
+  check(
+    "P2-308: feedHashParity — a feedhash step before the consistency step yields the position problem",
+    before.length === 1 && before[0].includes("after the feed-consistency step"),
+    before.join(" | "),
+  );
+  const duplicated = feedHashParity(
+    parseWorkflowJobs(wfText([consistencyStepText, hashStepText({ shell: "bash", timeout: 15 }), hashStepText({ shell: "bash", timeout: 15, run: "npx tsx scripts/feedhash.ts < b.json" })])),
+  );
+  check(
+    "P2-308: feedHashParity — two feedhash steps yield the uniqueness problem",
+    duplicated.length === 1 && duplicated[0].includes("more than once"),
+    duplicated.join(" | "),
+  );
+  const noShell = feedHashParity(parseWorkflowJobs(wfText([consistencyStepText, hashStepText({ shell: "pwsh", timeout: 15 })])));
+  check(
+    "P2-308: feedHashParity — a feedhash step without shell: bash yields the shell problem",
+    noShell.length === 1 && noShell[0].includes("shell: bash"),
+    noShell.join(" | "),
+  );
+  const noTimeout = feedHashParity(parseWorkflowJobs(wfText([consistencyStepText, hashStepText({ shell: "bash" })])));
+  check(
+    "P2-308: feedHashParity — a feedhash step without its own timeout-minutes yields the timeout problem",
+    noTimeout.length === 1 && noTimeout[0].includes("timeout-minutes"),
+    noTimeout.join(" | "),
+  );
+  const happyParity = feedHashParity(
+    parseWorkflowJobs(wfText([consistencyStepText, hashStepText({ shell: "bash", timeout: 15 })])),
+  );
+  check(
+    "P2-308: feedHashParity — a consistency step followed by one bash+timeout feedhash step yields zero problems",
+    happyParity.length === 0,
+    happyParity.join(" | "),
+  );
+
+  // Real-repo assertion: the actual release.yml carries the new step in the
+  // right position with the right hygiene, and the P2-179 draft contract is
+  // untouched. No release is executed — the gate only reads the YAML.
+  const releaseYml = readFileSync(join(import.meta.dirname, "..", ".github", "workflows", "release.yml"), "utf8");
+  const jobs = parseWorkflowJobs(releaseYml);
+  const feedJobs = jobs.filter((j) => j.steps.some((s) => /feed-consistency\.ts/.test(s.run)));
+  check(
+    "P2-308: the real release.yml has exactly one job carrying the feed-consistency step (release-feeds)",
+    feedJobs.length === 1 && feedJobs[0].name === "release-feeds",
+    JSON.stringify(feedJobs.map((j) => j.name)),
+  );
+  const realParity = feedHashParity(jobs);
+  check("P2-308: real release.yml — zero feed-hash parity problems", realParity.length === 0, realParity.join(" | "));
+  const feedJob = feedJobs[0];
+  const consistencyAt = feedJob.steps.findIndex((s) => /feed-consistency\.ts/.test(s.run));
+  const hashSteps = feedJob.steps.filter((s) => /feedhash\.ts/.test(s.run));
+  const hashRun = hashSteps.length === 1 ? hashSteps[0].run : "";
+  check(
+    "P2-308: real release.yml — exactly one feedhash step, after the consistency step, shell: bash, own timeout",
+    hashSteps.length === 1 &&
+      feedJob.steps.indexOf(hashSteps[0]) > consistencyAt &&
+      hashSteps[0].shell === "bash" &&
+      typeof hashSteps[0].timeoutMinutes === "number" &&
+      (hashSteps[0].timeoutMinutes ?? 0) > 0,
+    JSON.stringify(feedJob.steps.map((s) => ({ n: s.name, shell: s.shell, t: s.timeoutMinutes }))),
+  );
+  check(
+    "P2-308: real release.yml — the feedhash step downloads the release artifacts and measures sha512 base64 + size with node:crypto",
+    hashRun.includes("gh release download") &&
+      hashRun.includes('createHash("sha512")') &&
+      hashRun.includes('digest("base64")') &&
+      hashRun.includes("scripts/feedhash.ts"),
+    hashRun,
+  );
+  check(
+    "P2-308: real release.yml — release-publish still needs release-feeds (P2-179 draft contract)",
+    releaseYml.includes("needs: [release-verify, release-feeds]"),
+  );
+  const feedhashSrc = readFileSync(join(import.meta.dirname, "..", "scripts", "feedhash.ts"), "utf8");
+  check(
+    "P2-308: purity — feedhash.ts uses no node:fs, no node:child_process, no node:net/http, no require and no fetch",
+    !feedhashSrc.includes("node:fs") &&
+      !feedhashSrc.includes("node:child_process") &&
+      !feedhashSrc.includes("node:net") &&
+      !feedhashSrc.includes("node:http") &&
+      !feedhashSrc.includes("require(") &&
+      !/fetch\s*\(/.test(feedhashSrc),
+  );
+
+  // CLI round trip — the exact invocation shape the workflow step uses.
+  const repoRoot = join(import.meta.dirname, "..");
+  const tsxEntry = join(repoRoot, "node_modules", "tsx", "dist", "cli.mjs");
+  const feedhashScript = join(repoRoot, "scripts", "feedhash.ts");
+  const runCli = (input: string): { code: number; out: string } => {
+    try {
+      const out = execFileSync(process.execPath, [tsxEntry, feedhashScript], { input, encoding: "utf8" });
+      return { code: 0, out };
+    } catch (err) {
+      const e = err as { status?: number; stdout?: Buffer; stderr?: Buffer };
+      return { code: e.status ?? -1, out: `${e.stdout ?? ""}${e.stderr ?? ""}` };
+    }
+  };
+  const cliOk = runCli(
+    JSON.stringify({
+      feeds: [{ label: "latest.yml", yml: ymlText(DIGEST, 74374398) }],
+      measured: [{ fileName: EXE, sha512: DIGEST, size: 74374398 }],
+    }),
+  );
+  check(
+    "P2-308: cli exits 0 printing OK when the declared digest matches the published bytes",
+    cliOk.code === 0 && cliOk.out.includes("feedhash: OK"),
+    cliOk.out,
+  );
+  const cliBad = runCli(
+    JSON.stringify({
+      feeds: [{ label: "latest.yml", yml: ymlText(OTHER, 74374398) }],
+      measured: [{ fileName: EXE, sha512: DIGEST, size: 74374398 }],
+    }),
+  );
+  check(
+    "P2-308: cli exits 1 printing the divergent-digest problem (fail-closed)",
+    cliBad.code === 1 && cliBad.out.includes("feedhash: FAIL") && cliBad.out.includes("digests diverge"),
+    cliBad.out,
+  );
+  const cliGarbage = runCli("not json");
+  check(
+    "P2-308: cli refuses non-JSON stdin (fail-closed)",
+    cliGarbage.code === 1 && cliGarbage.out.includes("invalid JSON on stdin"),
+    cliGarbage.out,
   );
 }
 

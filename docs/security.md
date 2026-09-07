@@ -187,6 +187,16 @@ identity servers, no accounts.
     `scripts/lock-exemptions.json` — past the expiry the entry counts in
     full again.
 
+18. **Update-feed digest confrontation (P2-308).** The `release-feeds` job
+    downloads the release artifacts, measures sha512 (base64) and byte size
+    with `node:crypto` and confronts every digest the feed declares through
+    the pure `scripts/feedhash.ts`, failing the job with all problems at
+    once while the release is still a draft — the Windows app refuses an
+    installer whose digest diverges, so a hash-mismatched feed would
+    otherwise block every installed machine from updating forever; the
+    Squirrel.Mac JSON feeds declare no digest, so only the feeds that
+    declare a sha512 (today `latest.yml`) are hash-checked.
+
 ## Key rotation
 
 Delete `~/.opencode-remote/daemon.json` (or `manage.ts revoke-all`) and

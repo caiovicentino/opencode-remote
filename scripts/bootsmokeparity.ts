@@ -13,9 +13,11 @@
  * the real package AND runs the packaged daemon sidecar smoke
  * (P2-251/P2-253) — after packaging, with shell: bash declared
  * (P2-126/P2-164 lessons: pwsh does not expand globs) and its own timeout —
- * in BOTH workflows; and that every job that SHIPS the Windows setup exe
+ * in BOTH workflows; that every job that SHIPS the Windows setup exe
  * (P2-304) also smoke-installs it exactly once before the upload, with the
- * same shell/timeout hygiene.
+ * same shell/timeout hygiene; and that the release job which checks feed
+ * names and versions (P2-157) also confronts the sha512 digests the feeds
+ * declare with the published bytes (P2-308), with the same hygiene.
  *
  * Pure by construction: no node:fs, no node:child_process, no fetch, no
  * network — the caller reads the real-world inputs (the workflow files) and
@@ -194,6 +196,12 @@ const INSTALLER_SMOKE_RUN = /installer-smoke\.mjs/;
  * an installer, so the installer itself must be smoke-installed first. */
 const SETUP_UPLOAD_RUN = /apps\/desktop\/dist\/\*\.exe/;
 
+/** A step that checks feed names/versions against the published asset names (P2-157). */
+const FEED_CONSISTENCY_RUN = /feed-consistency\.ts/;
+
+/** A step that confronts the feeds' declared sha512 digests with the published bytes (P2-308). */
+const FEED_HASH_RUN = /feedhash\.ts/;
+
 /**
  * Cross-check the packaging jobs of the integration (ci) and release
  * workflows, returning one problem per cause in the established problems
@@ -321,6 +329,62 @@ export function bootSmokeParity(ciJobs: readonly WorkflowJob[], releaseJobs: rea
               );
             }
           }
+        }
+      }
+    }
+  }
+  return problems;
+}
+
+/**
+ * P2-308 — feed-digest parity for the release workflow. A job that checks
+ * feed names and versions against the published assets (the P2-157
+ * feed-consistency step) must ALSO confront the sha512 digests those feeds
+ * declare with the bytes actually published — the app refuses a Windows
+ * installer whose digest diverges, so a hash-mismatched feed blocks the
+ * whole installed base forever and must fail the release while it is still a
+ * draft. One problem per cause, applying the rules in order with no
+ * short-circuit:
+ * - a job with the consistency step but no feedhash step;
+ * - more than one feedhash step in the same job;
+ * - a feedhash step positioned before the consistency step it extends;
+ * - a feedhash step without shell: bash declared explicitly;
+ * - a feedhash step without its own timeout-minutes.
+ * A job without the consistency step is never flagged. Every problem names
+ * the job and says in one sentence what to do; the order is stable for the
+ * same input, and no problem ever embeds a file path from the input.
+ */
+export function feedHashParity(jobs: readonly WorkflowJob[]): string[] {
+  const problems: string[] = [];
+  for (const job of jobs) {
+    const consistencyAt = job.steps.findIndex((s) => FEED_CONSISTENCY_RUN.test(s.run));
+    if (consistencyAt < 0) continue; // a job that checks no feeds is never flagged
+    const hashes = job.steps.filter((s) => FEED_HASH_RUN.test(s.run));
+    if (hashes.length === 0) {
+      problems.push(
+        `feed-hash-parity: job "${job.name}" checks feed names and versions but never confronts the declared sha512 digests with the published bytes — add a step after the consistency step that runs scripts/feedhash.ts over the measured artifacts`,
+      );
+    } else {
+      if (hashes.length > 1) {
+        problems.push(
+          `feed-hash-parity: job "${job.name}" runs the feed digest confrontation more than once — keep exactly one occurrence`,
+        );
+      }
+      for (const step of hashes) {
+        if (job.steps.indexOf(step) < consistencyAt) {
+          problems.push(
+            `feed-hash-parity: job "${job.name}" confronts the feed digests before the consistency step it extends — move the feedhash step after the feed-consistency step`,
+          );
+        }
+        if (step.shell !== "bash") {
+          problems.push(
+            `feed-hash-parity: job "${job.name}" confronts the feed digests without declaring shell: bash — declare shell: bash explicitly (pwsh does not expand globs)`,
+          );
+        }
+        if (step.timeoutMinutes === null) {
+          problems.push(
+            `feed-hash-parity: job "${job.name}" confronts the feed digests without its own timeout-minutes — add one so a hung download cannot hold the runner`,
+          );
         }
       }
     }
