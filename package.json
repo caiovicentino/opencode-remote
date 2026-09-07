@@ -24,6 +24,7 @@
     "audit:deps": "tsx scripts/audit-deps.ts",
     "check:workflow-perms": "tsx scripts/check-workflow-perms.ts",
     "check:action-pins": "tsx scripts/check-action-pins.ts",
+    "check:job-timeouts": "tsx scripts/check-job-timeouts.ts",
     "check:lock-integrity": "tsx scripts/check-lock-integrity.ts",
     "test:desktop": "tsx scripts/desktop-sidecar.test.ts",
     "test:desktop-update": "tsx scripts/desktop-update.test.ts",

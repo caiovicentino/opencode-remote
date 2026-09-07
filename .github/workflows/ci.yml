@@ -8,6 +8,10 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    # P2-322: job-level timeout — GitHub's undeclared default is 360 minutes,
+    # so a hung install or download would hold the runner for six hours
+    # without aborting or reporting. Coherent with the work (docs/security.md).
+    timeout-minutes: 60
     # P2-271: every job declares its own least-privilege block — the
     # repository default is never trusted unseen (docs/security.md).
     permissions:
@@ -58,6 +62,19 @@ jobs:
         shell: bash
         timeout-minutes: 5
         run: npm run check:action-pins
+
+      # P2-322: job-timeout gate — no job of either workflow used to declare
+      # a job-level timeout-minutes, so a hung install, image download or
+      # disk mount held a runner for GitHub's 360-minute default without
+      # aborting or reporting. The step re-reads both real workflow files and
+      # fails this job on any problem (a job without a declared timeout, one
+      # that is not a positive integer, one above the documented ceiling, or
+      # a failed read). shell: bash (P2-126 lesson) and its own timeout
+      # (P2-245/P2-255 lessons).
+      - name: Job timeouts gate
+        shell: bash
+        timeout-minutes: 5
+        run: npm run check:job-timeouts
 
       # P2-283: lockfile-integrity gate — package-lock.json is the only file
       # that decides which third-party code is installed inside the job that
@@ -113,6 +130,8 @@ jobs:
   # below only runs when the diff can actually change the bundle.
   scope:
     runs-on: ubuntu-latest
+    # P2-322: job-level timeout, coherent with the work (docs/security.md).
+    timeout-minutes: 10
     # P2-271: least-privilege declaration, documented in scripts/workflow-scopes.json.
     permissions:
       contents: read
@@ -142,6 +161,8 @@ jobs:
   # bundle with the installer checks skipped (--no-installer).
   desktop-package:
     runs-on: macos-14
+    # P2-322: job-level timeout, coherent with the work (docs/security.md).
+    timeout-minutes: 60
     # P2-271: least-privilege declaration, documented in scripts/workflow-scopes.json.
     permissions:
       contents: read
@@ -222,6 +243,8 @@ jobs:
   # Nothing is uploaded or published; a broken package fails the PR.
   desktop-package-win:
     runs-on: windows-latest
+    # P2-322: job-level timeout, coherent with the work (docs/security.md).
+    timeout-minutes: 60
     # P2-271: least-privilege declaration, documented in scripts/workflow-scopes.json.
     permissions:
       contents: read
@@ -306,6 +329,8 @@ jobs:
   # secret — a pure verification job, publication stays with release.yml.
   verify-win:
     runs-on: windows-latest
+    # P2-322: job-level timeout, coherent with the work (docs/security.md).
+    timeout-minutes: 40
     # P2-271: least-privilege declaration, documented in scripts/workflow-scopes.json.
     permissions:
       contents: read
@@ -355,6 +380,8 @@ jobs:
   # path. Publication stays exclusively with the release workflow.
   relay-image:
     runs-on: ubuntu-latest
+    # P2-322: job-level timeout, coherent with the work (docs/security.md).
+    timeout-minutes: 20
     # P2-271: least-privilege declaration, documented in scripts/workflow-scopes.json.
     permissions:
       contents: read

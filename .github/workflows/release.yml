@@ -7,6 +7,8 @@ on:
 jobs:
   release:
     runs-on: ubuntu-latest
+    # P2-322: job-level timeout, coherent with the work (docs/security.md).
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
@@ -43,6 +45,9 @@ jobs:
   # and users right-click → Open once (README), exactly as before.
   desktop-dmg:
     runs-on: macos-14
+    # P2-322: job-level timeout, coherent with the work — the heaviest job of
+    # the pipeline (full package, possible notarization, four smokes, upload).
+    timeout-minutes: 90
     needs: release
     permissions:
       contents: write
@@ -251,6 +256,8 @@ jobs:
   # shell: bash on every run step so globs expand (pwsh won't).
   desktop-win:
     runs-on: windows-latest
+    # P2-322: job-level timeout, coherent with the work (docs/security.md).
+    timeout-minutes: 60
     needs: release
     permissions:
       contents: write
@@ -393,6 +400,8 @@ jobs:
   # download asset. P2-126 lesson: shell: bash on every run step.
   release-verify:
     runs-on: ubuntu-latest
+    # P2-322: job-level timeout, coherent with the work (docs/security.md).
+    timeout-minutes: 10
     needs: [desktop-dmg, desktop-win]
     permissions:
       contents: read
@@ -417,6 +426,8 @@ jobs:
   # crypto surface.
   relay-image:
     runs-on: ubuntu-latest
+    # P2-322: job-level timeout, coherent with the work (docs/security.md).
+    timeout-minutes: 30
     needs: release
     permissions:
       contents: read
@@ -494,6 +505,8 @@ jobs:
   # P2-126 lesson: shell: bash on every run step.
   release-feeds:
     runs-on: ubuntu-latest
+    # P2-322: job-level timeout, coherent with the work (docs/security.md).
+    timeout-minutes: 20
     needs: [desktop-dmg, desktop-win]
     permissions:
       contents: read
@@ -575,6 +588,8 @@ jobs:
   # release. P2-126 lesson: shell: bash on every run step.
   release-publish:
     runs-on: ubuntu-latest
+    # P2-322: job-level timeout, coherent with the work (docs/security.md).
+    timeout-minutes: 20
     needs: [release-verify, release-feeds]
     permissions:
       contents: write
