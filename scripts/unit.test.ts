@@ -22,6 +22,13 @@ import {
 
 import { isLoopbackAddr, localOriginAllowed, localUpgradeAllowed } from "../apps/daemon/src/localws";
 
+import {
+  PUSH_SUBSCRIPTION_MAX_ENDPOINT_LENGTH,
+  PUSH_SUBSCRIPTIONS_MAX,
+  pushSubscriptionVerdict,
+  redactPushEndpoint,
+} from "../apps/daemon/src/pushsubs";
+
 import { classifyRelayClose, effectiveRetryDelayMs } from "../apps/daemon/src/relayclose";
 import { relayDialVerdict, RELAY_DIAL_FLOOR_MS } from "../apps/daemon/src/relaydialerror";
 import {
@@ -23841,6 +23848,161 @@ check("P2-241: no new periodic timer was introduced by the handler", !dlBlock.in
   check(
     "P2-271: workflowperms.ts imports no node:child_process, node:fs or fetch",
     !/^import[^\n]*(node:child_process|node:fs|fetch)/m.test(permsSrc) && !permsSrc.includes("fetch("),
+  );
+}
+
+// --- P2-272: push subscription admission + endpoint redaction (pushsubs.ts) --
+{
+  const CAP = 3;
+  const MAXLEN = 128;
+  const mkUrl = (n: number) => "https://push.example.invalid/" + "a".repeat(Math.max(0, n - "https://push.example.invalid/".length));
+  const sub = (endpoint: string) => ({ endpoint, keys: { p256dh: "k-p256dh", auth: "k-auth" } });
+  const v = (s: unknown, list: ReturnType<typeof sub>[], cap = CAP, maxLen = MAXLEN) =>
+    pushSubscriptionVerdict(s, list, cap, maxLen);
+
+  // Rule 1: the signature itself is absent.
+  check("P2-272: an absent/garbage signature is refused", [undefined, null, "sub", 42].every((s) => v(s, []).verdict === "recusar"));
+
+  // Rule 2: shape — textual endpoint and both keys, or nothing is stored.
+  check(
+    "P2-272: missing keys or an empty/non-textual endpoint is refused",
+    [
+      v({}, []).verdict,
+      v({ endpoint: "" }, []).verdict,
+      v({ endpoint: 42 }, []).verdict,
+      v({ endpoint: "https://push.example.invalid/x" }, []).verdict,
+      v({ endpoint: "https://push.example.invalid/x", keys: {} }, []).verdict,
+      v({ endpoint: "https://push.example.invalid/x", keys: { p256dh: "k" } }, []).verdict,
+      v({ endpoint: "https://push.example.invalid/x", keys: { p256dh: "", auth: "a" } }, []).verdict,
+    ].every((verdict) => verdict === "recusar"),
+  );
+
+  // Rule 3: https-only, fail-closed — an unknown scheme is never guessed.
+  check(
+    "P2-272: a plain-http or scheme-less endpoint is refused",
+    [
+      v(sub("http://push.example.invalid/x"), []).verdict,
+      v(sub("push.example.invalid/x"), []).verdict,
+      v(sub("ftp://push.example.invalid/x"), []).verdict,
+      v(sub("://push.example.invalid/x"), []).verdict,
+    ].every((verdict) => verdict === "recusar"),
+  );
+
+  // Rule 4: the size ceiling fires BEFORE any comparison with the list.
+  check("P2-272: an endpoint exactly at the documented max length is accepted", v(sub(mkUrl(MAXLEN)), []).verdict === "acrescentar");
+  check(
+    "P2-272: an endpoint one char above the documented max length is refused",
+    v(sub(mkUrl(MAXLEN + 1)), []).verdict === "recusar",
+  );
+
+  // Rule 5: a known endpoint refreshes — never duplicates.
+  {
+    const list = [sub("https://a.example.invalid/1"), sub("https://a.example.invalid/2")];
+    const before = list.length;
+    check("P2-272: a repeated endpoint is a replace, never a list growth", v(sub("https://a.example.invalid/1"), list).verdict === "substituir" && list.length === before);
+  }
+
+  // Rule 6: at the ceiling a NEW endpoint is refused — never a silent evict.
+  {
+    const full = [sub("https://a.example.invalid/1"), sub("https://b.example.invalid/2"), sub("https://c.example.invalid/3")];
+    check("P2-272: a full list (explicit cap) refuses a new endpoint", v(sub("https://d.example.invalid/4"), full, CAP, MAXLEN).verdict === "recusar");
+    check("P2-272: one below the cap appends", v(sub("https://d.example.invalid/4"), full.slice(0, 2), CAP, MAXLEN).verdict === "acrescentar");
+  }
+
+  // Rule order proven through the static reason each rule leaves behind.
+  {
+    const schemeReason = v(sub("http://push.example.invalid/x"), []).reason;
+    const sizeReason = v(sub(mkUrl(MAXLEN + 1)), []).reason;
+    const full = [sub("https://a.example.invalid/1"), sub("https://b.example.invalid/2"), sub("https://c.example.invalid/3")];
+    check(
+      "P2-272: http endpoint + full list → refuse (the https rule comes first)",
+      v(sub("http://push.example.invalid/x"), full, CAP, MAXLEN).verdict === "recusar" &&
+        v(sub("http://push.example.invalid/x"), full, CAP, MAXLEN).reason === schemeReason,
+    );
+    check(
+      "P2-272: giant endpoint + repeated endpoint → refuse (the size rule comes first)",
+      v(sub(mkUrl(MAXLEN + 1)), [sub(mkUrl(MAXLEN + 1))]).verdict === "recusar" &&
+        v(sub(mkUrl(MAXLEN + 1)), [sub(mkUrl(MAXLEN + 1))]).reason === sizeReason,
+    );
+  }
+
+  // Determinism: the same inputs, the same report, every call.
+  {
+    const a = JSON.stringify(v(sub(mkUrl(64)), [sub(mkUrl(64))]));
+    const b = JSON.stringify(v(sub(mkUrl(64)), [sub(mkUrl(64))]));
+    check("P2-272: the verdict is identical for the same input in two calls", a === b);
+  }
+
+  // The module defaults are the documented constants.
+  check(
+    "P2-272: the documented constants flow through as defaults",
+    PUSH_SUBSCRIPTIONS_MAX > 0 && PUSH_SUBSCRIPTION_MAX_ENDPOINT_LENGTH > 0 && pushSubscriptionVerdict(sub(mkUrl(64)), []).verdict === "acrescentar",
+  );
+
+  // redactPushEndpoint: host + fixed-length suffix, never path/query/whole URL.
+  {
+    const ep = "https://fcm.googleapis.com/fcm/send/SECRET-TOKEN?trace=1";
+    const label = redactPushEndpoint(ep);
+    check(
+      "P2-272: the redacted label carries the host but no path, query or whole endpoint",
+      label.includes("fcm.googleapis.com") &&
+        !label.includes("/fcm/send/SECRET-TOKEN") &&
+        !label.includes("SECRET-TOKEN") &&
+        !label.includes("?trace=1") &&
+        !label.includes(ep),
+    );
+    check("P2-272: the label suffix has a fixed length", /\([0-9a-f]{8}\)$/.test(label));
+    check("P2-272: the label is stable for the same endpoint", redactPushEndpoint(ep) === label);
+    check(
+      "P2-272: two endpoints on the same host differ only by the suffix",
+      redactPushEndpoint("https://fcm.googleapis.com/fcm/send/A") !== redactPushEndpoint("https://fcm.googleapis.com/fcm/send/B") &&
+        redactPushEndpoint("https://fcm.googleapis.com/fcm/send/A").startsWith("fcm.googleapis.com"),
+    );
+    check(
+      "P2-272: an invalid endpoint never throws and falls back to a static label",
+      ["", "not a url", "::::", null, undefined, 42, "http://"].map((e) => redactPushEndpoint(e)).every((l) => l === "endpoint"),
+    );
+  }
+
+  // Purity + wiring, read from the real sources.
+  const pushsubsSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "pushsubs.ts"), "utf8");
+  check(
+    "P2-272: the real pushsubs.ts imports no node:fs, node:http, node:crypto, ws or fetch",
+    pushsubsSrc
+      .split("\n")
+      .filter((l) => l.trimStart().startsWith("import "))
+      .every((l) => !l.includes("node:fs") && !l.includes("node:http") && !l.includes("node:crypto") && !/from\s+"ws"/.test(l) && !l.includes("fetch")) &&
+      !pushsubsSrc.includes("require("),
+  );
+
+  const daemonIdxSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  check(
+    "P2-272: no push surface echoes a full endpoint — attempts carry the redacted label in the same field",
+    !daemonIdxSrc.includes("endpoint: sub.endpoint") && (daemonIdxSrc.match(/redactPushEndpoint\(sub\.endpoint\)/g) ?? []).length >= 4,
+  );
+  check(
+    "P2-272: the push status route keeps its response shape",
+    daemonIdxSrc.includes("body: { subscribers: loadSubscriptions().length, last: lastPushResult }"),
+  );
+  check(
+    "P2-272: subscriptions.json is written atomically (tmp+rename, created 0600) — never a bare writeFileSync",
+    daemonIdxSrc.includes("writeStateAtomic(subscriptionsFile()") && !daemonIdxSrc.includes("writeFileSync(subscriptionsFile()"),
+  );
+  check(
+    "P2-272: the POST route admits subscriptions only through the pure verdict",
+    daemonIdxSrc.includes("pushSubscriptionVerdict(req.body, subs)"),
+  );
+  {
+    const postAt = daemonIdxSrc.indexOf('"/__ocr/push-subscription"');
+    const pushBlock = daemonIdxSrc.slice(postAt, daemonIdxSrc.indexOf("shouldPaginateMessages", postAt));
+    check(
+      "P2-272: the push subscription routes never touch the paired-phones allowlist",
+      pushBlock.includes("/__ocr/push-subscription") && !pushBlock.includes("allowlist") && !pushBlock.includes("Allowlist"),
+    );
+  }
+  check(
+    "P2-272: no new periodic timer in the daemon",
+    (daemonIdxSrc.match(/setInterval\(/g) ?? []).length === 5,
   );
 }
 

@@ -205,6 +205,12 @@ private. That is the product: **local power, remote control, zero trust**.
   staleness verdict (`ativo`, `ocioso`, `dormente`, `nunca visto`, with a short
   pt-BR hint) computed read-only from those stamps — the product never revokes
   a device on its own; revocation stays an explicit owner action.
+- **Bounded, redacted push (P2-272)** — at most **10 phones** hold a push
+  subscription at once (a new phone past the ceiling is refused, never a silent
+  eviction of a working one), and the push diagnostics screen shows only a
+  short host-based label per endpoint, never the full address — a push endpoint
+  is itself the credential to notify that phone. The subscriptions file is
+  written atomically (same tmp+rename 0600 contract as the daemon state).
 - **BYOM** — opencode supports any provider; pick the model per session
 - **API + SDK** — drive sessions from code (`packages/sdk`)
 - **Artifacts** — the agent writes documents (html, md, csv, pdf) to
