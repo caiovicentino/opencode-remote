@@ -872,6 +872,7 @@ import { findWindowsInstaller, listProblems, smokeFlags, windowsInstallerProblem
 import { bootVerdict } from "../apps/desktop/scripts/packaged-boot-verdict.mjs";
 import { candidatePaths } from "../apps/desktop/scripts/packaged-boot-layout.mjs";
 import { installerVerdict } from "../apps/desktop/scripts/installer-smoke-verdict.mjs";
+import { dmgVerdict } from "../apps/desktop/scripts/dmg-smoke-verdict.mjs";
 
 import { daemonVerdict, MODULE_RESOLUTION_RE } from "../apps/desktop/scripts/packaged-daemon-verdict.mjs";
 
@@ -24240,10 +24241,18 @@ check(
     bootSmokeParity([wfJob("desktop-package-win", [pkgStep, bootStep, daemonStep])], []).length === 0,
   );
   check(
-    "P2-304: a job uploading only the dmg is never flagged (no setup exe to smoke-install)",
+    "P2-304: a job uploading only the dmg is never flagged for the installer rule (dmg carries its own smoke, P2-309)",
     bootSmokeParity(
       [],
-      [wfJob("desktop-dmg", [pkgStep, bootStep, daemonStep, { name: "Attach DMG", run: "gh release upload apps/desktop/dist/*.dmg", shell: "bash", timeoutMinutes: 5 }])],
+      [
+        wfJob("desktop-dmg", [
+          pkgStep,
+          bootStep,
+          daemonStep,
+          { name: "Smoke-mount the macOS disk image", run: 'node apps/desktop/scripts/dmg-smoke.mjs "$DMG"', shell: "bash", timeoutMinutes: 10 },
+          { name: "Attach DMG", run: "gh release upload apps/desktop/dist/*.dmg", shell: "bash", timeoutMinutes: 5 },
+        ]),
+      ],
     ).length === 0,
   );
 
@@ -24279,6 +24288,230 @@ check(
     const releaseJobs = parseWorkflowJobs(release);
     const problems = bootSmokeParity(ciJobs, releaseJobs);
     check("P2-304: bootSmokeParity is green against the real workflows with the installer rule", problems.length === 0, problems.join(" | "));
+  }
+}
+
+// --- P2-309: DMG smoke — dmgVerdict table + release.yml wiring --------------
+
+{
+  const src = (rel: string[]) => readFileSync(join(import.meta.dirname, "..", ...rel), "utf8");
+  const verdictSrc = src(["apps", "desktop", "scripts", "dmg-smoke-verdict.mjs"]);
+  const driverSrc = src(["apps", "desktop", "scripts", "dmg-smoke.mjs"]);
+
+  const GOOD = {
+    attach: { exitCode: 0, signal: null, mounted: true },
+    layout: { singleAppBundle: true, executable: true, daemonEntry: true, webDist: true },
+    applicationsLink: { present: true, targetOk: true },
+    boot: { driverAvailable: true, loadFinished: true, rootEmpty: false, canarySeen: true, consoleErrors: [] as string[] },
+    detach: { attempted: true, exitCode: 0, signal: null },
+  };
+  const v = (over: Partial<typeof GOOD>) => dmgVerdict({ ...GOOD, ...over });
+
+  // full verdict table (first match wins: attach → layout → applications
+  // link → boot → detach — each stage subsumes the ones after it)
+  check("P2-309: all facts good → ok with no reason", dmgVerdict(GOOD).ok === true && dmgVerdict(GOOD).reason === null);
+  check("P2-309: attach exit code non-zero → attach-failed", v({ attach: { exitCode: 5, signal: null, mounted: true } }).reason === "attach-failed");
+  check("P2-309: attach killed by signal → attach-failed", v({ attach: { exitCode: null, signal: "SIGKILL", mounted: true } }).reason === "attach-failed");
+  check("P2-309: volume never appeared → attach-failed", v({ attach: { exitCode: 0, signal: null, mounted: false } }).reason === "attach-failed");
+  check("P2-309: not exactly one app bundle → layout-missing", v({ layout: { ...GOOD.layout, singleAppBundle: false } }).reason === "layout-missing");
+  check("P2-309: missing executable → layout-missing", v({ layout: { ...GOOD.layout, executable: false } }).reason === "layout-missing");
+  check("P2-309: missing daemon entry → layout-missing", v({ layout: { ...GOOD.layout, daemonEntry: false } }).reason === "layout-missing");
+  check("P2-309: missing web dist → layout-missing", v({ layout: { ...GOOD.layout, webDist: false } }).reason === "layout-missing");
+  check(
+    "P2-309: layout-missing names every missing piece in one message",
+    (() => {
+      const verdict = v({ layout: { singleAppBundle: false, executable: false, daemonEntry: false, webDist: false } });
+      return verdict.reason === "layout-missing" && /ausente/.test(verdict.message) && /executável/.test(verdict.message) && /daemon/.test(verdict.message);
+    })(),
+  );
+  check("P2-309: Applications symlink absent → applications-link-missing", v({ applicationsLink: { present: false, targetOk: false } }).reason === "applications-link-missing");
+  check("P2-309: Applications symlink wrong target → applications-link-missing", v({ applicationsLink: { present: true, targetOk: false } }).reason === "applications-link-missing");
+  check("P2-309: driver unavailable fails closed → boot-failed", v({ boot: { ...GOOD.boot, driverAvailable: false } }).reason === "boot-failed");
+  check("P2-309: load not finished → boot-failed", v({ boot: { ...GOOD.boot, loadFinished: false } }).reason === "boot-failed");
+  check("P2-309: blank window → boot-failed", v({ boot: { ...GOOD.boot, rootEmpty: true } }).reason === "boot-failed");
+  check("P2-309: canary not seen → boot-failed (never a vacuous pass)", v({ boot: { ...GOOD.boot, canarySeen: false } }).reason === "boot-failed");
+  check("P2-309: console errors → boot-failed", v({ boot: { ...GOOD.boot, consoleErrors: ["boom"] } }).reason === "boot-failed");
+  check("P2-309: boot-failed cites the inner boot reason", v({ boot: { ...GOOD.boot, loadFinished: false } }).message.includes("load-failed"));
+  check("P2-309: detach exit non-zero → detach-failed", v({ detach: { attempted: true, exitCode: 16, signal: null } }).reason === "detach-failed");
+  check("P2-309: detach killed by signal → detach-failed", v({ detach: { attempted: true, exitCode: null, signal: "SIGKILL" } }).reason === "detach-failed");
+  check("P2-309: detach never attempted → detach-failed (fail closed)", v({ detach: { attempted: false, exitCode: null, signal: null } }).reason === "detach-failed");
+  check("P2-309: attach-failed outranks everything (later stages never ran)", v({ attach: { exitCode: 5, signal: null, mounted: false }, detach: { attempted: false, exitCode: null, signal: null } }).reason === "attach-failed");
+  check("P2-309: boot-failed outranks detach-failed", v({ boot: { ...GOOD.boot, loadFinished: false }, detach: { attempted: true, exitCode: 16, signal: null } }).reason === "boot-failed");
+
+  // determinism: the same input yields the identical verdict in two calls,
+  // for the all-green input and for a failing one
+  const failing = { ...GOOD, boot: { ...GOOD.boot, consoleErrors: ["boom"] } };
+  check(
+    "P2-309: identical result for the same input in two calls (ok and failing)",
+    JSON.stringify(dmgVerdict(GOOD)) === JSON.stringify(dmgVerdict(GOOD)) &&
+      JSON.stringify(dmgVerdict(failing)) === JSON.stringify(dmgVerdict(failing)),
+  );
+
+  // message hygiene: short pt-BR, no paths, no URL schemes, no secrets
+  const all = [
+    dmgVerdict(GOOD),
+    v({ attach: { exitCode: 5, signal: null, mounted: true } }),
+    v({ layout: { singleAppBundle: false, executable: true, daemonEntry: true, webDist: true } }),
+    v({ applicationsLink: { present: false, targetOk: false } }),
+    v({ applicationsLink: { present: true, targetOk: false } }),
+    v({ boot: { ...GOOD.boot, driverAvailable: false } }),
+    v({ boot: { ...GOOD.boot, loadFinished: false } }),
+    v({ detach: { attempted: true, exitCode: 16, signal: null } }),
+    v({ detach: { attempted: false, exitCode: null, signal: null } }),
+  ];
+  check(
+    "P2-309: every verdict message is non-empty and free of paths, URLs and secrets",
+    all.every((x) => typeof x.message === "string" && x.message.trim().length > 0 && !/[\\/]/.test(x.message) && !/https?:/i.test(x.message)),
+  );
+  check("P2-309: each reason carries a distinct message", new Set(all.map((x) => x.message)).size === all.length);
+
+  // the verdict module stays pure (P2-194 lesson): no I/O of any kind
+  check(
+    "P2-309: dmg-smoke-verdict.mjs is pure (no node: fs/os/path/net/http/child_process imports)",
+    !/node:(fs|os|path|net|http|child_process)/.test(verdictSrc.replace(/\/\/.*$/gm, "")),
+  );
+
+  // the driver carries the full pipeline and the hermetic contract of
+  // packaged-boot.mjs verbatim (P2-242 lesson: no thinner CI-only variant)
+  check(
+    "P2-309: driver mounts non-interactively — hdiutil attach readonly, nobrowse, no EULA, temp mount point",
+    driverSrc.includes('"attach", "-readonly", "-nobrowse", "-noautoopen", "-mountpoint"') && driverSrc.includes("mkdtempSync"),
+  );
+  check(
+    "P2-309: driver reuses the packaged-boot hermetic contract (same env fn, same executable resolution, same canary, same verdict module)",
+    driverSrc.includes('hermeticBootEnv, resolveExecutable } from "./packaged-boot.mjs"') &&
+      driverSrc.includes('CANARY } from "./packaged-boot-verdict.mjs"') &&
+      driverSrc.includes('dmgVerdict } from "./dmg-smoke-verdict.mjs"'),
+  );
+  check(
+    "P2-309: driver checks the mounted layout (exactly one .app, executable, resources/daemon, resources/web-dist)",
+    driverSrc.includes('endsWith(".app")') &&
+      driverSrc.includes("resolveDaemonEntry") &&
+      driverSrc.includes('"Contents", "Resources", "web-dist", "index.html"'),
+  );
+  check(
+    "P2-309: driver checks the Applications symlink via readlink (present AND pointing at /Applications)",
+    driverSrc.includes("readlinkSync") && driverSrc.includes('"/Applications"') && driverSrc.includes("isSymbolicLink"),
+  );
+  check(
+    "P2-309: driver fails closed BEFORE mounting anything when playwright-core is unavailable",
+    driverSrc.includes("refusing to pass vacuously") && driverSrc.indexOf("refusing to pass vacuously") < driverSrc.indexOf('"attach", "-readonly"'),
+  );
+  check(
+    "P2-309: driver refuses non-macOS hosts (hdiutil never executes there) and bounds every hdiutil child",
+    driverSrc.includes('process.platform !== "darwin"') && driverSrc.includes("waitExit"),
+  );
+  check(
+    "P2-309: driver boots the same beats as packaged-boot (firstWindow, load state, canary injection, #root)",
+    driverSrc.includes("firstWindow") && driverSrc.includes('waitForLoadState("load"') && driverSrc.includes("console.error('${CANARY}')"),
+  );
+  check(
+    "P2-309: driver detaches ALWAYS — plain first, -force retry, safety net even when the attempt dies",
+    driverSrc.includes('"detach", mount') && driverSrc.includes('"detach", "-force", mount') && driverSrc.includes("!detach.attempted"),
+  );
+  check(
+    "P2-309: driver cleans up the temp workspace even on failure",
+    driverSrc.includes("rmSync(workspace"),
+  );
+
+  // parity rules (synthetic fixtures, same shape as the P2-304 ones)
+  const wfJob = (name: string, steps: WorkflowStep[]): WorkflowJob => ({ name, platform: "x", steps });
+  const pkgStep: WorkflowStep = { name: "Package", run: "npm run dist --workspace @ocr/desktop -- --mac", shell: null, timeoutMinutes: null };
+  const bootStep: WorkflowStep = { name: "Boot", run: 'node apps/desktop/scripts/packaged-boot.mjs "$APP"', shell: "bash", timeoutMinutes: 10 };
+  const daemonStep: WorkflowStep = { name: "Smoke the packaged daemon sidecar", run: 'node apps/desktop/scripts/packaged-daemon-smoke.mjs "$APP"', shell: "bash", timeoutMinutes: 5 };
+  const dmgStep: WorkflowStep = { name: "Smoke-mount the macOS disk image", run: 'node apps/desktop/scripts/dmg-smoke.mjs "$DMG"', shell: "bash", timeoutMinutes: 10 };
+  const dmgUpload: WorkflowStep = {
+    name: "Attach DMG + update metadata to the GitHub release",
+    run: 'gh release upload "$GITHUB_REF_NAME" \\\n  apps/desktop/dist/*.dmg apps/desktop/dist/latest-mac.yml \\\n  --clobber',
+    shell: "bash",
+    timeoutMinutes: 5,
+  };
+  const dmgJob = (steps: WorkflowStep[]) => bootSmokeParity([], [wfJob("desktop-dmg", steps)]);
+  check(
+    "P2-309: a job shipping the disk image without the DMG smoke yields exactly one problem naming the job",
+    (() => {
+      const problems = dmgJob([pkgStep, bootStep, daemonStep, dmgUpload]);
+      return problems.length === 1 && problems[0].includes('"desktop-dmg"') && problems[0].includes("never smoke-mounts");
+    })(),
+  );
+  check(
+    "P2-309: a complete correct job (package, boot, daemon smoke, dmg smoke, upload) yields zero problems",
+    dmgJob([pkgStep, bootStep, daemonStep, dmgStep, dmgUpload]).length === 0,
+  );
+  check(
+    "P2-309: two dmg smokes yield the uniqueness problem",
+    (() => {
+      const problems = dmgJob([pkgStep, bootStep, daemonStep, dmgStep, dmgStep, dmgUpload]);
+      return problems.length === 1 && problems[0].includes("more than once");
+    })(),
+  );
+  check(
+    "P2-309: a dmg smoke before packaging yields the position problem",
+    (() => {
+      const problems = dmgJob([dmgStep, pkgStep, bootStep, daemonStep, dmgUpload]);
+      return problems.length === 1 && problems[0].includes("before the packaging step");
+    })(),
+  );
+  check(
+    "P2-309: a dmg smoke after the upload yields the position problem",
+    (() => {
+      const problems = dmgJob([pkgStep, bootStep, daemonStep, dmgUpload, dmgStep]);
+      return problems.length === 1 && problems[0].includes("after the upload");
+    })(),
+  );
+  check(
+    "P2-309: shell/timeout hygiene yields one problem per cause, no short-circuit",
+    (() => {
+      const problems = dmgJob([pkgStep, bootStep, daemonStep, { ...dmgStep, shell: null, timeoutMinutes: null }, dmgUpload]);
+      return problems.length === 2 && problems.some((p) => p.includes("shell: bash")) && problems.some((p) => p.includes("timeout-minutes"));
+    })(),
+  );
+  check(
+    "P2-309: a job uploading only the setup exe is never flagged for the dmg rule",
+    bootSmokeParity([], [wfJob("desktop-win", [pkgStep, bootStep, daemonStep])]).length === 0,
+  );
+  check(
+    "P2-309: the problem order is stable for the same input across two calls",
+    (() => {
+      const broken = [pkgStep, bootStep, daemonStep, { ...dmgStep, shell: null, timeoutMinutes: null }, dmgUpload];
+      return JSON.stringify(dmgJob(broken)) === JSON.stringify(dmgJob(broken));
+    })(),
+  );
+
+  // real-repo assertion: the actual release.yml runs the dmg smoke in
+  // desktop-dmg exactly once, after the gatekeeper verification of the
+  // distributed DMG and before the feed build + upload, with shell: bash and
+  // its own timeout — and parity stays green overall.
+  const release = src([".github", "workflows", "release.yml"]);
+  const dmgStart = release.indexOf("\n  desktop-dmg:");
+  const dmgEnd = release.indexOf("\n  desktop-win:");
+  const dmgYml = dmgStart > -1 && dmgEnd > dmgStart ? release.slice(dmgStart, dmgEnd) : "";
+  const gatekeeperAt = dmgYml.indexOf("Gatekeeper verification of the distributed DMG");
+  const smokeAt = dmgYml.indexOf("Smoke-mount the macOS disk image");
+  const feedAt = dmgYml.indexOf("Build the Squirrel.Mac JSON feed");
+  const uploadAt = dmgYml.indexOf("Attach DMG + update metadata");
+  const stepSlice = smokeAt > -1 ? dmgYml.slice(smokeAt, dmgYml.indexOf("\n      - name:", smokeAt)) : "";
+  check(
+    "P2-309: release.yml desktop-dmg runs the dmg smoke after the gatekeeper verification and before the feed build + upload",
+    gatekeeperAt > -1 && smokeAt > gatekeeperAt && feedAt > smokeAt && uploadAt > feedAt,
+  );
+  check(
+    "P2-309: exactly one Smoke-mount step and one dmg-smoke.mjs occurrence in the desktop-dmg job",
+    dmgYml.split("Smoke-mount the macOS disk image").length === 2 && dmgYml.split("dmg-smoke.mjs").length === 2,
+  );
+  check(
+    "P2-309: the dmg smoke step declares shell: bash and its own timeout-minutes",
+    stepSlice.includes("shell: bash") && /timeout-minutes: \d+/.test(stepSlice),
+  );
+  check(
+    "P2-309: the step resolves the .dmg under apps/desktop/dist and runs dmg-smoke.mjs against it",
+    stepSlice.includes("find apps/desktop/dist") && stepSlice.includes("node apps/desktop/scripts/dmg-smoke.mjs"),
+  );
+  {
+    const ciJobs = parseWorkflowJobs(readFileSync(join(import.meta.dirname, "..", ".github", "workflows", "ci.yml"), "utf8"));
+    const releaseJobs = parseWorkflowJobs(release);
+    const problems = bootSmokeParity(ciJobs, releaseJobs);
+    check("P2-309: bootSmokeParity is green against the real workflows with the dmg rule", problems.length === 0, problems.join(" | "));
   }
 }
 
