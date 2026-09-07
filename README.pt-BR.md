@@ -154,10 +154,9 @@ remoto, zero confiança**.
 - **Prontidão de abrir sites (P2-284)** — a máquina anuncia em `GET /api/health`
   (`browseState` / `browseMessage` / `browseCheckedAt`) se sabe navegar, antes
   de você pedir; o painel **Estado da máquina** das Configurações traz o mesmo
-  veredito na linha "Navegação de sites" (verde/âmbar/vermelho, espelhado na
-  leitura de settings que a tela já faz, P2-287). Instalar o navegador do
-  Playwright é opcional, e quando ele falta o agente responde com uma frase
-  curta em português em vez de um erro cru em inglês
+  veredito na linha "Navegação de sites" (verde/âmbar/vermelho, P2-287).
+  Instalar o navegador do Playwright é opcional, e quando ele falta o agente
+  responde com uma frase curta em português em vez de um erro cru em inglês
 - **Handoff** — continue a sessão exata no Mac (ícone de laptop no header do chat)
 - **Painel ao vivo** — estado de cada sessão: trabalhando, esperando aprovação,
   fez pergunta, pronto, erro; cards mostram o tempo relativo da última

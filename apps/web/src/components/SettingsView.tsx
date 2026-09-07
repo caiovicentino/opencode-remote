@@ -151,16 +151,17 @@ export function applyTheme() {
 
 /** P2-287: deterministic-evidence hatch (the P2-218 lesson, web edition) —
  * `ocr.browseStateOverride` in localStorage forces the browse verdict for
- * screenshots WITHOUT touching any network path. Fail-closed: only the four
- * documented P2-284 states (BROWSE_STATES, owned by machinestate.ts) are
- * honored, the real payload always wins, and no phrase is ever invented (the
- * label alone carries the row). Documented in docs/troubleshooting.md beside
- * the daemon hatches. With the P2-287 settings mirror in place the hatch is
- * only ever needed for deterministic shots of states a particular machine
- * does not currently report. */
+ * screenshots WITHOUT touching any network path. Fail-closed twice over:
+ * only the DEGRADED states of BROWSE_STATES (owned by machinestate.ts) are
+ * honored — never "ready", so the hatch can never fabricate an approval for
+ * a machine that never measured one — and the real payload always wins. No
+ * phrase is ever invented (the label alone carries the row). Documented in
+ * docs/troubleshooting.md beside the daemon hatches. */
+const HATCH_STATES: readonly string[] = BROWSE_STATES.filter((s) => s !== "ready");
+
 function forcedBrowseState(): string | undefined {
   const forced = localStorage.getItem("ocr.browseStateOverride") ?? "";
-  return BROWSE_STATES.includes(forced) ? forced : undefined;
+  return HATCH_STATES.includes(forced) ? forced : undefined;
 }
 
 export default function SettingsView({ request, onBack, transport, getDiagnostics, onPairRemote, getRelaySetting, setRelayUrl, getWebAppUrl, setWebAppUrl, upstream }: Props) {

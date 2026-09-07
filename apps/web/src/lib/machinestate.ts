@@ -11,7 +11,9 @@
  * readiness verdicts already mirrored on the existing GET /__ocr/settings
  * read, so the Settings section makes no new request and starts no new poll;
  * fields the PWA channel does not carry yet (relay, binary, doc conversion,
- * browse) simply yield no row until a future channel delivers them.
+ * browse) simply yield no row until a future channel delivers them — the
+ * browse row ships first (P2-287) and stays silent on daemons that do not
+ * report its verdict, exactly like relay and docs.
  *
  * Severity has exactly three levels. The ordering is worst-first with a fixed,
  * documented key order as the tie-break, so the list never dances between two

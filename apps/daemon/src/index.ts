@@ -989,16 +989,10 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
     // an opencode updated after boot is picked up here (at most once per
     // interval) instead of needing a daemon restart.
     maybeReprobeOpencodeVersion();
-    // P2-287: the browse verdict joins the same additive mirror (appended
-    // AFTER the anchor fields, never renamed or repositioned) so the
-    // machine-state screen announces site-opening readiness from the read it
-    // already performs. Same lazy policy as /api/health: installing the
-    // Playwright browser flips the verdict without a daemon restart.
-    await maybeReprobeBrowse();
     return {
       id: req.id,
       status: 200,
-      body: { ...readSettings(), version: VERSION, opencodeVersion: opencodeVersion, disk: diskStatus(), browseState: browseCap.state, browseMessage: browseCap.message },
+      body: { ...readSettings(), version: VERSION, opencodeVersion: opencodeVersion, disk: diskStatus() },
     };
   }
   if (req.path === "/__ocr/settings" && req.method === "PATCH") {

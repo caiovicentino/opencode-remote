@@ -142,11 +142,6 @@ to open sites BEFORE the user asks, and installing the Playwright browser
 afterwards is picked up without a restart. No phrase ever carries a path,
 port, address, environment variable or the raw error tail.
 
-Since P2-287 the existing `GET /__ocr/settings` read mirrors
-`browseState`/`browseMessage` additively (appended after the `disk` anchor,
-same lazy re-probe policy) so the Settings machine-state panel renders the
-verdict from the read it already performs — no new request, no new poll.
-
 ### Pairing state (P2-007)
 
 Two read-only routes serve the desktop shell's first-run QR overlay; they are
