@@ -18,6 +18,11 @@ import { readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { BootHealthRecord } from "./boothealth";
 
+/** P2-291: the record on disk is the boot-health record PLUS one additive
+ * optional boolean — the owner's explicit release mark. Absence keeps every
+ * legacy record byte-stable (the P2-149 lesson): no migration, no new file. */
+export type StoredBootHealthRecord = BootHealthRecord & { ownerRelease?: boolean };
+
 /** Structural subset of node:fs the store touches (tests inject fakes). */
 export interface BootHealthFs {
   readFileSync(file: string, encoding: "utf8"): string;
@@ -35,6 +40,25 @@ export const nodeBootHealthFs: BootHealthFs = {
 
 export function bootHealthRecordFile(userDataDir: string): string {
   return join(userDataDir, "boothealth.json");
+}
+
+/** P2-291: tolerant read of the owner's release mark — the ONE additive
+ * optional field in the existing record. Absent, corrupted and non-boolean
+ * fields all mean "no release"; only an exact `true` grants it. Never
+ * throws. */
+export function readOwnerRelease(record: unknown): boolean {
+  if (typeof record !== "object" || record === null || Array.isArray(record)) return false;
+  return (record as { ownerRelease?: unknown }).ownerRelease === true;
+}
+
+/** P2-291: the atomic write carries the additive release mark over from the
+ * stored record (the verdict's normalized copy drops it by design —
+ * boothealth.ts stays untouched), so a boot or a promotion never erases the
+ * owner's choice. Field order: the P2-218 contract keys, then the additive
+ * tail. */
+function withCarriedRelease(record: StoredBootHealthRecord, stored: unknown): StoredBootHealthRecord {
+  if (!readOwnerRelease(stored)) return record;
+  return { ...record, ownerRelease: true };
 }
 
 /** Outcome of one store operation: `written` plus a static reason for one
@@ -102,7 +126,7 @@ export function markOpeningInProgress(input: {
   if (!Number.isFinite(input.nowMs)) return OUTCOME_CLOCK;
   // Field order is a contract (P2-218): identical to normalizeBootHealthRecord.
   const carriesHealthy = input.base?.lastHealthyVersion !== undefined;
-  const record: BootHealthRecord = carriesHealthy
+  const record: StoredBootHealthRecord = carriesHealthy
     ? {
         lastSeenVersion: input.runningVersion,
         lastHealthyVersion: input.base?.lastHealthyVersion,
@@ -114,7 +138,10 @@ export function markOpeningInProgress(input: {
         unmatchedOpenings: Math.max(0, input.effectiveCount) + 1,
         lastOpeningAt: input.nowMs,
       };
-  return writeRecord(input.file, input.fs, record);
+  // P2-291: the owner's release mark survives the boot mark (re-read from the
+  // stored record — the normalized base drops the additive field by design).
+  const stored = readBootHealthRecord(input.file, input.fs);
+  return writeRecord(input.file, input.fs, withCarriedRelease(record, stored));
 }
 
 /** Promote the running version to "healthy": called ONLY when the main
@@ -138,11 +165,56 @@ export function promoteHealthyOpening(input: {
     const raw = (stored as { lastOpeningAt?: unknown }).lastOpeningAt;
     return typeof raw === "number" && Number.isFinite(raw) ? raw : undefined;
   })();
-  const record: BootHealthRecord = {
+  const record: StoredBootHealthRecord = {
     lastSeenVersion: input.runningVersion,
     lastHealthyVersion: input.runningVersion,
     unmatchedOpenings: 0,
     lastOpeningAt: previousLastOpeningAt ?? input.nowMs,
   };
+  return writeRecord(input.file, input.fs, withCarriedRelease(record, stored));
+}
+
+/** P2-291: record the owner's explicit release of the suspected version —
+ * the tray's "retomar atualização automática" item is the only caller. The
+ * mark lands as the ONE additive optional field in the existing record (no
+ * new file, no migration); every known field of the old record is carried
+ * over with its sanitized value. A harness session writes nothing; a
+ * non-finite instant refuses instead of guessing; every failure is a report
+ * line, never an exception. */
+export function writeOwnerRelease(input: {
+  file: string;
+  fs: BootHealthFs;
+  harnessSession: boolean;
+  runningVersion: string;
+  nowMs: number;
+}): BootHealthStoreOutcome {
+  if (input.harnessSession) return OUTCOME_HARNESS;
+  if (!Number.isFinite(input.nowMs)) return OUTCOME_CLOCK;
+  const stored = readBootHealthRecord(input.file, input.fs);
+  const raw = (typeof stored === "object" && stored !== null && !Array.isArray(stored) ? stored : {}) as {
+    lastSeenVersion?: unknown;
+    lastHealthyVersion?: unknown;
+    unmatchedOpenings?: unknown;
+    lastOpeningAt?: unknown;
+  };
+  const lastSeen =
+    typeof raw.lastSeenVersion === "string" && raw.lastSeenVersion.length > 0
+      ? raw.lastSeenVersion
+      : input.runningVersion;
+  const lastHealthy =
+    typeof raw.lastHealthyVersion === "string" && raw.lastHealthyVersion.length > 0
+      ? raw.lastHealthyVersion
+      : undefined;
+  const count =
+    typeof raw.unmatchedOpenings === "number" && Number.isFinite(raw.unmatchedOpenings) && raw.unmatchedOpenings >= 0
+      ? raw.unmatchedOpenings
+      : 0;
+  const lastAt =
+    typeof raw.lastOpeningAt === "number" && Number.isFinite(raw.lastOpeningAt) ? raw.lastOpeningAt : input.nowMs;
+  // Field order is a contract (P2-218) plus the additive tail (P2-291).
+  const record: StoredBootHealthRecord =
+    lastHealthy !== undefined
+      ? { lastSeenVersion: lastSeen, lastHealthyVersion: lastHealthy, unmatchedOpenings: count, lastOpeningAt: lastAt, ownerRelease: true }
+      : { lastSeenVersion: lastSeen, unmatchedOpenings: count, lastOpeningAt: lastAt, ownerRelease: true };
   return writeRecord(input.file, input.fs, record);
 }

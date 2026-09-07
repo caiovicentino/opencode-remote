@@ -71,6 +71,10 @@ export interface DiagnosticsInput {
    * address, a credential or the raw environment (privacy contract in this
    * header). Optional/additive. */
   proxy?: { mode: string; reason: string; origin?: string } | null;
+  /** P2-291: the update guard's last verdict ("seguir" | "recusar-oferta")
+   * and its short reason only — never a path, an address or a secret
+   * (privacy contract in this header). Optional/additive. */
+  updateGuard?: { state: string; reason: string } | null;
 }
 
 /** Lines of the diagnostic bundle, in display order. */
@@ -105,6 +109,9 @@ export function buildDiagnosticReport(d: DiagnosticsInput): string {
     `proxy: ${d.proxy?.mode ?? "unknown"}${d.proxy?.origin ? ` — origem ${d.proxy.origin}` : ""}${
       d.proxy?.reason ? ` (${d.proxy.reason})` : ""
     }`,
+    // P2-291: one additive line — the guard's last verdict + short reason
+    // only, never a path or an address (header privacy contract).
+    `update guard: ${d.updateGuard?.state ?? "unknown"}${d.updateGuard?.reason ? ` (${d.updateGuard.reason})` : ""}`,
     `crash files: ${d.crashFiles.length === 0 ? "none" : d.crashFiles.join(", ")}`,
     "--- desktop.log (last lines) ---",
     ...d.logTail.slice(-DIAG_LOG_TAIL),

@@ -1426,7 +1426,12 @@ window and, past a documented floor, suspends the automatic update check for
 that execution, flags the tray and asks the owner one question offering the
 existing ways out (**Copiar diagnóstico** or **Seguir assim mesmo**); it
 never rolls back, uninstalls, deletes or installs anything, and the record
-heals itself the first time the window truly opens again.
+heals itself the first time the window truly opens again. P2-291: while that
+verdict stands, the update guard refuses to re-download or re-offer the very
+version the feed keeps advertising when it is the one running — the tray
+gains one **OpenCode Remote — retomar atualização automática** item that
+records your release and re-checks immediately, so a genuinely new version
+flows again.
 P2-098: when that staged feed is
 absent — the normal case on a plain DMG install — the shell falls back to the
 public yml feed attached to the latest GitHub release, so the tray still

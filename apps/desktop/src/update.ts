@@ -26,6 +26,7 @@
 import { app, autoUpdater } from "electron";
 import { activeDaemonPort } from "./daemon";
 import { assetUrlFrom, parseWindowsFeed } from "./winupdate";
+import { updateGuard } from "./updateguard";
 
 /** Shape of the subset of Electron's autoUpdater we need (tests inject fakes). */
 export interface UpdaterLike {
@@ -289,6 +290,19 @@ export interface WinInstallerRequest {
 export interface UpdateCheckOptions {
   /** Overrides the resolved feed URL (tests); undefined uses resolvedFeedUrl(). */
   feedUrl?: string | null;
+  /** P2-291: static update-guard inputs main.ts resolves once per execution
+   * (the boot-health verdict, the owner release mark, the harness flag and
+   * the last resolved update state). The guard itself is consulted below,
+   * BEFORE the version comparison — a feed re-offering the very version the
+   * boot-health verdict accuses is refused (nothing downloaded nor
+   * re-offered) while a new version flows through untouched. Absent → the
+   * guard runs on its own tolerant defaults, which always resolve seguir. */
+  updateGuard?: {
+    harnessSession: boolean;
+    bootVerdict: string;
+    ownerRelease: boolean;
+    lastState: string | null;
+  } | null;
   /** Overrides the public fallback feed (tests); undefined uses publicFeedUrl(). */
   publicFeed?: string | null;
   /** Overrides app.isPackaged (tests drive the packaged-default fallback path
@@ -572,6 +586,25 @@ export async function checkForUpdatesOnBoot(opts: UpdateCheckOptions = {}): Prom
     return finish("unrecognized-feed");
   }
   const current = opts.currentVersion ?? app?.getVersion?.() ?? "0.0.0";
+  // P2-291: the guard is consulted before every automatic download — placed
+  // BEFORE the version comparison so a feed still advertising the running
+  // (accused) version hits the recusar-oferta rule instead of silently
+  // no-op'ing. The refusal resolves like "no update" (the same status the
+  // version comparison would produce) plus the offer recorded upstream, so
+  // the periodic recheck is never interrupted and a genuinely NEW version
+  // keeps being perceived — and followed (rule 5 of the guard's table).
+  const guard = updateGuard({
+    harnessSession: opts.updateGuard?.harnessSession ?? false,
+    bootVerdict: opts.updateGuard?.bootVerdict ?? "",
+    runningVersion: current,
+    offeredVersion: feed.version,
+    updateState: opts.updateGuard?.lastState ?? null,
+    ownerRelease: opts.updateGuard?.ownerRelease ?? false,
+  });
+  if (guard.decision === "recusar-oferta") {
+    log(`update guard: ${guard.decision} (${guard.reason}) — ${guard.phrase}`);
+    return finish("update-not-available", feed.version);
+  }
   if (!isNewerVersion(current, feed.version)) {
     log(`update check: no update (current ${current} >= feed ${feed.version})`);
     return finish("update-not-available");
