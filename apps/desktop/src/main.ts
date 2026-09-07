@@ -873,10 +873,28 @@ function runUpdateCheck(source: string): void {
     onStatus: (status, version) => {
       lastUpdateStatus = status;
       // P2-291: the version the feed offered — any version-carrying
-      // resolution records it (including the guard's refused re-offer), so
-      // the next check-time consultation compares exactly this offer against
-      // the running version.
-      if (version) lastOfferedUpdateVersion = version;
+      // resolution records it (including the guard's refused re-offer).
+      // P2-291 review round 3: the sink RECOMPUTES the tray verdict with the
+      // just-recorded offer — the download-time refusal in update.ts resolves
+      // before this sink runs, so without this recompute the release item
+      // would only appear after a SECOND manual check with zero feedback
+      // after the first (on the target machine boot + scheduled checks are
+      // suspended and the first manual check consults the guard with no offer
+      // known yet). The tray rebuild further below in this sink then runs
+      // with the fresh verdict.
+      if (version) {
+        lastOfferedUpdateVersion = version;
+        const sinkGuard = updateGuard({
+          harnessSession: HERMETIC_E2E,
+          bootVerdict: bootHealthVerdictName,
+          runningVersion: app.getVersion(),
+          offeredVersion: lastOfferedUpdateVersion,
+          updateState: lastUpdateStatus,
+          ownerRelease: ownerUpdateRelease,
+        });
+        updateGuardVerdict = sinkGuard.decision;
+        updateGuardReason = sinkGuard.reason;
+      }
       // P2-257: track the downloaded release so the reminder plan can tell it
       // apart from the version whose offers were already recorded, and hand
       // the SAME timer over to the reminder once the download completes (the

@@ -273,6 +273,14 @@ const verdict = (over: Partial<Parameters<typeof bootHealthVerdict>[0]> = {}) =>
       guardLinesP291.length > 0 &&
       guardLinesP291.every((l) => !l.includes("setInterval") && !l.includes("setTimeout")),
   );
+  const sinkStartP291 = mainSrcP291.indexOf("onStatus: (status, version) => {");
+  const sinkSliceP291 = mainSrcP291.slice(sinkStartP291, mainSrcP291.indexOf("refreshTrayMenu()", sinkStartP291));
+  check(
+    "P2-291: wiring — the onStatus sink recomputes the tray verdict after recording the offer (release item visible after the first refused check)",
+    sinkSliceP291.indexOf("lastOfferedUpdateVersion = version") >= 0 &&
+      sinkSliceP291.indexOf("updateGuard({") > sinkSliceP291.indexOf("lastOfferedUpdateVersion = version") &&
+      sinkSliceP291.indexOf("updateGuardVerdict =") > sinkSliceP291.indexOf("updateGuard({"),
+  );
 }
 
 // --- P2-291: the additive owner-release field in the existing store ----------------------

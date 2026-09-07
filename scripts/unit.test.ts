@@ -6967,6 +6967,15 @@ check(
       !runCheckSlice.includes("guard.decision ===") &&
       runCheckSlice.includes("updateGuard: {"),
   );
+  const sinkStart = mainTsSource.indexOf("onStatus: (status, version) => {");
+  const sinkSlice = mainTsSource.slice(sinkStart, mainTsSource.indexOf("refreshTrayMenu()", sinkStart));
+  check(
+    "P2-291: the onStatus sink recomputes the tray verdict right after recording the offer — the release item appears after the FIRST refused check",
+    sinkSlice.indexOf("lastOfferedUpdateVersion = version") >= 0 &&
+      sinkSlice.indexOf("updateGuard({") > sinkSlice.indexOf("lastOfferedUpdateVersion = version") &&
+      sinkSlice.indexOf("updateGuardVerdict =") > sinkSlice.indexOf("updateGuard({") &&
+      sinkSlice.indexOf("updateGuardReason =") > sinkSlice.indexOf("updateGuard({"),
+  );
   const guardLines = mainTsSource
     .split("\n")
     .filter((l) => /updateGuard|update guard|ownerUpdateRelease|lastOfferedUpdateVersion/.test(l));
