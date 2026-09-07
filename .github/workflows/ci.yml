@@ -59,6 +59,22 @@ jobs:
         timeout-minutes: 5
         run: npm run check:action-pins
 
+      # P2-283: lockfile-integrity gate — package-lock.json is the only file
+      # that decides which third-party code is installed inside the job that
+      # packages the notarized DMG and the signed installer, yet nothing
+      # verified where each package came from. The step re-reads the real
+      # lockfile, normalizes every entry and fails this job on a reject
+      # verdict alone: an origin outside the documented public registries
+      # (a git dependency, an arbitrary tarball) or a registry origin without
+      # an integrity hash. A failed read, an unusual hash algorithm or a
+      # still-valid exemption only warns. shell: bash (P2-126 lesson) and its
+      # own timeout (P2-245/P2-255 lessons). Deadlined exemptions:
+      # scripts/lock-exemptions.json (docs/security.md).
+      - name: Lock integrity gate
+        shell: bash
+        timeout-minutes: 5
+        run: npm run check:lock-integrity
+
       - name: Lint
         run: npx eslint apps packages scripts --quiet
 

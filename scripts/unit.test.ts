@@ -916,6 +916,15 @@ import {
 } from "./workflowperms";
 import { actionPinsVerdict, COMMIT_SHA_PATTERN, type ActionRef } from "./actionpins";
 import { parseWorkflowActionRefs } from "./check-action-pins";
+import {
+  INTEGRITY_ALGORITHM,
+  isInternalOrigin,
+  lockIntegrityVerdict,
+  originAccepted,
+  type LockEntry,
+  type LockExemption,
+} from "./lockintegrity";
+import { normalizeLockEntries } from "./check-lock-integrity";
 
 
 let failures = 0;
@@ -25233,6 +25242,359 @@ check("P2-241: no new periodic timer was introduced by the handler", !dlBlock.in
   check(
     "P2-278: actionpins.ts imports no node:child_process, node:fs or fetch",
     !/^import[^\n]*(node:child_process|node:fs|fetch)/m.test(pinsSrc) && !pinsSrc.includes("fetch("),
+  );
+}
+
+// --- P2-283: lockfile integrity verdict (lockintegrity.ts) --------------------
+{
+  const mkEntry = (
+    path: string,
+    resolved: string,
+    integrity: string,
+    internal = false,
+    readFailed = false,
+  ): LockEntry => ({
+    path,
+    resolved,
+    integrity,
+    internal,
+    ...(readFailed ? { readFailed: true } : {}),
+  });
+  const REGISTRIES = ["https://registry.npmjs.org/"];
+  const NOW = Date.parse("2026-09-06T12:00:00.000Z");
+  const REG = "https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz";
+  const SHA512 = "sha512-qqJ8zSCnXblcrXFTiwdt7RrZZXeiGQgT9M4WJfYuQP7YCVcsQpePE3LzIJLFa4M8=";
+  const SHA384 = "sha384-qqJ8zSCnXblcrXFTiwdt7RrZZXeiGQgT9M4WJfYuQP7YCVcsQpePE3LzIJLFa4M8=";
+  const GIT = "git+ssh://git@github.com/evil/pkg.git#1abc2def3456789abcdef";
+  const TARBALL = "https://evil.example/pkg-1.0.0.tgz";
+  const expires = (isodate: string): LockExemption[] => [
+    { id: "node_modules/left-pad", reason: "resolution unavailable", expiresAt: isodate },
+  ];
+
+  // Rule 1: an absent, empty or failed-read input warns and NEVER approves —
+  // checking zero packages is exactly the same as having no gate.
+  check(
+    "P2-283: an absent input warns and never approves",
+    lockIntegrityVerdict(null, REGISTRIES, [], NOW).outcome === "warn" &&
+      lockIntegrityVerdict(undefined, REGISTRIES, [], NOW).outcome === "warn",
+  );
+  check(
+    "P2-283: an empty entry list warns and never approves",
+    lockIntegrityVerdict([], REGISTRIES, [], NOW).outcome === "warn",
+  );
+  check(
+    "P2-283: a failed read warns even with a hashless registry entry present (rule order)",
+    lockIntegrityVerdict(
+      [mkEntry("package-lock.json", "", "", false, true), mkEntry("node_modules/left-pad", REG, "")],
+      REGISTRIES,
+      [],
+      NOW,
+    ).outcome === "warn",
+  );
+
+  // Rule 2: a non-finite current instant is refused instead of guessed.
+  check(
+    "P2-283: a non-finite current instant is rejected",
+    lockIntegrityVerdict([mkEntry("node_modules/left-pad", REG, SHA512)], REGISTRIES, [], NaN)
+      .outcome === "reject" &&
+      lockIntegrityVerdict([mkEntry("node_modules/left-pad", REG, SHA512)], REGISTRIES, [], Infinity)
+        .outcome === "reject",
+  );
+
+  // Rule 3: a package of this very repository is ignored, never a problem
+  // and never a report line — even with a git origin and no hash at all.
+  check(
+    "P2-283: an internal package is ignored without becoming a report line",
+    lockIntegrityVerdict(
+      [mkEntry("", "", "", true), mkEntry("node_modules/@ocr/web", "apps/web", "", true)],
+      REGISTRIES,
+      [],
+      NOW,
+    ).outcome === "approve" &&
+      lockIntegrityVerdict(
+        [mkEntry("", "", "", true), mkEntry("node_modules/@ocr/web", "apps/web", "", true)],
+        REGISTRIES,
+        [],
+        NOW,
+      ).lines.length === 0,
+  );
+  // Rule 3 is strict: an origin counts as this repository's own only when
+  // it is provably a repo-relative path — every other shape fails closed
+  // and crosses the registry checks (rule 4).
+  check(
+    "P2-283: isInternalOrigin accepts only provably repo-relative origins",
+    isInternalOrigin("apps/web") &&
+      isInternalOrigin("packages/protocol") &&
+      isInternalOrigin("./apps/web") &&
+      !isInternalOrigin("") &&
+      !isInternalOrigin("//evil.example/x.tgz") &&
+      !isInternalOrigin("git@github.com:evil/x.git#1abc2def") &&
+      !isInternalOrigin("github.com:evil/x.git") &&
+      !isInternalOrigin("file:../outside.tgz") &&
+      !isInternalOrigin("https://registry.npmjs.org/x") &&
+      !isInternalOrigin("/abs/path") &&
+      !isInternalOrigin("~/path") &&
+      !isInternalOrigin("../outside"),
+  );
+  check(
+    "P2-283: hostile scheme-less origins are not internal and reject through the verdict",
+    (() => {
+      const hostile = normalizeLockEntries({
+        packages: {
+          "node_modules/@ocr/web": { resolved: "apps/web", link: true },
+          "node_modules/scp": { resolved: "git@github.com:evil/x.git#1abc2def", integrity: SHA512 },
+          "node_modules/proto": { resolved: "//evil.example/x.tgz", integrity: SHA512 },
+        },
+      });
+      const byPath = new Map(hostile.map((e) => [e.path, e]));
+      const scp = byPath.get("node_modules/scp");
+      const proto = byPath.get("node_modules/proto");
+      const report = lockIntegrityVerdict(hostile, REGISTRIES, [], NOW);
+      return (
+        byPath.get("node_modules/@ocr/web")?.internal === true &&
+        scp?.internal === false &&
+        proto?.internal === false &&
+        report.outcome === "reject" &&
+        report.lines.length === 2 &&
+        report.lines.every((l) => l.includes("origin outside the documented public registries"))
+      );
+    })(),
+  );
+
+  // Rule 4: the case the gate exists for — an origin outside the documented
+  // public registries rejects before any other consideration.
+  check(
+    "P2-283: a git origin rejects",
+    lockIntegrityVerdict([mkEntry("node_modules/left-pad", GIT, "")], REGISTRIES, [], NOW)
+      .outcome === "reject",
+  );
+  check(
+    "P2-283: an arbitrary tarball origin outside the registry rejects",
+    lockIntegrityVerdict([mkEntry("node_modules/left-pad", TARBALL, SHA512)], REGISTRIES, [], NOW)
+      .outcome === "reject",
+  );
+  check(
+    "P2-283: a registry origin without an integrity hash rejects",
+    lockIntegrityVerdict([mkEntry("node_modules/left-pad", REG, "")], REGISTRIES, [], NOW)
+      .outcome === "reject",
+  );
+  // An integrity string that declares no usable hash material — no dash, no
+  // payload after the dash — is no hash at all and must reject, never ride
+  // the documented-algorithm approval.
+  check(
+    "P2-283: an integrity string without hash material rejects instead of approving",
+    lockIntegrityVerdict([mkEntry("node_modules/left-pad", REG, "sha512")], REGISTRIES, [], NOW)
+      .outcome === "reject" &&
+      lockIntegrityVerdict([mkEntry("node_modules/left-pad", REG, "sha512-")], REGISTRIES, [], NOW)
+        .outcome === "reject" &&
+      lockIntegrityVerdict([mkEntry("node_modules/left-pad", REG, "-abc")], REGISTRIES, [], NOW)
+        .outcome === "reject" &&
+      lockIntegrityVerdict(
+        [mkEntry("node_modules/left-pad", REG, "sha512")],
+        REGISTRIES,
+        [],
+        NOW,
+      ).lines[0]?.includes("no integrity hash declared"),
+  );
+  check(
+    "P2-283: a still-valid exemption downgrades a hash-material-less integrity string too",
+    lockIntegrityVerdict(
+      [mkEntry("node_modules/left-pad", REG, "sha512-")],
+      REGISTRIES,
+      expires("2027-01-01T00:00:00.000Z"),
+      NOW,
+    ).outcome === "warn",
+  );
+
+  // Rule order proof: an origin outside the registries rejects even when an
+  // exemption exists for the entry — an expired one counts in full, and a
+  // still-valid one cannot save the git origin either (rule 4 precedes the
+  // exemption rules entirely).
+  check(
+    "P2-283: an origin outside the registry and an expired exemption together still reject (rule order)",
+    lockIntegrityVerdict(
+      [mkEntry("node_modules/left-pad", GIT, "")],
+      REGISTRIES,
+      expires("2026-01-01T00:00:00.000Z"),
+      NOW,
+    ).outcome === "reject",
+  );
+  check(
+    "P2-283: a still-valid exemption does not save a git origin (rule order)",
+    lockIntegrityVerdict(
+      [mkEntry("node_modules/left-pad", GIT, "")],
+      REGISTRIES,
+      expires("2027-01-01T00:00:00.000Z"),
+      NOW,
+    ).outcome === "reject",
+  );
+
+  // Rule 6: a hash from another algorithm only warns — the origin is a
+  // documented registry and a hash is declared.
+  check(
+    "P2-283: a hash whose algorithm differs from the documented one warns",
+    lockIntegrityVerdict([mkEntry("node_modules/left-pad", REG, SHA384)], REGISTRIES, [], NOW)
+      .outcome === "warn",
+  );
+
+  // Rule 7: an expired exemption stops applying and the hashless registry
+  // entry rejects again in full.
+  check(
+    "P2-283: an expired exemption leaves the hashless entry rejecting again",
+    lockIntegrityVerdict(
+      [mkEntry("node_modules/left-pad", REG, "")],
+      REGISTRIES,
+      expires("2026-01-01T00:00:00.000Z"),
+      NOW,
+    ).outcome === "reject",
+  );
+
+  // Rule 8: a still-valid exemption downgrades to warn and the entry never
+  // leaves the report.
+  {
+    const report = lockIntegrityVerdict(
+      [mkEntry("node_modules/left-pad", REG, "")],
+      REGISTRIES,
+      expires("2027-01-01T00:00:00.000Z"),
+      NOW,
+    );
+    check(
+      "P2-283: a still-valid exemption downgrades to warn and never leaves the report",
+      report.outcome === "warn" &&
+        report.lines.length === 1 &&
+        report.lines[0]?.includes("exempt until 2027-01-01T00:00:00.000Z"),
+    );
+  }
+
+  // Rule 9: the remainder approves.
+  check(
+    "P2-283: a registry origin with the documented hash algorithm approves",
+    lockIntegrityVerdict([mkEntry("node_modules/left-pad", REG, SHA512)], REGISTRIES, [], NOW)
+      .outcome === "approve" &&
+      lockIntegrityVerdict([mkEntry("node_modules/left-pad", REG, SHA512)], REGISTRIES, [], NOW)
+        .lines.length === 0,
+  );
+
+  // Determinism: identical report for the same input in two calls, and a
+  // stable ordering by entry path regardless of the input order.
+  {
+    const messy = [
+      mkEntry("node_modules/zeta", REG, ""),
+      mkEntry("node_modules/alpha", REG, SHA512),
+      mkEntry("node_modules/mike", REG, SHA384),
+    ];
+    const run1 = lockIntegrityVerdict(messy, REGISTRIES, [], NOW);
+    const run2 = lockIntegrityVerdict([...messy].reverse(), REGISTRIES, [], NOW);
+    check(
+      "P2-283: the same input yields an identical report in two calls",
+      JSON.stringify(run1) === JSON.stringify(lockIntegrityVerdict(messy, REGISTRIES, [], NOW)),
+    );
+    check(
+      "P2-283: report lines are stably ordered by entry path",
+      JSON.stringify(run1) === JSON.stringify(run2) &&
+        run1.lines.length === 2 &&
+        run1.lines[0]?.includes("node_modules/mike") &&
+        run1.lines[1]?.includes("node_modules/zeta"),
+    );
+  }
+
+  // Real-repo assertions: the real lockfile, the real registries file, the
+  // CI step, the exemptions file and the purity of the verdict module.
+  const lockRoot = join(import.meta.dirname, "..");
+  const registriesDoc = JSON.parse(
+    readFileSync(join(lockRoot, "scripts", "lock-registries.json"), "utf8"),
+  ) as { registries: string[] };
+  check(
+    "P2-283: the registries file is a non-empty list of https origins",
+    registriesDoc.registries.length > 0 &&
+      registriesDoc.registries.every((r) => typeof r === "string" && r.startsWith("https://")),
+  );
+  const realEntries = normalizeLockEntries(
+    JSON.parse(readFileSync(join(lockRoot, "package-lock.json"), "utf8")),
+  );
+  const thirdParty = realEntries.filter((e) => !e.internal);
+  check(
+    "P2-283: the real lockfile has third-party entries to check",
+    thirdParty.length > 0,
+  );
+  check(
+    "P2-283: no third-party entry of the real lockfile goes without a hash or outside the accepted registries",
+    thirdParty.every(
+      (e) => originAccepted(e.resolved, registriesDoc.registries) && e.integrity !== "",
+    ) &&
+      lockIntegrityVerdict(realEntries, registriesDoc.registries, [], Date.now()).outcome ===
+        "approve",
+  );
+
+  // The gate step: unique, pinned between install and build, bash shell and
+  // own timeout (P2-245/P2-255 lessons), wired through package.json.
+  const ciYml = readFileSync(join(lockRoot, ".github", "workflows", "ci.yml"), "utf8");
+  const gateName = "- name: Lock integrity gate";
+  const verifyJob = ciYml.slice(0, ciYml.indexOf("\n  scope:"));
+  const gateAt = verifyJob.indexOf(gateName);
+  const gateEnd = verifyJob.indexOf("- name:", gateAt + 10);
+  const gateBlock = gateAt >= 0 && gateEnd > gateAt ? verifyJob.slice(gateAt, gateEnd) : "";
+  const installAt = verifyJob.indexOf("- name: Install\n");
+  const buildAt = verifyJob.indexOf("- name: Build\n");
+  check(
+    "P2-283: the lock-integrity step exists exactly once in ci.yml",
+    ciYml.split(gateName).length === 2,
+  );
+  check(
+    "P2-283: the step sits after the install step and before the build step",
+    installAt > -1 && gateAt > installAt && buildAt > gateAt,
+  );
+  check(
+    "P2-283: the step declares shell bash and its own timeout-minutes",
+    gateBlock.includes("shell: bash") && gateBlock.includes("timeout-minutes:"),
+  );
+  check(
+    "P2-283: the step runs the script via the package.json entry",
+    gateBlock.includes("npm run check:lock-integrity") &&
+      (JSON.parse(readFileSync(join(lockRoot, "package.json"), "utf8")) as {
+        scripts: Record<string, string>;
+      }).scripts["check:lock-integrity"] === "tsx scripts/check-lock-integrity.ts",
+  );
+
+  // The versioned exemptions file: every entry identified, motivated,
+  // deadlined — and never a token, machine path or address.
+  const lockExemptionsRaw = readFileSync(
+    join(lockRoot, "scripts", "lock-exemptions.json"),
+    "utf8",
+  );
+  const lockExemptionsDoc = JSON.parse(lockExemptionsRaw) as {
+    exemptions: Array<{ id?: string; reason?: string; expiresAt?: string }>;
+  };
+  check(
+    "P2-283: every real exemption entry carries id, reason and a parseable expiry",
+    lockExemptionsDoc.exemptions.every(
+      (e) =>
+        typeof e.id === "string" &&
+        e.id.length > 0 &&
+        typeof e.reason === "string" &&
+        e.reason.length > 0 &&
+        typeof e.expiresAt === "string" &&
+        !Number.isNaN(Date.parse(e.expiresAt)),
+    ),
+  );
+  check(
+    "P2-283: the lock exemptions file carries no token, machine path or address",
+    !/ghp_|github_pat_|npm_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]|xox[bap]/.test(lockExemptionsRaw) &&
+      !/\/Users\/|\/home\/|[A-Za-z]:\\/.test(lockExemptionsRaw) &&
+      !/https?:\/\//.test(lockExemptionsRaw),
+  );
+
+  // Purity: the verdict module imports no file system, no process spawning
+  // and no network vocabulary at all.
+  const lockIntegritySrc = readFileSync(join(lockRoot, "scripts", "lockintegrity.ts"), "utf8");
+  check(
+    "P2-283: lockintegrity.ts imports no node:child_process, node:fs or fetch",
+    !/^import[^\n]*(node:child_process|node:fs|fetch)/m.test(lockIntegritySrc) &&
+      !lockIntegritySrc.includes("fetch("),
+  );
+  check(
+    "P2-283: the documented integrity algorithm is exported and pinned",
+    INTEGRITY_ALGORITHM === "sha512",
   );
 }
 

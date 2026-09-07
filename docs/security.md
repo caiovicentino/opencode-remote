@@ -168,6 +168,25 @@ identity servers, no accounts.
     `scripts/action-exemptions.json` — past the expiry the reference counts
     in full again.
 
+17. **Lockfile integrity (P2-283).** `package-lock.json` is the only file
+    that decides which third-party code `npm ci` installs inside the job
+    that packages the notarized DMG and the signed installer, so
+    `npm run check:lock-integrity` (`scripts/check-lock-integrity.ts`,
+    verdict in the pure `scripts/lockintegrity.ts`) runs in the `verify`
+    job after the install step and before the build, failing the job only
+    on a reject verdict — an origin outside the documented registries
+    (`scripts/lock-registries.json`, today the public npm registry) or a
+    registry origin without an integrity hash (including a hash string with
+    no usable material, such as `sha512-`) — while a failed read, a
+    hash from another algorithm or a still-valid exemption only warn: only
+    an origin provably repo-relative into this repository (a workspace link
+    such as `apps/daemon`) counts as internal, so any other origin shape
+    fails closed into the registry checks; to
+    exempt an entry with a deadline, add it with the lockfile path as id,
+    a one-sentence reason and an expiry date to
+    `scripts/lock-exemptions.json` — past the expiry the entry counts in
+    full again.
+
 ## Key rotation
 
 Delete `~/.opencode-remote/daemon.json` (or `manage.ts revoke-all`) and
