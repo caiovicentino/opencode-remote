@@ -25,6 +25,7 @@ import {
   type CertExpiryVerdict,
 } from "./certexpiry.js";
 import { certReloadVerdict, type CertPairImpression, type CertReloadOutcome } from "./certreload.js";
+import { certChainVerdict, type CertChainVerdict, type CertLink } from "./certchain.js";
 import { makeIpTagger } from "./iptag.js";
 import {
   assetIntegrityPlan,
@@ -181,6 +182,62 @@ if (CERT_EXPIRY && (CERT_EXPIRY.verdict === "refuse-expired" || CERT_EXPIRY.verd
 }
 if (CERT_EXPIRY && CERT_EXPIRY.verdict === "warn") {
   ev("warn", "relay TLS certificate nearing expiry", { reason: CERT_EXPIRY.reason });
+}
+// P2-310: the certificate file can be a lone leaf or a full chain — Node's
+// X509Certificate constructor only ever reads the FIRST block, so the
+// preflight above validated a validity window that says nothing about the
+// intermediates. Every CERTIFICATE block in the file is extracted here (the
+// caller owns the extraction; certchain.ts stays pure) and classified ONCE
+// at boot. The verdict only explains — a leaf-only file still boots and
+// serves, because clients that already hold the intermediate in cache
+// connect fine; the line exists so the operator hears about it from the
+// relay instead of reverse-engineering a phone that refuses the handshake.
+// Exactly one static log line per verdict (warn only for the verdicts that
+// need attention). Plain mode has no pair: nothing is read, nothing logged.
+const CERT_CHAIN = (() => {
+  if (TLS.mode !== "tls") return undefined;
+  let pemText = "";
+  try {
+    pemText = readFileSync(TLS.certPath, "utf8");
+  } catch {
+    // the empty extraction below classifies fail-closed (unknown)
+  }
+  return certChainVerdict(extractCertLinks(pemText));
+})();
+if (CERT_CHAIN) {
+  ev(
+    certChainLogLevel(CERT_CHAIN.verdict),
+    "relay TLS certificate chain classified",
+    { verdict: CERT_CHAIN.verdict, reason: CERT_CHAIN.reason },
+  );
+}
+// P2-310: the boot verdict is the baseline for the reload deduplication —
+// only transitions away from the last seen verdict ever log a line.
+let lastCertChainState: CertChainVerdict | undefined = CERT_CHAIN?.verdict;
+
+// P2-310: PEM extraction lives in the caller — certchain.ts stays pure (no
+// node:fs, no node:crypto). Every CERTIFICATE block in file order becomes
+// one subject/issuer pair. A file whose blocks do not ALL parse yields an
+// empty list, which the verdict maps to unknown (fail-closed) — a half-
+// readable chain is never guessed into healthy.
+function extractCertLinks(pemText: string): CertLink[] {
+  const links: CertLink[] = [];
+  try {
+    for (const block of pemText.matchAll(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g)) {
+      const cert = new X509Certificate(block[0]!);
+      links.push({ subject: cert.subject, issuer: cert.issuer });
+    }
+  } catch {
+    return [];
+  }
+  return links;
+}
+
+// P2-310: the two healthy verdicts log at info; the ones an operator must
+// investigate log at warn. Purely a log-level choice — the verdict never
+// refuses a boot, closes a socket or skips an admission check.
+function certChainLogLevel(verdict: CertChainVerdict): LogLevel {
+  return verdict === "leaf-only" || verdict === "broken-order" || verdict === "unknown" ? "warn" : "info";
 }
 // P2-259: the boot verdict is the baseline for the runtime deduplication —
 // only transitions away from the last seen verdict ever log a line.
@@ -754,6 +811,14 @@ server.on(
         CERT_EXPIRY && lastCertExpiryVerdict
           ? { verdict: lastCertExpiryVerdict, expiresAtMs: CERT_EXPIRY.notAfter }
           : undefined,
+      // P2-310: additive — the probe announces the chain classification the
+      // boot preflight computed and the SAME reload sweep keeps current
+      // (`lastCertChainState`, recalculated only when new material actually
+      // enters service). Plain mode has no certificate: the getter answers
+      // undefined and the body stays byte-for-byte the pre-P2-310 shape.
+      // Only the short static verdict leaves the process — no subject,
+      // issuer, serial, fingerprint, path or host material.
+      certChain: () => CERT_CHAIN?.verdict,
     },
     isShuttingDown,
     // P2-188: optional static PWA route (RELAY_WEB_DIR); undefined keeps the
@@ -1135,6 +1200,23 @@ if (PING_INTERVAL_S > 0) {
         ) {
           CERT_RELOAD.lastOutcome = logged;
           ev("warn", "relay TLS certificate renewal refused", { reason: logged.reason });
+        }
+        // P2-310: adopted material re-classifies the certificate chain on
+        // the SAME sweep tick — no new timer, route, request or dependency.
+        // The verdict is recomputed only when new material actually entered
+        // service (a refused pair leaves the material in service, so its
+        // classification stands); one deduplicated line per transition,
+        // log-only — it never closes a socket, exits or refuses anything.
+        if (applied && freshCert) {
+          const nextChain = certChainVerdict(extractCertLinks(freshCert.toString("utf8")));
+          if (nextChain.verdict !== lastCertChainState) {
+            ev(
+              certChainLogLevel(nextChain.verdict),
+              "relay TLS certificate chain state changed",
+              { verdict: nextChain.verdict, reason: nextChain.reason },
+            );
+          }
+          lastCertChainState = nextChain.verdict;
         }
       }
     }

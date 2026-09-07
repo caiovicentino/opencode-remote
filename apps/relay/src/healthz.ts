@@ -16,6 +16,7 @@ import {
 import { conditionalVerdict, etagFor } from "./webcond.js";
 import { rejectionBreakdown } from "./rejectreasons.js";
 import type { CertExpiryVerdict } from "./certexpiry.js";
+import type { CertChainVerdict } from "./certchain.js";
 
 /**
  * GET /healthz — public, unauthenticated liveness probe for the hosted
@@ -126,6 +127,15 @@ import type { CertExpiryVerdict } from "./certexpiry.js";
  * Boundary: no returned field ever carries a room identifier, connection
  * id, address, IP or envelope content — only whole counter values keyed by
  * the documented reason names.
+ *
+ * P2-310: an optional `certChain` getter lets the probe carry the current
+ * certificate-chain verdict — the classification the boot preflight computed
+ * and the reload sweep keeps current (certchain.ts). Same rules as the
+ * P2-290 fields: a state without the getter adds nothing (plain mode keeps
+ * the body byte for byte), an absent, non-textual or out-of-table verdict
+ * adds nothing and a verdict is NEVER invented. The field carries only the
+ * short static verdict string — never a subject, issuer, serial number,
+ * fingerprint, file path, host or port.
  */
 
 /**
@@ -137,6 +147,18 @@ const CERT_EXPIRY_VERDICTS: ReadonlySet<string> = new Set([
   "warn",
   "refuse-expired",
   "refuse-not-yet-valid",
+]);
+
+/**
+ * P2-310: the documented certchain.ts verdict table, restated as the runtime
+ * allowlist. A verdict outside it adds nothing (fail-closed).
+ */
+const CERT_CHAIN_STATES: ReadonlySet<string> = new Set([
+  "complete",
+  "self-signed",
+  "leaf-only",
+  "broken-order",
+  "unknown",
 ]);
 
 /** P2-290: the current certificate-expiry verdict as maintained by the
@@ -161,6 +183,10 @@ export interface HealthzState {
    *  (or when it answers undefined) the payload keeps the exact pre-P2-290
    *  shape. */
   certExpiry?: () => CertExpiryHealth | undefined;
+  /** P2-310: additive — the current certificate-chain verdict (certchain.ts).
+   *  When absent (or when it answers undefined) the payload keeps the exact
+   *  pre-P2-310 shape. */
+  certChain?: () => CertChainVerdict | undefined;
   /** P2-293: additive — the per-reason counters behind roomsRejected, keyed
    *  by the closed rejectreasons.ts table. The pure rejectionBreakdown()
    *  decides what (if anything) the payload publishes; a state without the
@@ -186,6 +212,10 @@ export interface HealthzPayload {
   /** Additive (P2-290): whole seconds until certificate expiry, floored at
    *  zero; present only alongside certExpiryVerdict with a finite deadline. */
   certExpiryInS?: number;
+  /** Additive (P2-310): the short static certificate-chain verdict, present
+   *  only when the state provides the getter and the verdict is one of the
+   *  documented table values. Never carries certificate material. */
+  certChainState?: CertChainVerdict;
   /** Additive (P2-293): the roomsRejected split by the closed
    *  rejectreasons.ts table, present only when the state provides the
    *  getter and the counters normalize to a non-empty set. Never carries a
@@ -217,6 +247,14 @@ export function healthzPayload(s: HealthzState, now = Date.now(), draining = fal
     if (Number.isFinite(cert.expiresAtMs)) {
       base.certExpiryInS = Math.max(0, Math.floor((cert.expiresAtMs - now) / 1000));
     }
+  }
+  // P2-310: additive chain field, same rules as the expiry one above: a
+  // state without the getter adds nothing; an absent, non-textual or
+  // out-of-table verdict adds nothing and a verdict is NEVER invented
+  // (fail-closed); identical inputs produce identical bodies.
+  const chain = s.certChain?.();
+  if (typeof chain === "string" && CERT_CHAIN_STATES.has(chain)) {
+    base.certChainState = chain;
   }
   // P2-293: additive breakdown fields, following the header rules in order:
   // a state without the getter adds nothing; the getter's counters go
