@@ -13159,6 +13159,11 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     relayIndex.includes("relay TLS certificate chain classified") &&
       relayIndex.includes("relay TLS certificate chain state changed"),
   );
+  check(
+    "P2-310: the healthz getter publishes the sweep-maintained verdict, never the frozen boot const",
+    relayIndex.includes("certChain: () => lastCertChainState") &&
+      !relayIndex.includes("certChain: () => CERT_CHAIN?.verdict"),
+  );
   const chainStart = relayIndex.indexOf("const CERT_CHAIN");
   const chainEnd = relayIndex.indexOf("let lastCertChainState");
   const chainBlock = chainStart > 0 && chainEnd > chainStart ? relayIndex.slice(chainStart, chainEnd) : "";

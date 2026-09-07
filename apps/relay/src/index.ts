@@ -812,13 +812,15 @@ server.on(
           ? { verdict: lastCertExpiryVerdict, expiresAtMs: CERT_EXPIRY.notAfter }
           : undefined,
       // P2-310: additive — the probe announces the chain classification the
-      // boot preflight computed and the SAME reload sweep keeps current
-      // (`lastCertChainState`, recalculated only when new material actually
-      // enters service). Plain mode has no certificate: the getter answers
-      // undefined and the body stays byte-for-byte the pre-P2-310 shape.
-      // Only the short static verdict leaves the process — no subject,
-      // issuer, serial, fingerprint, path or host material.
-      certChain: () => CERT_CHAIN?.verdict,
+      // boot preflight computed and the SAME reload sweep keeps current:
+      // `lastCertChainState` is the variable the sweep reassigns when it
+      // adopts renewed material, so the probe always describes the pair in
+      // service (the boot-time CERT_CHAIN const would freeze the first
+      // classification forever). Plain mode has no certificate: the getter
+      // answers undefined and the body stays byte-for-byte the pre-P2-310
+      // shape. Only the short static verdict leaves the process — no
+      // subject, issuer, serial, fingerprint, path or host material.
+      certChain: () => lastCertChainState,
     },
     isShuttingDown,
     // P2-188: optional static PWA route (RELAY_WEB_DIR); undefined keeps the
