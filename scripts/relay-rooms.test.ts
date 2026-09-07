@@ -170,6 +170,8 @@ send(owner, "rr-b@d", "owner", "x");
 await sleep(300);
 const afterInvalid = JSON.parse(await fetchText(`http://127.0.0.1:${relay.port}/healthz`)) as {
   roomsRejected: number;
+  roomsRejectedInvalidRoomId?: number;
+  roomsRejectedSocketRoomCap?: number;
 };
 check("rooms: invalid ids are counted as rejected", afterInvalid.roomsRejected === rejectedBefore + 5);
 check("rooms: socket survives invalid-id frames", owner.readyState === WebSocket.OPEN);
@@ -192,6 +194,30 @@ check(
 );
 check("rooms: /healthz exposes rooms_rejected", healthz.roomsRejected >= 1);
 check("rooms: /healthz never leaks room ids", !JSON.stringify(healthz).includes(roomA));
+
+// P2-293: the opaque total is split by reason — 1 cap hit + 4 invalid ids
+// above — on every observability surface, without changing the total
+check(
+  "rooms: /healthz splits the refusals by documented reason (P2-293)",
+  afterInvalid.roomsRejectedInvalidRoomId === 4 && afterInvalid.roomsRejectedSocketRoomCap === 1,
+);
+check("rooms: /metrics prom exposes one counter line per reason", /relay_rooms_rejected_invalid_room_id 4/.test(metrics) && /relay_rooms_rejected_socket_room_cap 1/.test(metrics));
+const metricsJson = JSON.parse(await fetchText(`http://127.0.0.1:${relay.metrics}/metrics`)) as {
+  rooms_rejected?: number;
+  rooms_rejected_invalid_room_id?: number;
+  rooms_rejected_socket_room_cap?: number;
+};
+check(
+  "rooms: /metrics json exposes the per-reason split and keeps the total",
+  metricsJson.rooms_rejected === 5 &&
+    metricsJson.rooms_rejected_invalid_room_id === 4 &&
+    metricsJson.rooms_rejected_socket_room_cap === 1,
+);
+check(
+  "rooms: the per-reason surfaces never leak room ids either",
+  !metrics.includes(roomA) &&
+    !JSON.stringify(metricsJson).includes(roomA),
+);
 
 for (const ws of [listener, owner, listener2, peer9]) ws.close();
 relay.proc.kill("SIGTERM");

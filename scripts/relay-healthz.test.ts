@@ -13,6 +13,7 @@ import { gunzipSync } from "node:zlib";
 import { fileURLToPath } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
 import { healthzHandler, healthzPayload, WEB_ENCODING_CACHE, type CertExpiryHealth, type HealthzState } from "../apps/relay/src/healthz";
+import { rejectionBreakdown, ROOM_REJECT_REASONS } from "../apps/relay/src/rejectreasons";
 import { metricsAuthOk, metricsBinding } from "../apps/relay/src/metricsbind";
 import { DRAIN_GRACE_MS_CEILING, MAX_FRAME_CEILING, relayLimits } from "../apps/relay/src/limits";
 import { createShutdown, DRAIN_MS, refuseUpgrade } from "../apps/relay/src/shutdown";
@@ -1626,6 +1627,188 @@ check("cond: an unterminated quote is just a non-match (send)", conditionalVerdi
   condServer.close();
   rmSync(root, { recursive: true, force: true });
 }
+
+// --- 28. room-rejection breakdown (P2-293, pure table + rules in order) ------
+// The rules from rejectreasons.ts's header, exercised in order: absent /
+// non-object / non-numeric input withholds the whole set and never invents
+// zeros; an out-of-table reason is never a field and never summed into
+// another; negative, non-finite and non-integer counters publish as zero;
+// each documented reason becomes exactly one field, in stable table order;
+// identical input produces an identical result on every call.
+const VALID_COUNTS = { "invalid-room-id": 7, "socket-room-cap": 2 };
+
+check("reject: absent input returns the empty set (never invented zeros)", JSON.stringify(rejectionBreakdown(undefined)) === "{}");
+check("reject: null input returns the empty set", JSON.stringify(rejectionBreakdown(null)) === "{}");
+check("reject: non-object input returns the empty set", (() => {
+  return [5, "junk", true, [], ["invalid-room-id"]].every((v) => JSON.stringify(rejectionBreakdown(v)) === "{}");
+})());
+check(
+  "reject: a non-numeric documented slot withholds the whole set (string value)",
+  JSON.stringify(rejectionBreakdown({ "invalid-room-id": "3", "socket-room-cap": 2 })) === "{}",
+);
+check(
+  "reject: a non-numeric documented slot withholds the whole set (null value)",
+  JSON.stringify(rejectionBreakdown({ "invalid-room-id": null, "socket-room-cap": 2 })) === "{}",
+);
+check(
+  "reject: an absent documented slot withholds the whole set (fail-closed against a misleading subset)",
+  JSON.stringify(rejectionBreakdown({ "invalid-room-id": 7 })) === "{}",
+);
+check(
+  "reject: a reason outside the closed table never becomes a field",
+  (() => {
+    const out = rejectionBreakdown({ ...VALID_COUNTS, "rogue-room": 50, "socket-room-cap-x": 9 });
+    return JSON.stringify(Object.keys(out)) === JSON.stringify(["roomsRejectedInvalidRoomId", "roomsRejectedSocketRoomCap"]);
+  })(),
+);
+check(
+  "reject: an out-of-table reason is never summed into another reason",
+  (() => {
+    const out = rejectionBreakdown({ ...VALID_COUNTS, "rogue-room": 50 });
+    return out.roomsRejectedInvalidRoomId === 7 && out.roomsRejectedSocketRoomCap === 2;
+  })(),
+);
+check("reject: a negative counter publishes as zero", rejectionBreakdown({ "invalid-room-id": -5, "socket-room-cap": 2 }).roomsRejectedInvalidRoomId === 0);
+check("reject: a non-finite counter publishes as zero (Infinity)", rejectionBreakdown({ "invalid-room-id": Number.POSITIVE_INFINITY, "socket-room-cap": 2 }).roomsRejectedInvalidRoomId === 0);
+check("reject: a non-finite counter publishes as zero (NaN)", rejectionBreakdown({ "invalid-room-id": Number.NaN, "socket-room-cap": 2 }).roomsRejectedInvalidRoomId === 0);
+check("reject: a non-integer counter publishes as zero", rejectionBreakdown({ "invalid-room-id": 1.5, "socket-room-cap": 2 }).roomsRejectedInvalidRoomId === 0);
+check(
+  "reject: each documented reason becomes exactly one field, in table order",
+  (() => {
+    const out = rejectionBreakdown(VALID_COUNTS);
+    return (
+      JSON.stringify(Object.keys(out)) ===
+        JSON.stringify(ROOM_REJECT_REASONS.map((r) => r.field)) &&
+      out.roomsRejectedInvalidRoomId === 7 &&
+      out.roomsRejectedSocketRoomCap === 2
+    );
+  })(),
+);
+check(
+  "reject: measured zero counters publish as zeros (a real slot, not an invention)",
+  (() => {
+    const out = rejectionBreakdown({ "invalid-room-id": 0, "socket-room-cap": 0 });
+    return out.roomsRejectedInvalidRoomId === 0 && out.roomsRejectedSocketRoomCap === 0;
+  })(),
+);
+check(
+  "reject: stable ordering — two inputs with the keys in different orders produce identical output",
+  JSON.stringify(rejectionBreakdown({ "socket-room-cap": 2, "invalid-room-id": 7 })) ===
+    JSON.stringify(rejectionBreakdown({ "invalid-room-id": 7, "socket-room-cap": 2 })),
+);
+check(
+  "reject: rule order — an out-of-table reason and a negative counter together ignore the former and clamp the latter",
+  (() => {
+    const out = rejectionBreakdown({ "invalid-room-id": -5, "socket-room-cap": 2, "rogue-room": 9 });
+    return (
+      out.roomsRejectedInvalidRoomId === 0 &&
+      out.roomsRejectedSocketRoomCap === 2 &&
+      JSON.stringify(Object.keys(out)) === JSON.stringify(["roomsRejectedInvalidRoomId", "roomsRejectedSocketRoomCap"])
+    );
+  })(),
+);
+check(
+  "reject: identical input produces an identical result in two calls",
+  JSON.stringify(rejectionBreakdown(VALID_COUNTS)) === JSON.stringify(rejectionBreakdown({ ...VALID_COUNTS })),
+);
+
+// --- 28b. breakdown on the probe body (P2-293): additive getter ----------------
+const REJECT_NOW = START + 90_000;
+const rejectState = (counters: unknown): HealthzState => ({
+  version: "0.2.0",
+  startedAt: START,
+  rooms: () => 1,
+  roomsRejected: () => 9,
+  roomsRejectedBreakdown: () => counters,
+});
+const FIVE_FIELD_BODY = '{"ok":true,"version":"0.2.0","uptimeS":90,"rooms":1,"roomsRejected":9}';
+
+check(
+  "reject-probe: state without the getter keeps the exact pre-P2-293 body",
+  JSON.stringify(healthzPayload({ version: "0.2.0", startedAt: START, rooms: () => 1, roomsRejected: () => 9 }, REJECT_NOW)) === FIVE_FIELD_BODY,
+);
+check(
+  "reject-probe: state without the getter keeps the exact pre-P2-293 drain body",
+  JSON.stringify(healthzPayload({ version: "0.2.0", startedAt: START, rooms: () => 1, roomsRejected: () => 9 }, REJECT_NOW, true)) ===
+    '{"ok":false,"version":"0.2.0","uptimeS":90,"rooms":1,"roomsRejected":9,"draining":true}',
+);
+check(
+  "reject-probe: valid counters add exactly the two documented fields after the anchor fields",
+  JSON.stringify(healthzPayload(rejectState(VALID_COUNTS), REJECT_NOW)) ===
+    '{"ok":true,"version":"0.2.0","uptimeS":90,"rooms":1,"roomsRejected":9,"roomsRejectedInvalidRoomId":7,"roomsRejectedSocketRoomCap":2}',
+);
+check(
+  "reject-probe: the breakdown rides the drain response without changing any other field",
+  JSON.stringify(healthzPayload(rejectState(VALID_COUNTS), REJECT_NOW, true)) ===
+    '{"ok":false,"version":"0.2.0","uptimeS":90,"rooms":1,"roomsRejected":9,"roomsRejectedInvalidRoomId":7,"roomsRejectedSocketRoomCap":2,"draining":true}',
+);
+check(
+  "reject-probe: a getter answering undefined adds nothing",
+  JSON.stringify(healthzPayload(rejectState(undefined), REJECT_NOW)) === FIVE_FIELD_BODY,
+);
+check(
+  "reject-probe: a getter answering a non-object adds nothing",
+  (() => (["junk", 42, true, []] as unknown[]).every((v) => JSON.stringify(healthzPayload(rejectState(v), REJECT_NOW)) === FIVE_FIELD_BODY))(),
+);
+check(
+  "reject-probe: a getter with non-numeric slots adds nothing",
+  JSON.stringify(healthzPayload(rejectState({ "invalid-room-id": "x", "socket-room-cap": 1 }), REJECT_NOW)) === FIVE_FIELD_BODY,
+);
+check(
+  "reject-probe: identical input produces an identical body in two calls",
+  JSON.stringify(healthzPayload(rejectState(VALID_COUNTS), REJECT_NOW)) ===
+    JSON.stringify(healthzPayload(rejectState({ ...VALID_COUNTS }), REJECT_NOW)),
+);
+check(
+  "reject-probe: the body carries no key beyond the documented fields and no room id, address or IP",
+  (() => {
+    const planted = healthzPayload(
+      rejectState({
+        "invalid-room-id": 3,
+        "socket-room-cap": 1,
+        "room-abc123def456": 5,
+        "ip-10.0.0.1": 2,
+        "conn-s1abcd": 1,
+        "envelope-payload": "secret",
+      }),
+      REJECT_NOW,
+    );
+    const body = JSON.stringify(planted);
+    return (
+      JSON.stringify(Object.keys(planted)) ===
+        JSON.stringify(["ok", "version", "uptimeS", "rooms", "roomsRejected", "roomsRejectedInvalidRoomId", "roomsRejectedSocketRoomCap"]) &&
+      !body.includes("abc123") &&
+      !body.includes("10.0.0.1") &&
+      !body.includes("s1abcd") &&
+      !body.includes("secret")
+    );
+  })(),
+);
+check(
+  "reject: index.ts feeds the two existing increment points into the per-reason counters, keeps the total surfaces unchanged and adds no timer",
+  (() => {
+    const relayIndex = readFileSync(
+      fileURLToPath(new URL("../apps/relay/src/index.ts", import.meta.url)),
+      "utf8",
+    );
+    return (
+      // exactly the two pre-existing refusal points increment the total
+      (relayIndex.match(/m\.roomsRejected\+\+/g) ?? []).length === 2 &&
+      // each of those two points feeds exactly its own reason — and no
+      // third feeding point exists
+      relayIndex.includes('m.roomsRejectedByReason["invalid-room-id"]++') &&
+      relayIndex.includes('m.roomsRejectedByReason["socket-room-cap"]++') &&
+      (relayIndex.match(/m\.roomsRejectedByReason\["/g) ?? []).length === 2 &&
+      // the total line and the total JSON field stay byte-for-byte present
+      relayIndex.includes("relay_rooms_rejected ${m.roomsRejected}") &&
+      relayIndex.includes("rooms_rejected: m.roomsRejected,") &&
+      // the getter is wired from the same counter object
+      relayIndex.includes("roomsRejectedBreakdown: () => m.roomsRejectedByReason") &&
+      // observation only: no new periodic timer beyond the P2-067 ping sweep
+      (relayIndex.match(/setInterval\(/g) ?? []).length === 1
+    );
+  })(),
+);
 
 if (failures) process.exit(1);
 console.log("relay-healthz: ALL OK");

@@ -57,6 +57,7 @@ import {
   type RoomBudgetLimits,
   type RoomBudgetState,
 } from "./roombudget.js";
+import { emptyRejectCounts, ROOM_REJECT_REASONS } from "./rejectreasons.js";
 import {
   idleUnjoined,
   parseJoinDeadline,
@@ -479,6 +480,11 @@ const m = {
   rejects: 0,
   rateLimited: 0,
   roomsRejected: 0,
+  // P2-293: the same refusals re-labeled by reason — each slot is fed at
+  // the exact statement below that increments roomsRejected, and nowhere
+  // else, so the sum never exceeds the total. Pure observation: no policy
+  // reads this, only the observability surfaces do.
+  roomsRejectedByReason: emptyRejectCounts(),
   staleTerminated: 0,
   slowConsumers: 0,
   capacityRefused: 0,
@@ -511,6 +517,14 @@ if (METRICS.port && METRICS.problems.length === 0) {
           `relay_rate_limited_total ${m.rateLimited}`,
           "# TYPE relay_rooms_rejected counter",
           `relay_rooms_rejected ${m.roomsRejected}`,
+          // P2-293: one counter per documented room-reject reason, same
+          // naming grammar as the total line above — which stays
+          // byte-for-byte identical. Observation only: the reason names are
+          // fixed short strings, never a room id, address or IP.
+          ...ROOM_REJECT_REASONS.flatMap((r) => [
+            `# TYPE ${r.metric} counter`,
+            `${r.metric} ${m.roomsRejectedByReason[r.reason]}`,
+          ]),
           "# TYPE relay_stale_terminated counter",
           `relay_stale_terminated ${m.staleTerminated}`,
           "# TYPE relay_slow_consumers_total counter",
@@ -538,6 +552,11 @@ if (METRICS.port && METRICS.problems.length === 0) {
             rejects: m.rejects,
             rate_limited_total: m.rateLimited,
             rooms_rejected: m.roomsRejected,
+            // P2-293: per-reason split of rooms_rejected above (additive,
+            // same counters the /healthz breakdown publishes)
+            ...Object.fromEntries(
+              ROOM_REJECT_REASONS.map((r) => [r.json, m.roomsRejectedByReason[r.reason]]),
+            ),
             stale_terminated: m.staleTerminated,
             slow_consumers_total: m.slowConsumers,
             capacity_refused_total: m.capacityRefused,
@@ -639,6 +658,12 @@ server.on(
       startedAt: m.startedAt,
       rooms: () => rooms.size,
       roomsRejected: () => m.roomsRejected,
+      // P2-293: additive — the per-reason split of roomsRejected above, fed
+      // at the exact same two increment points. healthz.ts normalizes it
+      // through the pure rejectreasons.ts rules; a malformed set adds
+      // nothing to the probe body and the total keeps its byte-for-byte
+      // contract.
+      roomsRejectedBreakdown: () => m.roomsRejectedByReason,
       // P2-243: additive — rooms closed by the per-room volume budget.
       roomsBudgetTerminated: () => m.roomBudgetTerminated,
       // P2-290: additive — the probe announces the certificate verdict the
@@ -817,6 +842,8 @@ wss.on("connection", (socket: Socket, req) => {
     // never close — with only a prefix logged, as everywhere else.
     if (!isValidRoomId(frame.room)) {
       m.roomsRejected++;
+      // P2-293: observation only — same refusal, re-labeled by reason
+      m.roomsRejectedByReason["invalid-room-id"]++;
       ev("warn", "frame dropped: invalid room id", {
         id: socket.id,
         room: String(frame.room).slice(0, 8),
@@ -825,6 +852,8 @@ wss.on("connection", (socket: Socket, req) => {
     }
     if (!socket.rooms?.has(frame.room) && (socket.rooms?.size ?? 0) >= MAX_ROOMS_PER_SOCKET) {
       m.roomsRejected++;
+      // P2-293: observation only — same refusal, re-labeled by reason
+      m.roomsRejectedByReason["socket-room-cap"]++;
       ev("warn", "frame dropped: socket room cap exceeded", {
         id: socket.id,
         room: frame.room.slice(0, 8),

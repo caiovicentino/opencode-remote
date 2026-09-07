@@ -876,6 +876,18 @@ their handshake. Fail-closed: absent in plain mode, absent when nothing was
 measured, and never certificate material (only the verdict string and a
 seconds count).
 
+The relay also splits its one opaque `roomsRejected` counter by reason
+(P2-293): `/healthz` gains the additive `roomsRejectedInvalidRoomId` and
+`roomsRejectedSocketRoomCap` fields and `/metrics` gains the matching
+`relay_rooms_rejected_invalid_room_id` / `relay_rooms_rejected_socket_room_cap`
+counters (`rooms_rejected_invalid_room_id` / `rooms_rejected_socket_room_cap`
+in JSON), so the hosted operator can tell legitimate phones hitting the
+per-connection room ceiling — buy capacity — from a single malformed origin
+in a loop — block it. The sum never exceeds the unchanged total, the rules
+are fail-closed (no invented zeros, no misattributed refusals), and no field
+or line ever carries a room id, connection id, address or IP. Runbook:
+[docs/RELAY-HOSTING.md](docs/RELAY-HOSTING.md).
+
 **Two-step pairing (P2-189)**: the phone needs an address before there is a
 pairing QR to scan, so the desktop pairing screen shows two labeled steps.
 Step one is the **app address** — `https://…` derived from the relay address
