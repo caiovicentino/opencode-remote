@@ -28,11 +28,12 @@
 //   2. a capability whose verdict is outside the documented table yields no
 //      field for that capability (the other capabilities are unaffected —
 //      this is the rule the order-proof case pins): a relay verdict is in
-//      table only with ok exactly true or false, an agent verdict only with
-//      binaryFound exactly true or false and binarySource exactly "path",
-//      "known" or null, and the phrase member (reason / binarySource) must
-//      be present beside the state — an incomplete or ill-typed pair is
-//      trusted nowhere;
+//      table only with ok exactly true or false beside a phrase that is null
+//      or an ADDRESS-FREE string, an agent verdict only with binaryFound
+//      exactly true or false beside binarySource exactly "path", "known" or
+//      null, and the phrase member (reason / binarySource) must be present
+//      beside the state — an incomplete, ill-typed or address-carrying pair
+//      is trusted nowhere;
 //   3. a capability that was never measured yields no field INSTEAD of a
 //      field announcing readiness — fail-closed, because announcing a
 //      readiness that was never measured (a connected relay nobody measured,
@@ -40,8 +41,10 @@
 //      silent. The never-measured cases are an absent capability entry and
 //      an absent state member (ok / binaryFound); the mirror never
 //      synthesizes or defaults a field;
-//   4. the machine's phrase travels literally — reason and binarySource are
+//   4. the machine's phrase travels literally — a phrase that rides is
 //      copied verbatim, never rewritten, never re-authored by this module;
+//      the mirror's only editorial power is refusing a phrase entirely
+//      (rule 2), never rewording it;
 //   5. the result is identical for the same input on every call: no clock,
 //      no randomness, no module state.
 //
@@ -56,20 +59,34 @@
 //
 // PRIVACY BOUNDARY (part of the contract): no value returned by this module
 // ever contains a relay address, a host, a port, an absolute path, a volume
-// name, a device identifier, a raw environment variable or a secret. The
-// health-shaped relay entry may carry its (redacted) url — the mirror strips
-// it deterministically, so only ok/reason can ever ride the channel; and
-// binarySource is the origin tag ("path"/"known"), never a filesystem path.
-// Every other value is the state tag or the already-redacted phrase the
-// capability modules authored (doccap.ts / browsecap.ts / relayurl.ts /
-// opencodebin.ts), so mirroring cannot introduce a leak (same spirit as the
-// P2-285 address-redaction wording).
+// name, a device identifier, a raw environment variable or a secret. Two
+// deterministic enforcement points make that true rather than aspirational:
+// the relay entry's url is stripped, and a reason phrase rides only when it
+// is free of address material — no URL authority ("://"), no colon-digit run
+// (host:port, IPv6) and no dotted host token. The boot-validation phrases
+// relayurl.ts authors for /api/health embed the (userinfo-redacted) URL or
+// the host verbatim — redaction there is userinfo-only — so a misconfigured
+// RELAY_URL yields NO relay field at all: the line stays silent instead of
+// leaking the address, the same fail-closed trade the spec bakes into rule 3
+// (silence beats announcing). The address-free connected verdict (reason
+// null) rides normally, and binarySource is the origin tag ("path"/"known"),
+// never a filesystem path; the doc/browse phrases are the ones doccap.ts and
+// browsecap.ts author under the P2-232 discipline (no path, no URL scheme,
+// no secret). Same spirit as the P2-285 address-redaction wording.
 
 /** The documented measured table for the document-conversion verdict. */
 const DOC_STATES: readonly string[] = ["complete", "partial", "unavailable"];
 
 /** The documented measured table for the site-navigation verdict. */
 const BROWSE_STATES: readonly string[] = ["ready", "no-browser", "disabled"];
+
+/** P2-292: a relay phrase rides only when free of address material. The
+ * boot-validation phrases relayurl.ts authors embed the (userinfo-redacted)
+ * URL, the host or a dotted address verbatim, so any URL authority ("://"),
+ * any colon-digit run (host:port, IPv6) and any dotted token mark the phrase
+ * out-of-table and the whole relay field stays silent — fail-closed, because
+ * silence beats leaking the address. */
+const ADDRESS_MATERIAL = /:\/\/|:\d|[a-z0-9-]+\.[a-z0-9-]+/i;
 
 /** P2-292: the relay-link verdict — the same names and values the /api/health
  * relay object publishes; the url field never rides this mirror. */
@@ -141,13 +158,17 @@ export function settingsMirror(input?: unknown): SettingsMirrorFields {
   }
   // P2-292 — the relay link rides the same rules, one capability at a time:
   // a malformed or out-of-table entry silences only the relay. The state is
-  // ok (exactly boolean) and the phrase is reason (string or null), both
-  // copied verbatim; the url, present or not, never becomes a field.
+  // ok (exactly boolean) beside a phrase that is null or an address-free
+  // string, both copied verbatim; the url, present or not, never becomes a
+  // field, and a phrase carrying address material silences the whole verdict.
   const relay = plainObject(snap.relay);
   if (relay) {
     const ok = relay.ok;
     const reason = relay.reason;
-    if ((ok === true || ok === false) && (reason === null || typeof reason === "string")) {
+    if (
+      (ok === true || ok === false) &&
+      (reason === null || (typeof reason === "string" && !ADDRESS_MATERIAL.test(reason)))
+    ) {
       out.relay = { ok, reason };
     }
   }

@@ -202,11 +202,22 @@ const BROWSE = {
 
 // --- P2-292: the relay and agent mirrorings — complete table -----------------
 {
-  // Fixtures copied as the daemon authors them: the relay phrase is the
-  // static pt-BR boot-validation wording (no address in the clean case) and
-  // the agent pair is the P2-149 binary verdict, booleans included.
-  const RELAY_PHRASE =
-    "RELAY_URL points at a host that cannot be reached — refusing to dial the relay (fail-closed)";
+  // Fixtures copied from the real authors, same discipline as DOC/BROWSE
+  // above: the four relay phrases are the boot-validation problems
+  // relayurl.ts authors verbatim (they embed the userinfo-redacted URL, the
+  // host or a dotted address — redaction there is userinfo-only), and the
+  // agent pair is the P2-149 binary verdict, booleans included.
+  const RELAY_PROBLEM_URL =
+    'RELAY_URL="wss://relay.example.com:8792/room" is not a valid URL: refusing to dial the relay (fail-closed)';
+  const RELAY_PROBLEM_SCHEME =
+    'RELAY_URL scheme "ws:" is not supported — only ws:// and wss:// are accepted: refusing to dial the relay (fail-closed)';
+  const RELAY_PROBLEM_HOST =
+    'RELAY_URL points at non-loopback host "relay.example.com:8792" over plain ws://: room metadata and pairing traffic would cross the network without TLS — refusing to dial the relay (fail-closed)';
+  const RELAY_PROBLEM_DOTTED =
+    'RELAY_URL="relay.example.com" is not a valid URL: refusing to dial the relay (fail-closed)';
+  // The documented riding shape for a down relay: an address-free phrase —
+  // what relayurl.ts would have to author for the verdict to ride.
+  const RELAY_PHRASE = "Endereço do relay recusado na partida — recusando discar (fail-closed)";
   const RELAY_OK = { ok: true, reason: null };
   const RELAY_DOWN = { ok: false, reason: RELAY_PHRASE };
   const AGENT_PATH = { binaryFound: true, binarySource: "path" };
@@ -251,6 +262,14 @@ const BROWSE = {
       json(settingsMirror({ opencode: { binaryFound: true, binarySource: "warp" } })) === "{}" &&
       json(settingsMirror({ opencode: { binaryFound: false, binarySource: "/usr/local/bin/opencode" } })) === "{}",
   );
+  check(
+    "P2-292 rule 2: every boot-validation phrase relayurl.ts authors carries address material — the relay field stays silent",
+    [RELAY_PROBLEM_URL, RELAY_PROBLEM_SCHEME, RELAY_PROBLEM_HOST, RELAY_PROBLEM_DOTTED].every(
+      (p) =>
+        json(settingsMirror({ relay: { ok: false, reason: p } })) === "{}" &&
+        json(settingsMirror({ relay: { ok: true, reason: p } })) === "{}",
+    ),
+  );
 
   // rule 3 — a never-measured capability stays silent instead of announcing
   // readiness (fail-closed): no state member, no field, ever.
@@ -263,7 +282,9 @@ const BROWSE = {
   );
 
   // rule 4 — every documented verdict becomes exactly state + phrase,
-  // verbatim, with the same names and values /api/health publishes.
+  // verbatim, with the same names and values /api/health publishes: the
+  // connected verdict rides with its null phrase, an address-free down
+  // phrase rides verbatim, and the entry's url never does.
   check(
     "P2-292 rule 4: each documented relay verdict becomes exactly state + phrase",
     json(settingsMirror({ relay: { url: "wss://relay.example.com:8792/room", ...RELAY_OK } })) === json({ relay: RELAY_OK }) &&
@@ -311,10 +332,12 @@ const BROWSE = {
     json(orderRelay) === json({ relay: RELAY_OK }) && json(orderAgent) === json({ opencode: AGENT_KNOWN }),
   );
 
-  // Privacy boundary proven against a complete relay address in the input:
-  // the url (with host, port, path and credential) never rides the output.
+  // Privacy boundary proven against the data the daemon really feeds the
+  // mirror: a complete relay address in the url AND the production-authored
+  // problem phrase (host and port embedded) in the reason — the relay field
+  // stays silent and nothing of the address survives anywhere in the output.
   const withAddress = settingsMirror({
-    relay: { url: "wss://user:token@relay.example.com:8792/room", ...RELAY_DOWN },
+    relay: { url: "wss://user:token@relay.example.com:8792/room", ok: false, reason: RELAY_PROBLEM_HOST },
     opencode: AGENT_MISSING,
   });
   const flat: string[] = [];
@@ -325,8 +348,9 @@ const BROWSE = {
   };
   collect(withAddress);
   check(
-    "P2-292 privacy: an input carrying a complete relay address yields no address, host, port, path or secret",
-    flat.length > 0 &&
+    "P2-292 privacy: a production relay entry (address in the url and in the phrase) yields no relay field and no address, host, port, path or secret",
+    json(withAddress) === json({ opencode: AGENT_MISSING }) &&
+      flat.length > 0 &&
       flat.every(
         (v) =>
           !v.includes("://") &&
@@ -338,9 +362,9 @@ const BROWSE = {
           !v.includes("token") &&
           !v.includes("\\") &&
           !v.includes("localhost") &&
-          !v.includes("127.0.0.1"),
-      ) &&
-      json(withAddress) === json({ relay: RELAY_DOWN, opencode: AGENT_MISSING }),
+          !v.includes("127.0.0.1") &&
+          !v.includes("RELAY_URL"),
+      ),
   );
 
   // rule 5 — the same input yields the identical result on two calls,
@@ -371,6 +395,12 @@ const BROWSE = {
       !mirrorCode.includes("node:child_process") &&
       !mirrorCode.includes("fetch") &&
       !mirrorSrc.includes("require("),
+  );
+  check(
+    "P2-292 fail-closed boundary: the module refuses phrases carrying address material instead of trusting them",
+    mirrorSrc.includes("ADDRESS_MATERIAL") &&
+      mirrorSrc.includes('no URL authority ("://")') &&
+      mirrorSrc.includes("redaction there is userinfo-only"),
   );
 
   const indexSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
