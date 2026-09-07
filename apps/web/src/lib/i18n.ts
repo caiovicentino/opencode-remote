@@ -133,6 +133,10 @@ export const dict = {
     copyPath: "Copy path",
     copied: "Copied",
     copyFailed: "Could not copy the path",
+    // P2-282: per-bubble copy action on the chat bubbles themselves
+    copyMessage: "Copy message",
+    copyMsgFailed: "Could not copy the message",
+    copyMsgNothing: "Nothing to copy in this message",
     answer: "Answer",
     skip: "Skip",
     customAnswer: "or type your own answer…",
@@ -655,6 +659,10 @@ export const dict = {
     copyPath: "Copiar caminho",
     copied: "Copiado",
     copyFailed: "Não deu pra copiar o caminho",
+    // P2-282: ação de copiar nas próprias bolhas do chat
+    copyMessage: "Copiar mensagem",
+    copyMsgFailed: "Não deu pra copiar a mensagem",
+    copyMsgNothing: "Nada pra copiar nesta mensagem",
     answer: "Responder",
     skip: "Pular",
     customAnswer: "ou escreva sua resposta…",

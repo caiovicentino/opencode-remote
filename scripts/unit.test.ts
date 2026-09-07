@@ -271,6 +271,8 @@ import {
   type PasteItem,
 } from "../apps/web/src/lib/pasteattach";
 
+import { copyPlan, COPY_UNAVAILABLE_NOTHING, type CopyPart } from "../apps/web/src/lib/copymsg";
+
 import { mimeFor } from "../apps/web/src/lib/files";
 
 import { timeAgo, sessionUpdatedTs } from "../apps/web/src/lib/time";
@@ -24819,6 +24821,198 @@ check("P2-241: no new periodic timer was introduced by the handler", !dlBlock.in
       fnBody.includes("PASTE_FALLBACK_IMAGE_NAME") && fnBody.includes("PASTE_FALLBACK_FILE_NAME"),
     );
   }
+}
+
+// --- P2-282: copy-message verdict table (copymsg.ts) + bubble wiring ---------
+{
+  const mk = (type: string, text: string, language?: string): CopyPart =>
+    language === undefined ? { type, text } : { type, text, language };
+
+  // rule 1 — missing, empty or non-vector lists are unavailable, NEVER an
+  // empty copy: a button that copies nothing is worse than no button.
+  for (const bad of [undefined, null, 42, "parts", {}, true]) {
+    const p = copyPlan(bad as unknown as CopyPart[]);
+    check(
+      `P2-282: a ${bad === undefined ? "missing" : `non-array ${typeof bad}`} part list is unavailable`,
+      p.verdict === "unavailable" && p.text === "" && p.reason === COPY_UNAVAILABLE_NOTHING,
+    );
+  }
+  check("P2-282: an empty part list is unavailable", (() => {
+    const p = copyPlan([]);
+    return p.verdict === "unavailable" && p.text === "" && p.reason === COPY_UNAVAILABLE_NOTHING;
+  })());
+
+  // rule 2 — reasoning and tool-call parts are dropped before any joining;
+  // whoever copies wants the answer, not the machine's internal trail.
+  check("P2-282: a reasoning-only message is unavailable", (() => {
+    const p = copyPlan([mk("reasoning", "internal trail")]);
+    return p.verdict === "unavailable" && p.text === "";
+  })());
+  check("P2-282: a tool-call-only message is unavailable", (() => {
+    const p = copyPlan([mk("tool", "ran a tool")]);
+    return p.verdict === "unavailable" && p.text === "";
+  })());
+  check("P2-282: reasoning + text copies only the text (rule order)", (() => {
+    const p = copyPlan([mk("reasoning", "SECRET-TRAIL"), mk("text", "the answer")]);
+    return p.verdict === "copy" && p.text === "the answer" && !p.text.includes("SECRET-TRAIL");
+  })());
+  check("P2-282: tool output with a machine path never reaches the copy", (() => {
+    const p = copyPlan([
+      mk("text", "answer"),
+      mk("tool", "read /Users/evan/.ssh/id_rsa"),
+      mk("reasoning", "sk-live-abcdef"),
+    ]);
+    return p.verdict === "copy" && p.text === "answer";
+  })());
+
+  // rule 3 — an empty/whitespace-only part is discarded and never leaves a
+  // doubled blank line behind.
+  check("P2-282: an empty part is dropped without a doubled blank line", (() => {
+    const p = copyPlan([mk("text", "a"), mk("text", "   "), mk("text", ""), mk("text", "b")]);
+    return p.verdict === "copy" && p.text === "a\n\nb";
+  })());
+
+  // rule 4 — code blocks enter with fences and the declared language.
+  check("P2-282: a code block keeps its fences and declared language", (() => {
+    const p = copyPlan([mk("code", "const x = 1;", "ts")]);
+    return p.verdict === "copy" && p.text === "```ts\nconst x = 1;\n```";
+  })());
+  check("P2-282: a code block without a language keeps bare fences", (() => {
+    const p = copyPlan([mk("code", "hi()")]);
+    return p.verdict === "copy" && p.text === "```\nhi()\n```";
+  })());
+  check("P2-282: a language that could break the fence is dropped, the block is not", (() => {
+    const p = copyPlan([mk("code", "hi()", "js\n```")]);
+    return p.verdict === "copy" && p.text === "```\nhi()\n```";
+  })());
+  check("P2-282: text and code join with one blank line in input order", (() => {
+    const p = copyPlan([mk("text", "before"), mk("code", "hi()", "py"), mk("text", "after")]);
+    return p.text === "before\n\n```py\nhi()\n```\n\nafter";
+  })());
+
+  // rule 5 — a message with no usable part left is unavailable: the stripping
+  // rules ran before the final emptiness check.
+  check("P2-282: whitespace reasoning + empty text is unavailable (rule order)", (() => {
+    const p = copyPlan([mk("reasoning", "   "), mk("text", "  ")]);
+    return p.verdict === "unavailable" && p.text === "" && p.reason === COPY_UNAVAILABLE_NOTHING;
+  })());
+
+  // rule 6 — stable order and identical result for the same input twice.
+  {
+    const input = [
+      mk("reasoning", "trail"),
+      mk("text", "one"),
+      mk("code", "two()", "js"),
+      mk("text", "  "),
+    ];
+    const a = copyPlan(input);
+    const b = copyPlan(input);
+    check(
+      "P2-282: the same input twice yields an identical plan (stable order, no truncation)",
+      JSON.stringify(a) === JSON.stringify(b) &&
+        a.verdict === "copy" &&
+        a.text === "one\n\n```js\ntwo()\n```",
+    );
+  }
+
+  // no returned text or reason ever carries a system file path, an internal
+  // URL scheme or secret vocabulary.
+  check(
+    "P2-282: no returned text carries a file path, URL scheme or secret",
+    [
+      [mk("text", "answer"), mk("tool", "cat /Users/evan/.ssh/id_rsa"), mk("reasoning", "sk-live-abcdef")],
+      [mk("code", "x", "ts"), mk("tool", "ocr-upload://abc")],
+      [mk("reasoning", "https://internal.example/secret")],
+    ].every((list) => {
+      const p = copyPlan(list);
+      return (
+        !p.text.includes("/Users/") &&
+        !p.text.includes("://") &&
+        !p.text.includes("sk-") &&
+        !p.text.includes("id_rsa") &&
+        !p.reason.includes("/") &&
+        !p.reason.includes(":") &&
+        !p.reason.includes("sk-")
+      );
+    }),
+  );
+
+  // i18n: the unavailable reason and the visible strings resolve in en and
+  // pt with key parity (P2-118/P2-275 lessons).
+  check(
+    "P2-282: copy strings resolve in en and pt with key parity",
+    ["copyMessage", "copyMsgFailed", "copyMsgNothing", COPY_UNAVAILABLE_NOTHING].every(
+      (k) =>
+        translate("en", k) !== k &&
+        translate("pt", k) !== k &&
+        translate("en", k) !== translate("pt", k),
+    ),
+  );
+
+  // Purity, in the spirit of composer/thinking/chatfind: no React, no DOM,
+  // no fetch, no I/O vocabulary anywhere in the module.
+  const copySrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "lib", "copymsg.ts"), "utf8");
+  check(
+    "P2-282: copymsg.ts imports nothing and touches no DOM/fetch/IO",
+    !/\bimport\b/.test(copySrc) &&
+      !copySrc.includes("document.") &&
+      !copySrc.includes("window.") &&
+      !copySrc.includes("fetch(") &&
+      !copySrc.includes("require("),
+  );
+
+  // Wiring, read from the real ChatView: the bubble action serves the plan
+  // through the existing copyText — no new clipboard path anywhere.
+  const chatSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "ChatView.tsx"), "utf8");
+  check(
+    "P2-282: the bubble copy action reuses the existing copyText, never a new clipboard path",
+    chatSrc.includes("copyText(") &&
+      !chatSrc.includes("navigator.clipboard") &&
+      !chatSrc.includes("writeText"),
+  );
+  check(
+    "P2-282: the copy button is served by copyPlan and mounted for every copyable bubble",
+    chatSrc.includes("copyPlan(copyPartsOf(b))") &&
+      chatSrc.includes('className="msg-copy"') &&
+      chatSrc.includes('plan.verdict === "copy"') &&
+      chatSrc.includes("onClick={() => copyBubble(bubbleIdx, plan.text)}"),
+  );
+  check(
+    "P2-282: the copy target is not hover-gated — no mouse-only reveal wiring in the component",
+    !chatSrc.includes("onMouseEnter") && !chatSrc.includes("onMouseLeave"),
+  );
+  check(
+    "P2-282: copy failure surfaces where every conversation error already appears",
+    chatSrc.includes('setError(t("copyMsgFailed"))'),
+  );
+  check(
+    "P2-282: success is a calm ~2s confirmation on the button itself",
+    chatSrc.includes("setCopiedBubble(null), 2000"),
+  );
+
+  // CSS: the 44x44 touch target lives in the base rules (phone-first, always
+  // visible); pointer devices reveal the same mounted button opacity-only.
+  const cssSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");
+  const copyCss = cssSrc.slice(
+    cssSrc.indexOf(".msg-copy-row {"),
+    cssSrc.indexOf(".composer {"),
+  );
+  const copyBaseAt = copyCss.indexOf(".msg-copy {");
+  const copyBase = copyCss.slice(copyBaseAt, copyCss.indexOf("}", copyBaseAt));
+  check(
+    "P2-282: the copy touch target is 44x44 and visible in the base rules",
+    copyBase.includes("min-width: 44px") &&
+      copyBase.includes("min-height: 44px") &&
+      copyBase.includes("opacity: 1") &&
+      !copyBase.includes("opacity: 0"),
+  );
+  check(
+    "P2-282: the pointer reveal is opacity-only inside a hover-capable media query",
+    copyCss.includes("@media (hover: hover) and (pointer: fine)") &&
+      copyCss.includes(".msg:hover .msg-copy") &&
+      copyCss.includes(".msg-copy:focus-visible") &&
+      !copyCss.includes("display: none"),
+  );
 }
 
 // --- P2-278: action pinning verdict (actionpins.ts) --------------------------

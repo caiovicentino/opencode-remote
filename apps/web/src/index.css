@@ -582,6 +582,64 @@ select {
   padding: 4px 0;
 }
 
+/* ── P2-282: per-bubble copy action ──────────────────────────────────
+   Phone-first: a 44x44 touch target under each bubble, always visible,
+   never hover-dependent. The button stays mounted on pointer devices too —
+   the hover reveal below is opacity-only, so layout and hit area never move. */
+.msg-copy-row {
+  display: flex;
+  margin-top: 2px;
+}
+.msg.user .msg-copy-row {
+  justify-content: flex-end;
+}
+.msg.assistant .msg-copy-row {
+  justify-content: flex-start;
+}
+.msg-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 1;
+  transition:
+    opacity var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out);
+}
+.msg-copy:hover {
+  color: var(--text);
+}
+.msg-copy:focus-visible {
+  outline: 1px solid var(--border-strong);
+  color: var(--text);
+}
+/* the calm ~2s confirmation lives on the button itself */
+.msg-copy[data-copied] {
+  color: var(--accent);
+}
+/* Pointer devices: the action appears on bubble hover and keyboard focus,
+   in place — never display:none, so the target itself always exists. Phone
+   range viewports keep the always-visible base rules even in a desktop
+   browser, matching the real touch devices. */
+@media (hover: hover) and (pointer: fine) and (min-width: 640px) {
+  .msg-copy {
+    min-width: 28px;
+    min-height: 28px;
+    opacity: 0;
+  }
+  .msg:hover .msg-copy,
+  .msg-copy:focus-visible,
+  .msg-copy[data-copied] {
+    opacity: 1;
+  }
+}
+
 /* ── Composer (P3-086): one raised card — attachments, auto-grow input,
    bottom bar with attach / mic / agent·model selector / send ── */
 .composer {
