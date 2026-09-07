@@ -389,7 +389,10 @@ above:
   another start — the newcomer is the one refused.
 - **Entries ceiling** — on top of the existing 30-minute age prune, the
   open-downloads map never holds more than the 8 documented entries; if it
-  ever does, the oldest registrations are discarded first.
+  ever does, the oldest registrations are discarded first. The age prune runs
+  **before** admission — the same sweep-then-admit order as the upload
+  staging route — so aged-out registrations never count as live and the
+  endpoint can never wedge at 429 after 30 idle minutes.
 - **Fail-closed boot** — an invalid `OCR_DOWNLOAD_MAX_MB` (non-numeric,
   negative, zero, fractional or above the 2000 MB ceiling) is refused at
   boot exactly like `OCR_UPLOAD_MAX_MB`: one error line per problem, exit

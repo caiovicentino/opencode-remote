@@ -157,6 +157,15 @@ remoto, zero confiança**.
 - **Arquivos** — envie do celular, dê preview de tudo, exporte a conversa
   em markdown; todo card de arquivo tem um botão ⧉ que copia o caminho
   completo do arquivo (Clipboard API com fallback execCommand)
+- **Limites de download (P2-314)** — baixar arquivos da máquina pro celular é
+  limitado do mesmo jeito que o upload (`OCR_DOWNLOAD_MAX_MB`, padrão 200 MB,
+  teto documentado 2000, no máximo 8 downloads abertos): arquivo acima do
+  teto responde `413` e downloads abertos demais respondem `429`, os dois com
+  frase curta em português que nunca carrega caminho, nome de arquivo ou
+  tamanho; download em andamento nunca é interrompido por outro início, a
+  lista de downloads abertos nunca passa dos 8 registros (poda por idade de
+  30 minutos varrida antes de admitir + teto de entradas) e um valor inválido
+  impede o daemon de abrir (fail-closed)
 - **Conversão de documentos em PDF** — mande um documento (docx/doc/rtf/html/csv/xlsx/pptx)
   e o agente converte localmente: LibreOffice dá fidelidade completa e é
   descoberto pelo PATH e pelos caminhos padrão de instalação (app bundle no

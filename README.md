@@ -1263,8 +1263,10 @@ Downloads from the machine to the phone are bounded the same way
 downloads): a file above the ceiling answers `413`, too many simultaneous
 downloads answer `429` — both with a short static pt-BR phrase that never
 carries the path, file name or size — an in-progress download is never
-interrupted by another start, and an invalid value makes the daemon refuse to
-boot — see [docs/api.md](docs/api.md#download-start-limits-p2-314).
+interrupted by another start, stale registrations are swept before admission
+(the endpoint can never wedge at 429), and an invalid value makes the daemon
+refuse to boot — see
+[docs/api.md](docs/api.md#download-start-limits-p2-314).
 
 The first pairing on a virgin daemon is only accepted while the **bootstrap
 pairing window** is open: 15 minutes by default (`OCR_PAIR_WINDOW_MS`, positive

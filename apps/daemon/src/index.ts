@@ -954,6 +954,15 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
     // progress is never evicted by a newcomer's arrival (the newcomer is the
     // one refused). The verdict messages are static pt-BR copy: no path, no
     // file name, no measured size ever leaves the daemon.
+    // P2-314 round 3 (review): the 30-minute sweep runs BEFORE admission —
+    // the same order as the upload staging route ("swept ... before admitting
+    // new work"). With the sweep only after a successful insert, eight
+    // aged-out registrations would count as live forever and answer 429 to
+    // every new start: the prune was unreachable in exactly the state it
+    // exists for.
+    for (const [k, v] of downloads) {
+      if (Date.now() - v.at > 30 * 60_000) downloads.delete(k);
+    }
     const verdict = downloadVerdict(size, downloads.size, downloadCaps.maxBytes, downloadCaps.maxOpenDownloads);
     if (!verdict.allow) {
       log("warn", "download start refused", { reason: verdict.reason });
@@ -965,9 +974,6 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
     }
     const id = randomUUID();
     downloads.set(id, { path: abs, size, at: Date.now() });
-    for (const [k, v] of downloads) {
-      if (Date.now() - v.at > 30 * 60_000) downloads.delete(k);
-    }
     // P2-314: hard entries ceiling on top of the age prune — if the map ever
     // holds more than the documented number of open downloads, the oldest
     // registrations go first.

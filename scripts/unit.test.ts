@@ -14612,14 +14612,21 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     const caps = downloadCapLimits({});
     const downloads = new Map<string, { size: number; at: number }>();
     const refusals: Array<number | "413" | "429"> = [];
+    let now = Date.now();
+    const refusalsSoFar = () => refusals.length;
+    // mirror of the fixed route (review round 3): the 30-minute sweep runs
+    // BEFORE admission — prune → verdict → insert, like the upload route
     const start = (size: number): { id: string; chunks: number } | null => {
+      for (const [k, v] of downloads) {
+        if (now - v.at > 30 * 60_000) downloads.delete(k);
+      }
       const verdict = downloadStartVerdict(size, downloads.size, caps.maxBytes, caps.maxOpenDownloads);
       if (!verdict.allow) {
         refusals.push(verdict.reason === "file-above-cap" ? "413" : "429");
         return null;
       }
       const id = `id-${downloads.size}`;
-      downloads.set(id, { size, at: Date.now() });
+      downloads.set(id, { size, at: now });
       for (const k of evictOldestKeys(
         Array.from(downloads, ([key, v]) => ({ key, at: v.at })),
         caps.maxOpenDownloads,
@@ -14649,6 +14656,15 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       "P2-314: a file above the ceiling answers 413 with no registration",
       bigRefusal === null && refusals.includes("413") && downloads.size === beforeBigRefusal,
     );
+    // round 3 review: stale registrations must never brick the endpoint —
+    // after 30 idle minutes the sweep frees the map and starts flow again
+    now += 31 * 60_000;
+    const refusalsBeforeSweep = refusalsSoFar();
+    const afterAge = start(1_000);
+    check(
+      "P2-314: aged-out registrations are swept before admission — after 30 idle minutes the next start succeeds and the ceiling still holds",
+      afterAge !== null && downloads.size === 1 && refusals.length === refusalsBeforeSweep,
+    );
   }
 
   // -- the real index.ts: verdict before the id, 413/429 mapping, untouched chunk route
@@ -14666,6 +14682,11 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P2-314: the start route answers 413 for file-above-cap and 429 for too-many-open",
     startSlice.includes('verdict.reason === "file-above-cap" ? 413 : 429'),
+  );
+  check(
+    "P2-314: the 30-minute sweep runs BEFORE admission — a refused start can never strand stale entries (round-3 review)",
+    startSlice.indexOf("30 * 60_000") >= 0 &&
+      startSlice.indexOf("30 * 60_000") < startSlice.indexOf("downloadVerdict("),
   );
   check(
     "P2-314: the refusal log carries only the static reason — never a path, name or size",
