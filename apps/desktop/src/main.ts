@@ -90,6 +90,7 @@ import {
 import { updateGuard } from "./updateguard";
 import { WAKE_EVENT_TYPES, wakePlan } from "./wakeplan";
 import { parseProxyAddress, proxyPlan, type ProxyPlanVerdict } from "./proxyplan";
+import { proxyApplyDecision, type ProxyApplySnapshot } from "./proxyapply";
 import { proxySettingFile, readProxyChoice, writeProxyChoice } from "./proxystore";
 import { HOTKEY_USER_ENV, hotkeyPlan, type HotkeyPlan } from "./hotkey";
 import { initDesktopLog, log, logError } from "./desktop-log";
@@ -252,6 +253,11 @@ let bootProxyPlan: ProxyPlanVerdict | null = null;
 const PROXY_ORIGIN_OWNER = "escolha do dono";
 const PROXY_ORIGIN_ENVIRONMENT = "ambiente";
 let bootProxyOrigin: string = PROXY_ORIGIN_ENVIRONMENT;
+// P2-307: the verdict IN EFFECT right now — the boot verdict to begin with,
+// then the last applied save. Remembered so saving the same choice twice is
+// a keep: restarting the sidecar without need drops the phone's live chat.
+let liveProxyVerdict: ProxyPlanVerdict | null = null;
+let liveProxyRelay: string | null = null;
 
 // P2-244: GPU-crash policy state. `gpuDisabledThisBoot` mirrors the boot
 // plan's action so the tray hint can fire once the notification surface is
@@ -671,41 +677,20 @@ function proxyEnvSet(): Record<string, string | undefined> {
   return env;
 }
 
-/** The one application of the boot proxy verdict. Runs exactly once, before
- * the first window load. */
-function applyProxyVerdict(): void {
-  let localName = "";
+/** The machine's local hostname(s) for the planner — empty when unavailable;
+ * the planner's constants already cover loopback in that case. */
+function proxyLocalNames(): string[] {
   try {
-    localName = hostname().trim().toLowerCase();
+    const localName = hostname().trim().toLowerCase();
+    return localName === "" ? [] : [localName];
   } catch {
-    // no hostname available — the planner's constants already cover loopback
+    return [];
   }
-  const preference = storedProxyPreference();
-  const verdict = proxyPlan({
-    env: proxyEnvSet(),
-    preference,
-    localNames: localName === "" ? [] : [localName],
-  });
-  bootProxyPlan = verdict;
-  bootProxyOrigin = preference ? PROXY_ORIGIN_OWNER : PROXY_ORIGIN_ENVIRONMENT;
-  log(`[desktop] proxy: ${verdict.mode} — origem ${bootProxyOrigin} (${verdict.reason})`);
-  // P2-303: the owner's fixed choice must reach the daemon sidecar's relay
-  // dial — the child reads the machine environment by itself, but the stored
-  // choice (proxy.json) is invisible to it, so it rides OCR_RELAY_PROXY. A
-  // fixed mode decided by the machine environment needs no injection: the
-  // child inherits that environment verbatim. A socks choice applies to the
-  // shell session only — the relay dial speaks HTTP CONNECT (http/https), so
-  // a socks address is NOT injected: the daemon fails closed to direct and
-  // /api/health's relayProxyReason says so with its static phrase.
-  const fixedPref = preference !== null ? parseProxyAddress(preference) : null;
-  setSidecarRelayProxy(
-    verdict.mode === "fixo" &&
-      bootProxyOrigin === PROXY_ORIGIN_OWNER &&
-      fixedPref !== null &&
-      !fixedPref.scheme.startsWith("socks")
-      ? preference
-      : null,
-  );
+}
+
+/** The one session application site (P2-307): the boot verdict and an applied
+ * save both land here, so the session rule is never assembled twice. */
+function applySessionProxy(verdict: ProxyPlanVerdict): void {
   if (verdict.mode === "desconhecido") return;
   try {
     const mode: "system" | "direct" | undefined =
@@ -717,6 +702,42 @@ function applyProxyVerdict(): void {
   } catch {
     logError("[desktop] proxy: falha ao aplicar a regra — a sessão segue no padrão");
   }
+}
+
+/** The address that rides to every sidecar spawn for a verdict — the owner's
+ * non-socks fixed choice, or null when no fixed choice applies (P2-303
+ * semantics, unchanged: a socks choice applies to the shell session only —
+ * the relay dial speaks HTTP CONNECT, so a socks address is NOT injected:
+ * the daemon fails closed to direct and /api/health's relayProxyReason says
+ * so with its static phrase). */
+function sidecarRelayProxyFor(verdict: ProxyPlanVerdict, preference: string | null, origin: string): string | null {
+  const fixedPref = preference !== null ? parseProxyAddress(preference) : null;
+  return verdict.mode === "fixo" && origin === PROXY_ORIGIN_OWNER && fixedPref !== null && !fixedPref.scheme.startsWith("socks")
+    ? preference
+    : null;
+}
+
+/** The one application of the boot proxy verdict. Runs exactly once, before
+ * the first window load. */
+function applyProxyVerdict(): void {
+  const preference = storedProxyPreference();
+  const verdict = proxyPlan({
+    env: proxyEnvSet(),
+    preference,
+    localNames: proxyLocalNames(),
+  });
+  bootProxyPlan = verdict;
+  bootProxyOrigin = preference ? PROXY_ORIGIN_OWNER : PROXY_ORIGIN_ENVIRONMENT;
+  liveProxyVerdict = verdict;
+  log(`[desktop] proxy: ${verdict.mode} — origem ${bootProxyOrigin} (${verdict.reason})`);
+  // P2-303: the owner's fixed choice must reach the daemon sidecar's relay
+  // dial — the child reads the machine environment by itself, but the stored
+  // choice (proxy.json) is invisible to it, so it rides OCR_RELAY_PROXY. A
+  // fixed mode decided by the machine environment needs no injection: the
+  // child inherits that environment verbatim.
+  liveProxyRelay = sidecarRelayProxyFor(verdict, preference, bootProxyOrigin);
+  setSidecarRelayProxy(liveProxyRelay);
+  applySessionProxy(verdict);
 }
 
 /** The current proxy-setting state for the Settings surface: the stored
@@ -1627,13 +1648,17 @@ async function onReady(): Promise<void> {
     log(`[desktop] web app setting saved — origin ${res.origin}`);
     return { ok: true, ...res };
   });
-  // P2-289: the machine-proxy owner choice — read + validated write beside
-  // the relay handlers above, same trust model: validation ALWAYS happens
-  // here in the main process (proxystore.ts is fail-closed) and a hostile
-  // renderer can submit any payload shape — nothing is persisted before the
-  // store accepts it. The live session is NOT reconfigured on write: the
-  // choice takes effect on the next app start, when the boot verdict applies
-  // exactly once before the first window load.
+  // P2-289 + P2-307: the machine-proxy owner choice — read + validated write
+  // beside the relay handlers above, same trust model: validation ALWAYS
+  // happens here in the main process (proxystore.ts is fail-closed) and a
+  // hostile renderer can submit any payload shape — nothing is persisted
+  // before the store accepts it. Since P2-307 the save takes effect right
+  // away: the plan is resolved through the SAME path as the boot verdict
+  // (proxyplan.ts + the owner preference, no rule duplicated) and the pure
+  // proxyapply.ts verdict decides — the session rule follows immediately,
+  // and only a changed sidecar address restarts the daemon (an unneeded
+  // restart drops the phone's live conversation). One static pt-BR line per
+  // verdict: no address, no environment variable, no path.
   ipcMain.handle("app:proxySetting", () => currentProxySetting());
   ipcMain.handle("app:saveProxyChoice", (_e, payload: unknown) => {
     const result = writeProxyChoice(proxySettingFile(app.getPath("userData")), payload);
@@ -1642,8 +1667,38 @@ async function onReady(): Promise<void> {
       logError(`[desktop] proxy choice rejected: ${result.reason}`);
       return { ...currentProxySetting(), ok: false, reason: result.reason };
     }
-    const saved = readProxyChoice(proxySettingFile(app.getPath("userData")));
-    log(`[desktop] proxy choice saved — mode ${saved?.mode ?? "unknown"} (applies at next start)`);
+    const preference = storedProxyPreference();
+    const origin = preference !== null ? PROXY_ORIGIN_OWNER : PROXY_ORIGIN_ENVIRONMENT;
+    const resolved = proxyPlan({
+      env: proxyEnvSet(),
+      preference,
+      localNames: proxyLocalNames(),
+    });
+    const relayProxy = sidecarRelayProxyFor(resolved, preference, origin);
+    const inEffect: ProxyApplySnapshot = {
+      mode: liveProxyVerdict?.mode,
+      rule: liveProxyVerdict?.rule,
+      exceptions: liveProxyVerdict?.exceptions ?? [],
+      relayProxy: liveProxyRelay,
+    };
+    const decision = proxyApplyDecision(inEffect, {
+      mode: resolved.mode,
+      rule: resolved.rule,
+      exceptions: resolved.exceptions,
+      relayProxy,
+    });
+    log(`[desktop] proxy: ${decision.reason}`);
+    if (decision.kind !== "keep") {
+      applySessionProxy(resolved);
+    }
+    if (decision.kind === "apply-session-and-restart") {
+      setSidecarRelayProxy(relayProxy);
+      void restartDaemon();
+    }
+    if (decision.kind !== "keep") {
+      liveProxyVerdict = resolved;
+      liveProxyRelay = relayProxy;
+    }
     return { ...currentProxySetting(), ok: true };
   });
   // P3-053/P2-150: dock unread badge — the renderer derives the count
