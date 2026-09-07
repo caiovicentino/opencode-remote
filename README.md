@@ -217,7 +217,12 @@ private. That is the product: **local power, remote control, zero trust**.
   0600, that protects the daemon state file) and an illegible or unreadable
   file is never overwritten — the daemon keeps going with an empty list
   while the original bytes land in a `routines.json.<timestamp>.quarantine`
-  copy beside it, staying in place untouched until that move can happen
+  copy beside it, staying in place untouched until that move can happen; a
+  fire only happens within a 30-minute window after the scheduled time (a
+  routine created after its time is marked done for today instead of firing
+  immediately) and fire failures retry at most 3 times per day before the day
+  closes with an error state, while interval mode keeps its own pacing by
+  design
 - **Secure by construction** — passkey (WebAuthn) gate, ECDH P-256 + AES-256-GCM,
   replay protection, device allowlist, audit log, biometric unlock
 - **Distinguishable devices** — every pairing gets a stable, personal-data-free

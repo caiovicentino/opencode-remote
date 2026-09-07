@@ -89,6 +89,12 @@ import { parseRelayUrl, redactRelayUrl } from "./relayurl.js";
 import { bodyLimit, isBodyLimitError, readLimitedBody, type BodyLimitError } from "./bodylimit.js";
 import { pairWindow, bootstrapDecision } from "./pairwindow.js";
 import { leaseVerdict, parseRunLease, RUN_LEASE_KILL_MESSAGE } from "./routinelease.js";
+import {
+  routineDue,
+  ROUTINE_DUE_DELAY_WINDOW_MIN,
+  ROUTINE_DUE_EXHAUSTED_MESSAGE,
+  ROUTINE_DUE_MAX_ATTEMPTS,
+} from "./routinedue.js";
 import { queueView } from "./backlogview.js";
 import { DEVICE_TOUCH_INTERVAL_MS, nextDeviceLabel, touchDecision } from "./devicetouch.js";
 // P2-268: derived, read-only staleness verdicts for the devices routes —
@@ -738,6 +744,19 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
       }
     }
     const routine: Routine = { id: randomUUID(), name, prompt, hour, minute, mode, days, intervalMinutes };
+    // P2-286: a routine created (or recreated) after its time already passed
+    // today must not fire 30 seconds later. The current local day is marked
+    // as fulfilled with the SAME lastRun mark the sweep writes — no new
+    // field, no migration — so the next execution is the next occurrence,
+    // never the creation instant. Interval mode is intentionally untouched
+    // (its pacing starts from its own lastFiredAt marker).
+    if (mode !== "interval") {
+      const created = new Date();
+      const scheduledToday = mode !== "days" || (days ?? []).includes(created.getDay());
+      if (scheduledToday && created.getHours() * 60 + created.getMinutes() >= hour * 60 + minute) {
+        routine.lastRun = created.toLocaleDateString("sv");
+      }
+    }
     routines.push(routine);
     saveRoutines(routines);
     return { id: req.id, status: 200, body: { routine } };
@@ -1571,6 +1590,24 @@ function registerArtifactSession(info: { id?: string; directory?: string } | nul
 let routines = loadRoutines();
 const pendingRuns = new Map<string, string>(); // sessionID -> routineID
 
+// P2-286: per-day fire-attempt counters, in memory on purpose — no new field
+// in the routines file and no migration. A restart losing the counter can
+// only grant extra retries up to the same documented ceiling (the counter is
+// keyed by the local day, so a new day always starts from zero).
+const fireAttempts = new Map<string, { day: string; attempts: number }>();
+
+function fireAttemptsToday(routineId: string, today: string): number {
+  const entry = fireAttempts.get(routineId);
+  return entry && entry.day === today ? entry.attempts : 0;
+}
+
+function bumpFireAttempt(routineId: string, today: string): number {
+  const entry = fireAttempts.get(routineId);
+  const attempts = entry && entry.day === today ? entry.attempts + 1 : 1;
+  fireAttempts.set(routineId, { day: today, attempts });
+  return attempts;
+}
+
 async function fireRoutine(r: Routine) {
   try {
     const headers = { "content-type": "application/json", ...(authHeader ? { authorization: authHeader } : {}) };
@@ -1605,10 +1642,32 @@ async function fireRoutine(r: Routine) {
     });
     log("info", "routine fired", { routine: r.name, session: created.id });
   } catch (err) {
-    r.lastRun = undefined;
-    r.lastFiredAt = undefined;
-    saveRoutines(routines);
-    log("warn", "routine fire failed", { routine: r.name, error: (err as Error).message });
+    // P2-286: daily/days routines still retry within the day, but the retries
+    // are capped — the old path cleared the day mark unconditionally, so a
+    // failing routine retried every sweep until midnight, silently spending
+    // agent sessions. Once the documented ceiling is reached the day is
+    // closed with the error state and the short static phrase the routine
+    // already stores in lastError. No new timer, route or request. Interval
+    // mode keeps its exact previous behavior on purpose (P2-286 scope).
+    const today = new Date().toLocaleDateString("sv");
+    let attempt: number | undefined;
+    if ((r.mode ?? "daily") === "interval") {
+      r.lastRun = undefined;
+      r.lastFiredAt = undefined;
+      saveRoutines(routines);
+    } else {
+      attempt = bumpFireAttempt(r.id, today);
+      if (attempt >= ROUTINE_DUE_MAX_ATTEMPTS) {
+        r.lastRun = today;
+        r.lastStatus = "error";
+        r.lastError = ROUTINE_DUE_EXHAUSTED_MESSAGE;
+        fireAttempts.delete(r.id);
+      } else {
+        r.lastRun = undefined; // bounded retry at the next sweep
+      }
+      saveRoutines(routines);
+    }
+    log("warn", "routine fire failed", { routine: r.name, attempt, error: (err as Error).message });
   }
 }
 
@@ -1692,8 +1751,6 @@ function releaseStuckRun(r: Routine) {
 function checkRoutines() {
   const now = new Date();
   const today = now.toLocaleDateString("sv"); // local YYYY-MM-DD
-  const nowMin = now.getHours() * 60 + now.getMinutes();
-  const dow = now.getDay();
   const nowMs = now.getTime();
   // P2-236: consult the run lease inside the same periodic sweep — no new
   // timer, no per-request probing, no boot delay. A stuck run (marker left
@@ -1727,12 +1784,43 @@ function checkRoutines() {
       void fireRoutine(r);
       continue;
     }
-    if (r.lastRun === today) continue;
-    if (mode === "days" && !(r.days ?? []).includes(dow)) continue;
-    if (nowMin < r.hour * 60 + r.minute) continue;
-    r.lastRun = today;
-    saveRoutines(routines);
-    void fireRoutine(r);
+    // P2-286: the fire decision lives in the pure routinedue.ts module (same
+    // pattern as the run lease above) — the sweep only executes the verdict.
+    // Rules, in order: invalid input refuses and never fires; already
+    // fulfilled today waits; a weekday outside the list waits; before the
+    // scheduled time waits; past the documented delay window closes the day
+    // without firing; the day's retry ceiling closes the day; only what
+    // remains fires.
+    const verdict = routineDue(
+      nowMs,
+      {
+        hour: r.hour,
+        minute: r.minute,
+        mode,
+        days: r.days,
+        lastRun: r.lastRun,
+        attemptsToday: fireAttemptsToday(r.id, today),
+      },
+      ROUTINE_DUE_DELAY_WINDOW_MIN,
+    );
+    if (verdict.plan === "fire") {
+      r.lastRun = today;
+      saveRoutines(routines);
+      void fireRoutine(r);
+    } else if (verdict.plan === "close-day") {
+      const exhausted = verdict.reason === "attempts-exhausted";
+      if (r.lastRun !== today) r.lastRun = today;
+      if (exhausted) {
+        r.lastStatus = "error";
+        r.lastError = ROUTINE_DUE_EXHAUSTED_MESSAGE;
+        fireAttempts.delete(r.id);
+      }
+      saveRoutines(routines);
+      if (exhausted) {
+        log("warn", "routine day closed after repeated fire failures", { routine: r.name });
+      }
+    }
+    // wait / refuse: nothing to do this sweep
   }
 }
 

@@ -40,6 +40,13 @@ import {
   parseRunLease,
   type RoutineRunFacts,
 } from "../apps/daemon/src/routinelease";
+import {
+  ROUTINE_DUE_DELAY_WINDOW_MIN,
+  ROUTINE_DUE_EXHAUSTED_MESSAGE,
+  ROUTINE_DUE_MAX_ATTEMPTS,
+  routineDue,
+  type RoutineDueFacts,
+} from "../apps/daemon/src/routinedue";
 import { sttVerdict } from "../apps/daemon/src/voicecap";
 import {
   CONVERTER_PREFERENCE,
@@ -21032,6 +21039,178 @@ check(
   );
 }
 
+// --- P2-286: routine due verdict (routinedue.ts) + wiring --------------------
+
+{
+  const daemonIndexSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  const routinedueSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "routinedue.ts"), "utf8");
+
+  // Local calendar helpers — fixtures are built from local accessors so the
+  // table holds on any machine timezone.
+  const dayKey = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const at = (h: number, m: number) => {
+    const d = new Date();
+    d.setHours(h, m, 0, 0);
+    return d.getTime();
+  };
+  const daily = (over: Partial<RoutineDueFacts> = {}): RoutineDueFacts => ({
+    hour: 9,
+    minute: 0,
+    mode: "daily",
+    ...over,
+  });
+  const todayStr = dayKey(new Date(at(9, 10)));
+
+  // --- rule 1: refuse, and never fire (fail-closed) -------------------------
+  check(
+    "P2-286: missing input (undefined and null) refuses and never fires",
+    routineDue(at(9, 10), undefined, ROUTINE_DUE_DELAY_WINDOW_MIN).plan === "refuse" &&
+      routineDue(at(9, 10), null, ROUTINE_DUE_DELAY_WINDOW_MIN).plan === "refuse",
+  );
+  check(
+    "P2-286: non-object input (number, string, array) refuses and never fires",
+    [42, "x", []].every(
+      (i) => routineDue(at(9, 10), i as never, ROUTINE_DUE_DELAY_WINDOW_MIN).plan === "refuse",
+    ),
+  );
+  check(
+    "P2-286: non-integer hour or minute refuses and never fires",
+    routineDue(at(9, 10), daily({ hour: 7.5 }), ROUTINE_DUE_DELAY_WINDOW_MIN).plan === "refuse" &&
+      routineDue(at(9, 10), daily({ minute: 30.5 }), ROUTINE_DUE_DELAY_WINDOW_MIN).plan === "refuse",
+  );
+  check(
+    "P2-286: a non-finite now refuses and never fires",
+    routineDue(NaN, daily(), ROUTINE_DUE_DELAY_WINDOW_MIN).plan === "refuse" &&
+      routineDue(Infinity, daily(), ROUTINE_DUE_DELAY_WINDOW_MIN).plan === "refuse",
+  );
+
+  // --- rules 2-4: wait ------------------------------------------------------
+  check(
+    "P2-286: a routine already fulfilled on the current local day waits",
+    (() => {
+      const v = routineDue(at(9, 10), daily({ lastRun: todayStr }), ROUTINE_DUE_DELAY_WINDOW_MIN);
+      return v.plan === "wait" && v.reason === "already-done";
+    })(),
+  );
+  check(
+    "P2-286: weekday mode with today outside the day list waits",
+    (() => {
+      const dow = new Date(at(9, 10)).getDay();
+      const v = routineDue(at(9, 10), daily({ mode: "days", days: [(dow + 1) % 7] }), ROUTINE_DUE_DELAY_WINDOW_MIN);
+      return v.plan === "wait" && v.reason === "day-not-scheduled";
+    })(),
+  );
+  check(
+    "P2-286: an instant before the scheduled time waits",
+    (() => {
+      const v = routineDue(at(8, 59), daily(), ROUTINE_DUE_DELAY_WINDOW_MIN);
+      return v.plan === "wait" && v.reason === "before-time";
+    })(),
+  );
+
+  // --- rule 5 and fire ------------------------------------------------------
+  check(
+    "P2-286: an instant beyond the documented delay window closes the day without firing",
+    (() => {
+      const v = routineDue(at(15, 0), daily(), ROUTINE_DUE_DELAY_WINDOW_MIN);
+      return v.plan === "close-day" && v.reason === "past-window";
+    })(),
+  );
+  check(
+    "P2-286: an instant inside the window fires, the window edge included",
+    routineDue(at(9, 10), daily(), ROUTINE_DUE_DELAY_WINDOW_MIN).plan === "fire" &&
+      routineDue(at(9, 30), daily(), ROUTINE_DUE_DELAY_WINDOW_MIN).plan === "fire" &&
+      routineDue(at(9, 31), daily(), ROUTINE_DUE_DELAY_WINDOW_MIN).plan === "close-day",
+  );
+
+  // --- rule order, clock property, ceiling, determinism ----------------------
+  check(
+    "P2-286: rule order — already fulfilled today stays wait even with the instant beyond the window",
+    (() => {
+      const v = routineDue(at(23, 0), daily({ lastRun: todayStr }), ROUTINE_DUE_DELAY_WINDOW_MIN);
+      return v.plan === "wait" && v.reason === "already-done";
+    })(),
+  );
+  check(
+    "P2-286: a clock moved backward on the same local day never fires the routine again",
+    (() => {
+      const fired = routineDue(at(9, 10), daily(), ROUTINE_DUE_DELAY_WINDOW_MIN);
+      const rewoundBefore = routineDue(at(8, 55), daily({ lastRun: todayStr }), ROUTINE_DUE_DELAY_WINDOW_MIN);
+      const rewoundInside = routineDue(at(9, 5), daily({ lastRun: todayStr }), ROUTINE_DUE_DELAY_WINDOW_MIN);
+      return fired.plan === "fire" && rewoundBefore.plan === "wait" && rewoundInside.plan === "wait";
+    })(),
+  );
+  check(
+    "P2-286: an exhausted attempt ceiling closes the day, one retry below it still fires",
+    (() => {
+      const done = routineDue(at(9, 10), daily({ attemptsToday: ROUTINE_DUE_MAX_ATTEMPTS }), ROUTINE_DUE_DELAY_WINDOW_MIN);
+      const retry = routineDue(
+        at(9, 10),
+        daily({ attemptsToday: ROUTINE_DUE_MAX_ATTEMPTS - 1 }),
+        ROUTINE_DUE_DELAY_WINDOW_MIN,
+      );
+      return done.plan === "close-day" && done.reason === "attempts-exhausted" && retry.plan === "fire";
+    })(),
+  );
+  check("P2-286: the same input yields the identical verdict in two calls", (() => {
+    const input = daily({ lastRun: "2020-01-02", attemptsToday: 1 });
+    return (
+      JSON.stringify(routineDue(at(9, 10), input, ROUTINE_DUE_DELAY_WINDOW_MIN)) ===
+      JSON.stringify(routineDue(at(9, 10), input, ROUTINE_DUE_DELAY_WINDOW_MIN))
+    );
+  })());
+
+  // --- purity + real-repo wiring --------------------------------------------
+  // strip block + line comments first — the header prose names the banned modules
+  const routinedueCode = routinedueSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  check(
+    "P2-286: routinedue.ts is pure — no imports at all, so no fs/child_process/http/fetch",
+    !/^import /m.test(routinedueCode) &&
+      !/node:(fs|child_process|path|os|http)/.test(routinedueCode) &&
+      !/\bfetch\(/.test(routinedueCode),
+  );
+  const sweepAt = daemonIndexSrc.indexOf("function checkRoutines");
+  const sweepEnd = daemonIndexSrc.indexOf("setInterval(checkRoutines");
+  check(
+    "P2-286: the fire decision in checkRoutines comes from the module, not a hand-rolled time comparison",
+    sweepAt >= 0 &&
+      sweepEnd > sweepAt &&
+      daemonIndexSrc.indexOf("routineDue(") > sweepAt &&
+      daemonIndexSrc.indexOf("routineDue(") < sweepEnd &&
+      !daemonIndexSrc.includes("if (nowMin < r.hour * 60 + r.minute) continue;"),
+  );
+  const fireAt = daemonIndexSrc.indexOf("async function fireRoutine");
+  const fireBlock = fireAt >= 0 ? daemonIndexSrc.slice(fireAt, daemonIndexSrc.indexOf("async function completeRoutine")) : "";
+  check(
+    "P2-286: the failure path consults the documented ceiling and closes the day instead of clearing the mark forever",
+    fireBlock.includes("bumpFireAttempt(") &&
+      fireBlock.includes("ROUTINE_DUE_MAX_ATTEMPTS") &&
+      fireBlock.includes("ROUTINE_DUE_EXHAUSTED_MESSAGE"),
+  );
+  check(
+    "P2-286: no periodic timer was introduced for the routine due decision",
+    daemonIndexSrc
+      .split("\n")
+      .filter((l) => l.includes("setInterval"))
+      .every((l) => !/routinedue|fireAttempt|routineDue/i.test(l)) &&
+      daemonIndexSrc.includes("setInterval(checkRoutines, 30_000);"),
+  );
+  check(
+    "P2-286: creation after the scheduled time marks the current local day with the existing lastRun field",
+    daemonIndexSrc.includes("routine.lastRun = created.toLocaleDateString") &&
+      !daemonIndexSrc.includes("lastRunOverride"),
+  );
+  check(
+    "P2-286: the exhaustion phrase is static, short and content-free",
+    ROUTINE_DUE_EXHAUSTED_MESSAGE.length > 0 &&
+      ROUTINE_DUE_EXHAUSTED_MESSAGE.length <= 200 &&
+      !/[\\/]/.test(ROUTINE_DUE_EXHAUSTED_MESSAGE) &&
+      !/https?:/i.test(ROUTINE_DUE_EXHAUSTED_MESSAGE) &&
+      !/\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/.test(ROUTINE_DUE_EXHAUSTED_MESSAGE),
+  );
+}
+
 // --- P2-239: the real service-worker policy, loaded in an isolated VM -------
 
 // The policy module is a classic script: no import/export, no fetch, no
@@ -23359,7 +23538,10 @@ check("P2-241: no new periodic timer was introduced by the handler", !dlBlock.in
   );
   check(
     "P2-256: the existing routine write points are unchanged — one boot read, every save through saveRoutines",
-    (daemonIndexSrc.match(/saveRoutines\(/g) || []).length === 11 &&
+    // P2-286 added two legitimate write points: the capped failure path
+    // (retry vs close-day) and the close-day sweep branch, both persisting
+    // through the same saveRoutines.
+    (daemonIndexSrc.match(/saveRoutines\(/g) || []).length === 13 &&
       (daemonIndexSrc.match(/loadRoutines\(/g) || []).length === 1 &&
       !daemonIndexSrc.includes("routines.json"),
   );

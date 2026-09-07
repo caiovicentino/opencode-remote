@@ -96,7 +96,11 @@ Runs next to `opencode serve`. Responsibilities:
   for the agent's ffmpeg), whisper transcription, file delivery with an
   allowlist of roots (uploads dir, Desktop, Downloads, Documents, repo cwd).
 - **Routines**: local-time scheduled prompts, result saved as markdown and
-  pushed with deep-link.
+  pushed with deep-link; a fire only happens within a 30-minute window after
+  the scheduled time (a routine created after its time is marked done for
+  today) and fire failures are capped at 3 attempts per local day before the
+  day closes with an error state — interval mode intentionally keeps its own
+  pacing (decision in the pure `apps/daemon/src/routinedue.ts`).
 - **Skills**: saved prompts rendered as 1-tap chips in the composer.
 - **Security**: client allowlist (first QR pairing bootstraps it, 0600
   state file, fresh read per handshake), audit log of pairing events

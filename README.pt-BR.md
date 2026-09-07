@@ -191,7 +191,11 @@ remoto, zero confiança**.
   que não pôde ser lido nunca é sobrescrito — o daemon segue com a lista
   vazia enquanto os bytes originais vão para uma cópia
   `routines.json.<timestamp>.quarantine` ao lado, ficando no lugar, intactos,
-  até que essa mudança consiga acontecer
+  até que essa mudança consiga acontecer; o disparo só acontece dentro de uma
+  janela de 30 minutos após o horário marcado (rotina criada depois do horário
+  fica marcada como cumprida no dia, sem executar na hora) e as falhas de
+  disparo tentam no máximo 3 vezes por dia antes de fechar o dia com estado de
+  erro, enquanto o modo por intervalo mantém o próprio ritmo de propósito
 - **Seguro por construção** — gate com passkey (WebAuthn), ECDH P-256 +
   AES-256-GCM, anti-replay, allowlist de dispositivos, audit log, biometria
 - **Dispositivos distinguíveis** — cada pareamento ganha um rótulo estável e
