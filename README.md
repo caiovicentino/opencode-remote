@@ -509,7 +509,9 @@ for direct `wss://` termination or neither — setting only one, leaving a
 blank value, or pointing at an unreadable file makes the relay refuse to boot
 (exit 1) instead of silently serving plain `ws://`. The relay also watches the
 certificate's validity: it refuses to boot when it is expired or not yet valid
-by more than 24 h, and warns from 14 days before expiry on. Every port and cert path is an environment variable
+by more than 24 h, warns from 14 days before expiry on, and picks up a
+renewed certificate live — no restart needed (details in
+docs/RELAY-HOSTING.md). Every port and cert path is an environment variable
 (`RELAY_PORT`, `PWA_PORT`, `PWA_HOST`…). The autonomous pilot service follows
 the same rule: `deploy/install-pilot.sh` has no hardcoded hostname — set
 `RELAY_URL` in the environment (re-installs without it keep the value already

@@ -347,6 +347,20 @@ without dropping a single connection — starting **14 days before expiry**
 (`relay TLS certificate nearing expiry`), so renew the certificate when the
 warning shows up instead of waiting for the phones to lose access.
 
+A renewed certificate also takes effect without a restart (P2-306): the same
+liveness sweep that re-checks the validity window watches the pair's file
+stats and, when they move, re-reads and re-parses it. A valid renewal is
+applied in place (`relay TLS certificate renewed`) — the next handshake uses
+the new material while already-established connections stay untouched — and
+the `/healthz` and `/metrics` expiry fields follow the pair now on disk. A
+renewal that is illegible, unreadable, expired, not yet valid beyond the same
+24 h tolerance, or whose key does not match its certificate is refused with a
+single `relay TLS certificate renewal refused` line and the relay keeps
+serving the material that still works, so a botched renewal never costs an
+outage. No timer, route, port or dependency was added, plain mode (no pair
+configured) never touches this path, and no log line ever carries the file
+path or any certificate material.
+
 ### The log level is fail-closed too (P2-177)
 
 `RELAY_LOG_LEVEL` selects which JSONL lines the relay writes. The four

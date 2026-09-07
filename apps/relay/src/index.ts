@@ -1,6 +1,6 @@
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
-import { accessSync, constants as fsConstants, createReadStream, readFileSync, realpathSync, statSync } from "node:fs";
+import { accessSync, constants as fsConstants, createReadStream, readFileSync, realpathSync, statSync, type Stats } from "node:fs";
 import { join as joinPath, sep } from "node:path";
 import { randomBytes, X509Certificate } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -24,6 +24,7 @@ import {
   CERT_WARN_WINDOW_MS,
   type CertExpiryVerdict,
 } from "./certexpiry.js";
+import { certReloadVerdict, type CertPairImpression, type CertReloadOutcome } from "./certreload.js";
 import { makeIpTagger } from "./iptag.js";
 import {
   assetIntegrityPlan,
@@ -654,6 +655,54 @@ const server =
     ? createHttpsServer({ cert: readFileSync(TLS.certPath), key: readFileSync(TLS.keyPath) })
     : createHttpServer();
 const wss = new WebSocketServer({ noServer: true, maxPayload: maxFrame });
+
+// P2-306: hot reload of the TLS pair. The boot preflight above is untouched —
+// it still reads the pair exactly once and refuses a broken one fail-closed.
+// What changed: the pair on disk can now be RENEWED while the relay runs, and
+// the material in service used to stay frozen at the boot-time bytes, so
+// every phone lost access at the renewal deadline until someone restarted the
+// relay. This state holds the impression of the pair in service (size and
+// mtime of each file plus the two validity instants); the SAME liveness sweep
+// P2-067 already schedules re-probes it — only when the file stats moved does
+// the sweep re-read and re-parse the pair (P2-306). Plain mode has no pair:
+// CERT_RELOAD stays undefined and not a single disk probe is added — the
+// plain-mode behavior stays byte for byte the pre-P2-306 one.
+const CERT_RELOAD = (() => {
+  if (TLS.mode !== "tls" || !CERT_EXPIRY) return undefined;
+  const impression: CertPairImpression = {
+    certSize: Number.NaN,
+    certMtimeMs: Number.NaN,
+    keySize: Number.NaN,
+    keyMtimeMs: Number.NaN,
+    notBefore: CERT_EXPIRY.notBefore,
+    notAfter: CERT_EXPIRY.notAfter,
+  };
+  try {
+    const certStat = statSync(TLS.certPath);
+    const keyStat = statSync(TLS.keyPath);
+    impression.certSize = certStat.size;
+    impression.certMtimeMs = certStat.mtimeMs;
+    impression.keySize = keyStat.size;
+    impression.keyMtimeMs = keyStat.mtimeMs;
+  } catch {
+    // partial impression: the sweep re-probes the files and compares
+  }
+  return {
+    // what the running server actually holds — moves only when a renewal is
+    // applied for real
+    inService: { ...impression },
+    // the last on-disk state the sweep has seen, whatever the verdict — a
+    // refused or inapplicable pair is never re-read tick after tick; only a
+    // NEW file change re-opens the verdict
+    onDisk: { ...impression },
+    // P2-306: exactly one log line per transition — a repeated refusal of the
+    // same reason (a renewal stuck illegible for hours) never spams the log.
+    // The dedupe gates the LOG LINE only, never the application: two valid
+    // renewals in a row must both apply even though the static outcome text
+    // is identical.
+    lastOutcome: undefined as CertReloadOutcome | undefined,
+  };
+})();
 let counter = 0;
 
 // P2-023: SIGTERM/SIGINT graceful shutdown — drain ≤3s, then exit 0.
@@ -983,6 +1032,112 @@ wss.on("connection", (socket: Socket, req) => {
 if (PING_INTERVAL_S > 0) {
   setInterval(() => {
     const now = Date.now();
+    // P2-306 hot reload, riding the SAME sweep tick the ping interval already
+    // schedules (no new timer, no new route, no new request, no new
+    // dependency): the pair is re-read ONLY when its file impression moved
+    // since the last probe. On an adopt verdict the fresh material is applied
+    // with setSecureContext — a live-socket-safe swap that reaches only the
+    // following handshakes, no established socket is ever closed — and the
+    // instants feeding the expiry verdict below (and, through them, the
+    // P2-290 healthz field and the P2-294 metrics) start describing the pair
+    // now on disk. On a refuse verdict the material in service stays: a
+    // broken renewal never trades a working relay for a worse pair. Every
+    // transition logs exactly one static line — no path, subject, issuer,
+    // serial, fingerprint or any certificate material, same grammar as the
+    // certexpiry.ts phrases. Plain mode has no pair (CERT_RELOAD undefined):
+    // this block never runs and not a single disk probe is added.
+    if (CERT_RELOAD) {
+      let probe: { cert: Stats; key: Stats } | undefined;
+      try {
+        probe = { cert: statSync(TLS.certPath), key: statSync(TLS.keyPath) };
+      } catch {
+        probe = undefined;
+      }
+      const moved =
+        probe !== undefined &&
+        (probe.cert.size !== CERT_RELOAD.onDisk.certSize ||
+          probe.cert.mtimeMs !== CERT_RELOAD.onDisk.certMtimeMs ||
+          probe.key.size !== CERT_RELOAD.onDisk.keySize ||
+          probe.key.mtimeMs !== CERT_RELOAD.onDisk.keyMtimeMs);
+      if (probe && moved) {
+        const fresh: CertPairImpression = {
+          certSize: Number.NaN,
+          certMtimeMs: Number.NaN,
+          keySize: Number.NaN,
+          keyMtimeMs: Number.NaN,
+          notBefore: Number.NaN,
+          notAfter: Number.NaN,
+        };
+        let freshCert: Buffer | undefined;
+        let freshKey: Buffer | undefined;
+        try {
+          freshCert = readFileSync(TLS.certPath);
+          freshKey = readFileSync(TLS.keyPath);
+          const cert = new X509Certificate(freshCert);
+          fresh.notBefore = Date.parse(cert.validFrom);
+          fresh.notAfter = Date.parse(cert.validTo);
+          // stats captured BEFORE the read: a renewal whose writes straddle
+          // this tick leaves the impression one step behind the disk and the
+          // next sweep re-reads and heals it
+          fresh.certSize = probe.cert.size;
+          fresh.certMtimeMs = probe.cert.mtimeMs;
+          fresh.keySize = probe.key.size;
+          fresh.keyMtimeMs = probe.key.mtimeMs;
+        } catch {
+          // partial impression: the verdict refuses fail-closed
+        }
+        // the on-disk impression moves whatever the verdict — a refused or
+        // inapplicable pair is never re-read and re-parsed tick after tick
+        CERT_RELOAD.onDisk = fresh;
+        const outcome = certReloadVerdict(CERT_RELOAD.inService, fresh, now, CERT_CLOCK_TOLERANCE_MS);
+        let applied = false;
+        if (outcome.verdict === "adopt") {
+          // the swap itself is where a mismatched or truncated key (a renewal
+          // written as two files whose writes straddled a sweep) is first
+          // proven: the throw is caught and becomes a refusal — the relay
+          // keeps the material in service instead of crashing at exactly the
+          // renewal deadline
+          try {
+            if (freshCert && freshKey && CERT_EXPIRY && "setSecureContext" in server) {
+              server.setSecureContext({ cert: freshCert, key: freshKey });
+              CERT_EXPIRY.notBefore = fresh.notBefore;
+              CERT_EXPIRY.notAfter = fresh.notAfter;
+              CERT_RELOAD.inService = fresh;
+              applied = true;
+            }
+          } catch {
+            applied = false;
+          }
+        }
+        // one static line per transition: every ADOPTION follows a real file
+        // change and logs exactly once (the next tick finds the stats settled,
+        // so this can never spam), while a REFUSAL of the same stuck pair
+        // would repeat tick after tick and is deduplicated by verdict+reason.
+        // Neither branch gates the application: two valid renewals in a row
+        // (A→B→C) must both swap the material even though the static text is
+        // identical. A renewal that validated but could not be applied is
+        // logged as the refusal it effectively is.
+        const logged: CertReloadOutcome =
+          outcome.verdict === "adopt" && !applied
+            ? {
+                verdict: "refuse",
+                reason:
+                  "relay certificate renewal could not be applied: keeping the material in service instead of risking a broken pair (fail-closed)",
+              }
+            : outcome;
+        if (logged.verdict === "adopt") {
+          CERT_RELOAD.lastOutcome = logged;
+          ev("info", "relay TLS certificate renewed", { reason: logged.reason });
+        } else if (
+          logged.verdict === "refuse" &&
+          (logged.verdict !== CERT_RELOAD.lastOutcome?.verdict ||
+            logged.reason !== CERT_RELOAD.lastOutcome?.reason)
+        ) {
+          CERT_RELOAD.lastOutcome = logged;
+          ev("warn", "relay TLS certificate renewal refused", { reason: logged.reason });
+        }
+      }
+    }
     // P2-259 runtime re-evaluation: the boot decision is re-checked on the
     // SAME sweep tick the ping interval already schedules — no new timer,
     // and only while a TLS pair exists. Strictly log-only: it never closes
