@@ -1080,9 +1080,11 @@ URL).
 **Proxy (P2-285)**: o shell segue a configuração de proxy da máquina — o
 proxy do sistema é o padrão, e um endereço fixo vindo do ambiente de proxy é
 aplicado uma única vez no boot com o loopback sempre fora do proxy (a ponte
-local do daemon nunca passa pelo proxy); a tela de escolha manual de proxy
-segue registrada como continuação, e cada decisão vira uma linha `proxy:`
-(modo e motivo) no `desktop.log`, nunca o endereço nem credenciais.
+local do daemon nunca passa pelo proxy). Desde a P2-289 o dono também pode
+escolher o proxy à mão em Configurações → **Proxy da máquina** (sistema / sem
+proxy / endereço fixo): a escolha fica guardada nesta máquina e vale a
+partir do próximo início do app. Cada decisão vira uma linha `proxy:` (modo,
+origem e motivo) no `desktop.log`, nunca o endereço nem credenciais.
 
 Desde o P1-046 a janela é um cockpit de duas colunas de verdade: a conversa
 fica aberta na coluna da esquerda enquanto Artifacts, Browser, Arquivos ou

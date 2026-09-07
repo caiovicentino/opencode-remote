@@ -37,6 +37,8 @@ import SettingsView, {
   type RelaySettingWriteResult,
   type WebAppSetting,
   type WebAppSettingWriteResult,
+  type ProxySetting,
+  type ProxySettingWriteResult,
 } from "./components/SettingsView";
 import FilesView from "./components/FilesView";
 import ArtifactsView from "./components/ArtifactsView";
@@ -162,6 +164,9 @@ interface DesktopBridge {
   /** P2-189: app address the phone opens — Settings card (desktop shell only). */
   getWebAppUrl?: () => Promise<WebAppSetting>;
   setWebAppUrl?: (url: string | null) => Promise<WebAppSettingWriteResult>;
+  /** P2-289: machine proxy — Settings card (desktop shell only). */
+  getProxySetting?: () => Promise<ProxySetting>;
+  setProxyChoice?: (choice: { mode: "system" | "direct" | "fixed"; address?: string }) => Promise<ProxySettingWriteResult>;
 }
 
 function desktopBridge(): DesktopBridge | null {
@@ -954,6 +959,8 @@ export default function App() {
         setRelayUrl={desktopBridge()?.setRelayUrl}
         getWebAppUrl={desktopBridge()?.getWebAppUrl}
         setWebAppUrl={desktopBridge()?.setWebAppUrl}
+        getProxySetting={desktopBridge()?.getProxySetting}
+        setProxyChoice={desktopBridge()?.setProxyChoice}
         upstream={upstream}
       />
       </div>
@@ -1042,6 +1049,8 @@ export default function App() {
       setRelayUrl={desktopBridge()?.setRelayUrl}
       getWebAppUrl={desktopBridge()?.getWebAppUrl}
       setWebAppUrl={desktopBridge()?.setWebAppUrl}
+      getProxySetting={desktopBridge()?.getProxySetting}
+      setProxyChoice={desktopBridge()?.setProxyChoice}
       upstream={upstream}
     />
   );

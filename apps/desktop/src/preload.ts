@@ -123,6 +123,26 @@ export interface WebAppSettingWriteResult extends WebAppSetting {
   ok: boolean;
 }
 
+/** P2-289: the machine-proxy owner choice (Settings → machine proxy). mode
+ * is the stored choice (null = no choice yet — the machine environment
+ * decides), origin says whether the ACTIVE boot mode came from the stored
+ * choice or the machine environment, and reason is a short static phrase
+ * with no address and no credential. Mirrors
+ * apps/desktop/src/proxystore.ts. */
+export interface ProxySetting {
+  mode: "system" | "direct" | "fixed" | null;
+  address: string | null;
+  origin: "owner" | "environment";
+  reason: string;
+}
+
+/** Result of a write: ok=false carries the module's static refusal reason
+ * and nothing was persisted; the live session is never reconfigured — the
+ * choice applies on the next app start. */
+export interface ProxySettingWriteResult extends ProxySetting {
+  ok: boolean;
+}
+
 contextBridge.exposeInMainWorld("ocrDesktop", {
   platform: process.platform,
   version: ipcRenderer.invoke("app:version"),
@@ -158,6 +178,12 @@ contextBridge.exposeInMainWorld("ocrDesktop", {
   getWebAppUrl: (): Promise<WebAppSetting> => ipcRenderer.invoke("app:webAppUrl"),
   setWebAppUrl: (url: string | null): Promise<WebAppSettingWriteResult> =>
     ipcRenderer.invoke("app:setWebAppUrl", url),
+  // P2-289: machine proxy — current stored choice + validated write (the
+  // main process refuses a credential-bearing, wrong-scheme or unparseable
+  // address and returns the static reason instead).
+  getProxySetting: (): Promise<ProxySetting> => ipcRenderer.invoke("app:proxySetting"),
+  setProxyChoice: (choice: { mode: "system" | "direct" | "fixed"; address?: string }): Promise<ProxySettingWriteResult> =>
+    ipcRenderer.invoke("app:saveProxyChoice", choice),
   // P3-053: dock unread badge — the web UI derives the count (lib/unread.ts)
   // and pushes it on every change; main maps it to app.setBadgeCount. The
   // getter exists so tests can verify the IPC round-trip via the harness.

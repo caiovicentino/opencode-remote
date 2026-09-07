@@ -254,6 +254,21 @@ export const dict = {
     webAppOriginDerived: "Derived from the phone relay — same host and port, wss:// becomes https://.",
     webAppOriginUnavailable: "No usable address — the local relay only serves this machine.",
     webAppReset: "Use the address from the relay",
+    // machine proxy owner choice (desktop settings, P2-289) — no emoji, no
+    // path, no port, no secret in any of these strings; the refusal line
+    // renders the module's own static reason verbatim.
+    proxyTitle: "Machine proxy",
+    proxyHint: "How the app reaches the internet on this machine. The system proxy is followed by default.",
+    proxyModeSystem: "Follow the system",
+    proxyModeDirect: "No proxy",
+    proxyModeFixed: "Fixed address",
+    proxyAddressLabel: "Proxy address",
+    proxySave: "Save proxy choice",
+    proxySaved: "proxy choice saved",
+    proxyInvalid: "Could not save the proxy choice.",
+    proxyNextStart: "The choice takes effect the next time the app starts.",
+    proxyOriginOwner: "Active now: your choice.",
+    proxyOriginEnvironment: "Active now: the machine environment.",
     localConnecting: "Connecting to the local daemon…",
     // degraded first-boot journey (desktop, P2-112): a dead daemon on first
     // boot is never a dead end — calm status, visible auto-retry, minimal
@@ -781,6 +796,18 @@ export const dict = {
     webAppOriginDerived: "Derivado do relay do celular — mesmo host e porta, wss:// vira https://.",
     webAppOriginUnavailable: "Sem endereço utilizável — o relay local só atende esta máquina.",
     webAppReset: "Usar o endereço do relay",
+    proxyTitle: "Proxy da máquina",
+    proxyHint: "Como o app sai para a internet nesta máquina. Por padrão, o proxy do sistema é seguido.",
+    proxyModeSystem: "Seguir o sistema",
+    proxyModeDirect: "Sem proxy",
+    proxyModeFixed: "Endereço fixo",
+    proxyAddressLabel: "Endereço do proxy",
+    proxySave: "Salvar escolha de proxy",
+    proxySaved: "escolha de proxy salva",
+    proxyInvalid: "Não foi possível salvar a escolha de proxy.",
+    proxyNextStart: "A escolha vale a partir do próximo início do app.",
+    proxyOriginOwner: "Vale agora: escolha sua.",
+    proxyOriginEnvironment: "Vale agora: ambiente da máquina.",
     localConnecting: "Conectando ao daemon local…",
     // jornada degradada no primeiro boot (desktop, P2-112): daemon morto no
     // primeiro contato nunca vira beco sem saída — status calmo, retry

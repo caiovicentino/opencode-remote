@@ -85,7 +85,8 @@ import {
   readBootHealthRecord,
 } from "./boothealthstore";
 import { WAKE_EVENT_TYPES, wakePlan } from "./wakeplan";
-import { proxyPlan, type ProxyPlanVerdict } from "./proxyplan";
+import { parseProxyAddress, proxyPlan, type ProxyPlanVerdict } from "./proxyplan";
+import { proxySettingFile, readProxyChoice, writeProxyChoice } from "./proxystore";
 import { HOTKEY_USER_ENV, hotkeyPlan, type HotkeyPlan } from "./hotkey";
 import { initDesktopLog, log, logError } from "./desktop-log";
 import { initSidecarLog } from "./sidecar-log";
@@ -242,6 +243,11 @@ let hotkey: HotkeyPlan | null = null;
 // null only before ready. The verdict text never carries a credential, an
 // absolute path or the raw environment (the proxyplan.ts privacy contract).
 let bootProxyPlan: ProxyPlanVerdict | null = null;
+// P2-289: where that mode came from — the owner's stored choice or the
+// machine environment. Static labels only, never an address or credential.
+const PROXY_ORIGIN_OWNER = "escolha do dono";
+const PROXY_ORIGIN_ENVIRONMENT = "ambiente";
+let bootProxyOrigin: string = PROXY_ORIGIN_ENVIRONMENT;
 
 // P2-244: GPU-crash policy state. `gpuDisabledThisBoot` mirrors the boot
 // plan's action so the tray hint can fire once the notification surface is
@@ -361,9 +367,10 @@ function buildDiagnostics(): string {
     // P2-223: the last frozen-window episode — duration and outcome only,
     // one line in the bundle (privacy contract in this header).
     lastHang: hangEpisode.last,
-    // P2-285: the boot proxy verdict — mode and static reason only, never
-    // the address or the raw environment (privacy contract in this header).
-    proxy: bootProxyPlan ? { mode: bootProxyPlan.mode, reason: bootProxyPlan.reason } : null,
+    // P2-285/P2-289: the boot proxy verdict — mode, static reason and the
+    // mode origin only, never the address or the raw environment (privacy
+    // contract in this header).
+    proxy: bootProxyPlan ? { mode: bootProxyPlan.mode, reason: bootProxyPlan.reason, origin: bootProxyOrigin } : null,
   });
 }
 
@@ -603,11 +610,28 @@ function showGpuDisabledHint(): void {
 // The shell reads the machine's proxy configuration ONCE per boot and applies
 // the pure verdict (proxyplan.ts) to the default session before the first
 // window load — a corporate proxy must already cover the very first request,
-// update check included. The log line carries mode + static reason only,
-// never the address, a credential or the raw environment (the P2-182
+// update check included. The log line carries mode + origin + static reason
+// only, never the address, a credential or the raw environment (the P2-182
 // redaction bar). An apply failure is log-only and never takes the shell
-// down; there is no manual proxy store yet — the choice screen stays a
-// documented continuation, and the pure verdict already accepts one.
+// down. Since P2-289 the verdict also consumes the owner's stored choice
+// (proxystore.ts): the choice wins over the machine environment, and the log
+// says which of the two produced the mode.
+
+/** The stored owner preference in the planner's vocabulary ("sistema",
+ * "direto" or one address) — null when there is no stored choice or when a
+ * stored fixed address no longer validates (a hand-edited file): the planner
+ * would discard it, so the origin stays honest about what decided the mode. */
+function storedProxyPreference(): string | null {
+  try {
+    const choice = readProxyChoice(proxySettingFile(app.getPath("userData")));
+    if (!choice) return null;
+    if (choice.mode === "system") return "sistema";
+    if (choice.mode === "direct") return "direto";
+    return choice.address && parseProxyAddress(choice.address) ? choice.address : null;
+  } catch {
+    return null;
+  }
+}
 
 /** Normalizes this machine's proxy environment for the pure planner: the
  * documented variable names win over their lowercase twins. */
@@ -628,13 +652,15 @@ function applyProxyVerdict(): void {
   } catch {
     // no hostname available — the planner's constants already cover loopback
   }
+  const preference = storedProxyPreference();
   const verdict = proxyPlan({
     env: proxyEnvSet(),
-    preference: null,
+    preference,
     localNames: localName === "" ? [] : [localName],
   });
   bootProxyPlan = verdict;
-  log(`[desktop] proxy: ${verdict.mode} (${verdict.reason})`);
+  bootProxyOrigin = preference ? PROXY_ORIGIN_OWNER : PROXY_ORIGIN_ENVIRONMENT;
+  log(`[desktop] proxy: ${verdict.mode} — origem ${bootProxyOrigin} (${verdict.reason})`);
   if (verdict.mode === "desconhecido") return;
   try {
     const mode: "system" | "direct" | undefined =
@@ -646,6 +672,32 @@ function applyProxyVerdict(): void {
   } catch {
     logError("[desktop] proxy: falha ao aplicar a regra — a sessão segue no padrão");
   }
+}
+
+/** The current proxy-setting state for the Settings surface: the stored
+ * choice (mode + address, null when none), where the ACTIVE boot mode came
+ * from and the boot verdict's static reason. No path, no port text, no
+ * credential — the address is the owner's own stored value riding back to
+ * the owner's UI (the relay-setting precedent). */
+function currentProxySetting(): {
+  mode: "system" | "direct" | "fixed" | null;
+  address: string | null;
+  origin: "owner" | "environment";
+  reason: string;
+} {
+  let stored: ReturnType<typeof readProxyChoice> = null;
+  try {
+    stored = readProxyChoice(proxySettingFile(app.getPath("userData")));
+  } catch {
+    stored = null;
+  }
+  const usedOwnerChoice = storedProxyPreference() !== null;
+  return {
+    mode: stored?.mode ?? null,
+    address: stored?.address ?? null,
+    origin: usedOwnerChoice ? "owner" : "environment",
+    reason: bootProxyPlan?.reason ?? "",
+  };
 }
 
 // --- boot-health recovery dialog (P2-270) ---------------------------------------
@@ -1468,6 +1520,25 @@ async function onReady(): Promise<void> {
     const res = currentWebAppResolution();
     log(`[desktop] web app setting saved — origin ${res.origin}`);
     return { ok: true, ...res };
+  });
+  // P2-289: the machine-proxy owner choice — read + validated write beside
+  // the relay handlers above, same trust model: validation ALWAYS happens
+  // here in the main process (proxystore.ts is fail-closed) and a hostile
+  // renderer can submit any payload shape — nothing is persisted before the
+  // store accepts it. The live session is NOT reconfigured on write: the
+  // choice takes effect on the next app start, when the boot verdict applies
+  // exactly once before the first window load.
+  ipcMain.handle("app:proxySetting", () => currentProxySetting());
+  ipcMain.handle("app:saveProxyChoice", (_e, payload: unknown) => {
+    const result = writeProxyChoice(proxySettingFile(app.getPath("userData")), payload);
+    if (!result.ok) {
+      // Nothing persists — the UI shows the module's static reason instead.
+      logError(`[desktop] proxy choice rejected: ${result.reason}`);
+      return { ...currentProxySetting(), ok: false, reason: result.reason };
+    }
+    const saved = readProxyChoice(proxySettingFile(app.getPath("userData")));
+    log(`[desktop] proxy choice saved — mode ${saved?.mode ?? "unknown"} (applies at next start)`);
+    return { ...currentProxySetting(), ok: true };
   });
   // P3-053/P2-150: dock unread badge — the renderer derives the count
   // (lib/unread.ts) and pushes it on every change. The surface comes from
