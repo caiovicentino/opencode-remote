@@ -907,6 +907,11 @@ antes de os telefones falharem o handshake. Fail-closed: nenhuma série no
 modo plain ou sem veredito medido, toda linha pré-existente permanece byte a
 byte e nenhuma linha carrega material do certificado.
 
+Regras de alerta prontas para essas séries vão no repositório (P2-320):
+`deploy/relay/alerts.yml`, gerado por `apps/relay/src/alertrules.ts` — uma
+frase por regra, o que antecipa e como carregar o arquivo, na seção de regras
+de alerta do [docs/RELAY-HOSTING.md](docs/RELAY-HOSTING.md).
+
 A imagem também entrega a PWA do celular (P2-188): ela define
 `RELAY_WEB_DIR=/app/apps/web/dist`, então a URL do relay no navegador do
 telefone já abre o app — o primeiro passo da jornada não exige dev server,

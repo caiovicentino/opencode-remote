@@ -1,0 +1,72 @@
+# Relay alert rules — GENERATED FILE, do not edit by hand (P2-320).
+# Regenerate as the byte-exact output of serializeAlertRules(alertRules())
+# from apps/relay/src/alertrules.ts; a unit test pins this file to it.
+# Load: promtool check rules deploy/relay/alerts.yml, then list the file
+# under rule_files in your Prometheus configuration.
+# See docs/RELAY-HOSTING.md — thresholds are starting points, not policy.
+groups:
+  - name: relay
+    rules:
+      - alert: RelayCapacityRefused
+        expr: "increase(relay_capacity_refused_total[10m]) > 0"
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "O relay está recusando conexões novas por capacidade: quem tenta entrar recebe ocupado."
+      - alert: RelayCrashLoop
+        expr: "relay_uptime_seconds < 60"
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "O processo está reiniciando em laço: o tempo de atividade volta a zero a cada raspagem."
+      - alert: RelayCertExpiryState
+        expr: "relay_cert_expiry_state > 0"
+        for: 30m
+        labels:
+          severity: critical
+        annotations:
+          summary: "O certificado TLS saiu do estado saudável: a renovação está atrasando."
+      - alert: RelayCertExpirySeconds
+        expr: "relay_cert_expiry_seconds < 259200"
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "O certificado TLS entrou nos três dias finais antes de vencer."
+      - alert: RelaySchedulingDelay
+        expr: "relay_scheduling_delay_ms > 1000"
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "O loop de eventos está atrasando: as conversas começam a sentir lag antes de cair."
+      - alert: RelayMemoryBytes
+        expr: "relay_resident_bytes > 1073741824"
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A memória do processo está alta: antecipa pressão antes de o sistema derrubar o relay."
+      - alert: RelaySlowConsumers
+        expr: "increase(relay_slow_consumers_total[15m]) > 0"
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Clientes que pararam de ler estão sendo fechados para conter a memória."
+      - alert: RelayRoomsRejected
+        expr: "increase(relay_rooms_rejected[15m]) > 0"
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Recusas de sala acumulando: costuma ser identificador inválido ou teto por conexão."
+      - alert: RelayRoomBudgetTerminated
+        expr: "increase(relay_room_budget_terminated[1h]) > 0"
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Uma sala passou o orçamento de volume da janela e foi encerrada."

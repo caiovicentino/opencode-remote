@@ -61,6 +61,7 @@ export const PORTABLE_TESTS: readonly string[] = [
   "proxyplan.test.ts",
   "proxystore.test.ts",
   "qr-feed.test.ts",
+  "relay-alertrules.test.ts",
   "relay-backoff.test.ts",
   "relay-knobnames.test.ts",
   "release-watch.test.ts",
