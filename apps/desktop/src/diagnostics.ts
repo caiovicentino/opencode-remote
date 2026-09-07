@@ -66,6 +66,10 @@ export interface DiagnosticsInput {
    * outcome only ("responsive" | "warn" | "dialog" | "budget-exhausted"),
    * one line, never any path or token. Optional/additive. */
   lastHang?: { durationMs: number; outcome: string } | null;
+  /** P2-285: the boot proxy verdict — mode + static reason only, NEVER the
+   * proxy address, a credential or the raw environment (privacy contract in
+   * this header). Optional/additive. */
+  proxy?: { mode: string; reason: string } | null;
 }
 
 /** Lines of the diagnostic bundle, in display order. */
@@ -94,6 +98,9 @@ export function buildDiagnosticReport(d: DiagnosticsInput): string {
     // P2-223: one additive line — the last frozen-window episode with its
     // duration and outcome, nothing else (header privacy contract).
     `last hang: ${d.lastHang ? `${d.lastHang.outcome} after ${Math.round(d.lastHang.durationMs / 1000)}s` : "none"}`,
+    // P2-285: one additive line — mode + static reason only, never the proxy
+    // address or the raw environment (header privacy contract).
+    `proxy: ${d.proxy?.mode ?? "unknown"}${d.proxy?.reason ? ` (${d.proxy.reason})` : ""}`,
     `crash files: ${d.crashFiles.length === 0 ? "none" : d.crashFiles.join(", ")}`,
     "--- desktop.log (last lines) ---",
     ...d.logTail.slice(-DIAG_LOG_TAIL),

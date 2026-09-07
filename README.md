@@ -1197,6 +1197,14 @@ guest's web preferences are forced in the main process (context isolation +
 sandbox on, node integration off, no renderer-declared preload), so a page
 opened there can never render local files or grant itself privileges.
 
+**Proxy (P2-285)**: the shell follows the machine's proxy setup — the system
+proxy is the default, and a fixed address from the proxy environment is
+applied once at boot with loopback always bypassing it (the local daemon
+bridge never routes through a proxy); choosing a proxy manually inside the
+app is a registered continuation, and every decision lands as one
+mode-plus-reason `proxy:` line in `desktop.log`, never the address or
+credentials.
+
 Since P1-046 the window is a real two-column cockpit: the conversation stays
 open in the left column while Artifacts, Browser, Files or Settings open in a
 contextual pane on the right (switching panes never destroys the chat), and

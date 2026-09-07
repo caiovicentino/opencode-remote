@@ -1,7 +1,7 @@
 import { app, autoUpdater, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, powerMonitor, screen, session, Tray, shell } from "electron";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statfsSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import { join, sep } from "node:path";
 import QRCode from "qrcode";
 import {
@@ -85,6 +85,7 @@ import {
   readBootHealthRecord,
 } from "./boothealthstore";
 import { WAKE_EVENT_TYPES, wakePlan } from "./wakeplan";
+import { proxyPlan, type ProxyPlanVerdict } from "./proxyplan";
 import { HOTKEY_USER_ENV, hotkeyPlan, type HotkeyPlan } from "./hotkey";
 import { initDesktopLog, log, logError } from "./desktop-log";
 import { initSidecarLog } from "./sidecar-log";
@@ -236,6 +237,12 @@ let quitDialogShown = false;
 // item. null only before ready — nothing consults it that early.
 let hotkey: HotkeyPlan | null = null;
 
+// P2-285: the machine's proxy verdict, computed EXACTLY ONCE per boot (in
+// onReady, before the first window load) and reused by the diagnostics bundle.
+// null only before ready. The verdict text never carries a credential, an
+// absolute path or the raw environment (the proxyplan.ts privacy contract).
+let bootProxyPlan: ProxyPlanVerdict | null = null;
+
 // P2-244: GPU-crash policy state. `gpuDisabledThisBoot` mirrors the boot
 // plan's action so the tray hint can fire once the notification surface is
 // actually available (inside onReady); `gpuHintShown` caps the tip at ONE per
@@ -354,6 +361,9 @@ function buildDiagnostics(): string {
     // P2-223: the last frozen-window episode — duration and outcome only,
     // one line in the bundle (privacy contract in this header).
     lastHang: hangEpisode.last,
+    // P2-285: the boot proxy verdict — mode and static reason only, never
+    // the address or the raw environment (privacy contract in this header).
+    proxy: bootProxyPlan ? { mode: bootProxyPlan.mode, reason: bootProxyPlan.reason } : null,
   });
 }
 
@@ -586,6 +596,55 @@ function showGpuDisabledHint(): void {
     gpuHintShown = true;
   } catch (err) {
     logError("[desktop] gpu hint failed:", err);
+  }
+}
+
+// --- proxy verdict (P2-285) -----------------------------------------------------
+// The shell reads the machine's proxy configuration ONCE per boot and applies
+// the pure verdict (proxyplan.ts) to the default session before the first
+// window load — a corporate proxy must already cover the very first request,
+// update check included. The log line carries mode + static reason only,
+// never the address, a credential or the raw environment (the P2-182
+// redaction bar). An apply failure is log-only and never takes the shell
+// down; there is no manual proxy store yet — the choice screen stays a
+// documented continuation, and the pure verdict already accepts one.
+
+/** Normalizes this machine's proxy environment for the pure planner: the
+ * documented variable names win over their lowercase twins. */
+function proxyEnvSet(): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = {};
+  for (const name of ["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY", "PAC_URL"]) {
+    env[name] = process.env[name] ?? process.env[name.toLowerCase()];
+  }
+  return env;
+}
+
+/** The one application of the boot proxy verdict. Runs exactly once, before
+ * the first window load. */
+function applyProxyVerdict(): void {
+  let localName = "";
+  try {
+    localName = hostname().trim().toLowerCase();
+  } catch {
+    // no hostname available — the planner's constants already cover loopback
+  }
+  const verdict = proxyPlan({
+    env: proxyEnvSet(),
+    preference: null,
+    localNames: localName === "" ? [] : [localName],
+  });
+  bootProxyPlan = verdict;
+  log(`[desktop] proxy: ${verdict.mode} (${verdict.reason})`);
+  if (verdict.mode === "desconhecido") return;
+  try {
+    const mode: "system" | "direct" | undefined =
+      verdict.mode === "sistema" ? "system" : verdict.mode === "direto" ? "direct" : undefined;
+    const config = mode ? { mode } : { proxyRules: verdict.rule, proxyBypassRules: verdict.exceptions.join(",") };
+    session.defaultSession
+      .setProxy(config)
+      .catch(() => logError("[desktop] proxy: falha ao aplicar a regra — a sessão segue no padrão"));
+  } catch {
+    logError("[desktop] proxy: falha ao aplicar a regra — a sessão segue no padrão");
   }
 }
 
@@ -1103,6 +1162,10 @@ async function onReady(): Promise<void> {
   // watch's own cap).
   if (gpuDisabledThisBoot) showGpuDisabledHint();
   logInstanceBoot();
+  // P2-285: the proxy verdict is applied ONCE on the default session, before
+  // the first window load — never re-applied, never late for the first
+  // request the shell makes.
+  applyProxyVerdict();
   // P2-229: the global-hotkey plan is resolved ONCE after the app is ready,
   // before the first menu/tray build — both surfaces display its outcome.
   // Registration goes through the plan (harness session first, then the
