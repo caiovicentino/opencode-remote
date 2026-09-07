@@ -11,6 +11,7 @@ import { log, logError } from "./desktop-log";
 import { teeSidecarChunk } from "./sidecar-log";
 import { classifySidecarExit, type SidecarExitVerdict } from "./sidecarexit";
 import { planSidecarStop, type SidecarStopStep } from "./sidecarstop";
+import { planSidecarWedge, type SidecarWedgeVerdict } from "./sidecarwedge";
 import type { RelayLinkFacts } from "./relaylink";
 import { candidatePorts, pickDaemonPort, type DaemonPortReason } from "./daemonport";
 import { DEFAULT_RELAY_URL } from "./relaysetting";
@@ -408,7 +409,12 @@ export async function waitForDaemonHealth(opts: HealthWaitOptions = {}): Promise
     // Fresh install: the daemon generates its first token on the very poll
     // below, so keep re-reading while we have none (memoized once found).
     if (token === null) token = readApiToken();
-    if (await healthOnce(port, token)) return true;
+    if (await healthOnce(port, token)) {
+      // P2-321: our own child proved healthy — start (or keep) watching it for
+      // a wedge. Adopted daemons (spawned=false) stay with the reconnect watchdog.
+      if (sidecar.spawned) armWedgeProbe();
+      return true;
+    }
     await new Promise((r) => setTimeout(r, HEALTH_POLL_MS));
   }
   return false;
@@ -500,6 +506,7 @@ export async function startDaemonSidecar(
     sidecar.reused = true; // enables the daemon.log pair-URI fallback
     // P1-053: an adopted daemon is not our child — track its health forever
     // instead of relying on the (hosted-only) respawn budget.
+    disarmWedgeProbe(); // P2-321: the wedge prober only watches our own child
     startReconnectWatchdog();
     // P3-017: also remember how a replacement could be spawned so the manual
     // restart (restartDaemon) can act when an adopted daemon turns unstable.
@@ -561,6 +568,10 @@ function spawnChild(entry: DaemonEntry): void {
   // We're taking over with our own child again: the adopted-daemon watchdog
   // belongs to the reuse mode and must never probe (or state) alongside it.
   stopReconnectWatchdog();
+  // P2-321: a spawn that is not the wedge recovery's own respawn disarms the
+  // wedge prober — a fresh child starts a fresh watch. The recovery's own
+  // respawn keeps the prober armed so the documented ceiling can bind.
+  if (!wedgeRecoveryInFlight) disarmWedgeProbe();
   const child = spawn(entry.node, [...entry.args, entry.file], {
     cwd: entry.cwd,
     env: {
@@ -630,6 +641,10 @@ function spawnChild(entry: DaemonEntry): void {
   });
   child.on("exit", (code, signal) => {
     sidecar.exited = true;
+    // P2-321: every exit disarms the wedge prober — crash, intentional stop
+    // or app quit — EXCEPT the wedge recovery's own stop, which must keep its
+    // prober armed so the replacement child is judged against the ceiling.
+    if (!wedgeRecoveryInFlight) disarmWedgeProbe();
     // P2-140: remember WHY it died (port busy, missing entry, signal…); an
     // intentional stop never overwrites the verdict — it clears it below.
     if (!sidecar.stopping) {
@@ -660,6 +675,9 @@ function spawnChild(entry: DaemonEntry): void {
     }
   });
   log(`[desktop] daemon sidecar spawned (pid ${child.pid}, metrics :${activeDaemonPort()})`);
+  // P2-321: the wedge recovery's own respawn is complete — from here on the
+  // prober watches the replacement child like any other spawn would.
+  wedgeRecoveryInFlight = false;
 }
 
 /**
@@ -706,7 +724,9 @@ async function respawn(): Promise<void> {
     sidecar.reused = true;
     sidecar.failures = 0;
     sidecar.exit = null; // recovered — the last crash verdict is history
-    // Adopted again → the infinite reconnect watchdog takes over (P1-053).
+    // Adopted again → the infinite reconnect watchdog takes over (P1-053)
+    // and the wedge prober stands down (P2-321: not our child anymore).
+    disarmWedgeProbe();
     startReconnectWatchdog();
     return;
   }
@@ -813,6 +833,141 @@ async function reconnectProbe(): Promise<void> {
     reconnectAttempts += 1;
   }
   scheduleReconnectProbe(reconnectDelayMs(reconnectActive ? reconnectAttempts : 1, RESPAWN_DELAYS_MS));
+}
+
+// --- wedged-daemon probe (P2-321) ---------------------------------------------
+// The supervision above only sees a child that EXITS. A daemon that wedges
+// alive — port still bound, event loop pinned — never exits, so the exit
+// handler never fires, the respawn budget is never touched and the phone
+// hangs on a connection nothing will revive. After the child's FIRST healthy
+// boot the shell therefore probes it too (healthOnce, same loopback endpoint
+// the shell already uses — no new port, no new route, no new listener) and
+// feeds the answers through the pure verdict of sidecarwedge.ts. Same timer
+// discipline as the adopted-daemon watchdog: one self-scheduling probe,
+// disarmed on intentional stop, fresh spawn, child exit and app exit, and
+// never armed for an adopted daemon (that is the reconnect watchdog's job).
+
+/** Wedge probe interval. Tests shorten it via OCR_DAEMON_WEDGE_PROBE_MS —
+ * production never sets it, exactly like the other OCR_DAEMON_* hatches. */
+const WEDGE_PROBE_MS = Number(process.env.OCR_DAEMON_WEDGE_PROBE_MS) || 10_000;
+/** True while the wedge prober is watching our own child. */
+let wedgeArmed = false;
+/** Pending wedge probe timer, if any. */
+let wedgeTimer: NodeJS.Timeout | null = null;
+/** Consecutive health probes the child answered with silence. */
+let wedgeFailedProbes = 0;
+/** Consecutive wedge recoveries already spent (zeroed on the first healthy probe). */
+let wedgeRecoveries = 0;
+/** Last non-observe verdict, still in effect (null while healthy/observing). */
+let wedgeActive: SidecarWedgeVerdict | null = null;
+/** True between the wedge-initiated stop and its own respawn's spawnChild —
+ * the one window in which exit/new-spawn must NOT disarm the prober, so the
+ * documented recovery ceiling can actually bind. */
+let wedgeRecoveryInFlight = false;
+
+/** Last wedge verdict in effect, for the pairing payload (additive field) —
+ * a copy, so callers can never mutate the live verdict. */
+export function sidecarWedgeState(): { state: string; message: string } | null {
+  return wedgeActive ? { state: wedgeActive.kind, message: wedgeActive.message } : null;
+}
+
+/** Arm the wedge prober after our own child's first healthy boot. Idempotent:
+ * a prober already watching (e.g. through a wedge recovery) keeps its counters. */
+function armWedgeProbe(): void {
+  if (wedgeArmed) return;
+  wedgeArmed = true;
+  wedgeFailedProbes = 0;
+  wedgeRecoveries = 0;
+  wedgeActive = null;
+  log("[desktop] wedge probe armed for the daemon sidecar (alive-but-unresponsive watch)");
+  scheduleWedgeProbe(WEDGE_PROBE_MS);
+}
+
+/** Disarm the wedge prober and forget the episode (counters and verdict). */
+function disarmWedgeProbe(): void {
+  wedgeArmed = false;
+  if (wedgeTimer) {
+    clearTimeout(wedgeTimer);
+    wedgeTimer = null;
+  }
+  wedgeFailedProbes = 0;
+  wedgeRecoveries = 0;
+  wedgeActive = null;
+}
+
+/** One self-scheduling probe; runs while the prober stays armed. */
+function scheduleWedgeProbe(afterMs: number): void {
+  if (!wedgeArmed) return;
+  if (wedgeTimer) clearTimeout(wedgeTimer);
+  wedgeTimer = setTimeout(() => {
+    wedgeTimer = null;
+    void wedgeProbe();
+  }, afterMs);
+}
+
+async function wedgeProbe(): Promise<void> {
+  if (!wedgeArmed) return;
+  const childAlive = sidecar.child !== null && !sidecar.exited;
+  if (!childAlive) {
+    // Nothing to wedge — the exit path owns a dead child. Keep the cadence.
+    scheduleWedgeProbe(WEDGE_PROBE_MS);
+    return;
+  }
+  const healthy = await healthOnce(activeDaemonPort(), sidecar.token ?? readApiToken());
+  // An intentional stop, a fresh spawn or the app quitting may have happened
+  // during the probe — the verdict below would be stale.
+  if (!wedgeArmed) return;
+  if (healthy) {
+    // First healthy probe zeroes both counters (sidecarwedge.ts contract).
+    if (wedgeFailedProbes > 0) {
+      log("[desktop] daemon sidecar answering again — wedge counters reset");
+    }
+    wedgeFailedProbes = 0;
+    wedgeRecoveries = 0;
+    wedgeActive = null;
+    scheduleWedgeProbe(WEDGE_PROBE_MS);
+    return;
+  }
+  wedgeFailedProbes += 1;
+  const verdict = planSidecarWedge({
+    failedProbes: wedgeFailedProbes,
+    childAlive,
+    transitionInFlight: sidecar.stopping || respawnTimer !== null,
+    recoveriesUsed: wedgeRecoveries,
+  });
+  if (verdict.kind === "observe") {
+    scheduleWedgeProbe(WEDGE_PROBE_MS);
+    return;
+  }
+  // degraded / restart / give-up all travel: desktop.log once per transition
+  // and the additive pairing-payload field for as long as the verdict holds.
+  if (wedgeActive?.kind !== verdict.kind) {
+    log(`[desktop] daemon sidecar wedge: ${verdict.message}`);
+  }
+  wedgeActive = verdict;
+  if (verdict.kind === "restart") {
+    // One budgeted recovery through the EXISTING stop + respawn machinery —
+    // never a parallel path, never while another transition is in flight.
+    // The flag stays up until the recovery's own spawnChild runs, so neither
+    // the stop's exit nor the fresh spawn disarms the prober mid-recovery.
+    wedgeRecoveries += 1;
+    wedgeRecoveryInFlight = true;
+    await stopDaemonSidecar();
+    if (!wedgeRecoveryInFlight) return; // impossible today; fail safe on quit races
+    // The prober stays armed through its own recovery; the next probes judge
+    // the replacement child against the spent budget.
+    scheduleRespawn();
+    scheduleWedgeProbe(WEDGE_PROBE_MS);
+  } else if (verdict.kind === "give-up") {
+    // Ceiling reached: stop probing, keep the verdict visible in the payload.
+    if (wedgeTimer) {
+      clearTimeout(wedgeTimer);
+      wedgeTimer = null;
+    }
+    wedgeArmed = false;
+  } else {
+    scheduleWedgeProbe(WEDGE_PROBE_MS);
+  }
 }
 
 /**
@@ -941,7 +1096,9 @@ export async function restartDaemon(): Promise<boolean> {
     if (sidecar.token !== null && (await healthOnce(activeDaemonPort(), sidecar.token))) {
       log(`[desktop] restart daemon: daemon healthy on :${activeDaemonPort()} — reusing it`);
       sidecar.reused = true;
-      // Adopted again → re-arm the infinite reconnect watchdog (P1-053).
+      // Adopted again → re-arm the infinite reconnect watchdog (P1-053) and
+      // stand the wedge prober down (P2-321: not our child anymore).
+      disarmWedgeProbe();
       startReconnectWatchdog();
       return true;
     }

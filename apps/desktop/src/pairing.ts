@@ -108,6 +108,15 @@ export interface PairingState {
    * pairing — it is information, not an error.
    */
   startup?: { state: string; message: string };
+  /**
+   * P2-321: verdict of the wedged-daemon probe (sidecarwedge.ts classifier) —
+   * the shell's own sidecar child alive but not answering health probes.
+   * Additive; absent = no wedge in effect (the renderer renders nothing —
+   * today the verdict's surfaces are desktop.log and diagnostics). state is
+   * one of observe | degraded | restart | give-up; message is a static
+   * pt-BR phrase with no path, port, identifier or secret.
+   */
+  sidecarWedge?: { state: string; message: string };
 }
 
 /**

@@ -294,4 +294,13 @@ o mesmo veredito pra câmera do scanner de pareamento: o IPC `app:camAccess`
 (módulo puro `apps/desktop/src/camaccess.ts`, mesma leitura a cada pedido)
 substitui a frase estática de permissão negada pela frase acionável do
 veredito com a ação "Abrir ajustes do sistema" quando a ponte do shell está
-presente — no telefone a frase do dicionário segue intacta.
+presente — no telefone a frase do dicionário segue intacta. P2-321 fecha a
+cega de supervisionamento que sobrava: um daemon que trava VIVO (porta ligada,
+event loop preso) nunca sai, então o handler de saída nunca dispara respawn —
+depois do primeiro boot saudável o próprio filho passa a ser sondado
+(`healthOnce`, mesmo endpoint loopback, zero porta/rota/ouvinte novo) e o
+veredito puro de `sidecarwedge.ts` (observe/degraded/restart/give-up, teto de
+1 recuperação consecutiva, contador zerado na primeira sonda saudável) manda
+parar via `sidecarstop`/respawn existentes; o veredito viaja no campo aditivo
+`sidecarWedge` do `ocr:pairing-state` e no desktop.log (o hatch
+`OCR_DAEMON_WEDGE_PROBE_MS` encurta o intervalo em teste).
