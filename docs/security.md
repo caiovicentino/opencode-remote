@@ -128,6 +128,19 @@ identity servers, no accounts.
     `scripts/audit-exemptions.json` — past the expiry the advisory counts in
     full again.
 
+14. **Workflow permissions (P2-271).** Every job of both workflows declares
+    its own least-privilege `permissions:` block — the six CI jobs can only
+    read repository contents, and only the release jobs that publish touch
+    `contents: write` (plus `packages: write` for the relay image) — and
+    `npm run check:workflow-perms` (`scripts/check-workflow-perms.ts`,
+    verdict in the pure `scripts/workflowperms.ts`) runs in the `verify` job
+    after the install step, re-reading both files and failing the job on a
+    reject verdict alone (a broad `write-all`, a job without any
+    declaration, or a scope outside `scripts/workflow-scopes.json`; a failed
+    read only warns): a new job must declare its own `permissions:` block in
+    the workflow and register its scopes under its `"file/job"` key in
+    `scripts/workflow-scopes.json`.
+
 ## Key rotation
 
 Delete `~/.opencode-remote/daemon.json` (or `manage.ts revoke-all`) and

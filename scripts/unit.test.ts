@@ -867,6 +867,13 @@ import {
   type AuditExemption,
   type AuditSeverity,
 } from "./auditverdict";
+import { parseWorkflowPermissions } from "./check-workflow-perms";
+import {
+  BROAD_WRITE_SCOPE,
+  workflowPermsVerdict,
+  type WorkflowJobPerms,
+  type WorkflowScopeAllowlist,
+} from "./workflowperms";
 
 
 let failures = 0;
@@ -23650,6 +23657,190 @@ check("P2-241: no new periodic timer was introduced by the handler", !dlBlock.in
   check(
     "P2-269: auditverdict.ts imports no node:child_process, node:fs or fetch",
     !/^import[^\n]*(node:child_process|node:fs|fetch)/m.test(verdictSrc) && !verdictSrc.includes("fetch("),
+  );
+}
+
+// --- P2-271: workflow permissions verdict (workflowperms.ts) -----------------
+{
+  const job = (
+    file: string,
+    name: string,
+    jobScopes: string[],
+    fileScopes: string[] = [],
+    readFailed = false,
+  ): WorkflowJobPerms => ({
+    file,
+    job: name,
+    jobScopes,
+    fileScopes,
+    ...(readFailed ? { readFailed: true } : {}),
+  });
+  const RO = ["contents:read"];
+  const allow = (entries: Record<string, string[]>): WorkflowScopeAllowlist => entries;
+
+  // Rule 1: an absent, empty or failed-read input warns and NEVER approves —
+  // checking zero jobs is exactly the same as having no gate.
+  check(
+    "P2-271: an absent input warns and never approves",
+    workflowPermsVerdict(null, {}).outcome === "warn" &&
+      workflowPermsVerdict(undefined, {}).outcome === "warn",
+  );
+  check(
+    "P2-271: an empty job list warns and never approves",
+    workflowPermsVerdict([], {}).outcome === "warn",
+  );
+  check(
+    "P2-271: a failed read warns even with a broad-write job present (rule order)",
+    workflowPermsVerdict(
+      [job("ci.yml", "broken", [], [], true), job("ci.yml", "wide", [BROAD_WRITE_SCOPE])],
+      allow({ "ci.yml/wide": [BROAD_WRITE_SCOPE] }),
+    ).outcome === "warn",
+  );
+  check(
+    "P2-271: an entry marked as a failed read warns even claiming a write scope",
+    workflowPermsVerdict([job("ci.yml", "broken", ["contents:write"], [], true)], allow({})).outcome === "warn",
+  );
+
+  // Rule order, second proof: a broad write and a job without any
+  // declaration at the same time — the outcome is reject, not warn.
+  check(
+    "P2-271: a broad-write job rejects while another job declares nothing at all (rule order)",
+    workflowPermsVerdict(
+      [job("a.yml", "wide", [BROAD_WRITE_SCOPE]), job("b.yml", "silent", [])],
+      allow({}),
+    ).outcome === "reject",
+  );
+
+  // Rule 2 boundaries: the broad write rejects even when the allowlist
+  // would legitimize it — no allowlist entry can ever save write-all.
+  check(
+    "P2-271: the broad write rejects even with a matching allowlist entry",
+    workflowPermsVerdict([job("a.yml", "wide", [BROAD_WRITE_SCOPE])], allow({ "a.yml/wide": [BROAD_WRITE_SCOPE] }))
+      .outcome === "reject",
+  );
+  check("P2-271: the documented broad write is the write-all declaration", BROAD_WRITE_SCOPE === "write-all");
+
+  // Rule 3: no declaration of its own and nothing inherited.
+  check(
+    "P2-271: a job with no declaration of its own and none inherited rejects",
+    workflowPermsVerdict([job("ci.yml", "ghost", [], [])], allow({ "ci.yml/ghost": RO })).outcome === "reject",
+  );
+
+  // Rule 4: a top-only declaration counts as declared, reported inherited.
+  const inherited = workflowPermsVerdict([job("ci.yml", "scoped", [], RO)], allow({ "ci.yml/scoped": RO }));
+  check(
+    "P2-271: a top-only declaration approves and is reported as inherited",
+    inherited.outcome === "approve" &&
+      inherited.lines.some((l) => l.includes("ci.yml/scoped") && l.includes("(inherited from the workflow top)")),
+  );
+
+  // Rule 5: a declared scope outside the documented allowlist rejects.
+  check(
+    "P2-271: a declared scope outside the documented allowlist rejects",
+    workflowPermsVerdict(
+      [job("ci.yml", "greedy", ["contents:read", "actions:write"])],
+      allow({ "ci.yml/greedy": RO }),
+    ).outcome === "reject",
+  );
+
+  // Rule 6: the happy case — a read-only job with its own declaration.
+  const happy = workflowPermsVerdict([job("ci.yml", "verify", RO)], allow({ "ci.yml/verify": RO }));
+  check(
+    "P2-271: a read-only job with its own declaration approves",
+    happy.outcome === "approve" && happy.lines.length === 1,
+  );
+
+  // Determinism: identical report for the same input in two calls, and a
+  // stable (file, job) ordering regardless of the input order.
+  const messy = [job("b.yml", "zeta", RO), job("a.yml", "alpha", ["contents:write"]), job("a.yml", "beta", [], RO)];
+  const allowMessy = allow({ "b.yml/zeta": RO, "a.yml/alpha": ["contents:write"], "a.yml/beta": RO });
+  const run1 = workflowPermsVerdict(messy, allowMessy);
+  const run2 = workflowPermsVerdict([...messy].reverse(), allowMessy);
+  check(
+    "P2-271: the same input yields an identical report in two calls",
+    JSON.stringify(run1) === JSON.stringify(workflowPermsVerdict(messy, allowMessy)),
+  );
+  check(
+    "P2-271: report lines are stably ordered by file and job name",
+    JSON.stringify(run1) === JSON.stringify(run2) &&
+      JSON.stringify(run1.lines.map((l) => l.split(" ")[2])) ===
+        JSON.stringify(["a.yml/alpha", "a.yml/beta", "b.yml/zeta"]),
+  );
+
+  // Real-repo assertions: both real workflows, the CI step, the allowlist
+  // file and the purity of the verdict module.
+  const root = join(import.meta.dirname, "..");
+  const ciYml = readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8");
+  const releaseYml = readFileSync(join(root, ".github", "workflows", "release.yml"), "utf8");
+  const ciParsed = parseWorkflowPermissions(ciYml);
+  const releaseParsed = parseWorkflowPermissions(releaseYml);
+  check(
+    "P2-271: the real ci.yml exposes exactly the six expected jobs",
+    JSON.stringify(ciParsed.jobs.map((j) => j.job)) ===
+      JSON.stringify(["verify", "scope", "desktop-package", "desktop-package-win", "verify-win", "relay-image"]),
+  );
+  check(
+    "P2-271: every job of both real workflows declares permissions",
+    ciParsed.jobs.length > 0 &&
+      releaseParsed.jobs.length > 0 &&
+      ciParsed.jobs.every((j) => j.scopes.length > 0) &&
+      releaseParsed.jobs.every((j) => j.scopes.length > 0),
+  );
+  check(
+    "P2-271: no ci.yml job declares a write of any kind",
+    ciParsed.jobs.every((j) => j.scopes.every((s) => !s.endsWith(":write") && s !== BROAD_WRITE_SCOPE)),
+  );
+
+  // The gate step: unique, pinned between install and build, bash shell and
+  // own timeout (P2-245/P2-255 lessons), wired through package.json.
+  const gateName = "- name: Workflow permissions gate";
+  const verifyJob = ciYml.slice(0, ciYml.indexOf("\n  scope:"));
+  const gateAt = verifyJob.indexOf(gateName);
+  const gateEnd = verifyJob.indexOf("- name:", gateAt + 10);
+  const gateBlock = gateAt >= 0 && gateEnd > gateAt ? verifyJob.slice(gateAt, gateEnd) : "";
+  const installAt = verifyJob.indexOf("- name: Install\n");
+  const buildAt = verifyJob.indexOf("- name: Build\n");
+  check(
+    "P2-271: the workflow-perms step exists exactly once in ci.yml",
+    ciYml.split(gateName).length === 2,
+  );
+  check(
+    "P2-271: the step sits after the install step and before the build step",
+    installAt > -1 && gateAt > installAt && buildAt > gateAt,
+  );
+  check(
+    "P2-271: the step declares shell bash and its own timeout-minutes",
+    gateBlock.includes("shell: bash") && gateBlock.includes("timeout-minutes:"),
+  );
+  check(
+    "P2-271: the step runs the script via the package.json entry",
+    gateBlock.includes("npm run check:workflow-perms") &&
+      (JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { scripts: Record<string, string> })
+        .scripts["check:workflow-perms"] === "tsx scripts/check-workflow-perms.ts",
+  );
+
+  // The versioned allowlist: one entry per real job, and never a token, a
+  // machine path or an address.
+  const scopesRaw = readFileSync(join(root, "scripts", "workflow-scopes.json"), "utf8");
+  const scopesDoc = JSON.parse(scopesRaw) as { jobs?: WorkflowScopeAllowlist };
+  check(
+    "P2-271: the allowlist file holds one entry per real workflow job",
+    typeof scopesDoc.jobs === "object" &&
+      Object.keys(scopesDoc.jobs ?? {}).length === ciParsed.jobs.length + releaseParsed.jobs.length,
+  );
+  check(
+    "P2-271: the allowlist file carries no token, machine path or address",
+    !/ghp_|github_pat_|npm_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]|xox[bap]/.test(scopesRaw) &&
+      !/\/Users\/|\/home\/|[A-Za-z]:\\/.test(scopesRaw) &&
+      !/https?:\/\//.test(scopesRaw),
+  );
+
+  // Purity: the verdict module imports no file system, no process spawning
+  // and no network vocabulary at all.
+  const permsSrc = readFileSync(join(root, "scripts", "workflowperms.ts"), "utf8");
+  check(
+    "P2-271: workflowperms.ts imports no node:child_process, node:fs or fetch",
+    !/^import[^\n]*(node:child_process|node:fs|fetch)/m.test(permsSrc) && !permsSrc.includes("fetch("),
   );
 }
 
