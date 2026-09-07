@@ -30,6 +30,7 @@ import {
   workspaceCoversArtifacts,
 } from "../apps/daemon/src/sessionctx";
 import { CLOSE_HINT_LOG } from "../apps/desktop/src/closehint";
+import { shellLabels } from "../apps/desktop/src/shelllang";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 
@@ -658,22 +659,24 @@ try {
   // The paired two-column layout can't render hermetically (needs real E2E
   // keys, see the P1-051 note above), but the shortcut WIRING is fully
   // observable: the preload bridge must expose onMenuAction and the app menu
-  // must carry the Go (Ir, pt-BR since P2-176) items whose click handlers
-  // broadcast ocr:menu-action.
+  // must carry the Go items whose click handlers broadcast ocr:menu-action.
+  // Since P2-276 the labels follow the language the renderer pushes (en or
+  // pt) — assert against the shell vocabulary, never the machine locale.
   const bridge = run("P1-046: preload exposes onMenuAction", ["ipc", "typeof window.ocrDesktop.onMenuAction"], 15_000);
   if (bridge.ok) check("P1-046: onMenuAction is a function", /function/.test(bridge.stdout));
-  const menuIds: [string, string][] = [
-    ["go-new-chat", "Nova conversa"],
-    ["go-palette", "Paleta de comandos"],
-    ["go-pane-chat", "Conversas"],
-    ["go-pane-artifacts", "Artifacts"],
-    ["go-pane-browser", "Browser"],
-    ["go-pane-files", "Arquivos"],
-    ["go-pane-settings", "Configurações"],
+  const menuIds: [string, keyof ReturnType<typeof shellLabels>["menu"]][] = [
+    ["go-new-chat", "newChat"],
+    ["go-palette", "commandPalette"],
+    ["go-pane-chat", "paneConversations"],
+    ["go-pane-artifacts", "paneArtifacts"],
+    ["go-pane-browser", "paneBrowser"],
+    ["go-pane-files", "paneFiles"],
+    ["go-pane-settings", "paneSettings"],
   ];
-  for (const [id, label] of menuIds) {
+  for (const [id, key] of menuIds) {
     const res = run(`P1-046: Go menu item ${id}`, ["menu", id], 15_000);
-    if (res.ok) check(`P1-046: ${id} is labeled "${label}"`, res.stdout.includes(label));
+    const labels = [shellLabels("en").menu[key], shellLabels("pt").menu[key]];
+    if (res.ok) check(`P1-046: ${id} carries a shell-vocabulary label`, labels.some((l) => res.stdout.includes(l)));
   }
   // Real click on the menu item: runs the main-process handler that
   // broadcasts ocr:menu-action to every window (renderer ignores it while

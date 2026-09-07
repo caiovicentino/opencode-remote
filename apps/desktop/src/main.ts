@@ -1434,8 +1434,11 @@ async function onReady(): Promise<void> {
   // new routes, no new requests, no new timers.
   ipcMain.on("ocr:shell-lang", (_e, raw: unknown) => {
     const decision = shellLang(raw, app.getLocale(), SUPPORTED_SHELL_LANGS);
-    if (decision.lang === shellLangState.lang) return;
+    // The state records every accepted push (origin included) even when the
+    // language is unchanged — only the rebuild is lang-change-gated.
+    const langChanged = decision.lang !== shellLangState.lang;
     shellLangState = decision;
+    if (!langChanged) return;
     log(`[desktop] shell language: ${decision.lang} (${decision.origin})`);
     applyShellLanguage();
   });
