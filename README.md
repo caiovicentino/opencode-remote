@@ -743,6 +743,18 @@ against an already-built package:
     node apps/desktop/scripts/packaged-daemon-smoke.mjs "apps/desktop/dist/mac-arm64/OpenCode Remote.app"
     node apps/desktop/scripts/packaged-daemon-smoke.mjs "apps/desktop/dist/win-unpacked"
 
+Since P2-309 the mac job also **smoke-mounts the disk image itself**
+(`Smoke-mount the macOS disk image` step, after the container Gatekeeper
+verification and before the upload): the DMG a user actually opens is attached
+non-interactively at a throwaway mount point, the mounted content is checked
+(exactly one `.app`, its executable, `resources/daemon` + `web-dist`, and the
+Applications symlink → `/Applications` that the drag-to-install flow relies
+on), the app is booted FROM INSIDE the mounted volume under the same hermetic
+contract as the boot smoke, and the image is detached no matter what —
+Playwright missing fails closed before anything is mounted. Like its siblings
+(P2-204/P2-251/P2-304), the image smoke runs only in the release workflow,
+never in the deterministic gate.
+
 One command stamps all three from the tag — never bump by
 hand:
 

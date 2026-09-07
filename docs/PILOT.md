@@ -205,6 +205,21 @@ próprio). Como os irmãos de empacotamento (P2-204/P2-251), o smoke de
 instalador fica **fora do gate determinístico por design** — só roda no
 workflow de release, numa máquina Windows real (NSIS não executa em outro
 host; o script falha fechado fora do Windows).
+Desde a P2-309 o job desktop-dmg também **monta a imagem que o usuário de Mac
+realmente abre** antes de anexá-la (passo `Smoke-mount the macOS disk image`,
+`apps/desktop/scripts/dmg-smoke.mjs`, depois da verificação Gatekeeper do
+container e antes do upload): `hdiutil attach` sem interface num ponto de
+montagem descartável, conferência do conteúdo montado (exatamente um `.app`,
+executável, `resources/daemon` + `web-dist`, atalho para Aplicativos apontando
+para `/Applications`), boot do app DE DENTRO do volume com o mesmo contrato
+hermético do boot smoke e desmontagem sempre (retry `-force`). O veredito vive
+na função pura `dmgVerdict` (`dmg-smoke-verdict.mjs`) com motivos
+`attach-failed`, `layout-missing`, `applications-link-missing`, `boot-failed` e
+`detach-failed`; Playwright ausente falha fechado **antes** de montar qualquer
+coisa. Exigido por `scripts/bootsmokeparity.ts` no job que anexa a imagem
+(exatamente uma ocorrência, depois do empacotamento e antes do upload, `shell:
+bash` e timeout próprio) e, como os irmãos P2-204/P2-251/P2-304, o smoke de
+imagem fica **fora do gate determinístico por design**.
 Na mesma ponta de distribuição, o job `release-feeds` do workflow confere o
 CONTEÚDO dos quatro feeds de update antes da publicação (P2-157, estendido
 pela P2-212): `update-mac-arm64.json` e `update-mac-x64.json` — os dois que

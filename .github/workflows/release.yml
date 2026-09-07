@@ -191,6 +191,32 @@ jobs:
               "dmg-codesign-$i.txt" "dmg-spctl-$i.txt" "dmg-stapler-$i.txt"
           done <<< "$DMGS"
 
+      # P2-309: every verdict above reads bytes OUTSIDE the image — the .app
+      # under dist/ and the container's signature verdicts — but the DMG the
+      # user actually opens was never MOUNTED, so a volume without the
+      # Applications shortcut (the drag-to-install affordance the README
+      # names) or with a broken app inside only surfaced on the downloader's
+      # Mac. Attach each constraint to the real artifact: mount the
+      # arch-matching image non-interactively, check the mounted content
+      # (exactly one .app, executable, resources/daemon + web-dist, the
+      # Applications symlink → /Applications), boot the app FROM INSIDE the
+      # volume with the same hermetic contract as the boot smoke above and
+      # detach the image ALWAYS — all BEFORE the upload below. Playwright
+      # missing fails closed. Failure keeps the release a draft (P2-179).
+      # shell: bash (P2-126 lesson) and its own timeout (P2-245 lesson);
+      # position, uniqueness, shell and timeout are pinned by
+      # scripts/bootsmokeparity.ts via the unit battery.
+      - name: Smoke-mount the macOS disk image
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          ARCH_DIR="$(uname -m | sed 's/x86_64/x64/')"
+          DMG="$(find apps/desktop/dist -maxdepth 1 -type f -name '*.dmg' | grep -F "$ARCH_DIR" | head -1)"
+          [ -n "$DMG" ] || DMG="$(find apps/desktop/dist -maxdepth 1 -type f -name '*.dmg' | head -1)"
+          [ -n "$DMG" ] || { echo "dmg-smoke: no .dmg found under apps/desktop/dist — nothing to mount"; exit 1; }
+          echo "dmg-smoke: smoke-mounting $DMG"
+          node apps/desktop/scripts/dmg-smoke.mjs "$DMG"
+
       # P2-146: build the Squirrel.Mac JSON feed from the packed dist root —
       # the zip the mac target now produces + latest-mac.yml become the
       # update-mac.json the packaged shell auto-consumes on darwin. Exits 1

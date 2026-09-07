@@ -192,9 +192,17 @@ const DAEMON_SMOKE_RUN = /packaged-daemon-smoke\.mjs/;
 /** A step that smoke-installs the NSIS setup exe (P2-304). */
 const INSTALLER_SMOKE_RUN = /installer-smoke\.mjs/;
 
+/** A step that smoke-mounts the macOS disk image (P2-309). */
+const DMG_SMOKE_RUN = /dmg-smoke\.mjs/;
+
 /** A step that uploads the Windows setup exe to the release — the job SHIPS
  * an installer, so the installer itself must be smoke-installed first. */
 const SETUP_UPLOAD_RUN = /apps\/desktop\/dist\/\*\.exe/;
+
+/** A step that uploads the macOS disk image to the release — the job SHIPS
+ * the container the user actually opens, so it must be smoke-mounted first
+ * (P2-309). */
+const DMG_UPLOAD_RUN = /apps\/desktop\/dist\/\*\.dmg/;
 
 /** A step that checks feed names/versions against the published asset names (P2-157). */
 const FEED_CONSISTENCY_RUN = /feed-consistency\.ts/;
@@ -224,7 +232,14 @@ const FEED_HASH_RUN = /feedhash\.ts/;
  * - an installer-smoke step positioned before packaging or after the upload
  *   that ships the setup exe (P2-304);
  * - an installer-smoke step without shell: bash declared explicitly (P2-304);
- * - an installer-smoke step without its own timeout-minutes (P2-304).
+ * - an installer-smoke step without its own timeout-minutes (P2-304);
+ * - a job that uploads the macOS disk image but never runs the DMG smoke
+ *   (P2-309);
+ * - more than one dmg-smoke step in the same job (P2-309);
+ * - a dmg-smoke step positioned before packaging or after the upload that
+ *   ships the image (P2-309);
+ * - a dmg-smoke step without shell: bash declared explicitly (P2-309);
+ * - a dmg-smoke step without its own timeout-minutes (P2-309).
  * A job that packages nothing is never flagged. Every problem names the job
  * and says in one sentence what to do; the order is stable for the same
  * input, and no problem ever embeds a file path from the input.
@@ -326,6 +341,48 @@ export function bootSmokeParity(ciJobs: readonly WorkflowJob[], releaseJobs: rea
             if (smoke.timeoutMinutes === null) {
               problems.push(
                 `boot-smoke-parity: job "${job.name}" of the ${workflow} workflow smoke-installs the setup exe without its own timeout-minutes — add one so a hung installer cannot hold the runner`,
+              );
+            }
+          }
+        }
+      }
+      // P2-309: a job that SHIPS the macOS disk image must prove the
+      // container the user actually opens mounts, carries the Applications
+      // shortcut and boots the app from INSIDE the volume — release-only by
+      // shape (only the desktop-dmg job uploads *.dmg), keyed on the upload
+      // step itself so no job name is hardcoded.
+      const dmgUploadAt = job.steps.findIndex((s) => DMG_UPLOAD_RUN.test(s.run));
+      if (dmgUploadAt > -1) {
+        const dmgSmokes = job.steps.filter((s) => DMG_SMOKE_RUN.test(s.run));
+        if (dmgSmokes.length === 0) {
+          problems.push(
+            `boot-smoke-parity: job "${job.name}" of the ${workflow} workflow ships the macOS disk image but never smoke-mounts it — add a step before the upload that runs the DMG smoke (dmg-smoke.mjs) against the resolved image`,
+          );
+        } else {
+          if (dmgSmokes.length > 1) {
+            problems.push(
+              `boot-smoke-parity: job "${job.name}" of the ${workflow} workflow runs the DMG smoke more than once — keep exactly one occurrence`,
+            );
+          }
+          for (const smoke of dmgSmokes) {
+            if (job.steps.indexOf(smoke) < packagingAt) {
+              problems.push(
+                `boot-smoke-parity: job "${job.name}" of the ${workflow} workflow smoke-mounts the disk image before the packaging step it validates — move the DMG smoke after packaging`,
+              );
+            }
+            if (job.steps.indexOf(smoke) > dmgUploadAt) {
+              problems.push(
+                `boot-smoke-parity: job "${job.name}" of the ${workflow} workflow smoke-mounts the disk image after the upload that ships it — move the DMG smoke before the upload`,
+              );
+            }
+            if (smoke.shell !== "bash") {
+              problems.push(
+                `boot-smoke-parity: job "${job.name}" of the ${workflow} workflow smoke-mounts the disk image without declaring shell: bash — declare shell: bash explicitly (pwsh does not expand globs)`,
+              );
+            }
+            if (smoke.timeoutMinutes === null) {
+              problems.push(
+                `boot-smoke-parity: job "${job.name}" of the ${workflow} workflow smoke-mounts the disk image without its own timeout-minutes — add one so a hung mount cannot hold the runner`,
               );
             }
           }
