@@ -182,6 +182,8 @@ const P2_294_EXISTING_LINES = [
   "relay_slow_consumers_total",
   "relay_capacity_refused_total",
   "relay_idle_unjoined_closed",
+  // P2-302: the room-budget termination counter joined the documented set
+  "relay_room_budget_terminated",
   "relay_rooms_active",
 ];
 const P2_294_CERT_LINES = ["relay_cert_expiry_state", "relay_cert_expiry_seconds"];

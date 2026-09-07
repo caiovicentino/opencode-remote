@@ -5,6 +5,7 @@
  * Run: npx tsx scripts/relay-healthz.test.ts
  */
 import { createServer, get, type IncomingMessage, type Server } from "node:http";
+import { spawn } from "node:child_process";
 import net from "node:net";
 import { createReadStream, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1928,6 +1929,213 @@ check(
     );
   })(),
 );
+
+// --- 28d. room-budget termination series on /metrics (P2-302) ----------------
+// The P2-243 counter the /healthz body already publishes (roomsBudgetTerminated)
+// now also rides the /metrics endpoint in BOTH formats, from the SAME
+// in-memory counter read at scrape time. Over the real relay subprocess: the
+// zero publishes as zero (never omitted), one budget termination flips it to 1
+// in Prometheus and JSON with the same value, every pre-existing line and key
+// keeps today's name and order, nothing identifiable leaks, and two scrapes
+// without a counter change are identical.
+
+const ROOM_BUDGET_PROM_ORDER = [
+  "relay_connections_total",
+  "relay_connections_active",
+  "relay_frames_routed",
+  "relay_bytes_routed",
+  "relay_rejects",
+  "relay_rate_limited_total",
+  "relay_rooms_rejected",
+  "relay_rooms_rejected_invalid_room_id",
+  "relay_rooms_rejected_socket_room_cap",
+  "relay_stale_terminated",
+  "relay_slow_consumers_total",
+  "relay_capacity_refused_total",
+  "relay_idle_unjoined_closed",
+  "relay_room_budget_terminated",
+  "relay_rooms_active",
+];
+const ROOM_BUDGET_JSON_ORDER = [
+  "uptime_s",
+  "connections_total",
+  "connections_active",
+  "frames_routed",
+  "bytes_routed",
+  "rejects",
+  "rate_limited_total",
+  "rooms_rejected",
+  "rooms_rejected_invalid_room_id",
+  "rooms_rejected_socket_room_cap",
+  "stale_terminated",
+  "slow_consumers_total",
+  "capacity_refused_total",
+  "idle_unjoined_closed",
+  "room_budget_terminated",
+  "rooms_active",
+];
+
+check(
+  "room-budget-metrics: index.ts publishes the SAME counter the /healthz getter uses, with no new counter, route or timer",
+  (() => {
+    const relayIndex = readFileSync(
+      fileURLToPath(new URL("../apps/relay/src/index.ts", import.meta.url)),
+      "utf8",
+    );
+    // exact adjacent source of the Prometheus pair: TYPE line immediately
+    // before the value line, both fed by the one in-memory counter
+    const promPair =
+      '# TYPE relay_room_budget_terminated counter",\n' +
+      "          `relay_room_budget_terminated ${m.roomBudgetTerminated}`,";
+    return (
+      // the /healthz getter and the /metrics publication read the one counter
+      relayIndex.includes("roomsBudgetTerminated: () => m.roomBudgetTerminated") &&
+      // declared once, incremented once: no new counter
+      (relayIndex.match(/roomBudgetTerminated: 0/g) ?? []).length === 1 &&
+      (relayIndex.match(/m\.roomBudgetTerminated\+\+/g) ?? []).length === 1 &&
+      // TYPE line and value line each appear exactly once, adjacent
+      (relayIndex.match(/# TYPE relay_room_budget_terminated counter/g) ?? []).length === 1 &&
+      (relayIndex.match(/relay_room_budget_terminated \$\{m\.roomBudgetTerminated\}/g) ?? [])
+        .length === 1 &&
+      relayIndex.includes(promPair) &&
+      // JSON key in the same snake_case grammar as its neighbors, same counter
+      (relayIndex.match(/room_budget_terminated: m\.roomBudgetTerminated/g) ?? []).length === 1 &&
+      // no new route and no new timer (one /metrics route literal, the two
+      // servers the relay already had, the one pre-existing sweep)
+      (relayIndex.match(/\/metrics"/g) ?? []).length === 1 &&
+      (relayIndex.match(/createHttpServer\(/g) ?? []).length === 2 &&
+      (relayIndex.match(/setInterval\(/g) ?? []).length === 1
+    );
+  })(),
+);
+
+{
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const port = 40_000 + Math.floor(Math.random() * 20_000);
+  const mport = port + 1;
+  const proc = spawn("npx", ["tsx", "apps/relay/src/index.ts"], {
+    cwd: join(import.meta.dirname, ".."),
+    env: {
+      ...process.env,
+      RELAY_PORT: String(port),
+      RELAY_METRICS_PORT: String(mport),
+      // any forwarded frame's serialized byte count exceeds one byte: the
+      // first frame of the room terminates it (policy untouched, knob only)
+      RELAY_ROOM_BUDGET_BYTES: "1",
+      OCR_E2E_MARKER: "1",
+    },
+    stdio: ["ignore", "ignore", "inherit"],
+  });
+  process.on("exit", () => proc.kill("SIGTERM"));
+
+  const fetchMetricsBody = (p: number, qs = "") =>
+    new Promise<string>((resolve) => {
+      get(`http://127.0.0.1:${p}/metrics${qs}`, (res) => {
+        let s = "";
+        res.on("data", (c) => (s += c));
+        res.on("end", () => resolve(s));
+      });
+    });
+
+  // wait for the relay listener like relay-liveness does
+  let up = false;
+  for (let attempt = 0; attempt < 30 && !up; attempt++) {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const w = new WebSocket(`ws://127.0.0.1:${port}`);
+        w.on("open", () => {
+          w.close();
+          resolve();
+        });
+        w.on("error", reject);
+      });
+      up = true;
+    } catch {
+      await sleep(300);
+    }
+  }
+  if (up) {
+    const promBefore = await fetchMetricsBody(mport, "?format=prom");
+    check(
+      "room-budget-metrics: the zero publishes as a zero line, never omitted",
+      (promBefore.match(/^relay_room_budget_terminated 0$/gm) ?? []).length === 1,
+    );
+    check(
+      "room-budget-metrics: TYPE line immediately before the value line, exactly once",
+      promBefore.includes("# TYPE relay_room_budget_terminated counter\nrelay_room_budget_terminated 0") &&
+        (promBefore.match(/^relay_room_budget_terminated /gm) ?? []).length === 1,
+    );
+
+    // one forwarded frame with a 1-byte cap: the room is terminated (1013)
+    const room = `rmb-${Date.now()}`;
+    const sock = await new Promise<WebSocket>((resolve, reject) => {
+      const w = new WebSocket(`ws://127.0.0.1:${port}`);
+      w.on("open", () => resolve(w));
+      w.on("error", reject);
+    });
+    const closed = new Promise<number>((r) => sock.on("close", (c) => r(c)));
+    sock.send(JSON.stringify({ room, from: "b1", payload: "" }));
+    check(
+      "room-budget-metrics: positive value reflects the counter after a budget termination",
+      (await Promise.race([closed, sleep(5_000).then(() => -1)])) === 1013 &&
+        (await fetchMetricsBody(mport, "?format=prom")).includes(
+          "\nrelay_room_budget_terminated 1",
+        ),
+    );
+
+    const prom = await fetchMetricsBody(mport, "?format=prom");
+    const jsonRaw = await fetchMetricsBody(mport);
+    const json = JSON.parse(jsonRaw) as Record<string, unknown>;
+    check(
+      "room-budget-metrics: the whole Prometheus line table keeps today's names and order with the new series additive",
+      JSON.stringify(
+        prom
+          .split("\n")
+          .filter((l) => l !== "" && !l.startsWith("#"))
+          .map((l) => l.split(" ")[0]),
+      ) === JSON.stringify(ROOM_BUDGET_PROM_ORDER),
+    );
+    check(
+      "room-budget-metrics: each series keeps its TYPE header immediately before its value line",
+      ROOM_BUDGET_PROM_ORDER.every((n) => {
+        const kind = n === "relay_connections_active" || n === "relay_rooms_active" ? "gauge" : "counter";
+        return prom.includes(`# TYPE ${n} ${kind}\n${n} `);
+      }),
+    );
+    check(
+      "room-budget-metrics: JSON keeps every existing key in today's order with the new key additive",
+      JSON.stringify(Object.keys(json)) === JSON.stringify(ROOM_BUDGET_JSON_ORDER),
+    );
+    check(
+      "room-budget-metrics: JSON of the same scrape carries the new key with exactly the Prometheus value",
+      json["room_budget_terminated"] === 1 &&
+        prom.includes("\nrelay_room_budget_terminated 1\n"),
+    );
+    check(
+      "room-budget-metrics: no output carries the room id, address or IP",
+      !prom.includes(room) &&
+        !prom.includes("127.0.0.1") &&
+        !jsonRaw.includes(room) &&
+        !jsonRaw.includes("127.0.0.1") &&
+        !promBefore.includes(room),
+    );
+    const again1 = await fetchMetricsBody(mport, "?format=prom");
+    const again2 = await fetchMetricsBody(mport, "?format=prom");
+    check(
+      "room-budget-metrics: two consecutive scrapes without a counter change are identical",
+      again1 === again2 && again1 === prom,
+    );
+    const jsonAgain = (JSON.parse(await fetchMetricsBody(mport)) ?? {}) as Record<string, unknown>;
+    const stripUptime = (o: Record<string, unknown>) => JSON.stringify({ ...o, uptime_s: 0 });
+    check(
+      "room-budget-metrics: consecutive JSON scrapes without a counter change are identical apart from uptime_s",
+      stripUptime(jsonAgain) === stripUptime(json) && jsonAgain["room_budget_terminated"] === 1,
+    );
+  } else {
+    check("room-budget-metrics: relay subprocess came up", false);
+  }
+  proc.kill("SIGTERM");
+}
 
 if (failures) process.exit(1);
 console.log("relay-healthz: ALL OK");

@@ -896,7 +896,10 @@ window (`RELAY_ROOM_BUDGET_WINDOW_MS`, default 1 h) a room may forward at
 most `RELAY_ROOM_BUDGET_BYTES` (default 1 GiB, ~3.8x the heaviest legitimate
 room-hour of chat + voice + files + screenshots) before its sockets are
 closed — crossing half the cap writes one warn line per window, crossing the
-cap closes the room with a `roomsBudgetTerminated` counter on `/healthz`.
+cap closes the room with a `roomsBudgetTerminated` counter on `/healthz`;
+the same counter rides `/metrics` as `relay_room_budget_terminated`
+(Prometheus) / `room_budget_terminated` (JSON), published even at zero so a
+scraping-based alert never mistakes a healthy relay for a missing series.
 Only frame byte counts are accumulated (the relay stays blind: no content,
 no envelope fields, no identities); `RELAY_ROOM_BUDGET_BYTES=-1` disables
 the budget for a private, allowlisted relay. Runbook:
