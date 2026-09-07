@@ -43,6 +43,7 @@ import { PORTABLE_EXCLUSIONS, portableCoverage } from "./portablecoverage";
 
 export const PORTABLE_TESTS: readonly string[] = [
   "boothealth.test.ts",
+  "browsecap.test.ts",
   "bubble-merge.test.ts",
   "chatfind.test.ts",
   "client-ready.test.ts",

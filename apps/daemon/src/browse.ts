@@ -5,11 +5,13 @@
 // Browsers are only launched on demand; everything is torn down after a short
 // idle time so the daemon never keeps a fleet of chromium processes alive.
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { log } from "./log.js";
 import { metrics } from "./metrics.js";
 import { appendAudit } from "./auditlog.js";
+import { browseReadiness } from "./browsecap.js";
 
 const MAX_SESSIONS = 3;
 const IDLE_CLOSE_MS = 5 * 60_000;
@@ -98,6 +100,52 @@ function killSwitch(): boolean {
   return process.env.OCR_BROWSE_DISABLED === "1";
 }
 
+// P2-284: short tail of the most recent launch failure — probe input only.
+// It stays server-side (log + next probe); it never reaches a client, a
+// health field or a verdict phrase.
+let lastLaunchTail: string | null = null;
+
+/** Normalized shape of the probe result judged by browsecap.ts. */
+export interface BrowseProbe {
+  disabled: boolean;
+  libraryResolved: boolean;
+  executableFound: boolean;
+  launchError: string | null;
+}
+
+/**
+ * P2-284: one normalized browse-capability probe. Never throws and never
+ * launches a browser: resolving the library and locating the executable are
+ * read-only operations, and any failure degrades to the marks that are
+ * honestly known (library unresolved → executable unknown → not found).
+ * The `exists` predicate is injected so callers (index.ts at boot, tests)
+ * keep the filesystem on their side of the fence.
+ */
+export async function probeBrowse(exists: (path: string) => boolean): Promise<BrowseProbe> {
+  const disabled = killSwitch();
+  let libraryResolved = false;
+  let executableFound = false;
+  try {
+    const pw = await import("playwright-core");
+    libraryResolved = true;
+    let exePath: string | null = null;
+    try {
+      exePath = process.env.OCR_BROWSER_PATH || pw.chromium.executablePath();
+    } catch {
+      exePath = null;
+    }
+    executableFound = typeof exePath === "string" && exePath.length > 0 && exists(exePath);
+  } catch {
+    libraryResolved = false;
+  }
+  return { disabled, libraryResolved, executableFound, launchError: lastLaunchTail };
+}
+
+/** A client-facing error carrying the pt-BR verdict phrase (see fail()). */
+function verdictError(message: string): Error & { browsePhrase: string } {
+  return Object.assign(new Error(message), { browsePhrase: message });
+}
+
 async function getBrowser(): Promise<import("playwright-core").Browser> {
   if (browser && browser.isConnected()) return browser;
   const pw = await import("playwright-core");
@@ -114,11 +162,22 @@ async function getBrowser(): Promise<import("playwright-core").Browser> {
       args: [...(noSandbox ? ["--no-sandbox"] : []), "--disable-dev-shm-usage"],
     });
   } catch (err) {
-    log("warn", "browse: chromium launch failed", { error: String(err).slice(0, 200) });
-    throw new Error(
-      "playwright chromium not available — install it with: npx playwright install chromium",
-    );
+    const tail = String(err instanceof Error ? err.message : err).slice(0, 200);
+    lastLaunchTail = tail;
+    log("warn", "browse: chromium launch failed", { error: tail });
+    // P2-284: the client gets the short pt-BR verdict phrase, never the raw
+    // English error with the install command. The launch failure dominates
+    // the verdict (executable question is moot once the launch itself failed);
+    // fail() delivers the phrase with the same 502 as before.
+    const verdict = browseReadiness({
+      disabled: killSwitch(),
+      libraryResolved: true,
+      executableFound: true,
+      launchError: tail,
+    });
+    throw verdictError(verdict.message);
   }
+  lastLaunchTail = null;
   browser.on("disconnected", () => {
     browser = null;
     sessions.clear();
@@ -244,7 +303,14 @@ function fail(res: ServerResponse, err: unknown) {
   // detail stays server-side: raw Playwright/Node errors can leak internals
   // (paths, flags) to the client — callers only get a generic message
   log("warn", "browse action failed", { error: msg.slice(0, 300) });
-  json(res, 502, { error: "browse action failed — see daemon log for details" });
+  // P2-284: a tagged verdict error delivers its short pt-BR readiness phrase
+  // with the same 502 as before; every other failure keeps the generic message.
+  const phrase = (err as { browsePhrase?: unknown } | null)?.browsePhrase;
+  json(
+    res,
+    502,
+    { error: typeof phrase === "string" ? phrase : "browse action failed — see daemon log for details" },
+  );
 }
 
 /** Pure helper for the click route: out-of-range coordinates are REJECTED, not
@@ -274,7 +340,12 @@ export async function handleBrowse(
 ): Promise<boolean> {
   if (seg[1] !== "browse") return false;
   if (killSwitch()) {
-    json(res, 503, { error: "browse disabled (OCR_BROWSE_DISABLED=1)" });
+    // P2-284: same 503, short pt-BR verdict phrase instead of English + env
+    // var name — the disabled state never suggests installing anything.
+    json(res, 503, {
+      error: browseReadiness({ disabled: true, libraryResolved: false, executableFound: false, launchError: null })
+        .message,
+    });
     return true;
   }
   startSweeper();

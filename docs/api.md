@@ -128,6 +128,20 @@ Set `OCR_READINESS_DISABLE=off|0|false` to turn revalidation off entirely;
 Each actually re-done probe logs exactly one line with the capability name
 and the resulting state — never a path, a resolved binary or env content.
 
+### `/api/health` — browse-readiness verdict (P2-284)
+
+`GET /api/health` adds three additive fields for the browse capability (no
+existing field is removed, renamed or repositioned): `browseState`
+(`ready` | `no-browser` | `disabled` | `unknown`), `browseMessage` (short
+pt-BR sentence, same register as the other verdicts) and `browseCheckedAt`
+(ISO instant, `null` before the first probe). The verdict is probed once at
+boot on the same readiness hook as the other capabilities and re-probed
+lazily on this route under the same `OCR_READINESS_MIN_MS` /
+`OCR_READINESS_DISABLE` policy — so a machine announces whether it knows how
+to open sites BEFORE the user asks, and installing the Playwright browser
+afterwards is picked up without a restart. No phrase ever carries a path,
+port, address, environment variable or the raw error tail.
+
 ### Pairing state (P2-007)
 
 Two read-only routes serve the desktop shell's first-run QR overlay; they are
@@ -154,6 +168,10 @@ known-broken. Request bodies are capped at 64 KB. Audit entries land in the
 same `audit.log` the app reviews; set `OCR_BROWSE_DISABLED=1` to turn the
 surface off. The desktop app exposes the same routes through the **🌐 Browser**
 pane (screenshot loop — page content never renders inside the app origin).
+Since P2-284 the browse error paths answer with the short pt-BR readiness
+phrase instead of a raw English error: a failed browser launch keeps status
+502 and the kill switch keeps 503, both carrying the `browseMessage` verdict
+from `/api/health`.
 
 ```bash
 TOKEN=$(opencode-remote token)
