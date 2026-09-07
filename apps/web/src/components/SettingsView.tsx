@@ -4,7 +4,7 @@ import { APP_VERSION } from "../version";
 import { useT, setLang, getLang, type Lang } from "../lib/i18n";
 import { timeAgo } from "../lib/time";
 import { getTtsLang, setTtsLang as persistTtsLang, type TtsLang } from "../lib/voice";
-import { readinessRows, summarize, MACHINE_SEVERITY_DOT } from "../lib/machinestate";
+import { readinessRows, summarize, MACHINE_SEVERITY_DOT, BROWSE_STATES } from "../lib/machinestate";
 import type { UpstreamNotice } from "../lib/degraded";
 
 /** P2-187: phone relay resolution from the desktop shell (mirrors
@@ -152,14 +152,15 @@ export function applyTheme() {
 /** P2-287: deterministic-evidence hatch (the P2-218 lesson, web edition) —
  * `ocr.browseStateOverride` in localStorage forces the browse verdict for
  * screenshots WITHOUT touching any network path. Fail-closed: only the four
- * documented P2-284 states are honored, the real payload always wins, and no
- * phrase is ever invented (the label alone carries the row). Documented in
- * docs/troubleshooting.md beside the daemon hatches. */
-const BROWSE_STATES = new Set(["ready", "no-browser", "disabled", "unknown"]);
-
+ * documented P2-284 states (BROWSE_STATES, owned by machinestate.ts) are
+ * honored, the real payload always wins, and no phrase is ever invented (the
+ * label alone carries the row). Documented in docs/troubleshooting.md beside
+ * the daemon hatches. With the P2-287 settings mirror in place the hatch is
+ * only ever needed for deterministic shots of states a particular machine
+ * does not currently report. */
 function forcedBrowseState(): string | undefined {
   const forced = localStorage.getItem("ocr.browseStateOverride") ?? "";
-  return BROWSE_STATES.has(forced) ? forced : undefined;
+  return BROWSE_STATES.includes(forced) ? forced : undefined;
 }
 
 export default function SettingsView({ request, onBack, transport, getDiagnostics, onPairRemote, getRelaySetting, setRelayUrl, getWebAppUrl, setWebAppUrl, upstream }: Props) {

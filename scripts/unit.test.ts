@@ -9673,18 +9673,26 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
   const machineStateSrc = readFileSync(new URL("../apps/web/src/lib/machinestate.ts", import.meta.url), "utf8");
   check(
-    "P2-287: SettingsView feeds the browse row from the same settings read — no /api/health fetch, no new poll",
+    "P2-287: SettingsView feeds the browse row from the same settings read — no /api/health fetch, no browse timer",
     settingsViewSrc.includes("browseState: browse?.state ?? forcedBrowseState()") &&
       settingsViewSrc.includes('request("GET", "/__ocr/settings"') &&
       !settingsViewSrc.includes("/api/health") &&
-      (settingsViewSrc.match(/setInterval|setTimeout.*browse/gi) || []).length === 0,
+      (settingsViewSrc.match(/(?:setInterval|setTimeout)\s*\([^)]*browse/gi) || []).length === 0,
   );
   check(
     "P2-287: the evidence hatch is fail-closed — only the four documented states, real payload wins, no phrase forced",
-    settingsViewSrc.includes('BROWSE_STATES.has(forced)') &&
+    settingsViewSrc.includes("BROWSE_STATES.includes(forced)") &&
       settingsViewSrc.includes("browse?.state ?? forcedBrowseState()") &&
       !settingsViewSrc.includes("browseMessage: forced") &&
       (settingsViewSrc.match("ocr.browseStateOverride") || []).length >= 1,
+  );
+  check(
+    "P2-287: BROWSE_STATES has one owner — the view imports the set machinestate exports (no duplicated table)",
+    machineStateSrc.includes(
+      'export const BROWSE_STATES: readonly string[] = ["ready", "no-browser", "disabled", "unknown"];',
+    ) &&
+      settingsViewSrc.includes('import { readinessRows, summarize, MACHINE_SEVERITY_DOT, BROWSE_STATES } from "../lib/machinestate";') &&
+      !settingsViewSrc.includes('new Set(["ready"'),
   );
   check(
     "P2-287: machinestate keeps the browse row last in MACHINE_ROW_ORDER and pure (no React, no fetch, no node:)",
@@ -9694,7 +9702,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       !machineStateSrc.includes("node:"),
   );
   check(
-    "P2-287: apps/daemon stays untouched — the settings body keeps its exact shape and no mirror is invented there",
+    "P2-287: the daemon mirrors the browse verdict on the existing settings read — additive, appended after the anchor fields",
     (() => {
       const src = readFileSync(new URL("../apps/daemon/src/index.ts", import.meta.url), "utf8");
       const settingsGet = src.split('"/__ocr/settings" && req.method === "GET"')[1] ?? "";
@@ -9702,7 +9710,10 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       return (
         body.includes("opencodeVersion: opencodeVersion") &&
         body.includes("disk: diskStatus()") &&
-        !body.includes("browse")
+        body.indexOf("disk: diskStatus()") < body.indexOf("browseState: browseCap.state") &&
+        body.includes("browseState: browseCap.state") &&
+        body.includes("browseMessage: browseCap.message") &&
+        settingsGet.includes("await maybeReprobeBrowse()")
       );
     })(),
   );
@@ -23084,20 +23095,22 @@ check("P2-241: no new periodic timer was introduced by the handler", !dlBlock.in
 
   // revalidation appears ONLY at the described use points: the transcribe
   // refusal, the health route (doc-convert + version + browse) and the
-  // settings read (version) — never anywhere else. P2-284 adds the browse
-  // verdict on the health route as the fifth use point.
+  // settings read (version + browse) — never anywhere else. P2-284 adds the
+  // browse verdict on the health route as the fifth use point; P2-287 mirrors
+  // the browse verdict onto the settings read as the sixth, so the
+  // machine-state screen re-probes under the same lazy policy.
   {
     const lines = code.split("\n");
     const callLines = lines.filter((l) =>
       /maybeReprobe(?:Transcription|DocConvert|OpencodeVersion|Browse)\(/.test(l) && !l.includes("function maybeReprobe"),
     );
     check(
-      "P2-250: revalidation fires at exactly five use points (transcribe refusal, health ×3, settings)",
-      callLines.length === 5 &&
+      "P2-250: revalidation fires at exactly six use points (transcribe refusal, health ×3, settings ×2)",
+      callLines.length === 6 &&
         callLines.filter((l) => l.includes("maybeReprobeTranscription")).length === 1 &&
         callLines.filter((l) => l.includes("maybeReprobeDocConvert")).length === 1 &&
         callLines.filter((l) => l.includes("maybeReprobeOpencodeVersion")).length === 2 &&
-        callLines.filter((l) => l.includes("maybeReprobeBrowse")).length === 1,
+        callLines.filter((l) => l.includes("maybeReprobeBrowse")).length === 2,
     );
     // each call sits inside a route handler region (tunnel proxy or handleApi),
     // never inside main()

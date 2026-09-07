@@ -64,6 +64,11 @@ export const MACHINE_SEVERITY_DOT: Record<MachineSeverity, string> = {
   unavailable: "err",
 };
 
+/** The four documented P2-284 browse verdicts the browse row accepts — the
+ * executable form of the table in the header, exported so the view's
+ * documented evidence hatch reuses one truth instead of duplicating it. */
+export const BROWSE_STATES: readonly string[] = ["ready", "no-browser", "disabled", "unknown"];
+
 const SEVERITY_RANK: Record<MachineSeverity, number> = { ok: 0, attention: 1, unavailable: 2 };
 
 /** i18n key of the short label per row (P2-118: the view resolves it). */
@@ -164,12 +169,7 @@ export function readinessRows(health: unknown): MachineReadinessRow[] {
   // values yield no row — same tolerance as every other line. "unknown" is
   // the fail-closed exception: an attention row, never an approved one.
   const browseState = asString(body.browseState);
-  if (
-    browseState === "ready" ||
-    browseState === "no-browser" ||
-    browseState === "disabled" ||
-    browseState === "unknown"
-  ) {
+  if (BROWSE_STATES.includes(browseState)) {
     candidates.push(
       row(
         "browse",
