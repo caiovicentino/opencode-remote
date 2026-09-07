@@ -264,7 +264,10 @@ private. That is the product: **local power, remote control, zero trust**.
   routine that has been failing every day is finally visible; the record
   never carries the prompt, an agent reply, an error text, a path or any
   other user data, and a malformed record is discarded alone at load without
-  ever dropping the routine
+  ever dropping the routine; the Settings screen renders that history as a
+  calm collapsible per routine — the ten most recent runs with relative time,
+  translated outcome and duration, plus a short empty-state phrase when
+  there are no records
 - **Secure by construction** — passkey (WebAuthn) gate, ECDH P-256 + AES-256-GCM,
   replay protection, device allowlist, audit log, biometric unlock
 - **Distinguishable devices** — every pairing gets a stable, personal-data-free

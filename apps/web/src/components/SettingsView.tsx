@@ -3,6 +3,8 @@ import { copyText } from "../lib/clipboard";
 import { APP_VERSION } from "../version";
 import { useT, setLang, getLang, type Lang } from "../lib/i18n";
 import { timeAgo } from "../lib/time";
+import { routineHistoryRows } from "../lib/routinehistoryview";
+import { IconChevronDown } from "./icons";
 import { getTtsLang, setTtsLang as persistTtsLang, type TtsLang } from "../lib/voice";
 import { readinessRows, summarize, MACHINE_SEVERITY_DOT, BROWSE_STATES, DOC_STATES, VOICE_STATES, TTS_STATES } from "../lib/machinestate";
 import type { UpstreamNotice } from "../lib/degraded";
@@ -96,6 +98,9 @@ interface Routine {
   intervalMinutes?: number;
   lastStatus?: "ok" | "error";
   lastError?: string;
+  /** P2-318: raw per-trigger history exactly as the route delivers it —
+   * parsed tolerantly by lib/routinehistoryview.ts, never trusted. */
+  history?: unknown;
 }
 
 const DAY_NAME_KEYS = ["daySun", "dayMon", "dayTue", "dayWed", "dayThu", "dayFri", "daySat"];
@@ -239,6 +244,9 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
   const [pushMsg, setPushMsg] = useState("");
   const [pushSubs, setPushSubs] = useState(0);
   const [routines, setRoutines] = useState<Routine[]>([]);
+  // P2-318: which routine history panels are expanded (id → open), closed by
+  // default — a calm collapsible per PRODUCT.md principle 2.
+  const [openHistory, setOpenHistory] = useState<Record<string, boolean>>({});
   const [nrName, setNrName] = useState("");
   const [nrTime, setNrTime] = useState("07:00");
   const [nrPrompt, setNrPrompt] = useState("");
@@ -1162,35 +1170,69 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
 
         <div className="card">
           <h3>{t("routinesTitle")}</h3>
-          {routines.map((r) => (
-            <div key={r.id} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
-              <span style={{ flex: 1, minWidth: 0 }}>
-                <b>{scheduleLabel(r, t)}</b> · {r.name}
-                <div className="muted" style={{ fontSize: "0.72rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {r.prompt}
+          {routines.map((r) => {
+            const rows = routineHistoryRows(r.history, Date.now(), t);
+            const open = !!openHistory[r.id];
+            return (
+              <div key={r.id} style={{ marginBottom: 6 }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <span style={{ flex: 1, minWidth: 0 }}>
+                    <b>{scheduleLabel(r, t)}</b> · {r.name}
+                    <div className="muted" style={{ fontSize: "0.72rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {r.prompt}
+                    </div>
+                  </span>
+                  <span
+                    title={r.lastError ? t("routineLastError", { err: r.lastError }) : r.lastStatus === "ok" ? t("routineLastOk") : t("routineNeverRan")}
+                    style={{ fontSize: "0.85rem" }}
+                  >
+                    <span
+                      className={`status-dot ${r.lastStatus === "ok" ? "ok" : r.lastStatus === "error" ? "err" : "idle"}`}
+                    />
+                  </span>
+                  <button
+                    className="danger"
+                    onClick={() =>
+                      void (async () => {
+                        await request("DELETE", "/__ocr/routines", { id: r.id });
+                        setRoutines((prev) => prev.filter((x) => x.id !== r.id));
+                      })()
+                    }
+                  >
+                    {t("delete")}
+                  </button>
                 </div>
-              </span>
-              <span
-                title={r.lastError ? t("routineLastError", { err: r.lastError }) : r.lastStatus === "ok" ? t("routineLastOk") : t("routineNeverRan")}
-                style={{ fontSize: "0.85rem" }}
-              >
-                <span
-                  className={`status-dot ${r.lastStatus === "ok" ? "ok" : r.lastStatus === "error" ? "err" : "idle"}`}
-                />
-              </span>
-              <button
-                className="danger"
-                onClick={() =>
-                  void (async () => {
-                    await request("DELETE", "/__ocr/routines", { id: r.id });
-                    setRoutines((prev) => prev.filter((x) => x.id !== r.id));
-                  })()
-                }
-              >
-                {t("delete")}
-              </button>
-            </div>
-          ))}
+                {rows.length === 0 ? (
+                  <p className="routine-history-empty">{t("routineHistoryEmpty")}</p>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      className="routine-history-head"
+                      aria-expanded={open}
+                      onClick={() => setOpenHistory((prev) => ({ ...prev, [r.id]: !prev[r.id] }))}
+                    >
+                      <span className={`routine-history-chevron${open ? " open" : ""}`} aria-hidden>
+                        <IconChevronDown size={14} />
+                      </span>
+                      {t("routineHistoryToggle", { n: rows.length })}
+                    </button>
+                    {open && (
+                      <ul className="routine-history-list">
+                        {rows.map((row, i) => (
+                          <li key={`${row.at}-${i}`}>
+                            <span className="routine-history-when">{row.whenLabel}</span>
+                            <span className={`routine-history-outcome ${row.outcome}`}>{row.outcomeLabel}</span>
+                            <span className="routine-history-dur">{row.durationLabel}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </>
+                )}
+              </div>
+            );
+          })}
           <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
             <select
               value={nrMode}

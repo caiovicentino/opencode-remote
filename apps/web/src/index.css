@@ -2675,6 +2675,77 @@ button.desk-new:hover:not(:disabled) {
   margin: 0;
   font-size: var(--font-size-sm);
 }
+/* P2-318: per-routine run history — a quiet collapsible under each routine
+   row (PRODUCT.md: calm, closed by default, no emoji, no loud color). Same
+   anatomy as the thinking block: muted head, hairline rows, chevron turn. */
+.routine-history-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 44px; /* phone touch target */
+  padding: 2px 0;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  text-align: left;
+  cursor: pointer;
+}
+.routine-history-head:hover {
+  color: var(--text);
+}
+.routine-history-head:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: var(--radius-sm);
+}
+.routine-history-chevron {
+  display: inline-flex;
+  flex-shrink: 0;
+  transition: transform var(--motion-fast) var(--ease-out);
+}
+.routine-history-chevron.open {
+  transform: rotate(90deg);
+}
+.routine-history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.routine-history-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+  font-size: var(--font-size-sm);
+}
+.routine-history-when {
+  color: var(--muted);
+  min-width: 3.5em;
+  font-variant-numeric: tabular-nums;
+}
+.routine-history-outcome {
+  flex: 1;
+  min-width: 0;
+}
+.routine-history-outcome.failed {
+  color: var(--danger);
+}
+.routine-history-outcome.skipped {
+  color: var(--muted);
+}
+.routine-history-dur {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.routine-history-empty {
+  margin: 2px 0 6px;
+  font-size: var(--font-size-sm);
+  color: var(--muted);
+}
 /* spinner inside the reconnect button (trying state, P2-112) */
 .reconnect-spin {
   display: inline-block;
