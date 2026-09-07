@@ -599,7 +599,14 @@ any other use of the app**; when the location cannot be confirmed it stays
 quiet. With the location wrong, an update that finished downloading is **not
 offered as a restart** (one `desktop.log` line instead) because the restart
 could not apply it anyway. Diagnostics → Copy diagnostic reports the verdict
-state (never the path). macOS only; other platforms are unaffected.
+state (never the path). macOS first; since P2-299 Windows is classified too —
+the same calm line appears when the executable runs from a user-temp
+extraction of a downloaded zip (asking to close the app, install it in a
+definite folder of the computer and reopen from the installed copy), from a
+network share (asking to install it on the machine's own disk) or from
+Downloads (reusing the existing downloads verdict), while Program Files,
+Program Files (x86), the per-user Programs area and any other regular path
+stay quiet; other platforms are unaffected.
 `OCR_DESKTOP_FORCE_DMG_VOLUME=1` on the desktop shell forces the warning for
 deterministic screenshots (test-only hatch, never set in production).
 
