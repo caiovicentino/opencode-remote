@@ -1,4 +1,4 @@
-// P2-288 + P2-292 + P2-296: additive settings-channel mirror of the
+// P2-288 + P2-292 + P2-296 + P2-300: additive settings-channel mirror of the
 // machine-readiness verdicts. Pure module — no node:fs, node:http,
 // node:child_process or fetch imports and no I/O of any kind on purpose,
 // because index.ts runs main() on import and unit tests must never boot a
@@ -55,10 +55,18 @@
 //   document conversion: "complete" | "partial" | "unavailable"
 //   site navigation:     "ready" | "no-browser" | "disabled"
 //   voice transcription: "ready" | "missing-binary" | "missing-model"
+//   speech (tts):        "ready" | "missing-tool"
 //   relay link:          ok true | false, with the phrase reason:
 //                        string | null (null while connected)
 //   agent binary:        binaryFound true | false, with the origin
 //                        companion binarySource "path" | "known" | null
+//
+// P2-300 identifier note (collision recorded so nobody repeats it — P2-297
+// lesson): the spoken-reply pair is ttsState/ttsMessage, NOT voiceState —
+// voiceState is the voice-TRANSCRIPTION pair since P2-296, and a second
+// capability under the same identifier would silently overwrite it. The
+// speech fields follow the same <capability>State/<capability>Message grammar
+// the doc-conversion pair established.
 //
 // PRIVACY BOUNDARY (part of the contract): no value returned by this module
 // ever contains a relay address, a host, a port, an absolute path, a volume
@@ -89,6 +97,9 @@ const BROWSE_STATES: readonly string[] = ["ready", "no-browser", "disabled"];
 
 /** P2-296: the documented measured table for the voice-transcription verdict. */
 const VOICE_STATES: readonly string[] = ["ready", "missing-binary", "missing-model"];
+
+/** P2-300: the documented measured table for the spoken-reply verdict. */
+const TTS_STATES: readonly string[] = ["ready", "missing-tool"];
 
 /** P2-292: a relay phrase rides only when free of address material. The
  * boot-validation phrases relayurl.ts authors embed the (userinfo-redacted)
@@ -138,6 +149,8 @@ export interface SettingsMirrorFields {
   opencode?: SettingsMirrorAgent;
   voiceState?: string;
   voiceMessage?: string;
+  ttsState?: string;
+  ttsMessage?: string;
 }
 
 /** Tolerant plain-object read: only a plain object passes (rule 1). */
@@ -151,8 +164,9 @@ function plainObject(v: unknown): Record<string, unknown> | null {
  * Decide which readiness verdicts ride the GET /__ocr/settings response,
  * given the already-normalized readiness snapshot /api/health publishes
  * (docConvertState/docConvertMessage, browseState/browseMessage, the relay
- * object, the opencode binary pair, and since P2-296 the voice pair
- * voiceState/voiceMessage). Tolerant and fail-closed: see the module header
+ * object, the opencode binary pair, since P2-296 the voice pair
+ * voiceState/voiceMessage and since P2-300 the spoken-reply pair
+ * ttsState/ttsMessage). Tolerant and fail-closed: see the module header
  * for the rule order and the privacy boundary.
  */
 export function settingsMirror(input?: unknown): SettingsMirrorFields {
@@ -166,6 +180,8 @@ export function settingsMirror(input?: unknown): SettingsMirrorFields {
     snap.browseMessage,
     snap.voiceState,
     snap.voiceMessage,
+    snap.ttsState,
+    snap.ttsMessage,
   ];
   // rule 1b — a present-but-non-textual flat field breaks the snapshot
   // contract: trust nothing instead of manufacturing a malformed field
@@ -233,6 +249,26 @@ export function settingsMirror(input?: unknown): SettingsMirrorFields {
   ) {
     out.voiceState = voiceState;
     out.voiceMessage = voiceMessage;
+  }
+  // P2-300 — the spoken-reply verdict rides the same rules, one capability at
+  // a time: the state must be in the documented table beside a phrase that is
+  // free of path material, both copied verbatim. A phrase carrying an
+  // absolute path, a tool or script name, a port, an address, a raw
+  // environment variable or a secret silences the whole verdict — the line
+  // stays quiet instead of leaking (rule 4 still holds: the phrase that rides
+  // is never rewritten, only refused entirely). The identifiers are
+  // ttsState/ttsMessage, NOT voiceState — that pair is the voice-transcription
+  // capability since P2-296 (collision recorded in the module header).
+  const ttsState = snap.ttsState as string | undefined;
+  const ttsMessage = snap.ttsMessage as string | undefined;
+  if (
+    ttsState !== undefined &&
+    ttsMessage !== undefined &&
+    TTS_STATES.includes(ttsState) &&
+    !PATH_MATERIAL.test(ttsMessage)
+  ) {
+    out.ttsState = ttsState;
+    out.ttsMessage = ttsMessage;
   }
   // rules 4+5 — the values above are verbatim copies; the same input always
   // builds the same object with the same key order

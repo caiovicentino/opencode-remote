@@ -28090,6 +28090,286 @@ import { settingsMirror } from "../apps/daemon/src/settingsmirror";
   );
 }
 
+// P2-300: the spoken-reply (tts) readiness rides /api/health and the settings
+// mirror — the canonical blocks for the test:unit chain
+// (scripts/settingsmirror.test.ts is the portable twin for the P2-237
+// sub-battery). Fixtures copied from the real author: the two phrases are
+// the ttscap.ts constants verbatim (the mirror only passes them through,
+// never rewrites them), and the dirty phrase is what a leak would look like.
+{
+  const json = (v: unknown) => JSON.stringify(v);
+  const TTS = {
+    ready: "Respostas faladas prontas neste computador.",
+    missingTool:
+      "A fala deste computador ainda não está instalada — peça a quem gerencia a máquina para instalar o recurso de voz.",
+  };
+  const DOC300 = {
+    complete: "Conversão de documentos em PDF pronta neste computador.",
+    partial:
+      "A conversão de documentos neste computador cobre apenas alguns formatos — instale o LibreOffice para converter qualquer documento em PDF.",
+  };
+  const BROWSE300 = {
+    ready: "Navegação de sites pronta neste computador.",
+    noBrowser:
+      "Este computador ainda não tem navegador para abrir sites — instalar o navegador do Playwright é opcional e fica a cargo de quem gerencia a máquina.",
+  };
+  const VOICE300 = {
+    ready: "Transcrição de voz pronta neste computador.",
+    missingBinary:
+      "A transcrição de voz ainda não está instalada neste computador — peça a quem gerencia a máquina para instalar o recurso de voz.",
+  };
+  const RELAY_DOWN_300 = { ok: false, reason: "Endereço do relay recusado na partida — recusando discar (fail-closed)" };
+  const AGENT_PATH_300 = { binaryFound: true, binarySource: "path" };
+
+  // Rule 1 — absent input, non-object input and non-textual fields yield no
+  // tts field (the empty set when the tts pair is all there is).
+  check(
+    "P2-300: missing or non-object input yields no tts field",
+    json(settingsMirror()) === "{}" &&
+      json(settingsMirror(undefined)) === "{}" &&
+      json(settingsMirror(null)) === "{}" &&
+      ["tts snapshot", 42, true, [], ["ready"]].every((v) => json(settingsMirror(v)) === "{}"),
+  );
+  check(
+    "P2-300: a non-textual tts field never becomes a field",
+    json(settingsMirror({ ttsState: 42, ttsMessage: TTS.ready })) === "{}" &&
+      json(settingsMirror({ ttsState: true, ttsMessage: TTS.ready })) === "{}" &&
+      json(settingsMirror({ ttsState: "ready", ttsMessage: null })) === "{}" &&
+      json(settingsMirror({ ttsState: ["ready"], ttsMessage: TTS.ready })) === "{}",
+  );
+
+  // Rule 2 — a speech verdict outside the documented two-state table yields
+  // no field.
+  check(
+    "P2-300: speech verdicts outside the documented table yield no field",
+    ["warp-speed", "", "Ready", "missing_tool", "ready ", "unavailable", "missing-binary"].every(
+      (state) => json(settingsMirror({ ttsState: state, ttsMessage: TTS.ready })) === "{}",
+    ),
+  );
+
+  // Rule 3 — a never-measured speech capability stays silent (fail-closed):
+  // no state member, no field, ever.
+  check(
+    "P2-300: a never-measured speech capability yields no field instead of one announcing readiness",
+    json(settingsMirror({ ttsState: "unknown", ttsMessage: TTS.ready })) === "{}" &&
+      json(settingsMirror({ ttsMessage: TTS.ready })) === "{}",
+  );
+
+  // Rule 4 — each of the two documented verdicts becomes exactly state +
+  // phrase, verbatim, the same names and values /api/health publishes.
+  check(
+    "P2-300: each documented speech verdict becomes exactly state + phrase, verbatim",
+    json(settingsMirror({ ttsState: "ready", ttsMessage: TTS.ready })) ===
+      json({ ttsState: "ready", ttsMessage: TTS.ready }) &&
+      json(settingsMirror({ ttsState: "missing-tool", ttsMessage: TTS.missingTool })) ===
+        json({ ttsState: "missing-tool", ttsMessage: TTS.missingTool }),
+  );
+
+  // Privacy boundary proven against a leak-shaped input: the phrase carries
+  // an absolute tool path, a script name and a port — the whole speech
+  // verdict stays silent (the measured doc capability is unaffected).
+  const dirty300 =
+    "Fala instalada em /usr/local/bin/edge-tts — rode scripts/setup-tts.sh no host e confira a porta 8792";
+  const dirtyOut300 = settingsMirror({
+    ttsState: "ready",
+    ttsMessage: dirty300,
+    docConvertState: "partial",
+    docConvertMessage: DOC300.partial,
+  });
+  check(
+    "P2-300: a speech phrase carrying an absolute tool path, script name and port silences the verdict",
+    json(dirtyOut300) === json({ docConvertState: "partial", docConvertMessage: DOC300.partial }),
+  );
+
+  // The six capabilities together: the P2-288, P2-292 and P2-296 mirrorings
+  // keep their exact names, values and order, and the speech pair appends
+  // last.
+  const six = settingsMirror({
+    docConvertState: "complete",
+    docConvertMessage: DOC300.complete,
+    browseState: "ready",
+    browseMessage: BROWSE300.ready,
+    relay: RELAY_DOWN_300,
+    opencode: AGENT_PATH_300,
+    voiceState: "missing-binary",
+    voiceMessage: VOICE300.missingBinary,
+    ttsState: "missing-tool",
+    ttsMessage: TTS.missingTool,
+  });
+  check(
+    "P2-300: the six capabilities coexist and the P2-288/P2-292/P2-296 mirroring loses no field",
+    json(six) ===
+      json({
+        docConvertState: "complete",
+        docConvertMessage: DOC300.complete,
+        browseState: "ready",
+        browseMessage: BROWSE300.ready,
+        relay: RELAY_DOWN_300,
+        opencode: AGENT_PATH_300,
+        voiceState: "missing-binary",
+        voiceMessage: VOICE300.missingBinary,
+        ttsState: "missing-tool",
+        ttsMessage: TTS.missingTool,
+      }) &&
+      Object.keys(six).join(",") ===
+        "docConvertState,docConvertMessage,browseState,browseMessage,relay,opencode,voiceState,voiceMessage,ttsState,ttsMessage",
+  );
+
+  // Rule order proven: a measured speech verdict and an out-of-table
+  // capability coexist (and the mirror image of that case) — one silent
+  // capability never takes the other down.
+  const orderTts300 = settingsMirror({ ttsState: "ready", ttsMessage: TTS.ready, relay: { ok: 1, reason: null } });
+  const orderDoc300 = settingsMirror({
+    ttsState: "warp-speed",
+    ttsMessage: TTS.ready,
+    docConvertState: "partial",
+    docConvertMessage: DOC300.partial,
+  });
+  check(
+    "P2-300: rule order — a measured speech capability and an out-of-table capability coexist (and vice versa)",
+    json(orderTts300) === json({ ttsState: "ready", ttsMessage: TTS.ready }) &&
+      json(orderDoc300) === json({ docConvertState: "partial", docConvertMessage: DOC300.partial }),
+  );
+
+  // Rule 5 — the same input yields the identical result on two calls.
+  const ttsSnap = {
+    docConvertState: "partial",
+    docConvertMessage: DOC300.partial,
+    browseState: "no-browser",
+    browseMessage: BROWSE300.noBrowser,
+    relay: RELAY_DOWN_300,
+    opencode: AGENT_PATH_300,
+    voiceState: "missing-binary",
+    voiceMessage: VOICE300.missingBinary,
+    ttsState: "missing-tool",
+    ttsMessage: TTS.missingTool,
+  };
+  check("P2-300: the same input yields the identical result on two calls", json(settingsMirror(ttsSnap)) === json(settingsMirror(ttsSnap)));
+
+  // Robustness: no input shape ever throws.
+  let ttsMirrorThrew = false;
+  try {
+    for (const input of [NaN, new Date(), () => 1, { ttsState: {} }, { ttsMessage: Symbol("x") }, { ttsState: "ready" }]) {
+      settingsMirror(input);
+    }
+  } catch {
+    ttsMirrorThrew = true;
+  }
+  check("P2-300: robustness — no input shape ever throws", !ttsMirrorThrew);
+
+  // Real-repo assertions on the daemon wiring: both the /api/health readiness
+  // block and the settings GET handler publish the additive speech fields,
+  // keep every existing field in place, run the lazy tts re-probe at that
+  // same point under the shared readiness policy, introduce no periodic
+  // timer and avoid the voiceState collision.
+  const idx300 = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  const healthAt300 = idx300.indexOf('seg[1] === "health"');
+  const mcpAt300 = idx300.indexOf('seg[1] === "mcp"');
+  const health300 = healthAt300 >= 0 && mcpAt300 > healthAt300 ? idx300.slice(healthAt300, mcpAt300) : "";
+  check(
+    "P2-300: /api/health publishes the three additive speech fields from the hatch-aware ttsStatus()",
+    health300.includes("const tts = ttsStatus();") &&
+      health300.includes("ttsState: tts.state") &&
+      health300.includes("ttsMessage: tts.message") &&
+      health300.includes("ttsCheckedAt: readinessCheckedAt(readinessState.tts.probedAt)"),
+  );
+  check(
+    "P2-300: the identifier does not collide with the transcription one — ttsState is the speech state, voiceState stays transcription",
+    health300.includes("voiceState: stt.state") &&
+      health300.includes("ttsState: tts.state") &&
+      !health300.includes("voiceState: tts.") &&
+      !health300.includes("ttsState: stt."),
+  );
+  check(
+    "P2-300: the speech fields are appended after the existing health fields — none renamed, removed or repositioned",
+    [
+      "docConvertState: docConvert.state",
+      "docConvertMessage: docConvert.message",
+      "docConvertExts: docConvert.exts",
+      'docConvertCheckedAt: readinessCheckedAt(readinessState["doc-convert"].probedAt)',
+      "browseState: browseCap.state",
+      "browseMessage: browseCap.message",
+      "browseCheckedAt: readinessCheckedAt(readinessState.browse.probedAt)",
+      "voiceState: stt.state",
+      "voiceMessage: stt.message",
+      "voiceCheckedAt: readinessCheckedAt(readinessState.transcription.probedAt)",
+      "ttsState: tts.state",
+      "ttsMessage: tts.message",
+      "ttsCheckedAt: readinessCheckedAt(readinessState.tts.probedAt)",
+    ].every((f, i, arr) => health300.includes(f) && (i === 0 || health300.indexOf(arr[i - 1]) < health300.indexOf(f))),
+  );
+  check(
+    "P2-300: the lazy tts re-probe runs in the health block, under the shared readiness policy",
+    health300.includes("maybeReprobeTts();") &&
+      health300.indexOf("await maybeReprobeTranscription();") < health300.indexOf("maybeReprobeTts();") &&
+      health300.indexOf("maybeReprobeTts();") < health300.indexOf("const tts = ttsStatus();") &&
+      idx300.includes("readinessRefreshPlan(") &&
+      idx300.includes("parseReadinessKnobs(process.env)"),
+  );
+  check("P2-300: no periodic timer in the health block", !/setInterval|setTimeout/.test(health300));
+
+  const get300At = idx300.indexOf('req.path === "/__ocr/settings" && req.method === "GET"');
+  const patch300At = idx300.indexOf('req.path === "/__ocr/settings" && req.method === "PATCH"');
+  const settings300 = get300At >= 0 && patch300At > get300At ? idx300.slice(get300At, patch300At) : "";
+  check(
+    "P2-300: the settings GET handler sources the speech pair through settingsMirror",
+    settings300.includes("...settingsMirror({") &&
+      settings300.indexOf("voiceMessage: stt.message") < settings300.indexOf("ttsState: tts.state") &&
+      settings300.indexOf("ttsState: tts.state") < settings300.indexOf("ttsMessage: tts.message") &&
+      !settings300.includes("voiceState: tts."),
+  );
+  check(
+    "P2-300: no existing settings field is renamed, removed or repositioned",
+    settings300.indexOf("...readSettings()") < settings300.indexOf("version: VERSION") &&
+      settings300.indexOf("version: VERSION") < settings300.indexOf("opencodeVersion: opencodeVersion") &&
+      settings300.indexOf("opencodeVersion: opencodeVersion") < settings300.indexOf("disk: diskStatus()") &&
+      settings300.indexOf("disk: diskStatus()") < settings300.indexOf("...settingsMirror({") &&
+      settings300.indexOf("...settingsMirror({") < settings300.indexOf("relay: {") &&
+      settings300.indexOf("relay: {") < settings300.indexOf("opencode: {") &&
+      settings300.indexOf("opencode: {") < settings300.indexOf("voiceState: stt.state") &&
+      settings300.indexOf("voiceState: stt.state") < settings300.indexOf("ttsState: tts.state"),
+  );
+  check(
+    "P2-300: the lazy tts re-probe runs in the settings handler before the mirror answers",
+    settings300.includes("maybeReprobeTts();") &&
+      settings300.indexOf("await maybeReprobeTranscription();") < settings300.indexOf("maybeReprobeTts();") &&
+      settings300.indexOf("maybeReprobeTts();") < settings300.indexOf("...settingsMirror({"),
+  );
+  check(
+    "P2-300: no new periodic timer — the handlers have none and the daemon keeps exactly the five pre-existing ones",
+    !/setInterval|setTimeout/.test(settings300) && (idx300.match(/setInterval\(/g) || []).length === 5,
+  );
+  check(
+    "P2-300: no new re-probe log line — each re-probe keeps its one-line policy (four capabilities total)",
+    idx300.split("\n").filter((l) => l.includes("readiness re-probe")).length === 4,
+  );
+
+  // Real-repo assertion on the module itself: still pure, and the speech
+  // table plus the collision note are written where the contract lives.
+  const mirror300Src = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "settingsmirror.ts"), "utf8");
+  const mirror300Code = mirror300Src
+    .split("\n")
+    .filter((l) => !l.trim().startsWith("//"))
+    .join("\n");
+  check(
+    "P2-300: purity — settingsmirror.ts still imports no node:fs, node:http, node:child_process or fetch",
+    !/^import\b/m.test(mirror300Code) &&
+      !mirror300Code.includes("node:fs") &&
+      !mirror300Code.includes("node:http") &&
+      !mirror300Code.includes("node:child_process") &&
+      !mirror300Code.includes("fetch") &&
+      !mirror300Src.includes("require("),
+  );
+  check(
+    "P2-300: the module documents the speech table and the voiceState collision",
+    mirror300Src.includes('const TTS_STATES: readonly string[] = ["ready", "missing-tool"];') &&
+      mirror300Src.includes("speech (tts):") &&
+      mirror300Src.includes("NOT voiceState") &&
+      mirror300Src.includes("ttsState?: string") &&
+      mirror300Src.includes("ttsMessage?: string"),
+  );
+}
+
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);
   process.exit(1);

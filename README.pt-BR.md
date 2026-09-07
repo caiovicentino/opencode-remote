@@ -83,8 +83,11 @@ remoto, zero confiança**.
   serve (sem mais instrução crua em inglês pra instalar no host), o daemon
   acha a ferramenta no Windows também (localizador nativo `where` no lugar da
   sonda só POSIX) e uma instalação feita depois do boot vale pela re-sondagem
-  preguiçosa; a publicação desse veredito em `GET /api/health` e no canal de
-  settings segue como continuação declarada.
+  preguiçosa. Desde a P2-300 o mesmo veredito também viaja em
+  `GET /api/health` (`ttsState` / `ttsMessage` / `ttsCheckedAt`) e no canal
+  `GET /__ocr/settings` que a tela de Configurações já lê — a linha de fala do
+  painel Estado da máquina segue como continuação declarada até apps/web
+  ganhar a chave correspondente.
   `OCR_TTS_BLOCK=1` no daemon é um hatch de teste que força o veredito
   missing-tool para evidência visual determinística
 - **Prontidão de modelo** — o composer avisa antes do primeiro envio quando a

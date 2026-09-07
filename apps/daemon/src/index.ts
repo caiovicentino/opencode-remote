@@ -1018,7 +1018,16 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
     // or its model is picked up without a restart. No new route, no new
     // request, no new poll, no new timer.
     await maybeReprobeTranscription();
+    // P2-300: the spoken-reply verdict rides this channel too — re-probed
+    // lazily at this same point under the same readiness policy, so installing
+    // edge-tts after boot is picked up without a restart. No new route, no
+    // new request, no new poll, no new timer. The OCR_TTS_BLOCK=1 hatch keeps
+    // forcing the missing-tool verdict for these fields as well.
+    maybeReprobeTts();
     const stt = sttStatus();
+    // P2-300: the same hatch-aware spoken-reply verdict the tts-status route
+    // serves.
+    const tts = ttsStatus();
     return {
       id: req.id,
       status: 200,
@@ -1053,6 +1062,12 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
           // what rides, appended after the existing entries (never reordered).
           voiceState: stt.state,
           voiceMessage: stt.message,
+          // P2-300: the spoken-reply pair joins the mirror — appended after
+          // the existing entries (never reordered). The identifier is
+          // ttsState, NOT voiceState: voiceState is the voice-TRANSCRIPTION
+          // pair since P2-296 (collision documented so nobody repeats it).
+          ttsState: tts.state,
+          ttsMessage: tts.message,
         }),
       },
     };
@@ -3472,9 +3487,18 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       // (at most once per OCR_READINESS_MIN_MS, honoring OCR_READINESS_DISABLE),
       // so installing whisper or its model is picked up without a restart.
       await maybeReprobeTranscription();
+      // P2-300: the spoken-reply verdict is answered here too — same lazy
+      // policy (at most once per OCR_READINESS_MIN_MS, honoring
+      // OCR_READINESS_DISABLE, no new periodic timer), so installing edge-tts
+      // after boot is picked up without a restart. The documented
+      // OCR_TTS_BLOCK=1 hatch keeps forcing the missing-tool verdict.
+      maybeReprobeTts();
       // The same hatch-aware verdict the stt-status route serves (the
       // documented OCR_STT_BLOCK=1 hatch forces these fields as well).
       const stt = sttStatus();
+      // P2-300: the same hatch-aware spoken-reply verdict the tts-status route
+      // serves (OCR_TTS_BLOCK=1 forces these fields as well).
+      const tts = ttsStatus();
       send(200, {
         healthy: true,
         version: VERSION,
@@ -3554,6 +3578,17 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
         voiceState: stt.state,
         voiceMessage: stt.message,
         voiceCheckedAt: readinessCheckedAt(readinessState.transcription.probedAt),
+        // P2-300: additive spoken-reply readiness — same grammar as the
+        // doc-conversion triple (state + short pt-BR phrase + last-probe
+        // instant, null before the first probe). The identifier is ttsState,
+        // deliberately NOT voiceState: voiceState is the voice-TRANSCRIPTION
+        // pair since P2-296, and this comment records the collision so nobody
+        // repeats it (P2-297 lesson). Appended after the existing fields —
+        // none is renamed, removed or repositioned. No phrase ever carries a
+        // path, tool or script name, port, address, env var or secret.
+        ttsState: tts.state,
+        ttsMessage: tts.message,
+        ttsCheckedAt: readinessCheckedAt(readinessState.tts.probedAt),
       });
       return true;
     }
