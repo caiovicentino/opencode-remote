@@ -99,8 +99,10 @@ private. That is the product: **local power, remote control, zero trust**.
   sentence from the same verdict the status route serves (no more raw English
   install instructions), the daemon finds the tool on Windows too (native
   `where` locator instead of a POSIX-only probe), and an install made after
-  boot is picked up by the lazy re-probe; publishing that verdict to
-  `GET /api/health` and the settings channel is a declared continuation.
+  boot is picked up by the lazy re-probe. Since P2-300 the same verdict also
+  rides `GET /api/health` (`ttsState` / `ttsMessage` / `ttsCheckedAt`) and the
+  `GET /__ocr/settings` channel the Settings screen reads — the Machine-state
+  speech line is a declared continuation until apps/web gains the key.
   `OCR_TTS_BLOCK=1` on the daemon is a test hatch that forces the
   missing-tool verdict for deterministic screenshots
 - **Model readiness** — the composer warns before the first send when the
