@@ -66,6 +66,16 @@ import {
 import { initialUnreadState, reduceUnread, sendUnreadToShell } from "../lib/unread";
 import { ArtifactIcon, IconArrowLeft, IconArrowUp, IconChat, IconCheck, IconCopy, IconChevronDown, IconChevronUp, IconClock, IconDownload, IconLaptop, IconMic, IconPlus, IconRefresh, IconSearch, IconSpeaker, IconWrench, IconX } from "./icons";
 
+/** P2-312: microphone verdict from the desktop shell (mirrors
+ * apps/desktop/src/preload.ts, kept in sync by tests). phrase is the shell's
+ * static pt-BR sentence; settingsTarget is the OS panel that unlocks the mic
+ * when one exists (macOS privacy pane / Windows microphone page). */
+export interface MicAccessVerdict {
+  verdict: "ready" | "will-ask" | "blocked-by-system" | "unknown";
+  phrase: string;
+  settingsTarget: string | null;
+}
+
 interface Props {
   sessionId: string;
   events: EventEnvelope[];
@@ -93,6 +103,9 @@ interface Props {
    * in-chat .conn-banner must not duplicate the same sentence (one banner
    * only). The mobile PWA has no shell banner and keeps it. */
   shellBannerVisible?: boolean;
+  /** P2-312: microphone-permission verdict from the desktop shell (absent on
+   * the phone) — replaces the Safari-only NotAllowedError advice. */
+  getMicAccess?: () => Promise<MicAccessVerdict | null>;
 }
 
 interface QuestionInfo {
@@ -352,6 +365,7 @@ export default function ChatView({
   paneArtifact,
   onPaneArtifactConsumed,
   shellBannerVisible = false,
+  getMicAccess,
 }: Props) {
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
@@ -371,6 +385,9 @@ export default function ChatView({
   const [error, setError] = useState("");
   // text of the last failed send, so the error banner can offer one-tap retry
   const [retryText, setRetryText] = useState("");
+  // P2-312: system settings panel target for the mic-denied verdict — set by
+  // micError alongside the shell's phrase, cleared when the mic is used again.
+  const [micPanel, setMicPanel] = useState<string | null>(null);
   // P2-282: per-bubble copy — a calm confirmation on the button itself for
   // ~2s; the failure surfaces where every conversation error already appears.
   const [copiedBubble, setCopiedBubble] = useState<number | null>(null);
@@ -1986,6 +2003,7 @@ export default function ChatView({
 
   async function micDown() {
     setError("");
+    setMicPanel(null);
     try {
       recorder.current = new WavRecorder();
       await recorder.current.start();
@@ -2018,10 +2036,35 @@ export default function ChatView({
   function micError(err: unknown) {
     const e = err as Error & { name?: string };
     if (e.name === "NotAllowedError") {
-      setError("microphone denied — allow it once in iOS Settings → Apps → Safari → Microphone, then reload");
+      // P2-312: when the shell bridge is present, ask it what the OS actually
+      // says (not asked yet / denied by the system / readable) and show that
+      // verdict's phrase — with the system-panel action when the shell offers
+      // one. Without the bridge (the phone) the current sentence stays.
+      if (getMicAccess) {
+        void getMicAccess()
+          .then((v) => {
+            if (v && v.phrase) {
+              // the panel action only makes sense when the system is in the way
+              setMicPanel(v.verdict === "blocked-by-system" || v.verdict === "unknown" ? v.settingsTarget : null);
+              setError(v.phrase);
+            } else {
+              setMicPanel(null);
+              setError(t("micDeniedIos"));
+            }
+          })
+          .catch(() => {
+            setMicPanel(null);
+            setError(t("micDeniedIos"));
+          });
+      } else {
+        setMicPanel(null);
+        setError(t("micDeniedIos"));
+      }
     } else if (e.name === "NotFoundError") {
-      setError("no microphone found on this device");
+      setMicPanel(null);
+      setError(t("micNoMicrophone"));
     } else {
+      setMicPanel(null);
       setError(e.message ?? String(e));
     }
     setRecState("idle");
@@ -2739,6 +2782,21 @@ export default function ChatView({
         {error && (
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <p style={{ color: "var(--danger)", margin: 0, flex: 1, minWidth: 0 }}>{humanizeError(error, t)}</p>
+            {micPanel && (
+              <button
+                className="danger"
+                style={{ padding: "6px 10px", flexShrink: 0 }}
+                onClick={() => {
+                  // P2-312: the existing external-open path — the shell's
+                  // window-open handler routes the panel target through
+                  // extlink.ts to the OS (the phone never renders this).
+                  if (micPanel) window.open(micPanel, "_blank", "noopener");
+                  setMicPanel(null);
+                }}
+              >
+                {t("micOpenPanel")}
+              </button>
+            )}
             {retryText && (
               <button
                 className="danger"

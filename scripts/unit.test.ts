@@ -1242,6 +1242,90 @@ check("permissions.ts is pure (no fetch)", !permissionsSource.includes("fetch(")
 
 
 
+// --- microphone access verdict (P2-312) --------------------------------------
+
+import { micAccessVerdict, MIC_PANEL_MACOS, MIC_PANEL_WINDOWS } from "../apps/desktop/src/micaccess";
+
+const micExpected: Array<[string, string]> = [
+  ["granted", "ready"],
+  ["not-determined", "will-ask"],
+  ["denied", "blocked-by-system"],
+  ["restricted", "blocked-by-system"],
+  ["unknown", "unknown"],
+];
+
+const micPlatformTargets: Array<[string, string | null]> = [
+  ["darwin", MIC_PANEL_MACOS],
+  ["win32", MIC_PANEL_WINDOWS],
+  ["linux", null],
+];
+
+for (const [platform, expectedTarget] of micPlatformTargets) {
+  for (const [status, expectedVerdict] of micExpected) {
+    const verdict = micAccessVerdict(platform, status);
+    check(`micAccessVerdict ${platform}/${status} → ${expectedVerdict}`, verdict.verdict === expectedVerdict);
+    check(`micAccessVerdict ${platform}/${status} phrase non-empty`, typeof verdict.phrase === "string" && verdict.phrase.length > 0);
+    check(`micAccessVerdict ${platform}/${status} target`, verdict.settingsTarget === expectedTarget);
+  }
+  // absent + non-textual input fails closed on every platform
+  for (const absent of [undefined, null, "", 42, {}, ["denied"]]) {
+    const verdict = micAccessVerdict(platform, absent as unknown);
+    const label = typeof absent === "undefined" ? "absent" : JSON.stringify(absent) || String(absent);
+    check(`micAccessVerdict ${platform} fails closed on ${label}`, verdict.verdict === "unknown");
+    check(`micAccessVerdict ${platform} fail-closed phrase non-empty`, verdict.phrase.length > 0);
+    check(`micAccessVerdict ${platform} fail-closed target unchanged`, verdict.settingsTarget === expectedTarget);
+  }
+}
+
+// the same input twice must answer the exact same verdict
+const micTwice = [micAccessVerdict("darwin", "denied"), micAccessVerdict("darwin", "denied")];
+check(
+  "micAccessVerdict is deterministic for the same input",
+  JSON.stringify(micTwice[0]) === JSON.stringify(micTwice[1]) && micTwice[0].phrase === micTwice[1].phrase,
+);
+
+// static pt-BR sentences: no path, no user name, no address
+const micPhrases = ["granted", "not-determined", "denied", "restricted", "unknown", "", null, 42].map((s) =>
+  micAccessVerdict("darwin", s as unknown).phrase,
+);
+check(
+  "micAccessVerdict phrases carry no path, user or address",
+  micPhrases.every((p) => p.length > 0 && !p.includes("/") && !p.includes("\\") && !p.includes("@") && !p.includes("http")),
+);
+
+// micaccess.ts stays pure: no electron, no node:fs, no I/O — so the unit test
+// always exercises the real mapping.
+const micAccessSource = readFileSync(new URL("../apps/desktop/src/micaccess.ts", import.meta.url), "utf8");
+check("micaccess.ts is pure (no electron import)", !micAccessSource.includes('from "electron"'));
+check("micaccess.ts is pure (no node:fs import)", !micAccessSource.includes("node:fs"));
+check("micaccess.ts is pure (no node builtins, no fetch, no I/O)", !micAccessSource.includes("node:") && !micAccessSource.includes("require(") && !micAccessSource.includes("fetch("));
+
+// wiring: the main process answers app:micAccess through the pure verdict,
+// reading the OS state at request time; the preload bridge exposes the read.
+check("main.ts imports the mic access module", mainTsSource.includes('from "./micaccess"'));
+check("main.ts registers app:micAccess exactly once", (mainTsSource.match(/app:micAccess/g) ?? []).length === 1);
+check("main.ts reads the mic status at request time", mainTsSource.includes('getMediaAccessStatus("microphone")'));
+check("main.ts answers app:micAccess with the shared verdict", mainTsSource.includes("micAccessVerdict(process.platform,"));
+const preloadSource = readFileSync(new URL("../apps/desktop/src/preload.ts", import.meta.url), "utf8");
+check("preload exposes getMicAccess through the existing bridge", preloadSource.includes("getMicAccess") && preloadSource.includes("app:micAccess"));
+
+// the panel opening rides the existing external-link gate: both OS panel
+// targets must pass externalOpenDecision unchanged.
+check("externalOpenDecision admits the macOS mic panel target", externalOpenDecision(MIC_PANEL_MACOS).allow);
+check("externalOpenDecision admits the Windows mic panel target", externalOpenDecision(MIC_PANEL_WINDOWS).allow);
+
+// the composer swaps the phrase only when the shell bridge is present, and the
+// new copy exists in both languages of the dictionary.
+const chatViewSource = readFileSync(new URL("../apps/web/src/components/ChatView.tsx", import.meta.url), "utf8");
+check("ChatView asks the shell for the mic verdict", chatViewSource.includes("getMicAccess"));
+const i18nSource = readFileSync(new URL("../apps/web/src/lib/i18n.ts", import.meta.url), "utf8");
+check(
+  "mic copy exists in both languages",
+  (i18nSource.match(/micDeniedIos:/g) ?? []).length === 2 && (i18nSource.match(/micOpenPanel:/g) ?? []).length === 2 && (i18nSource.match(/micNoMicrophone:/g) ?? []).length === 2,
+);
+
+
+
 // --- guest webContents guard (P2-184) ----------------------------------------
 
 const httpAttach = guestAttachDecision("http://localhost:3000/", {}, undefined);

@@ -408,6 +408,11 @@ export const dict = {
     pasteTooLarge: "Paste refused: the pasted item is larger than the attach limit",
     pasteTooMany: "Paste refused: too many items in one paste — attach up to 4 at a time",
     micNeedsPermission: "Microphone unavailable — allow access to record voice",
+    // P2-312: mic-denied copy — the phone keeps the Safari sentence, the
+    // desktop shell swaps in the OS verdict phrase (apps/desktop/src/micaccess.ts).
+    micDeniedIos: "microphone denied — allow it once in iOS Settings → Apps → Safari → Microphone, then reload",
+    micNoMicrophone: "no microphone found on this device",
+    micOpenPanel: "Open system settings",
     modelSelector: "Agent and model",
     defaultModel: "default model",
     stopRecording: "Stop recording",
@@ -953,6 +958,10 @@ export const dict = {
     pasteTooLarge: "Colagem recusada: o item colado é maior que o limite de anexo",
     pasteTooMany: "Colagem recusada: itens demais numa só colagem — anexe até 4 por vez",
     micNeedsPermission: "Microfone indisponível — permita o acesso pra gravar voz",
+    // P2-312: same keys as above — the phone sentence and the panel action.
+    micDeniedIos: "microfone negado — permita o acesso em Ajustes → Apps → Safari → Microfone e recarregue",
+    micNoMicrophone: "nenhum microfone encontrado neste dispositivo",
+    micOpenPanel: "Abrir ajustes do sistema",
     modelSelector: "Agente e modelo",
     defaultModel: "modelo padrão",
     stopRecording: "Parar gravação",

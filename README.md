@@ -95,6 +95,13 @@ private. That is the product: **local power, remote control, zero trust**.
   `OCR_STT_BLOCK=1` on the daemon is a test hatch that forces the
   missing-binary verdict so the disabled-mic UI can be evidenced
   deterministically even on hosts that do have whisper installed
+- **Mic denied guidance (desktop)** — when the OS refuses the microphone
+  inside the desktop app, the composer no longer shows the old Safari/iOS
+  sentence: the shell reports what the system actually says (never asked yet,
+  denied in the system, or unreadable — fail-closed) with one calm pt-BR
+  sentence, and — on macOS and Windows — an **Open system settings** action
+  that opens the microphone privacy panel through the shell's external-link
+  gate. The phone keeps the mobile-browser advice untouched
 - **Spoken replies** — the agent's answer can be read aloud by an optional
   host tool (edge-tts): since P2-298 the refusal is a short actionable pt-BR
   sentence from the same verdict the status route serves (no more raw English

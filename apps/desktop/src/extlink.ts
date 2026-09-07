@@ -2,14 +2,16 @@
 // artifacts and update feeds all carry URLs that end up at
 // `shell.openExternal`, and the OS will happily launch whatever handler is
 // registered for a scheme — file, smb, a custom app, anything. This module is
-// the single gate in front of that: it accepts ONLY http, https and mailto and
-// refuses everything else with a reason that is safe to log (never the URL
-// itself, so conversation content cannot leak into desktop.log). Pure on
+// the single gate in front of that: it accepts ONLY http, https, mailto and
+// the two inert OS settings schemes (P2-312: the mic-denied composer action
+// opens the system privacy panel through this same path) and refuses
+// everything else with a reason that is safe to log (never the URL itself, so
+// conversation content cannot leak into desktop.log). Pure on
 // purpose — no electron, no node builtins — so scripts/unit.test.ts exercises
 // the real code (same pattern as deeplink.ts); main.ts injects the raw string
 // at runtime.
 
-export const ALLOWED_EXTERNAL_SCHEMES = ["http", "https", "mailto"] as const;
+export const ALLOWED_EXTERNAL_SCHEMES = ["http", "https", "mailto", "ms-settings", "x-apple.systempreferences"] as const;
 
 const ALLOWED = new Set<string>(ALLOWED_EXTERNAL_SCHEMES);
 

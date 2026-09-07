@@ -77,6 +77,14 @@ remoto, zero confiança**.
   `./scripts/setup-whisper.sh`.
   `OCR_STT_BLOCK=1` no daemon é um hatch de teste que força o veredito
   missing-binary para evidência visual determinística
+- **Orientação de microfone negado (desktop)** — quando o sistema recusa o
+  microfone dentro do app desktop, o compositor não mostra mais a frase antiga
+  do Safari/iOS: o shell diz o que o sistema de fato reporta (ainda não
+  perguntou, negado no sistema ou ilegível — fail-closed) numa frase calma em
+  português e, no macOS e no Windows, oferece a ação **Abrir ajustes do
+  sistema**, que abre o painel de privacidade do microfone pelo mesmo portão
+  de link externo do shell. No celular a orientação de navegador móvel segue
+  intacta
 - **Respostas faladas** — a resposta do agente pode ser lida em voz alta por
   uma ferramenta opcional do host (edge-tts): desde a P2-298 a recusa é uma
   frase curta e acionável em português, do mesmo veredito que a rota de status

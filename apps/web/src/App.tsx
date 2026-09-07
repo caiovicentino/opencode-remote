@@ -28,7 +28,7 @@ import PairingView from "./components/PairingView";
 import PairingOverlay, { type WebAppInfo } from "./components/PairingOverlay";
 import SessionsView from "./components/SessionsView";
 import SidebarAccount from "./components/SidebarAccount";
-import ChatView from "./components/ChatView";
+import ChatView, { type MicAccessVerdict } from "./components/ChatView";
 import HomeView from "./components/HomeView";
 import { setDraft } from "./lib/drafts";
 import SettingsView, {
@@ -167,6 +167,8 @@ interface DesktopBridge {
   /** P2-289: machine proxy — Settings card (desktop shell only). */
   getProxySetting?: () => Promise<ProxySetting>;
   setProxyChoice?: (choice: { mode: "system" | "direct" | "fixed"; address?: string }) => Promise<ProxySettingWriteResult>;
+  /** P2-312: microphone-permission verdict (desktop shell only, mirrored in ChatView). */
+  getMicAccess?: () => Promise<MicAccessVerdict | null>;
 }
 
 function desktopBridge(): DesktopBridge | null {
@@ -1036,6 +1038,7 @@ export default function App() {
       // P2-108: the shell strip (.daemon-reconnecting/.daemon-down) and the
       // in-chat .conn-banner say the same sentence — never show both.
       shellBannerVisible={kind === "reconnecting" || kind === "down"}
+      getMicAccess={desktopBridge()?.getMicAccess}
     />
   );
   const settingsNode = (

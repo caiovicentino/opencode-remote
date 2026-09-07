@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
+import type { MicAccessVerdict } from "./micaccess";
 
 /** Result shape of the /api/browse proxy in apps/desktop/src/main.ts. */
 export interface DaemonBrowseResponse {
@@ -184,6 +185,10 @@ contextBridge.exposeInMainWorld("ocrDesktop", {
   getProxySetting: (): Promise<ProxySetting> => ipcRenderer.invoke("app:proxySetting"),
   setProxyChoice: (choice: { mode: "system" | "direct" | "fixed"; address?: string }): Promise<ProxySettingWriteResult> =>
     ipcRenderer.invoke("app:saveProxyChoice", choice),
+  // P2-312: microphone-permission verdict for the composer's error path —
+  // read at request time (never cached at boot) through the same bridge as
+  // the proxy setting above. Shape mirrors apps/desktop/src/micaccess.ts.
+  getMicAccess: (): Promise<MicAccessVerdict> => ipcRenderer.invoke("app:micAccess"),
   // P3-053: dock unread badge — the web UI derives the count (lib/unread.ts)
   // and pushes it on every change; main maps it to app.setBadgeCount. The
   // getter exists so tests can verify the IPC round-trip via the harness.
