@@ -865,6 +865,16 @@ no envelope fields, no identities); `RELAY_ROOM_BUDGET_BYTES=-1` disables
 the budget for a private, allowlisted relay. Runbook:
 [docs/RELAY-HOSTING.md](docs/RELAY-HOSTING.md).
 
+The hosted relay's `/healthz` probe also announces the TLS certificate
+verdict (P2-290): with a cert pair configured, the body gains the additive
+`certExpiryVerdict` (`use`/`warn`/`refuse-expired`/`refuse-not-yet-valid`)
+and `certExpiryInS` (whole seconds to expiry, floored at zero) — fed by the
+verdict the relay already recomputes on its liveness sweep, so an expiring
+certificate shows up in the operator's monitor days before phones fail
+their handshake. Fail-closed: absent in plain mode, absent when nothing was
+measured, and never certificate material (only the verdict string and a
+seconds count).
+
 **Two-step pairing (P2-189)**: the phone needs an address before there is a
 pairing QR to scan, so the desktop pairing screen shows two labeled steps.
 Step one is the **app address** — `https://…` derived from the relay address

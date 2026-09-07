@@ -641,6 +641,18 @@ server.on(
       roomsRejected: () => m.roomsRejected,
       // P2-243: additive — rooms closed by the per-room volume budget.
       roomsBudgetTerminated: () => m.roomBudgetTerminated,
+      // P2-290: additive — the probe announces the certificate verdict the
+      // P2-259 runtime revalidation already maintains (`lastCertExpiryVerdict`,
+      // refreshed by the SAME ping sweep; no new timer, no new route, no new
+      // request, boot refusal untouched) plus the whole seconds left before
+      // expiry. Plain mode has no certificate: the getter answers undefined
+      // and the body stays byte-for-byte the pre-P2-290 shape. Only the short
+      // static verdict and a seconds count leave the process — no subject,
+      // issuer, serial, fingerprint, path or host material.
+      certExpiry: () =>
+        CERT_EXPIRY && lastCertExpiryVerdict
+          ? { verdict: lastCertExpiryVerdict, expiresAtMs: CERT_EXPIRY.notAfter }
+          : undefined,
     },
     isShuttingDown,
     // P2-188: optional static PWA route (RELAY_WEB_DIR); undefined keeps the

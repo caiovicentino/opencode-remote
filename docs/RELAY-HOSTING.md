@@ -637,6 +637,27 @@ expose publicly (no room ids, no per-peer metadata):
 The image's `HEALTHCHECK` polls it locally every 30s; load balancers should
 use the same path as the HTTP health check.
 
+### Certificate verdict on the probe (P2-290)
+
+When the relay runs with a TLS pair, two additive fields ride the same body:
+`certExpiryVerdict` — one of `use`, `warn`, `refuse-expired`,
+`refuse-not-yet-valid` — and `certExpiryInS`, the whole seconds until the
+certificate stops being valid (floored at zero). Both come from the verdict
+the relay already recomputes on its liveness sweep — no new timer, no new
+route — so an operator monitoring this probe sees an expiring certificate
+days before phones start failing their handshake, instead of reading it in a
+log line nobody watches.
+
+The fields are fail-closed: absent in plain mode (`ws://`, no certificate),
+absent while no verdict was measured, and never announcing a healthy verdict
+the relay did not measure. They carry only the verdict string and a seconds
+count — never a subject, issuer, serial number, fingerprint, file path or
+host. The drain response keeps them, exactly like every other field:
+
+```json
+{"ok":false,"version":"0.2.0","uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0,"certExpiryVerdict":"warn","certExpiryInS":86400,"draining":true}
+```
+
 ### During the drain: 503 on purpose (P2-145)
 
 When the relay receives `SIGTERM` it enters a drain window (≤3s) and

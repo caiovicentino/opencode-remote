@@ -801,6 +801,17 @@ identidade); `RELAY_ROOM_BUDGET_BYTES=-1` desliga o orçamento num relay
 privado e allowlistado. Runbook:
 [docs/RELAY-HOSTING.md](docs/RELAY-HOSTING.md).
 
+A sonda `/healthz` do relay hospedado também anuncia o veredito do
+certificado TLS (P2-290): com o par de certificados configurado, o corpo
+ganha os campos aditivos `certExpiryVerdict`
+(`use`/`warn`/`refuse-expired`/`refuse-not-yet-valid`) e `certExpiryInS`
+(segundos inteiros até o vencimento, piso zero) — alimentados pelo veredito
+que o relay já recalcula no sweep de liveness, então um certificado
+vencendo aparece no monitor do operador dias antes de os telefones falharem
+o handshake. Fail-closed: ausente em modo plain, ausente quando nada foi
+medido, e nunca material do certificado (só o veredito curto e uma contagem
+de segundos).
+
 A imagem também entrega a PWA do celular (P2-188): ela define
 `RELAY_WEB_DIR=/app/apps/web/dist`, então a URL do relay no navegador do
 telefone já abre o app — o primeiro passo da jornada não exige dev server,
