@@ -804,6 +804,32 @@ line stays byte for byte. Fail-closed: plain mode (no certificate) publishes
 neither line, an unmeasured verdict publishes neither line, and no line ever
 carries a subject, issuer, serial number, fingerprint, file path or host.
 
+The relay process itself is on the same surface (P2-313), as five additive
+gauges appended after every pre-existing line in both formats —
+`relay_resident_bytes` is the process's resident memory (RSS) in bytes, the
+series that exposes a slow leak as a steady climb long before the OOM killer
+does the announcing; `relay_heap_used_bytes` is the JavaScript heap actually
+in use, whose ratchet-only-upward shape between scrapes anticipates growing
+live data (retained rooms, maps, buffers); `relay_heap_total_bytes` is the
+heap the runtime has allocated for the relay, which anticipates memory
+pressure from the outside — a cgroup or hosting-plan limit the process is
+about to run into; `relay_uptime_seconds` is how long the process has been
+up, and a value that keeps resetting anticipates the crash loop that
+per-scrape probes miss when the process dies between them;
+`relay_scheduling_delay_ms` is the largest delay observed since the previous
+scrape between when the internal liveness sweep was due and when it actually
+ran (window max, reset by every scrape), and a rising value anticipates an
+event loop so starved that keep-alive checks and frame routing start
+lagging — the stage that precedes dropped conversations. The same numbers
+ride the JSON body as `resident_bytes`, `heap_used_bytes`, `heap_total_bytes`
+and `scheduling_delay_ms` next to the existing `uptime_s`. They are
+observation only — no limit, admission, refusal or socket close reads them —
+computed per scrape from values already in memory (no new timer, no new
+route, no new request, no new dependency), and fail-closed like the
+certificate series: a component the relay cannot measure is omitted rather
+than published as an invented zero, and no series ever carries an address,
+port, room id, token or any identifiable material.
+
 ## Pointing a daemon at the hosted relay
 
 The daemon picks its relay from `RELAY_URL` at install time:

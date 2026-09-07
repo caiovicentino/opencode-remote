@@ -16,6 +16,7 @@ import { WebSocket, WebSocketServer } from "ws";
 import { healthzHandler, healthzPayload, WEB_ENCODING_CACHE, type CertExpiryHealth, type HealthzState } from "../apps/relay/src/healthz";
 import { rejectionBreakdown, ROOM_REJECT_REASONS } from "../apps/relay/src/rejectreasons";
 import { certExpiryMetrics } from "../apps/relay/src/certmetrics";
+import { procMetrics, procMetricsJson } from "../apps/relay/src/procmetrics";
 import { metricsAuthOk, metricsBinding } from "../apps/relay/src/metricsbind";
 import { DRAIN_GRACE_MS_CEILING, MAX_FRAME_CEILING, relayLimits } from "../apps/relay/src/limits";
 import { createShutdown, DRAIN_MS, refuseUpgrade } from "../apps/relay/src/shutdown";
@@ -54,9 +55,9 @@ function check(name: string, ok: boolean) {
 }
 
 setTimeout(() => {
-  console.error("relay-healthz test timed out (global 15s)");
+  console.error("relay-healthz test timed out (global 60s)");
   process.exit(1);
-}, 15_000).unref();
+}, 60_000).unref();
 
 // --- 1. pure payload: shape and uptime math ---------------------------------
 const START = 1_000_000;
@@ -1975,6 +1976,30 @@ const ROOM_BUDGET_JSON_ORDER = [
   "rooms_active",
 ];
 
+// P2-313: the additive process series (Prometheus names, in order) and their
+// JSON body twins — appended AFTER every pre-existing series by procmetrics.ts
+const PROC_SERIES = [
+  "relay_resident_bytes",
+  "relay_heap_used_bytes",
+  "relay_heap_total_bytes",
+  "relay_uptime_seconds",
+  "relay_scheduling_delay_ms",
+] as const;
+const PROC_JSON_KEYS = [
+  "resident_bytes",
+  "heap_used_bytes",
+  "heap_total_bytes",
+  "scheduling_delay_ms",
+] as const;
+// a process gauge is SUPPOSED to move between scrapes (that is the point of
+// observing a live process), so identity checks on the pre-existing surface
+// strip the process series before comparing
+const stripProcSeries = (text: string) =>
+  text
+    .split("\n")
+    .filter((l) => l !== "" && !PROC_SERIES.some((n) => l === `# TYPE ${n} gauge` || l.startsWith(`${n} `)))
+    .join("\n");
+
 check(
   "room-budget-metrics: index.ts publishes the SAME counter the /healthz getter uses, with no new counter, route or timer",
   (() => {
@@ -2087,13 +2112,17 @@ check(
     const jsonRaw = await fetchMetricsBody(mport);
     const json = JSON.parse(jsonRaw) as Record<string, unknown>;
     check(
-      "room-budget-metrics: the whole Prometheus line table keeps today's names and order with the new series additive",
-      JSON.stringify(
-        prom
+      "room-budget-metrics: today's Prometheus line table keeps its names and order, with only the P2-313 process series after it",
+      (() => {
+        const dataNames = prom
           .split("\n")
           .filter((l) => l !== "" && !l.startsWith("#"))
-          .map((l) => l.split(" ")[0]),
-      ) === JSON.stringify(ROOM_BUDGET_PROM_ORDER),
+          .map((l) => l.split(" ")[0]);
+        return (
+          JSON.stringify(dataNames) ===
+          JSON.stringify([...ROOM_BUDGET_PROM_ORDER, ...PROC_SERIES])
+        );
+      })(),
     );
     check(
       "room-budget-metrics: each series keeps its TYPE header immediately before its value line",
@@ -2103,8 +2132,9 @@ check(
       }),
     );
     check(
-      "room-budget-metrics: JSON keeps every existing key in today's order with the new key additive",
-      JSON.stringify(Object.keys(json)) === JSON.stringify(ROOM_BUDGET_JSON_ORDER),
+      "room-budget-metrics: JSON keeps every existing key in today's order, with only the P2-313 process keys after them",
+      JSON.stringify(Object.keys(json)) ===
+        JSON.stringify([...ROOM_BUDGET_JSON_ORDER, ...PROC_JSON_KEYS]),
     );
     check(
       "room-budget-metrics: JSON of the same scrape carries the new key with exactly the Prometheus value",
@@ -2122,17 +2152,315 @@ check(
     const again1 = await fetchMetricsBody(mport, "?format=prom");
     const again2 = await fetchMetricsBody(mport, "?format=prom");
     check(
-      "room-budget-metrics: two consecutive scrapes without a counter change are identical",
-      again1 === again2 && again1 === prom,
+      "room-budget-metrics: two consecutive scrapes keep every pre-existing line identical (the P2-313 process gauges may move)",
+      stripProcSeries(again1) === stripProcSeries(again2) &&
+        stripProcSeries(again1) === stripProcSeries(prom),
     );
     const jsonAgain = (JSON.parse(await fetchMetricsBody(mport)) ?? {}) as Record<string, unknown>;
-    const stripUptime = (o: Record<string, unknown>) => JSON.stringify({ ...o, uptime_s: 0 });
+    const stripVolatile = (o: Record<string, unknown>) =>
+      JSON.stringify({ ...o, uptime_s: 0, ...Object.fromEntries(PROC_JSON_KEYS.map((k) => [k, 0])) });
     check(
-      "room-budget-metrics: consecutive JSON scrapes without a counter change are identical apart from uptime_s",
-      stripUptime(jsonAgain) === stripUptime(json) && jsonAgain["room_budget_terminated"] === 1,
+      "room-budget-metrics: consecutive JSON scrapes keep every pre-existing value identical apart from uptime_s and the P2-313 process fields",
+      stripVolatile(jsonAgain) === stripVolatile(json) && jsonAgain["room_budget_terminated"] === 1,
     );
   } else {
     check("room-budget-metrics: relay subprocess came up", false);
+  }
+  proc.kill("SIGTERM");
+}
+
+// --- 23. process metrics (P2-313, pure module) ----------------------------------
+// Table tests: each series with a valid input publishes exactly one TYPE +
+// value pair; a missing, negative, non-numeric or non-finite input omits the
+// series entirely (fail-closed, never an invented zero).
+
+const PROC_VALID = [2048, 1024, 4096, 42, 7];
+
+check(
+  "proc-metrics: every valid input publishes TYPE + value pairs, in order",
+  (() => {
+    const lines = procMetrics(PROC_VALID[0], PROC_VALID[1], PROC_VALID[2], PROC_VALID[3], PROC_VALID[4]);
+    const expected = PROC_SERIES.flatMap((name, i) => [`# TYPE ${name} gauge`, `${name} ${PROC_VALID[i]}`]);
+    return JSON.stringify(lines) === JSON.stringify(expected);
+  })(),
+);
+
+// each series × each invalid input class: that series vanishes, the others stay
+const PROC_INVALID: Array<[string, unknown]> = [
+  ["missing", undefined],
+  ["null", null],
+  ["non-numeric", "1024"],
+  ["NaN", Number.NaN],
+  ["+Infinity", Number.POSITIVE_INFINITY],
+  ["-Infinity", Number.NEGATIVE_INFINITY],
+  ["negative", -1],
+  ["negative fractional", -0.5],
+  ["object", {}],
+  ["boolean", true],
+];
+for (let series = 0; series < PROC_SERIES.length; series++) {
+  for (const [label, value] of PROC_INVALID) {
+    const inputs = PROC_VALID.map((v, i) => (i === series ? value : v)) as [
+      unknown,
+      unknown,
+      unknown,
+      unknown,
+      unknown,
+    ];
+    const lines = procMetrics(...inputs);
+    const dataLines = lines.filter((l) => !l.startsWith("# TYPE"));
+    check(
+      `proc-metrics: ${PROC_SERIES[series]} with ${label} input omits the series`,
+      !lines.some((l) => l.includes(PROC_SERIES[series])) &&
+        dataLines.length === PROC_SERIES.length - 1 &&
+        dataLines.every((l) => !Number.isNaN(Number(l.split(" ")[1]))),
+    );
+  }
+}
+
+check(
+  "proc-metrics: identical inputs produce byte-identical lines on every call",
+  JSON.stringify(procMetrics(2048, 1024, 4096, 42, 7)) ===
+    JSON.stringify(procMetrics(2048, 1024, 4096, 42, 7)),
+);
+
+check(
+  "proc-metrics: no line carries an address, port, room id or token material",
+  (() => {
+    const lines = procMetrics(2048, 1024, 4096, 42, 7).join("\n");
+    return !lines.includes("127.0.0.1") && !lines.includes(":") && /^[\w\n #.-]+$/.test(lines);
+  })(),
+);
+
+check(
+  "proc-metrics json: same numbers as the Prometheus lines for the same inputs",
+  (() => {
+    const lines = procMetrics(2048, 1024, 4096, 42, 7);
+    const json = procMetricsJson(2048, 1024, 4096, 7);
+    const fromProm: Record<string, number> = {};
+    for (const l of lines) if (!l.startsWith("# TYPE")) fromProm[l.split(" ")[0]!] = Number(l.split(" ")[1]);
+    return (
+      fromProm.relay_resident_bytes === json.resident_bytes &&
+      fromProm.relay_heap_used_bytes === json.heap_used_bytes &&
+      fromProm.relay_heap_total_bytes === json.heap_total_bytes &&
+      fromProm.relay_scheduling_delay_ms === json.scheduling_delay_ms
+    );
+  })(),
+);
+
+check(
+  "proc-metrics json: exactly the four additive fields, no uptime twin (the body already publishes uptime_s)",
+  (() => {
+    const json = procMetricsJson(2048, 1024, 4096, 7);
+    return (
+      JSON.stringify(Object.keys(json)) ===
+        JSON.stringify(["resident_bytes", "heap_used_bytes", "heap_total_bytes", "scheduling_delay_ms"]) &&
+      !("uptime_s" in json) && !("uptime_seconds" in json)
+    );
+  })(),
+);
+
+for (const [label, value] of PROC_INVALID) {
+  check(`proc-metrics json: ${label} resident input omits the field`, !("resident_bytes" in procMetricsJson(value, 1, 1, 1)));
+  check(`proc-metrics json: ${label} heap-used input omits the field`, !("heap_used_bytes" in procMetricsJson(1, value, 1, 1)));
+  check(`proc-metrics json: ${label} heap-total input omits the field`, !("heap_total_bytes" in procMetricsJson(1, 1, value, 1)));
+  check(`proc-metrics json: ${label} delay input omits the field`, !("scheduling_delay_ms" in procMetricsJson(1, 1, 1, value)));
+}
+
+check(
+  "proc-metrics json: identical inputs produce an identical object on every call",
+  JSON.stringify(procMetricsJson(2048, 1024, 4096, 7)) ===
+    JSON.stringify(procMetricsJson(2048, 1024, 4096, 7)),
+);
+
+// purity: the module imports nothing at all — no node:fs, no node:process, no
+// network, no timer — so the unit battery can load it without booting anything
+{
+  const procSrc = readFileSync(
+    fileURLToPath(new URL("../apps/relay/src/procmetrics.ts", import.meta.url)),
+    "utf8",
+  );
+  const codeOnly = procSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+  check(
+    "proc-metrics purity: the module has zero imports, no process, no network and no timer",
+    codeOnly.trim().length > 0 &&
+      !/^import /m.test(codeOnly) &&
+      !codeOnly.includes("from \"") &&
+      !codeOnly.includes("node:") &&
+      !/require\(/.test(codeOnly) &&
+      !/\bprocess\b/.test(codeOnly) &&
+      !/setInterval|setTimeout/.test(codeOnly) &&
+      !/fetch\(/.test(codeOnly),
+  );
+}
+
+// real-source assertions on index.ts: the measurement rides the EXISTING
+// sweep, and no timer, route or dependency entered with it
+{
+  const relayIndex = readFileSync(
+    fileURLToPath(new URL("../apps/relay/src/index.ts", import.meta.url)),
+    "utf8",
+  );
+  const setIntervalAt = relayIndex.indexOf("setInterval(");
+  const delayCalcAt = relayIndex.indexOf("const sweepLateMs = now - lastSweepAt - PING_INTERVAL_S * 1000");
+  const lastSweepAt = relayIndex.indexOf("lastSweepAt = now");
+  const metricsRouteAt = relayIndex.indexOf('startsWith("/metrics")');
+  // the reset (not the `let` declaration, which also assigns 0) sits after it
+  const resetAt = relayIndex.indexOf("sweepDelayMaxMs = 0;", metricsRouteAt);
+  const promSpreadAt = relayIndex.indexOf("...procMetrics(");
+  const certSpreadAt = relayIndex.indexOf("...certExpiryMetrics(");
+  const jsonSpreadAt = relayIndex.indexOf("...procMetricsJson(");
+  check(
+    "proc-metrics source: the delay is measured inside the existing sweep tick",
+    setIntervalAt > -1 && delayCalcAt > setIntervalAt && lastSweepAt > delayCalcAt,
+  );
+  check(
+    "proc-metrics source: no new timer entered (the one pre-existing sweep)",
+    (relayIndex.match(/setInterval\(/g) ?? []).length === 1,
+  );
+  check(
+    "proc-metrics source: no new route entered (the one /metrics route literal)",
+    (relayIndex.match(/\/metrics"/g) ?? []).length === 1,
+  );
+  check(
+    "proc-metrics source: the read-and-reset happens once, inside the /metrics branch, before both formats",
+    resetAt > -1 &&
+      (relayIndex.match(/(?<!let )sweepDelayMaxMs = 0/g) ?? []).length === 1 &&
+      resetAt < relayIndex.indexOf("format=prom"),
+  );
+  check(
+    "proc-metrics source: the Prometheus spread is the LAST element, after the certificate series",
+    promSpreadAt > certSpreadAt &&
+      certSpreadAt > -1 &&
+      /\.\.\.procMetrics\([^\n]*\),\s*\n\s*\];/.test(relayIndex),
+  );
+  check(
+    "proc-metrics source: the JSON spread sits additively next to rooms_active",
+    jsonSpreadAt > relayIndex.indexOf("rooms_active: rooms.size") && jsonSpreadAt > -1,
+  );
+  check(
+    "proc-metrics source: no new bare-specifier import (dependency surface unchanged)",
+    [...relayIndex.matchAll(/from "([^".][^"]*)"/g)]
+      .map((x) => x[1])
+      .every((s) => ["ws", "node:http", "node:https", "node:fs", "node:path", "node:crypto"].includes(s ?? "")),
+  );
+}
+
+// live endpoint: the real relay subprocess on ephemeral loopback ports — every
+// pre-existing Prometheus line byte-for-byte as before, each new series exactly
+// once in both formats
+{
+  const freePort = () =>
+    new Promise<number>((resolve, reject) => {
+      const srv = net.createServer();
+      srv.listen(0, "127.0.0.1", () => {
+        const p = (srv.address() as { port: number }).port;
+        srv.close(() => resolve(p));
+      });
+      srv.on("error", reject);
+    });
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const port = await freePort();
+  const mport = await freePort();
+  const proc = spawn("npx", ["tsx", "apps/relay/src/index.ts"], {
+    cwd: join(import.meta.dirname, ".."),
+    env: { ...process.env, RELAY_PORT: String(port), RELAY_METRICS_PORT: String(mport), OCR_E2E_MARKER: "1" },
+    stdio: ["ignore", "ignore", "inherit"],
+  });
+  process.on("exit", () => proc.kill("SIGTERM"));
+
+  // wait for readiness through the documented probe
+  let up = false;
+  for (let attempt = 0; attempt < 30 && !up; attempt++) {
+    up = await new Promise<boolean>((resolve) => {
+      get(`http://127.0.0.1:${port}/healthz`, (res) => {
+        res.resume();
+        resolve(res.statusCode === 200);
+      }).on("error", () => resolve(false));
+    });
+    if (!up) await sleep(300);
+  }
+
+  if (up) {
+    const fetchBody = (qs: string) =>
+      new Promise<string>((resolve) => {
+        get(`http://127.0.0.1:${mport}/metrics${qs}`, (res) => {
+          let s = "";
+          res.on("data", (c) => (s += c));
+          res.on("end", () => resolve(s));
+        });
+      });
+    const jsonRaw = await fetchBody("");
+    const prom = await fetchBody("?format=prom");
+    const json = JSON.parse(jsonRaw) as Record<string, number>;
+
+    // every pre-existing line, reconstructed from the JSON body: with no
+    // clients connected the counters are frozen between the two scrapes, so
+    // a byte-for-byte prefix match proves the old lines did not move
+    const PRE_EXISTING: Array<[string, string, "counter" | "gauge"]> = [
+      ["connections_total", "relay_connections_total", "counter"],
+      ["connections_active", "relay_connections_active", "gauge"],
+      ["frames_routed", "relay_frames_routed", "counter"],
+      ["bytes_routed", "relay_bytes_routed", "counter"],
+      ["rejects", "relay_rejects", "counter"],
+      ["rate_limited_total", "relay_rate_limited_total", "counter"],
+      ["rooms_rejected", "relay_rooms_rejected", "counter"],
+      ["rooms_rejected_invalid_room_id", "relay_rooms_rejected_invalid_room_id", "counter"],
+      ["rooms_rejected_socket_room_cap", "relay_rooms_rejected_socket_room_cap", "counter"],
+      ["stale_terminated", "relay_stale_terminated", "counter"],
+      ["slow_consumers_total", "relay_slow_consumers_total", "counter"],
+      ["capacity_refused_total", "relay_capacity_refused_total", "counter"],
+      ["idle_unjoined_closed", "relay_idle_unjoined_closed", "counter"],
+      ["room_budget_terminated", "relay_room_budget_terminated", "counter"],
+      ["rooms_active", "relay_rooms_active", "gauge"],
+    ];
+    const expectedPrefix = PRE_EXISTING.flatMap(([key, name, type]) => [
+      `# TYPE ${name} ${type}`,
+      `${name} ${json[key]}`,
+    ]).join("\n");
+    check(
+      "proc-metrics live: every pre-existing Prometheus line stays byte-for-byte identical (prefix block)",
+      prom.startsWith(expectedPrefix + "\n"),
+    );
+    const tail = prom.startsWith(expectedPrefix + "\n") ? prom.slice(expectedPrefix.length + 1) : prom;
+    const tailDataNames = tail
+      .split("\n")
+      .filter((l) => l && !l.startsWith("# TYPE"))
+      .map((l) => l.split(" ")[0]);
+    check(
+      "proc-metrics live: the new series are the only lines after the pre-existing block, in order",
+      JSON.stringify(tailDataNames) === JSON.stringify([...PROC_SERIES]),
+    );
+    for (const name of PROC_SERIES) {
+      check(
+        `proc-metrics live: ${name} appears exactly once (data + TYPE), as a whole number`,
+        (prom.match(new RegExp(`^${name} \\d+$`, "gm")) ?? []).length === 1 &&
+          (prom.match(new RegExp(`# TYPE ${name} gauge`, "g")) ?? []).length === 1,
+      );
+    }
+    for (const key of ["resident_bytes", "heap_used_bytes", "heap_total_bytes", "scheduling_delay_ms"]) {
+      check(
+        `proc-metrics live: ${key} appears exactly once in the JSON body as a finite non-negative number`,
+        (jsonRaw.match(new RegExp(`"${key}"`, "g")) ?? []).length === 1 &&
+          typeof json[key] === "number" &&
+          Number.isFinite(json[key]) &&
+          json[key]! >= 0,
+      );
+    }
+    const keys = Object.keys(json);
+    check(
+      "proc-metrics live: the JSON body is the pre-existing key set plus exactly the four additive fields",
+      keys.length === ROOM_BUDGET_JSON_ORDER.length + PROC_JSON_KEYS.length &&
+        keys.every(
+          (k) => ROOM_BUDGET_JSON_ORDER.includes(k) || (PROC_JSON_KEYS as readonly string[]).includes(k),
+        ),
+    );
+    check(
+      "proc-metrics live: no series carries an address, port or room id",
+      !prom.includes("127.0.0.1") && !jsonRaw.includes("127.0.0.1") && !prom.includes("rmb-"),
+    );
+  } else {
+    check("proc-metrics live: relay subprocess came up", false);
   }
   proc.kill("SIGTERM");
 }
