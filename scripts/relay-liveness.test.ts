@@ -7,10 +7,11 @@
  * silently disabling the sweep.
  * Run: npx tsx scripts/relay-liveness.test.ts
  */
-import { spawn, type ChildProcess } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { get } from "node:http";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import WebSocket from "ws";
 import { decideStale, type LivenessPeer } from "../apps/relay/src/liveness";
 import { JOIN_UNJOINED_CLOSE_CODE } from "../apps/relay/src/joindeadline";
@@ -161,6 +162,58 @@ check("liveness: reaped socket frees the per-IP slot", third !== null);
 const prom = await fetchMetrics(strict.port + 1, "?format=prom");
 check("metrics: relay_stale_terminated exposed in prom format", /relay_stale_terminated \d+/.test(prom));
 
+// --- P2-294: certificate-expiry series on the real /metrics endpoint ---------
+// Plain mode has no certificate: every pre-existing documented line must
+// still be present and unchanged, NO line beyond the documented set may
+// appear, and the cert series must be entirely absent — never an invented
+// healthy state, never zeros (fail-closed). No certificate material may
+// travel in the response.
+const P2_294_EXISTING_LINES = [
+  "relay_connections_total",
+  "relay_connections_active",
+  "relay_frames_routed",
+  "relay_bytes_routed",
+  "relay_rejects",
+  "relay_rate_limited_total",
+  "relay_rooms_rejected",
+  "relay_rooms_rejected_invalid_room_id",
+  "relay_rooms_rejected_socket_room_cap",
+  "relay_stale_terminated",
+  "relay_slow_consumers_total",
+  "relay_capacity_refused_total",
+  "relay_idle_unjoined_closed",
+  "relay_rooms_active",
+];
+const P2_294_CERT_LINES = ["relay_cert_expiry_state", "relay_cert_expiry_seconds"];
+const P2_294_ALL = [...P2_294_EXISTING_LINES, ...P2_294_CERT_LINES];
+check(
+  "cert-metrics: plain-mode endpoint keeps every existing documented line with its TYPE header and a value",
+  P2_294_EXISTING_LINES.every((name) =>
+    prom.includes(`# TYPE ${name} `) && new RegExp(`(^|\\n)${name} \\S+`).test(prom),
+  ),
+);
+check(
+  "cert-metrics: plain-mode endpoint publishes no line beyond the documented set",
+  prom
+    .split("\n")
+    .filter((l) => l !== "" && !l.startsWith("#"))
+    .every((l) => P2_294_ALL.includes(l.split(" ")[0] ?? "")),
+);
+check(
+  "cert-metrics: plain-mode endpoint publishes no cert series at all (never invented healthy, never zeros)",
+  !prom.includes("relay_cert_expiry_"),
+);
+check(
+  "cert-metrics: no certificate material travels in the metrics response",
+  !prom.includes("BEGIN") &&
+    !prom.includes("CN=") &&
+    !prom.includes("serial") &&
+    !prom.includes("fingerprint") &&
+    !prom.includes("issuer") &&
+    !prom.includes("subject") &&
+    !prom.includes(".pem"),
+);
+
 third?.close();
 live.close();
 strict.proc.kill("SIGTERM");
@@ -244,6 +297,80 @@ zeroJoin.proc.kill("SIGTERM");
       relayIndexSrc.includes('ev("warn", "invalid relay join deadline, refusing to start (fail-closed)"') &&
       relayIndexSrc.includes("joinDeadlineMs,"),
   );
+}
+
+// --- 7. P2-294: the cert series really appears on the TLS relay's endpoint ----
+// Throwaway self-signed pair (openssl is present on macOS dev machines and
+// CI runners); no openssl → the beat is skipped. A 30-day validity window is
+// comfortably outside the 14-day warn window, so the documented verdict is
+// "use" → the numeric state gauge publishes 0.
+const cert_oc = spawnSync("openssl", ["version"]);
+if (cert_oc.status === 0) {
+  const tlsDir = mkdtempSync(join(tmpdir(), "relay-certmetrics-"));
+  const cert = join(tlsDir, "cert.pem");
+  const key = join(tlsDir, "key.pem");
+  const gen = spawnSync(
+    "openssl",
+    [
+      "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+      "-keyout", key, "-out", cert, "-days", "30",
+      "-subj", "/CN=localhost",
+      "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1",
+    ],
+    { stdio: "ignore" },
+  );
+  check("cert-metrics: openssl generated the throwaway certificate", gen.status === 0);
+  if (gen.status === 0) {
+    const tlsRelay = startRelay({ RELAY_TLS_CERT: cert, RELAY_TLS_KEY: key });
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const w = new WebSocket(`wss://127.0.0.1:${tlsRelay.port}`, { rejectUnauthorized: false });
+          w.on("open", () => {
+            w.close();
+            resolve();
+          });
+          w.on("error", reject);
+        });
+        break;
+      } catch {
+        if (attempt > 30) throw new Error("tls relay never came up");
+        await sleep(300);
+      }
+    }
+    const tlsProm = await fetchMetrics(tlsRelay.port + 1, "?format=prom");
+    check(
+      "cert-metrics: TLS relay publishes the documented state gauge with the 'use' value",
+      /(^|\n)relay_cert_expiry_state 0(\n|$)/.test(tlsProm) && /(^|\n)# TYPE relay_cert_expiry_state gauge/.test(tlsProm),
+    );
+    const seconds = tlsProm.match(/(^|\n)relay_cert_expiry_seconds (\d+)(\n|$)/);
+    check(
+      "cert-metrics: TLS relay publishes positive whole seconds to expiry",
+      seconds !== null && Number(seconds[2]) > 0,
+    );
+    check(
+      "cert-metrics: TLS endpoint publishes no line beyond the documented set",
+      tlsProm
+        .split("\n")
+        .filter((l) => l !== "" && !l.startsWith("#"))
+        .every((l) => P2_294_ALL.includes(l.split(" ")[0] ?? "")),
+    );
+    check(
+      "cert-metrics: TLS endpoint carries no certificate material either",
+      !tlsProm.includes("BEGIN") &&
+        !tlsProm.includes("CN=") &&
+        !tlsProm.includes("serial") &&
+        !tlsProm.includes("fingerprint") &&
+        !tlsProm.includes("issuer") &&
+        !tlsProm.includes("subject") &&
+        !tlsProm.includes(".pem") &&
+        !tlsProm.includes("localhost"),
+    );
+    tlsRelay.proc.kill("SIGTERM");
+  }
+  rmSync(tlsDir, { recursive: true, force: true });
+} else {
+  console.log("SKIP cert-metrics TLS beat: openssl not available");
 }
 
 if (failures) process.exit(1);

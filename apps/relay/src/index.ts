@@ -64,6 +64,7 @@ import {
   JOIN_UNJOINED_CLOSE_CODE,
   JOIN_UNJOINED_CLOSE_REASON,
 } from "./joindeadline.js";
+import { certExpiryMetrics } from "./certmetrics.js";
 
 /**
  * Relay: a blind router.
@@ -535,6 +536,17 @@ if (METRICS.port && METRICS.problems.length === 0) {
           `relay_idle_unjoined_closed ${m.idleUnjoinedClosed}`,
           "# TYPE relay_rooms_active gauge",
           `relay_rooms_active ${rooms.size}`,
+          // P2-294: additive certificate-expiry series — the SAME verdict the
+          // periodic revalidation below already maintains and the /healthz
+          // getter publishes, now on the surface the operator's metric
+          // scraping actually watches. Evaluated per scrape from values
+          // already in memory: no new timer, no new route, no new request.
+          // Plain mode (no certificate) contributes no line at all, and every
+          // pre-existing line above stays byte for byte.
+          ...certExpiryMetrics(
+            lastCertExpiryVerdict,
+            CERT_EXPIRY ? Math.floor((CERT_EXPIRY.notAfter - Date.now()) / 1000) : 0,
+          ),
         ];
         res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
         res.end(lines.join("\n") + "\n");

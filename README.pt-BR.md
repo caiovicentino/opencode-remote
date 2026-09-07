@@ -826,6 +826,17 @@ zero inventado, nenhuma recusa atribuída ao motivo errado) e nenhum campo ou
 linha carrega id de sala, id de conexão, endereço ou IP. Runbook:
 [docs/RELAY-HOSTING.md](docs/RELAY-HOSTING.md).
 
+O veredito do certificado também chega à superfície de raspagem do
+`/metrics` (P2-294): com o par de certificados configurado, o formato
+Prometheus ganha duas linhas gauge — `relay_cert_expiry_state` (0 = `use`,
+1 = `warn`, 2 = `refuse-expired`, 3 = `refuse-not-yet-valid`) e
+`relay_cert_expiry_seconds` (segundos inteiros até o vencimento, piso zero)
+— calculadas a cada raspagem a partir do veredito que o relay já mantém no
+sweep de liveness, então o alerta baseado em métricas acorda o operador dias
+antes de os telefones falharem o handshake. Fail-closed: nenhuma série no
+modo plain ou sem veredito medido, toda linha pré-existente permanece byte a
+byte e nenhuma linha carrega material do certificado.
+
 A imagem também entrega a PWA do celular (P2-188): ela define
 `RELAY_WEB_DIR=/app/apps/web/dist`, então a URL do relay no navegador do
 telefone já abre o app — o primeiro passo da jornada não exige dev server,
