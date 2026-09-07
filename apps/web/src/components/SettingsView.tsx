@@ -33,6 +33,21 @@ export interface WebAppSettingWriteResult extends WebAppSetting {
   ok: boolean;
 }
 
+/** P2-289: machine-proxy owner choice from the desktop shell (mirrors
+ * apps/desktop/src/preload.ts). mode is the stored choice (null = no choice
+ * yet), origin says whether the ACTIVE boot mode came from the stored choice
+ * or the machine environment. */
+export interface ProxySetting {
+  mode: "system" | "direct" | "fixed" | null;
+  address: string | null;
+  origin: "owner" | "environment";
+  reason: string;
+}
+
+export interface ProxySettingWriteResult extends ProxySetting {
+  ok: boolean;
+}
+
 interface Props {
   request: (
     method: string,
@@ -54,6 +69,9 @@ interface Props {
   /** P2-189: desktop shell only — app address the phone opens, read + validated write. */
   getWebAppUrl?: () => Promise<WebAppSetting>;
   setWebAppUrl?: (url: string | null) => Promise<WebAppSettingWriteResult>;
+  /** P2-289: desktop shell only — machine proxy read + validated write. */
+  getProxySetting?: () => Promise<ProxySetting>;
+  setProxyChoice?: (choice: { mode: "system" | "direct" | "fixed"; address?: string }) => Promise<ProxySettingWriteResult>;
   /** P2-138: upstream (opencode) notice — renders the help section the calm
    * card's secondary button links to; absent when the agent server is fine. */
   upstream?: UpstreamNotice | null;
@@ -164,7 +182,7 @@ function forcedBrowseState(): string | undefined {
   return HATCH_STATES.includes(forced) ? forced : undefined;
 }
 
-export default function SettingsView({ request, onBack, transport, getDiagnostics, onPairRemote, getRelaySetting, setRelayUrl, getWebAppUrl, setWebAppUrl, upstream }: Props) {
+export default function SettingsView({ request, onBack, transport, getDiagnostics, onPairRemote, getRelaySetting, setRelayUrl, getWebAppUrl, setWebAppUrl, getProxySetting, setProxyChoice, upstream }: Props) {
   const [devices, setDevices] = useState<Device[]>([]);
   const [name, setName] = useState("");
   const [notify, setNotify] = useState({ permission: true, idle: true });
@@ -220,6 +238,12 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
   // draft/resolution discipline as the relay setting above.
   const [webApp, setWebApp] = useState<WebAppSetting | null>(null);
   const [webAppDraft, setWebAppDraft] = useState("");
+  // P2-289: machine proxy (desktop shell only) — the radio choice, the fixed
+  // address draft and the module's static refusal reason (rendered verbatim).
+  const [proxy, setProxy] = useState<ProxySetting | null>(null);
+  const [proxyMode, setProxyMode] = useState<"system" | "direct" | "fixed">("system");
+  const [proxyAddress, setProxyAddress] = useState("");
+  const [proxyRefusal, setProxyRefusal] = useState("");
 
   useEffect(() => {
     if (!getRelaySetting) return;
@@ -230,6 +254,17 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
       })
       .catch(() => {});
     // Mount-time read only: the bridge is stable for the app's lifetime.
+  }, []);
+
+  useEffect(() => {
+    if (!getProxySetting) return;
+    void getProxySetting()
+      .then((s) => {
+        setProxy(s);
+        if (s.mode) setProxyMode(s.mode);
+        setProxyAddress(s.address ?? "");
+      })
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -340,6 +375,28 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
       setMsg(t("saved"));
     } catch {
       setMsg(t("webAppInvalid"));
+    }
+  }
+
+  /** P2-289: apply the drafted proxy choice in the main process (validated
+   * there, fail-closed) — the live session is never reconfigured; the choice
+   * takes effect at the next app start. A refusal renders the module's own
+   * static reason, verbatim. */
+  async function saveProxy() {
+    if (!setProxyChoice) return;
+    setProxyRefusal("");
+    try {
+      const res = await setProxyChoice(
+        proxyMode === "fixed" ? { mode: "fixed", address: proxyAddress } : { mode: proxyMode },
+      );
+      if (res.ok) {
+        setProxy(res);
+        setMsg(t("proxySaved"));
+      } else {
+        setProxyRefusal(res.reason || t("proxyInvalid"));
+      }
+    } catch {
+      setProxyRefusal(t("proxyInvalid"));
     }
   }
 
@@ -573,6 +630,52 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
                 {t("webAppReset")}
               </button>
             )}
+          </div>
+        )}
+
+        {/* P2-289: machine proxy — desktop shell only; the PWA has no shell
+            bridge, so the section simply never renders there. */}
+        {getProxySetting && setProxyChoice && proxy && (
+          <div className="card proxy-setting">
+            <h3>{t("proxyTitle")}</h3>
+            <p className="muted" style={{ margin: "0 0 6px" }}>
+              {t("proxyHint")}
+            </p>
+            {(["system", "direct", "fixed"] as const).map((m) => (
+              <label key={m} style={{ display: "block" }}>
+                <input
+                  type="radio"
+                  name="proxy-mode"
+                  checked={proxyMode === m}
+                  onChange={() => setProxyMode(m)}
+                />{" "}
+                {t(m === "system" ? "proxyModeSystem" : m === "direct" ? "proxyModeDirect" : "proxyModeFixed")}
+              </label>
+            ))}
+            {proxyMode === "fixed" && (
+              <input
+                style={{ width: "100%", marginTop: 6 }}
+                value={proxyAddress}
+                onChange={(e) => setProxyAddress(e.target.value)}
+                placeholder="proxy.exemplo.corp"
+                aria-label={t("proxyAddressLabel")}
+                spellCheck={false}
+              />
+            )}
+            {proxyRefusal && (
+              <p className="muted" style={{ margin: "6px 0 0", color: "var(--danger)" }}>
+                {proxyRefusal}
+              </p>
+            )}
+            <button className="primary" style={{ marginTop: 8 }} onClick={() => void saveProxy()}>
+              {t("proxySave")}
+            </button>
+            <p className="muted" style={{ margin: "6px 0 0" }}>
+              {t("proxyNextStart")}
+            </p>
+            <p className="muted" style={{ margin: "2px 0 0" }}>
+              {proxy.origin === "owner" ? t("proxyOriginOwner") : t("proxyOriginEnvironment")}
+            </p>
           </div>
         )}
 

@@ -227,6 +227,12 @@ import {
   proxyPlan,
 } from "../apps/desktop/src/proxyplan";
 import {
+  clearProxyChoice,
+  proxySettingFile,
+  readProxyChoice,
+  writeProxyChoice,
+} from "../apps/desktop/src/proxystore";
+import {
   bodyLimit,
   isBodyLimitError,
   MAX_JSON_BODY_BYTES,
@@ -26255,6 +26261,110 @@ check("P2-241: no new periodic timer was introduced by the handler", !dlBlock.in
     threw = true;
   }
   check("P2-285: robustness — no input shape ever throws", !threw);
+}
+
+// --- P2-289: the machine-proxy owner choice (apps/desktop/src/proxystore.ts) ------
+// The store is the persistence half of the P2-285 planner: reads are tolerant
+// (any degraded shape is "no stored choice", never an exception) and writes
+// are fail-closed (a credential-bearing, wrong-scheme or unparseable address
+// is refused with a short static reason and nothing is persisted).
+{
+  const dir = mkdtempSync(join(tmpdir(), "ocr-proxystore-"));
+  const file = proxySettingFile(dir);
+  const json = (v: unknown) => JSON.stringify(v);
+
+  // Tolerant reads — the full degraded table.
+  check("P2-289: read — missing file is no choice", readProxyChoice(file) === null);
+  writeFileSync(file, "not json at all", "utf8");
+  check("P2-289: read — corrupted JSON is no choice", readProxyChoice(file) === null);
+  writeFileSync(file, "[1,2,3]", "utf8");
+  check("P2-289: read — a non-object payload is no choice", readProxyChoice(file) === null);
+  writeFileSync(file, "{}", "utf8");
+  check("P2-289: read — an object without the fields is no choice", readProxyChoice(file) === null);
+  writeFileSync(file, JSON.stringify({ mode: "always" }), "utf8");
+  check("P2-289: read — a mode outside the documented table is no choice", readProxyChoice(file) === null);
+  writeFileSync(file, JSON.stringify({ mode: "fixed", address: 42 }), "utf8");
+  check("P2-289: read — a non-textual address is no choice", readProxyChoice(file) === null);
+  writeFileSync(file, JSON.stringify({ mode: "fixed", address: "proxy.corp:3128" }), "utf8");
+  check("P2-289: read — the fixed mode returns the stored address", json(readProxyChoice(file)) === json({ mode: "fixed", address: "proxy.corp:3128" }));
+  writeFileSync(file, JSON.stringify({ mode: "system", address: "ignored.corp:1" }), "utf8");
+  check("P2-289: read — system mode never carries an address", json(readProxyChoice(file)) === json({ mode: "system", address: null }));
+
+  // Fail-closed writes — refused shapes leave the file untouched.
+  const before = readFileSync(file, "utf8");
+  const r1 = writeProxyChoice(file, "junk");
+  check("P2-289: write — a malformed payload is refused with a static reason", !r1.ok && typeof r1.reason === "string" && r1.reason.length > 0);
+  const r2 = writeProxyChoice(file, { mode: "always" });
+  check("P2-289: write — a mode outside the table is refused", !r2.ok && r2.reason.length > 0);
+  const r3 = writeProxyChoice(file, { mode: "fixed" });
+  check("P2-289: write — a fixed choice without an address is refused", !r3.ok && r3.reason.length > 0);
+  const r4 = writeProxyChoice(file, { mode: "fixed", address: "http://user:pass@proxy.corp:3128" });
+  check("P2-289: write — a credential-bearing address is refused with a reason and nothing written", !r4.ok && r4.reason.length > 0 && readFileSync(file, "utf8") === before);
+  const r5 = writeProxyChoice(file, { mode: "fixed", address: "ftp://proxy.corp:21" });
+  check("P2-289: write — a scheme outside the documented list is refused", !r5.ok && r5.reason.length > 0 && readFileSync(file, "utf8") === before);
+  const r6 = writeProxyChoice(file, { mode: "fixed", address: "nonsense with space" });
+  check("P2-289: write — an unparseable address is refused", !r6.ok && r6.reason.length > 0 && readFileSync(file, "utf8") === before);
+
+  // A valid choice round-trips, deterministic across reads.
+  check("P2-289: write — a valid fixed choice persists", writeProxyChoice(file, { mode: "fixed", address: "http://proxy.corp:3128" }).ok);
+  const first = readProxyChoice(file);
+  const second = readProxyChoice(file);
+  check("P2-289: write — the stored choice reads back identical", json(first) === json({ mode: "fixed", address: "http://proxy.corp:3128" }));
+  check("P2-289: read — the same input yields the exact same result twice", json(first) === json(second));
+  check("P2-289: write — a valid system choice persists", writeProxyChoice(file, { mode: "system" }).ok && readProxyChoice(file)?.mode === "system");
+  check("P2-289: write — a valid direct choice persists", writeProxyChoice(file, { mode: "direct" }).ok && readProxyChoice(file)?.mode === "direct");
+  clearProxyChoice(file);
+  check("P2-289: clear — after clearing, the choice is gone", readProxyChoice(file) === null);
+
+  // Owner-restricted permissions, verified for real (POSIX bits; the portable
+  // twin skips this on win32 — see scripts/proxystore.test.ts).
+  writeProxyChoice(file, { mode: "fixed", address: "http://proxy.corp:3128" });
+  if (process.platform !== "win32") {
+    check("P2-289: privacy — the stored choice file is owner-only (0600)", (statSync(file).mode & 0o777) === 0o600);
+  }
+
+  // The real sources: wiring and module purity.
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  check(
+    "P2-289: wiring — main.ts feeds proxyPlan with the stored preference beside the environment",
+    mainSrc.includes("const preference = storedProxyPreference();") && /proxyPlan\(\{[\s\S]*?preference,/.test(mainSrc),
+  );
+  check("P2-289: wiring — the stored preference comes from the proxystore", mainSrc.includes("readProxyChoice") && mainSrc.includes("proxySettingFile"));
+  check("P2-289: wiring — the verdict is still applied exactly once", mainSrc.split("applyProxyVerdict();").length - 1 === 1);
+  const applyAt = mainSrc.indexOf("applyProxyVerdict();");
+  const firstWindowCall = mainSrc.indexOf("createWindow();");
+  check("P2-289: wiring — the application still happens before the first window creation", applyAt >= 0 && firstWindowCall > applyAt);
+  check("P2-289: wiring — the log line names the origin", mainSrc.includes("origem ${bootProxyOrigin}"));
+  check("P2-289: wiring — read + write IPC channels exist in the relay-handler shape", mainSrc.includes('"app:proxySetting"') && mainSrc.includes('"app:saveProxyChoice"'));
+  check("P2-289: wiring — the diagnostics bundle carries the mode origin", mainSrc.includes("origin: bootProxyOrigin"));
+  const storeSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "proxystore.ts"), "utf8");
+  check("P2-289: purity — proxystore.ts imports no electron", !storeSrc.includes("electron"));
+
+  // The new Settings labels: exact en/pt key parity (the P2-118/P2-275 bar).
+  const proxyLabelKeys = [
+    "proxyTitle",
+    "proxyHint",
+    "proxyModeSystem",
+    "proxyModeDirect",
+    "proxyModeFixed",
+    "proxyAddressLabel",
+    "proxySave",
+    "proxySaved",
+    "proxyInvalid",
+    "proxyNextStart",
+    "proxyOriginOwner",
+    "proxyOriginEnvironment",
+  ];
+  check(
+    "P2-289: i18n — the proxy labels have exact en/pt key parity and resolve per locale",
+    proxyLabelKeys.every((k) => {
+      const en = (dict.en as Record<string, string>)[k];
+      const pt = (dict.pt as Record<string, string>)[k];
+      return typeof en === "string" && en.trim() !== "" && typeof pt === "string" && pt.trim() !== "";
+    }),
+  );
+
+  rmSync(dir, { recursive: true, force: true });
 }
 
 // --- P2-288: the settings channel mirrors the doc-conversion and browse verdicts --
