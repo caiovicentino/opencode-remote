@@ -113,11 +113,13 @@ const {
   getPairUrl,
   healthOnce,
   isDaemonDown,
+  lastStopExit,
   reconnectDelayMs,
   reconnectState,
   restartDaemon,
   resolveEntry,
   respawnState,
+  setSidecarRelayUrl,
   startDaemonSidecar,
   stopDaemonSidecar,
   waitForDaemonHealth,
@@ -405,6 +407,68 @@ check(
   reconnectState().reconnecting === false && reconnectState().attempts === 0,
 );
 delete process.env.OCR_DAEMON_ENTRY;
+
+// --- P2-315: the REAL daemon stops gracefully through the shell (code 0) ------
+// The dev entry (OCR_DAEMON_ENTRY deleted) resolves to the daemon's TypeScript
+// source via tsx, so startDaemonSidecar spawns the real daemon. Its stop must
+// ride the IPC message channel (no signal) into the SIGTERM drain and exit
+// with code 0 — the exact behavior Windows gets, exercised on this machine.
+// A throwaway HOME keeps the real 0600 state file out of the operator's
+// machine; OCR_DAEMON_STATE_FILE points the shell's reader at the same file.
+{
+  const realHome = mkdtempSync(join(tmpdir(), "ocr-reald-"));
+  const realState = join(realHome, ".opencode-remote", "daemon.json");
+  const prevHome = process.env.HOME;
+  const prevStateFile = process.env.OCR_DAEMON_STATE_FILE;
+  process.env.HOME = realHome;
+  process.env.OCR_DAEMON_STATE_FILE = realState;
+  // Dead loopback relay: the daemon's dial fails fast, offline, forever.
+  setSidecarRelayUrl("ws://127.0.0.1:1");
+  // Free the test port so the real daemon can bind it (fixture server is off).
+  await new Promise<void>((r) => {
+    server.closeAllConnections();
+    server.close(() => r());
+  });
+  let realPid = 0;
+  process.on("exit", () => {
+    try {
+      if (realPid) process.kill(realPid, "SIGKILL");
+    } catch {
+      /* already gone */
+    }
+  });
+  check(
+    "real daemon: starts via the dev entry (tsx)",
+    (await startDaemonSidecar(join(repoRoot, "apps", "desktop"), undefined)) === true,
+  );
+  realPid = Number(/pid (\d+)/.exec(logLines.find((l) => l.includes("daemon sidecar spawned")) ?? "")?.[1] ?? 0);
+  // The daemon mints its apiToken on the first probe, so poke the 401
+  // challenge first (same dance as the bundle smoke below) — healthOnce
+  // refuses to fetch while the shell has no token.
+  let challenged = false;
+  const challengeDeadline = Date.now() + 20_000;
+  while (Date.now() < challengeDeadline && !challenged) {
+    try {
+      challenged = (await fetch(`http://127.0.0.1:${port}/api/health`)).status === 401;
+    } catch {
+      /* not up yet */
+    }
+    if (!challenged) await new Promise((r) => setTimeout(r, 100));
+  }
+  check("real daemon: boot challenge answered (401)", challenged);
+  check("real daemon: becomes healthy on the test port", await waitForDaemonHealth({ timeoutMs: 15_000 }));
+  await stopDaemonSidecar();
+  check(
+    "real daemon: stopped via the graceful IPC path with code 0 (no signal)",
+    lastStopExit()?.code === 0 && lastStopExit()?.signal === null,
+  );
+  check("real daemon: pid is gone", realPid === 0 || !pidAlive(realPid));
+  const tSecond = Date.now();
+  await stopDaemonSidecar();
+  check("real daemon: second stop is harmless (idempotent, no grace)", Date.now() - tSecond < 1000);
+  process.env.HOME = prevHome;
+  process.env.OCR_DAEMON_STATE_FILE = prevStateFile ?? fakeState;
+}
 
 // --- bundled artifact smoke (P2-006) -----------------------------------------
 // The packaged app runs dist-daemon/index.js (shipped as resources/daemon/

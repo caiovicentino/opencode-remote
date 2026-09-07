@@ -122,7 +122,11 @@ its saved choice over a one-way IPC channel (`ocr:shell-lang`), the pure
 verdict in `src/shelllang.ts` resolves it (a supported preference always
 wins; without one, the OS locale decides; anything else falls back to en)
 and the shell rebuilds both surfaces from that module's static label tables —
-ids, order and accelerators never move.
+ids, order and accelerators never move. Quitting the app stops its daemon
+sidecar gracefully on both platforms (P2-315): the request rides the spawn
+IPC channel into the same drain SIGTERM runs, and the fixed signal walk
+(SIGTERM → 3s → SIGKILL) remains only as the fallback when the channel is not
+connected.
 
 ### PWA static origin (deploy/pwa-server.mjs + launchd, P2-075)
 The phone's origin is **not** a dev server: `deploy/install.sh` installs
