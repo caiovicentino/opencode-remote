@@ -100,4 +100,159 @@ check("url untouched", spokenNumbers("veja https://x.com/10 e 5 GB", "pt-BR") ==
 check("unknown lang falls back", normalizeLang("fr") === "pt-BR" && normalizeLang(undefined) === "pt-BR");
 check("voice allowlist", resolveVoice("en-US").voice === "en-US-AndrewNeural" && resolveVoice("garbage").voice.startsWith("pt-BR"));
 
+// ─── P2-298: spoken-reply capability verdict (apps/daemon/src/ttscap.ts) ───
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { isAbsoluteToolPath, ttsVerdict } from "../apps/daemon/src/ttscap";
+
+const repoSrc = (rel: string[]) => readFileSync(join(import.meta.dirname, "..", ...rel), "utf8");
+
+// full verdict table: null, empty and non-textual input → missing-tool
+check("tts null input is missing-tool", ttsVerdict(null, "posix").state === "missing-tool");
+check("tts empty input is missing-tool", ttsVerdict("", "windows").state === "missing-tool");
+check("tts blank input is missing-tool", ttsVerdict("   ", "posix").state === "missing-tool");
+check(
+  "tts non-textual input is missing-tool",
+  ttsVerdict(42, "posix").state === "missing-tool" &&
+    ttsVerdict(undefined, "windows").state === "missing-tool" &&
+    ttsVerdict({}, "posix").state === "missing-tool",
+);
+
+// POSIX absolute path → ready on posix
+check("tts posix absolute path is ready", ttsVerdict("/usr/local/bin/edge-tts", "posix").state === "ready");
+
+// Windows drive-letter path → ready on windows, rejected on posix
+check(
+  "tts windows drive-letter path ready on windows, rejected on posix",
+  ttsVerdict("C:\\Tools\\edge-tts.exe", "windows").state === "ready" &&
+    ttsVerdict("C:\\Tools\\edge-tts.exe", "posix").state === "missing-tool",
+);
+// Windows UNC path (two leading backslashes) → ready on windows
+check("tts UNC path ready on windows", ttsVerdict("\\\\server\\share\\edge-tts.exe", "windows").state === "ready");
+
+// relative path rejected on both platforms
+check(
+  "tts relative path rejected on both platforms",
+  ttsVerdict("edge-tts", "posix").state === "missing-tool" &&
+    ttsVerdict("edge-tts", "windows").state === "missing-tool" &&
+    ttsVerdict("bin/edge-tts", "posix").state === "missing-tool",
+);
+
+// unknown platform falls into the POSIX rule
+check(
+  "tts unknown platform is judged by the posix rule",
+  ttsVerdict("/usr/bin/edge-tts", "sunos").state === "ready" &&
+    ttsVerdict("C:\\x\\edge-tts", "sunos").state === "missing-tool",
+);
+
+// rule order proven: non-textual input AND unknown platform at the same time
+// still lands missing-tool with the missing-tool phrase (no crash, no ready)
+check(
+  "tts rule order: non-textual + unknown platform is missing-tool",
+  ttsVerdict(42, "atari").state === "missing-tool" &&
+    ttsVerdict(42, "atari").message === ttsVerdict(null, "posix").message,
+);
+
+// each verdict carries exactly state + message
+{
+  const ready = ttsVerdict("/usr/bin/edge-tts", "posix");
+  const missing = ttsVerdict(null, "posix");
+  check(
+    "tts verdict is exactly state + message",
+    Object.keys(ready).length === 2 &&
+      Object.keys(missing).length === 2 &&
+      ready.state === "ready" &&
+      missing.state === "missing-tool" &&
+      typeof ready.message === "string" &&
+      typeof missing.message === "string",
+  );
+  check(
+    "tts phrases differ between verdicts",
+    ready.message !== missing.message && /instal/i.test(missing.message),
+  );
+}
+
+// message boundary: no slash, backslash, dollar, colon+digit or script extension
+check(
+  "tts phrases leak no path/tool/port/script",
+  [
+    ttsVerdict(null, "posix").message,
+    ttsVerdict("/usr/local/bin/edge-tts", "posix").message,
+    ttsVerdict(null, "windows").message,
+    ttsVerdict("C:\\Tools\\edge-tts.exe", "windows").message,
+    ttsVerdict(42, "atari").message,
+  ].every(
+    (m) =>
+      !m.includes("/") &&
+      !m.includes("\\") &&
+      !m.includes("$") &&
+      !/:\d/.test(m) &&
+      !/\.(sh|ps1|bat|cmd|js|mjs|py)\b/i.test(m),
+  ),
+);
+
+// determinism: same input twice → identical result
+check(
+  "tts verdict is deterministic",
+  JSON.stringify(ttsVerdict("/usr/bin/edge-tts", "posix")) === JSON.stringify(ttsVerdict("/usr/bin/edge-tts", "posix")) &&
+    JSON.stringify(ttsVerdict(null, "windows")) === JSON.stringify(ttsVerdict(null, "windows")),
+);
+
+// the pure path-form rule, exercised directly (portable-suite surface)
+check(
+  "path rule: posix form",
+  isAbsoluteToolPath("/usr/bin/edge-tts", "posix") === true &&
+    isAbsoluteToolPath("edge-tts", "posix") === false,
+);
+check(
+  "path rule: windows forms",
+  isAbsoluteToolPath("C:\\Tools\\edge-tts.exe", "windows") === true &&
+    isAbsoluteToolPath("C:/Tools/edge-tts.exe", "windows") === true &&
+    isAbsoluteToolPath("\\\\srv\\share\\edge-tts.exe", "windows") === true &&
+    isAbsoluteToolPath("Tools\\edge-tts.exe", "windows") === false,
+);
+check(
+  "path rule: unknown platform judged posix",
+  isAbsoluteToolPath("/usr/bin/edge-tts", "sunos") === true &&
+    isAbsoluteToolPath("C:\\Tools\\edge-tts.exe", "sunos") === false,
+);
+
+// real-repo assertions: routes serve the module verdict; purity holds
+{
+  // strip line comments first — the header prose names the banned modules
+  const ttscapCode = repoSrc(["apps", "daemon", "src", "ttscap.ts"]).replace(/\/\/.*$/gm, "");
+  const indexSrc = repoSrc(["apps", "daemon", "src", "index.ts"]);
+  check(
+    "P2-298: ttscap.ts is pure (no node:fs/child_process/os/http imports, no fetch)",
+    !/node:(fs|child_process|os|http)/.test(ttscapCode) && !/\bfetch\b/.test(ttscapCode),
+  );
+  check(
+    "P2-298: the tts 501 refusal carries the verdict phrase; the raw English hint is gone",
+    /status: 501, body: \{ error: ttsStatus\(\)\.message \}/.test(indexSrc) &&
+      !indexSrc.includes("install edge-tts on the host"),
+  );
+  check(
+    "P2-298: tts-status keeps available/voice/voices/langs unchanged and adds state+message from the verdict",
+    /available: !!edgeTtsBin, voice: resolveVoice\("pt-BR", TTS_PT_VOICE\)\.voice, voices: TTS_VOICES, langs: SPEECH_LANGS, state: tts\.state, message: tts\.message/.test(
+      indexSrc,
+    ),
+  );
+  check(
+    "P2-298: the refusal and the status route read the verdict through ttsStatus()",
+    indexSrc.includes("ttsVerdict(edgeTtsBin") && (indexSrc.match(/ttsStatus\(\)/g) ?? []).length >= 3,
+  );
+  check(
+    "P2-298: lazy re-probe runs at the refusal and the status route; no new periodic timer",
+    (indexSrc.match(/maybeReprobeTts\(\);/g) ?? []).length >= 2 &&
+      !/setInterval\([^)]*tts/i.test(indexSrc),
+  );
+  check(
+    "P2-298: OCR_TTS_BLOCK=1 is the documented hatch forcing the missing-tool verdict",
+    indexSrc.includes('process.env.OCR_TTS_BLOCK === "1"') &&
+      /OCR_TTS_BLOCK/.test(repoSrc(["README.md"])) &&
+      /OCR_TTS_BLOCK/.test(repoSrc(["README.pt-BR.md"])) &&
+      /OCR_TTS_BLOCK/.test(repoSrc(["docs", "troubleshooting.md"])),
+  );
+}
+
 process.exit(failures ? 1 : 0);

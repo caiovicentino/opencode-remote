@@ -94,6 +94,15 @@ private. That is the product: **local power, remote control, zero trust**.
   `OCR_STT_BLOCK=1` on the daemon is a test hatch that forces the
   missing-binary verdict so the disabled-mic UI can be evidenced
   deterministically even on hosts that do have whisper installed
+- **Spoken replies** — the agent's answer can be read aloud by an optional
+  host tool (edge-tts): since P2-298 the refusal is a short actionable pt-BR
+  sentence from the same verdict the status route serves (no more raw English
+  install instructions), the daemon finds the tool on Windows too (native
+  `where` locator instead of a POSIX-only probe), and an install made after
+  boot is picked up by the lazy re-probe; publishing that verdict to
+  `GET /api/health` and the settings channel is a declared continuation.
+  `OCR_TTS_BLOCK=1` on the daemon is a test hatch that forces the
+  missing-tool verdict for deterministic screenshots
 - **Model readiness** — the composer warns before the first send when the
   machine hosting the daemon has no usable model configured (no provider
   credential, or credentials without models): a single calm line above the

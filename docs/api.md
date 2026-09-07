@@ -159,6 +159,22 @@ missing-binary verdict for these fields too. No phrase ever carries an
 absolute path, a model file name, an install script name, a port, an address,
 a raw environment variable or a secret.
 
+### Voice replies — spoken-reply verdict (P2-298)
+
+`GET /__ocr/voice/tts-status` keeps its `available`, `voice`, `voices` and
+`langs` fields exactly as they were and adds two additive fields from the same
+pure verdict the other capability routes serve: `state` (`ready` |
+`missing-tool`) and `message` (short pt-BR sentence, same register as the
+other verdicts). The `POST /__ocr/voice/tts` refusal (501) now carries that
+same actionable phrase instead of a raw English install instruction. The
+verdict is re-probed lazily at both points under the same
+`OCR_READINESS_MIN_MS` / `OCR_READINESS_DISABLE` policy — an edge-tts install
+made after boot is picked up without a restart — and the documented
+`OCR_TTS_BLOCK=1` hatch forces the missing-tool verdict for deterministic
+screenshots. No phrase ever carries a path, a tool or script name, a port, an
+address, a raw environment variable or a secret; publishing the verdict to
+`GET /api/health` and the settings channel is a declared continuation.
+
 ### `/__ocr/settings` — machine-readiness mirror (P2-288)
 
 `GET /__ocr/settings` carries the document-conversion and site-navigation

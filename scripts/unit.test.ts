@@ -23739,12 +23739,13 @@ check("P2-241: no new periodic timer was introduced by the handler", !dlBlock.in
   // the re-probe log lines carry ONLY the capability name and the resulting
   // state (lesson P2-182: never a path, a resolved binary or env content).
   // P2-284: browse joins the same one-line-per-redone-probe policy.
+  // P2-298: tts joins the same policy too.
   {
     const logLines = code.split("\n").filter((l) => l.includes("readiness re-probe"));
     check(
       "P2-250: each re-done probe logs exactly one line with capability + state only",
-      logLines.length === 3 &&
-        logLines.every((l) => /capability: "(transcription|doc-convert|browse)", state: [\w.()]+?\s*\}/.test(l)),
+      logLines.length === 4 &&
+        logLines.every((l) => /capability: "(transcription|tts|doc-convert|browse)", state: [\w.()]+?\s*\}/.test(l)),
     );
   }
 
@@ -27713,8 +27714,8 @@ import { settingsMirror } from "../apps/daemon/src/settingsmirror";
     !/setInterval|setTimeout/.test(settings296) && (idx296.match(/setInterval\(/g) || []).length === 5,
   );
   check(
-    "P2-296: no new re-probe log line — the transcription re-probe keeps its one-line policy (three capabilities total)",
-    idx296.split("\n").filter((l) => l.includes("readiness re-probe")).length === 3,
+    "P2-296: no new re-probe log line — each re-probe keeps its one-line policy (four capabilities total, P2-298 added tts)",
+    idx296.split("\n").filter((l) => l.includes("readiness re-probe")).length === 4,
   );
 
   // Real-repo assertion on the module itself: still pure, and the voice table
