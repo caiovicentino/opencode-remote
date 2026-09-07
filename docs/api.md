@@ -209,10 +209,10 @@ spoken-reply pair rides them as well — `ttsState` / `ttsMessage` (the
 identifier deliberately not `voiceState`, which is transcription), appended
 last. Since P2-297
 apps/web reads every group on this same channel, so the Settings
-**Machine state** panel renders all seven lines and no line stays pending a
-future channel — the speech line itself is a declared continuation until
-apps/web gains the corresponding key. No existing field of the response is
-renamed, removed or repositioned.
+**Machine state** panel renders all eight lines (P2-305 appended the
+spoken-replies row: `ready` → ok, `missing-tool` → unavailable, any other
+value silent) and no line stays pending a future channel. No existing field
+of the response is renamed, removed or repositioned.
 
 ### Pairing state (P2-007)
 

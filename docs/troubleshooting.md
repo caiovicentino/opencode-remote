@@ -248,8 +248,8 @@ at boot).
 
 Settings → **Machine state** ("Estado da máquina") gathers every readiness
 verdict the machine itself reports — the remote relay link, the agent server
-and its version, disk space, document → PDF conversion, site browsing and
-voice transcription, seven lines in total — in a
+and its version, disk space, document → PDF conversion, site browsing, voice
+transcription and spoken replies, eight lines in total — in a
 single calm list, worst verdict first, each row with a severity marker
 (green / amber / red), a short label and **the machine's own phrase,
 verbatim**: the app never rewrites a phrase and never invents one. The section

@@ -10032,7 +10032,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       !settingsViewSrc.includes('new Set(["ready"'),
   );
   check(
-    "P2-287: machinestate keeps the browse row last in MACHINE_ROW_ORDER and pure (no React, no fetch, no node:)",
+    "P2-287: machinestate keeps the browse row in place (second-to-last after P2-305 appended spoken last) and pure (no React, no fetch, no node:)",
     machineStateSrc.includes('"docs",\n  "browse",') &&
       !machineStateSrc.includes("from \"react\"") &&
       !machineStateSrc.includes("fetch(") &&
