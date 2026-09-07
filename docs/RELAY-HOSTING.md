@@ -299,7 +299,11 @@ as every other relay rejection line. The state dies with the room (the
 moment its last peer leaves), so there is no map growth and no new timer:
 the verdict is consulted on the forwarding path, where the rate bucket and
 the backpressure verdict already sit. The additive `roomsBudgetTerminated`
-field on `/healthz` counts terminated rooms since boot.
+field on `/healthz` counts terminated rooms since boot, and the same counter
+rides the `/metrics` endpoint (P2-302) as `relay_room_budget_terminated` in
+the Prometheus text format and `room_budget_terminated` in the JSON — zero
+published as zero, never omitted, so a scraping-based alert distinguishes a
+healthy relay from a missing series.
 
 To adjust: set `RELAY_ROOM_BUDGET_BYTES` (ceiling 16 GiB) and/or
 `RELAY_ROOM_BUDGET_WINDOW_MS` (ceiling 24 h) — both validated fail-closed at

@@ -833,7 +833,10 @@ só pode encaminhar `RELAY_ROOM_BUDGET_BYTES` (padrão
 1 GiB, ~3,8x a hora mais pesada legítima de conversa + voz + arquivos +
 screenshots) antes de ter os sockets fechados — metade do teto escreve uma
 linha de aviso por janela, o teto fechado gera o contador
-`roomsBudgetTerminated` no `/healthz`. Só o tamanho dos quadros é acumulado
+`roomsBudgetTerminated` no `/healthz`; o mesmo contador também sai no
+`/metrics` como `relay_room_budget_terminated` (formato Prometheus) /
+`room_budget_terminated` (JSON), publicado mesmo em zero pra um alerta de
+raspagem nunca confundir relay saudável com série ausente. Só o tamanho dos quadros é acumulado
 (o relay continua cego: nenhum conteúdo, nenhum campo de envelope, nenhuma
 identidade); `RELAY_ROOM_BUDGET_BYTES=-1` desliga o orçamento num relay
 privado e allowlistado. Runbook:

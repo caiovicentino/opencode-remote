@@ -534,6 +534,16 @@ if (METRICS.port && METRICS.problems.length === 0) {
           `relay_capacity_refused_total ${m.capacityRefused}`,
           "# TYPE relay_idle_unjoined_closed counter",
           `relay_idle_unjoined_closed ${m.idleUnjoinedClosed}`,
+          // P2-302: additive — rooms closed by the per-room volume budget.
+          // The SAME in-memory counter the /healthz getter publishes
+          // (roomsBudgetTerminated), read at scrape time: no new counter, no
+          // new route, no new request, no new timer, no termination-policy
+          // change. Zero publishes as zero, never omitted, so an operator
+          // alert distinguishes a healthy relay from a missing series.
+          // Boundary: a whole counter value only — never a room id, address,
+          // IP, port, token or any identifiable material.
+          "# TYPE relay_room_budget_terminated counter",
+          `relay_room_budget_terminated ${m.roomBudgetTerminated}`,
           "# TYPE relay_rooms_active gauge",
           `relay_rooms_active ${rooms.size}`,
           // P2-294: additive certificate-expiry series — the SAME verdict the
@@ -573,6 +583,11 @@ if (METRICS.port && METRICS.problems.length === 0) {
             slow_consumers_total: m.slowConsumers,
             capacity_refused_total: m.capacityRefused,
             idle_unjoined_closed: m.idleUnjoinedClosed,
+            // P2-302: additive — same counter the /healthz body publishes,
+            // read at scrape time; zero stays zero. A whole count only:
+            // never a room id, address, IP, port, token or any identifiable
+            // material.
+            room_budget_terminated: m.roomBudgetTerminated,
             rooms_active: rooms.size,
           },
           null,
