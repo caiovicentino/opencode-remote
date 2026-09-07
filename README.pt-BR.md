@@ -512,6 +512,13 @@ damaged". Um release **ad-hoc** cobra a régua ad-hoc: a assinatura precisa
 verificar e as ferramentas precisam produzir vereditos legíveis, mas o spctl
 rejeitando o build e a ausência de ticket são exatamente o fluxo documentado de
 right-click → **Open**, então o caminho de release sem secrets continua verde.
+Desde a P2-295 os mesmos três vereditos também rodam sobre cada **contêiner**
+DMG que você realmente baixa (`spctl -t open` e `stapler validate` em cada
+imagem, uma por arquitetura): o release só sai quando os vereditos próprios dos
+contêineres batem com o formato documentado de empacotamento — a assinatura e,
+num release notarizado, o ticket grampeado vivem no app dentro do DMG, e um
+contêiner sem assinatura sendo rejeitado continua significando apenas
+right-click → **Open** uma vez.
 
 Quem prefere Homebrew usa o `Formula/opencode-remote.rb` (AGPL-3.0-only,
 checksum fixado automaticamente pelo pipeline de release a cada tag).

@@ -158,6 +158,39 @@ jobs:
             "${{ steps.signing.outputs.mode }}" "${{ steps.signing.outputs.notarize }}" \
             codesign.txt spctl.txt stapler.txt
 
+      # P2-295: the step above verifies the packaged .app, but the file a user
+      # downloads and double-clicks is the DMG CONTAINER — review round 2
+      # pinned the real packaging shape (apps/desktop/electron-builder.yml):
+      # electron-builder leaves dmg.sign off and never staples the image, so
+      # the container itself is always UNSIGNED/UNSTAPLED in every mode — the
+      # signature and the stapled ticket live on the .app inside. The gate
+      # below therefore treats the unsigned-container verdicts ("not signed at
+      # all", spctl rejection, no stapled ticket) as the documented baseline
+      # and fails closed on anything anomalous: empty or unrecognizable
+      # output from any tool, a failed signature verification, or a
+      # signed-but-rejected / signed-but-unstapled container when the signing
+      # profile promised more (scripts/gatekeeper-verify.ts decides).
+      # electron-builder ships ONE CONTAINER PER ARCHITECTURE (P2-191,
+      # arm64 + x64) — verify EACH of them, never assume a single file.
+      # shell: bash (P2-126 lesson) and its own timeout (P2-245/P2-255 lessons).
+      - name: Gatekeeper verification of the distributed DMG
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          DMGS="$(find apps/desktop/dist -maxdepth 1 -type f -name '*.dmg' | sort)"
+          [ -n "$DMGS" ] || { echo "gatekeeper-verify: no .dmg found under apps/desktop/dist — nothing to verify"; exit 1; }
+          i=0
+          while IFS= read -r DMG; do
+            i=$((i+1))
+            echo "gatekeeper-verify: verifying container $DMG"
+            codesign --verify --deep --strict --verbose=2 "$DMG" > "dmg-codesign-$i.txt" 2>&1 || true
+            spctl -a -vv -t open "$DMG" > "dmg-spctl-$i.txt" 2>&1 || true
+            xcrun stapler validate "$DMG" > "dmg-stapler-$i.txt" 2>&1 || true
+            npx --yes tsx@4.23.12 scripts/gatekeeper-verify.ts dmg \
+              "${{ steps.signing.outputs.mode }}" "${{ steps.signing.outputs.notarize }}" \
+              "dmg-codesign-$i.txt" "dmg-spctl-$i.txt" "dmg-stapler-$i.txt"
+          done <<< "$DMGS"
+
       # P2-146: build the Squirrel.Mac JSON feed from the packed dist root —
       # the zip the mac target now produces + latest-mac.yml become the
       # update-mac.json the packaged shell auto-consumes on darwin. Exits 1
