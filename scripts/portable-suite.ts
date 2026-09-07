@@ -42,6 +42,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { PORTABLE_EXCLUSIONS, portableCoverage } from "./portablecoverage";
 
 export const PORTABLE_TESTS: readonly string[] = [
+  "boothealth.test.ts",
   "bubble-merge.test.ts",
   "client-ready.test.ts",
   "composer.test.ts",
