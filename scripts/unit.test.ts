@@ -577,6 +577,7 @@ import {
 } from "../apps/pilot/src/gateprofile";
 
 import { browseTarget, clickPoint, validSession, viewportFromParams } from "../apps/daemon/src/browse";
+import { browseReadiness } from "../apps/daemon/src/browsecap";
 
 import { createShutdown, DRAIN_MS, stopAccepting } from "../apps/daemon/src/shutdown";
 
@@ -22698,19 +22699,21 @@ check("P2-241: no new periodic timer was introduced by the handler", !dlBlock.in
   );
 
   // revalidation appears ONLY at the described use points: the transcribe
-  // refusal, the health route (doc-convert + version) and the settings read
-  // (version) — never anywhere else
+  // refusal, the health route (doc-convert + version + browse) and the
+  // settings read (version) — never anywhere else. P2-284 adds the browse
+  // verdict on the health route as the fifth use point.
   {
     const lines = code.split("\n");
     const callLines = lines.filter((l) =>
-      /maybeReprobe(?:Transcription|DocConvert|OpencodeVersion)\(/.test(l) && !l.includes("function maybeReprobe"),
+      /maybeReprobe(?:Transcription|DocConvert|OpencodeVersion|Browse)\(/.test(l) && !l.includes("function maybeReprobe"),
     );
     check(
-      "P2-250: revalidation fires at exactly four use points (transcribe refusal, health ×2, settings)",
-      callLines.length === 4 &&
+      "P2-250: revalidation fires at exactly five use points (transcribe refusal, health ×3, settings)",
+      callLines.length === 5 &&
         callLines.filter((l) => l.includes("maybeReprobeTranscription")).length === 1 &&
         callLines.filter((l) => l.includes("maybeReprobeDocConvert")).length === 1 &&
-        callLines.filter((l) => l.includes("maybeReprobeOpencodeVersion")).length === 2,
+        callLines.filter((l) => l.includes("maybeReprobeOpencodeVersion")).length === 2 &&
+        callLines.filter((l) => l.includes("maybeReprobeBrowse")).length === 1,
     );
     // each call sits inside a route handler region (tunnel proxy or handleApi),
     // never inside main()
@@ -22735,13 +22738,14 @@ check("P2-241: no new periodic timer was introduced by the handler", !dlBlock.in
   }
 
   // the re-probe log lines carry ONLY the capability name and the resulting
-  // state (lesson P2-182: never a path, a resolved binary or env content)
+  // state (lesson P2-182: never a path, a resolved binary or env content).
+  // P2-284: browse joins the same one-line-per-redone-probe policy.
   {
     const logLines = code.split("\n").filter((l) => l.includes("readiness re-probe"));
     check(
       "P2-250: each re-done probe logs exactly one line with capability + state only",
-      logLines.length === 2 &&
-        logLines.every((l) => /capability: "(transcription|doc-convert)", state: [\w.()]+?\s*\}/.test(l)),
+      logLines.length === 3 &&
+        logLines.every((l) => /capability: "(transcription|doc-convert|browse)", state: [\w.()]+?\s*\}/.test(l)),
     );
   }
 
@@ -25591,6 +25595,149 @@ check("P2-241: no new periodic timer was introduced by the handler", !dlBlock.in
   check(
     "P2-283: the documented integrity algorithm is exported and pinned",
     INTEGRITY_ALGORITHM === "sha512",
+  );
+}
+
+// --- P2-284: browse-capability readiness (browsecap.ts) + wiring ---------------
+
+{
+  const fullProbe = { disabled: false, libraryResolved: true, executableFound: true, launchError: null };
+
+  // rule 1 — fail-closed validation: absent input, non-object input and
+  // non-boolean marks are unknown, NEVER ready
+  check(
+    "P2-284: absent input is unknown, never ready",
+    browseReadiness(null).state === "unknown" &&
+      browseReadiness(undefined).state === "unknown" &&
+      browseReadiness(null).message.length > 0,
+  );
+  check(
+    "P2-284: non-object input (string, number, array) is unknown",
+    browseReadiness("corrupt").state === "unknown" &&
+      browseReadiness(42).state === "unknown" &&
+      browseReadiness([]).state === "unknown",
+  );
+  check(
+    "P2-284: a single non-boolean mark poisons the whole verdict into unknown",
+    browseReadiness({ ...fullProbe, libraryResolved: "yes" }).state === "unknown" &&
+      browseReadiness({ ...fullProbe, disabled: 1 }).state === "unknown" &&
+      browseReadiness({ ...fullProbe, executableFound: null }).state === "unknown" &&
+      browseReadiness({ ...fullProbe, libraryResolved: "yes" }).state !== "ready",
+  );
+
+  // rule order — disabled first, then library, then executable, then launch error
+  const disabledVerdict = browseReadiness({ disabled: true, libraryResolved: false, executableFound: false, launchError: null });
+  check(
+    "P2-284: disabled wins over an unresolved library and never suggests installing",
+    disabledVerdict.state === "disabled" && !/instal/i.test(disabledVerdict.message),
+  );
+  check(
+    "P2-284: unresolved library is no-browser before any look at the executable",
+    browseReadiness({ disabled: false, libraryResolved: false, executableFound: true, launchError: null }).state ===
+      "no-browser" &&
+      browseReadiness({ disabled: false, libraryResolved: false, executableFound: false, launchError: null })
+        .state === "no-browser",
+  );
+  check(
+    "P2-284: missing executable is no-browser",
+    browseReadiness({ disabled: false, libraryResolved: true, executableFound: false, launchError: null }).state ===
+      "no-browser",
+  );
+  check(
+    "P2-284: a launch error with the library resolved is no-browser",
+    browseReadiness({ disabled: false, libraryResolved: true, executableFound: true, launchError: "Executable doesn't exist" })
+      .state === "no-browser",
+  );
+  check("P2-284: everything present is ready", browseReadiness(fullProbe).state === "ready");
+
+  // determinism — the same input yields the identical verdict on every call
+  check(
+    "P2-284: same input, identical verdict twice in a row",
+    JSON.stringify(browseReadiness(fullProbe)) === JSON.stringify(browseReadiness(fullProbe)) &&
+      JSON.stringify(browseReadiness(null)) === JSON.stringify(browseReadiness(null)) &&
+      JSON.stringify(browseReadiness({ ...fullProbe, disabled: true })) ===
+        JSON.stringify(browseReadiness({ ...fullProbe, disabled: true })),
+  );
+
+  // phrase hygiene — no path, volume, port, address, env var or raw error tail
+  const nastyTail =
+    "/Volumes/Secret Disk/chromium-1.2.3 died at https://10.0.0.1:9999 with OCR_TAIL=value";
+  const allVerdicts = [
+    browseReadiness(fullProbe),
+    browseReadiness({ ...fullProbe, libraryResolved: false }),
+    browseReadiness({ ...fullProbe, executableFound: false }),
+    browseReadiness({ ...fullProbe, launchError: nastyTail }),
+    browseReadiness({ disabled: true, libraryResolved: false, executableFound: false, launchError: null }),
+    browseReadiness(null),
+  ];
+  check(
+    "P2-284: no phrase carries a path, port, address, env var or the raw error tail",
+    allVerdicts.every(
+      (v) =>
+        v.message.trim().length > 0 &&
+        !/[\\/]/.test(v.message) &&
+        !/https?:/i.test(v.message) &&
+        !v.message.includes("=") &&
+        !/[0-9]/.test(v.message) &&
+        !v.message.includes("OCR_") &&
+        !v.message.includes(nastyTail),
+    ),
+  );
+
+  // real browse.ts — the English install-command error is gone from the
+  // client path, and the new verdict path degrades instead of throwing
+  const browseSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "browse.ts"), "utf8");
+  check(
+    "P2-284: the English install-command phrase is no longer thrown at the client",
+    !browseSrc.includes("npx playwright install chromium") &&
+      !browseSrc.includes("playwright chromium not available") &&
+      browseSrc.includes("browseReadiness(") &&
+      browseSrc.includes("browsePhrase"),
+  );
+  const probeFn = browseSrc.slice(browseSrc.indexOf("export async function probeBrowse"));
+  check(
+    "P2-284: the probe path never throws — a failing library probe degrades to honest marks",
+    browseSrc.includes("export async function probeBrowse") &&
+      probeFn.includes("catch {") &&
+      probeFn.includes("libraryResolved = false"),
+  );
+
+  // real index.ts — the three additive health fields and no new periodic timer
+  const indexSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  check(
+    "P2-284: /api/health gains the three additive browse fields",
+    indexSrc.includes("browseState: browseCap.state") &&
+      indexSrc.includes("browseMessage: browseCap.message") &&
+      indexSrc.includes("browseCheckedAt: readinessCheckedAt(readinessState.browse.probedAt)"),
+  );
+  check(
+    "P2-284: no new periodic timer was introduced for the browse capability",
+    !indexSrc.split("\n").some((l) => l.includes("setInterval") && /browse/i.test(l)) &&
+      !/browseInterval|browseTimer/.test(indexSrc) &&
+      indexSrc.includes("await maybeReprobeBrowse()"),
+  );
+  const capFn = indexSrc.slice(indexSrc.indexOf("async function probeBrowseCap"));
+  check(
+    "P2-284: the boot probe path never throws — it degrades to the unknown verdict",
+    capFn.includes("try {") && capFn.includes("browseReadiness(null)"),
+  );
+
+  // real browsecap.ts — pure module hygiene and the documented phrase boundary
+  const browsecapSrc = readFileSync(
+    join(import.meta.dirname, "..", "apps", "daemon", "src", "browsecap.ts"),
+    "utf8",
+  );
+  check(
+    "P2-284: browsecap.ts imports no node:fs, node:child_process, node:http, playwright-core or fetch",
+    !/^import[^\n]*(node:fs|node:child_process|node:http|playwright-core|fetch)/m.test(browsecapSrc) &&
+      !browsecapSrc.includes("fetch(") &&
+      !browsecapSrc.includes("await import("),
+  );
+  check(
+    "P2-284: the module header documents the rule order and the phrase boundary",
+    browsecapSrc.includes("in THIS order") &&
+      browsecapSrc.includes("absolute path") &&
+      browsecapSrc.includes("raw error tail"),
   );
 }
 

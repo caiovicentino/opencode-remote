@@ -151,6 +151,11 @@ remoto, zero confiança**.
   `OCR_READINESS_MIN_MS` (milissegundos inteiros, padrão 60000, teto 3600000)
   ou desligue a revalidação com `OCR_READINESS_DISABLE=off` (valores inválidos
   derrubam o boot, fail-closed)
+- **Prontidão de abrir sites (P2-284)** — a máquina anuncia em `GET /api/health`
+  (`browseState` / `browseMessage` / `browseCheckedAt`) se sabe navegar, antes
+  de você pedir; instalar o navegador do Playwright é opcional, e quando ele
+  falta o agente responde com uma frase curta em português em vez de um erro
+  cru em inglês
 - **Handoff** — continue a sessão exata no Mac (ícone de laptop no header do chat)
 - **Painel ao vivo** — estado de cada sessão: trabalhando, esperando aprovação,
   fez pergunta, pronto, erro; cards mostram o tempo relativo da última
