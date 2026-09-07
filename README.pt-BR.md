@@ -1056,6 +1056,13 @@ Desde a P2-178 toda abertura externa passa por um único gate: apenas links
 de propósito (a recusa é registrada no log como esquema + motivo, nunca a
 URL).
 
+**Proxy (P2-285)**: o shell segue a configuração de proxy da máquina — o
+proxy do sistema é o padrão, e um endereço fixo vindo do ambiente de proxy é
+aplicado uma única vez no boot com o loopback sempre fora do proxy (a ponte
+local do daemon nunca passa pelo proxy); a tela de escolha manual de proxy
+segue registrada como continuação, e cada decisão vira uma linha `proxy:`
+(modo e motivo) no `desktop.log`, nunca o endereço nem credenciais.
+
 Desde o P1-046 a janela é um cockpit de duas colunas de verdade: a conversa
 fica aberta na coluna da esquerda enquanto Artifacts, Browser, Arquivos ou
 Configurações abrem num pane contextual à direita (trocar de pane nunca
