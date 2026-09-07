@@ -257,7 +257,14 @@ private. That is the product: **local power, remote control, zero trust**.
   routine created after its time is marked done for today instead of firing
   immediately) and fire failures retry at most 3 times per day before the day
   closes with an error state, while interval mode keeps its own pacing by
-  design
+  design; every trigger also leaves exactly one record in a per-routine
+  execution history (`GET /__ocr/routines` returns it beside `lastRun`) —
+  start instant, duration, `completed`/`failed`/`skipped` and the created
+  session id, newest first and capped at the 30 most recent records, so a
+  routine that has been failing every day is finally visible; the record
+  never carries the prompt, an agent reply, an error text, a path or any
+  other user data, and a malformed record is discarded alone at load without
+  ever dropping the routine
 - **Secure by construction** — passkey (WebAuthn) gate, ECDH P-256 + AES-256-GCM,
   replay protection, device allowlist, audit log, biometric unlock
 - **Distinguishable devices** — every pairing gets a stable, personal-data-free

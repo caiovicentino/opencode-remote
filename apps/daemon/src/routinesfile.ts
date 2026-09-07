@@ -41,6 +41,7 @@
 // the sentence goes to the log (P2-182 lesson).
 
 import type { Routine } from "./routines.js";
+import { normalizeRoutineHistory } from "./routinehistory.js";
 
 export type RoutinesPlan = "first-run" | "use" | "refuse";
 
@@ -83,6 +84,23 @@ function isWellFormedEntry(value: unknown): value is Routine {
     typeof r.minute === "number" &&
     Number.isFinite(r.minute)
   );
+}
+
+// P2-316: the execution history rides the same file, so it is sanitized at
+// the same load: an old routine without the field stays byte-identical, and
+// a present history keeps only its well-formed records (a malformed record
+// is discarded alone — never the routine, never the whole list), reordered
+// newest first and capped by normalizeRoutineHistory. An empty survivor set
+// drops the field instead of persisting an empty array forever.
+function withSanitizedHistory(entry: Routine): Routine {
+  if (entry.history === undefined) return entry;
+  const history = normalizeRoutineHistory(entry.history);
+  if (history.length === 0) {
+    const clean = { ...entry };
+    delete clean.history;
+    return clean;
+  }
+  return { ...entry, history };
 }
 
 /**
@@ -156,7 +174,7 @@ export function routinesVerdict(
   const routines: Routine[] = [];
   let discarded = 0;
   for (const entry of parsed) {
-    if (isWellFormedEntry(entry)) routines.push(entry);
+    if (isWellFormedEntry(entry)) routines.push(withSanitizedHistory(entry));
     else discarded++;
   }
   return { plan: "use", quarantine: false, routines, discarded, message: ROUTINES_USE_MESSAGE };

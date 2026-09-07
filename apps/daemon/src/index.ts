@@ -74,6 +74,7 @@ import { cachedSpeech, detectEdgeTts, prewarmSpeech, putSpeech, resolveVoice, sy
 import { spokenNumbers, SPEECH_LANGS } from "./spoken.js";
 import { metrics, startMetricsServer, VERSION } from "./metrics.js";
 import { loadRoutines, saveRoutines, type Routine } from "./routines.js";
+import { appendRoutineHistory, recordRoutineTrigger } from "./routinehistory.js";
 import { ARTIFACTS_ROOT, artifactMime, capArtifacts, kindFor, listArtifacts, readArtifact, sessionTitleMap } from "./artifacts.js";
 import { RETENTION_INTERVAL_MS, retentionDisabled, retentionPlan, type RetentionEntry } from "./artifactretention.js";
 import { parseUploadRetention, uploadRetentionPlan, type UploadEntry as UploadFile } from "./uploadretention.js";
@@ -1747,7 +1748,28 @@ function bumpFireAttempt(routineId: string, today: string): number {
   return attempts;
 }
 
+// P2-316: exactly one history record per routine trigger, persisted on the
+// routine through the same routines-file write. recordRoutineTrigger is the
+// privacy gate — only the four documented fields (instant, duration,
+// outcome, session id) ever reach the record: no prompt text, no agent
+// reply, no path, no user data. The append is capped, oldest discarded.
+function recordRoutineTriggerResult(
+  r: Routine,
+  outcome: "completed" | "failed" | "skipped",
+  startedAtMs: number | undefined,
+  sessionId?: string,
+) {
+  const record = recordRoutineTrigger({
+    outcome,
+    startedAtMs: startedAtMs ?? Date.now(),
+    endedAtMs: Date.now(),
+    sessionId,
+  });
+  if (record) r.history = appendRoutineHistory(r.history, record);
+}
+
 async function fireRoutine(r: Routine) {
+  const firedAt = Date.now();
   try {
     const headers = { "content-type": "application/json", ...(authHeader ? { authorization: authHeader } : {}) };
     const created = (await (
@@ -1781,6 +1803,11 @@ async function fireRoutine(r: Routine) {
     });
     log("info", "routine fired", { routine: r.name, session: created.id });
   } catch (err) {
+    // P2-316: the trigger that failed is a fact the history keeps — exactly
+    // one record, outcome "failed", with the created session id when the
+    // failure happened after the session exists (r.lastSessionID is only
+    // ever set by this in-flight run — the sweep skips in-flight routines).
+    recordRoutineTriggerResult(r, "failed", firedAt, r.lastSessionID);
     // P2-286: daily/days routines still retry within the day, but the retries
     // are capped — the old path cleared the day mark unconditionally, so a
     // failing routine retried every sweep until midnight, silently spending
@@ -1837,6 +1864,9 @@ async function completeRoutine(routineId: string, sessionID: string) {
     r.lastSessionID = undefined;
     r.lastStatus = "ok";
     r.lastError = undefined;
+    // P2-316: the trigger that fired resolves here — exactly one record with
+    // the real run duration (fire → completion) and the session it created.
+    recordRoutineTriggerResult(r, "completed", r.runStartedAt, sessionID);
     saveRoutines(routines);
     void pushToSubscribers(`⏰ ${r.name} pronto`, "Rotina concluída — toque para ver/salvar o arquivo", {
       url: "#/files",
@@ -1846,6 +1876,9 @@ async function completeRoutine(routineId: string, sessionID: string) {
     r.lastSessionID = undefined;
     r.lastStatus = "error";
     r.lastError = (err as Error).message.slice(0, 200);
+    // P2-316: a run that never produced a result is a failed trigger — the
+    // error text stays out of the history by design (privacy contract).
+    recordRoutineTriggerResult(r, "failed", r.runStartedAt, sessionID);
     saveRoutines(routines);
     void pushToSubscribers(
       `⏰ ${r.name} falhou`,
@@ -1863,6 +1896,9 @@ async function failRoutine(routineId: string, sessionID: string, why: string) {
   r.lastSessionID = undefined;
   r.lastStatus = "error";
   r.lastError = why.slice(0, 200);
+  // P2-316: the agent-side failure resolves the trigger too — one "failed"
+  // record, still free of the error text (privacy contract).
+  recordRoutineTriggerResult(r, "failed", r.runStartedAt, sessionID);
   saveRoutines(routines);
   void pushToSubscribers(`⏰ ${r.name} falhou`, `Erro do agent: ${why.slice(0, 120)}`, { url: "#/" });
   log("warn", "routine run errored", { routine: r.name, why });
@@ -1877,11 +1913,16 @@ async function failRoutine(routineId: string, sessionID: string, why: string) {
 // never deleted; the next sweep makes it eligible again, so it fires
 // normally at its next scheduled time.
 function releaseStuckRun(r: Routine) {
+  // P2-316: the released run is a failed trigger — capture the facts before
+  // the markers are cleared so the history record stays truthful.
+  const stuckSessionId = r.lastSessionID;
+  const stuckStartedAt = r.runStartedAt;
   if (r.lastSessionID) pendingRuns.delete(r.lastSessionID);
   r.lastSessionID = undefined;
   r.runStartedAt = undefined;
   r.lastStatus = "error";
   r.lastError = RUN_LEASE_KILL_MESSAGE;
+  recordRoutineTriggerResult(r, "failed", stuckStartedAt, stuckSessionId);
   saveRoutines(routines);
   void pushToSubscribers(`⏰ ${r.name} falhou`, RUN_LEASE_KILL_MESSAGE, { url: "#/" });
   log("warn", RUN_LEASE_KILL_MESSAGE, { routine: r.name });
@@ -1948,7 +1989,14 @@ function checkRoutines() {
       void fireRoutine(r);
     } else if (verdict.plan === "close-day") {
       const exhausted = verdict.reason === "attempts-exhausted";
-      if (r.lastRun !== today) r.lastRun = today;
+      if (r.lastRun !== today) {
+        r.lastRun = today;
+        // P2-316: the day was closed without a fire (machine off past the
+        // delay window, or the retry ceiling reached) — today's scheduled run
+        // was skipped. One record, at most once per day: after the day mark
+        // is set the sweep waits instead of re-recording the same skip.
+        recordRoutineTriggerResult(r, "skipped", nowMs);
+      }
       if (exhausted) {
         r.lastStatus = "error";
         r.lastError = ROUTINE_DUE_EXHAUSTED_MESSAGE;

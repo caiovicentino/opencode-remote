@@ -47,6 +47,14 @@ import {
   routineDue,
   type RoutineDueFacts,
 } from "../apps/daemon/src/routinedue";
+import {
+  ROUTINE_HISTORY_CAP,
+  appendRoutineHistory,
+  isRoutineHistoryRecord,
+  normalizeRoutineHistory,
+  recordRoutineTrigger,
+  type RoutineHistoryRecord,
+} from "../apps/daemon/src/routinehistory";
 import { sttVerdict } from "../apps/daemon/src/voicecap";
 import {
   CONVERTER_PREFERENCE,
@@ -23524,6 +23532,353 @@ check(
       !/[\\/]/.test(ROUTINE_DUE_EXHAUSTED_MESSAGE) &&
       !/https?:/i.test(ROUTINE_DUE_EXHAUSTED_MESSAGE) &&
       !/\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/.test(ROUTINE_DUE_EXHAUSTED_MESSAGE),
+  );
+}
+
+// --- P2-316: per-routine execution history (routinehistory.ts) + wiring -----
+
+{
+  const src = (rel: string[]) => readFileSync(join(import.meta.dirname, "..", ...rel), "utf8");
+  const historySrc = src(["apps", "daemon", "src", "routinehistory.ts"]);
+  const routinesFileSrc = src(["apps", "daemon", "src", "routinesfile.ts"]);
+  const routinesModSrc = src(["apps", "daemon", "src", "routines.ts"]);
+  const daemonIndexSrc = src(["apps", "daemon", "src", "index.ts"]);
+
+  // helpers — fixed instants so the tables hold anywhere, anytime
+  const t = (iso: string) => `${iso}`;
+  const rec = (at: string, durationMs: number, outcome: RoutineHistoryRecord["outcome"], sessionId?: string): RoutineHistoryRecord =>
+    sessionId === undefined ? { at, durationMs, outcome } : { at, durationMs, outcome, sessionId };
+  const T0 = t("2026-09-01T10:00:00.000Z");
+  const T1 = t("2026-09-02T10:00:00.000Z");
+  const T2 = t("2026-09-03T10:00:00.000Z");
+  const T3 = t("2026-09-04T10:00:00.000Z");
+  const atOf = (h: RoutineHistoryRecord[]) => h.map((r) => r.at);
+
+  // --- module shape: documented cap ----------------------------------------
+  check(
+    "P2-316: the cap is a documented positive integer well above one day of triggers",
+    Number.isInteger(ROUTINE_HISTORY_CAP) && ROUTINE_HISTORY_CAP >= 2 && ROUTINE_HISTORY_CAP <= 1000,
+  );
+
+  // --- insertion, ordering, cap (table) --------------------------------------
+  const appendTable: Array<{
+    name: string;
+    history: unknown;
+    record: RoutineHistoryRecord;
+    want: string[];
+  }> = [
+    {
+      name: "missing history → the record lands alone",
+      history: undefined,
+      record: rec(T1, 5, "completed"),
+      want: [T1],
+    },
+    {
+      name: "empty history → the record lands alone",
+      history: [],
+      record: rec(T1, 5, "failed"),
+      want: [T1],
+    },
+    {
+      name: "older history → the new record comes first (newest first)",
+      history: [rec(T1, 5, "completed")],
+      record: rec(T2, 7, "completed"),
+      want: [T2, T1],
+    },
+    {
+      name: "newer history → the new record still sorts newest first",
+      history: [rec(T2, 5, "completed")],
+      record: rec(T1, 7, "failed"),
+      want: [T2, T1],
+    },
+    {
+      name: "degenerate history shapes survive as normalization, not a throw",
+      history: { not: "an array" },
+      record: rec(T1, 5, "skipped"),
+      want: [T1],
+    },
+  ];
+  check(
+    "P2-316: append table — insertion and newest-first ordering",
+    appendTable.every(({ history, record, want }) => atOf(appendRoutineHistory(history, record)).join() === want.join()) &&
+      atOf(appendRoutineHistory(null, rec(T0, 0, "completed"))).join() === T0,
+  );
+
+  check(
+    "P2-316: the cap discards the oldest, never refuses the newest (chunkstore staged-ids form)",
+    (() => {
+      let full: RoutineHistoryRecord[] = [];
+      for (let i = 0; i < ROUTINE_HISTORY_CAP; i++) {
+        full = appendRoutineHistory(full, rec(t(`2026-01-01T10:00:${String(i).padStart(2, "0")}Z`), i, "completed"));
+      }
+      const atCap = full.length === ROUTINE_HISTORY_CAP && full[0].at === t("2026-01-01T10:00:29Z");
+      const over = appendRoutineHistory(full, rec(t("2026-01-01T10:00:59Z"), 99, "failed"));
+      return (
+        atCap &&
+        over.length === ROUTINE_HISTORY_CAP &&
+        over[0].at === t("2026-01-01T10:00:59Z") &&
+        !over.some((r) => r.at === t("2026-01-01T10:00:00Z")) && // oldest discarded
+        over.every((r) => r.at !== t("2026-01-01T10:00:00Z"))
+      );
+    })(),
+  );
+
+  // --- degenerate records: each invalid field is refused ---------------------
+  check(
+    "P2-316: degenerate records are refused whole — bad outcome, bad instant, bad duration, non-object",
+    [
+      rec("not-a-date", 1, "completed"),
+      rec(T0, -1, "completed"),
+      rec(T0, 1.5, "completed"),
+      rec(T0, Number.NaN, "completed"),
+      rec(T0, 1, "perfect" as never),
+      rec(T0, 1, undefined as never),
+      null,
+      "record",
+      42,
+      [],
+      { at: T0, durationMs: 1 }, // missing outcome
+    ].every((r) => isRoutineHistoryRecord(r) === null) &&
+      isRoutineHistoryRecord(rec(T0, 0, "skipped")) !== null,
+  );
+
+  check(
+    "P2-316: a history with malformed entries keeps only the valid records (each discarded alone)",
+    (() => {
+      const mixed = [
+        "lixo",
+        42,
+        null,
+        { at: T0 },
+        { at: T0, durationMs: -5, outcome: "completed" },
+        rec(T1, 3, "failed"),
+        { at: T2, durationMs: 4, outcome: "completed", extra: "campo hostil" },
+      ];
+      const out = normalizeRoutineHistory(mixed);
+      return out.length === 2 && out[0].at === T2 && out[1].at === T1 && !("extra" in out[0]);
+    })(),
+  );
+
+  check(
+    "P2-316: absent, truncated and non-array histories normalize to empty without throwing",
+    normalizeRoutineHistory(undefined).length === 0 &&
+      normalizeRoutineHistory(null).length === 0 &&
+      normalizeRoutineHistory("truncado").length === 0 &&
+      normalizeRoutineHistory({}).length === 0 &&
+      normalizeRoutineHistory([null, "x", {}]).length === 0,
+  );
+
+  // --- purity: same input twice, identical result; no mutation ---------------
+  const pureInput = [rec(T0, 1, "completed")];
+  const pureRecord = rec(T1, 2, "failed", "ses_abc");
+  const once = appendRoutineHistory(pureInput, pureRecord);
+  const twice = appendRoutineHistory(pureInput, pureRecord);
+  check(
+    "P2-316: the same input in two calls yields the identical result, and no argument is mutated",
+    JSON.stringify(once) === JSON.stringify(twice) &&
+      JSON.stringify(pureInput) === JSON.stringify([rec(T0, 1, "completed")]) &&
+      pureRecord.sessionId === "ses_abc",
+  );
+
+  // --- privacy contract -------------------------------------------------------
+  check(
+    "P2-316: a record serializes to exactly the four documented fields — never a fifth",
+    (() => {
+      const built = recordRoutineTrigger({ outcome: "completed", startedAtMs: 1_000, endedAtMs: 3_500, sessionId: "ses_x" });
+      const keys = built ? Object.keys(built).sort().join() : "";
+      return (
+        built !== null &&
+        keys === "at,durationMs,outcome,sessionId" &&
+        Object.keys(rec(T0, 0, "failed")).sort().join() === "at,durationMs,outcome"
+      );
+    })(),
+  );
+  check(
+    "P2-316: normalize strips hostile extra fields — prompt text, agent reply, path — field by field",
+    (() => {
+      const hostile = normalizeRoutineHistory([
+        { at: T0, durationMs: 1, outcome: "failed", prompt: "PROMPT-SECRETO", output: "RESPOSTA-DO-AGENTE", path: "/Users/x/y" },
+      ]);
+      const json = JSON.stringify(hostile);
+      return hostile.length === 1 && !/PROMPT-SECRETO|RESPOSTA-DO-AGENTE|Users/.test(json);
+    })(),
+  );
+  check(
+    "P2-316: the builder takes no free text — a failed run is the word failed, never the error message",
+    (() => {
+      const built = recordRoutineTrigger({ outcome: "failed", startedAtMs: 10, endedAtMs: 22 });
+      return built !== null && built.outcome === "failed" && !("why" in built) && !("error" in built);
+    })(),
+  );
+
+  // --- sweep-level acceptance: one record per trigger, the right outcome -----
+  check(
+    "P2-316: a routine that fires resolves exactly one completed record; one that fails, exactly one failed record",
+    (() => {
+      // Routine A: the sweep fires it (no record yet — the run is in flight),
+      // the run completes → exactly one record with the real duration + session.
+      const historyA = appendRoutineHistory(undefined, recordRoutineTrigger({ outcome: "completed", startedAtMs: Date.parse(T0), endedAtMs: Date.parse(T0) + 2500, sessionId: "ses_a" })!);
+      // Routine B: the fire itself fails → exactly one failed record, no session.
+      const historyB = appendRoutineHistory(undefined, recordRoutineTrigger({ outcome: "failed", startedAtMs: Date.parse(T0), endedAtMs: Date.parse(T0) + 120 })!);
+      return (
+        historyA.length === 1 &&
+        historyA[0].outcome === "completed" &&
+        historyA[0].sessionId === "ses_a" &&
+        historyA[0].durationMs === 2500 &&
+        historyB.length === 1 &&
+        historyB[0].outcome === "failed" &&
+        historyB[0].sessionId === undefined
+      );
+    })(),
+  );
+  check(
+    "P2-316: a skipped day is a zero-duration record without a session",
+    (() => {
+      const built = recordRoutineTrigger({ outcome: "skipped", startedAtMs: Date.parse(T0), endedAtMs: Date.parse(T0) });
+      return built !== null && built.durationMs === 0 && built.sessionId === undefined && built.outcome === "skipped";
+    })(),
+  );
+  check(
+    "P2-316: a backward clock clamps the duration at zero instead of going negative",
+    (() => {
+      const built = recordRoutineTrigger({ outcome: "completed", startedAtMs: 2_000, endedAtMs: 1_000 });
+      return built !== null && built.durationMs === 0;
+    })(),
+  );
+
+  // --- routinesfile load tolerance --------------------------------------------
+  const OLD_FILE = JSON.stringify([
+    { id: "a", name: "Antiga", prompt: "p", hour: 7, minute: 30, lastRun: "2026-08-01" },
+  ]);
+  const WITH_HISTORY = JSON.stringify([
+    {
+      id: "b",
+      name: "Com histórico",
+      prompt: "p2",
+      hour: 8,
+      minute: 0,
+      lastRun: "2026-09-07",
+      history: [
+        { at: T1, durationMs: 30, outcome: "completed", sessionId: "ses_b" },
+        { at: T0, durationMs: 10, outcome: "failed" },
+        "registro estragado",
+        { at: "sem data", durationMs: 10, outcome: "completed" },
+      ],
+    },
+  ]);
+  const BAD_HISTORY = JSON.stringify([
+    { id: "c", name: "Estragada", prompt: "p3", hour: 9, minute: 0, history: "banana" },
+    { id: "d", name: "Vazia", prompt: "p4", hour: 9, minute: 5, history: [] },
+  ]);
+  check(
+    "P2-316: an old routines file without history loads normally and gains no field",
+    (() => {
+      const v = routinesVerdict(true, OLD_FILE, null);
+      return v.plan === "use" && v.routines.length === 1 && v.routines[0].history === undefined;
+    })(),
+  );
+  check(
+    "P2-316: malformed records are discarded alone — the routine and its valid history survive",
+    (() => {
+      const v = routinesVerdict(true, WITH_HISTORY, null);
+      const h = v.plan === "use" ? v.routines[0].history : undefined;
+      return (
+        v.plan === "use" &&
+        v.routines.length === 1 &&
+        v.routines[0].id === "b" &&
+        h !== undefined &&
+        h.length === 2 &&
+        h[0].at === T1 &&
+        h[0].sessionId === "ses_b" &&
+        h[1].outcome === "failed"
+      );
+    })(),
+  );
+  check(
+    "P2-316: a non-array or empty history drops the field instead of persisting an empty shell",
+    (() => {
+      const v = routinesVerdict(true, BAD_HISTORY, null);
+      return (
+        v.plan === "use" &&
+        v.routines.length === 2 &&
+        v.routines[0].history === undefined &&
+        v.routines[1].history === undefined
+      );
+    })(),
+  );
+
+  // --- purity of the module + real-repo wiring --------------------------------
+  const historyCode = historySrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  check(
+    "P2-316: routinehistory.ts is pure (no imports at all, no fs/child_process/http, no fetch, no clock reads)",
+    !/^import /m.test(historyCode) &&
+      !/node:(fs|child_process|path|os|http)/.test(historyCode) &&
+      !/\bfetch\(/.test(historyCode) &&
+      !/Date\.now\(\)/.test(historyCode),
+  );
+  check(
+    "P2-316: Routine gains history additively — the scheduling and marker fields are untouched",
+    routinesModSrc.includes("history?: RoutineHistoryRecord[]") &&
+      routinesModSrc.includes("lastRun?: string;") &&
+      routinesModSrc.includes("lastFiredAt?: number;") &&
+      routinesModSrc.includes("runStartedAt?: number;") &&
+      routinesModSrc.includes("lastStatus?"),
+  );
+  check(
+    "P2-316: the load sanitizes the history in the same verdict that validates routines (no new file, still pure)",
+    routinesFileSrc.includes('from "./routinehistory.js"') &&
+      routinesFileSrc.includes("withSanitizedHistory(") &&
+      !/node:(fs|child_process|path|os|http)/.test(
+        routinesFileSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, ""),
+      ) &&
+      !/\bfetch\(/.test(routinesFileSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "")),
+  );
+
+  const fireAt = daemonIndexSrc.indexOf("async function fireRoutine");
+  const fireCatchAt = daemonIndexSrc.indexOf("} catch (err) {", fireAt);
+  const fireBlock = daemonIndexSrc.slice(fireAt, fireCatchAt);
+  const catchBlock = daemonIndexSrc.slice(fireCatchAt, daemonIndexSrc.indexOf("async function completeRoutine"));
+  check(
+    "P2-316: a successful fire writes no record — the record comes when the run resolves",
+    !fireBlock.includes("recordRoutineTriggerResult(") &&
+      catchBlock.includes('recordRoutineTriggerResult(r, "failed", firedAt, r.lastSessionID)'),
+  );
+  const completeAt = daemonIndexSrc.indexOf("async function completeRoutine");
+  const failRoutineAt = daemonIndexSrc.indexOf("function failRoutine");
+  const completeBlock = daemonIndexSrc.slice(completeAt, failRoutineAt);
+  check(
+    "P2-316: completion and run failure each land their record beside the existing status write",
+    completeBlock.split('recordRoutineTriggerResult(r, "completed"').length === 2 &&
+      completeBlock.split('recordRoutineTriggerResult(r, "failed"').length === 2 &&
+      completeBlock.includes("r.runStartedAt, sessionID"),
+  );
+  const releaseBlock = daemonIndexSrc.slice(
+    daemonIndexSrc.indexOf("function releaseStuckRun"),
+    daemonIndexSrc.indexOf("function checkRoutines"),
+  );
+  check(
+    "P2-316: a released stuck run is a failed record captured before the markers clear",
+    releaseBlock.includes('recordRoutineTriggerResult(r, "failed", stuckStartedAt, stuckSessionId)') &&
+      releaseBlock.indexOf("stuckStartedAt = r.runStartedAt") < releaseBlock.indexOf("r.runStartedAt = undefined"),
+  );
+  const sweepAt = daemonIndexSrc.indexOf("function checkRoutines");
+  const sweepEnd = daemonIndexSrc.indexOf("setInterval(checkRoutines");
+  const closeDayBlock = daemonIndexSrc.slice(sweepAt, sweepEnd);
+  check(
+    "P2-316: the skipped day is recorded inside the existing close-day branch, once per day",
+    closeDayBlock.includes('recordRoutineTriggerResult(r, "skipped", nowMs)') &&
+      closeDayBlock.indexOf('recordRoutineTriggerResult(r, "skipped", nowMs)') >
+        closeDayBlock.indexOf("if (r.lastRun !== today) {"),
+  );
+  check(
+    "P2-316: the routines listing keeps returning the routines — the history rides the same objects",
+    daemonIndexSrc.includes('return { id: req.id, status: 200, body: { routines } };'),
+  );
+  check(
+    "P2-316: no new timer, route or dependency was introduced for the history",
+    daemonIndexSrc.split("\n").filter((l) => l.includes("setInterval")).every((l) => !/history/i.test(l)) &&
+      !daemonIndexSrc.includes("routinehistoryRouter") &&
+      !daemonIndexSrc.includes("/__ocr/routine-history"),
   );
 }
 

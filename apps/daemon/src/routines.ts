@@ -20,6 +20,7 @@ import { homedir } from "node:os";
 import { writeStateAtomic } from "./statefile.js";
 import { quarantineName } from "./identityfile.js";
 import { routinesVerdict, ROUTINES_REFUSE_PRESERVE_FAILED_MESSAGE } from "./routinesfile.js";
+import type { RoutineHistoryRecord } from "./routinehistory.js";
 import { log } from "./log.js";
 
 export interface Routine {
@@ -37,6 +38,7 @@ export interface Routine {
   runStartedAt?: number; // epoch ms when the current in-flight run was first observed (run lease basis, P2-236)
   lastStatus?: "ok" | "error";
   lastError?: string;
+  history?: RoutineHistoryRecord[]; // P2-316: per-trigger execution history, newest first, capped (privacy contract in routinehistory.ts)
 }
 
 const FILE = () => join(homedir(), ".opencode-remote", "routines.json");
