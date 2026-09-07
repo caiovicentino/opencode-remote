@@ -13,9 +13,9 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
@@ -45,6 +45,19 @@ jobs:
         shell: bash
         timeout-minutes: 5
         run: npm run audit:deps
+
+      # P2-278: action-pinning gate — before this, every third-party action
+      # was referenced by a mutable version tag, so whoever controlled the
+      # tag could run code inside the job that signs and publishes the
+      # user's package. The step re-reads both real workflow files, normalizes
+      # every `uses:` reference and fails this job on a reject verdict alone
+      # (a warning never blocks). shell: bash (P2-126 lesson) and its own
+      # timeout (P2-245/P2-255 lessons). Deadlined exemptions:
+      # scripts/action-exemptions.json (docs/security.md).
+      - name: Action pins gate
+        shell: bash
+        timeout-minutes: 5
+        run: npm run check:action-pins
 
       - name: Lint
         run: npx eslint apps packages scripts --quiet
@@ -91,7 +104,7 @@ jobs:
       desktop: ${{ steps.scope.outputs.desktop }}
       relay-image: ${{ steps.scope.outputs.relay-image }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
@@ -118,9 +131,9 @@ jobs:
     needs: scope
     if: needs.scope.outputs.desktop == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
@@ -198,9 +211,9 @@ jobs:
     needs: scope
     if: needs.scope.outputs.desktop == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
@@ -277,9 +290,9 @@ jobs:
     needs: scope
     if: needs.scope.outputs.desktop == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
@@ -326,7 +339,7 @@ jobs:
     needs: scope
     if: needs.scope.outputs.relay-image == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Build image (ephemeral local tag only — never a registry ref)
         shell: bash
