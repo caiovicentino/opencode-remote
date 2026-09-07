@@ -293,15 +293,18 @@ function Modal({
 /** P2-281: inline search highlighting for plain-prose bubbles. Only used
  * when lib/chatfind.canHighlightInline guarantees the raw text renders
  * verbatim, so the hit offsets are exact; .msg is pre-wrap, so plain
- * segments keep their own line breaks. */
+ * segments keep their own line breaks. `active` is the GLOBAL active hit —
+ * segmentsFor's hitIndex is the per-bubble ordinal, so the current mark is
+ * resolved by object identity through `hits` (same references as the global
+ * searchHits array), never by comparing the two ordinal spaces. */
 function HighlightedText({
   text,
   hits,
-  activeIndex,
+  active,
 }: {
   text: string;
   hits: ChatHit[];
-  activeIndex: number;
+  active: ChatHit | null;
 }) {
   return (
     <>
@@ -309,7 +312,11 @@ function HighlightedText({
         s.hit ? (
           <mark
             key={i}
-            className={s.hitIndex === activeIndex ? "search-mark search-mark-current" : "search-mark"}
+            className={
+              active !== null && hits[s.hitIndex!] === active
+                ? "search-mark search-mark-current"
+                : "search-mark"
+            }
           >
             {s.text}
           </mark>
@@ -725,23 +732,26 @@ export default function ChatView({
   }, [searchOpen]);
 
   // a new term starts at the newest occurrence — the nearest one to the tail
-  // the reader is already looking at; arrows/Enter then walk the rest
-  const searchHitsRef = useRef(searchHits);
-  searchHitsRef.current = searchHits;
+  // the reader is already looking at; arrows/Enter then walk the rest.
+  // The closure reads the hits of the render that changed the deps — always
+  // fresh, no render-phase ref write needed.
   useEffect(() => {
-    setSearchIdx(Math.max(0, searchHitsRef.current.length - 1));
+    setSearchIdx(Math.max(0, searchHits.length - 1));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchTerm, searchOpen]);
 
   // Cmd+F / Ctrl+F opens the bar (the app owns find while the chat is up);
-  // Esc closes from anywhere while it is up
+  // Esc closes from anywhere while it is up — except when a modal is stacked
+  // on top: Modal's own Esc handler consumes that one, and co-closing would
+  // discard the term the reader is mid-way through
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "f") {
         e.preventDefault();
         openSearch();
       } else if (e.key === "Escape" && searchOpen) {
-        closeSearch();
+        const modalOpen = document.querySelector(".modal-scrim") !== null;
+        if (!modalOpen) closeSearch();
       }
     };
     window.addEventListener("keydown", onKey);
@@ -2399,7 +2409,7 @@ export default function ChatView({
                 />
               )}
               {bubbleHits && bubbleHits.length > 0 && canHighlightInline(b.text) ? (
-                <HighlightedText text={b.text} hits={bubbleHits} activeIndex={searchCursor} />
+                <HighlightedText text={b.text} hits={bubbleHits} active={currentHit} />
               ) : (
                 renderBubbleText(b.text, request, setError)
               )}

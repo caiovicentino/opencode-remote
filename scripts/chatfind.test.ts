@@ -90,6 +90,42 @@ check(
     segmentsFor("nothing here", []).length === 1,
 );
 
+// --- composition contract (P2-281 review r2) ---------------------------------
+// The view groups the global hits per bubble and calls segmentsFor with each
+// per-bubble array, so hitIndex is a PER-BUBBLE ordinal. The active mark must
+// be resolved by identity: hits[hitIndex] === globalActiveHit. Pin the exact
+// scenario the reviewer flagged — several bubbles, some with multiple hits,
+// active cursor in the middle.
+{
+  const list = msgs("deploy um", "o deploy dois e o deploy tres", "deploy quatro");
+  const globalHits = findHits(list, "deploy");
+  const byBubble = new Map<number, ReturnType<typeof findHits>>();
+  for (const h of globalHits) {
+    const arr = byBubble.get(h.bubble) ?? [];
+    if (arr.length === 0) byBubble.set(h.bubble, arr);
+    arr.push(h);
+  }
+  // global cursor 2 = bubble 1's SECOND hit ("deploy tres")
+  const active = globalHits[2]!;
+  const bubbleHits = byBubble.get(1)!;
+  const markIsCurrent = (hit: { start: number }) =>
+    segmentsFor(list[1]!.text, bubbleHits)
+      .filter((s) => s.hit)
+      .some((s) => bubbleHits[s.hitIndex!] === hit);
+  check(
+    "composition: identity resolves the active mark across ordinal spaces",
+    active.start === 18 && markIsCurrent(active),
+    JSON.stringify({ globalHits, active }),
+  );;
+  // the false positive the old per-bubble === global comparison produced:
+  // bubble 1's per-bubble index 1 must NOT light up for global cursor 0
+  const notThis = globalHits[0]!;
+  check(
+    "composition: an active hit in another bubble marks nothing here",
+    !markIsCurrent(notThis),
+  );
+}
+
 // --- inline-highlight safety -------------------------------------------------
 check("inline: plain prose is safe", canHighlightInline("combustível no tanque?"));
 check("inline: markdown bold is NOT inline-safe", !canHighlightInline("**bold** match"));
