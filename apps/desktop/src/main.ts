@@ -18,6 +18,7 @@ import {
   respawnState,
   setSidecarRelayProxy,
   sidecarExitInfo,
+  sidecarWedgeState,
   setSidecarRelayUrl,
   startDaemonSidecar,
   stateFilePath,
@@ -2071,6 +2072,9 @@ function withLocalMode(state: PairingState): PairingState {
  * the daemon died, not only that it gave up. */
 function daemonDownState(): PairingState {
   const exit = sidecarExitInfo();
+  // P2-321: the wedge verdict rides along when the daemon stopped ANSWERING
+  // (wedged alive) rather than dying — additive, renderer-ignored for now.
+  const wedge = sidecarWedgeState();
   return {
     uri: null,
     qrDataUrl: null,
@@ -2078,6 +2082,7 @@ function daemonDownState(): PairingState {
     phonePaired: false,
     daemonDown: true,
     sidecarExit: exit ? { kind: exit.kind, reason: exit.reason, hint: exit.hint } : undefined,
+    sidecarWedge: wedge ?? undefined,
   };
 }
 
@@ -2087,6 +2092,8 @@ function daemonDownState(): PairingState {
  * the QR overlay can never open from it, and nothing re-pairs on recovery. */
 function reconnectingState(): PairingState {
   const { attempts } = reconnectState();
+  // P2-321: the wedge verdict rides along additively when it is in effect.
+  const wedge = sidecarWedgeState();
   return {
     uri: null,
     qrDataUrl: null,
@@ -2094,6 +2101,7 @@ function reconnectingState(): PairingState {
     phonePaired: false,
     reconnecting: true,
     reconnectAttempts: attempts,
+    sidecarWedge: wedge ?? undefined,
   };
 }
 
@@ -2510,6 +2518,11 @@ async function refreshPairingState(): Promise<void> {
       startup: bootStartup
         ? { state: bootStartup.action, message: loginItemMessage(bootStartup.action) }
         : undefined,
+      // P2-321: additive wedged-daemon verdict (sidecarwedge.ts), AFTER the
+      // P2-218 field so the real-source assertions keep matching; absent
+      // unless the shell's own child stopped answering while alive. The
+      // renderer never renders it yet — the verdict's surface is desktop.log.
+      sidecarWedge: sidecarWedgeState() ?? undefined,
     });
   } catch (err) {
     // Daemon down, token rotated or state file wiped: drop the cached state so
@@ -2526,7 +2539,15 @@ async function refreshPairingState(): Promise<void> {
       // instead of silence, so the UI never falls back to the pairing screen.
       setPairingState(withLocalMode(reconnectingState()));
     } else {
-      setPairingState(null);
+      // P2-321: a sidecar that wedged alive answers nothing, so the tick lands
+      // here — report the wedge verdict instead of silence. The renderer only
+      // knows the field additively: no verdict in effect keeps the old null.
+      const wedge = sidecarWedgeState();
+      setPairingState(
+        wedge
+          ? { uri: null, qrDataUrl: null, devices: 0, phonePaired: false, sidecarWedge: wedge }
+          : null,
+      );
     }
   }
 }
