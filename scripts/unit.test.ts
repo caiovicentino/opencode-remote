@@ -610,6 +610,7 @@ import {
 
 import { tlsPlan } from "../apps/relay/src/tlsconfig";
 import { certExpiryVerdict, CERT_CLOCK_TOLERANCE_MS, CERT_WARN_WINDOW_MS } from "../apps/relay/src/certexpiry";
+import { certReloadVerdict, type CertPairImpression } from "../apps/relay/src/certreload";
 
 import { makeIpTagger, UNKNOWN_IP_TAG, IP_TAG_LENGTH } from "../apps/relay/src/iptag";
 
@@ -12709,6 +12710,247 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       healthzSrc.includes("ok: !draining") &&
       healthzSrc.includes("s.certExpiry?.()") &&
       healthzSrc.includes("CERT_EXPIRY_VERDICTS.has(cert.verdict)"),
+  );
+}
+
+
+// --- P2-306: relay certificate hot reload verdict table -----------------------
+{
+  const TOL = CERT_CLOCK_TOLERANCE_MS; // documented clock tolerance (24 h)
+  const NOW = 1_800_000_000_000;
+  const DAY = 86_400_000;
+
+  const pair = (over: Partial<CertPairImpression>): CertPairImpression => ({
+    certSize: 1_234,
+    certMtimeMs: NOW - 61 * DAY,
+    keySize: 1_701,
+    keyMtimeMs: NOW - 61 * DAY,
+    notBefore: NOW - 30 * DAY,
+    notAfter: NOW + 60 * DAY,
+    ...over,
+  });
+  const IN_SERVICE = pair({});
+
+  // 1. unchanged pair → keep
+  const unchanged = certReloadVerdict(IN_SERVICE, pair({}), NOW, TOL);
+  check("P2-306: unchanged pair → keep", unchanged.verdict === "keep", unchanged.reason);
+
+  // 2. renewed valid pair (new files, fresh validity window) → adopt
+  const renewed = certReloadVerdict(
+    IN_SERVICE,
+    pair({
+      certSize: 1_300,
+      certMtimeMs: NOW - 1_000,
+      keySize: 1_800,
+      keyMtimeMs: NOW - 1_000,
+      notBefore: NOW - 1_000,
+      notAfter: NOW + 90 * DAY,
+    }),
+    NOW,
+    TOL,
+  );
+  check("P2-306: renewed valid pair → adopt", renewed.verdict === "adopt", renewed.reason);
+
+  // 3. same policy as boot: a renewal inside the clock tolerance at either
+  // end (edge included — strict comparisons, mirroring certexpiry.ts) is
+  // usable material, not a refusal
+  const skewExpired = certReloadVerdict(
+    IN_SERVICE,
+    pair({
+      certSize: 1_300,
+      certMtimeMs: NOW - 1_000,
+      keySize: 1_800,
+      keyMtimeMs: NOW - 1_000,
+      notBefore: NOW - 31 * DAY,
+      notAfter: NOW - TOL,
+    }),
+    NOW,
+    TOL,
+  );
+  const skewFuture = certReloadVerdict(
+    IN_SERVICE,
+    pair({
+      certSize: 1_300,
+      certMtimeMs: NOW - 1_000,
+      keySize: 1_800,
+      keyMtimeMs: NOW - 1_000,
+      notBefore: NOW + TOL,
+      notAfter: NOW + 90 * DAY,
+    }),
+    NOW,
+    TOL,
+  );
+  check(
+    "P2-306: renewal within the clock tolerance (edge included) → adopt, same policy as boot",
+    skewExpired.verdict === "adopt" && skewFuture.verdict === "adopt",
+    `${skewExpired.reason} | ${skewFuture.reason}`,
+  );
+
+  // 4. new illegible pair (no readable validity window) → refuse
+  const illegible = certReloadVerdict(
+    IN_SERVICE,
+    pair({
+      certSize: 7,
+      certMtimeMs: NOW - 1_000,
+      keySize: 9,
+      keyMtimeMs: NOW - 1_000,
+      notBefore: Number.NaN,
+      notAfter: Number.NaN,
+    }),
+    NOW,
+    TOL,
+  );
+  check("P2-306: illegible renewal → refuse", illegible.verdict === "refuse", illegible.reason);
+
+  // 5. new expired pair → refuse — never swap the material in service for a
+  // worse one
+  const expired = certReloadVerdict(
+    IN_SERVICE,
+    pair({
+      certSize: 1_300,
+      certMtimeMs: NOW - 1_000,
+      keySize: 1_800,
+      keyMtimeMs: NOW - 1_000,
+      notBefore: NOW - 100 * DAY,
+      notAfter: NOW - TOL - 1,
+    }),
+    NOW,
+    TOL,
+  );
+  check("P2-306: expired renewal beyond the tolerance → refuse", expired.verdict === "refuse", expired.reason);
+
+  // 6. new not-yet-valid pair → refuse
+  const notYet = certReloadVerdict(
+    IN_SERVICE,
+    pair({
+      certSize: 1_300,
+      certMtimeMs: NOW - 1_000,
+      keySize: 1_800,
+      keyMtimeMs: NOW - 1_000,
+      notBefore: NOW + TOL + 1,
+      notAfter: NOW + 90 * DAY,
+    }),
+    NOW,
+    TOL,
+  );
+  check(
+    "P2-306: not-yet-valid renewal beyond the tolerance → refuse",
+    notYet.verdict === "refuse",
+    notYet.reason,
+  );
+
+  // 7. non-finite instants refuse whichever field is unusable, and a
+  // non-finite current instant can never be judged against
+  const nanStart = certReloadVerdict(IN_SERVICE, pair({ certSize: 1_300, keySize: 1_800, notBefore: Number.NaN }), NOW, TOL);
+  const nanEnd = certReloadVerdict(IN_SERVICE, pair({ certSize: 1_300, keySize: 1_800, notAfter: Number.NaN }), NOW, TOL);
+  const infNow = certReloadVerdict(IN_SERVICE, pair({ certSize: 1_300, keySize: 1_800 }), Number.POSITIVE_INFINITY, TOL);
+  check(
+    "P2-306: non-finite instants → refuse (start, end and current instant alike)",
+    nanStart.verdict === "refuse" && nanEnd.verdict === "refuse" && infNow.verdict === "refuse",
+    `${nanStart.reason} | ${nanEnd.reason} | ${infNow.reason}`,
+  );
+
+  // 8. determinism: the same input twice produces an identical result
+  const freshPair = pair({
+    certSize: 1_300,
+    certMtimeMs: NOW - 1_000,
+    keySize: 1_800,
+    keyMtimeMs: NOW - 1_000,
+    notBefore: NOW - 1_000,
+    notAfter: NOW + 90 * DAY,
+  });
+  const a = certReloadVerdict(IN_SERVICE, freshPair, NOW, TOL);
+  const b = certReloadVerdict(IN_SERVICE, freshPair, NOW, TOL);
+  check("P2-306: same input twice → identical verdict and reason", a.verdict === b.verdict && a.reason === b.reason);
+
+  // 9. every phrase is static and blind: no digits, no path separators, no
+  // host, no subject/issuer/serial/fingerprint, no secret material
+  const phrases = [unchanged, renewed, skewExpired, skewFuture, illegible, expired, notYet, nanStart, nanEnd, infNow, a].map(
+    (o) => o.reason,
+  );
+  const forbidden = ["localhost", "127.0.0.1", "https", "pem", ".key", "issuer", "serial", "fingerprint", "CN=", "subject"];
+  check(
+    "P2-306: every reason phrase is static and free of path, host, port, subject, issuer or secret material",
+    phrases.every(
+      (r) =>
+        !/[\d]/.test(r) &&
+        !r.includes("/") &&
+        !r.includes("\\") &&
+        !r.includes(":\\") &&
+        forbidden.every((f) => !r.includes(f)),
+    ),
+  );
+
+  // 10. the real module stays pure: no node:fs, node:tls, node:http, no
+  // network call and no import statement at all
+  const root = join(import.meta.dirname, "..");
+  const reloadSrc = readFileSync(join(root, "apps", "relay", "src", "certreload.ts"), "utf8");
+  check(
+    "P2-306: certreload.ts imports nothing (no node:fs, node:tls, node:http, no network)",
+    !reloadSrc.includes("node:fs") &&
+      !reloadSrc.includes("node:tls") &&
+      !reloadSrc.includes("node:crypto") &&
+      !reloadSrc.includes("node:http") &&
+      !reloadSrc.includes("fetch") &&
+      !/^import /m.test(reloadSrc) &&
+      !reloadSrc.includes("require("),
+  );
+
+  // 11. the real index.ts wires the re-read into the EXISTING sweep
+  const relayIndex = readFileSync(join(root, "apps", "relay", "src", "index.ts"), "utf8");
+  const sweepAt = relayIndex.indexOf("setInterval(");
+  const reloadCallAt = relayIndex.indexOf("certReloadVerdict(");
+  const setSecureAt = relayIndex.indexOf("setSecureContext");
+  check(
+    "P2-306: the re-read rides the existing sweep — still exactly one setInterval, reload logic inside it",
+    (relayIndex.match(/setInterval\(/g) ?? []).length === 1 &&
+      sweepAt > 0 &&
+      reloadCallAt > sweepAt &&
+      setSecureAt > sweepAt,
+  );
+  const reloadStart = relayIndex.indexOf("P2-306 hot reload");
+  const reloadEnd = relayIndex.indexOf("const nextCert = certExpiryVerdict(");
+  const reloadBlock = reloadStart > 0 && reloadEnd > reloadStart ? relayIndex.slice(reloadStart, reloadEnd) : "";
+  check(
+    "P2-306: the reload block swaps the context and never closes a socket, exits or listens",
+    reloadBlock.length > 0 &&
+      reloadBlock.includes("setSecureContext") &&
+      reloadBlock.includes("CERT_EXPIRY.notAfter = fresh.notAfter") &&
+      !reloadBlock.includes("process.exit") &&
+      !reloadBlock.includes(".close(") &&
+      !reloadBlock.includes(".terminate(") &&
+      !reloadBlock.includes(".listen("),
+  );
+
+  // 12. no new route: the relay still registers exactly the two handlers it
+  // always had (the healthz request handler and the ws upgrade handler)
+  check(
+    "P2-306: no new route — the relay still registers exactly the request and upgrade handlers",
+    (relayIndex.match(/server\.on\(/g) ?? []).length === 2,
+  );
+
+  // 13. plain mode gains nothing: the reload state only exists in tls mode,
+  // so the sweep never probes the disk without a pair in service
+  check(
+    "P2-306: plain mode gains nothing — reload state is tls-only and the sweep is guarded",
+    relayIndex.includes('if (TLS.mode !== "tls" || !CERT_EXPIRY) return undefined;') &&
+      relayIndex.includes("if (CERT_RELOAD) {"),
+  );
+
+  // 14. the fail-closed boot preflight is untouched
+  check(
+    "P2-306: the boot preflight stays fail-closed and untouched",
+    relayIndex.includes("invalid relay TLS pair, refusing to start (fail-closed)") &&
+      relayIndex.includes("invalid relay TLS certificate, refusing to start (fail-closed)"),
+  );
+
+  // 15. no new dependency
+  const relayPkg = JSON.parse(readFileSync(join(root, "apps", "relay", "package.json"), "utf8")) as {
+    dependencies: Record<string, string>;
+  };
+  check(
+    "P2-306: no new dependency — the relay still depends only on @ocr/protocol and ws",
+    JSON.stringify(Object.keys(relayPkg.dependencies).sort()) === JSON.stringify(["@ocr/protocol", "ws"]),
   );
 }
 
