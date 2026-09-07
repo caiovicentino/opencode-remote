@@ -682,6 +682,15 @@ host. The drain response keeps them, exactly like every other field:
 {"ok":false,"version":"0.2.0","uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0,"roomsRejectedInvalidRoomId":0,"roomsRejectedSocketRoomCap":0,"certExpiryVerdict":"warn","certExpiryInS":86400,"draining":true}
 ```
 
+The same verdict also feeds the Prometheus series described in the metrics
+section below (`relay_cert_expiry_state` / `relay_cert_expiry_seconds`), which
+is the surface an operator's alerting can actually evaluate. The alert rule,
+in prose: page when the state gauge leaves `0` — the certificate stopped
+being a plain `use` — or when `relay_cert_expiry_seconds` drops below the
+renewal budget (a common choice is three days). The seconds gauge is the line
+that fires first, days before the handshake failures every phone would
+otherwise be the first to report at once.
+
 ### During the drain: 503 on purpose (P2-145)
 
 When the relay receives `SIGTERM` it enters a drain window (≤3s) and
@@ -725,6 +734,18 @@ JSON payload gains the matching `rooms_rejected_invalid_room_id` /
 `rooms_rejected_socket_room_cap` fields next to the unchanged
 `rooms_rejected`. Same contract as the probe: the sum never exceeds the
 total, and no line or field carries a room id, address or IP.
+
+The certificate verdict the relay already recomputes on its liveness sweep is
+exported as Prometheus text lines too (P2-294) — the surface an operator's
+alerting actually scrapes: `relay_cert_expiry_state` (gauge; `0` = `use`,
+`1` = `warn`, `2` = `refuse-expired`, `3` = `refuse-not-yet-valid` — a
+numeric state gauge, never a textual label, so no scrape ever creates new
+series cardinality) and `relay_cert_expiry_seconds` (gauge; whole seconds to
+expiry, floored at zero). Both are computed per scrape from values already in
+memory — no new timer, no new route, no new request — and every pre-existing
+line stays byte for byte. Fail-closed: plain mode (no certificate) publishes
+neither line, an unmeasured verdict publishes neither line, and no line ever
+carries a subject, issuer, serial number, fingerprint, file path or host.
 
 ## Pointing a daemon at the hosted relay
 

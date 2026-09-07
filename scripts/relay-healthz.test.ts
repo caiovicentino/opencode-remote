@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
 import { healthzHandler, healthzPayload, WEB_ENCODING_CACHE, type CertExpiryHealth, type HealthzState } from "../apps/relay/src/healthz";
 import { rejectionBreakdown, ROOM_REJECT_REASONS } from "../apps/relay/src/rejectreasons";
+import { certExpiryMetrics } from "../apps/relay/src/certmetrics";
 import { metricsAuthOk, metricsBinding } from "../apps/relay/src/metricsbind";
 import { DRAIN_GRACE_MS_CEILING, MAX_FRAME_CEILING, relayLimits } from "../apps/relay/src/limits";
 import { createShutdown, DRAIN_MS, refuseUpgrade } from "../apps/relay/src/shutdown";
@@ -1804,6 +1805,124 @@ check(
       relayIndex.includes("rooms_rejected: m.roomsRejected,") &&
       // the getter is wired from the same counter object
       relayIndex.includes("roomsRejectedBreakdown: () => m.roomsRejectedByReason") &&
+      // observation only: no new periodic timer beyond the P2-067 ping sweep
+      (relayIndex.match(/setInterval\(/g) ?? []).length === 1
+    );
+  })(),
+);
+
+// --- 28c. certificate-expiry metrics (P2-294): pure line table, rules in order
+// The rules from certmetrics.ts's header, exercised in order: a missing,
+// non-textual or out-of-table verdict publishes nothing and never invents a
+// healthy line (fail-closed); the no-cert mode publishes nothing instead of
+// invented zeros; a negative or non-finite remainder floors at zero; each
+// documented verdict becomes exactly the documented numeric state lines;
+// the output is deterministic.
+const CERT_LINE_TABLE: Record<string, string[]> = {
+  use: [
+    "# TYPE relay_cert_expiry_state gauge",
+    "relay_cert_expiry_state 0",
+    "# TYPE relay_cert_expiry_seconds gauge",
+    "relay_cert_expiry_seconds 50",
+  ],
+  warn: [
+    "# TYPE relay_cert_expiry_state gauge",
+    "relay_cert_expiry_state 1",
+    "# TYPE relay_cert_expiry_seconds gauge",
+    "relay_cert_expiry_seconds 50",
+  ],
+  "refuse-expired": [
+    "# TYPE relay_cert_expiry_state gauge",
+    "relay_cert_expiry_state 2",
+    "# TYPE relay_cert_expiry_seconds gauge",
+    "relay_cert_expiry_seconds 50",
+  ],
+  "refuse-not-yet-valid": [
+    "# TYPE relay_cert_expiry_state gauge",
+    "relay_cert_expiry_state 3",
+    "# TYPE relay_cert_expiry_seconds gauge",
+    "relay_cert_expiry_seconds 50",
+  ],
+};
+
+check("cert-metrics: absent verdict returns the empty set", JSON.stringify(certExpiryMetrics(undefined, 50)) === "[]");
+check("cert-metrics: null verdict returns the empty set", JSON.stringify(certExpiryMetrics(null, 50)) === "[]");
+check("cert-metrics: non-textual verdict returns the empty set", (() => {
+  return [42, true, 1.5, {}, [], { verdict: "use" }].every((v) => JSON.stringify(certExpiryMetrics(v, 50)) === "[]");
+})());
+for (const outside of [
+  "expired", "USE", "", "warn ", "healthy",
+  // inherited property names must resolve as out-of-table, never through
+  // the plain-object prototype chain (a garbage "state" nobody measured)
+  "constructor", "toString", "hasOwnProperty", "isPrototypeOf",
+  "propertyIsEnumerable", "toLocaleString", "valueOf", "__proto__",
+]) {
+  check(
+    `cert-metrics: verdict outside the documented table returns the empty set (${JSON.stringify(outside)})`,
+    JSON.stringify(certExpiryMetrics(outside, 50)) === "[]",
+  );
+}
+for (const [verdict, lines] of Object.entries(CERT_LINE_TABLE)) {
+  check(
+    `cert-metrics: documented verdict "${verdict}" becomes exactly the documented lines`,
+    JSON.stringify(certExpiryMetrics(verdict, 50)) === JSON.stringify(lines),
+  );
+}
+check("cert-metrics: negative remainder floors at zero", (() => {
+  const out = certExpiryMetrics("warn", -250);
+  return out.includes("relay_cert_expiry_state 1") && out.includes("relay_cert_expiry_seconds 0");
+})());
+check("cert-metrics: non-finite remainder (NaN) floors at zero", (() => {
+  const out = certExpiryMetrics("use", Number.NaN);
+  return out.includes("relay_cert_expiry_state 0") && out.includes("relay_cert_expiry_seconds 0");
+})());
+check("cert-metrics: non-finite remainder (Infinity) floors at zero", (() => {
+  const out = certExpiryMetrics("use", Number.POSITIVE_INFINITY);
+  return out.includes("relay_cert_expiry_state 0") && out.includes("relay_cert_expiry_seconds 0");
+})());
+check("cert-metrics: fractional remainder publishes as whole seconds", certExpiryMetrics("use", 50.9).includes("relay_cert_expiry_seconds 50"));
+check("cert-metrics: no-cert mode (plain ws://) publishes nothing instead of invented zeros", JSON.stringify(certExpiryMetrics(undefined, 0)) === "[]");
+check(
+  "cert-metrics: rule order — an out-of-table verdict and a negative remainder together publish nothing at all",
+  JSON.stringify(certExpiryMetrics("bogus", -5)) === "[]",
+);
+check(
+  "cert-metrics: deterministic — identical inputs produce identical lines in two calls",
+  JSON.stringify(certExpiryMetrics("warn", 1234)) === JSON.stringify(certExpiryMetrics("warn", 1234)),
+);
+check(
+  "cert-metrics: no line ever carries certificate material — the whole table is exactly the documented lines",
+  (() => {
+    const planted = [
+      ...Object.keys(CERT_LINE_TABLE).map((verdict) => certExpiryMetrics(verdict, 50)),
+      certExpiryMetrics("warn", -1),
+    ].flat();
+    const documented = [...Object.values(CERT_LINE_TABLE).flat(), ...certExpiryMetrics("warn", 0)];
+    return (
+      JSON.stringify(planted) === JSON.stringify(documented) &&
+      planted.every((l) => !l.includes("CN=") && !l.includes("BEGIN") && !l.includes("DEADBEEF") && !l.includes("/") && !l.includes(":"))
+    );
+  })(),
+);
+check(
+  "cert-metrics: index.ts feeds /metrics from the verdict the periodic revalidation maintains, with no new periodic timer and every existing line unchanged",
+  (() => {
+    const relayIndex = readFileSync(
+      fileURLToPath(new URL("../apps/relay/src/index.ts", import.meta.url)),
+      "utf8",
+    );
+    const callAt = relayIndex.indexOf("...certExpiryMetrics(");
+    const callSource = callAt === -1 ? "" : relayIndex.slice(callAt, callAt + 220);
+    return (
+      callAt > -1 &&
+      // fed by the maintained verdict variable and the already-extracted instant
+      callSource.includes("lastCertExpiryVerdict") &&
+      callSource.includes("CERT_EXPIRY.notAfter") &&
+      // appended after the last pre-existing line, which stays byte for byte
+      relayIndex.includes("# TYPE relay_rooms_active gauge") &&
+      relayIndex.indexOf("relay_rooms_active ${rooms.size}") < callAt &&
+      // the verdict variable is exactly the one the sweep assigns on transitions
+      relayIndex.includes("lastCertExpiryVerdict = nextCert.verdict") &&
       // observation only: no new periodic timer beyond the P2-067 ping sweep
       (relayIndex.match(/setInterval\(/g) ?? []).length === 1
     );

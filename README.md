@@ -888,6 +888,17 @@ are fail-closed (no invented zeros, no misattributed refusals), and no field
 or line ever carries a room id, connection id, address or IP. Runbook:
 [docs/RELAY-HOSTING.md](docs/RELAY-HOSTING.md).
 
+The certificate verdict also reaches the `/metrics` scrape surface (P2-294):
+with a cert pair configured, the Prometheus text format gains two gauge
+lines — `relay_cert_expiry_state` (0 = `use`, 1 = `warn`,
+2 = `refuse-expired`, 3 = `refuse-not-yet-valid`) and
+`relay_cert_expiry_seconds` (whole seconds to expiry, floored at zero) —
+computed per scrape from the verdict the relay already maintains on its
+liveness sweep, so metric-based alerting pages the operator days before
+phones fail their handshake. Fail-closed: no series at all in plain mode or
+without a measured verdict, every pre-existing line byte for byte unchanged,
+and no line carries certificate material.
+
 **Two-step pairing (P2-189)**: the phone needs an address before there is a
 pairing QR to scan, so the desktop pairing screen shows two labeled steps.
 Step one is the **app address** — `https://…` derived from the relay address
