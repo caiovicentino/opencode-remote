@@ -813,6 +813,19 @@ o handshake. Fail-closed: ausente em modo plain, ausente quando nada foi
 medido, e nunca material do certificado (só o veredito curto e uma contagem
 de segundos).
 
+O relay também divide seu único contador opaco `roomsRejected` por motivo
+(P2-293): o `/healthz` ganha os campos aditivos `roomsRejectedInvalidRoomId`
+e `roomsRejectedSocketRoomCap` e o `/metrics` ganha os contadores
+correspondentes `relay_rooms_rejected_invalid_room_id` /
+`relay_rooms_rejected_socket_room_cap` (`rooms_rejected_invalid_room_id` /
+`rooms_rejected_socket_room_cap` no JSON), para o operador do relay hospedado
+distinguir telefones legítimos batendo no teto de salas por conexão —
+comprar capacidade — de uma única origem malformada em laço — bloqueá-la. A
+soma nunca ultrapassa o total inalterado, as regras são fail-closed (nenhum
+zero inventado, nenhuma recusa atribuída ao motivo errado) e nenhum campo ou
+linha carrega id de sala, id de conexão, endereço ou IP. Runbook:
+[docs/RELAY-HOSTING.md](docs/RELAY-HOSTING.md).
+
 A imagem também entrega a PWA do celular (P2-188): ela define
 `RELAY_WEB_DIR=/app/apps/web/dist`, então a URL do relay no navegador do
 telefone já abre o app — o primeiro passo da jornada não exige dev server,

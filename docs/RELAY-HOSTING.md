@@ -631,11 +631,35 @@ changed. No other relay log line ever carries a client address.
 expose publicly (no room ids, no per-peer metadata):
 
 ```json
-{"ok":true,"version":"0.2.0","uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0}
+{"ok":true,"version":"0.2.0","uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0,"roomsRejectedInvalidRoomId":0,"roomsRejectedSocketRoomCap":0}
 ```
 
 The image's `HEALTHCHECK` polls it locally every 30s; load balancers should
 use the same path as the HTTP health check.
+
+### Why a room was refused: the rejection breakdown (P2-293)
+
+A single opaque `roomsRejected` total cannot answer the operator's actual
+question — are legitimate phones hitting the configured per-connection
+ceiling (buy capacity) or is one malformed origin in a loop hammering the
+relay (block it)? The probe therefore also carries the total split by the
+closed table of refusal reasons: `roomsRejectedInvalidRoomId` (the frame's
+room id failed the room-id grammar) and `roomsRejectedSocketRoomCap` (the
+socket already holds the maximum number of rooms). The two fields are
+additive and always sum to at most `roomsRejected` — each per-reason counter
+is fed at the exact statement that increments the total, so no refusal is
+counted twice or misattributed. The total keeps its name and meaning byte
+for byte.
+
+Fail-closed: a state that cannot produce a fully numeric counter set
+publishes nothing instead of an invented set of zeros, a counter that is
+negative, fractional or non-finite publishes as zero, and no field ever
+carries a room identifier, connection id, address or IP — the relay stays
+blind. The drain response keeps the fields, like every other one:
+
+```json
+{"ok":false,"version":"0.2.0","uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0,"roomsRejectedInvalidRoomId":0,"roomsRejectedSocketRoomCap":0,"draining":true}
+```
 
 ### Certificate verdict on the probe (P2-290)
 
@@ -655,7 +679,7 @@ count — never a subject, issuer, serial number, fingerprint, file path or
 host. The drain response keeps them, exactly like every other field:
 
 ```json
-{"ok":false,"version":"0.2.0","uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0,"certExpiryVerdict":"warn","certExpiryInS":86400,"draining":true}
+{"ok":false,"version":"0.2.0","uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0,"roomsRejectedInvalidRoomId":0,"roomsRejectedSocketRoomCap":0,"certExpiryVerdict":"warn","certExpiryInS":86400,"draining":true}
 ```
 
 ### During the drain: 503 on purpose (P2-145)
@@ -665,7 +689,7 @@ When the relay receives `SIGTERM` it enters a drain window (≤3s) and
 `draining:true` field — every pre-existing field keeps its name and meaning:
 
 ```json
-{"ok":false,"version":"0.2.0","uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0,"draining":true}
+{"ok":false,"version":"0.2.0","uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0,"roomsRejectedInvalidRoomId":0,"roomsRejectedSocketRoomCap":0,"draining":true}
 ```
 
 The 503 tells the load balancer to stop routing NEW daemons and phones to
@@ -691,6 +715,16 @@ once at boot. With a token configured, requests without a matching
 `Authorization: Bearer <token>` header receive a `401` with no body. Like
 `/healthz`, the payload is counter-only — the relay is a blind router and the
 metrics never carry plaintext or key material.
+
+The room-rejection total is also split by reason (P2-293): the Prometheus
+text format gains one counter per documented reason —
+`relay_rooms_rejected_invalid_room_id` (bad room id) and
+`relay_rooms_rejected_socket_room_cap` (per-connection room ceiling) — in the
+same naming grammar as the unchanged `relay_rooms_rejected` total, and the
+JSON payload gains the matching `rooms_rejected_invalid_room_id` /
+`rooms_rejected_socket_room_cap` fields next to the unchanged
+`rooms_rejected`. Same contract as the probe: the sum never exceeds the
+total, and no line or field carries a room id, address or IP.
 
 ## Pointing a daemon at the hosted relay
 

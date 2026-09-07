@@ -14,6 +14,7 @@ import {
   type WebContentEncoding,
 } from "./webencoding.js";
 import { conditionalVerdict, etagFor } from "./webcond.js";
+import { rejectionBreakdown } from "./rejectreasons.js";
 import type { CertExpiryVerdict } from "./certexpiry.js";
 
 /**
@@ -107,6 +108,24 @@ import type { CertExpiryVerdict } from "./certexpiry.js";
  * fingerprint, file path, host or any other certificate or key material —
  * only the short static verdict string and a whole-seconds count. The relay
  * stays blind here, as everywhere.
+ *
+ * P2-293: an optional `roomsRejectedBreakdown` getter lets the probe carry
+ * the per-reason split of the opaque `roomsRejected` total — the closed
+ * rejectreasons.ts table (today: `invalid-room-id`, `socket-room-cap`) — so
+ * the operator distinguishes legitimate phones hitting the configured
+ * ceiling from a malformed origin in a loop. The rules below are evaluated
+ * IN THIS ORDER (covered by tests):
+ *
+ *   1. A state without the getter adds nothing: the body keeps the exact
+ *      pre-P2-293 shape byte for byte, drain response included.
+ *   2. The getter's counters normalize through the pure rejectionBreakdown():
+ *      an absent, non-object or non-numeric-slot set adds nothing — and an
+ *      invented set of zeros is NEVER published. A non-empty normalized set
+ *      is assigned verbatim (table order, one field per documented reason).
+ *
+ * Boundary: no returned field ever carries a room identifier, connection
+ * id, address, IP or envelope content — only whole counter values keyed by
+ * the documented reason names.
  */
 
 /**
@@ -142,6 +161,11 @@ export interface HealthzState {
    *  (or when it answers undefined) the payload keeps the exact pre-P2-290
    *  shape. */
   certExpiry?: () => CertExpiryHealth | undefined;
+  /** P2-293: additive — the per-reason counters behind roomsRejected, keyed
+   *  by the closed rejectreasons.ts table. The pure rejectionBreakdown()
+   *  decides what (if anything) the payload publishes; a state without the
+   *  getter keeps the exact pre-P2-293 shape. */
+  roomsRejectedBreakdown?: () => unknown;
 }
 
 export interface HealthzPayload {
@@ -162,6 +186,12 @@ export interface HealthzPayload {
   /** Additive (P2-290): whole seconds until certificate expiry, floored at
    *  zero; present only alongside certExpiryVerdict with a finite deadline. */
   certExpiryInS?: number;
+  /** Additive (P2-293): the roomsRejected split by the closed
+   *  rejectreasons.ts table, present only when the state provides the
+   *  getter and the counters normalize to a non-empty set. Never carries a
+   *  room id, connection id, address or IP — whole counters only. */
+  roomsRejectedInvalidRoomId?: number;
+  roomsRejectedSocketRoomCap?: number;
 }
 
 export function healthzPayload(s: HealthzState, now = Date.now(), draining = false): HealthzPayload {
@@ -187,6 +217,15 @@ export function healthzPayload(s: HealthzState, now = Date.now(), draining = fal
     if (Number.isFinite(cert.expiresAtMs)) {
       base.certExpiryInS = Math.max(0, Math.floor((cert.expiresAtMs - now) / 1000));
     }
+  }
+  // P2-293: additive breakdown fields, following the header rules in order:
+  // a state without the getter adds nothing; the getter's counters go
+  // through the pure rejectionBreakdown(), whose empty result (absent,
+  // non-object or non-numeric slots — never invented zeros) adds nothing
+  // and whose non-empty result is exactly the documented fields in table
+  // order, byte-for-byte stable for identical inputs.
+  if (s.roomsRejectedBreakdown !== undefined) {
+    Object.assign(base, rejectionBreakdown(s.roomsRejectedBreakdown()));
   }
   // healthy body stays byte-identical to the pre-P2-145 probe; the additive
   // field only appears while draining (ok flips to false in the same case)
