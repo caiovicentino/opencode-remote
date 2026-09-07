@@ -204,8 +204,8 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
   // same channel as above (additive `disk` field on /__ocr/settings).
   const [disk, setDisk] = useState<{ state?: string; message?: string } | null>(null);
   // P2-287: browse-readiness verdict (site opening) — same channel as above
-  // (additive fields on /__ocr/settings); absent on legacy daemons, in which
-  // case only the documented evidence hatch below can produce the row.
+  // (additive fields on /__ocr/settings, mirrored by daemons since P2-287);
+  // older daemons send no field, the read simply yields no browse row.
   const [browse, setBrowse] = useState<{ state?: string; message?: string } | null>(null);
   const [nrMode, setNrMode] = useState<"daily" | "days" | "interval">("daily");
   const [nrDays, setNrDays] = useState<number[]>([1, 2, 3, 4, 5]);
@@ -382,9 +382,10 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
   // or malformed verdicts, so a legacy daemon yields the calm empty state.
   // The daemon's phrases render verbatim; the app never rewrites them and
   // never invents its own.
-  // P2-287: the browse verdict rides the same read (additive mirror; absent
-  // on daemons that predate the continuation) and turns into the site-browsing
-  // row — still no new route, no new request, no new poll.
+  // P2-287: the browse verdict rides the same read (additive mirror, live on
+  // daemons since P2-287) and turns into the site-browsing row — still no new
+  // route, no new request, no new poll. The real payload always wins over the
+  // evidence hatch below.
   const machineRows = readinessRows({
     opencode: {
       versionState: opencodeVersion?.state,

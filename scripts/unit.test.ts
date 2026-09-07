@@ -9702,17 +9702,21 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       !machineStateSrc.includes("node:"),
   );
   check(
-    "P2-287: apps/daemon stays untouched — the settings body keeps its exact shape and carries no browse mirror",
+    "P2-287: the daemon mirrors the browse verdict onto the settings read — appended after the disk anchor, same lazy re-probe policy",
     (() => {
       const src = readFileSync(new URL("../apps/daemon/src/index.ts", import.meta.url), "utf8");
       const settingsGet = src.split('"/__ocr/settings" && req.method === "GET"')[1] ?? "";
       const body = settingsGet.split("return {")[1]?.split("};")[0] ?? "";
       const handler = settingsGet.split('/__ocr/settings" && req.method === "PATCH"')[0] ?? "";
       return (
+        // Anchor fields keep their order (P2-218 lesson: append, never
+        // insert/rename) and the browse fields ride AFTER the disk anchor.
         body.includes("opencodeVersion: opencodeVersion") &&
         body.includes("disk: diskStatus()") &&
-        !body.includes("browse") &&
-        !handler.includes("maybeReprobeBrowse")
+        body.indexOf("disk: diskStatus()") < body.indexOf("browseState: browseCap.state") &&
+        body.includes("browseState: browseCap.state") &&
+        body.includes("browseMessage: browseCap.message") &&
+        handler.includes("await maybeReprobeBrowse()")
       );
     })(),
   );
@@ -23094,22 +23098,21 @@ check("P2-241: no new periodic timer was introduced by the handler", !dlBlock.in
 
   // revalidation appears ONLY at the described use points: the transcribe
   // refusal, the health route (doc-convert + version + browse) and the
-  // settings read (version) — never anywhere else. P2-284 adds the browse
-  // verdict on the health route as the fifth use point. P2-287 round 2
-  // briefly mirrored the browse verdict onto the settings read; the review
-  // rejected the apps/daemon scope breach, so the count is back to five.
+  // settings read (version + browse) — never anywhere else. P2-287 (scope
+  // amended by review) mirrors the browse verdict onto the settings read as
+  // the sixth use point, the same channel P2-215 used for disk.
   {
     const lines = code.split("\n");
     const callLines = lines.filter((l) =>
       /maybeReprobe(?:Transcription|DocConvert|OpencodeVersion|Browse)\(/.test(l) && !l.includes("function maybeReprobe"),
     );
     check(
-      "P2-250: revalidation fires at exactly five use points (transcribe refusal, health ×3, settings)",
-      callLines.length === 5 &&
+      "P2-250: revalidation fires at exactly six use points (transcribe refusal, health ×3, settings ×2)",
+      callLines.length === 6 &&
         callLines.filter((l) => l.includes("maybeReprobeTranscription")).length === 1 &&
         callLines.filter((l) => l.includes("maybeReprobeDocConvert")).length === 1 &&
         callLines.filter((l) => l.includes("maybeReprobeOpencodeVersion")).length === 2 &&
-        callLines.filter((l) => l.includes("maybeReprobeBrowse")).length === 1,
+        callLines.filter((l) => l.includes("maybeReprobeBrowse")).length === 2,
     );
     // each call sits inside a route handler region (tunnel proxy or handleApi),
     // never inside main()

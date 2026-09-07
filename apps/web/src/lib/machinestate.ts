@@ -9,11 +9,11 @@
  * object) — every field is read tolerantly: absent or ill-typed fields are
  * simply ignored and never become a row. The app feeds the module the
  * readiness verdicts already mirrored on the existing GET /__ocr/settings
- * read, so the Settings section makes no new request and starts no new poll;
- * fields the PWA channel does not carry yet (relay, binary, doc conversion,
- * browse) simply yield no row until a future channel delivers them — the
- * browse row ships first (P2-287) and stays silent on daemons that do not
- * report its verdict, exactly like relay and docs.
+ * read (version + disk since P2-213/P2-215, browse since P2-287's amended
+ * scope), so the Settings section makes no new request and starts no new
+ * poll; fields the settings channel does not carry yet (relay, binary, doc
+ * conversion) simply yield no row until a future channel delivers them, and
+ * a daemon too old to mirror the browse verdict renders no browse row.
  *
  * Severity has exactly three levels. The ordering is worst-first with a fixed,
  * documented key order as the tie-break, so the list never dances between two
