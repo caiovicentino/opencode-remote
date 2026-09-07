@@ -569,8 +569,16 @@ nenhum outro uso do app**; quando o local não pode ser confirmado, ela fica
 silenciosa. Com o local errado, um update já baixado **não é oferecido como
 reinício** (uma linha no `desktop.log` no lugar), porque o reinício não
 conseguiria aplicá-lo de qualquer forma. O Copy diagnostic em Configurações
-reporta o estado do veredito (nunca o caminho). Somente macOS; as outras
-plataformas não mudam. `OCR_DESKTOP_FORCE_DMG_VOLUME=1` no shell desktop força
+reporta o estado do veredito (nunca o caminho). Primeiro o macOS; desde a
+P2-299 o Windows também é classificado — a mesma linha calma aparece quando o
+executável roda de uma cópia temporária extraída de um zip baixado (pedindo
+para fechar o app, instalá-lo em uma pasta definitiva do computador e reabrir
+pela cópia instalada), de um compartilhamento de rede (pedindo para instalá-lo
+no disco da própria máquina) ou da pasta de downloads (reaproveitando o
+veredito de downloads já existente), enquanto Arquivos de Programas, Arquivos
+de Programas (x86), a área de Programas por usuário e qualquer outro caminho
+comum ficam calados; as outras plataformas não mudam.
+`OCR_DESKTOP_FORCE_DMG_VOLUME=1` no shell desktop força
 o aviso para screenshots determinísticos (hatch de teste, nunca em produção).
 
 ### Instalador do app desktop (Windows)

@@ -19422,8 +19422,9 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "P2-211: dev build → ok even under a mounted volume",
     v("darwin", "/Volumes/Setup/App.app/Contents/MacOS/App", false, false).state === "ok",
   );
-  // 2. non-macOS always ok (this task covers macOS only, documented in-module)
-  check("P2-211: Windows packaged → ok", v("win32", "C:\\Users\\u\\Downloads\\App.exe", false, true).state === "ok");
+  // 2. platforms outside the documented pair always ok (P2-299 below adds
+  // Windows on top; every other platform keeps today's ok)
+  check("P2-211: a platform outside the documented pair → ok", v("linux", "/opt/App/App", null, true).state === "ok");
   // 3. path under the volume mount point → dmg-volume
   check(
     "P2-211: path under the volume mount point → dmg-volume",
@@ -19566,6 +19567,172 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P2-211: the diagnostics bundle gains exactly one install-location line carrying the state only",
     (diagSrc.match(/install location:/g) ?? []).length === 1 && diagSrc.includes('d.installLocation ?? "unknown"'),
+  );
+}
+
+// --- P2-299: Windows install-location table (installloc.ts) --------------------
+
+{
+  // full Windows truth table, rules applied in the documented order
+  const v = (path: string | null) => installVerdict("win32", path as string, null, true);
+
+  // ok: the recognized install destinations stay quiet
+  check(
+    "P2-299: path under the system program folder → ok",
+    v("C:\\Program Files\\OpenCode Remote\\OpenCode Remote.exe").state === "ok",
+  );
+  check(
+    "P2-299: path under the x86 system program folder → ok",
+    v("C:\\Program Files (x86)\\OpenCode Remote\\OpenCode Remote.exe").state === "ok",
+  );
+  check(
+    "P2-299: path under the per-user program area → ok",
+    v("C:\\Users\\u\\AppData\\Local\\Programs\\opencode-remote\\OpenCode Remote.exe").state === "ok",
+  );
+  // unc-share: two leading backslashes win over everything else
+  check(
+    "P2-299: path starting with two backslashes → unc-share",
+    v("\\\\servidor\\compartilhamento\\OpenCode Remote.exe").state === "unc-share",
+  );
+  // zip-temp: the user temp directory (where Explorer unpacks a zip's exe)
+  check(
+    "P2-299: path under the user temp directory → zip-temp",
+    v("C:\\Users\\u\\AppData\\Local\\Temp\\Portable\\OpenCode Remote.exe").state === "zip-temp",
+  );
+  // downloads: the reused existing state
+  check(
+    "P2-299: path under the Downloads folder → downloads",
+    v("C:\\Users\\u\\Downloads\\OpenCode Remote.exe").state === "downloads",
+  );
+  // Windows paths are case-insensitive; the table follows
+  check(
+    "P2-299: the Windows table is case-insensitive",
+    v("C:\\USERS\\U\\APPDATA\\LOCAL\\TEMP\\x\\App.exe").state === "zip-temp" &&
+      v("c:\\users\\u\\downloads\\app.exe").state === "downloads",
+  );
+  // missing or non-textual entry → unknown
+  check("P2-299: absent path entry → unknown", v(null).state === "unknown");
+  check("P2-299: non-textual path entry → unknown", v(42 as unknown as string).state === "unknown");
+  check("P2-299: empty path entry → unknown", v("").state === "unknown");
+  // rule order: the network share beats Downloads (gravest case first) and
+  // the temp folder beats Downloads
+  check(
+    "P2-299: a UNC share inside a Downloads folder stays unc-share",
+    v("\\\\servidor\\compartilhamento\\Downloads\\App.exe").state === "unc-share",
+  );
+  check(
+    "P2-299: a temp extraction of a Downloads-like path stays zip-temp",
+    v("C:\\Users\\u\\AppData\\Local\\Temp\\Downloads\\App.exe").state === "zip-temp",
+  );
+  // each new state ships exactly its documented static phrase
+  check(
+    "P2-299: zip-temp ships exactly the documented phrase",
+    installMessage("zip-temp") ===
+      "o app está rodando de uma cópia temporária extraída de um arquivo compactado — feche-o, instale-o em uma pasta definitiva do computador e reabra pela cópia instalada",
+  );
+  check(
+    "P2-299: unc-share ships exactly the documented phrase",
+    installMessage("unc-share") ===
+      "o app está rodando de um compartilhamento de rede — feche-o, instale-o no disco do computador e reabra pela cópia instalada",
+  );
+  check(
+    "P2-299: the reused downloads state ships the same copy on Windows",
+    v("C:\\Users\\u\\Downloads\\App.exe").message === installMessage("downloads"),
+  );
+
+  // every Windows message: static, path-free, scheme-free, port-free, secret-free
+  const winVerdicts = [
+    v("C:\\Program Files\\App\\App.exe"),
+    v("C:\\Users\\u\\AppData\\Local\\Programs\\App\\App.exe"),
+    v("\\\\servidor\\compartilhamento\\App.exe"),
+    v("C:\\Users\\u\\AppData\\Local\\Temp\\App\\App.exe"),
+    v("C:\\Users\\u\\Downloads\\App.exe"),
+    v(null),
+  ];
+  check(
+    "P2-299: every Windows message is non-empty, path-free, scheme-free, port-free and secret-free",
+    winVerdicts.every(
+      (x) =>
+        x.message.length > 0 &&
+        !x.message.includes("/") &&
+        !x.message.includes("\\") &&
+        !x.message.includes("http") &&
+        !x.message.includes("://") &&
+        !x.message.includes("localhost") &&
+        !/\d{2,}/.test(x.message) &&
+        !x.message.includes("token") &&
+        !x.message.includes("senha"),
+    ),
+  );
+
+  // purity: the same input yields the identical verdict on every call
+  check(
+    "P2-299: the same Windows input yields the identical verdict twice",
+    (() => {
+      const a = installVerdict("win32", "C:\\Users\\u\\AppData\\Local\\Temp\\App.exe", null, true);
+      const b = installVerdict("win32", "C:\\Users\\u\\AppData\\Local\\Temp\\App.exe", null, true);
+      return a.state === b.state && a.message === b.message;
+    })(),
+  );
+
+  // the macOS table reproduces today's verdicts, verdict-by-verdict
+  check(
+    "P2-299: the macOS table is untouched (verdict-by-verdict)",
+    installVerdict("darwin", "/Volumes/Setup/App.app/x", false, true).state === "dmg-volume" &&
+      installVerdict("darwin", "/private/var/folders/T/AppTranslocation/g/d/App.app/x", false, true).state ===
+        "translocated" &&
+      installVerdict("darwin", "/Users/u/Downloads/App.app/x", false, true).state === "downloads" &&
+      installVerdict("darwin", "/Applications/App.app/x", true, true).state === "ok" &&
+      installVerdict("darwin", "/Applications/App.app/x", null, true).state === "unknown" &&
+      installVerdict("darwin", "/Applications/App.app/x", false, true).state === "unknown" &&
+      installVerdict("darwin", "/Volumes/Setup/App.app/x", false, false).state === "ok",
+  );
+  check(
+    "P2-299: platforms outside the documented pair stay ok exactly as before",
+    installVerdict("linux", "/opt/App/App", null, true).state === "ok" &&
+      installVerdict("freebsd", "\\\\share\\App.exe", null, true).state === "ok",
+  );
+
+  // module hygiene: installloc.ts stays pure (read from the REAL file)
+  const locSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "installloc.ts"), "utf8");
+  check(
+    "P2-299: installloc.ts stays pure — it never imports electron, node:fs or node:path",
+    !/from\s+["'](electron|node:fs|node:path|node:os)["']/.test(locSrc) &&
+      !/^\s*import\s+["'](electron|node:fs|node:path|node:os)/m.test(locSrc) &&
+      !locSrc.includes("require("),
+  );
+
+  // wiring: the shell feeds the verdict from the path it already holds at
+  // boot (process.execPath), computed exactly once — no new disk access, no
+  // new periodic timer anywhere in the boot block
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  check(
+    "P2-299: the Windows verdict rides the same single boot call, fed by the shell's own process.execPath",
+    (mainSrc.match(/installVerdict\(/g) ?? []).length === 1 &&
+      mainSrc.includes("installVerdict(process.platform, process.execPath, inApplicationsFolder, app.isPackaged)"),
+  );
+  check(
+    "P2-299: the boot verdict block gains no new disk access and no new timer",
+    (() => {
+      const bootAt = mainSrc.indexOf("bootInstallLocation = ");
+      const bootEnd = mainSrc.indexOf("log(`[desktop] install location:", bootAt);
+      const bootBlock = bootAt >= 0 && bootEnd > bootAt ? mainSrc.slice(bootAt, bootEnd) : "";
+      return (
+        bootBlock.length > 0 &&
+        bootBlock.includes("process.execPath") &&
+        !bootBlock.includes("readFile") &&
+        !bootBlock.includes("existsSync") &&
+        !bootBlock.includes("statSync") &&
+        !bootBlock.includes("tmpdir") &&
+        !bootBlock.includes("setInterval") &&
+        !bootBlock.includes("setTimeout")
+      );
+    })(),
+  );
+  check(
+    "P2-299: the three existing surfaces carry the Windows verdict unfiltered (no new surface, no state allowlist)",
+    mainSrc.includes("log(`[desktop] install location: ${bootInstallLocation.state}`)") &&
+      mainSrc.includes("installLocation: bootInstallLocation"),
   );
 }
 
