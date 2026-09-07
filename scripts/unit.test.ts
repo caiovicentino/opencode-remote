@@ -8801,6 +8801,169 @@ check("i18n: no empty strings in either locale", enKeys.every((k) => String((dic
 check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "olderMessages", "changesFor", "connTitle"].every((k) => String((dict.en as Record<string, string>)[k]).includes("{") && String((dict.pt as Record<string, string>)[k]).includes("{")));
 
 
+// --- P2-275: SettingsView literal-copy drift lock -------------------------------
+// Every Settings string must ride the en/pt dictionary — a literal phrase
+// written back into SettingsView.tsx reopens the half-English Settings screen
+// for pt users. The lock reads the REAL component source and fails when any
+// phrase that used to be literal reappears anywhere in the file.
+{
+  const settingsViewSource = readFileSync(new URL("../apps/web/src/components/SettingsView.tsx", import.meta.url), "utf8");
+  const bannedLiteralPhrases = [
+    // section titles + header
+    ">Settings</h1>",
+    ">About</h3>",
+    "app {APP_VERSION}",
+    ">Appearance</h3>",
+    "Push notifications</h3>",
+    "Share to agent</h3>",
+    "Skills (1-tap prompts)",
+    "Scheduled routines</h3>",
+    "Security log</h3>",
+    // machine card
+    'placeholder="machine name"',
+    ">Save</button>",
+    "Notifications\n",
+    // MCP + voice controls
+    ">local</option>",
+    ">remote</option>",
+    'aria-label="Remove"',
+    "Auto-detect",
+    "Language:{",
+    '"Português (Antonio)"',
+    '"English (Andrew)"',
+    '"Español (Alvaro)"',
+    // caption style
+    "Caption style (clips)",
+    "Font (e.g. Helvetica Bold)",
+    '"Size"',
+    "Primary color",
+    "Highlight color",
+    "Outline color",
+    "Bottom margin",
+    "Save style",
+    "caption style saved",
+    // appearance
+    "Theme:{",
+    ">System</option>",
+    ">Dark</option>",
+    ">Light</option>",
+    "Font size:{",
+    ">Small</option>",
+    ">Normal</option>",
+    ">Large</option>",
+    // push
+    "Send test notification",
+    "Sending…",
+    "Re-subscribe",
+    "no device subscribed",
+    "sent OK — check the phone",
+    "device(s) subscribed",
+    "Home Screen",
+    // share to agent
+    "share sheet offers",
+    "long-press the message field",
+    // skills
+    "label (e.g. Daily report)",
+    "prompt sent to the agent on tap",
+    "Add skill",
+    "skill added",
+    "skill rejected — label and prompt required",
+    ">Delete</button>",
+    // routines
+    "Every day</option>",
+    "Specific days</option>",
+    "Loop every N min",
+    "Schedule mode",
+    "Interval in minutes",
+    "runs immediately, then every N minutes",
+    "prompt for the agent (e.g. summarize crypto news and save a report)",
+    "Add routine",
+    "routine added",
+    "routine rejected — check fields",
+    "last error: ",
+    "last run: ok",
+    "never ran",
+    "every ${r.intervalMinutes}m",
+    "daily ${hm}",
+    '"Sun", "Mon", "Tue"',
+    '"S", "M", "T", "W"',
+    // paired devices
+    '?? "device"',
+    ">Revoke</button>",
+  ];
+  const drift = (src: string) => bannedLiteralPhrases.filter((p) => src.includes(p));
+  check(
+    "P2-275: SettingsView carries zero hardcoded settings phrases (all copy rides the dict)",
+    drift(settingsViewSource).length === 0,
+  );
+  // The lock is live, not vacuous: re-injecting ANY banned phrase into a copy
+  // of the real source must trip the detector — proven per phrase.
+  check(
+    "P2-275: the drift lock fails when any banned phrase is reintroduced",
+    bannedLiteralPhrases.every((p) => drift(`${settingsViewSource}\n// reintroduced: ${p}\n`).includes(p)),
+  );
+  // New settings keys resolve in BOTH locales — never the raw key, never "".
+  const settingsOnlyKeys = [
+    "aboutTitle", "aboutVersions", "save", "machineNamePlaceholder", "remove",
+    "mcpTypeLocal", "mcpTypeRemote", "voiceInLang", "voiceLangAuto", "voiceLangEn",
+    "voiceLangPt", "voiceLangEs", "voiceLangFr", "ttsVoicePt", "ttsVoiceEn", "ttsVoiceEs",
+    "captionStyleTitle", "captionFont", "captionFontSize", "captionPrimary",
+    "captionHighlight", "captionOutline", "captionMargin", "captionSave", "captionSaved",
+    "appearanceTitle", "themeLabel", "themeSystem", "themeDark", "themeLight",
+    "fontLabel", "fontSmall", "fontNormal", "fontLarge",
+    "pushTitle", "pushSendTest", "pushSending", "pushResubscribe", "pushSubscribed",
+    "pushNoDevices", "pushSentOk", "pushSubsCount",
+    "shareTitle", "shareAndroidLabel", "shareAndroidBody", "shareIosLabel", "shareIosBody",
+    "skillsTitle", "skillLabelPlaceholder", "skillPromptPlaceholder", "skillAdd",
+    "skillAdded", "skillRejected",
+    "routinesTitle", "routineEveryDay", "routineSpecificDays", "routineLoop",
+    "routineModeLabel", "routineIntervalLabel", "routineNamePlaceholder",
+    "routineIntervalHint", "routinePromptPlaceholder", "routineAdd", "routineAdded",
+    "routineRejected", "routineEvery", "routineDaily", "routineLastError",
+    "routineLastOk", "routineNeverRan",
+    "daySun", "dayMon", "dayTue", "dayWed", "dayThu", "dayFri", "daySat",
+    "dayLetter0", "dayLetter1", "dayLetter2", "dayLetter3", "dayLetter4", "dayLetter5", "dayLetter6",
+    "deviceFallback", "revoke", "securityLog",
+  ];
+  check(
+    "P2-275: every settings key resolves per locale (no raw-key fallback)",
+    (["en", "pt"] as const).every((lang) =>
+      settingsOnlyKeys.every((k) => {
+        const s = translate(lang, k);
+        return s !== k && s.trim() !== "";
+      }),
+    ),
+  );
+  // pt is real Portuguese of the same register as the rest of the app —
+  // spot-check the sections the task names, per P2-275's acceptance criteria.
+  check(
+    "P2-275: the named sections render pt-BR copy",
+    translate("pt", "aboutTitle") === "Sobre" &&
+      translate("pt", "captionStyleTitle") === "Estilo de legenda (clips)" &&
+      translate("pt", "captionSave") === "Salvar estilo" &&
+      translate("pt", "appearanceTitle") === "Aparência" &&
+      translate("pt", "pushTitle") === "Notificações push" &&
+      translate("pt", "shareTitle") === "Compartilhar com o agente" &&
+      translate("pt", "routinesTitle") === "Rotinas agendadas" &&
+      translate("pt", "routineAdded") === "rotina adicionada" &&
+      translate("pt", "routineRejected").includes("rotina recusada") &&
+      translate("pt", "securityLog") === "Registro de segurança",
+  );
+  check(
+    "P2-275: product names stay intact in both locales",
+    (["en", "pt"] as const).every((lang) =>
+      translate(lang, "mcp") === "MCP" && translate(lang, "autoMode") === "AutoMode",
+    ),
+  );
+  // The SettingsView really calls t() for the renamed sections (not just
+  // absent literals): the dict keys appear in the component source.
+  check(
+    "P2-275: SettingsView routes the renamed sections through t()",
+    ["aboutTitle", "captionStyleTitle", "appearanceTitle", "pushTitle", "shareTitle", "skillsTitle", "routinesTitle", "securityLog", "routineAdded", "routineRejected", "skillAdded", "skillRejected"].every((k) => settingsViewSource.includes(`t("${k}")`)),
+  );
+}
+
+
 // --- P2-118: connection screens resolve to ONE locale ---------------------------
 // The daemon-down banner, its recovery button and the neighboring pairing /
 // scanner copy must all come from the same dictionary, per app locale — the
