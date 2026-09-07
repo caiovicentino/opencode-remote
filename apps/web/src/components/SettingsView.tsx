@@ -149,6 +149,19 @@ export function applyTheme() {
   document.documentElement.style.fontSize = font === "small" ? "14px" : font === "large" ? "19px" : "16.5px";
 }
 
+/** P2-287: deterministic-evidence hatch (the P2-218 lesson, web edition) —
+ * `ocr.browseStateOverride` in localStorage forces the browse verdict for
+ * screenshots WITHOUT touching any network path. Fail-closed: only the four
+ * documented P2-284 states are honored, the real payload always wins, and no
+ * phrase is ever invented (the label alone carries the row). Documented in
+ * docs/troubleshooting.md beside the daemon hatches. */
+const BROWSE_STATES = new Set(["ready", "no-browser", "disabled", "unknown"]);
+
+function forcedBrowseState(): string | undefined {
+  const forced = localStorage.getItem("ocr.browseStateOverride") ?? "";
+  return BROWSE_STATES.has(forced) ? forced : undefined;
+}
+
 export default function SettingsView({ request, onBack, transport, getDiagnostics, onPairRemote, getRelaySetting, setRelayUrl, getWebAppUrl, setWebAppUrl, upstream }: Props) {
   const [devices, setDevices] = useState<Device[]>([]);
   const [name, setName] = useState("");
@@ -188,6 +201,10 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
   // P2-215: disk-space verdict for the volume hosting the daemon's state dir —
   // same channel as above (additive `disk` field on /__ocr/settings).
   const [disk, setDisk] = useState<{ state?: string; message?: string } | null>(null);
+  // P2-287: browse-readiness verdict (site opening) — same channel as above
+  // (additive fields on /__ocr/settings); absent on legacy daemons, in which
+  // case only the documented evidence hatch below can produce the row.
+  const [browse, setBrowse] = useState<{ state?: string; message?: string } | null>(null);
   const [nrMode, setNrMode] = useState<"daily" | "days" | "interval">("daily");
   const [nrDays, setNrDays] = useState<number[]>([1, 2, 3, 4, 5]);
   const [nrInterval, setNrInterval] = useState(60);
@@ -242,6 +259,12 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
         setDaemonVersion((s.body as { version?: string }).version ?? "");
         setOpencodeVersion((s.body as { opencodeVersion?: { state?: string; message?: string } }).opencodeVersion ?? null);
         setDisk((s.body as { disk?: { state?: string; message?: string } }).disk ?? null);
+        setBrowse((s.body as { browseState?: string; browseMessage?: string }).browseState !== undefined
+          ? {
+              state: (s.body as { browseState?: string }).browseState,
+              message: (s.body as { browseMessage?: string }).browseMessage,
+            }
+          : null);
       }
       const cs = await request("GET", "/__ocr/clip-style");
       if (cs.status === 200) setStyle((cs.body as Record<string, unknown>) ?? {});
@@ -357,6 +380,9 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
   // or malformed verdicts, so a legacy daemon yields the calm empty state.
   // The daemon's phrases render verbatim; the app never rewrites them and
   // never invents its own.
+  // P2-287: the browse verdict rides the same read (additive mirror; absent
+  // on daemons that predate the continuation) and turns into the site-browsing
+  // row — still no new route, no new request, no new poll.
   const machineRows = readinessRows({
     opencode: {
       versionState: opencodeVersion?.state,
@@ -364,6 +390,8 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
     },
     diskState: disk?.state,
     diskMessage: disk?.message,
+    browseState: browse?.state ?? forcedBrowseState(),
+    browseMessage: browse?.message,
   });
   const machineSummary = summarize(machineRows);
 

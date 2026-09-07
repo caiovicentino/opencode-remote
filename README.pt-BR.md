@@ -117,12 +117,12 @@ remoto, zero confiança**.
 - **Painel Estado da máquina** — Configurações → **Estado da máquina** reúne
   numa lista calma todos os vereditos de prontidão que a própria máquina
   informa: o elo remoto com o relay, o servidor do agente e a versão dele,
-  espaço em disco e conversão de documentos. O pior veredito primeiro, uma
-  linha por veredito com marcador de severidade e **a frase da própria
-  máquina, literal** — o app nunca a reescreve e nunca inventa outra.
-  Vereditos que o daemon conectado não informa simplesmente não aparecem
-  (estado vazio calmo), e nada no painel impede qualquer ação: ele descreve a
-  máquina que hospeda o daemon — nunca o celular
+  espaço em disco, conversão de documentos e navegação de sites. O pior
+  veredito primeiro, uma linha por veredito com marcador de severidade e **a
+  frase da própria máquina, literal** — o app nunca a reescreve e nunca inventa
+  outra. Vereditos que o daemon conectado não informa simplesmente não
+  aparecem (estado vazio calmo), e nada no painel impede qualquer ação: ele
+  descreve a máquina que hospeda o daemon — nunca o celular
 - **Arquivos** — envie do celular, dê preview de tudo, exporte a conversa
   em markdown; todo card de arquivo tem um botão ⧉ que copia o caminho
   completo do arquivo (Clipboard API com fallback execCommand)

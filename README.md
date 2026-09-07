@@ -133,12 +133,12 @@ private. That is the product: **local power, remote control, zero trust**.
   that forces the critical verdict for deterministic screenshots
 - **Machine state panel** — Settings → **Machine state** gathers in one calm
   list every readiness verdict the machine itself reports: the remote relay
-  link, the agent server and its version, disk space and document→PDF
-  conversion. Worst verdict first, one row per verdict with a severity marker
-  and **the machine's own phrase, verbatim** — the app never rewrites it and
-  never invents one. Verdicts the connected daemon does not report simply
-  don't appear (calm empty state), and nothing in the panel ever blocks: it
-  describes the machine hosting the daemon — never the phone
+  link, the agent server and its version, disk space, document→PDF
+  conversion and site browsing. Worst verdict first, one row per verdict with
+  a severity marker and **the machine's own phrase, verbatim** — the app never
+  rewrites it and never invents one. Verdicts the connected daemon does not
+  report simply don't appear (calm empty state), and nothing in the panel ever
+  blocks: it describes the machine hosting the daemon — never the phone
 - **Files** — upload from the phone, preview anything, export a conversation
   as markdown with one tap; every file card has a ⧉ button that copies the
   file's full path (Clipboard API with an execCommand fallback)
