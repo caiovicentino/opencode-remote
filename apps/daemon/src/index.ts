@@ -88,6 +88,8 @@ import { createRelayRetry } from "./relayretry.js";
 import { classifyRelayClose, effectiveRetryDelayMs, type RelayCloseKind } from "./relayclose.js";
 import { relayDialVerdict, type RelayDialKind } from "./relaydialerror.js";
 import { parseRelayUrl, redactRelayUrl } from "./relayurl.js";
+import { normalizeProxyEnv, relayProxyVerdict, type RelayProxyVerdict } from "./relayproxy.js";
+import { createRelayTunnelConnect } from "./relaytunnel.js";
 import { bodyLimit, isBodyLimitError, readLimitedBody, type BodyLimitError } from "./bodylimit.js";
 import { pairWindow, bootstrapDecision } from "./pairwindow.js";
 import { leaseVerdict, parseRunLease, RUN_LEASE_KILL_MESSAGE } from "./routinelease.js";
@@ -152,6 +154,16 @@ const RELAY_URL = process.env.RELAY_URL ?? "ws://127.0.0.1:8787";
 // unaffected because it does not ride the relay.
 const relayUrl = parseRelayUrl(RELAY_URL);
 const relayDisabled = relayUrl.problems.length > 0;
+// P2-303: the machine's proxy verdict for the relay dial, computed exactly
+// once at boot from the documented proxy variables (HTTPS_PROXY, HTTP_PROXY,
+// ALL_PROXY, NO_PROXY and the daemon's own OCR_RELAY_PROXY — the desktop
+// shell injects the owner's fixed choice there). "direct" keeps today's
+// one-argument dial byte-for-byte; "tunnel" dials through an HTTP CONNECT
+// tunnel built by relaytunnel.ts. The verdict's reason is static pt-BR copy;
+// the proxy address never reaches the log or the API surface.
+const relayProxy: RelayProxyVerdict = relayProxyVerdict(normalizeProxyEnv(process.env), RELAY_URL);
+const relayTunnelConnect =
+  relayProxy.state === "tunnel" ? createRelayTunnelConnect(relayProxy, relayUrl.secure) : null;
 // P2-180: the JSON body ceiling is resolved exactly once at boot. Fail-closed
 // like the RELAY_URL preflight above: an invalid OCR_MAX_BODY_BYTES never
 // falls back to the default — main() logs one line per problem and exits 1
@@ -3034,7 +3046,15 @@ function connectRelay() {
   // once at boot instead of repeating on every retry; nothing here schedules
   // a reconnect, so the backoff loop never starts.
   if (relayDisabled) return;
-  const ws = new WebSocket(RELAY_URL);
+  // P2-303: in tunnel mode the socket comes from an HTTP CONNECT tunnel
+  // through the machine's proxy (errors flow through the same ws `error`
+  // event, so relaydialerror.ts keeps triaging them); in direct mode the
+  // dial is exactly the one-argument call it has always been.
+  const ws = relayTunnelConnect
+    ? new WebSocket(RELAY_URL, {
+        createConnection: relayTunnelConnect as unknown as typeof import("node:net").createConnection,
+      })
+    : new WebSocket(RELAY_URL);
   relaySocket = ws;
 
     ws.on("open", () => {
@@ -3535,11 +3555,18 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
           : { ...relayRetry.snapshot(), lastClose: relayLastClose, lastDial: relayLastDial },
         // P2-139: additive boot-validation verdict of RELAY_URL; relayConnected
         // and relayRetry above keep their exact shape. Userinfo (if any) is
-        // redacted before the URL reaches the API surface.
+        // redacted before the URL reaches the API surface. P2-303 adds the
+        // machine-proxy verdict of the relay dial inside this same block:
+        // relayProxyState is "direct" (today's path) or "tunnel" (HTTP
+        // CONNECT through the machine's proxy) and relayProxyReason is a
+        // static pt-BR phrase authored by relayproxy.ts — the proxy address
+        // never rides.
         relay: {
           url: redactRelayUrl(RELAY_URL),
           ok: !relayDisabled,
           reason: relayDisabled ? relayUrl.problems.join(" ") : null,
+          relayProxyState: relayProxy.state,
+          relayProxyReason: relayProxy.reason,
         },
         // P2-190: additive bootstrap pairing-window verdict — true while a
         // virgin daemon (empty allowlist) would still auto-pair the first
