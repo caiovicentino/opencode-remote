@@ -117,7 +117,9 @@ export function routineDue(
   // Rule 1 — fail-closed input validation; refuse can never become fire.
   if (!Number.isFinite(nowMs)) return refuse();
   if (typeof routine !== "object" || routine === null || Array.isArray(routine)) return refuse();
-  const facts = routine as Record<string, unknown>;
+  // Rule 1 validates every field at runtime, so the local view is the raw
+  // record — the typed facade above only shapes what well-formed callers pass.
+  const facts = routine as unknown as Record<string, unknown>;
   const hour = facts.hour;
   const minute = facts.minute;
   if (typeof hour !== "number" || !Number.isInteger(hour) || hour < 0 || hour > 23) return refuse();
