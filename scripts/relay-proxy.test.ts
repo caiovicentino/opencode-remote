@@ -10,6 +10,11 @@
  */
 import net from "node:net";
 import http from "node:http";
+import tls from "node:tls";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { WebSocket, WebSocketServer } from "ws";
 import {
@@ -68,13 +73,32 @@ check(
 const byOwn = relayProxyVerdict({ OCR_RELAY_PROXY: "10.0.0.1:3128", HTTPS_PROXY: "10.0.0.2:3128" }, "wss://relay.example:8787");
 check("precedence: OCR_RELAY_PROXY beats the scheme variables", byOwn.state === "tunnel" && byOwn.host === "10.0.0.1" && byOwn.port === 3128);
 const byHttps = relayProxyVerdict({ HTTPS_PROXY: "10.0.0.2:3128", ALL_PROXY: "10.0.0.3:3128" }, "wss://relay.example:8787");
-check("precedence: wss relay picks HTTPS_PROXY over ALL_PROXY", byHttps.state === "tunnel" && byHttps.host === "10.0.0.2");
-const byHttp = relayProxyVerdict({ HTTP_PROXY: "10.0.0.2:3128", ALL_PROXY: "10.0.0.3:3128" }, PUBLIC_RELAY);
+check("precedence: wss relay picks HTTPS_PROXY over ALL_PROXY", byHttps.state === "tunnel" && byHttps.host === "10.0.0.2");const byHttp = relayProxyVerdict({ HTTP_PROXY: "10.0.0.2:3128", ALL_PROXY: "10.0.0.3:3128" }, PUBLIC_RELAY);
 check("precedence: ws relay picks HTTP_PROXY over ALL_PROXY", byHttp.state === "tunnel" && byHttp.host === "10.0.0.2");
 const byAll = relayProxyVerdict({ ALL_PROXY: "http://10.0.0.3:3128" }, PUBLIC_RELAY);
 check("precedence: ALL_PROXY is the fallback, scheme parsed away", byAll.state === "tunnel" && byAll.host === "10.0.0.3" && byAll.port === 3128);
 const httpsOnlyOnWs = relayProxyVerdict({ HTTPS_PROXY: "10.0.0.2:3128" }, PUBLIC_RELAY);
 check("precedence: a ws relay ignores HTTPS_PROXY (scheme mismatch)", httpsOnlyOnWs.state === "direct" && httpsOnlyOnWs.reason === RELAY_PROXY_REASONS.none);
+
+// --- 3b. the https:// proxy scheme is honored, never silently downgraded ------
+const tlsProxyVerdict = relayProxyVerdict({ OCR_RELAY_PROXY: "https://proxy.corp:3128" }, "wss://relay.example:8787");
+check(
+  "tls-proxy: an https:// address yields a tunnel verdict with secure=true and the TLS phrase",
+  tlsProxyVerdict.state === "tunnel" && tlsProxyVerdict.secure === true && tlsProxyVerdict.reason === RELAY_PROXY_REASONS.tunnelTls,
+);
+const plainProxyVerdict = relayProxyVerdict({ OCR_RELAY_PROXY: "http://proxy.corp:3128" }, "wss://relay.example:8787");
+check(
+  "tls-proxy: an http:// address yields a tunnel verdict with secure=false",
+  plainProxyVerdict.state === "tunnel" && plainProxyVerdict.secure === false && plainProxyVerdict.reason === RELAY_PROXY_REASONS.tunnel,
+);
+const bareProxyVerdict = relayProxyVerdict({ OCR_RELAY_PROXY: "proxy.corp" }, "wss://relay.example:8787");
+check("tls-proxy: a bare address defaults to the http (cleartext proxy) leg", bareProxyVerdict.state === "tunnel" && bareProxyVerdict.secure === false);
+
+// --- 3c. an empty uppercase variable never shadows a nonempty lowercase twin ---
+const shadowed = relayProxyVerdict(normalizeProxyEnv({ HTTPS_PROXY: "", https_proxy: "10.0.0.2:3128" }), "wss://relay.example:8787");
+check("normalize: HTTPS_PROXY=\"\" does not shadow a nonempty https_proxy", shadowed.state === "tunnel" && shadowed.host === "10.0.0.2");
+const upperWins = relayProxyVerdict(normalizeProxyEnv({ HTTPS_PROXY: "10.0.0.1:3128", https_proxy: "10.0.0.2:3128" }), "wss://relay.example:8787");
+check("normalize: a nonempty uppercase value still wins over the lowercase twin", upperWins.state === "tunnel" && upperWins.host === "10.0.0.1");
 
 // --- 4. loopback is always direct ---------------------------------------------
 for (const url of ["ws://localhost:8787", "ws://127.0.0.1:8787", "wss://[::1]:8787"]) {
@@ -218,6 +242,54 @@ await (async () => {
   );
   refused.ws.terminate();
   rejecting.close();
+
+  // the https:// proxy leg is really TLS: a self-signed proxy certificate is
+  // generated at test time and pinned via ca, so the dial only succeeds when
+  // the factory honors the scheme and TLS-connects to the proxy BEFORE the
+  // CONNECT (a plaintext CONNECT can never complete a TLS handshake)
+  const certDir = mkdtempSync(join(tmpdir(), "ocr-relayproxy-"));
+  execFileSync(
+    "openssl",
+    [
+      "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+      "-keyout", join(certDir, "key.pem"),
+      "-out", join(certDir, "cert.pem"),
+      "-days", "1",
+      "-subj", "/CN=127.0.0.1",
+      "-addext", "subjectAltName = IP:127.0.0.1",
+    ],
+    { stdio: ["ignore", "ignore", "ignore"] },
+  );
+  const certPem = readFileSync(join(certDir, "cert.pem"));
+  let sawTlsConnect = false;
+  const tlsProxy = tls.createServer({ key: readFileSync(join(certDir, "key.pem")), cert: certPem }, (client) => {
+    client.once("data", (chunk) => {
+      sawTlsConnect = chunk.toString("utf8").startsWith(`CONNECT relay.test:${relayPort} `);
+      client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+      const upstream = net.connect(relayPort, "127.0.0.1");
+      client.pipe(upstream);
+      upstream.pipe(client);
+      upstream.on("error", () => client.destroy());
+    });
+  });
+  const tlsProxyPort = await listen(tlsProxy);
+  const tlsVerdict = relayProxyVerdict({ OCR_RELAY_PROXY: `https://127.0.0.1:${tlsProxyPort}` }, `ws://relay.test:${relayPort}`);
+  check("tls-proxy: the https:// verdict is tunnel with secure=true", tlsVerdict.state === "tunnel" && tlsVerdict.secure === true);
+  const tlsDial = dial(
+    `ws://relay.test:${relayPort}`,
+    tlsVerdict.state === "tunnel" ? { createConnection: createRelayTunnelConnect(tlsVerdict, false, { proxyTls: { ca: [certPem] } }) } : undefined,
+  );
+  let tlsOpened = false;
+  try {
+    await tlsDial.opened;
+    tlsOpened = true;
+  } catch {
+    // recorded by the checks below
+  }
+  check("tls-proxy: the dial completes over the TLS proxy leg", tlsOpened);
+  check("tls-proxy: the TLS proxy saw the CONNECT authority-form request", sawTlsConnect);
+  tlsDial.ws.close();
+  tlsProxy.close();
 
   // identity: with no proxy variables the dial is the one-argument call
   const directVerdict = relayProxyVerdict({}, loop(relayPort));

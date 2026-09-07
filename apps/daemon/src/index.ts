@@ -3051,9 +3051,7 @@ function connectRelay() {
   // event, so relaydialerror.ts keeps triaging them); in direct mode the
   // dial is exactly the one-argument call it has always been.
   const ws = relayTunnelConnect
-    ? new WebSocket(RELAY_URL, {
-        createConnection: relayTunnelConnect as unknown as typeof import("node:net").createConnection,
-      })
+    ? new WebSocket(RELAY_URL, { createConnection: relayTunnelConnect })
     : new WebSocket(RELAY_URL);
   relaySocket = ws;
 

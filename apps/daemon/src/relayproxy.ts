@@ -48,6 +48,9 @@ export interface RelayProxyTunnel {
   host: string;
   /** Proxy port for the HTTP CONNECT request (1–65535). */
   port: number;
+  /** True when the proxy address is https:// — the CONNECT leg itself is
+   * tunneled over TLS to the proxy (honored, never downgraded). */
+  secure: boolean;
   /** Short static pt-BR phrase for /api/health — never the address. */
   reason: string;
 }
@@ -81,17 +84,26 @@ export const RELAY_PROXY_REASONS = {
   scheme: "proxy com esquema fora da lista http e https — conexão direta, sem proxy",
   unparseable: "endereço de proxy ilegível no ambiente — conexão direta, sem proxy",
   tunnel: "o relay atravessa o proxy desta máquina via túnel HTTP CONNECT",
+  tunnelTls: "o relay atravessa o proxy desta máquina por TLS via túnel HTTP CONNECT",
 } as const;
 
 /**
  * Normalize a raw process-like environment into the documented variable set:
- * the documented uppercase names win over their lowercase twins. Pure — the
- * caller passes whatever it read; nothing here touches process.env itself.
+ * the documented uppercase names win over their lowercase twins — but an
+ * EMPTY uppercase value never shadows a nonempty lowercase one (an exported
+ * `HTTPS_PROXY=""` is an absence, not a choice). Pure — the caller passes
+ * whatever it read; nothing here touches process.env itself.
  */
 export function normalizeProxyEnv(env: unknown): RelayProxyEnv {
   if (typeof env !== "object" || env === null) return {};
   const rec = env as Record<string, unknown>;
-  const pick = (name: string): unknown => rec[name] ?? rec[name.toLowerCase()];
+  const blank = (v: unknown) => typeof v === "string" && v.trim() === "";
+  const pick = (name: string): unknown => {
+    const upper = rec[name];
+    const lower = rec[name.toLowerCase()];
+    if (blank(upper) && !blank(lower)) return lower;
+    return upper ?? lower;
+  };
   return {
     HTTPS_PROXY: pick("HTTPS_PROXY"),
     HTTP_PROXY: pick("HTTP_PROXY"),
@@ -104,12 +116,14 @@ export function normalizeProxyEnv(env: unknown): RelayProxyEnv {
 /**
  * Parse one proxy address against the documented vocabulary (http/https only
  * — the CONNECT tunnel is an HTTP dial). Returns the credential-free proxy
- * endpoint, or null when the address is discarded: a scheme outside the
- * list, embedded credentials, path/query/fragment material, a bad port or
- * anything that does not parse as host[:port]. Pure string work.
+ * endpoint WITH its scheme (a bare address defaults to http — the scheme
+ * decides whether the CONNECT leg is tunneled over TLS), or null when the
+ * address is discarded: a scheme outside the list, embedded credentials,
+ * path/query/fragment material, a bad port or anything that does not parse
+ * as host[:port]. Pure string work.
  */
 export function parseRelayProxyAddress(raw: unknown):
-  | { ok: true; host: string; port: number }
+  | { ok: true; host: string; port: number; scheme: "http" | "https" }
   | { ok: false; why: "credential" | "scheme" | "unparseable" }
   | null {
   if (typeof raw !== "string") return null;
@@ -117,8 +131,9 @@ export function parseRelayProxyAddress(raw: unknown):
   if (value === "" || /\s/.test(value)) return null;
   const schemeMatch = /^([a-zA-Z][a-zA-Z0-9+.-]*):\/\//.exec(value);
   let rest = value;
+  let scheme: "http" | "https" = "http";
   if (schemeMatch) {
-    const scheme = (schemeMatch[1] ?? "").toLowerCase();
+    scheme = (schemeMatch[1] ?? "").toLowerCase() as "http" | "https";
     if (scheme !== "http" && scheme !== "https") return { ok: false, why: "scheme" };
     rest = value.slice(schemeMatch[0].length);
   }
@@ -149,7 +164,7 @@ export function parseRelayProxyAddress(raw: unknown):
   // split can disambiguate — fail closed instead of guessing.
   if (host === "" || (!bracketed && host.includes(":"))) return { ok: false, why: "unparseable" };
   if (!Number.isInteger(port) || port < 1 || port > 65535) return { ok: false, why: "unparseable" };
-  return { ok: true, host, port };
+  return { ok: true, host, port, scheme };
 }
 
 /** True when the relay host:port is covered by a NO_PROXY entry: "*" matches
@@ -242,6 +257,16 @@ export function relayProxyVerdict(env: unknown, relayUrl: string): RelayProxyVer
     return { state: "direct", reason };
   }
 
-  // Rule 7 — the remaining valid address becomes the CONNECT tunnel.
-  return { state: "tunnel", host: parsed.host, port: parsed.port, reason: RELAY_PROXY_REASONS.tunnel };
+  // Rule 7 — the remaining valid address becomes the CONNECT tunnel. An
+  // https:// proxy is HONORED, not downgraded: the CONNECT leg rides a TLS
+  // session to the proxy (see relaytunnel.ts), so the owner's explicit
+  // TLS-to-proxy request never degrades to cleartext on a corporate network.
+  const proxySecure = parsed.scheme === "https";
+  return {
+    state: "tunnel",
+    host: parsed.host,
+    port: parsed.port,
+    secure: proxySecure,
+    reason: proxySecure ? RELAY_PROXY_REASONS.tunnelTls : RELAY_PROXY_REASONS.tunnel,
+  };
 }

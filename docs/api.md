@@ -76,7 +76,8 @@ Since P2-303 the `relay` object also carries an additive machine-proxy
 verdict of the dial: `relayProxyState` is `direct` (today's path — no proxy
 variables, a loopback relay, a `NO_PROXY` match or a discarded address) or
 `tunnel` (the dial crosses the machine's http/https proxy via an HTTP
-CONNECT tunnel), and `relayProxyReason` is one static pt-BR phrase for the
+CONNECT tunnel — over a TLS session when the proxy address is `https://`),
+and `relayProxyReason` is one static pt-BR phrase for the
 state. The proxy address itself never rides — the reason is address-free
 copy, and the tunnel's host/port stay inside the daemon.
 

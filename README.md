@@ -1171,14 +1171,19 @@ address turns the relay dial into an HTTP CONNECT tunnel through the proxy,
 while `NO_PROXY` matches and loopback relays always dial directly, and an
 address that is non-textual, carries embedded credentials, uses another
 scheme (socks, for instance) or does not parse is discarded — failing closed
-to today's direct dial, never to a guessed proxy. A refused tunnel flows
-through the same P2-260 dial-error classification, so the reconnect backoff
+to today's direct dial, never to a guessed proxy. An `https://` proxy
+address is honored, never downgraded: the CONNECT itself rides a TLS session
+to the proxy with standard certificate validation. A refused or silent
+proxy flows through the same P2-260 dial-error classification (a proxy that
+never answers the CONNECT is destroyed after a fixed budget and classified
+as timed-out), so the reconnect backoff
 is untouched. The verdict shows up as additive `relayProxyState`
 (`direct`/`tunnel`) and `relayProxyReason` (one static pt-BR phrase) inside
 `/api/health`'s `relay` object — never the proxy address. The desktop shell
 injects the owner's fixed proxy choice (see **Machine proxy** below) into the
-sidecar as `OCR_RELAY_PROXY`, so the child dials through the same proxy the
-shell uses.
+sidecar as `OCR_RELAY_PROXY` when it is an http/https address, so the child
+dials through the same proxy the shell uses — a socks choice stays on the
+shell session, and the relay dial dials direct instead.
 
 ## CLI
 
