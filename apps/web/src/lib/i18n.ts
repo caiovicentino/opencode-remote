@@ -527,6 +527,9 @@ export const dict = {
     // P2-287: the site-opening readiness row — short label only, no emoji,
     // no path, no port, no address; the row's phrase comes from the daemon.
     machineLabelBrowse: "Web browsing",
+    // P2-297: the voice-transcription readiness row — same discipline; the
+    // phrase comes from the daemon (P2-296 payload), never from here.
+    machineLabelVoice: "Voice transcription",
     // P2-275: the remaining Settings sections ride the dict — SettingsView no
     // longer carries literal JSX copy. Product names (MCP, AutoMode) stay.
     aboutTitle: "About",
@@ -1064,6 +1067,9 @@ export const dict = {
     // P2-287: linha de prontidão de navegação — só o rótulo curto, sem emoji,
     // sem caminho, sem porta, sem endereço; a frase da linha vem da máquina.
     machineLabelBrowse: "Navegação de sites",
+    // P2-297: linha de prontidão da transcrição de voz — mesma disciplina; a
+    // frase vem da máquina (payload da P2-296), nunca daqui.
+    machineLabelVoice: "Transcrição de voz",
     // P2-275: seções restantes das Configurações no dicionário — o SettingsView
     // não tem mais copy literal no JSX. Nomes de produto (MCP, AutoMode) ficam.
     aboutTitle: "Sobre",

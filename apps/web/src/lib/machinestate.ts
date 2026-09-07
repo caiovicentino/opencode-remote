@@ -4,17 +4,18 @@
  * partial payload can never crash the view or invent a row the machine never
  * spoke.
  *
- * The input is the daemon's /api/health readiness block (versionState,
- * diskState, docConvertState, browseState, the relay object, the opencode
+ * The input is the daemon's readiness block (versionState, diskState,
+ * docConvertState, browseState, voiceState, the relay object, the opencode
  * object) — every field is read tolerantly: absent or ill-typed fields are
  * simply ignored and never become a row. The app feeds the module the
- * readiness verdicts already mirrored on the existing GET /__ocr/settings
- * read (version + disk, P2-213/P2-215), so the Settings section makes no new
- * request and starts no new poll; fields the settings channel does not carry
- * yet (relay, binary, doc conversion, browse) simply yield no row until a
- * future channel delivers them — the browse row (P2-287) ships first and
- * stays silent on daemons that do not report its verdict, exactly like relay
- * and docs.
+ * readiness verdicts mirrored on the existing GET /__ocr/settings read —
+ * since P2-292/P2-296 the settings mirror carries every capability (relay,
+ * the agent binary pair, doc conversion, browse, voice) and, since P2-297,
+ * the view wires ALL of them from the same mount read, so the section still
+ * makes no new request, no new route, no new poll and no new timer. A
+ * verdict the connected daemon does not report simply yields no row (the
+ * calm empty state covers it, mirroring the P2-213/P2-215 fail-open
+ * discipline).
  *
  * Severity has exactly three levels. The ordering is worst-first with a fixed,
  * documented key order as the tie-break, so the list never dances between two
@@ -31,11 +32,21 @@
  *                             that was never measured is worse than admitting
  *                             we do not know)
  * It is the documented exception to the "unknown stays silent" rule below:
- * a browse verdict of "unknown" IS a row, with attention severity. */
+ * a browse verdict of "unknown" IS a row, with attention severity.
+ *
+ * The voice row (P2-297) maps the three documented P2-296 verdicts by THIS
+ * closed table, written here so tests and reviews share one truth:
+ *   ready          → ok
+ *   missing-model  → attention    (the engine is there, the model is not)
+ *   missing-binary → unavailable  (the machine cannot hear at all)
+ * Every other value — absent, non-textual or out-of-table — yields no row:
+ * the general silence rule holds, and navigation keeps being the ONLY
+ * documented exception where a verdict outside the measured table
+ * ("unknown") becomes a row. */
 
 export type MachineSeverity = "ok" | "attention" | "unavailable";
 
-export type MachineRowKey = "relay" | "agent" | "version" | "disk" | "docs" | "browse";
+export type MachineRowKey = "relay" | "agent" | "version" | "disk" | "docs" | "browse" | "voice";
 
 export interface MachineReadinessRow {
   /** Stable row key — doubles as the documented fixed tie-break order. */
@@ -49,7 +60,9 @@ export interface MachineReadinessRow {
 }
 
 /** Fixed row order: the module's build order AND the tie-break for rows of
- * the same severity — documented here so tests and reviews share one truth. */
+ * the same severity — documented here so tests and reviews share one truth.
+ * P2-297: new capability keys are APPENDED at the end (voice last) so no
+ * existing row ever changes position. */
 export const MACHINE_ROW_ORDER: readonly MachineRowKey[] = [
   "relay",
   "agent",
@@ -57,6 +70,7 @@ export const MACHINE_ROW_ORDER: readonly MachineRowKey[] = [
   "disk",
   "docs",
   "browse",
+  "voice",
 ];
 
 /** Severity → the shared .status-dot chrome class (apps/web/src/index.css).
@@ -72,6 +86,16 @@ export const MACHINE_SEVERITY_DOT: Record<MachineSeverity, string> = {
  * documented evidence hatch reuses one truth instead of duplicating it. */
 export const BROWSE_STATES: readonly string[] = ["ready", "no-browser", "disabled", "unknown"];
 
+/** The documented measured table for the document-conversion verdict (also
+ * the one owner of the view's docs evidence hatch — P2-297). */
+export const DOC_STATES: readonly string[] = ["complete", "partial", "unavailable"];
+
+/** The three documented P2-296 voice-transcription verdicts the voice row
+ * accepts — the executable form of the closed table in the header, exported
+ * so the view's documented evidence hatch reuses one truth instead of
+ * duplicating it (same discipline as BROWSE_STATES, P2-297). */
+export const VOICE_STATES: readonly string[] = ["ready", "missing-binary", "missing-model"];
+
 const SEVERITY_RANK: Record<MachineSeverity, number> = { ok: 0, attention: 1, unavailable: 2 };
 
 /** i18n key of the short label per row (P2-118: the view resolves it). */
@@ -82,6 +106,7 @@ const LABEL_KEYS: Record<MachineRowKey, string> = {
   disk: "machineLabelDisk",
   docs: "machineLabelDocs",
   browse: "machineLabelBrowse",
+  voice: "machineLabelVoice",
 };
 
 /** Tolerant read of an object-typed field: only a plain object passes. */
@@ -156,7 +181,7 @@ export function readinessRows(health: unknown): MachineReadinessRow[] {
 
   // docs — document→PDF conversion readiness.
   const docState = asString(body.docConvertState);
-  if (docState === "complete" || docState === "partial" || docState === "unavailable") {
+  if (DOC_STATES.includes(docState)) {
     candidates.push(
       row(
         "docs",
@@ -178,6 +203,22 @@ export function readinessRows(health: unknown): MachineReadinessRow[] {
         "browse",
         browseState === "ready" ? "ok" : browseState === "no-browser" ? "unavailable" : "attention",
         asString(body.browseMessage),
+      ),
+    );
+  }
+
+  // voice — speech-to-text readiness (P2-296 payload fields, P2-297 row).
+  // Only the three documented verdicts become a row, each with exactly the
+  // severity of the closed table in the header; absent, non-textual or
+  // out-of-table values yield no row — the general silence rule, with
+  // navigation remaining the only documented "unknown" exception.
+  const voiceState = asString(body.voiceState);
+  if (VOICE_STATES.includes(voiceState)) {
+    candidates.push(
+      row(
+        "voice",
+        voiceState === "ready" ? "ok" : voiceState === "missing-model" ? "attention" : "unavailable",
+        asString(body.voiceMessage),
       ),
     );
   }
