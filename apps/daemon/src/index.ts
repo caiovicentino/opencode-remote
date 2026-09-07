@@ -1008,11 +1008,24 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
         // P2-288: additive mirror of the /api/health verdicts — same names,
         // same values. The pure settingsmirror.ts decides which fields are
         // safe to carry; every existing field keeps its exact name and order.
+        // P2-292: the relay and agent verdicts ride this channel too — the
+        // relay object exactly as the health route answers it (url included);
+        // the pure mirror strips the address deterministically, so only
+        // ok/reason and binaryFound/binarySource can ever reach the response.
         ...settingsMirror({
           docConvertState: docConvert.state,
           docConvertMessage: docConvert.message,
           browseState: browseCap.state,
           browseMessage: browseCap.message,
+          relay: {
+            url: redactRelayUrl(RELAY_URL),
+            ok: !relayDisabled,
+            reason: relayDisabled ? relayUrl.problems.join(" ") : null,
+          },
+          opencode: {
+            binaryFound: binaryPick.path !== null,
+            binarySource: binaryPick.source,
+          },
         }),
       },
     };

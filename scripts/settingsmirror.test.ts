@@ -200,6 +200,216 @@ const BROWSE = {
   );
 }
 
+// --- P2-292: the relay and agent mirrorings — complete table -----------------
+{
+  // Fixtures copied as the daemon authors them: the relay phrase is the
+  // static pt-BR boot-validation wording (no address in the clean case) and
+  // the agent pair is the P2-149 binary verdict, booleans included.
+  const RELAY_PHRASE =
+    "RELAY_URL points at a host that cannot be reached — refusing to dial the relay (fail-closed)";
+  const RELAY_OK = { ok: true, reason: null };
+  const RELAY_DOWN = { ok: false, reason: RELAY_PHRASE };
+  const AGENT_PATH = { binaryFound: true, binarySource: "path" };
+  const AGENT_KNOWN = { binaryFound: true, binarySource: "known" };
+  const AGENT_MISSING = { binaryFound: false, binarySource: null };
+
+  // rule 1 — an absent or non-object capability entry never becomes a field
+  // (and never takes the other capabilities down with it).
+  check(
+    "P2-292 rule 1: a relay/opencode entry that is absent or not an object never becomes a field",
+    json(settingsMirror({})) === "{}" &&
+      json(settingsMirror({ relay: "wss://relay.example.com:8792/room" })) === "{}" &&
+      json(settingsMirror({ relay: 42 })) === "{}" &&
+      json(settingsMirror({ relay: [] })) === "{}" &&
+      json(settingsMirror({ relay: null })) === "{}" &&
+      json(settingsMirror({ opencode: "warp" })) === "{}" &&
+      json(settingsMirror({ opencode: 42 })) === "{}" &&
+      json(settingsMirror({ relay: 42, docConvertState: "complete", docConvertMessage: DOC.complete })) ===
+        json({ docConvertState: "complete", docConvertMessage: DOC.complete }),
+  );
+  check(
+    "P2-292 rule 1: a non-textual phrase member never becomes a field",
+    json(settingsMirror({ relay: { ok: true, reason: 42 } })) === "{}" &&
+      json(settingsMirror({ relay: { ok: false, reason: 42 } })) === "{}" &&
+      json(settingsMirror({ relay: { ok: true } })) === "{}" &&
+      json(settingsMirror({ opencode: { binaryFound: true, binarySource: 42 } })) === "{}" &&
+      json(settingsMirror({ opencode: { binaryFound: true } })) === "{}",
+  );
+
+  // rule 2 — verdicts outside the documented tables yield no field.
+  check(
+    "P2-292 rule 2: a relay verdict outside the documented table yields no field",
+    [ "true", 1, 0, null, { yes: true }, [] ].every(
+      (v) => json(settingsMirror({ relay: { ok: v, reason: RELAY_PHRASE } })) === "{}",
+    ),
+  );
+  check(
+    "P2-292 rule 2: an agent verdict outside the documented table yields no field",
+    [ "true", 1, 0, null, {} ].every(
+      (v) => json(settingsMirror({ opencode: { binaryFound: v, binarySource: "path" } })) === "{}",
+    ) &&
+      json(settingsMirror({ opencode: { binaryFound: true, binarySource: "warp" } })) === "{}" &&
+      json(settingsMirror({ opencode: { binaryFound: false, binarySource: "/usr/local/bin/opencode" } })) === "{}",
+  );
+
+  // rule 3 — a never-measured capability stays silent instead of announcing
+  // readiness (fail-closed): no state member, no field, ever.
+  check(
+    "P2-292 rule 3: a never-measured relay or agent yields no field instead of one announcing readiness",
+    json(settingsMirror({ relay: { reason: null } })) === "{}" &&
+      json(settingsMirror({ relay: { reason: RELAY_PHRASE } })) === "{}" &&
+      json(settingsMirror({ opencode: { binarySource: "path" } })) === "{}" &&
+      json(settingsMirror({ opencode: { binarySource: null } })) === "{}",
+  );
+
+  // rule 4 — every documented verdict becomes exactly state + phrase,
+  // verbatim, with the same names and values /api/health publishes.
+  check(
+    "P2-292 rule 4: each documented relay verdict becomes exactly state + phrase",
+    json(settingsMirror({ relay: { url: "wss://relay.example.com:8792/room", ...RELAY_OK } })) === json({ relay: RELAY_OK }) &&
+      json(settingsMirror({ relay: RELAY_DOWN })) === json({ relay: RELAY_DOWN }),
+  );
+  check(
+    "P2-292 rule 4: each documented agent verdict becomes exactly state + phrase",
+    json(settingsMirror({ opencode: AGENT_PATH })) === json({ opencode: AGENT_PATH }) &&
+      json(settingsMirror({ opencode: AGENT_KNOWN })) === json({ opencode: AGENT_KNOWN }) &&
+      json(settingsMirror({ opencode: AGENT_MISSING })) === json({ opencode: AGENT_MISSING }),
+  );
+
+  // The four capabilities together: the P2-288 fields keep their exact names,
+  // values and order, and the two new pairs append after them.
+  const four = settingsMirror({
+    docConvertState: "complete",
+    docConvertMessage: DOC.complete,
+    browseState: "ready",
+    browseMessage: BROWSE.ready,
+    relay: RELAY_DOWN,
+    opencode: AGENT_PATH,
+  });
+  check(
+    "P2-292: the four capabilities coexist and the P2-288 mirroring loses no field",
+    json(four) ===
+      json({
+        docConvertState: "complete",
+        docConvertMessage: DOC.complete,
+        browseState: "ready",
+        browseMessage: BROWSE.ready,
+        relay: RELAY_DOWN,
+        opencode: AGENT_PATH,
+      }) &&
+      Object.keys(four).join(",") ===
+        "docConvertState,docConvertMessage,browseState,browseMessage,relay,opencode",
+  );
+
+  // Rule order proven: a measured relay and an out-of-table agent (and the
+  // mirror image of that case) coexist — one silent capability never takes
+  // the other down.
+  const orderRelay = settingsMirror({ relay: RELAY_OK, opencode: { binaryFound: "true", binarySource: "path" } });
+  const orderAgent = settingsMirror({ relay: { ok: 1, reason: RELAY_PHRASE }, opencode: AGENT_KNOWN });
+  check(
+    "P2-292 rule order: a measured relay and an out-of-table agent coexist (and vice versa)",
+    json(orderRelay) === json({ relay: RELAY_OK }) && json(orderAgent) === json({ opencode: AGENT_KNOWN }),
+  );
+
+  // Privacy boundary proven against a complete relay address in the input:
+  // the url (with host, port, path and credential) never rides the output.
+  const withAddress = settingsMirror({
+    relay: { url: "wss://user:token@relay.example.com:8792/room", ...RELAY_DOWN },
+    opencode: AGENT_MISSING,
+  });
+  const flat: string[] = [];
+  const collect = (v: unknown): void => {
+    if (v === null || v === undefined) return;
+    if (typeof v === "object") for (const x of Object.values(v as Record<string, unknown>)) collect(x);
+    else flat.push(String(v));
+  };
+  collect(withAddress);
+  check(
+    "P2-292 privacy: an input carrying a complete relay address yields no address, host, port, path or secret",
+    flat.length > 0 &&
+      flat.every(
+        (v) =>
+          !v.includes("://") &&
+          !v.includes("/") &&
+          !v.includes("relay.example.com") &&
+          !v.includes("8792") &&
+          !v.includes("room") &&
+          !v.includes("user") &&
+          !v.includes("token") &&
+          !v.includes("\\") &&
+          !v.includes("localhost") &&
+          !v.includes("127.0.0.1"),
+      ) &&
+      json(withAddress) === json({ relay: RELAY_DOWN, opencode: AGENT_MISSING }),
+  );
+
+  // rule 5 — the same input yields the identical result on two calls,
+  // nested objects included.
+  const fullSnap = {
+    docConvertState: "partial",
+    docConvertMessage: DOC.partial,
+    browseState: "no-browser",
+    browseMessage: BROWSE.noBrowser,
+    relay: { url: "ws://127.0.0.1:8787", ...RELAY_DOWN },
+    opencode: AGENT_PATH,
+  };
+  check("P2-292 rule 5: the same input yields the identical result on two calls", json(settingsMirror(fullSnap)) === json(settingsMirror(fullSnap)));
+}
+
+// --- P2-292: the real sources — wiring, purity and the untouched P2-288 ------
+{
+  const mirrorSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "settingsmirror.ts"), "utf8");
+  const mirrorCode = mirrorSrc
+    .split("\n")
+    .filter((l) => !l.trim().startsWith("//"))
+    .join("\n");
+  check(
+    "P2-292 purity: settingsmirror.ts still imports no node:fs, node:http, node:child_process or fetch",
+    !/^import\b/m.test(mirrorCode) &&
+      !mirrorCode.includes("node:fs") &&
+      !mirrorCode.includes("node:http") &&
+      !mirrorCode.includes("node:child_process") &&
+      !mirrorCode.includes("fetch") &&
+      !mirrorSrc.includes("require("),
+  );
+
+  const indexSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  const handlerAt = indexSrc.indexOf('req.path === "/__ocr/settings" && req.method === "GET"');
+  const patchAt = indexSrc.indexOf('req.path === "/__ocr/settings" && req.method === "PATCH"');
+  const handler = handlerAt >= 0 && patchAt > handlerAt ? indexSrc.slice(handlerAt, patchAt) : "";
+  check(
+    "P2-292 wiring: the additive relay and agent fields leave the module in the settings GET handler",
+    handler.includes("...settingsMirror({") &&
+      handler.indexOf("docConvertState: docConvert.state") < handler.indexOf("relay: {") &&
+      handler.indexOf("relay: {") < handler.indexOf("opencode: {") &&
+      handler.includes("ok: !relayDisabled") &&
+      handler.includes("reason: relayDisabled ? relayUrl.problems.join(\" \") : null") &&
+      handler.includes("binaryFound: binaryPick.path !== null") &&
+      handler.includes("binarySource: binaryPick.source"),
+  );
+  check(
+    "P2-292 wiring: no existing settings field is renamed, removed or repositioned",
+    handler.indexOf("...readSettings()") < handler.indexOf("version: VERSION") &&
+      handler.indexOf("version: VERSION") < handler.indexOf("opencodeVersion: opencodeVersion") &&
+      handler.indexOf("opencodeVersion: opencodeVersion") < handler.indexOf("disk: diskStatus()") &&
+      handler.indexOf("disk: diskStatus()") < handler.indexOf("...settingsMirror({") &&
+      handler.indexOf("...settingsMirror({") < handler.indexOf("relay: {") &&
+      handler.indexOf("relay: {") < handler.indexOf("opencode: {"),
+  );
+  check(
+    "P2-292 wiring: the lazy revalidation is still called at the same point, same readiness policy",
+    handler.indexOf("maybeReprobeOpencodeVersion();") < handler.indexOf("maybeReprobeDocConvert();") &&
+      handler.indexOf("maybeReprobeDocConvert();") < handler.indexOf("await maybeReprobeBrowse();") &&
+      handler.indexOf("await maybeReprobeBrowse();") < handler.indexOf("...settingsMirror({") &&
+      indexSrc.includes("readinessRefreshPlan(") &&
+      indexSrc.includes("parseReadinessKnobs(process.env)"),
+  );
+  check(
+    "P2-292 wiring: no new periodic timer — the handler has none and the module keeps exactly the five pre-existing ones",
+    !/setInterval|setTimeout/.test(handler) && (indexSrc.match(/setInterval\(/g) || []).length === 5,
+  );
+}
+
 if (failures > 0) {
   console.error(`SETTINGS MIRROR TESTS FAILED: ${failures}`);
   process.exit(1);

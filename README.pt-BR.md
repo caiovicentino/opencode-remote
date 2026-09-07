@@ -157,9 +157,10 @@ remoto, zero confiança**.
   (`browseState` / `browseMessage` / `browseCheckedAt`) se sabe navegar, antes
   de você pedir; o painel **Estado da máquina** das Configurações renderiza
   esse veredito na linha "Navegação de sites" (verde/âmbar/vermelho) pelo
-  canal `GET /__ocr/settings` que a tela já lê (P2-287/P2-288) — as linhas de
-  relay e de agente são as continuações registradas que ainda não viajam
-  nesse canal. Instalar o navegador do Playwright é opcional, e quando ele
+  canal `GET /__ocr/settings` que a tela já lê (P2-287/P2-288) — e desde a
+  P2-292 as linhas de relay e de agente também viajam nesse mesmo canal, sem
+  nenhuma linha nova além dessas duas pendente. Instalar o navegador do
+  Playwright é opcional, e quando ele
   falta o agente responde com uma frase curta em português em vez de um erro
   cru em inglês
 - **Handoff** — continue a sessão exata no Mac (ícone de laptop no header do chat)
