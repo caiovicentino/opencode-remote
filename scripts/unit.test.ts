@@ -9702,7 +9702,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       !machineStateSrc.includes("node:"),
   );
   check(
-    "P2-287: apps/daemon stays untouched — the settings body keeps its exact shape and carries no browse mirror",
+    "P2-287: apps/daemon keeps the settings body shape — version + disk intact, and since P2-288 the readiness mirror rides the channel",
     (() => {
       const src = readFileSync(new URL("../apps/daemon/src/index.ts", import.meta.url), "utf8");
       const settingsGet = src.split('"/__ocr/settings" && req.method === "GET"')[1] ?? "";
@@ -9711,8 +9711,8 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       return (
         body.includes("opencodeVersion: opencodeVersion") &&
         body.includes("disk: diskStatus()") &&
-        !body.includes("browse") &&
-        !handler.includes("maybeReprobeBrowse")
+        body.includes("...settingsMirror({") &&
+        handler.includes("maybeReprobeBrowse")
       );
     })(),
   );
@@ -17255,9 +17255,10 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
   check(
     "P2-213: the existing /__ocr/settings read mirrors the verdict — no new route",
-    // P2-215 grew the same object additively (`disk: diskStatus()`), so the
-    // assertion matches the mirror prefix, not the exact closing brace.
-    /body: \{ \.\.\.readSettings\(\), version: VERSION, opencodeVersion: opencodeVersion,/.test(indexSrc),
+    // P2-215 grew the same object additively (`disk: diskStatus()`) and P2-288
+    // reformatted it multi-line appending the readiness mirror, so the
+    // assertion matches the mirror prefix and field order, not the brace.
+    /body: \{\s*\.\.\.readSettings\(\),\s*version: VERSION,\s*opencodeVersion: opencodeVersion,/.test(indexSrc),
   );
 
   // the Settings machine section shows the phrase only for too-old and NEVER
@@ -23094,24 +23095,22 @@ check("P2-241: no new periodic timer was introduced by the handler", !dlBlock.in
 
   // revalidation appears ONLY at the described use points: the transcribe
   // refusal, the health route (doc-convert + version + browse) and the
-  // settings read (version) — never anywhere else. P2-284 adds the browse
-  // verdict on the health route as the fifth use point. P2-287 twice briefly
-  // mirrored the browse verdict onto the settings read; the review rejected
-  // the apps/daemon scope breach both times (the spec contradiction is
-  // escalated to a planner/strategist round, not resolved inside this UI
-  // task), so the count is back to five.
+  // settings read. P2-284 adds the browse verdict on the health route as the
+  // fifth use point. P2-288 is the sanctioned continuation: the settings read
+  // now revalidates doc-convert and browse at the same point it answers them,
+  // so the count is seven.
   {
     const lines = code.split("\n");
     const callLines = lines.filter((l) =>
       /maybeReprobe(?:Transcription|DocConvert|OpencodeVersion|Browse)\(/.test(l) && !l.includes("function maybeReprobe"),
     );
     check(
-      "P2-250: revalidation fires at exactly five use points (transcribe refusal, health ×3, settings)",
-      callLines.length === 5 &&
+      "P2-250: revalidation fires at exactly seven use points (transcribe refusal, health ×3, settings ×3)",
+      callLines.length === 7 &&
         callLines.filter((l) => l.includes("maybeReprobeTranscription")).length === 1 &&
-        callLines.filter((l) => l.includes("maybeReprobeDocConvert")).length === 1 &&
+        callLines.filter((l) => l.includes("maybeReprobeDocConvert")).length === 2 &&
         callLines.filter((l) => l.includes("maybeReprobeOpencodeVersion")).length === 2 &&
-        callLines.filter((l) => l.includes("maybeReprobeBrowse")).length === 1,
+        callLines.filter((l) => l.includes("maybeReprobeBrowse")).length === 2,
     );
     // each call sits inside a route handler region (tunnel proxy or handleApi),
     // never inside main()
@@ -26256,6 +26255,229 @@ check("P2-241: no new periodic timer was introduced by the handler", !dlBlock.in
     threw = true;
   }
   check("P2-285: robustness — no input shape ever throws", !threw);
+}
+
+// --- P2-288: the settings channel mirrors the doc-conversion and browse verdicts --
+// settingsMirror() decides which readiness fields ride GET /__ocr/settings:
+// rule 1 — absent input, non-object input or a snapshot with any present
+// non-textual field yields the empty set; rule 2 — an out-of-table verdict
+// yields no field for that capability; rule 3 — a never-measured capability
+// yields no field instead of one announcing readiness (fail-closed); rule 4 —
+// the machine's phrase travels verbatim; rule 5 — same input, same result.
+import { settingsMirror } from "../apps/daemon/src/settingsmirror";
+{
+  // The daemon's own phrases, exactly as /api/health serves them (doccap.ts /
+  // browsecap.ts constants, copied as fixtures — the mirror only passes them
+  // through verbatim, it never authors phrases).
+  const DOC = {
+    complete: "Conversão de documentos em PDF pronta neste computador.",
+    partial:
+      "A conversão de documentos neste computador cobre apenas alguns formatos — instale o LibreOffice para converter qualquer documento em PDF.",
+    unavailable:
+      "Este computador ainda não converte documentos em PDF — peça a quem gerencia a máquina para instalar o LibreOffice.",
+  };
+  const BROWSE = {
+    ready: "Navegação de sites pronta neste computador.",
+    noBrowser:
+      "Este computador ainda não tem navegador para abrir sites — instalar o navegador do Playwright é opcional e fica a cargo de quem gerencia a máquina.",
+    disabled:
+      "A navegação de sites está desligada neste computador — quem gerencia a máquina é quem decide quando ligá-la.",
+  };
+  const json = (v: unknown) => JSON.stringify(v);
+
+  // Rule 1 — absent and non-object inputs yield the empty set.
+  check(
+    "P2-288: missing input yields the empty set",
+    json(settingsMirror()) === "{}" && json(settingsMirror(undefined)) === "{}" && json(settingsMirror(null)) === "{}",
+  );
+  check(
+    "P2-288: non-object input yields the empty set",
+    ["doc snapshot", 42, true, [], ["ready"]].every((v) => json(settingsMirror(v)) === "{}"),
+  );
+
+  // Rule 1 — a present non-textual field breaks the snapshot contract and
+  // yields the empty set (a malformed field never becomes a field).
+  check(
+    "P2-288: a non-textual field never becomes a field — the set stays empty",
+    json(settingsMirror({ docConvertState: 42, docConvertMessage: DOC.complete })) === "{}" &&
+      json(settingsMirror({ browseState: true, browseMessage: BROWSE.ready })) === "{}" &&
+      json(settingsMirror({ docConvertState: "complete", docConvertMessage: null })) === "{}" &&
+      json(settingsMirror({ docConvertState: ["complete"], browseState: "ready", browseMessage: BROWSE.ready })) === "{}",
+  );
+
+  // Rule 2 — a verdict outside the documented table yields no field.
+  const outOfTable = (state: unknown) =>
+    json(settingsMirror({ docConvertState: state, docConvertMessage: DOC.complete })) === "{}" &&
+    json(settingsMirror({ browseState: state, browseMessage: BROWSE.ready })) === "{}";
+  check(
+    "P2-288: verdicts outside the documented table yield no field",
+    ["warp-speed", "", "Ready", "no_browser", "complete "].every(outOfTable),
+  );
+
+  // Rule 3 — a never-measured capability stays silent (fail-closed).
+  check(
+    "P2-288: the never-measured verdict (browse unknown) yields no field instead of one announcing readiness",
+    json(settingsMirror({ browseState: "unknown", browseMessage: "Não deu para verificar a navegação de sites agora — o resto do app segue disponível do mesmo jeito." })) === "{}" &&
+      json(settingsMirror({ docConvertState: "complete", docConvertMessage: DOC.complete })) ===
+        json({ docConvertState: "complete", docConvertMessage: DOC.complete }),
+  );
+  check(
+    "P2-288: an absent capability yields no field (the other one is unaffected)",
+    json(settingsMirror({ docConvertState: "partial", docConvertMessage: DOC.partial })) ===
+      json({ docConvertState: "partial", docConvertMessage: DOC.partial }) &&
+      json(settingsMirror({ browseState: "disabled", browseMessage: BROWSE.disabled })) ===
+        json({ browseState: "disabled", browseMessage: BROWSE.disabled }),
+  );
+
+  // A measured capability becomes exactly state + phrase, verbatim.
+  check(
+    "P2-288: a measured capability becomes exactly state + phrase, verbatim",
+    json(settingsMirror({ docConvertState: "unavailable", docConvertMessage: DOC.unavailable })) ===
+      json({ docConvertState: "unavailable", docConvertMessage: DOC.unavailable }) &&
+      json(settingsMirror({ browseState: "no-browser", browseMessage: BROWSE.noBrowser })) ===
+        json({ browseState: "no-browser", browseMessage: BROWSE.noBrowser }),
+  );
+
+  // Both capabilities together become the four fields, in the fixed order.
+  const both = settingsMirror({
+    docConvertState: "complete",
+    docConvertMessage: DOC.complete,
+    browseState: "ready",
+    browseMessage: BROWSE.ready,
+  });
+  check(
+    "P2-288: both measured capabilities become exactly the four additive fields",
+    json(both) ===
+      json({
+        docConvertState: "complete",
+        docConvertMessage: DOC.complete,
+        browseState: "ready",
+        browseMessage: BROWSE.ready,
+      }) &&
+      Object.keys(both).join(",") === "docConvertState,docConvertMessage,browseState,browseMessage",
+  );
+
+  // Rule order proven: one capability measured and the other out of the table
+  // at the same time — the measured one still rides the channel.
+  const orderA = settingsMirror({
+    docConvertState: "complete",
+    docConvertMessage: DOC.complete,
+    browseState: "warp-speed",
+    browseMessage: BROWSE.ready,
+  });
+  const orderB = settingsMirror({
+    docConvertState: "warp-speed",
+    docConvertMessage: DOC.complete,
+    browseState: "disabled",
+    browseMessage: BROWSE.disabled,
+  });
+  check(
+    "P2-288: rule order — one measured capability and one out-of-table verdict coexist",
+    json(orderA) === json({ docConvertState: "complete", docConvertMessage: DOC.complete }) &&
+      json(orderB) === json({ browseState: "disabled", browseMessage: BROWSE.disabled }),
+  );
+
+  // Deterministic: the same input twice, the identical result (keys included).
+  const snap = {
+    docConvertState: "partial",
+    docConvertMessage: DOC.partial,
+    browseState: "no-browser",
+    browseMessage: BROWSE.noBrowser,
+  };
+  check("P2-288: the same input yields the identical result on two calls", json(settingsMirror(snap)) === json(settingsMirror(snap)));
+
+  // Hygiene: no returned value ever carries a path, volume, port, address,
+  // raw env variable or secret.
+  const vals = (m: ReturnType<typeof settingsMirror>): string[] => Object.values(m) as string[];
+  const allValues: string[] = [
+    ...vals(settingsMirror({ docConvertState: "complete", docConvertMessage: DOC.complete })),
+    ...vals(settingsMirror({ docConvertState: "partial", docConvertMessage: DOC.partial })),
+    ...vals(settingsMirror({ docConvertState: "unavailable", docConvertMessage: DOC.unavailable })),
+    ...vals(settingsMirror({ browseState: "ready", browseMessage: BROWSE.ready })),
+    ...vals(settingsMirror({ browseState: "no-browser", browseMessage: BROWSE.noBrowser })),
+    ...vals(settingsMirror({ browseState: "disabled", browseMessage: BROWSE.disabled })),
+    ...vals(settingsMirror(snap)),
+  ];
+  check(
+    "P2-288: no returned value contains a path, port, address, env variable or secret",
+    allValues.every(
+      (v) =>
+        !v.includes("://") &&
+        !v.includes("/") &&
+        !v.includes("\\") &&
+        !v.includes("127.0.0.1") &&
+        !v.includes(":8792") &&
+        !v.includes("localhost") &&
+        !v.includes("$") &&
+        !v.includes("Bearer") &&
+        !v.includes("token"),
+    ),
+  );
+
+  // Robustness: no input shape ever throws.
+  let mirrorThrew = false;
+  try {
+    for (const input of [NaN, new Date(), () => 1, { docConvertState: {} }, { browseMessage: Symbol("x") }, { docConvertState: "complete" }]) {
+      settingsMirror(input);
+    }
+  } catch {
+    mirrorThrew = true;
+  }
+  check("P2-288: robustness — no input shape ever throws", !mirrorThrew);
+
+  // Real-repo assertions on the daemon wiring: the GET /__ocr/settings
+  // handler sources the four additive fields from the module, keeps every
+  // existing field in place, re-probes both capabilities at that same point
+  // under the existing readiness policy and introduces no periodic timer.
+  const indexSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  const handlerAt = indexSrc.indexOf('req.path === "/__ocr/settings" && req.method === "GET"');
+  const patchAt = indexSrc.indexOf('req.path === "/__ocr/settings" && req.method === "PATCH"');
+  const handler = handlerAt >= 0 && patchAt > handlerAt ? indexSrc.slice(handlerAt, patchAt) : "";
+  check(
+    "P2-288: wiring — the settings GET handler mirrors the four fields from settingsMirror",
+    handler.includes("...settingsMirror({") &&
+      handler.includes("docConvertState: docConvert.state") &&
+      handler.includes("docConvertMessage: docConvert.message") &&
+      handler.includes("browseState: browseCap.state") &&
+      handler.includes("browseMessage: browseCap.message"),
+  );
+  check(
+    "P2-288: wiring — no existing settings field is renamed, removed or repositioned",
+    handler.indexOf("...readSettings()") < handler.indexOf("version: VERSION") &&
+      handler.indexOf("version: VERSION") < handler.indexOf("opencodeVersion: opencodeVersion") &&
+      handler.indexOf("opencodeVersion: opencodeVersion") < handler.indexOf("disk: diskStatus()") &&
+      handler.indexOf("disk: diskStatus()") < handler.indexOf("...settingsMirror({"),
+  );
+  check(
+    "P2-288: wiring — both capabilities are lazily revalidated at the same point, same readiness policy",
+    handler.indexOf("maybeReprobeOpencodeVersion();") < handler.indexOf("maybeReprobeDocConvert();") &&
+      handler.includes("await maybeReprobeBrowse();") &&
+      handler.indexOf("await maybeReprobeBrowse();") < handler.indexOf("...settingsMirror({") &&
+      indexSrc.includes("readinessRefreshPlan(") &&
+      indexSrc.includes("parseReadinessKnobs(process.env)"),
+  );
+  check(
+    "P2-288: wiring — no new periodic timer: the handler has none and the module keeps exactly the five pre-existing ones",
+    !/setInterval|setTimeout/.test(handler) && (indexSrc.match(/setInterval\(/g) || []).length === 5,
+  );
+
+  // Real-repo assertion on the module itself: pure, no I/O imports at all.
+  const mirrorSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "settingsmirror.ts"), "utf8");
+  check(
+    "P2-288: purity — settingsmirror.ts imports no node:fs, node:http, node:child_process, fetch or anything else",
+    !/^import\b/m.test(mirrorSrc) &&
+      !/^import[^\n]*(node:fs|node:http|node:child_process|fetch)/m.test(mirrorSrc) &&
+      !mirrorSrc.includes("require("),
+  );
+  check(
+    "P2-288: purity — the header documents the rule order and the privacy boundary",
+    mirrorSrc.includes("RULE ORDER CONTRACT") && mirrorSrc.includes("PRIVACY BOUNDARY"),
+  );
+  check(
+    "P2-288: the documented tables are exactly the measured /api/health verdicts",
+    mirrorSrc.includes('const DOC_STATES: readonly string[] = ["complete", "partial", "unavailable"];') &&
+      mirrorSrc.includes('const BROWSE_STATES: readonly string[] = ["ready", "no-browser", "disabled"];'),
+  );
 }
 
 if (failures > 0) {

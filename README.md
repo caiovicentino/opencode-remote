@@ -149,7 +149,9 @@ private. That is the product: **local power, remote control, zero trust**.
   native textutil+cupsfilter fallback covers doc/docx/rtf/html/csv without
   preserving formatting. The machine's readiness is announced by `GET /api/health`
   (`docConvertState` / `docConvertMessage` / `docConvertExts`, probed once at
-  boot) before you send anything;   with no converter installed the tool answers
+  boot) and mirrored onto the `GET /__ocr/settings` channel the Settings
+  screen already reads (P2-288) before you send anything; with no converter
+  installed the tool answers
   with one short sentence asking for LibreOffice — never a raw English error —
   and the original file is never modified
 - **Lazy capability revalidation (P2-250)** — the machine-capability verdicts
@@ -171,9 +173,9 @@ private. That is the product: **local power, remote control, zero trust**.
   `GET /api/health` (`browseState` / `browseMessage` / `browseCheckedAt`)
   whether it knows how to open sites, before you ask; the Settings
   **Machine state** panel renders that verdict as its red/amber/green
-  "Web browsing" row whenever the connected daemon reports it on the
-  settings channel the screen already reads (P2-287; mirroring the verdict
-  onto that channel is the registered continuation task). Installing the
+  "Web browsing" row from the `GET /__ocr/settings` channel the screen
+  already reads (P2-287/P2-288) — the relay and agent lines are the
+  registered continuations that do not ride that channel yet. Installing the
   Playwright browser is optional, and when it is missing the agent answers
   with one short pt-BR sentence instead of a raw English error
 - **Handoff** — continue the exact session on your Mac (laptop icon in the

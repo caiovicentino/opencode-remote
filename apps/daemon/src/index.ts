@@ -50,6 +50,7 @@ import { appendAudit, readAuditTail } from "./auditlog.js";
 import { capMessagePage, parsePageLimit, shouldPaginateMessages, type HistoryRowLike } from "./paginate.js";
 import { handleBrowse, probeBrowse } from "./browse.js";
 import { browseReadiness, type BrowseVerdict } from "./browsecap.js";
+import { settingsMirror } from "./settingsmirror.js";
 import {
   avgDoneDuration,
   buildCards,
@@ -989,10 +990,31 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
     // an opencode updated after boot is picked up here (at most once per
     // interval) instead of needing a daemon restart.
     maybeReprobeOpencodeVersion();
+    // P2-288: the doc-conversion and browse verdicts ride this channel too —
+    // both re-probed lazily at this same point under the same readiness.ts
+    // policy (OCR_READINESS_MIN_MS / OCR_READINESS_DISABLE), so installing
+    // LibreOffice or the Playwright browser is picked up without a restart.
+    // No new route, no new request, no new poll, no new timer.
+    maybeReprobeDocConvert();
+    await maybeReprobeBrowse();
     return {
       id: req.id,
       status: 200,
-      body: { ...readSettings(), version: VERSION, opencodeVersion: opencodeVersion, disk: diskStatus() },
+      body: {
+        ...readSettings(),
+        version: VERSION,
+        opencodeVersion: opencodeVersion,
+        disk: diskStatus(),
+        // P2-288: additive mirror of the /api/health verdicts — same names,
+        // same values. The pure settingsmirror.ts decides which fields are
+        // safe to carry; every existing field keeps its exact name and order.
+        ...settingsMirror({
+          docConvertState: docConvert.state,
+          docConvertMessage: docConvert.message,
+          browseState: browseCap.state,
+          browseMessage: browseCap.message,
+        }),
+      },
     };
   }
   if (req.path === "/__ocr/settings" && req.method === "PATCH") {

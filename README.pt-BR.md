@@ -133,9 +133,11 @@ remoto, zero confiança**.
   macOS, o fallback nativo textutil+cupsfilter cobre doc/docx/rtf/html/csv
   sem preservar formatação. A prontidão da máquina aparece em `GET /api/health`
   (`docConvertState` / `docConvertMessage` / `docConvertExts`, sondado uma vez
-  no boot) antes de você mandar qualquer coisa; sem conversor instalado, a
-  ferramenta responde com uma frase curta pedindo o LibreOffice — nunca um
-  erro cru em inglês — e o arquivo original nunca é alterado
+  no boot) e viaja espelhada no canal `GET /__ocr/settings` que a tela de
+  Configurações já lê (P2-288) antes de você mandar qualquer coisa; sem
+  conversor instalado, a ferramenta responde com uma frase curta pedindo o
+  LibreOffice — nunca um erro cru em inglês — e o arquivo original nunca é
+  alterado
 - **Revalidação preguiçosa de capacidades (P2-250)** — os vereditos de
   capacidade da máquina (transcrição de voz, conversão de documentos em PDF,
   versão do opencode) continuam sondados uma vez no boot, mas não ficam mais
@@ -154,11 +156,12 @@ remoto, zero confiança**.
 - **Prontidão de abrir sites (P2-284)** — a máquina anuncia em `GET /api/health`
   (`browseState` / `browseMessage` / `browseCheckedAt`) se sabe navegar, antes
   de você pedir; o painel **Estado da máquina** das Configurações renderiza
-  esse veredito na linha "Navegação de sites" (verde/âmbar/vermelho) sempre
-  que o daemon conectado o informa no canal de settings que a tela já lê
-  (P2-287; espelhar o veredito nesse canal é a continuação registrada).
-  Instalar o navegador do Playwright é opcional, e quando ele falta o agente
-  responde com uma frase curta em português em vez de um erro cru em inglês
+  esse veredito na linha "Navegação de sites" (verde/âmbar/vermelho) pelo
+  canal `GET /__ocr/settings` que a tela já lê (P2-287/P2-288) — as linhas de
+  relay e de agente são as continuações registradas que ainda não viajam
+  nesse canal. Instalar o navegador do Playwright é opcional, e quando ele
+  falta o agente responde com uma frase curta em português em vez de um erro
+  cru em inglês
 - **Handoff** — continue a sessão exata no Mac (ícone de laptop no header do chat)
 - **Painel ao vivo** — estado de cada sessão: trabalhando, esperando aprovação,
   fez pergunta, pronto, erro; cards mostram o tempo relativo da última
