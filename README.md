@@ -174,8 +174,9 @@ private. That is the product: **local power, remote control, zero trust**.
   whether it knows how to open sites, before you ask; the Settings
   **Machine state** panel renders that verdict as its red/amber/green
   "Web browsing" row from the `GET /__ocr/settings` channel the screen
-  already reads (P2-287/P2-288) — the relay and agent lines are the
-  registered continuations that do not ride that channel yet. Installing the
+  already reads (P2-287/P2-288) — and since P2-292 the relay and agent lines
+  ride that same channel, so no line besides those two stays pending.
+  Installing the
   Playwright browser is optional, and when it is missing the agent answers
   with one short pt-BR sentence instead of a raw English error
 - **Handoff** — continue the exact session on your Mac (laptop icon in the

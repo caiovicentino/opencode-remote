@@ -152,9 +152,12 @@ already reads (no new route, no new request, no new poll, no periodic timer).
 Both capabilities are re-probed lazily at this point under the same
 `OCR_READINESS_MIN_MS` / `OCR_READINESS_DISABLE` policy as the version
 verdict; a capability that was never measured stays silent instead of
-announcing readiness, and the relay and agent lines remain the registered
-continuations that do not ride this channel yet. No existing field of the
-response is renamed, removed or repositioned.
+announcing readiness. Since P2-292 the relay and agent verdicts ride this
+same channel additively — `relay` (`ok` + `reason`, the health relay object
+minus the address, which never rides) and `opencode` (`binaryFound` +
+`binarySource`) — so the panel's first two lines reach a lay user, and no
+line besides these two stays pending. No existing field of the response is
+renamed, removed or repositioned.
 
 ### Pairing state (P2-007)
 
