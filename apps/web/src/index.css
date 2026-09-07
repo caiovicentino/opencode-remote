@@ -2253,6 +2253,9 @@ button.desk-new:hover:not(:disabled) {
 .qr-unavailable .qr-paste-cta {
   align-self: stretch;
 }
+.qr-unavailable .qr-panel-cta {
+  align-self: stretch;
+}
 .qr-hint {
   margin: 0;
   font-size: 0.8rem;

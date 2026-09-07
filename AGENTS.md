@@ -289,4 +289,9 @@ pro veredito de microfone: o IPC `app:micAccess` (módulo puro
 frase estática em português do veredito com a ação "Abrir ajustes do sistema"
 — o alvo do painel (macOS `x-apple.systempreferences:` / Windows
 `ms-settings:`) abre pelo mesmo portão de link externo de `extlink.ts`, que
-agora admite esses dois esquemas inertes de ajustes do sistema.
+agora admite esses dois esquemas inertes de ajustes do sistema. P2-319 estende
+o mesmo veredito pra câmera do scanner de pareamento: o IPC `app:camAccess`
+(módulo puro `apps/desktop/src/camaccess.ts`, mesma leitura a cada pedido)
+substitui a frase estática de permissão negada pela frase acionável do
+veredito com a ação "Abrir ajustes do sistema" quando a ponte do shell está
+presente — no telefone a frase do dicionário segue intacta.

@@ -1350,6 +1350,86 @@ check(
 
 
 
+// --- camera access verdict (P2-319) -------------------------------------------
+
+import { camAccessVerdict, CAM_PANEL_MACOS, CAM_PANEL_WINDOWS } from "../apps/desktop/src/camaccess";
+
+const camExpected: Array<[string, string]> = [
+  ["granted", "ready"],
+  ["not-determined", "will-ask"],
+  ["denied", "blocked-by-system"],
+  ["restricted", "blocked-by-system"],
+  ["unknown", "unknown"],
+];
+
+const camPlatformTargets: Array<[string, string | null]> = [
+  ["darwin", CAM_PANEL_MACOS],
+  ["win32", CAM_PANEL_WINDOWS],
+  ["linux", null],
+];
+
+for (const [platform, expectedTarget] of camPlatformTargets) {
+  for (const [status, expectedVerdict] of camExpected) {
+    const verdict = camAccessVerdict(platform, status);
+    check(`camAccessVerdict ${platform}/${status} → ${expectedVerdict}`, verdict.verdict === expectedVerdict);
+    check(`camAccessVerdict ${platform}/${status} phrase non-empty`, typeof verdict.phrase === "string" && verdict.phrase.length > 0);
+    check(`camAccessVerdict ${platform}/${status} target`, verdict.settingsTarget === expectedTarget);
+  }
+  // absent + non-textual input fails closed on every platform
+  for (const absent of [undefined, null, "", 42, {}, ["denied"]]) {
+    const verdict = camAccessVerdict(platform, absent as unknown);
+    const label = typeof absent === "undefined" ? "absent" : JSON.stringify(absent) || String(absent);
+    check(`camAccessVerdict ${platform} fails closed on ${label}`, verdict.verdict === "unknown");
+    check(`camAccessVerdict ${platform} fail-closed phrase non-empty`, verdict.phrase.length > 0);
+    check(`camAccessVerdict ${platform} fail-closed target unchanged`, verdict.settingsTarget === expectedTarget);
+  }
+}
+
+// the same input twice must answer the exact same verdict
+const camTwice = [camAccessVerdict("darwin", "denied"), camAccessVerdict("darwin", "denied")];
+check(
+  "camAccessVerdict is deterministic for the same input",
+  JSON.stringify(camTwice[0]) === JSON.stringify(camTwice[1]) && camTwice[0].phrase === camTwice[1].phrase,
+);
+
+// static pt-BR sentences: no path, no user name, no address
+const camPhrases = ["granted", "not-determined", "denied", "restricted", "unknown", "", null, 42].map((s) =>
+  camAccessVerdict("darwin", s as unknown).phrase,
+);
+check(
+  "camAccessVerdict phrases carry no path, user or address",
+  camPhrases.every((p) => p.length > 0 && !p.includes("/") && !p.includes("\\") && !p.includes("@") && !p.includes("http")),
+);
+
+// camaccess.ts stays pure: no electron, no node:fs, no I/O — so the unit test
+// always exercises the real mapping.
+const camAccessSource = readFileSync(new URL("../apps/desktop/src/camaccess.ts", import.meta.url), "utf8");
+check("camaccess.ts is pure (no electron import)", !camAccessSource.includes('from "electron"'));
+check("camaccess.ts is pure (no node:fs import)", !camAccessSource.includes("node:fs"));
+check("camaccess.ts is pure (no node builtins, no fetch, no I/O)", !camAccessSource.includes("node:") && !camAccessSource.includes("require(") && !camAccessSource.includes("fetch("));
+
+// wiring: the main process answers app:camAccess through the pure verdict,
+// reading the OS state at request time; the preload bridge exposes the read.
+check("main.ts imports the camera access module", mainTsSource.includes('from "./camaccess"'));
+check("main.ts registers app:camAccess exactly once", (mainTsSource.match(/app:camAccess/g) ?? []).length === 1);
+check("main.ts reads the camera status at request time", mainTsSource.includes('getMediaAccessStatus("camera")'));
+check("main.ts answers app:camAccess with the shared verdict", mainTsSource.includes("camAccessVerdict(process.platform,"));
+check("preload exposes getCamAccess through the existing bridge", preloadSource.includes("getCamAccess") && preloadSource.includes("app:camAccess"));
+
+// the panel opening rides the existing external-link gate: both OS panel
+// targets must pass externalOpenDecision unchanged.
+check("externalOpenDecision admits the macOS camera panel target", externalOpenDecision(CAM_PANEL_MACOS).allow);
+check("externalOpenDecision admits the Windows camera panel target", externalOpenDecision(CAM_PANEL_WINDOWS).allow);
+
+// the scanner swaps the phrase only when the shell bridge is present, and the
+// new copy exists in both languages of the dictionary.
+const qrScannerSource = readFileSync(new URL("../apps/web/src/components/QrScanner.tsx", import.meta.url), "utf8");
+check("QrScanner asks the shell for the camera verdict", qrScannerSource.includes("getCamAccess"));
+check("QrScanner keeps the dictionary phrase when the bridge is absent", qrScannerSource.includes("scanErr_") && qrScannerSource.includes("camVerdict?.phrase"));
+check("camera copy exists in both languages", (i18nSource.match(/camOpenPanel:/g) ?? []).length === 2);
+
+
+
 // --- guest webContents guard (P2-184) ----------------------------------------
 
 const httpAttach = guestAttachDecision("http://localhost:3000/", {}, undefined);

@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import QrScanner from "./QrScanner";
+import QrScanner, { type CameraAccessVerdict } from "./QrScanner";
 import { useT } from "../lib/i18n";
 
 interface Props {
@@ -16,9 +16,12 @@ interface Props {
    * another desktop's QR is a circular flow. Camera stays available as an
    * option; on the phone the scan button remains primary. */
   preferPaste?: boolean;
+  /** P2-319: camera-permission verdict (desktop shell only) — the scanner's
+   * permission refusal becomes an actionable system-panel call to action. */
+  getCamAccess?: () => Promise<CameraAccessVerdict | null>;
 }
 
-export default function PairingView({ phase, error, onPair, onRetry, onPairRemote, localMode, preferPaste }: Props) {
+export default function PairingView({ phase, error, onPair, onRetry, onPairRemote, localMode, preferPaste, getCamAccess }: Props) {
   const t = useT();
   const [code, setCode] = useState("");
   const [scanning, setScanning] = useState(false);
@@ -40,7 +43,7 @@ export default function PairingView({ phase, error, onPair, onRetry, onPairRemot
   }, []);
 
   if (scanning) {
-    return <QrScanner onScan={handleScan} onCancel={() => setScanning(false)} onPaste={backToPaste} />;
+    return <QrScanner onScan={handleScan} onCancel={() => setScanning(false)} onPaste={backToPaste} getCamAccess={getCamAccess} />;
   }
 
   // P2-112: in local mode the intro promises automatic pairing — showing the
