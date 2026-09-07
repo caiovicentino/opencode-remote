@@ -322,7 +322,11 @@ private. That is the product: **local power, remote control, zero trust**.
   Connection screens follow one locale end-to-end: daemon-down/reconnecting
   banners, the QR scanner and the desktop home screen resolve their copy from
   the same dictionary as the actions next to them — no pt-BR/English mix on a
-  single screen
+  single screen. The whole Settings screen is dictionary-driven too (P2-275):
+  About, Caption style, Appearance, Push notifications, Share to agent, Skills,
+  Scheduled routines and the Security log all translate, with a unit-test drift
+  lock that fails when a literal English phrase is written back into the
+  component
 - **Quiet chrome, one status surface** — the mobile sessions header reads as a
   0.72rem overline (machine name + connection dot) instead of a page title, the
   badge filters fold into a menu attached to the search field (active filter

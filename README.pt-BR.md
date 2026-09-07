@@ -334,7 +334,11 @@ remoto, zero confiança**.
   o focus, e o painel de sessões é totalmente navegável por teclado. As telas de conexão
   seguem um único idioma de ponta a ponta: banners de daemon caído/reconectando, o scanner
   de QR e a home do desktop resolvem o copy do mesmo dicionário das ações vizinhas —
-  sem mistura pt-BR/inglês numa mesma tela
+  sem mistura pt-BR/inglês numa mesma tela. A tela inteira de Configurações também é
+  traduzida (P2-275): Sobre, Estilo de legenda, Aparência, Notificações push, Compartilhar
+  com o agente, Skills, Rotinas agendadas e o Registro de segurança saem do dicionário,
+  com um teste unitário de travamento de deriva que falha se uma frase literal em inglês
+  voltar a ser escrita no componente
 
 ## Quick Start (Mac → iPhone, ~5 min)
 

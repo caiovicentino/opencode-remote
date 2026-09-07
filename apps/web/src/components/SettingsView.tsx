@@ -80,15 +80,17 @@ interface Routine {
   lastError?: string;
 }
 
-const DAY_LABELS = ["S", "M", "T", "W", "T", "F", "S"];
-const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const DAY_NAME_KEYS = ["daySun", "dayMon", "dayTue", "dayWed", "dayThu", "dayFri", "daySat"];
+const DAY_LETTER_KEYS = ["dayLetter0", "dayLetter1", "dayLetter2", "dayLetter3", "dayLetter4", "dayLetter5", "dayLetter6"];
 
-function scheduleLabel(r: Routine): string {
+type TranslateFn = (key: string, vars?: Record<string, string | number>) => string;
+
+function scheduleLabel(r: Routine, t: TranslateFn): string {
   const hm = `${String(r.hour).padStart(2, "0")}:${String(r.minute).padStart(2, "0")}`;
-  if (r.mode === "interval") return `every ${r.intervalMinutes}m`;
+  if (r.mode === "interval") return t("routineEvery", { n: r.intervalMinutes ?? 0 });
   if (r.mode === "days")
-    return `${(r.days ?? []).map((d) => DAY_NAMES[d]).join(" ")} · ${hm}`;
-  return `daily ${hm}`;
+    return `${(r.days ?? []).map((d) => t(DAY_NAME_KEYS[d] as string)).join(" ")} · ${hm}`;
+  return t("routineDaily", { time: hm });
 }
 
 interface Skill {
@@ -317,7 +319,7 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
   async function saveMcp(name: string, config?: Partial<McpServer>, remove = false) {
     const res = await request("PUT", "/__ocr/mcp", remove ? { name, remove: true } : { name, config });
     if (res.status === 200) {
-      setMsg("salvo");
+      setMsg(t("saved"));
       setMcpServers((res.body as { servers?: McpServer[] }).servers ?? []);
     } else {
       setMsg(t("saveError", { msg: JSON.stringify(res.body).slice(0, 100) }));
@@ -341,7 +343,7 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
     const next = { ...style, ...patch };
     setStyle(next);
     await request("PUT", "/__ocr/clip-style", next);
-    setMsg("caption style saved");
+    setMsg(t("captionSaved"));
   }
 
   async function revoke(pub: string) {
@@ -369,7 +371,7 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
     <div className="screen">
       <header>
         <button onClick={onBack}>←</button>
-        <h1 style={{ fontSize: "1rem", margin: 0, flex: 1 }}>Settings</h1>
+        <h1 style={{ fontSize: "1rem", margin: 0, flex: 1 }}>{t("navSettings")}</h1>
       </header>
 
       <div className="list">
@@ -392,9 +394,9 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
         )}
 
         <div className="card">
-          <h3>About</h3>
+          <h3>{t("aboutTitle")}</h3>
           <p className="muted" style={{ margin: 0 }}>
-            app {APP_VERSION} · daemon {daemonVersion || "?"}
+            {t("aboutVersions", { app: APP_VERSION, daemon: daemonVersion || "?" })}
             {daemonVersion && daemonVersion !== APP_VERSION && (
               <span style={{ color: "var(--danger)" }}>
                 {" "}
@@ -562,14 +564,14 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
               style={{ flex: 1 }}
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="machine name"
+              placeholder={t("machineNamePlaceholder")}
             />
             <button className="primary" onClick={() => void saveSettings({ name })}>
-              Save
+              {t("save")}
             </button>
           </div>
           <p className="muted" style={{ marginBottom: 0 }}>
-            Notifications
+            {t("settingsNotifications")}
           </p>
           {/* P2-213: version readiness is advice about the machine hosting the
               daemon, never a gate — a probe that can flip must not lock the
@@ -619,7 +621,7 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
         </div>
 
         <div className="card">
-          <h3>MCP</h3>
+          <h3>{t("mcp")}</h3>
           <p className="muted" style={{ margin: "0 0 6px" }}>
             {t("mcpHint", { file: configFile.split("/").pop() ?? "" })}
           </p>
@@ -637,7 +639,7 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
                   {s.type === "remote" ? s.url : (s.command ?? []).join(" ")}
                 </span>
               </div>
-              <button className="danger" aria-label="Remove" onClick={() => void saveMcp(s.name, undefined, true)}>
+              <button className="danger" aria-label={t("remove")} onClick={() => void saveMcp(s.name, undefined, true)}>
                 ✕
               </button>
             </div>
@@ -647,8 +649,8 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
             <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
               <input style={{ flex: 1 }} placeholder={t("mcpName")} value={newMcp.name} onChange={(e) => setNewMcp({ ...newMcp, name: e.target.value })} />
               <select value={newMcp.type} onChange={(e) => setNewMcp({ ...newMcp, type: e.target.value })}>
-                <option value="local">local</option>
-                <option value="remote">remote</option>
+                <option value="local">{t("mcpTypeLocal")}</option>
+                <option value="remote">{t("mcpTypeRemote")}</option>
               </select>
             </div>
             <input
@@ -676,7 +678,7 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
         </div>
 
         <div className="card">
-          <h3>AutoMode</h3>
+          <h3>{t("autoMode")}</h3>
           <label style={{ display: "block" }}>
             <input
               type="checkbox"
@@ -705,13 +707,13 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
             {t("voiceAutoSend")}
           </label>
           <label style={{ display: "block", marginTop: 8 }}>
-            Language:{" "}
+            {t("voiceInLang")}:{" "}
             <select value={voice.lang} onChange={(e) => saveVoice({ ...voice, lang: e.target.value })}>
-              <option value="auto">Auto-detect</option>
-              <option value="pt">Portuguese</option>
-              <option value="en">English</option>
-              <option value="es">Spanish</option>
-              <option value="fr">French</option>
+              <option value="auto">{t("voiceLangAuto")}</option>
+              <option value="pt">{t("voiceLangPt")}</option>
+              <option value="en">{t("voiceLangEn")}</option>
+              <option value="es">{t("voiceLangEs")}</option>
+              <option value="fr">{t("voiceLangFr")}</option>
             </select>
           </label>
           <label style={{ display: "block", marginTop: 8 }}>
@@ -724,23 +726,23 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
                 setTtsLangState(next);
               }}
             >
-              <option value="pt-BR">Português (Antonio)</option>
-              <option value="en-US">English (Andrew)</option>
-              <option value="es-ES">Español (Alvaro)</option>
+              <option value="pt-BR">{t("ttsVoicePt")}</option>
+              <option value="en-US">{t("ttsVoiceEn")}</option>
+              <option value="es-ES">{t("ttsVoiceEs")}</option>
             </select>
           </label>
         </div>
 
         <div className="card">
-          <h3>Caption style (clips)</h3>
+          <h3>{t("captionStyleTitle")}</h3>
           {(
             [
-              ["font", "Font (e.g. Helvetica Bold)"],
-              ["fontSize", "Size"],
-              ["primary", "Primary color (&H..)"],
-              ["secondary", "Highlight color (&H..)"],
-              ["outlineColor", "Outline color (&H..)"],
-              ["marginV", "Bottom margin"],
+              ["font", t("captionFont")],
+              ["fontSize", t("captionFontSize")],
+              ["primary", t("captionPrimary")],
+              ["secondary", t("captionHighlight")],
+              ["outlineColor", t("captionOutline")],
+              ["marginV", t("captionMargin")],
             ] as [string, string][]
           ).map(([k, label]) => (
             <label key={k} style={{ display: "block", marginBottom: 6 }}>
@@ -754,35 +756,35 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
             </label>
           ))}
           <button className="primary" onClick={() => void saveStyle({})}>
-            Save style
+            {t("captionSave")}
           </button>
         </div>
 
         <div className="card">
-          <h3>Appearance</h3>
+          <h3>{t("appearanceTitle")}</h3>
           <label style={{ display: "block" }}>
-            Theme:{" "}
+            {t("themeLabel")}:{" "}
             <select
               value={theme}
               onChange={(e) => saveTheme(e.target.value as ThemeChoice, font)}
             >
-              <option value="system">System</option>
-              <option value="dark">Dark</option>
-              <option value="light">Light</option>
+              <option value="system">{t("themeSystem")}</option>
+              <option value="dark">{t("themeDark")}</option>
+              <option value="light">{t("themeLight")}</option>
             </select>
           </label>
           <label style={{ display: "block", marginTop: 8 }}>
-            Font size:{" "}
+            {t("fontLabel")}:{" "}
             <select value={font} onChange={(e) => saveTheme(theme, e.target.value)}>
-              <option value="small">Small</option>
-              <option value="normal">Normal</option>
-              <option value="large">Large</option>
+              <option value="small">{t("fontSmall")}</option>
+              <option value="normal">{t("fontNormal")}</option>
+              <option value="large">{t("fontLarge")}</option>
             </select>
           </label>
         </div>
 
         <div className="card">
-          <h3>Push notifications</h3>
+          <h3>{t("pushTitle")}</h3>
           <button
             className="primary"
             disabled={pushTesting}
@@ -795,12 +797,12 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
                   const { results } = res.body as {
                     results?: { endpoint: string; ok: boolean; status?: number; error?: string }[];
                   };
-                  if (!results?.length) setPushMsg("no device subscribed — tap Re-subscribe");
+                  if (!results?.length) setPushMsg(t("pushNoDevices"));
                   else {
                     const bad = results.filter((r) => !r.ok);
                     setPushMsg(
                       bad.length === 0
-                        ? "sent OK — check the phone"
+                        ? t("pushSentOk")
                         : bad
                             .map(
                               (r) =>
@@ -821,7 +823,7 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
               })()
             }
           >
-            {pushTesting ? "Sending…" : "Send test notification"}
+            {pushTesting ? t("pushSending") : t("pushSendTest")}
           </button>
           <button
             style={{ marginLeft: 8 }}
@@ -831,7 +833,7 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
                 try {
                   const { enablePush } = await import("../lib/push");
                   await enablePush(request);
-                  setPushMsg("subscribed");
+                  setPushMsg(t("pushSubscribed"));
                   const st = await request("GET", "/__ocr/push/status");
                   setPushSubs((st.body as { subscribers?: number }).subscribers ?? 0);
                 } catch (err) {
@@ -840,27 +842,25 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
               })()
             }
           >
-            Re-subscribe
+            {t("pushResubscribe")}
           </button>
           {pushMsg && <p className="muted" style={{ marginBottom: 0 }}>{pushMsg}</p>}
           <p className="muted" style={{ marginBottom: 0 }}>
-            {pushSubs} device(s) subscribed · iOS: app must be on the Home Screen
+            {t("pushSubsCount", { n: pushSubs })}
           </p>
         </div>
 
         <div className="card">
-          <h3>Share to agent</h3>
+          <h3>{t("shareTitle")}</h3>
           <p className="muted" style={{ margin: 0 }}>
-            <b>Android/desktop</b>: the system share sheet offers "OpenCode Remote" directly.
+            <b>{t("shareAndroidLabel")}</b>: {t("shareAndroidBody")}
             <br />
-            <b>iOS</b>: copy the link anywhere, open the app, long-press the message field → Colar,
-            add your instruction and send. Or create a Shortcut (Shortcuts app) that copies the
-            shared text and opens "OpenCode Remote".
+            <b>{t("shareIosLabel")}</b>: {t("shareIosBody")}
           </p>
         </div>
 
         <div className="card">
-          <h3>Skills (1-tap prompts)</h3>
+          <h3>{t("skillsTitle")}</h3>
           {skills.map((s) => (
             <div key={s.id} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
               <span style={{ flex: 1, minWidth: 0 }}>
@@ -886,14 +886,14 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
                   })()
                 }
               >
-                Delete
+                {t("delete")}
               </button>
             </div>
           ))}
           <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
             <input
               style={{ flex: 1, minWidth: 0 }}
-              placeholder="label (e.g. Daily report)"
+              placeholder={t("skillLabelPlaceholder")}
               value={nsLabel}
               onChange={(e) => setNsLabel(e.target.value)}
               maxLength={40}
@@ -901,7 +901,7 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
           </div>
           <textarea
             rows={2}
-            placeholder="prompt sent to the agent on tap"
+            placeholder={t("skillPromptPlaceholder")}
             style={{ width: "100%", marginTop: 6 }}
             value={nsPrompt}
             onChange={(e) => setNsPrompt(e.target.value)}
@@ -919,29 +919,29 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
                   setSkills((prev) => [...prev, skill]);
                   setNsLabel("");
                   setNsPrompt("");
-                  setMsg("skill added");
+                  setMsg(t("skillAdded"));
                 } else {
-                  setMsg("skill rejected — label and prompt required");
+                  setMsg(t("skillRejected"));
                 }
               })()
             }
           >
-            Add skill
+            {t("skillAdd")}
           </button>
         </div>
 
         <div className="card">
-          <h3>Scheduled routines</h3>
+          <h3>{t("routinesTitle")}</h3>
           {routines.map((r) => (
             <div key={r.id} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
               <span style={{ flex: 1, minWidth: 0 }}>
-                <b>{scheduleLabel(r)}</b> · {r.name}
+                <b>{scheduleLabel(r, t)}</b> · {r.name}
                 <div className="muted" style={{ fontSize: "0.72rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                   {r.prompt}
                 </div>
               </span>
               <span
-                title={r.lastError ? `last error: ${r.lastError}` : r.lastStatus === "ok" ? "last run: ok" : "never ran"}
+                title={r.lastError ? t("routineLastError", { err: r.lastError }) : r.lastStatus === "ok" ? t("routineLastOk") : t("routineNeverRan")}
                 style={{ fontSize: "0.85rem" }}
               >
                 <span
@@ -957,7 +957,7 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
                   })()
                 }
               >
-                Delete
+                {t("delete")}
               </button>
             </div>
           ))}
@@ -965,11 +965,11 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
             <select
               value={nrMode}
               onChange={(e) => setNrMode(e.target.value as typeof nrMode)}
-              aria-label="Schedule mode"
+              aria-label={t("routineModeLabel")}
             >
-              <option value="daily">Every day</option>
-              <option value="days">Specific days</option>
-              <option value="interval">Loop every N min</option>
+              <option value="daily">{t("routineEveryDay")}</option>
+              <option value="days">{t("routineSpecificDays")}</option>
+              <option value="interval">{t("routineLoop")}</option>
             </select>
             {nrMode !== "interval" ? (
               <input style={{ width: 90 }} type="time" value={nrTime} onChange={(e) => setNrTime(e.target.value)} />
@@ -981,14 +981,14 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
                 max={10080}
                 value={nrInterval}
                 onChange={(e) => setNrInterval(Number(e.target.value))}
-                aria-label="Interval in minutes"
+                aria-label={t("routineIntervalLabel")}
               />
             )}
-            <input style={{ width: 90, flexGrow: 1 }} placeholder="name" value={nrName} onChange={(e) => setNrName(e.target.value)} />
+            <input style={{ width: 90, flexGrow: 1 }} placeholder={t("routineNamePlaceholder")} value={nrName} onChange={(e) => setNrName(e.target.value)} />
           </div>
           {nrMode === "days" && (
             <div style={{ display: "flex", gap: 4, marginTop: 6 }}>
-              {DAY_LABELS.map((d, i) => (
+              {DAY_LETTER_KEYS.map((key, i) => (
                 <button
                   key={i}
                   onClick={() =>
@@ -1003,21 +1003,21 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
                     background: nrDays.includes(i) ? "var(--accent)" : "transparent",
                     color: nrDays.includes(i) ? "var(--on-accent)" : "inherit",
                   }}
-                  aria-label={DAY_NAMES[i]}
+                  aria-label={t(DAY_NAME_KEYS[i] as string)}
                 >
-                  {d}
+                  {t(key)}
                 </button>
               ))}
             </div>
           )}
           {nrMode === "interval" && (
             <p className="muted" style={{ margin: "6px 0 0", fontSize: "0.72rem" }}>
-              runs immediately, then every N minutes while the daemon is up (min 5)
+              {t("routineIntervalHint")}
             </p>
           )}
           <textarea
             rows={2}
-            placeholder="prompt for the agent (e.g. summarize crypto news and save a report)"
+            placeholder={t("routinePromptPlaceholder")}
             style={{ width: "100%", marginTop: 6 }}
             value={nrPrompt}
             onChange={(e) => setNrPrompt(e.target.value)}
@@ -1041,14 +1041,14 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
                   setRoutines((prev) => [...prev, routine]);
                   setNrName("");
                   setNrPrompt("");
-                  setMsg("routine added");
+                  setMsg(t("routineAdded"));
                 } else {
-                  setMsg("routine rejected — check fields");
+                  setMsg(t("routineRejected"));
                 }
               })()
             }
           >
-            Add routine
+            {t("routineAdd")}
           </button>
         </div>
 
@@ -1057,7 +1057,7 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
           {devices.map((d) => (
             <div key={d.pub} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
               <span style={{ flex: 1 }}>
-                {d.label ?? "device"} · …{d.pub.slice(-6)}
+                {d.label ?? t("deviceFallback")} · …{d.pub.slice(-6)}
                 <br />
                 <span style={{ opacity: 0.6, fontSize: 12 }}>
                   {d.lastSeenAt
@@ -1067,14 +1067,14 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
                 </span>
               </span>
               <button className="danger" onClick={() => void revoke(d.pub)}>
-                Revoke
+                {t("revoke")}
               </button>
             </div>
           ))}
         </div>
 
         <div className="card">
-          <h3>Security log</h3>
+          <h3>{t("securityLog")}</h3>
           {auditEntries.length === 0 && <p className="muted" style={{ margin: 0 }}>{t("noAudit")}</p>}
           {auditEntries.map((e, i) => (
             <div key={i} className="muted" style={{ fontSize: "0.72rem", marginBottom: 4 }}>
