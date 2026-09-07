@@ -188,6 +188,17 @@ const P2_294_EXISTING_LINES = [
 ];
 const P2_294_CERT_LINES = ["relay_cert_expiry_state", "relay_cert_expiry_seconds"];
 const P2_294_ALL = [...P2_294_EXISTING_LINES, ...P2_294_CERT_LINES];
+// P2-313: the additive process gauges joined the documented set, appended
+// after every pre-existing series (plain mode included — the process is
+// observed whatever the TLS mode is)
+const P2_313_PROC_LINES = [
+  "relay_resident_bytes",
+  "relay_heap_used_bytes",
+  "relay_heap_total_bytes",
+  "relay_uptime_seconds",
+  "relay_scheduling_delay_ms",
+];
+const P2_313_ALL = [...P2_294_ALL, ...P2_313_PROC_LINES];
 check(
   "cert-metrics: plain-mode endpoint keeps every existing documented line with its TYPE header and a value",
   P2_294_EXISTING_LINES.every((name) =>
@@ -199,7 +210,7 @@ check(
   prom
     .split("\n")
     .filter((l) => l !== "" && !l.startsWith("#"))
-    .every((l) => P2_294_ALL.includes(l.split(" ")[0] ?? "")),
+    .every((l) => P2_313_ALL.includes(l.split(" ")[0] ?? "")),
 );
 check(
   "cert-metrics: plain-mode endpoint publishes no cert series at all (never invented healthy, never zeros)",
@@ -355,7 +366,7 @@ if (cert_oc.status === 0) {
       tlsProm
         .split("\n")
         .filter((l) => l !== "" && !l.startsWith("#"))
-        .every((l) => P2_294_ALL.includes(l.split(" ")[0] ?? "")),
+        .every((l) => P2_313_ALL.includes(l.split(" ")[0] ?? "")),
     );
     check(
       "cert-metrics: TLS endpoint carries no certificate material either",

@@ -67,6 +67,7 @@ import {
   JOIN_UNJOINED_CLOSE_REASON,
 } from "./joindeadline.js";
 import { certExpiryMetrics } from "./certmetrics.js";
+import { procMetrics, procMetricsJson } from "./procmetrics.js";
 
 /**
  * Relay: a blind router.
@@ -553,6 +554,13 @@ const m = {
   roomBudgetTerminated: 0,
   startedAt: Date.now(),
 };
+// P2-313: process-observation state for the metrics surfaces — pure
+// observation, no policy reads these numbers. The sweep below records how
+// late each tick started relative to the intended interval (elapsed minus
+// interval), keeping only the window max; every /metrics scrape reads and
+// resets that max, so each window covers exactly one scrape interval.
+let sweepDelayMaxMs = 0;
+let lastSweepAt = Date.now();
 if (METRICS.port && METRICS.problems.length === 0) {
   createHttpServer((req, res) => {
     if (METRICS.token && !metricsAuthOk(req.headers.authorization, METRICS.token)) {
@@ -560,6 +568,14 @@ if (METRICS.port && METRICS.problems.length === 0) {
       return;
     }
     if (req.url?.startsWith("/metrics")) {
+      // P2-313: one process sample per scrape, and the read-and-reset of the
+      // scheduling-delay window — both formats get the same numbers and
+      // every scrape opens a fresh window. Observation only: nothing below
+      // feeds any limit, admission, refusal or socket close.
+      const procMem = process.memoryUsage();
+      const procUptimeS = Math.round((Date.now() - m.startedAt) / 1000);
+      const procDelayMs = sweepDelayMaxMs;
+      sweepDelayMaxMs = 0;
       if (req.url.includes("format=prom")) {
         const lines = [
           "# TYPE relay_connections_total counter",
@@ -615,6 +631,13 @@ if (METRICS.port && METRICS.problems.length === 0) {
             lastCertExpiryVerdict,
             CERT_EXPIRY ? Math.floor((CERT_EXPIRY.notAfter - Date.now()) / 1000) : Number.NaN,
           ),
+          // P2-313: additive process series at the very end — the SAME
+          // numbers the JSON body publishes below. Zero publishes as zero,
+          // never omitted, so an operator alert distinguishes a healthy
+          // relay from a missing series. Boundary: a byte count, a seconds
+          // count or a milliseconds count only — never an address, port,
+          // room id, token or any identifiable material.
+          ...procMetrics(procMem.rss, procMem.heapUsed, procMem.heapTotal, procUptimeS, procDelayMs),
         ];
         res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
         res.end(lines.join("\n") + "\n");
@@ -624,7 +647,7 @@ if (METRICS.port && METRICS.problems.length === 0) {
       res.end(
         JSON.stringify(
           {
-            uptime_s: Math.round((Date.now() - m.startedAt) / 1000),
+            uptime_s: procUptimeS,
             connections_total: m.connectionsTotal,
             connections_active: wss.clients.size,
             frames_routed: m.framesRouted,
@@ -647,6 +670,10 @@ if (METRICS.port && METRICS.problems.length === 0) {
             // material.
             room_budget_terminated: m.roomBudgetTerminated,
             rooms_active: rooms.size,
+            // P2-313: additive — the SAME process numbers the Prometheus
+            // text publishes above, next to the uptime this body already
+            // had. Observation only: no policy reads them.
+            ...procMetricsJson(procMem.rss, procMem.heapUsed, procMem.heapTotal, procDelayMs),
           },
           null,
           2,
@@ -1099,6 +1126,14 @@ wss.on("connection", (socket: Socket, req) => {
 if (PING_INTERVAL_S > 0) {
   setInterval(() => {
     const now = Date.now();
+    // P2-313: scheduling-delay observation riding this SAME sweep tick (no
+    // new timer, no new route, no new request, no new dependency) — how much
+    // later this tick started than the intended interval. Only the window
+    // max is kept; the /metrics scrape reads and resets it. Log-only
+    // observability: nothing here closes, refuses or throttles anything.
+    const sweepLateMs = now - lastSweepAt - PING_INTERVAL_S * 1000;
+    lastSweepAt = now;
+    if (sweepLateMs > sweepDelayMaxMs) sweepDelayMaxMs = sweepLateMs;
     // P2-306 hot reload, riding the SAME sweep tick the ping interval already
     // schedules (no new timer, no new route, no new request, no new
     // dependency): the pair is re-read ONLY when its file impression moved
