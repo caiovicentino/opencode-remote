@@ -1,11 +1,19 @@
 // Pure decision logic for the desktop tray (P3-007). Kept free of electron
 // imports so scripts/unit.test.ts can exercise it (same pattern as pairing.ts).
 import { join } from "node:path";
+import { UPDATE_GUARD_RELEASE_LABEL } from "./updateguard";
 
 /** Tooltip shown by the tray: doubles as the sidecar health indicator, kept in
  * sync by the 3s pairing-watcher poll in main.ts. */
 export function daemonTooltip(healthy: boolean): string {
   return healthy ? "OpenCode Remote — daemon ok" : "OpenCode Remote — daemon down";
+}
+
+/** P2-291: static label of the tray's release item (present only on the
+ * guard's recusar-oferta verdict), through the same pure text mechanism as
+ * daemonTooltip above. No emoji (P2-107). */
+export function updateGuardReleaseLabel(): string {
+  return UPDATE_GUARD_RELEASE_LABEL;
 }
 
 /** app.setLoginItemSettings/getLoginItemSettings are no-ops outside macOS and

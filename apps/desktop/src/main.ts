@@ -83,7 +83,10 @@ import {
   nodeBootHealthFs,
   promoteHealthyOpening,
   readBootHealthRecord,
+  readOwnerRelease,
+  writeOwnerRelease,
 } from "./boothealthstore";
+import { updateGuard } from "./updateguard";
 import { WAKE_EVENT_TYPES, wakePlan } from "./wakeplan";
 import { parseProxyAddress, proxyPlan, type ProxyPlanVerdict } from "./proxyplan";
 import { proxySettingFile, readProxyChoice, writeProxyChoice } from "./proxystore";
@@ -98,7 +101,7 @@ import { externalOpenDecision } from "./extlink";
 import { downloadVerdict, DOWNLOAD_LIMITS, uniqueDownloadName } from "./downloadplan";
 import { guestAttachDecision, guestNavigationDecision } from "./webviewguard";
 import { permissionDecision, requestingScheme } from "./permissions";
-import { loginItemSupported, logsDirPath, openLogsFolder, trayIconSource } from "./tray";
+import { loginItemSupported, logsDirPath, openLogsFolder, trayIconSource, updateGuardReleaseLabel } from "./tray";
 import { trayStatus } from "./traystatus";
 import { shellLang, shellLabels, SUPPORTED_SHELL_LANGS, type ShellLangDecision, type ShellLabels } from "./shelllang";
 import { badgePlan, type BadgePlan } from "./badge";
@@ -371,6 +374,9 @@ function buildDiagnostics(): string {
     // mode origin only, never the address or the raw environment (privacy
     // contract in this header).
     proxy: bootProxyPlan ? { mode: bootProxyPlan.mode, reason: bootProxyPlan.reason, origin: bootProxyOrigin } : null,
+    // P2-291: the update guard's last verdict and short reason only — never a
+    // path, an address or a secret (privacy contract in diagnostics.ts).
+    updateGuard: updateGuardVerdict ? { state: updateGuardVerdict, reason: updateGuardReason ?? "" } : null,
   });
 }
 
@@ -418,6 +424,19 @@ let bootHealthFile = "";
 let bootRecoveryActive = false;
 let bootHealthAlarmLabel: string | null = null;
 let bootHealthPromoted = false;
+// P2-291: the update guard's inputs and last verdict. `bootHealthVerdictName`
+// mirrors the P2-270 verdict (the guard's first-class input); the owner
+// release mark is read once at boot from the same boothealth.json record and
+// flipped in memory the moment the owner releases;
+// `lastOfferedUpdateVersion` is the version the feed last offered (recorded
+// by the onStatus sink) — the "versão oferecida pelo feed" input of the pure
+// guard. `updateGuardVerdict`/`updateGuardReason` feed the tray item and the
+// diagnostics line. No timer and no I/O here — the guard itself is pure.
+let bootHealthVerdictName = "normal";
+let ownerUpdateRelease = false;
+let lastOfferedUpdateVersion: string | null = null;
+let updateGuardVerdict: string | null = null;
+let updateGuardReason: string | null = null;
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -486,10 +505,11 @@ if (!gotLock) {
   // promotion to "healthy" only happens when the main window truly finishes
   // loading (the did-finish-load path). Every store failure is a log line.
   bootHealthFile = bootHealthRecordFile(app.getPath("userData"));
+  const storedBootRecord = readBootHealthRecord(bootHealthFile, nodeBootHealthFs);
   const bootHealth = bootHealthVerdict({
     harnessSession: HERMETIC_E2E,
     runningVersion: app.getVersion(),
-    record: readBootHealthRecord(bootHealthFile, nodeBootHealthFs),
+    record: storedBootRecord,
     nowMs: Date.now(),
     floor: BOOT_HEALTH_OPENING_FLOOR,
   });
@@ -497,6 +517,13 @@ if (!gotLock) {
     bootRecoveryActive = true;
     bootHealthAlarmLabel = bootHealth.label;
   }
+  // P2-291: the guard's static inputs, resolved exactly once at boot — the
+  // verdict name (consumed before every check) and the owner's release mark,
+  // read tolerantly from the same record (absent/corrupted/non-boolean → no
+  // release). The owner tray item flips the flag in memory the moment it
+  // writes it.
+  bootHealthVerdictName = bootHealth.verdict;
+  ownerUpdateRelease = readOwnerRelease(storedBootRecord);
   log(`[desktop] boot health: ${bootHealth.verdict} (${bootHealth.phrase})`);
   const bootHealthMark = markOpeningInProgress({
     file: bootHealthFile,
@@ -779,6 +806,24 @@ function runUpdateCheck(source: string): void {
     log(`[desktop] update check (${source}) skipped: boot-health recovery active for this execution`);
     return;
   }
+  // P2-291: the guard is consulted BEFORE every check and every automatic
+  // download (the download-time consultation itself lives in update.ts, fed
+  // by the option below). Its recusar-oferta verdict skips ONLY the download
+  // step — never this check and never the periodic recheck, so the arrival of
+  // a NEW version keeps being perceived and followed (the escape route is the
+  // guard's own rule 5). One log line with the verdict and the reason — no
+  // path, no address, no secret.
+  const guard = updateGuard({
+    harnessSession: HERMETIC_E2E,
+    bootVerdict: bootHealthVerdictName,
+    runningVersion: app.getVersion(),
+    offeredVersion: lastOfferedUpdateVersion,
+    updateState: lastUpdateStatus,
+    ownerRelease: ownerUpdateRelease,
+  });
+  updateGuardVerdict = guard.decision;
+  updateGuardReason = guard.reason;
+  log(`[desktop] update guard: ${guard.decision} (${guard.reason})`);
   // P2-264: the disk-space gate rides the SAME tick updateschedule.ts feeds —
   // only the scheduled recheck consults it (never boot, never the user's
   // explicit "Check for updates"). A postpone skips this check entirely: the
@@ -787,6 +832,15 @@ function runUpdateCheck(source: string): void {
   if (source === "scheduled" && updateSpaceGateSkip()) return;
   void checkForUpdatesOnBoot({
     dialog: updateDialogSinks,
+    // P2-291: static guard inputs for the download-time consultation inside
+    // update.ts — before the automatic download, fed by the same state the
+    // check-time consultation above used.
+    updateGuard: {
+      harnessSession: HERMETIC_E2E,
+      bootVerdict: bootHealthVerdictName,
+      ownerRelease: ownerUpdateRelease,
+      lastState: lastUpdateStatus,
+    },
     // P2-211: the boot verdict gates the consent dialog — a bundle the
     // updater cannot replace (DMG volume / translocated copy) is never
     // offered a restart it cannot apply. Fail-open: unknown/absent never
@@ -818,6 +872,11 @@ function runUpdateCheck(source: string): void {
     onProgress: onUpdateProgress,
     onStatus: (status, version) => {
       lastUpdateStatus = status;
+      // P2-291: the version the feed offered — any version-carrying
+      // resolution records it (including the guard's refused re-offer), so
+      // the next check-time consultation compares exactly this offer against
+      // the running version.
+      if (version) lastOfferedUpdateVersion = version;
       // P2-257: track the downloaded release so the reminder plan can tell it
       // apart from the version whose offers were already recorded, and hand
       // the SAME timer over to the reminder once the download completes (the
@@ -3131,6 +3190,33 @@ function trayMenuItems(): Electron.MenuItemConstructorOptions[] {
     // (static label from the pure verdict; the tray never appears in a
     // window screenshot).
     ...(bootHealthAlarmLabel ? [{ label: bootHealthAlarmLabel, enabled: false }] : []),
+    // P2-291: the owner's way out of a refused re-offer — present ONLY while
+    // the guard's last verdict is "recusar-oferta", right beside the disabled
+    // alarm label above. One enabled item that records the owner's release
+    // (the additive boothealth.json field) and fires an immediate check; the
+    // label goes through the same pure tray.ts text mechanism as every other
+    // item and carries no emoji (P2-107).
+    ...(updateGuardVerdict === "recusar-oferta"
+      ? [
+          {
+            label: updateGuardReleaseLabel(),
+            click: () => {
+              const release = writeOwnerRelease({
+                file: bootHealthFile,
+                fs: nodeBootHealthFs,
+                harnessSession: HERMETIC_E2E,
+                runningVersion: app.getVersion(),
+                nowMs: Date.now(),
+              });
+              // The in-memory flag flips only when the write landed, so a
+              // failed write keeps the guard refusing (the reason is logged).
+              if (release.written) ownerUpdateRelease = true;
+              log(`[desktop] update guard: release recorded (${release.reason})`);
+              checkForUpdates();
+            },
+          },
+        ]
+      : []),
     { label: "Open OpenCode Remote", click: showMainWindow },
   ];
   // P2-229: the same truth the Help menu carries — the active accelerator as

@@ -1242,7 +1242,12 @@ verificação automática de atualização naquela execução, sinaliza a bandej
 pergunta ao dono uma única vez pelas saídas que já existem (**Copiar
 diagnóstico** ou **Seguir assim mesmo**); ele nunca volta versão, desinstala
 ou apaga nada, e o registro se cura sozinho na primeira vez em que a janela
-abre de verdade. Checagens
+abre de verdade. Desde a P2-291, com esse veredito ativo o guarda de
+atualização se recusa a baixar e reoferecer a própria versão que o feed
+insiste em anunciar quando é justamente a que está rodando — a bandeja ganha
+um item **OpenCode Remote — retomar atualização automática**, que registra a
+sua liberação e recheca na hora, e uma versão nova volta a fluir
+normalmente. Checagens
 repetidas nunca empilham
 ofertas velhas. Desde a P2-146, todo release do GitHub também publica os
 feeds JSON do Squirrel.Mac, gerados por

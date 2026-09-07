@@ -738,7 +738,10 @@ import { candidatePorts, pickDaemonPort } from "../apps/desktop/src/daemonport";
 
 import { versionMismatch } from "../apps/desktop/src/versions";
 
-import { daemonTooltip, loginItemSupported, logsDirPath, openLogsFolder, trayIconSource } from "../apps/desktop/src/tray";
+import { daemonTooltip, loginItemSupported, logsDirPath, openLogsFolder, trayIconSource, updateGuardReleaseLabel } from "../apps/desktop/src/tray";
+import { updateGuard, UPDATE_GUARD_RELEASE_LABEL } from "../apps/desktop/src/updateguard";
+import { readOwnerRelease, writeOwnerRelease, type StoredBootHealthRecord } from "../apps/desktop/src/boothealthstore";
+import { buildDiagnosticReport } from "../apps/desktop/src/diagnostics";
 
 import { menuSpec, type MenuItemSpec } from "../apps/desktop/src/menu";
 import { shellLang, shellLabels, SUPPORTED_SHELL_LANGS, type ShellLabels } from "../apps/desktop/src/shelllang";
@@ -6818,6 +6821,322 @@ check(
   check(
     "P2-270: recovery suspends only the automatic checks, before any updater call",
     gateAt >= 0 && gateAt < mainTsSource.indexOf("checkForUpdatesOnBoot({"),
+  );
+}
+
+// --- P2-291: update guard (apps/desktop/src/updateguard.ts) -----------------------
+{
+  const now = 1_700_000_000_000;
+  const json = (v: unknown) => JSON.stringify(v);
+  const noSlash = (s: string) => !s.includes("/") && !s.includes("://") && !s.includes("\\");
+  const guard = (over: Record<string, unknown> = {}) =>
+    updateGuard({
+      harnessSession: false,
+      bootVerdict: "recuperar",
+      runningVersion: "1.2.4",
+      offeredVersion: "1.2.4",
+      updateState: null,
+      ownerRelease: false,
+      ...over,
+    });
+
+  // 1. The full verdict table, in the documented rule order.
+  check(
+    "P2-291: an active harness session is seguir even with verdict recuperar and equal versions",
+    guard({ harnessSession: true }).decision === "seguir" && guard({ harnessSession: true }).reason === "harness",
+  );
+  check(
+    "P2-291: absent input and non-object input are seguir, never segurar",
+    updateGuard(undefined).decision === "seguir" &&
+      updateGuard(null).decision === "seguir" &&
+      updateGuard(42).decision === "seguir" &&
+      updateGuard("boom").decision === "seguir" &&
+      updateGuard([]).decision === "seguir",
+  );
+  check(
+    "P2-291: non-textual fields are seguir — holding by doubt would freeze the fleet on a defective version",
+    updateGuard({ bootVerdict: "recuperar", runningVersion: 7, offeredVersion: "1.2.4" }).decision === "seguir" &&
+      updateGuard({ bootVerdict: 7, runningVersion: "1.2.4" }).decision === "seguir" &&
+      updateGuard({ bootVerdict: "recuperar", runningVersion: "1.2.4", offeredVersion: 9 }).decision === "seguir" &&
+      updateGuard({ bootVerdict: "recuperar", runningVersion: "1.2.4", updateState: {} }).decision === "seguir",
+  );
+  check(
+    "P2-291: verdict normal and verdict suspeito are seguir",
+    guard({ bootVerdict: "normal" }).decision === "seguir" &&
+      guard({ bootVerdict: "normal" }).reason === "veredito" &&
+      guard({ bootVerdict: "suspeito", offeredVersion: "1.2.4" }).decision === "seguir",
+  );
+  check(
+    "P2-291: verdict recuperar with an offered version textually equal to the running one is recusar-oferta",
+    guard().decision === "recusar-oferta" && guard().reason === "mesma-versao",
+  );
+  check(
+    "P2-291: verdict recuperar with a different offered version is seguir — a new version is the escape route",
+    guard({ offeredVersion: "1.2.5" }).decision === "seguir" && guard({ offeredVersion: "1.2.5" }).reason === "nova-versao",
+  );
+  check(
+    "P2-291: no offer known yet under verdict recuperar is seguir",
+    guard({ offeredVersion: null }).decision === "seguir" && guard({ offeredVersion: null }).reason === "nova-versao",
+  );
+  check(
+    "P2-291: the owner release is seguir even with verdict recuperar and equal versions — the owner always wins",
+    guard({ ownerRelease: true }).decision === "seguir" && guard({ ownerRelease: true }).reason === "liberacao",
+  );
+  check(
+    "P2-291: rule order — harness session and verdict recuperar hold at the same time, harness wins",
+    guard({ harnessSession: true, bootVerdict: "recuperar", offeredVersion: "1.2.4" }).decision === "seguir",
+  );
+  check(
+    "P2-291: rule order — owner release and equal versions hold at the same time, release wins",
+    guard({ ownerRelease: true, bootVerdict: "recuperar", offeredVersion: "1.2.4" }).decision === "seguir" &&
+      guard({ ownerRelease: true, bootVerdict: "recuperar", offeredVersion: "1.2.4" }).reason === "liberacao",
+  );
+  check(
+    "P2-291: the same input in two calls yields an identical view",
+    json(guard()) === json(guard()) &&
+      json(updateGuard({ bootVerdict: "normal", runningVersion: "1.0.0", offeredVersion: null, updateState: null })) ===
+        json(updateGuard({ bootVerdict: "normal", runningVersion: "1.0.0", offeredVersion: null, updateState: null })),
+  );
+  check(
+    "P2-291: segurar stays documented but no rule emits it — the guard never holds by doubt",
+    [guard(), guard({ harnessSession: true }), guard({ ownerRelease: true }), guard({ offeredVersion: "1.2.5" }), updateGuard(null)].every(
+      (view) => view.decision !== "segurar",
+    ),
+  );
+
+  // 2. Copy hygiene: static pt-BR, path/address/secret-free, tray-budget sized.
+  const allGuardViews = [
+    guard({ harnessSession: true }),
+    guard({ bootVerdict: "normal" }),
+    guard(),
+    guard({ offeredVersion: "1.2.5" }),
+    guard({ ownerRelease: true }),
+    updateGuard(null),
+  ];
+  const allGuardCopy = [
+    ...allGuardViews.flatMap((v) => [v.label, v.phrase]),
+    UPDATE_GUARD_RELEASE_LABEL,
+    updateGuardReleaseLabel(),
+  ];
+  check(
+    "P2-291: every guard label and sentence is static, path-free, address-free and secret-free",
+    allGuardCopy.every(
+      (s) =>
+        noSlash(s) &&
+        !/[A-Za-z]:[\\/]/.test(s) &&
+        !s.includes("localhost") &&
+        !s.includes("127.0.0.1") &&
+        !/Bearer|apiToken|token/i.test(s),
+    ),
+  );
+  check(
+    "P2-291: every guard label fits inside the documented tray text budget",
+    allGuardViews.every((v) => v.label.length <= TRAY_TIP_MAX_CHARS && v.phrase.length <= TRAY_TIP_MAX_CHARS) &&
+      UPDATE_GUARD_RELEASE_LABEL.length <= TRAY_TIP_MAX_CHARS,
+  );
+  check(
+    "P2-291: the tray release label goes through the same tray.ts text mechanism (one source of truth, no emoji)",
+    updateGuardReleaseLabel() === UPDATE_GUARD_RELEASE_LABEL && UPDATE_GUARD_RELEASE_LABEL.startsWith("OpenCode Remote — "),
+  );
+
+  // 3. The real updateguard.ts source: no electron, node:fs, node:path, fetch.
+  const updateGuardSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "updateguard.ts"), "utf8");
+  check(
+    "P2-291: updateguard.ts imports no electron, node:fs, node:path nor fetch",
+    !/^\s*import\b.*(?:electron|node:fs|node:path|fetch)/m.test(updateGuardSrc) &&
+      !updateGuardSrc.includes("require(") &&
+      !updateGuardSrc.includes("fetch("),
+  );
+
+  // 4. The real main.ts wiring: the guard consulted before every check and
+  //    the automatic download, the recheck never interrupted on
+  //    recusar-oferta, and no new periodic timer anywhere in the guard lines.
+  const guardCallAt = mainTsSource.indexOf("const guard = updateGuard({");
+  const downloadCallAt = mainTsSource.indexOf("checkForUpdatesOnBoot({");
+  check(
+    "P2-291: main.ts consults the guard before every check and the automatic download",
+    guardCallAt >= 0 && guardCallAt < downloadCallAt && mainTsSource.indexOf("updateGuard: {", guardCallAt) > guardCallAt,
+  );
+  const runCheckSlice = mainTsSource.slice(
+    mainTsSource.indexOf("function runUpdateCheck"),
+    mainTsSource.indexOf("function scheduleNextUpdateCheck"),
+  );
+  check(
+    "P2-291: the check-time verdict never aborts the check — the refusal lives only in update.ts, download-only",
+    runCheckSlice.includes("const guard = updateGuard({") &&
+      !runCheckSlice.includes("guard.decision ===") &&
+      runCheckSlice.includes("updateGuard: {"),
+  );
+  const guardLines = mainTsSource
+    .split("\n")
+    .filter((l) => /updateGuard|update guard|ownerUpdateRelease|lastOfferedUpdateVersion/.test(l));
+  check(
+    "P2-291: the guard wiring introduces no periodic timer",
+    guardLines.length > 0 && guardLines.every((l) => !l.includes("setInterval") && !l.includes("setTimeout")),
+  );
+  const updateTsSource = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "update.ts"), "utf8");
+  const updateGuardAt = updateTsSource.indexOf("const guard = updateGuard({");
+  const versionGateAt = updateTsSource.indexOf("if (!isNewerVersion(current, feed.version))");
+  const refuseAt = updateTsSource.indexOf('return finish("update-not-available", feed.version)');
+  check(
+    "P2-291: the download-time consultation runs before the version comparison and refuses only the download",
+    updateGuardAt >= 0 && updateGuardAt < versionGateAt && refuseAt > updateGuardAt,
+  );
+  check(
+    "P2-291: a refused check resolves like no-update, so the periodic recheck keeps running untouched",
+    nextCheckDelayMs("update-not-available", 0, Math.random) !== null,
+  );
+  const traySliceP291 = mainTsSource.slice(mainTsSource.indexOf("function trayMenuItems"));
+  const alarmAt = traySliceP291.indexOf("bootHealthAlarmLabel");
+  const releaseItemAt = traySliceP291.indexOf('updateGuardVerdict === "recusar-oferta"');
+  const releaseLabelAt = traySliceP291.indexOf("updateGuardReleaseLabel()");
+  check(
+    "P2-291: the release tray item exists only on recusar-oferta, beside the alarm label, and records + rechecks",
+    alarmAt >= 0 &&
+      releaseItemAt > alarmAt &&
+      releaseLabelAt > releaseItemAt &&
+      traySliceP291.indexOf("writeOwnerRelease({", releaseItemAt) > releaseItemAt &&
+      traySliceP291.indexOf("checkForUpdates()", releaseItemAt) > releaseItemAt,
+  );
+
+  // 5. The owner release mark in the existing store: tolerant read, additive
+  //    write, carried over by every existing write path — no new file, no
+  //    migration.
+  const memoryFs = () => {
+    const files = new Map<string, string>();
+    const fs: BootHealthFs = {
+      readFileSync: (file) => {
+        const value = files.get(file);
+        if (value === undefined) {
+          const err = new Error("ENOENT") as NodeJS.ErrnoException;
+          err.code = "ENOENT";
+          throw err;
+        }
+        return value;
+      },
+      writeFileSync: (file, data) => {
+        files.set(file, data);
+      },
+      renameSync: (from, to) => {
+        const value = files.get(from);
+        if (value === undefined) throw new Error("missing tmp");
+        files.delete(from);
+        files.set(to, value);
+      },
+      unlinkSync: (file) => {
+        files.delete(file);
+      },
+    };
+    return { files, fs };
+  };
+  const guardFile = bootHealthRecordFile("/ud");
+  check(
+    "P2-291: readOwnerRelease — absent, corrupted and non-boolean fields all mean no release",
+    readOwnerRelease(undefined) === false &&
+      readOwnerRelease(null) === false &&
+      readOwnerRelease("x") === false &&
+      readOwnerRelease([]) === false &&
+      readOwnerRelease({}) === false &&
+      readOwnerRelease({ ownerRelease: "yes" }) === false &&
+      readOwnerRelease({ ownerRelease: 1 }) === false &&
+      readOwnerRelease({ ownerRelease: true }) === true,
+  );
+  {
+    const { files, fs } = memoryFs();
+    const outcome = writeOwnerRelease({ file: guardFile, fs, harnessSession: false, runningVersion: "1.2.4", nowMs: now });
+    const stored = JSON.parse(files.get(guardFile) ?? "null") as StoredBootHealthRecord | null;
+    check(
+      "P2-291: the release lands as ONE additive field of the existing record — no new file",
+      outcome.written &&
+        stored !== null &&
+        stored.lastSeenVersion === "1.2.4" &&
+        stored.unmatchedOpenings === 0 &&
+        stored.ownerRelease === true &&
+        [...files.keys()].every((k) => k === guardFile || k === `${guardFile}.tmp`),
+    );
+    check(
+      "P2-291: a legacy record without the field stays legible without migration",
+      readOwnerRelease(readBootHealthRecord(guardFile, memoryFs().fs)) === false &&
+        readBootHealthRecord(guardFile, fs) !== null,
+    );
+  }
+  {
+    const { fs } = memoryFs();
+    const harness = writeOwnerRelease({ file: guardFile, fs, harnessSession: true, runningVersion: "1.2.4", nowMs: now });
+    const clock = writeOwnerRelease({ file: guardFile, fs, harnessSession: false, runningVersion: "1.2.4", nowMs: Number.NaN });
+    check(
+      "P2-291: a harness session writes no release and a broken clock refuses instead of guessing",
+      !harness.written && harness.reason === "harness" && !clock.written && clock.reason === "relogio",
+    );
+  }
+  {
+    const { files, fs } = memoryFs();
+    writeOwnerRelease({ file: guardFile, fs, harnessSession: false, runningVersion: "1.2.4", nowMs: now });
+    const stored = readBootHealthRecord(guardFile, fs);
+    const verdict = bootHealthVerdict({ harnessSession: false, runningVersion: "1.2.4", record: stored, nowMs: now, floor: 3 });
+    markOpeningInProgress({
+      file: guardFile,
+      fs,
+      harnessSession: false,
+      runningVersion: "1.2.4",
+      base: verdict.record,
+      effectiveCount: verdict.count,
+      nowMs: now,
+    });
+    const afterMark = readBootHealthRecord(guardFile, fs);
+    promoteHealthyOpening({ file: guardFile, fs, harnessSession: false, runningVersion: "1.2.4", nowMs: now });
+    const afterPromote = readBootHealthRecord(guardFile, fs);
+    check(
+      "P2-291: every existing write path carries the release mark over — a boot or a promotion never erases the owner's choice",
+      readOwnerRelease(afterMark) && readOwnerRelease(afterPromote),
+    );
+    check(
+      "P2-291: boothealth.ts stays untouched — normalize drops the additive tail, absence reproduces the legacy record byte-a-byte",
+      json(normalizeBootHealthRecord({ lastSeenVersion: "1.2.4", unmatchedOpenings: 1, lastOpeningAt: now }, now)) ===
+        json({ lastSeenVersion: "1.2.4", unmatchedOpenings: 1, lastOpeningAt: now }),
+    );
+  }
+  check(
+    "P2-291: the diagnostics bundle gains exactly one additive guard line — state and reason only",
+    (() => {
+      const report = buildDiagnosticReport({
+        appVersion: "0.2.0",
+        electronVersion: "44.1.1",
+        platform: "darwin arm64",
+        locale: "pt-BR",
+        packaged: true,
+        userData: "/u",
+        daemon: { healthy: true, down: false, reconnecting: false, attempts: 0, port: 8792, portReason: null },
+        logTail: [],
+        sidecarLogTail: [],
+        crashFiles: [],
+        updateStatus: null,
+        updateGuard: { state: "recusar-oferta", reason: "mesma-versao" },
+      });
+      const bare = buildDiagnosticReport({
+        appVersion: "0.2.0",
+        electronVersion: "44.1.1",
+        platform: "darwin arm64",
+        locale: "pt-BR",
+        packaged: true,
+        userData: "/u",
+        daemon: { healthy: true, down: false, reconnecting: false, attempts: 0, port: 8792, portReason: null },
+        logTail: [],
+        sidecarLogTail: [],
+        crashFiles: [],
+        updateStatus: null,
+      });
+      return (
+        report.includes("update guard: recusar-oferta (mesma-versao)") &&
+        bare.includes("update guard: unknown") &&
+        (bare.match(/update guard:/g) ?? []).length === 1 &&
+        (report.match(/update guard:/g) ?? []).length === 1
+      );
+    })(),
+  );
+  check(
+    "P2-291: main.ts mirrors the guard verdict and reason into the diagnostics input",
+    mainTsSource.includes("updateGuard: updateGuardVerdict ? { state: updateGuardVerdict, reason: updateGuardReason ?? \"\" } : null"),
   );
 }
 
