@@ -86,7 +86,11 @@ private. That is the product: **local power, remote control, zero trust**.
   a short actionable sentence from the daemon instead of recording into a dead
   end — and the daemon serves the same verdict on
   `GET /__ocr/voice/stt-status` (`{ available, state, message }`, mirroring the
-  tts-status route). Install it on the host with `./scripts/setup-whisper.sh`.
+  tts-status route). Since P2-296 the same verdict also rides `GET /api/health`
+  (`voiceState` / `voiceMessage` / `voiceCheckedAt`) and the
+  `GET /__ocr/settings` channel the Settings screen reads — the Machine-state
+  voice line is a declared continuation until apps/web gains the key. Install
+  it on the host with `./scripts/setup-whisper.sh`.
   `OCR_STT_BLOCK=1` on the daemon is a test hatch that forces the
   missing-binary verdict so the disabled-mic UI can be evidenced
   deterministically even on hosts that do have whisper installed
@@ -158,7 +162,8 @@ private. That is the product: **local power, remote control, zero trust**.
   (voice transcription, document→PDF conversion, opencode version) are still
   probed once at boot, but they are no longer frozen: right before the daemon
   answers "this machine can't do that" (a voice transcription refused, the
-  health/settings read of the conversion or version verdict) it re-probes the
+  health/settings read of the conversion, version or voice verdict) it
+  re-probes the
   capability lazily, at most **once per minute per capability** — so
   installing LibreOffice or whisper, or updating opencode, is picked up
   without restarting the daemon. A verdict that already works is never

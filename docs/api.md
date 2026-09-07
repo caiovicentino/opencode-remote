@@ -118,8 +118,9 @@ its exact shape.
 
 The verdicts themselves are no longer frozen at the boot probe: the daemon
 re-probes a capability lazily, right before it answers with a refusal
-(voice transcription 501) or serves the verdict (health route: doc conversion
-+ version; `/__ocr/settings`: version), at most once per
+(voice transcription 501) or serves the verdict (health route: doc conversion,
+version and voice; `/__ocr/settings`: version, doc conversion, browse and
+voice), at most once per
 `OCR_READINESS_MIN_MS` per capability (whole milliseconds, default 60000,
 ceiling 3600000; invalid values fail the boot, fail-closed). A verdict that
 already works is never re-probed and a probe in flight is never duplicated.
@@ -142,6 +143,22 @@ to open sites BEFORE the user asks, and installing the Playwright browser
 afterwards is picked up without a restart. No phrase ever carries a path,
 port, address, environment variable or the raw error tail.
 
+### `/api/health` — voice-transcription readiness (P2-296)
+
+`GET /api/health` adds three additive fields for the voice capability (no
+existing field is removed, renamed or repositioned): `voiceState`
+(`ready` | `missing-binary` | `missing-model`), `voiceMessage` (short pt-BR
+sentence, same register as the other verdicts) and `voiceCheckedAt` (ISO
+instant, `null` before the first probe). The verdict is probed once at boot on
+the same readiness hook as the other capabilities and re-probed lazily on this
+route and on the settings read under the same `OCR_READINESS_MIN_MS` /
+`OCR_READINESS_DISABLE` policy — the machine no longer claims all-clear while
+it cannot hear, and installing whisper or its model afterwards is picked up
+without a restart. The documented `OCR_STT_BLOCK=1` hatch keeps forcing the
+missing-binary verdict for these fields too. No phrase ever carries an
+absolute path, a model file name, an install script name, a port, an address,
+a raw environment variable or a secret.
+
 ### `/__ocr/settings` — machine-readiness mirror (P2-288)
 
 `GET /__ocr/settings` carries the document-conversion and site-navigation
@@ -156,8 +173,11 @@ announcing readiness. Since P2-292 the relay and agent verdicts ride this
 same channel additively — `relay` (`ok` + `reason`, the health relay object
 minus the address, which never rides) and `opencode` (`binaryFound` +
 `binarySource`) — so the panel's first two lines reach a lay user, and no
-line besides these two stays pending. No existing field of the response is
-renamed, removed or repositioned.
+line besides these two stays pending. Since P2-296 the voice pair rides the
+same rules too — `voiceState` / `voiceMessage`, appended last; the Settings
+**Machine state** voice line remains a declared continuation until apps/web
+gains the corresponding key. No existing field of the response is renamed,
+removed or repositioned.
 
 ### Pairing state (P2-007)
 

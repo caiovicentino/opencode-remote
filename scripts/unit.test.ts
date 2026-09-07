@@ -23435,16 +23435,18 @@ check("P2-241: no new periodic timer was introduced by the handler", !dlBlock.in
   // settings read. P2-284 adds the browse verdict on the health route as the
   // fifth use point. P2-288 is the sanctioned continuation: the settings read
   // now revalidates doc-convert and browse at the same point it answers them,
-  // so the count is seven.
+  // so the count is seven. P2-296 is the same sanctioned continuation for the
+  // voice verdict: the health route and the settings read both revalidate the
+  // transcription at the same point they answer it, so the count is nine.
   {
     const lines = code.split("\n");
     const callLines = lines.filter((l) =>
       /maybeReprobe(?:Transcription|DocConvert|OpencodeVersion|Browse)\(/.test(l) && !l.includes("function maybeReprobe"),
     );
     check(
-      "P2-250: revalidation fires at exactly seven use points (transcribe refusal, health ×3, settings ×3)",
-      callLines.length === 7 &&
-        callLines.filter((l) => l.includes("maybeReprobeTranscription")).length === 1 &&
+      "P2-250: revalidation fires at exactly nine use points (transcribe refusal + health ×4, settings ×4)",
+      callLines.length === 9 &&
+        callLines.filter((l) => l.includes("maybeReprobeTranscription")).length === 3 &&
         callLines.filter((l) => l.includes("maybeReprobeDocConvert")).length === 2 &&
         callLines.filter((l) => l.includes("maybeReprobeOpencodeVersion")).length === 2 &&
         callLines.filter((l) => l.includes("maybeReprobeBrowse")).length === 2,
@@ -27176,6 +27178,303 @@ import { settingsMirror } from "../apps/daemon/src/settingsmirror";
     "P2-292: no new periodic timer — the handler has none and the module keeps exactly the five pre-existing ones",
     !/setInterval|setTimeout/.test(p292Handler) &&
       (p292IndexSrc.match(/setInterval\(/g) || []).length === 5,
+  );
+}
+
+// P2-296: the voice-transcription readiness rides /api/health and the
+// settings mirror — the canonical blocks for the test:unit chain
+// (scripts/settingsmirror.test.ts is the portable twin for the P2-237
+// sub-battery). Fixtures copied from the real author: the three phrases are
+// the voicecap.ts constants verbatim (the mirror only passes them through,
+// never rewrites them), and the dirty phrase is what a leak would look like.
+{
+  const json = (v: unknown) => JSON.stringify(v);
+  const VOICE = {
+    ready: "Transcrição de voz pronta neste computador.",
+    missingBinary:
+      "A transcrição de voz ainda não está instalada neste computador — peça a quem gerencia a máquina para instalar o recurso de voz.",
+    missingModel:
+      "O computador tem o motor de transcrição, mas falta o modelo de voz — quem gerencia a máquina precisa concluir a instalação.",
+  };
+  const DOC296 = {
+    complete: "Conversão de documentos em PDF pronta neste computador.",
+    partial:
+      "A conversão de documentos neste computador cobre apenas alguns formatos — instale o LibreOffice para converter qualquer documento em PDF.",
+  };
+  const BROWSE296 = {
+    ready: "Navegação de sites pronta neste computador.",
+    noBrowser:
+      "Este computador ainda não tem navegador para abrir sites — instalar o navegador do Playwright é opcional e fica a cargo de quem gerencia a máquina.",
+  };
+  const RELAY_DOWN_296 = { ok: false, reason: "Endereço do relay recusado na partida — recusando discar (fail-closed)" };
+  const AGENT_PATH_296 = { binaryFound: true, binarySource: "path" };
+
+  // Rule 1 — absent and non-object inputs yield the empty set.
+  check(
+    "P2-296: missing input yields the empty set",
+    json(settingsMirror()) === "{}" && json(settingsMirror(undefined)) === "{}" && json(settingsMirror(null)) === "{}",
+  );
+  check(
+    "P2-296: non-object input yields the empty set",
+    ["voice snapshot", 42, true, [], ["ready"]].every((v) => json(settingsMirror(v)) === "{}"),
+  );
+
+  // Rule 1 — a present non-textual voice field breaks the snapshot contract
+  // and yields the empty set (a malformed field never becomes a field).
+  check(
+    "P2-296: a non-textual voice field never becomes a field",
+    json(settingsMirror({ voiceState: 42, voiceMessage: VOICE.ready })) === "{}" &&
+      json(settingsMirror({ voiceState: true, voiceMessage: VOICE.ready })) === "{}" &&
+      json(settingsMirror({ voiceState: "ready", voiceMessage: null })) === "{}" &&
+      json(settingsMirror({ voiceState: ["ready"], voiceMessage: VOICE.ready })) === "{}",
+  );
+
+  // Rule 2 — a voice verdict outside the documented table yields no field.
+  check(
+    "P2-296: voice verdicts outside the documented table yield no field",
+    ["warp-speed", "", "Ready", "missing_binary", "ready ", "unavailable"].every(
+      (state) => json(settingsMirror({ voiceState: state, voiceMessage: VOICE.ready })) === "{}",
+    ),
+  );
+
+  // Rule 3 — a never-measured voice capability stays silent (fail-closed):
+  // no state member, no field, ever.
+  check(
+    "P2-296: a never-measured voice capability yields no field instead of one announcing readiness",
+    json(settingsMirror({ voiceState: "unknown", voiceMessage: VOICE.ready })) === "{}" &&
+      json(settingsMirror({ voiceMessage: VOICE.ready })) === "{}",
+  );
+
+  // Rule 4 — each of the three documented verdicts becomes exactly state +
+  // phrase, verbatim, the same names and values /api/health publishes.
+  check(
+    "P2-296: each documented voice verdict becomes exactly state + phrase, verbatim",
+    json(settingsMirror({ voiceState: "ready", voiceMessage: VOICE.ready })) ===
+      json({ voiceState: "ready", voiceMessage: VOICE.ready }) &&
+      json(settingsMirror({ voiceState: "missing-binary", voiceMessage: VOICE.missingBinary })) ===
+        json({ voiceState: "missing-binary", voiceMessage: VOICE.missingBinary }) &&
+      json(settingsMirror({ voiceState: "missing-model", voiceMessage: VOICE.missingModel })) ===
+        json({ voiceState: "missing-model", voiceMessage: VOICE.missingModel }),
+  );
+
+  // The five capabilities together: the P2-288 and P2-292 mirrorings keep
+  // their exact names, values and order, and the voice pair appends last.
+  const five = settingsMirror({
+    docConvertState: "complete",
+    docConvertMessage: DOC296.complete,
+    browseState: "ready",
+    browseMessage: BROWSE296.ready,
+    relay: RELAY_DOWN_296,
+    opencode: AGENT_PATH_296,
+    voiceState: "missing-model",
+    voiceMessage: VOICE.missingModel,
+  });
+  check(
+    "P2-296: the five capabilities coexist and the P2-288/P2-292 mirroring loses no field",
+    json(five) ===
+      json({
+        docConvertState: "complete",
+        docConvertMessage: DOC296.complete,
+        browseState: "ready",
+        browseMessage: BROWSE296.ready,
+        relay: RELAY_DOWN_296,
+        opencode: AGENT_PATH_296,
+        voiceState: "missing-model",
+        voiceMessage: VOICE.missingModel,
+      }) &&
+      Object.keys(five).join(",") ===
+        "docConvertState,docConvertMessage,browseState,browseMessage,relay,opencode,voiceState,voiceMessage",
+  );
+
+  // Rule order proven: a measured voice and an out-of-table capability
+  // coexist (and the mirror image of that case) — one silent capability
+  // never takes the other down.
+  const orderVoice = settingsMirror({ voiceState: "ready", voiceMessage: VOICE.ready, relay: { ok: 1, reason: null } });
+  const orderDoc = settingsMirror({
+    voiceState: "warp-speed",
+    voiceMessage: VOICE.ready,
+    docConvertState: "partial",
+    docConvertMessage: DOC296.partial,
+  });
+  check(
+    "P2-296: rule order — a measured voice and an out-of-table capability coexist (and vice versa)",
+    json(orderVoice) === json({ voiceState: "ready", voiceMessage: VOICE.ready }) &&
+      json(orderDoc) === json({ docConvertState: "partial", docConvertMessage: DOC296.partial }),
+  );
+
+  // Privacy boundary proven against a leak-shaped input: the phrase carries
+  // an absolute model path, a model file name, an install script name and a
+  // port — the whole voice verdict stays silent and nothing of it survives
+  // anywhere in the output (the measured doc capability is unaffected).
+  const dirty =
+    "Modelo de voz em /Users/caio/.opencode-remote/models/ggml-base.bin — rode scripts/setup-whisper.sh no host e confira a porta 8792";
+  const dirtyOut = settingsMirror({
+    voiceState: "missing-model",
+    voiceMessage: dirty,
+    docConvertState: "partial",
+    docConvertMessage: DOC296.partial,
+  });
+  check(
+    "P2-296: a voice phrase carrying an absolute model path, script name and port silences the verdict",
+    json(dirtyOut) === json({ docConvertState: "partial", docConvertMessage: DOC296.partial }),
+  );
+
+  // Hygiene: no returned value ever carries a path, script name, port,
+  // address, raw env variable or secret (nested relay/opencode entries
+  // flattened, same discipline as the P2-292 privacy case).
+  const flat296: string[] = [];
+  const collect296 = (v: unknown): void => {
+    if (v === null || v === undefined) return;
+    if (typeof v === "object") for (const x of Object.values(v as Record<string, unknown>)) collect296(x);
+    else flat296.push(String(v));
+  };
+  for (const m of [
+    settingsMirror({ voiceState: "ready", voiceMessage: VOICE.ready }),
+    settingsMirror({ voiceState: "missing-binary", voiceMessage: VOICE.missingBinary }),
+    settingsMirror({ voiceState: "missing-model", voiceMessage: VOICE.missingModel }),
+    five,
+    dirtyOut,
+  ]) {
+    collect296(m);
+  }
+  const allVoiceValues: string[] = flat296;
+  check(
+    "P2-296: no returned value contains a path, script name, port, address, env variable or secret",
+    allVoiceValues.length > 0 &&
+      allVoiceValues.every(
+        (v) =>
+          !v.includes("/") &&
+          !v.includes("\\") &&
+          !v.includes("://") &&
+          !v.includes("127.0.0.1") &&
+          !v.includes("8792") &&
+          !v.includes("localhost") &&
+          !v.includes(".sh") &&
+          !v.includes(".bin") &&
+          !v.includes("$") &&
+          !v.includes("Bearer") &&
+          !v.includes("token"),
+      ),
+  );
+
+  // Rule 5 — the same input yields the identical result on two calls.
+  const voiceSnap = {
+    docConvertState: "partial",
+    docConvertMessage: DOC296.partial,
+    browseState: "no-browser",
+    browseMessage: BROWSE296.noBrowser,
+    relay: RELAY_DOWN_296,
+    opencode: AGENT_PATH_296,
+    voiceState: "missing-binary",
+    voiceMessage: VOICE.missingBinary,
+  };
+  check("P2-296: the same input yields the identical result on two calls", json(settingsMirror(voiceSnap)) === json(settingsMirror(voiceSnap)));
+
+  // Robustness: no input shape ever throws.
+  let voiceMirrorThrew = false;
+  try {
+    for (const input of [NaN, new Date(), () => 1, { voiceState: {} }, { voiceMessage: Symbol("x") }, { voiceState: "ready" }]) {
+      settingsMirror(input);
+    }
+  } catch {
+    voiceMirrorThrew = true;
+  }
+  check("P2-296: robustness — no input shape ever throws", !voiceMirrorThrew);
+
+  // Real-repo assertions on the daemon wiring: both the /api/health readiness
+  // block and the settings GET handler publish the additive voice fields, keep
+  // every existing field in place, run the lazy transcription re-probe at that
+  // same point under the shared readiness policy and introduce no periodic
+  // timer and no new re-probe log line.
+  const idx296 = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  const healthAt = idx296.indexOf('seg[1] === "health"');
+  const mcpAt = idx296.indexOf('seg[1] === "mcp"');
+  const health = healthAt >= 0 && mcpAt > healthAt ? idx296.slice(healthAt, mcpAt) : "";
+  check(
+    "P2-296: /api/health publishes the three additive voice fields from the hatch-aware sttStatus()",
+    health.includes("const stt = sttStatus();") &&
+      health.includes("voiceState: stt.state") &&
+      health.includes("voiceMessage: stt.message") &&
+      health.includes("voiceCheckedAt: readinessCheckedAt(readinessState.transcription.probedAt)"),
+  );
+  check(
+    "P2-296: the voice fields are appended after the existing health fields — none renamed, removed or repositioned",
+    [
+      "docConvertState: docConvert.state",
+      "docConvertMessage: docConvert.message",
+      "docConvertExts: docConvert.exts",
+      'docConvertCheckedAt: readinessCheckedAt(readinessState["doc-convert"].probedAt)',
+      "browseState: browseCap.state",
+      "browseMessage: browseCap.message",
+      "browseCheckedAt: readinessCheckedAt(readinessState.browse.probedAt)",
+      "voiceState: stt.state",
+    ].every((f, i, arr) => health.includes(f) && (i === 0 || health.indexOf(arr[i - 1]) < health.indexOf(f))),
+  );
+  check(
+    "P2-296: the lazy transcription re-probe runs in the health block, under the shared readiness policy",
+    health.includes("await maybeReprobeTranscription();") &&
+      health.indexOf("await maybeReprobeBrowse();") < health.indexOf("await maybeReprobeTranscription();") &&
+      health.indexOf("await maybeReprobeTranscription();") < health.indexOf("const stt = sttStatus();") &&
+      idx296.includes("readinessRefreshPlan(") &&
+      idx296.includes("parseReadinessKnobs(process.env)"),
+  );
+  check("P2-296: no periodic timer in the health block", !/setInterval|setTimeout/.test(health));
+
+  const get296At = idx296.indexOf('req.path === "/__ocr/settings" && req.method === "GET"');
+  const patch296At = idx296.indexOf('req.path === "/__ocr/settings" && req.method === "PATCH"');
+  const settings296 = get296At >= 0 && patch296At > get296At ? idx296.slice(get296At, patch296At) : "";
+  check(
+    "P2-296: the settings GET handler sources the voice pair through settingsMirror",
+    settings296.includes("...settingsMirror({") &&
+      settings296.indexOf("opencode: {") < settings296.indexOf("voiceState: stt.state") &&
+      settings296.indexOf("voiceState: stt.state") < settings296.indexOf("voiceMessage: stt.message"),
+  );
+  check(
+    "P2-296: no existing settings field is renamed, removed or repositioned",
+    settings296.indexOf("...readSettings()") < settings296.indexOf("version: VERSION") &&
+      settings296.indexOf("version: VERSION") < settings296.indexOf("opencodeVersion: opencodeVersion") &&
+      settings296.indexOf("opencodeVersion: opencodeVersion") < settings296.indexOf("disk: diskStatus()") &&
+      settings296.indexOf("disk: diskStatus()") < settings296.indexOf("...settingsMirror({") &&
+      settings296.indexOf("...settingsMirror({") < settings296.indexOf("relay: {") &&
+      settings296.indexOf("relay: {") < settings296.indexOf("opencode: {") &&
+      settings296.indexOf("opencode: {") < settings296.indexOf("voiceState: stt.state"),
+  );
+  check(
+    "P2-296: the lazy transcription re-probe runs in the settings handler before the mirror answers",
+    settings296.includes("await maybeReprobeTranscription();") &&
+      settings296.indexOf("await maybeReprobeBrowse();") < settings296.indexOf("await maybeReprobeTranscription();") &&
+      settings296.indexOf("await maybeReprobeTranscription();") < settings296.indexOf("...settingsMirror({"),
+  );
+  check(
+    "P2-296: no new periodic timer — the handlers have none and the daemon keeps exactly the five pre-existing ones",
+    !/setInterval|setTimeout/.test(settings296) && (idx296.match(/setInterval\(/g) || []).length === 5,
+  );
+  check(
+    "P2-296: no new re-probe log line — the transcription re-probe keeps its one-line policy (three capabilities total)",
+    idx296.split("\n").filter((l) => l.includes("readiness re-probe")).length === 3,
+  );
+
+  // Real-repo assertion on the module itself: still pure, and the voice table
+  // plus the path-material boundary are written where the contract lives.
+  const mirror296Src = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "settingsmirror.ts"), "utf8");
+  const mirror296Code = mirror296Src
+    .split("\n")
+    .filter((l) => !l.trim().startsWith("//"))
+    .join("\n");
+  check(
+    "P2-296: purity — settingsmirror.ts still imports no node:fs, node:http, node:child_process or fetch",
+    !/^import\b/m.test(mirror296Code) &&
+      !mirror296Code.includes("node:fs") &&
+      !mirror296Code.includes("node:http") &&
+      !mirror296Code.includes("node:child_process") &&
+      !mirror296Code.includes("fetch") &&
+      !mirror296Src.includes("require("),
+  );
+  check(
+    "P2-296: the module documents the voice table and the path-material privacy boundary",
+    mirror296Src.includes('const VOICE_STATES: readonly string[] = ["ready", "missing-binary", "missing-model"];') &&
+      mirror296Src.includes("PATH_MATERIAL") &&
+      mirror296Src.includes("voice transcription: \"ready\" | \"missing-binary\" | \"missing-model\""),
   );
 }
 

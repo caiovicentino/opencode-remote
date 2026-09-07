@@ -68,7 +68,12 @@ remoto, zero confiança**.
   desabilitado com uma frase curta e acionável do daemon em vez de gravar para
   falhar depois — e o daemon expõe o mesmo veredito em
   `GET /__ocr/voice/stt-status` (`{ available, state, message }`, espelhando a
-  rota de tts-status). Instale no host com `./scripts/setup-whisper.sh`.
+  rota de tts-status). Desde a P2-296 o mesmo veredito também viaja em
+  `GET /api/health` (`voiceState` / `voiceMessage` / `voiceCheckedAt`) e no
+  canal `GET /__ocr/settings` que a tela de Configurações já lê — a linha de
+  voz do Estado da máquina segue como continuação declarada até apps/web
+  ganhar a chave correspondente. Instale no host com
+  `./scripts/setup-whisper.sh`.
   `OCR_STT_BLOCK=1` no daemon é um hatch de teste que força o veredito
   missing-binary para evidência visual determinística
 - **Prontidão de modelo** — o composer avisa antes do primeiro envio quando a
@@ -142,8 +147,8 @@ remoto, zero confiança**.
   capacidade da máquina (transcrição de voz, conversão de documentos em PDF,
   versão do opencode) continuam sondados uma vez no boot, mas não ficam mais
   congelados: imediatamente antes de o daemon responder "esta máquina não faz
-  isso" (uma transcrição de voz recusada, a leitura do veredito de conversão
-  ou de versão na saúde/ajustes) ele volta a sondar a capacidade, no máximo
+  isso" (uma transcrição de voz recusada, a leitura do veredito de conversão,
+  versão ou voz na saúde/ajustes) ele volta a sondar a capacidade, no máximo
   **uma vez por minuto por capacidade** — instalar o LibreOffice ou o whisper,
   ou atualizar o opencode, passa a valer sem reiniciar o daemon. Veredito que
   já funciona nunca é re-sondado (o caminho feliz custa zero), sondagem em
