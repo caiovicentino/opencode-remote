@@ -414,6 +414,11 @@ export const dict = {
     voiceOutLang: "Reply voice",
     toolActivity: "tool activity",
     noToolCalls: "no tool calls observed yet",
+    // P2-281: in-conversation search bar
+    searchInChat: "Search in conversation…",
+    searchPrev: "Previous match",
+    searchNext: "Next match",
+    searchNoMatches: "no matches",
     refreshTools: "Refresh tool history",
     agentMode: "Agent mode",
     agentOption: "agent",
@@ -929,6 +934,11 @@ export const dict = {
     voiceOutLang: "Voz das respostas",
     toolActivity: "atividade de tools",
     noToolCalls: "nenhuma tool chamada ainda",
+    // P2-281: in-conversation search bar
+    searchInChat: "Buscar na conversa…",
+    searchPrev: "Ocorrência anterior",
+    searchNext: "Próxima ocorrência",
+    searchNoMatches: "nada encontrado",
     refreshTools: "Atualizar histórico de tools",
     agentMode: "Modo do agente",
     agentOption: "agente",
