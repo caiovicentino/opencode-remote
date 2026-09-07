@@ -530,7 +530,13 @@ before `gh release upload` — never as a published "app is damaged" surprise. A
 **ad-hoc** release is held to the ad-hoc bar: the signature itself must verify
 and the tools must produce readable verdicts, but spctl rejecting the build and
 an absent staple are exactly the documented right-click → **Open** flow, so the
-no-secrets release path stays green.
+no-secrets release path stays green. Since P2-295 the same three verdicts also
+run against the DMG **container** you actually download (`spctl -t open` and
+`stapler validate` on the image itself, not just the inner app), so a green
+release means the double-clicked file carries a valid signature — and, on a
+notarized release, its own stapled ticket that lets it launch offline without
+the "app is damaged" wall, while on an ad-hoc container the expected rejection
+still just means right-click → **Open** once.
 
 Homebrew users get the same code via the `Formula/opencode-remote.rb` formula
 (AGPL-3.0-only, checksum pinned automatically by the release pipeline at tag

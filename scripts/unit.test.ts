@@ -896,7 +896,7 @@ import { imageSmokeVerdict } from "./relay-image-smoke";
 import { expectedAssets, missingAssets, tagProblems } from "./release-assets";
 import { publishDecision } from "./release-publish";
 
-import { gatekeeperProblems } from "./gatekeeper-verify";
+import { dmgProblems, gatekeeperProblems } from "./gatekeeper-verify";
 
 import { authenticodeProblems } from "./authenticode-verify";
 
@@ -15367,6 +15367,244 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       gatekeeperBlock.includes("steps.signing.outputs.mode") &&
       gatekeeperBlock.includes("steps.signing.outputs.notarize"),
     JSON.stringify(gatekeeperBlock),
+  );
+}
+
+// --- P2-295: gatekeeper-verify — the distributed DMG container gets the same Gatekeeper gate
+{
+  // Realistic tool outputs of a healthy Developer ID + notarized run against
+  // the DMG container itself (spctl with -t open, stapler validate on the
+  // image).
+  const healthyDmg = {
+    mode: "developer-id",
+    notarizeRequested: true,
+    codesign: "apps/desktop/dist/OpenCode Remote-1.2.3-arm64.dmg: valid on disk\n",
+    spctl: "apps/desktop/dist/OpenCode Remote-1.2.3-arm64.dmg: accepted\nsource=Notarized Developer ID\norigin=Notarized Developer ID: Example (TEAM1234)\n",
+    stapler: "The validate action worked for apps/desktop/dist/OpenCode Remote-1.2.3-arm64.dmg\n",
+  };
+
+  check(
+    "P2-295: developer-id + notarization + success outputs of all three tools on the container → no problems",
+    dmgProblems(healthyDmg).length === 0,
+    JSON.stringify(dmgProblems(healthyDmg)),
+  );
+
+  // The documented no-secrets path: ad-hoc container, no notarization. spctl
+  // rejecting the image and the missing staple are EXPECTED there (right-click
+  // → Open); the signature itself must still verify.
+  const adhocDmg = dmgProblems({
+    mode: "adhoc",
+    notarizeRequested: false,
+    codesign: healthyDmg.codesign,
+    spctl: "apps/desktop/dist/OpenCode Remote-1.2.3-arm64.dmg: rejected (the code is valid but does not seem to be an applet)\n",
+    stapler: "apps/desktop/dist/OpenCode Remote-1.2.3-arm64.dmg does not have a ticket stapled to it.\n",
+  });
+  check(
+    "P2-295: ad-hoc container without notarization → no problem at all",
+    adhocDmg.length === 0,
+    JSON.stringify(adhocDmg),
+  );
+
+  // Rule 1: a mode outside the documented pair is a problem
+  const drifted = dmgProblems({ ...healthyDmg, mode: "self-signed" });
+  check(
+    "P2-295: unknown signing-profile mode → problem",
+    drifted.some((p) => p.includes("mode") && p.includes("self-signed")),
+    JSON.stringify(drifted),
+  );
+
+  // Rule 2: empty output of each of the three tools is fail-closed
+  for (const tool of ["codesign", "spctl", "stapler"] as const) {
+    const problems = dmgProblems({ ...healthyDmg, [tool]: "" });
+    check(
+      `P2-295: empty ${tool} output on the container → problem (fail-closed)`,
+      problems.some((p) => p.startsWith(`${tool}:`) && p.includes("no output")),
+      JSON.stringify(problems),
+    );
+  }
+
+  // Rule 2: unrecognizable output is fail-closed too (Apple rewording must fail loudly)
+  const gibberish = dmgProblems({ ...healthyDmg, stapler: "the image seems fine, trust me\n" });
+  check(
+    "P2-295: unrecognizable stapler output on the container → problem",
+    gibberish.some((p) => p.startsWith("stapler:") && p.includes("unrecognizable")),
+    JSON.stringify(gibberish),
+  );
+
+  // Rule 3: an invalid signature is a problem
+  const invalid = dmgProblems({
+    ...healthyDmg,
+    codesign: "apps/desktop/dist/OpenCode Remote-1.2.3-arm64.dmg: code object is not signed at all\n",
+  });
+  check(
+    "P2-295: invalid codesign signature on the container → problem",
+    invalid.some((p) => p.startsWith("codesign:") && p.includes("failed")),
+    JSON.stringify(invalid),
+  );
+
+  // Rule 4: an spctl rejection is a problem in developer-id mode…
+  const rejectedDevId = dmgProblems({
+    ...healthyDmg,
+    spctl: "apps/desktop/dist/OpenCode Remote-1.2.3-arm64.dmg: rejected (the code is valid but does not seem to be an applet)\n",
+  });
+  check(
+    "P2-295: spctl rejected on the container in developer-id mode → problem",
+    rejectedDevId.some((p) => p.startsWith("spctl:") && p.includes("rejected")),
+    JSON.stringify(rejectedDevId),
+  );
+  // …and NOT a problem in ad-hoc mode
+  const rejectedAdhoc = dmgProblems({
+    ...healthyDmg,
+    mode: "adhoc",
+    notarizeRequested: false,
+    spctl: "apps/desktop/dist/OpenCode Remote-1.2.3-arm64.dmg: rejected (the code is valid but does not seem to be an applet)\n",
+  });
+  check(
+    "P2-295: spctl rejected on the container in ad-hoc mode → NOT a problem (right-click → Open is the documented flow)",
+    rejectedAdhoc.length === 0,
+    JSON.stringify(rejectedAdhoc),
+  );
+
+  // Rule 5: a missing ticket is a problem only when notarization was requested
+  const unstapled = dmgProblems({
+    ...healthyDmg,
+    stapler: "apps/desktop/dist/OpenCode Remote-1.2.3-arm64.dmg does not have a ticket stapled to it.\n",
+  });
+  check(
+    "P2-295: missing staple ticket on the container with notarization requested → problem",
+    unstapled.some((p) => p.startsWith("stapler:") && p.includes("ticket")),
+    JSON.stringify(unstapled),
+  );
+  const unstapledNoNotarize = dmgProblems({
+    ...healthyDmg,
+    notarizeRequested: false,
+    stapler: "apps/desktop/dist/OpenCode Remote-1.2.3-arm64.dmg does not have a ticket stapled to it.\n",
+  });
+  check(
+    "P2-295: missing staple ticket on the container without notarization requested → NOT a problem",
+    unstapledNoNotarize.length === 0,
+    JSON.stringify(unstapledNoNotarize),
+  );
+
+  // Rule order proven: an invalid mode AND an empty tool output hold at the
+  // same time — the mode problem is reported FIRST and both are cumulative.
+  const order = dmgProblems({ ...healthyDmg, mode: "self-signed", codesign: "" });
+  check(
+    "P2-295: rule order — mode problem comes first, empty-output problem is cumulative",
+    order.length === 2 && order[0]!.includes("mode") && order[1]!.startsWith("codesign:") && order[1]!.includes("no output"),
+    JSON.stringify(order),
+  );
+
+  // Pure: the same input yields the same problem list on every call
+  const twice = [dmgProblems(healthyDmg), dmgProblems(healthyDmg)];
+  check(
+    "P2-295: same input in two calls → identical result",
+    JSON.stringify(twice[0]) === JSON.stringify(twice[1]),
+    JSON.stringify(twice),
+  );
+
+  // --- CLI: the additive `dmg` invocation mode, old form untouched -----------
+  const repoRoot = join(import.meta.dirname, "..");
+  const tsxEntry = join(repoRoot, "node_modules", "tsx", "dist", "cli.mjs");
+  const script = join(repoRoot, "scripts", "gatekeeper-verify.ts");
+  const tmp = mkdtempSync(join("/tmp", "gatekeeper-dmg-"));
+  for (const [name, content] of [
+    ["codesign.txt", healthyDmg.codesign],
+    ["spctl.txt", healthyDmg.spctl],
+    ["stapler.txt", healthyDmg.stapler],
+    ["bad-stapler.txt", "apps/desktop/dist/OpenCode Remote-1.2.3-arm64.dmg does not have a ticket stapled to it.\n"],
+  ] as const) {
+    writeFileSync(join(tmp, name), content);
+  }
+  const runDmgCli = (args: string[]): { code: number; out: string } => {
+    try {
+      const out = execFileSync(process.execPath, [tsxEntry, script, ...args], { cwd: repoRoot, encoding: "utf8" });
+      return { code: 0, out };
+    } catch (err) {
+      const e = err as { status?: number; stdout?: Buffer; stderr?: Buffer };
+      return { code: e.status ?? -1, out: `${e.stdout ?? ""}${e.stderr ?? ""}` };
+    }
+  };
+  const dmgOk = runDmgCli(["dmg", "developer-id", "true", join(tmp, "codesign.txt"), join(tmp, "spctl.txt"), join(tmp, "stapler.txt")]);
+  check(
+    "P2-295: cli dmg mode exits 0 on a healthy developer-id container",
+    dmgOk.code === 0 && dmgOk.out.includes("gatekeeper-verify: OK") && dmgOk.out.includes("dmg container"),
+    dmgOk.out,
+  );
+  const dmgFail = runDmgCli(["dmg", "developer-id", "true", join(tmp, "codesign.txt"), join(tmp, "spctl.txt"), join(tmp, "bad-stapler.txt")]);
+  check(
+    "P2-295: cli dmg mode exits 1 listing every problem at once",
+    dmgFail.code === 1 && dmgFail.out.includes("gatekeeper-verify: FAIL") && dmgFail.out.includes("1 problem(s) found") && dmgFail.out.includes("stapler"),
+    dmgFail.out,
+  );
+  const oldForm = runDmgCli(["developer-id", "true", join(tmp, "codesign.txt"), join(tmp, "spctl.txt"), join(tmp, "stapler.txt")]);
+  check(
+    "P2-295: the original (bundle) cli invocation still works unchanged",
+    oldForm.code === 0 && oldForm.out.includes("gatekeeper-verify: OK") && oldForm.out.includes("bundle"),
+    oldForm.out,
+  );
+
+  // --- real-repo assertion: the desktop-dmg job gates the UPLOAD on the container too
+  const release = readFileSync(join(repoRoot, ".github", "workflows", "release.yml"), "utf8");
+  const dmgJobStart = release.indexOf("\n  desktop-dmg:");
+  const dmgJobEnd = release.indexOf("\n  desktop-win:");
+  const dmgJob = dmgJobStart > -1 && dmgJobEnd > dmgJobStart ? release.slice(dmgJobStart, dmgJobEnd) : "";
+  check("P2-295: release.yml still has the desktop-dmg job", dmgJob.length > 0);
+
+  const stepName = "- name: Gatekeeper verification of the distributed DMG";
+  const newStepCount = dmgJob.split(stepName).length - 1;
+  check("P2-295: the DMG verification step exists exactly once", newStepCount === 1, String(newStepCount));
+
+  const pkgStep = dmgJob.indexOf("- name: Gatekeeper verification of the packaged app");
+  const newStep = dmgJob.indexOf(stepName);
+  const attachStep = dmgJob.indexOf("- name: Attach DMG + update metadata to the GitHub release");
+  check(
+    "P2-295: the DMG verification sits after the packaged-app verification and before the release upload",
+    pkgStep > -1 && newStep > pkgStep && attachStep > newStep,
+    `pkg=${pkgStep} dmg=${newStep} attach=${attachStep}`,
+  );
+
+  const newBlock = newStep > -1 && attachStep > newStep ? dmgJob.slice(newStep, attachStep) : "";
+  check(
+    "P2-295: DMG verification step declares shell: bash and its own timeout-minutes (P2-245/P2-255 lessons)",
+    /^\s*shell:\s*bash\s*$/m.test(newBlock) && /^\s*timeout-minutes:\s*\d+\s*$/m.test(newBlock),
+    JSON.stringify(newBlock),
+  );
+  check(
+    "P2-295: DMG verification locates exactly one DMG and fails on zero or multiple",
+    newBlock.includes("find apps/desktop/dist -maxdepth 1 -type f -name '*.dmg'") &&
+      newBlock.includes('"$DMG_COUNT" != "1"') &&
+      newBlock.includes("exit 1"),
+    JSON.stringify(newBlock),
+  );
+  check(
+    "P2-295: DMG verification captures the three verdicts (stderr→stdout, -t open) and calls the container CLI",
+    newBlock.includes("codesign --verify --deep --strict") &&
+      newBlock.includes("spctl -a -vv -t open") &&
+      newBlock.includes("xcrun stapler validate") &&
+      (newBlock.match(/2>&1/g) ?? []).length === 3 &&
+      newBlock.includes("scripts/gatekeeper-verify.ts dmg") &&
+      newBlock.includes("steps.signing.outputs.mode") &&
+      newBlock.includes("steps.signing.outputs.notarize"),
+    JSON.stringify(newBlock),
+  );
+
+  // The P2-170 step must remain untouched: same three invocations, exec type,
+  // bundle CLI form, no container artifacts leaking in. The job-wide counts
+  // pin the exec/open split regardless of comment boundaries.
+  const nextStepAt = dmgJob.indexOf("- name:", pkgStep + 1);
+  const pkgBlock = pkgStep > -1 && nextStepAt > pkgStep ? dmgJob.slice(pkgStep, nextStepAt) : "";
+  check(
+    "P2-295: the packaged-app verification step is unchanged (exec type, bundle CLI form, no container capture)",
+    pkgBlock.includes("spctl -a -vv -t exec") &&
+      pkgBlock.includes("xcrun stapler validate") &&
+      pkgBlock.includes("codesign --verify --deep --strict") &&
+      pkgBlock.includes("codesign.txt spctl.txt stapler.txt") &&
+      !pkgBlock.includes("gatekeeper-verify.ts dmg") &&
+      !pkgBlock.includes(".dmg") &&
+      (dmgJob.match(/spctl -a -vv -t exec/g) ?? []).length === 1 &&
+      (dmgJob.match(/spctl -a -vv -t open/g) ?? []).length === 1,
+    JSON.stringify(pkgBlock),
   );
 }
 
