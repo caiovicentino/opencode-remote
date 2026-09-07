@@ -98,6 +98,7 @@ import { guestAttachDecision, guestNavigationDecision } from "./webviewguard";
 import { permissionDecision, requestingScheme } from "./permissions";
 import { loginItemSupported, logsDirPath, openLogsFolder, trayIconSource } from "./tray";
 import { trayStatus } from "./traystatus";
+import { shellLang, shellLabels, SUPPORTED_SHELL_LANGS, type ShellLangDecision, type ShellLabels } from "./shelllang";
 import { badgePlan, type BadgePlan } from "./badge";
 import { CLOSE_HINT_LOG, closeHintPlan, hintFlagPath, readHintFlag, writeHintFlag } from "./closehint";
 import { checkForUpdatesOnBoot, installBlocksUpdate, updatesEnabled, updateMenuLabel, type UpdateDialogSinks, type UpdateStatus, type WinInstallerRequest } from "./update";
@@ -179,6 +180,17 @@ let lastUpdateStatus: UpdateStatus | null = null;
 // the dock badge is (or would be) showing. Exposed via app:unreadBadge for
 // the desktop harness; never derived from the OS itself.
 let lastUnreadBadge = 0;
+// P2-276: the native shell's language (menu bar + tray). Resolved once at
+// boot from the OS locale (rule: no preference yet → the system decides) and
+// re-resolved on every ocr:shell-lang push the renderer sends after that —
+// the saved in-app choice always wins there. The tables for both surfaces
+// come from shelllang.ts; nothing below carries a literal phrase anymore.
+let shellLangState: ShellLangDecision = { lang: "en", origin: "default" };
+
+/** The vocabulary both OS surfaces share, for the current shell language. */
+function currentShellLabels(): ShellLabels {
+  return shellLabels(shellLangState.lang);
+}
 // P2-155: periodic update recheck. The app can stay alive for weeks with the
 // window closed to the tray (P2-152), so the boot-only check would pin the
 // installed version forever. `updateRecheckTimer` holds the single pending
@@ -1105,6 +1117,11 @@ async function onReady(): Promise<void> {
   });
   log(`[desktop] global hotkey: ${hotkey.register ? hotkey.accelerator : "off"} (${hotkey.reason})`);
   registerGlobalHotkey();
+  // P2-276: resolve the shell language ONCE at boot — no renderer preference
+  // has arrived yet, so the OS locale decides (shelllang.ts rules 3-4). The
+  // ocr:shell-lang pushes then apply the in-app choice on top of this.
+  shellLangState = shellLang(null, app.getLocale(), SUPPORTED_SHELL_LANGS);
+  log(`[desktop] shell language: ${shellLangState.lang} (${shellLangState.origin})`);
   buildMenu();
   buildTray();
   // P2-270: the boot-health recovery question — fire-and-forget; the
@@ -1410,6 +1427,21 @@ async function onReady(): Promise<void> {
   // P3-053: verification surface for tools/desktop.mjs ipc and the flow test —
   // reports the last count the renderer pushed (not an OS read-back).
   ipcMain.handle("app:unreadBadge", () => lastUnreadBadge);
+  // P2-276: the renderer publishes the language the app already chose — a
+  // one-way push, same pattern as the ocr:unread channel above. An invalid
+  // payload resolves exactly like an absent preference (the system language
+  // decides), and the menu bar + tray are rebuilt on every real change. No
+  // new routes, no new requests, no new timers.
+  ipcMain.on("ocr:shell-lang", (_e, raw: unknown) => {
+    const decision = shellLang(raw, app.getLocale(), SUPPORTED_SHELL_LANGS);
+    // The state records every accepted push (origin included) even when the
+    // language is unchanged — only the rebuild is lang-change-gated.
+    const langChanged = decision.lang !== shellLangState.lang;
+    shellLangState = decision;
+    if (!langChanged) return;
+    log(`[desktop] shell language: ${decision.lang} (${decision.origin})`);
+    applyShellLanguage();
+  });
   // Host self-approval: the desktop shell runs on the same machine that owns
   // daemon.json, so it may add its own client identity to the allowlist. The
   // daemon re-reads the allowlist file on every handshake (fresh read), so
@@ -1762,13 +1794,19 @@ function setPairingState(next: PairingState | null): void {
 let trayHealthy: boolean | null = null;
 let trayStatusKey: string | null = null;
 let trayMenuLine = trayStatus(false, null, 0).menuLine;
+// P2-276: the last state the pairing tick fed the tray with, so a language
+// push can re-run the SAME single write path without inventing new data.
+let trayLinkState: string | null = null;
+let trayPhones = 0;
 
 function updateTrayStatus(healthy: boolean, linkState: string | null, phones: number): void {
-  const status = trayStatus(healthy, linkState, phones);
+  trayHealthy = healthy;
+  trayLinkState = linkState;
+  trayPhones = phones;
+  const status = trayStatus(healthy, linkState, phones, currentShellLabels());
   const key = `${status.tooltip}\u0000${status.menuLine}`;
   if (trayStatusKey === key) return;
   trayStatusKey = key;
-  trayHealthy = healthy;
   trayMenuLine = status.menuLine;
   tray?.setToolTip(status.tooltip);
   log(`[desktop] tray status: ${status.tooltip}`);
@@ -2659,9 +2697,21 @@ function currentUpdateLabel(): string | null {
 function buildMenu(): void {
   Menu.setApplicationMenu(
     Menu.buildFromTemplate(
-      toElectronItems(menuSpec(process.platform, currentUpdateLabel(), updatesEnabled(), hotkey, zoomLevel)),
+      toElectronItems(
+        menuSpec(process.platform, currentUpdateLabel(), updatesEnabled(), hotkey, zoomLevel, currentShellLabels()),
+      ),
     ),
   );
+}
+
+// P2-276: rebuild both OS surfaces with the current shell language. The tray
+// dedup key holds the phrase text, so it resets before the re-run — the
+// language change must land even when the health state is unchanged. No new
+// timer, no new request: the same updateTrayStatus write path as always.
+function applyShellLanguage(): void {
+  buildMenu();
+  trayStatusKey = null;
+  updateTrayStatus(trayHealthy ?? false, trayLinkState, trayPhones);
 }
 
 // P3-015: prefer the monochrome template asset (build/trayTemplate.png;

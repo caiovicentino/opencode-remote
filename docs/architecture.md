@@ -111,6 +111,15 @@ notification taps to hash deep-links. On the desktop shell (served over
 `file://`) the service worker is not registered and Web Push stays
 unavailable — registration there can only reject.
 
+### apps/desktop
+Electron shell around the same web build. Since P2-276 the native menu bar
+and the tray follow the language chosen inside the app: the renderer pushes
+its saved choice over a one-way IPC channel (`ocr:shell-lang`), the pure
+verdict in `src/shelllang.ts` resolves it (a supported preference always
+wins; without one, the OS locale decides; anything else falls back to en)
+and the shell rebuilds both surfaces from that module's static label tables —
+ids, order and accelerators never move.
+
 ### PWA static origin (deploy/pwa-server.mjs + launchd, P2-075)
 The phone's origin is **not** a dev server: `deploy/install.sh` installs
 `com.ocr.pwa`, a launchd service (`RunAtLoad` + `KeepAlive`) that runs

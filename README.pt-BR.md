@@ -1061,7 +1061,9 @@ Browser / Arquivos / Configurações / Mission Control. O menu nativo fala
 português desde a P2-176 (mesmo idioma da UI) e ganhou o menu **Ajuda** com
 **Verificar atualizações**, **Abrir pasta de logs** e **Copiar diagnóstico** —
 as ações de suporte do tray, agora também na barra de menus (os itens de
-update só aparecem quando há feed configurado).
+update só aparecem quando há feed configurado). Desde a P2-276 o menu e a
+bandeja seguem o idioma escolhido dentro do app (Configurações → Idioma): o
+shell se reconstrói nesse idioma e, sem escolha feita, usa o do sistema.
 
 **Menu de clique direito (P2-235)**: o clique com o botão direito na janela
 abre um menu de contexto nativo com o básico que um usuário leigo procura —

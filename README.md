@@ -1172,7 +1172,9 @@ Mission Control. The native menu is Portuguese since P2-176 (matching the UI
 copy), including a **Ajuda** menu with **Verificar atualizações**, **Abrir
 pasta de logs** and **Copiar diagnóstico** — the tray's support actions,
 reachable from the menu bar too (the update items appear only when an update
-feed is configured).
+feed is configured). Since P2-276 the menu bar and the tray follow the
+language chosen inside the app (Settings → Language): the shell rebuilds in
+that language, falling back to the system's when no choice was made yet.
 
 **Right-click menu (P2-235)**: right-clicking the window opens a native
 context menu with the lay-user basics — **Recortar / Copiar / Colar / Selecionar
