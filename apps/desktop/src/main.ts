@@ -16,6 +16,7 @@ import {
   reconnectState,
   restartDaemon,
   respawnState,
+  setSidecarRelayProxy,
   sidecarExitInfo,
   setSidecarRelayUrl,
   startDaemonSidecar,
@@ -688,6 +689,23 @@ function applyProxyVerdict(): void {
   bootProxyPlan = verdict;
   bootProxyOrigin = preference ? PROXY_ORIGIN_OWNER : PROXY_ORIGIN_ENVIRONMENT;
   log(`[desktop] proxy: ${verdict.mode} — origem ${bootProxyOrigin} (${verdict.reason})`);
+  // P2-303: the owner's fixed choice must reach the daemon sidecar's relay
+  // dial — the child reads the machine environment by itself, but the stored
+  // choice (proxy.json) is invisible to it, so it rides OCR_RELAY_PROXY. A
+  // fixed mode decided by the machine environment needs no injection: the
+  // child inherits that environment verbatim. A socks choice applies to the
+  // shell session only — the relay dial speaks HTTP CONNECT (http/https), so
+  // a socks address is NOT injected: the daemon fails closed to direct and
+  // /api/health's relayProxyReason says so with its static phrase.
+  const fixedPref = preference !== null ? parseProxyAddress(preference) : null;
+  setSidecarRelayProxy(
+    verdict.mode === "fixo" &&
+      bootProxyOrigin === PROXY_ORIGIN_OWNER &&
+      fixedPref !== null &&
+      !fixedPref.scheme.startsWith("socks")
+      ? preference
+      : null,
+  );
   if (verdict.mode === "desconhecido") return;
   try {
     const mode: "system" | "direct" | undefined =

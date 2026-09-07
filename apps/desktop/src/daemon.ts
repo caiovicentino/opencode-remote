@@ -537,6 +537,24 @@ export function setSidecarRelayUrl(url: string): void {
   relayUrlForSpawn = url;
 }
 
+// --- P2-303: machine proxy handed to every sidecar spawn ----------------------
+
+// The daemon child reads the machine's proxy environment (HTTPS_PROXY etc.)
+// by itself, but the owner's fixed choice lives in the shell's userData
+// (proxy.json) — invisible to the child. The boot verdict holder (main.ts)
+// publishes the fixed address here once per boot; spawnChild forwards it as
+// OCR_RELAY_PROXY, the daemon's own proxy variable, so the owner's choice
+// reaches the sidecar's relay dial. null clears the injection — the child
+// falls back to the machine environment it inherited anyway.
+let relayProxyForSpawn: string | null = null;
+
+/** Apply the fixed proxy address for every future sidecar spawn (initial
+ * start, respawns and manual restarts). Callers pass the already-validated
+ * owner address, or null when no fixed choice applies. */
+export function setSidecarRelayProxy(address: string | null): void {
+  relayProxyForSpawn = address;
+}
+
 /** Spawn + wire one daemon child (used by the initial start and by respawns). */
 function spawnChild(entry: DaemonEntry): void {
   // We're taking over with our own child again: the adopted-daemon watchdog
@@ -555,6 +573,11 @@ function spawnChild(entry: DaemonEntry): void {
       // pairing QR no longer points at this machine's own loopback by
       // default. Validated again by the daemon's own boot preflight.
       RELAY_URL: relayUrlForSpawn,
+      // P2-303: the owner's fixed proxy choice (see setSidecarRelayProxy) so
+      // the sidecar's relay dial tunnels through the same proxy the shell
+      // uses. Absent when no fixed choice applies — the machine environment
+      // the child inherits decides on its own.
+      ...(relayProxyForSpawn ? { OCR_RELAY_PROXY: relayProxyForSpawn } : {}),
     },
     // stdout is piped (not inherited) so we can capture the boot pairing URI;
     // each chunk is forwarded to our own stdout, preserving the old behavior.

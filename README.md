@@ -1161,6 +1161,30 @@ hammering it — while transient blips keep the P2-129 jittered backoff
 untouched. The verdict shows up as additive `lastDial: { kind, hint }` inside
 `/api/health`'s `relayRetry` object, next to `lastClose`.
 
+**Relay dial through the machine's proxy (P2-303)**: on a corporate or
+university machine the only way out to the internet is a proxy — and until
+now the daemon never read that configuration, so the relay link never came up
+and the phone could not find the machine. The daemon now resolves the
+documented proxy variables once at boot (`HTTPS_PROXY`, `HTTP_PROXY`,
+`ALL_PROXY`, `NO_PROXY` and its own `OCR_RELAY_PROXY`): a valid http/https
+address turns the relay dial into an HTTP CONNECT tunnel through the proxy,
+while `NO_PROXY` matches and loopback relays always dial directly, and an
+address that is non-textual, carries embedded credentials, uses another
+scheme (socks, for instance) or does not parse is discarded — failing closed
+to today's direct dial, never to a guessed proxy. An `https://` proxy
+address is honored, never downgraded: the CONNECT itself rides a TLS session
+to the proxy with standard certificate validation. A refused or silent
+proxy flows through the same P2-260 dial-error classification (a proxy that
+never answers the CONNECT is destroyed after a fixed budget and classified
+as timed-out), so the reconnect backoff
+is untouched. The verdict shows up as additive `relayProxyState`
+(`direct`/`tunnel`) and `relayProxyReason` (one static pt-BR phrase) inside
+`/api/health`'s `relay` object — never the proxy address. The desktop shell
+injects the owner's fixed proxy choice (see **Machine proxy** below) into the
+sidecar as `OCR_RELAY_PROXY` when it is an http/https address, so the child
+dials through the same proxy the shell uses — a socks choice stays on the
+shell session, and the relay dial dials direct instead.
+
 ## CLI
 
 ```bash
@@ -1285,7 +1309,9 @@ applied once at boot with loopback always bypassing it (the local daemon
 bridge never routes through a proxy). Since P2-289 the owner can also pick
 the proxy by hand in Settings → **Machine proxy** (system / no proxy / fixed
 address): the choice is stored on this machine and takes effect the next
-time the app starts. Every decision lands as one mode-plus-origin-and-reason
+time the app starts. Since P2-303 a fixed choice also reaches the daemon
+sidecar (as `OCR_RELAY_PROXY`), so the relay dial tunnels through the same
+proxy. Every decision lands as one mode-plus-origin-and-reason
 `proxy:` line in `desktop.log`, never the address or credentials.
 
 Since P1-046 the window is a real two-column cockpit: the conversation stays

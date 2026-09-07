@@ -77,6 +77,7 @@ export const PORTABLE_EXCLUSIONS: readonly PortableExclusion[] = [
   { file: "relay-healthz.test.ts", cause: "network-port" },
   { file: "relay-ipcap.test.ts", cause: "long-lived-child" },
   { file: "relay-liveness.test.ts", cause: "long-lived-child" },
+  { file: "relay-proxy.test.ts", cause: "network-port" },
   { file: "relay-rooms.test.ts", cause: "long-lived-child" },
   { file: "relay-ratelimit.test.ts", cause: "long-lived-child" },
   { file: "release-preflight.test.ts", cause: "long-lived-child" },

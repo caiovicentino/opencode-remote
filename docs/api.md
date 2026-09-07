@@ -72,6 +72,15 @@ address) or 5min (bad certificate); `transient` keeps the P2-129 curve. The
 raw Node error message, which embeds the relay host and port, is neither
 logged in free text nor exposed here.
 
+Since P2-303 the `relay` object also carries an additive machine-proxy
+verdict of the dial: `relayProxyState` is `direct` (today's path — no proxy
+variables, a loopback relay, a `NO_PROXY` match or a discarded address) or
+`tunnel` (the dial crosses the machine's http/https proxy via an HTTP
+CONNECT tunnel — over a TLS session when the proxy address is `https://`),
+and `relayProxyReason` is one static pt-BR phrase for the
+state. The proxy address itself never rides — the reason is address-free
+copy, and the tunnel's host/port stay inside the daemon.
+
 ### `/api/health` — upstream agent state (P2-135)
 
 `GET /api/health` keeps the legacy `opencodeHealthy` boolean untouched and
