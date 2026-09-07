@@ -174,6 +174,9 @@ remoto, zero confiança**.
 - **Rascunho por conversa (P1-088)** — o campo de mensagem guarda um rascunho
   por conversa: alternar de sessão no meio da digitação não perde nem mistura
   texto; enviar limpa só o rascunho da conversa onde você enviou
+- **Colar pra anexar (P2-277)** — colar no composer anexa direto um print de
+  tela, imagem ou arquivo copiado (até 4 itens por colagem, 25 MB cada);
+  colar texto continua colando texto
 - **Rotinas** — cron de verdade: diário, dias da semana ou loop por intervalo;
   execução presa (daemon reiniciado no meio, evento de sessão perdido) é
   liberada sozinha após o prazo de 2 h (`OCR_RUN_LEASE_MS`, `off` para

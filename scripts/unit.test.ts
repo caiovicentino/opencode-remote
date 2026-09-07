@@ -260,6 +260,17 @@ import { opencodeCandidates, pickOpencodeBinary } from "../apps/daemon/src/openc
 
 import { copyText, hasClipboardApi, legacyCopy } from "../apps/web/src/lib/clipboard";
 
+import {
+  pastePlan,
+  PASTE_FALLBACK_FILE_NAME,
+  PASTE_FALLBACK_IMAGE_NAME,
+  PASTE_MAX_ITEM_BYTES,
+  PASTE_MAX_ITEMS,
+  PASTE_REFUSE_ITEM_BYTES,
+  PASTE_REFUSE_TOO_MANY,
+  type PasteItem,
+} from "../apps/web/src/lib/pasteattach";
+
 import { mimeFor } from "../apps/web/src/lib/files";
 
 import { timeAgo, sessionUpdatedTs } from "../apps/web/src/lib/time";
@@ -24476,6 +24487,162 @@ check("P2-241: no new periodic timer was introduced by the handler", !dlBlock.in
     "P2-272: no new periodic timer in the daemon",
     (daemonIdxSrc.match(/setInterval\(/g) ?? []).length === 5,
   );
+}
+
+// --- P2-277: paste-to-attach verdict table (pasteattach.ts) + composer wiring --
+{
+  const mk = (type: string, size: number, name = "item.bin"): PasteItem => ({ type, size, name });
+  const img = (size = 1024, name = "shot.png"): PasteItem => ({ type: "image", size, name });
+
+  // rule 1 — missing, empty or non-vector lists are ignore, NEVER refuse:
+  // paste stays a text gesture first, never an error message.
+  for (const bad of [undefined, null, 42, "list", {}, true]) {
+    const p = pastePlan(bad as unknown as PasteItem[]);
+    check(
+      `P2-277: a ${bad === undefined ? "missing" : `non-array ${typeof bad}`} list is ignored, never refused`,
+      p.verdict === "ignore" && p.attach.length === 0 && p.reason === "",
+    );
+  }
+  check("P2-277: an empty list is ignored, never refused", (() => {
+    const p = pastePlan([]);
+    return p.verdict === "ignore" && p.attach.length === 0 && p.reason === "";
+  })());
+
+  // rule 2 — plain text with content alone is ignore, and it wins over an
+  // image riding in the same paste (rule order made visible).
+  check("P2-277: plain text alone is ignored so the field pastes it", (() => {
+    const p = pastePlan([mk("text", 12, "")]);
+    return p.verdict === "ignore" && p.reason === "";
+  })());
+  for (const ordered of [
+    [mk("text", 30, ""), img()],
+    [img(), mk("text", 30, "")],
+  ]) {
+    check(
+      "P2-277: text with content ignores the paste even when an image rides along (rule order)",
+      pastePlan(ordered).verdict === "ignore" && pastePlan(ordered).reason === "",
+    );
+  }
+
+  // rule 3 — unknown types are discarded, never guessed into an attach.
+  check("P2-277: an unknown-only paste is ignored without becoming an attach", (() => {
+    const p = pastePlan([mk("application/x-mystery", 512)]);
+    return p.verdict === "ignore" && p.attach.length === 0;
+  })());
+  check("P2-277: an unknown item next to an image is dropped, the image attaches", (() => {
+    const image = img();
+    const p = pastePlan([mk("application/x-mystery", 512), image]);
+    return p.verdict === "attach" && p.attach.length === 1 && p.attach[0] === image;
+  })());
+
+  // rule 4 — byte ceiling: exactly at the ceiling attaches, one byte above
+  // refuses; the explicit threshold is part of the table.
+  check("P2-277: an item exactly at the explicit byte ceiling attaches", pastePlan([img(100)], 100, 4).verdict === "attach");
+  check("P2-277: one byte above the explicit ceiling refuses", (() => {
+    const p = pastePlan([img(101)], 100, 4);
+    return p.verdict === "refuse" && p.reason === PASTE_REFUSE_ITEM_BYTES;
+  })());
+  check("P2-277: an item exactly at the documented default ceiling attaches", pastePlan([img(PASTE_MAX_ITEM_BYTES)]).verdict === "attach");
+  check("P2-277: one byte above the documented default ceiling refuses", pastePlan([img(PASTE_MAX_ITEM_BYTES + 1)]).reason === PASTE_REFUSE_ITEM_BYTES);
+
+  // rule 5 — quantity ceiling: exactly at it attaches, one above refuses
+  // (explicit threshold and the documented default).
+  check("P2-277: exactly the explicit item ceiling attaches all of them", (() => {
+    const p = pastePlan([img(10, "a.png"), img(20, "b.png")], 100, 2);
+    return p.verdict === "attach" && p.attach.length === 2 && p.attach[1].name === "b.png";
+  })());
+  check("P2-277: one above the explicit item ceiling refuses instead of truncating", (() => {
+    const p = pastePlan([img(10, "a.png"), img(20, "b.png"), img(30, "c.png")], 100, 2);
+    return p.verdict === "refuse" && p.reason === PASTE_REFUSE_TOO_MANY;
+  })());
+  check("P2-277: one above the documented default ceiling refuses too", pastePlan(Array.from({ length: PASTE_MAX_ITEMS + 1 }, (_, i) => img(10, `${i}.png`))).reason === PASTE_REFUSE_TOO_MANY);
+
+  // rules 4 before 5 — when both ceilings are violated at once the byte
+  // reason wins, because size is measured before quantity.
+  check("P2-277: byte ceiling and quantity ceiling together refuse with the byte reason", (() => {
+    const p = pastePlan([img(1000, "big.png"), img(10, "a.png"), img(20, "b.png"), img(30, "c.png"), img(40, "d.png")], 100, 4);
+    return p.verdict === "refuse" && p.reason === PASTE_REFUSE_ITEM_BYTES;
+  })());
+
+  // rule 6 — stable order and identical result for the same input twice.
+  {
+    const input = [mk("application/x-mystery", 1), img(10, "first.png"), img(20, "second.png"), mk("text", 0, "")];
+    const a = pastePlan(input, 100, 4);
+    const b = pastePlan(input, 100, 4);
+    check(
+      "P2-277: the same input twice yields an identical plan (stable order, discarded text/unknown)",
+      JSON.stringify(a) === JSON.stringify(b) &&
+        a.verdict === "attach" &&
+        a.attach.length === 2 &&
+        a.attach[0].name === "first.png" &&
+        a.attach[1].name === "second.png",
+    );
+  }
+
+  // the static reason is a bare key — no file path, URL scheme or secret
+  // vocabulary ever rides back from the module.
+  const reasonInputs: PasteItem[][] = [
+    [],
+    [mk("text", 5, "")],
+    [img(PASTE_MAX_ITEM_BYTES + 1, "/Users/evan/secret.png")],
+    [img(10, "https://evil.example/x.png"), img(10, "a.png"), img(10, "b.png"), img(10, "c.png"), img(10, "d.png")],
+  ];
+  check(
+    "P2-277: no returned reason carries a file path, URL scheme or secret",
+    reasonInputs.every((list) => {
+      const r = pastePlan(list).reason;
+      return /^[A-Za-z]*$/.test(r) && !r.includes("/") && !r.includes(":") && !r.includes("sk-");
+    }),
+  );
+
+  // i18n: both refuse reasons resolve in en and pt with key parity.
+  check(
+    "P2-277: paste reasons resolve in en and pt",
+    [PASTE_REFUSE_ITEM_BYTES, PASTE_REFUSE_TOO_MANY].every(
+      (k) =>
+        translate("en", k) !== k && translate("pt", k) !== k && translate("en", k) !== translate("pt", k),
+    ),
+  );
+  check(
+    "P2-277: fallback names are documented static strings",
+    PASTE_FALLBACK_IMAGE_NAME === "pasted-image.png" && PASTE_FALLBACK_FILE_NAME.length > 0,
+  );
+
+  // Purity, in the spirit of composer/degraded/machinestate: no React, no
+  // DOM, no fetch, no I/O vocabulary anywhere in the module.
+  const pasteSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "lib", "pasteattach.ts"), "utf8");
+  check(
+    "P2-277: pasteattach.ts imports nothing and touches no DOM/fetch/IO",
+    !/\bimport\b/.test(pasteSrc) &&
+      !pasteSrc.includes("document.") &&
+      !pasteSrc.includes("window.") &&
+      !pasteSrc.includes("fetch(") &&
+      !pasteSrc.includes("require("),
+  );
+
+  // Wiring, read from the real ChatView: the paste listener lives on the
+  // composer (textarea onPaste) and never on window, and attaching reuses
+  // the existing attachFile path (attachRef) — no new upload path.
+  const chatSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "ChatView.tsx"), "utf8");
+  check(
+    "P2-277: the paste listener is wired on the composer textarea, not the window",
+    chatSrc.includes("onPaste={onComposerPaste}") && !chatSrc.includes('window.addEventListener("paste"'),
+  );
+  {
+    const fnAt = chatSrc.indexOf("function onComposerPaste");
+    const fnBody = chatSrc.slice(fnAt, chatSrc.indexOf("\n  }", fnAt));
+    check(
+      "P2-277: the composer paste path decides through pastePlan and attaches via the existing attachFile",
+      fnBody.includes("pastePlan(items)") &&
+        fnBody.includes("attachRef.current(") &&
+        !fnBody.includes("uploadBytes") &&
+        !fnBody.includes("fetch("),
+    );
+    check(
+      "P2-277: a nameless pasted image gets the documented static name",
+      fnBody.includes("PASTE_FALLBACK_IMAGE_NAME") && fnBody.includes("PASTE_FALLBACK_FILE_NAME"),
+    );
+  }
 }
 
 if (failures > 0) {
