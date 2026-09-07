@@ -12073,14 +12073,17 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
         !reevalBlock.includes(".listen("),
   );
 
-  // 14. the healthz body keeps its exact P2-145 shape and knows nothing
-  // about the certificate expiry decision
+  // 14. the healthz body keeps its exact P2-145 shape; P2-290 evolves the
+  // no-coupling rule into an additive-only one: an optional certExpiry
+  // getter exists, but a state without it reproduces the body byte for byte
+  // and the verdict is validated fail-closed against the documented table
   const healthzSrc = readFileSync(join(root, "apps", "relay", "src", "healthz.ts"), "utf8");
   check(
-    "P2-259: the healthz body is untouched (healthy and drain shapes intact, no expiry coupling)",
+    "P2-259: the healthz body keeps its shape (P2-290 cert fields additive-only, fail-closed)",
     healthzSrc.includes("draining ? 503 : 200") &&
       healthzSrc.includes("ok: !draining") &&
-      !healthzSrc.includes("certExpiry"),
+      healthzSrc.includes("s.certExpiry?.()") &&
+      healthzSrc.includes("CERT_EXPIRY_VERDICTS.has(cert.verdict)"),
   );
 }
 

@@ -14,6 +14,7 @@ import {
   type WebContentEncoding,
 } from "./webencoding.js";
 import { conditionalVerdict, etagFor } from "./webcond.js";
+import type { CertExpiryVerdict } from "./certexpiry.js";
 
 /**
  * GET /healthz — public, unauthenticated liveness probe for the hosted
@@ -82,7 +83,52 @@ import { conditionalVerdict, etagFor } from "./webcond.js";
  * before the conditional decision — a cheap 304 is still a request — and the
  * 404/405 answers and the /healthz body stay byte-for-byte as they were: no
  * validator, no conditional handling.
+ *
+ * P2-290: an optional `certExpiry` getter on the state lets the probe carry
+ * the current certificate-expiry verdict — the same verdict the runtime
+ * revalidation in index.ts already maintains (P2-259) — so an operator
+ * watching this documented probe sees an expiring certificate days before
+ * phones start failing their handshake. The rules below are evaluated IN
+ * THIS ORDER (the order is load-bearing and covered by tests):
+ *
+ *   1. A state without the getter adds nothing: the body keeps the exact
+ *      pre-P2-290 shape byte for byte, drain response included.
+ *   2. An absent (getter returned undefined), non-textual or out-of-table
+ *      verdict adds nothing — and a good verdict is NEVER invented. The
+ *      table is the documented certexpiry.ts one: `use`, `warn`,
+ *      `refuse-expired`, `refuse-not-yet-valid`. Fail-closed: announcing
+ *      certificate health nobody measured is worse than staying silent.
+ *   3. A non-finite deadline adds no seconds field (an unusable instant
+ *      cannot back a number); a negative remainder floors at zero.
+ *   4. The result is a pure function of the state and `now`: identical
+ *      inputs produce identical bodies in two calls.
+ *
+ * Boundary: no returned field ever carries a subject, issuer, serial number,
+ * fingerprint, file path, host or any other certificate or key material —
+ * only the short static verdict string and a whole-seconds count. The relay
+ * stays blind here, as everywhere.
  */
+
+/**
+ * P2-290: the documented certexpiry.ts verdict table, restated as the
+ * runtime allowlist. A verdict outside it adds nothing (fail-closed).
+ */
+const CERT_EXPIRY_VERDICTS: ReadonlySet<string> = new Set([
+  "use",
+  "warn",
+  "refuse-expired",
+  "refuse-not-yet-valid",
+]);
+
+/** P2-290: the current certificate-expiry verdict as maintained by the
+ *  runtime revalidation in index.ts — the short static verdict plus the
+ *  certificate's notAfter instant. Nothing else about the certificate ever
+ *  crosses this interface. */
+export interface CertExpiryHealth {
+  verdict: CertExpiryVerdict;
+  /** Certificate notAfter instant in epoch milliseconds. */
+  expiresAtMs: number;
+}
 
 export interface HealthzState {
   version: string;
@@ -92,6 +138,10 @@ export interface HealthzState {
   /** P2-243: additive — rooms closed by the per-room volume budget. When
    *  absent the payload keeps the exact pre-P2-243 shape. */
   roomsBudgetTerminated?: () => number;
+  /** P2-290: additive — the current certificate-expiry verdict. When absent
+   *  (or when it answers undefined) the payload keeps the exact pre-P2-290
+   *  shape. */
+  certExpiry?: () => CertExpiryHealth | undefined;
 }
 
 export interface HealthzPayload {
@@ -105,6 +155,13 @@ export interface HealthzPayload {
   /** Additive (P2-243): rooms terminated by the per-room volume budget,
    *  present only when the state provides the counter. */
   roomsBudgetTerminated?: number;
+  /** Additive (P2-290): the short static certificate verdict, present only
+   *  when the state provides the getter and the verdict is one of the
+   *  documented table values. Never carries certificate material. */
+  certExpiryVerdict?: CertExpiryVerdict;
+  /** Additive (P2-290): whole seconds until certificate expiry, floored at
+   *  zero; present only alongside certExpiryVerdict with a finite deadline. */
+  certExpiryInS?: number;
 }
 
 export function healthzPayload(s: HealthzState, now = Date.now(), draining = false): HealthzPayload {
@@ -118,6 +175,19 @@ export function healthzPayload(s: HealthzState, now = Date.now(), draining = fal
   // P2-243: additive field only when the state provides the getter — a state
   // without it reproduces the pre-P2-243 body byte for byte
   if (s.roomsBudgetTerminated !== undefined) base.roomsBudgetTerminated = s.roomsBudgetTerminated();
+  // P2-290: additive certificate fields, following the header rules in order:
+  // getter absent adds nothing; an absent, non-textual or out-of-table
+  // verdict adds nothing and a good verdict is NEVER invented (fail-closed —
+  // announcing certificate health nobody measured is worse than staying
+  // silent); a non-finite deadline omits the seconds field while a negative
+  // remainder floors at zero; identical inputs produce identical bodies.
+  const cert = s.certExpiry?.();
+  if (cert && typeof cert.verdict === "string" && CERT_EXPIRY_VERDICTS.has(cert.verdict)) {
+    base.certExpiryVerdict = cert.verdict as CertExpiryVerdict;
+    if (Number.isFinite(cert.expiresAtMs)) {
+      base.certExpiryInS = Math.max(0, Math.floor((cert.expiresAtMs - now) / 1000));
+    }
+  }
   // healthy body stays byte-identical to the pre-P2-145 probe; the additive
   // field only appears while draining (ok flips to false in the same case)
   return draining ? { ...base, draining: true } : base;

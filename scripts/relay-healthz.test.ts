@@ -12,7 +12,7 @@ import { join, sep } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { fileURLToPath } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
-import { healthzHandler, healthzPayload, WEB_ENCODING_CACHE } from "../apps/relay/src/healthz";
+import { healthzHandler, healthzPayload, WEB_ENCODING_CACHE, type CertExpiryHealth, type HealthzState } from "../apps/relay/src/healthz";
 import { metricsAuthOk, metricsBinding } from "../apps/relay/src/metricsbind";
 import { DRAIN_GRACE_MS_CEILING, MAX_FRAME_CEILING, relayLimits } from "../apps/relay/src/limits";
 import { createShutdown, DRAIN_MS, refuseUpgrade } from "../apps/relay/src/shutdown";
@@ -1105,7 +1105,154 @@ check("budget map: identity derivation follows TRUST_PROXY_HOPS exactly like the
   check("budget http: the probe of the exhausted identity still answers 200", (await budgetRequest("/healthz", { "x-forwarded-for": "9.9.9.1" })).status === 200);
   check("budget http: the probe consumes no budget (bucket stays empty)", (await budgetRequest("/", { "x-forwarded-for": "9.9.9.1" })).status === 429);
 
-  budgetServer.close();
+budgetServer.close();
+
+// --- 6c. certificate-expiry verdict (P2-290): additive payload fields ----------
+// Rules mirrored from the healthz.ts header, in order: a state without the
+// getter adds nothing; an absent, non-textual or out-of-table verdict adds
+// nothing and a good verdict is NEVER invented (fail-closed); a non-finite
+// deadline omits the seconds field while a negative remainder floors at
+// zero; identical inputs produce identical bodies. Only the two documented
+// fields ever appear — never certificate material.
+const CERT_NOW = 1_090_000;
+const certState = (cert: unknown): HealthzState => ({
+  version: "0.2.0",
+  startedAt: START,
+  rooms: () => 1,
+  roomsRejected: () => 2,
+  certExpiry: () => cert as CertExpiryHealth,
+});
+const FIVE_BASE_FIELDS = ["ok", "rooms", "roomsRejected", "uptimeS", "version"];
+
+check(
+  "cert: state without the getter keeps the exact pre-P2-290 body",
+  JSON.stringify(healthzPayload({ version: "0.2.0", startedAt: START, rooms: () => 1, roomsRejected: () => 2 }, CERT_NOW)) ===
+    '{"ok":true,"version":"0.2.0","uptimeS":90,"rooms":1,"roomsRejected":2}',
+);
+check(
+  "cert: absent verdict (getter answers undefined) adds nothing",
+  (() => {
+    const keys = Object.keys(healthzPayload(certState(undefined), CERT_NOW)).sort();
+    return JSON.stringify(keys) === JSON.stringify(FIVE_BASE_FIELDS);
+  })(),
+);
+check(
+  "cert: non-textual verdict adds nothing",
+  (() => {
+    const keys = Object.keys(healthzPayload(certState({ verdict: 42, expiresAtMs: CERT_NOW + 50_000 }), CERT_NOW)).sort();
+    return JSON.stringify(keys) === JSON.stringify(FIVE_BASE_FIELDS);
+  })(),
+);
+for (const outside of ["expired", "USE", "", "warn ", "healthy"]) {
+  check(
+    `cert: verdict outside the documented table adds nothing (${JSON.stringify(outside)})`,
+    (() => {
+      const keys = Object.keys(healthzPayload(certState({ verdict: outside, expiresAtMs: CERT_NOW + 50_000 }), CERT_NOW)).sort();
+      return JSON.stringify(keys) === JSON.stringify(FIVE_BASE_FIELDS);
+    })(),
+  );
+}
+for (const verdict of ["use", "warn", "refuse-expired", "refuse-not-yet-valid"]) {
+  check(
+    `cert: documented verdict "${verdict}" becomes exactly the two additive fields`,
+    (() => {
+      const p = healthzPayload(certState({ verdict, expiresAtMs: CERT_NOW + 50_000 }), CERT_NOW);
+      return (
+        p.certExpiryVerdict === verdict &&
+        p.certExpiryInS === 50 &&
+        JSON.stringify(Object.keys(p)) ===
+          JSON.stringify(["ok", "version", "uptimeS", "rooms", "roomsRejected", "certExpiryVerdict", "certExpiryInS"])
+      );
+    })(),
+  );
+}
+check(
+  "cert: negative deadline floors the seconds at zero",
+  (() => {
+    const p = healthzPayload(certState({ verdict: "warn", expiresAtMs: CERT_NOW - 250 }), CERT_NOW);
+    return p.certExpiryVerdict === "warn" && p.certExpiryInS === 0;
+  })(),
+);
+check(
+  "cert: non-finite deadline (NaN) adds no seconds field",
+  (() => {
+    const p = healthzPayload(certState({ verdict: "warn", expiresAtMs: Number.NaN }), CERT_NOW);
+    return p.certExpiryVerdict === "warn" && p.certExpiryInS === undefined;
+  })(),
+);
+check(
+  "cert: non-finite deadline (Infinity) adds no seconds field",
+  (() => {
+    const p = healthzPayload(certState({ verdict: "use", expiresAtMs: Number.POSITIVE_INFINITY }), CERT_NOW);
+    return p.certExpiryVerdict === "use" && p.certExpiryInS === undefined;
+  })(),
+);
+check(
+  "cert: additive fields ride the drain response without changing any other field",
+  JSON.stringify(healthzPayload(certState({ verdict: "warn", expiresAtMs: CERT_NOW + 50_000 }), CERT_NOW, true)) ===
+    '{"ok":false,"version":"0.2.0","uptimeS":90,"rooms":1,"roomsRejected":2,"certExpiryVerdict":"warn","certExpiryInS":50,"draining":true}',
+);
+check(
+  "cert: drain response without the getter stays byte-for-byte the pre-P2-290 body",
+  JSON.stringify(healthzPayload({ version: "0.2.0", startedAt: START, rooms: () => 1, roomsRejected: () => 2 }, CERT_NOW, true)) ===
+    '{"ok":false,"version":"0.2.0","uptimeS":90,"rooms":1,"roomsRejected":2,"draining":true}',
+);
+check(
+  "cert: identical input produces an identical body in two calls",
+  JSON.stringify(healthzPayload(certState({ verdict: "use", expiresAtMs: CERT_NOW + 50_000 }), CERT_NOW)) ===
+    JSON.stringify(healthzPayload(certState({ verdict: "use", expiresAtMs: CERT_NOW + 50_000 }), CERT_NOW)),
+);
+check(
+  "cert: body carries no key beyond the two documented and no certificate material",
+  (() => {
+    const planted = healthzPayload(
+      certState({
+        verdict: "warn",
+        expiresAtMs: CERT_NOW + 50_000,
+        subject: "CN=relay-secret",
+        issuer: "CN=Evil CA",
+        serialNumber: "DEADBEEF01",
+        fingerprint: "aa:bb:cc:dd",
+        path: "/etc/ssl/private/relay.pem",
+        host: "relay.example.com",
+      }),
+      CERT_NOW,
+    );
+    const body = JSON.stringify(planted);
+    return (
+      JSON.stringify(Object.keys(planted)) ===
+        JSON.stringify(["ok", "version", "uptimeS", "rooms", "roomsRejected", "certExpiryVerdict", "certExpiryInS"]) &&
+      !body.includes("relay-secret") &&
+      !body.includes("Evil") &&
+      !body.includes("DEADBEEF") &&
+      !body.includes("aa:bb") &&
+      !body.includes("/etc/ssl") &&
+      !body.includes("relay.example.com")
+    );
+  })(),
+);
+check(
+  "cert: index.ts feeds the getter from the verdict the periodic revalidation maintains, with no new periodic timer",
+  (() => {
+    const relayIndex = readFileSync(
+      fileURLToPath(new URL("../apps/relay/src/index.ts", import.meta.url)),
+      "utf8",
+    );
+    const getterAt = relayIndex.indexOf("certExpiry: () =>");
+    const getterSource = getterAt === -1 ? "" : relayIndex.slice(getterAt, getterAt + 240);
+    return (
+      getterAt > -1 &&
+      // fed by the maintained verdict variable and the already-extracted instant
+      getterSource.includes("lastCertExpiryVerdict") &&
+      getterSource.includes("CERT_EXPIRY.notAfter") &&
+      // the variable is exactly the one the sweep assigns on verdict transitions
+      relayIndex.includes("lastCertExpiryVerdict = nextCert.verdict") &&
+      // and no periodic timer beyond the pre-existing P2-067 ping sweep exists
+      (relayIndex.match(/setInterval\(/g) ?? []).length === 1
+    );
+  })(),
+);
+
   rmSync(root, { recursive: true, force: true });
 }
 
