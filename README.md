@@ -1308,11 +1308,14 @@ proxy is the default, and a fixed address from the proxy environment is
 applied once at boot with loopback always bypassing it (the local daemon
 bridge never routes through a proxy). Since P2-289 the owner can also pick
 the proxy by hand in Settings → **Machine proxy** (system / no proxy / fixed
-address): the choice is stored on this machine and takes effect the next
-time the app starts. Since P2-303 a fixed choice also reaches the daemon
-sidecar (as `OCR_RELAY_PROXY`), so the relay dial tunnels through the same
-proxy. Every decision lands as one mode-plus-origin-and-reason
-`proxy:` line in `desktop.log`, never the address or credentials.
+address): the choice is stored on this machine, and since P2-307 it takes
+effect right away — the running session is reconfigured on the spot, and
+when the fixed address the sidecar dials with changes the daemon restarts so
+the relay link follows too (saving the same choice again changes nothing).
+Since P2-303 a fixed choice also reaches the daemon sidecar (as
+`OCR_RELAY_PROXY`), so the relay dial tunnels through the same proxy. Every
+decision lands as one mode-plus-origin-and-reason `proxy:` line in
+`desktop.log`, never the address or credentials.
 
 Since P1-046 the window is a real two-column cockpit: the conversation stays
 open in the left column while Artifacts, Browser, Files or Settings open in a

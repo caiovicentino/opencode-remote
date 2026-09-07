@@ -233,6 +233,7 @@ import {
   readProxyChoice,
   writeProxyChoice,
 } from "../apps/desktop/src/proxystore";
+import { proxyApplyDecision } from "../apps/desktop/src/proxyapply";
 import {
   bodyLimit,
   isBodyLimitError,
@@ -27765,6 +27766,122 @@ check("P2-241: no new periodic timer was introduced by the handler", !dlBlock.in
   );
 
   rmSync(dir, { recursive: true, force: true });
+}
+
+// --- P2-307: applying a saved proxy choice (apps/desktop/src/proxyapply.ts) ------
+// Until now the machine-proxy choice only took effect on the next app start
+// while the relay address beside it applied instantly. The pure decision
+// module receives the verdict in effect and the verdict resolved from the
+// freshly saved choice and answers: keep, apply-session or
+// apply-session-and-restart — fail-closed, because an unneeded sidecar
+// restart drops the phone's live conversation.
+{
+  const json = (v: unknown) => JSON.stringify(v);
+  const EXC = ["localhost", "127.0.0.1", "::1"];
+  const SYSTEM = { mode: "sistema", rule: "modo system — a sessão segue o proxy do sistema", exceptions: EXC, relayProxy: null };
+  const DIRECT = { mode: "direto", rule: "modo direct — conexão direta, sem proxy", exceptions: EXC, relayProxy: null };
+  const FIXED_A = { mode: "fixo", rule: "http=proxy.corp:3128", exceptions: EXC, relayProxy: "proxy.corp:3128" };
+  const FIXED_B = { mode: "fixo", rule: "http=outro.corp:8080", exceptions: EXC, relayProxy: "outro.corp:8080" };
+
+  // The transition table — every documented edge.
+  check("P2-307: sistema → direto muda só a sessão", proxyApplyDecision(SYSTEM, DIRECT).kind === "apply-session");
+  check("P2-307: direto → fixo muda o sidecar também", proxyApplyDecision(DIRECT, FIXED_A).kind === "apply-session-and-restart");
+  check("P2-307: fixo → o mesmo endereço não muda nada", proxyApplyDecision(FIXED_A, { ...FIXED_A, exceptions: [...EXC] }).kind === "keep");
+  check("P2-307: fixo → endereço diferente muda o sidecar também", proxyApplyDecision(FIXED_A, FIXED_B).kind === "apply-session-and-restart");
+  check("P2-307: fixo → sistema muda o sidecar também", proxyApplyDecision(FIXED_A, SYSTEM).kind === "apply-session-and-restart");
+  check("P2-307: um endereço fixo de socks vale só na sessão (o sidecar não o enxerga)", proxyApplyDecision(SYSTEM, { ...FIXED_A, rule: "socks5://socks.corp:1080", relayProxy: null }).kind === "apply-session");
+
+  // Fail-closed: unreadable input is a keep — nothing acts, nobody drops.
+  check(
+    "P2-307: entrada ausente é keep",
+    proxyApplyDecision(undefined, FIXED_A).kind === "keep" &&
+      proxyApplyDecision(SYSTEM, undefined).kind === "keep" &&
+      proxyApplyDecision(undefined, undefined).kind === "keep" &&
+      proxyApplyDecision(null, null).kind === "keep",
+  );
+  check(
+    "P2-307: entrada não objeto é keep",
+    [42, "fixo", true, [], {}].map((bad) => proxyApplyDecision(bad, SYSTEM).kind === "keep" && proxyApplyDecision(SYSTEM, bad).kind === "keep").every((v) => v),
+  );
+  check(
+    "P2-307: campo fora da forma documentada é keep",
+    proxyApplyDecision({ mode: "fixo", rule: "r" }, SYSTEM).kind === "keep" &&
+      proxyApplyDecision({ mode: 42, rule: "r", exceptions: [], relayProxy: null }, SYSTEM).kind === "keep" &&
+      proxyApplyDecision({ mode: "fixo", rule: "r", exceptions: "localhost", relayProxy: null }, SYSTEM).kind === "keep" &&
+      proxyApplyDecision(SYSTEM, { mode: "fixo", rule: "r", exceptions: [42], relayProxy: null }).kind === "keep" &&
+      proxyApplyDecision(SYSTEM, { mode: "fixo", rule: "r", exceptions: [], relayProxy: 42 }).kind === "keep",
+  );
+
+  // Idempotency: the same save repeated is a keep — the state machine mirrors
+  // the main.ts wiring (apply → remember → compare against the remembered).
+  let live: typeof SYSTEM = SYSTEM;
+  const save = (choice: typeof SYSTEM) => {
+    const decision = proxyApplyDecision(live, choice);
+    if (decision.kind !== "keep") live = choice;
+    return decision.kind;
+  };
+  check(
+    "P2-307: idempotência — a mesma escolha salva duas vezes só age na primeira",
+    save(FIXED_A) === "apply-session-and-restart" && save(FIXED_A) === "keep" && save(FIXED_A) === "keep",
+  );
+  check(
+    "P2-307: idempotência — resave de escolha anterior depois de troca também é keep",
+    save(SYSTEM) === "apply-session-and-restart" && save(SYSTEM) === "keep",
+  );
+
+  // Determinism: the same input yields the exact same verdict on every call.
+  check(
+    "P2-307: determinismo — a mesma entrada devolve o veredito idêntico duas chamadas depois",
+    json(proxyApplyDecision(SYSTEM, FIXED_A)) === json(proxyApplyDecision(SYSTEM, FIXED_A)) &&
+      proxyApplyDecision(SYSTEM, FIXED_A).reason === proxyApplyDecision(SYSTEM, FIXED_A).reason,
+  );
+
+  // One static pt-BR reason per verdict — no address, no env var, no path.
+  const reasons = [proxyApplyDecision(SYSTEM, SYSTEM), proxyApplyDecision(SYSTEM, DIRECT), proxyApplyDecision(SYSTEM, FIXED_A), proxyApplyDecision(SYSTEM, "junk")].map((v) => v.reason);
+  check(
+    "P2-307: cada veredito carrega um motivo estático distinto",
+    reasons.every((r) => typeof r === "string" && r.length > 0) && new Set(reasons).size === reasons.length,
+  );
+  check(
+    "P2-307: nenhum motivo carrega endereço, variável de ambiente ou caminho",
+    reasons.every((r) => !r.includes("proxy.corp") && !r.includes("outro.corp") && !r.includes("OCR_") && !r.includes("/")),
+  );
+
+  // The real sources: purity + main.ts wiring.
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  const applySrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "proxyapply.ts"), "utf8");
+  check(
+    "P2-307: purity — proxyapply.ts não importa electron nem node:fs (nenhum import whatsoever)",
+    !/(^|\n)\s*import[^\n]*(electron|node:fs|node:child_process|node:net|fetch)/.test(applySrc) && !/^import\b/m.test(applySrc),
+  );
+  const handlerAt = mainSrc.indexOf('"app:saveProxyChoice"');
+  const handlerEnd = mainSrc.indexOf("ocr:unread", handlerAt);
+  const handler = handlerAt >= 0 && handlerEnd > handlerAt ? mainSrc.slice(handlerAt, handlerEnd) : "";
+  check("P2-307: wiring — o manipulador de save resolve o plano pelo MESMO caminho do boot", handler.includes("proxyPlan({") && handler.includes("storedProxyPreference()") && handler.includes("proxyEnvSet()"));
+  check("P2-307: wiring — a decisão vem do módulo puro", handler.includes("proxyApplyDecision("));
+  const restartAt = handler.indexOf("restartDaemon");
+  const verdictGuardAt = handler.indexOf('decision.kind === "apply-session-and-restart"');
+  check(
+    "P2-307: wiring — o reinício do sidecar acontece uma única vez e só depois do veredito",
+    handler.split("restartDaemon").length - 1 === 1 && verdictGuardAt >= 0 && restartAt > verdictGuardAt,
+  );
+  check(
+    "P2-307: wiring — o manipulador não chama o caminho de boot nem um segundo setProxy",
+    !handler.includes("applyProxyVerdict") && handler.split("applySessionProxy(").length - 1 === 1 && !handler.includes("setProxy"),
+  );
+  check(
+    "P2-307: wiring — o boot continua aplicando o proxy exatamente uma vez, antes da primeira janela",
+    mainSrc.split("applyProxyVerdict();").length - 1 === 1 &&
+      mainSrc.indexOf("applyProxyVerdict();") < mainSrc.indexOf("createWindow();"),
+  );
+  check(
+    "P2-307: wiring — a sessão continua com um único ponto de aplicação",
+    mainSrc.split("setProxy").length - 1 === 1 && mainSrc.includes("function applySessionProxy("),
+  );
+  check(
+    "P2-307: wiring — o veredito em vigor fica lembrado no processo principal",
+    mainSrc.includes("let liveProxyVerdict") && mainSrc.includes("let liveProxyRelay") && mainSrc.includes("liveProxyVerdict = resolved"),
+  );
 }
 
 // --- P2-288: the settings channel mirrors the doc-conversion and browse verdicts --
