@@ -248,15 +248,16 @@ at boot).
 
 Settings → **Machine state** ("Estado da máquina") gathers every readiness
 verdict the machine itself reports — the remote relay link, the agent server
-and its version, disk space, document → PDF conversion, site browsing and
-voice transcription, seven lines in total — in a
+and its version, disk space, document → PDF conversion, site browsing, voice
+transcription and spoken replies, eight lines in total — in a
 single calm list, worst verdict first, each row with a severity marker
 (green / amber / red), a short label and **the machine's own phrase,
 verbatim**: the app never rewrites a phrase and never invents one. The section
 consumes the same settings read the screen already performs (the daemon mirrors
 its health verdicts on `GET /__ocr/settings`) — no new request, no new poll.
-Since P2-297 no line is pending a future channel: the panel shows all seven
-lines whenever the connected daemon reports the verdicts.
+Since P2-297 no line is pending a future channel: the panel shows all eight
+lines whenever the connected daemon reports the verdicts (P2-305 appended
+the spoken-replies row).
 
 - A verdict the connected daemon does not report simply renders no row; with
   nothing known yet the section shows the calm empty state. Nothing in the
@@ -273,6 +274,10 @@ lines whenever the connected daemon reports the verdicts.
   module: ready → normal, missing-model → amber (the engine is there, the
   model is not) and missing-binary → red (the machine cannot hear at all);
   any other value stays silent.
+- Spoken replies (P2-305) follow their own closed table in the same module:
+  ready → normal and missing-tool → red (the machine cannot speak at all);
+  any other value stays silent. The row phrase comes from the daemon's
+  `ttsMessage`, verbatim.
 - Deterministic screenshots: `OCR_OPENCODE_OLD=1` forces the too-old agent
   version (amber row) and `OCR_DISK_FULL=1` the critical disk verdict (red
   row) on the daemon — the same hatches documented for the single-line
@@ -280,7 +285,8 @@ lines whenever the connected daemon reports the verdicts.
   web-side verdicts without any daemon: `ocr.browseStateOverride`
   (`no-browser`, `disabled` or `unknown`), `ocr.docsStateOverride`
   (`partial` or `unavailable`), `ocr.voiceStateOverride` (`missing-binary`
-  or `missing-model`), `ocr.relayStateOverride` (`down`) and
+  or `missing-model`), `ocr.ttsStateOverride` (`missing-tool`, P2-305),
+  `ocr.relayStateOverride` (`down`) and
   `ocr.agentStateOverride` (`missing`) — e.g.
   `localStorage.setItem("ocr.voiceStateOverride", "missing-binary")`.
   Every hatch honors ONLY the degraded states of the verdict tables (never

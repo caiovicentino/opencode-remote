@@ -85,9 +85,10 @@ remoto, zero confiança**.
   sonda só POSIX) e uma instalação feita depois do boot vale pela re-sondagem
   preguiçosa. Desde a P2-300 o mesmo veredito também viaja em
   `GET /api/health` (`ttsState` / `ttsMessage` / `ttsCheckedAt`) e no canal
-  `GET /__ocr/settings` que a tela de Configurações já lê — a linha de fala do
-  painel Estado da máquina segue como continuação declarada até apps/web
-  ganhar a chave correspondente.
+  `GET /__ocr/settings` que a tela de Configurações já lê — e desde a P2-305
+  apps/web tem a chave: o painel Estado da máquina renderiza a linha de
+  resposta falada a partir desse par (`ready` → ok, `missing-tool` →
+  indisponível).
   `OCR_TTS_BLOCK=1` no daemon é um hatch de teste que força o veredito
   missing-tool para evidência visual determinística
 - **Prontidão de modelo** — o composer avisa antes do primeiro envio quando a
@@ -135,9 +136,9 @@ remoto, zero confiança**.
   veredito crítico para evidência visual determinística
 - **Painel Estado da máquina** — Configurações → **Estado da máquina** reúne
   numa lista calma todos os vereditos de prontidão que a própria máquina
-  informa, em sete linhas: o elo remoto com o relay, o servidor do agente e a
-  versão dele, espaço em disco, conversão de documentos, navegação de sites e
-  transcrição de voz. O pior
+  informa, em oito linhas: o elo remoto com o relay, o servidor do agente e a
+  versão dele, espaço em disco, conversão de documentos, navegação de sites,
+  transcrição de voz e resposta falada. O pior
   veredito primeiro, uma linha por veredito com marcador de severidade e **a
   frase da própria máquina, literal** — o app nunca a reescreve e nunca inventa
   outra. Nenhuma linha fica pendente de canal futuro (P2-297 ligou as quatro

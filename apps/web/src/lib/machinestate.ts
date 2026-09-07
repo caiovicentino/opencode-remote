@@ -5,17 +5,17 @@
  * spoke.
  *
  * The input is the daemon's readiness block (versionState, diskState,
- * docConvertState, browseState, voiceState, the relay object, the opencode
- * object) — every field is read tolerantly: absent or ill-typed fields are
- * simply ignored and never become a row. The app feeds the module the
- * readiness verdicts mirrored on the existing GET /__ocr/settings read —
- * since P2-292/P2-296 the settings mirror carries every capability (relay,
- * the agent binary pair, doc conversion, browse, voice) and, since P2-297,
- * the view wires ALL of them from the same mount read, so the section still
- * makes no new request, no new route, no new poll and no new timer. A
- * verdict the connected daemon does not report simply yields no row (the
- * calm empty state covers it, mirroring the P2-213/P2-215 fail-open
- * discipline).
+ * docConvertState, browseState, voiceState, ttsState, the relay object, the
+ * opencode object) — every field is read tolerantly: absent or ill-typed
+ * fields are simply ignored and never become a row. The app feeds the
+ * module the readiness verdicts mirrored on the existing GET /__ocr/settings
+ * read — since P2-292/P2-296 the settings mirror carries every capability
+ * (relay, the agent binary pair, doc conversion, browse, voice) and, since
+ * P2-297, the view wires ALL of them from the same mount read, so the
+ * section still makes no new request, no new route, no new poll and no new
+ * timer. A verdict the connected daemon does not report simply yields no
+ * row (the calm empty state covers it, mirroring the P2-213/P2-215
+ * fail-open discipline).
  *
  * Severity has exactly three levels. The ordering is worst-first with a fixed,
  * documented key order as the tie-break, so the list never dances between two
@@ -42,11 +42,29 @@
  * Every other value — absent, non-textual or out-of-table — yields no row:
  * the general silence rule holds, and navigation keeps being the ONLY
  * documented exception where a verdict outside the measured table
- * ("unknown") becomes a row. */
+ * ("unknown") becomes a row.
+ *
+ * The spoken-replies row (P2-305) maps the two documented P2-300 TTS
+ * verdicts by THIS closed table, written here so tests and reviews share
+ * one truth:
+ *   ready        → ok
+ *   missing-tool → unavailable  (the machine cannot speak at all)
+ * Every other value — absent, non-textual or out-of-table — yields no row:
+ * the general silence rule holds (the payload pair is ttsState/ttsMessage,
+ * NOT voiceState — that pair is the transcription capability since
+ * P2-296). */
 
 export type MachineSeverity = "ok" | "attention" | "unavailable";
 
-export type MachineRowKey = "relay" | "agent" | "version" | "disk" | "docs" | "browse" | "voice";
+export type MachineRowKey =
+  | "relay"
+  | "agent"
+  | "version"
+  | "disk"
+  | "docs"
+  | "browse"
+  | "voice"
+  | "spoken";
 
 export interface MachineReadinessRow {
   /** Stable row key — doubles as the documented fixed tie-break order. */
@@ -61,8 +79,8 @@ export interface MachineReadinessRow {
 
 /** Fixed row order: the module's build order AND the tie-break for rows of
  * the same severity — documented here so tests and reviews share one truth.
- * P2-297: new capability keys are APPENDED at the end (voice last) so no
- * existing row ever changes position. */
+ * P2-297/P2-305: new capability keys are APPENDED at the end (spoken last)
+ * so no existing row ever changes position. */
 export const MACHINE_ROW_ORDER: readonly MachineRowKey[] = [
   "relay",
   "agent",
@@ -71,6 +89,7 @@ export const MACHINE_ROW_ORDER: readonly MachineRowKey[] = [
   "docs",
   "browse",
   "voice",
+  "spoken",
 ];
 
 /** Severity → the shared .status-dot chrome class (apps/web/src/index.css).
@@ -96,6 +115,12 @@ export const DOC_STATES: readonly string[] = ["complete", "partial", "unavailabl
  * duplicating it (same discipline as BROWSE_STATES, P2-297). */
 export const VOICE_STATES: readonly string[] = ["ready", "missing-binary", "missing-model"];
 
+/** The two documented P2-300 spoken-reply (TTS) verdicts the spoken row
+ * accepts — the executable form of the closed table in the header, exported
+ * so the view's documented evidence hatch reuses one truth instead of
+ * duplicating it (same discipline as VOICE_STATES, P2-305). */
+export const TTS_STATES: readonly string[] = ["ready", "missing-tool"];
+
 const SEVERITY_RANK: Record<MachineSeverity, number> = { ok: 0, attention: 1, unavailable: 2 };
 
 /** i18n key of the short label per row (P2-118: the view resolves it). */
@@ -107,6 +132,7 @@ const LABEL_KEYS: Record<MachineRowKey, string> = {
   docs: "machineLabelDocs",
   browse: "machineLabelBrowse",
   voice: "machineLabelVoice",
+  spoken: "machineLabelSpoken",
 };
 
 /** Tolerant read of an object-typed field: only a plain object passes. */
@@ -220,6 +246,19 @@ export function readinessRows(health: unknown): MachineReadinessRow[] {
         voiceState === "ready" ? "ok" : voiceState === "missing-model" ? "attention" : "unavailable",
         asString(body.voiceMessage),
       ),
+    );
+  }
+
+  // spoken — spoken-reply (TTS) readiness (P2-300 payload fields, P2-305
+  // row). Only the two documented verdicts become a row, each with exactly
+  // the severity of the closed table in the header; absent, non-textual or
+  // out-of-table values yield no row — the general silence rule, with
+  // navigation remaining the only documented "unknown" exception. The pair
+  // is ttsState/ttsMessage, NOT voiceState (that is transcription, P2-296).
+  const ttsState = asString(body.ttsState);
+  if (TTS_STATES.includes(ttsState)) {
+    candidates.push(
+      row("spoken", ttsState === "ready" ? "ok" : "unavailable", asString(body.ttsMessage)),
     );
   }
 

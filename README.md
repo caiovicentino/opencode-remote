@@ -88,8 +88,9 @@ private. That is the product: **local power, remote control, zero trust**.
   `GET /__ocr/voice/stt-status` (`{ available, state, message }`, mirroring the
   tts-status route). Since P2-296 the same verdict also rides `GET /api/health`
   (`voiceState` / `voiceMessage` / `voiceCheckedAt`) and the
-  `GET /__ocr/settings` channel the Settings screen reads — the Machine-state
-  voice line is a declared continuation until apps/web gains the key. Install
+  `GET /__ocr/settings` channel the Settings screen reads — and since P2-297
+  apps/web has the key: the Machine-state panel renders the voice row from
+  that pair. Install
   it on the host with `./scripts/setup-whisper.sh`.
   `OCR_STT_BLOCK=1` on the daemon is a test hatch that forces the
   missing-binary verdict so the disabled-mic UI can be evidenced
@@ -101,8 +102,9 @@ private. That is the product: **local power, remote control, zero trust**.
   `where` locator instead of a POSIX-only probe), and an install made after
   boot is picked up by the lazy re-probe. Since P2-300 the same verdict also
   rides `GET /api/health` (`ttsState` / `ttsMessage` / `ttsCheckedAt`) and the
-  `GET /__ocr/settings` channel the Settings screen reads — the Machine-state
-  speech line is a declared continuation until apps/web gains the key.
+  `GET /__ocr/settings` channel the Settings screen reads — and since P2-305
+  apps/web has the key: the Machine-state panel renders the spoken-replies
+  row from that pair (`ready` → ok, `missing-tool` → unavailable).
   `OCR_TTS_BLOCK=1` on the daemon is a test hatch that forces the
   missing-tool verdict for deterministic screenshots
 - **Model readiness** — the composer warns before the first send when the
@@ -147,9 +149,10 @@ private. That is the product: **local power, remote control, zero trust**.
   by the retention janitor); `OCR_DISK_FULL=1` on the daemon is a test hatch
   that forces the critical verdict for deterministic screenshots
 - **Machine state panel** — Settings → **Machine state** gathers in one calm
-  list every readiness verdict the machine itself reports, in seven lines:
+  list every readiness verdict the machine itself reports, in eight lines:
   the remote relay link, the agent server and its version, disk space,
-  document→PDF conversion, site browsing and voice transcription. Worst
+  document→PDF conversion, site browsing, voice transcription and spoken
+  replies. Worst
   verdict first, one row per verdict with a severity marker and **the
   machine's own phrase, verbatim** — the app never rewrites it and never
   invents one. No line is pending a future channel (P2-297 wires the last

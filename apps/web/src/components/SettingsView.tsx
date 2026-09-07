@@ -4,7 +4,7 @@ import { APP_VERSION } from "../version";
 import { useT, setLang, getLang, type Lang } from "../lib/i18n";
 import { timeAgo } from "../lib/time";
 import { getTtsLang, setTtsLang as persistTtsLang, type TtsLang } from "../lib/voice";
-import { readinessRows, summarize, MACHINE_SEVERITY_DOT, BROWSE_STATES, DOC_STATES, VOICE_STATES } from "../lib/machinestate";
+import { readinessRows, summarize, MACHINE_SEVERITY_DOT, BROWSE_STATES, DOC_STATES, VOICE_STATES, TTS_STATES } from "../lib/machinestate";
 import type { UpstreamNotice } from "../lib/degraded";
 
 /** P2-187: phone relay resolution from the desktop shell (mirrors
@@ -171,6 +171,7 @@ export function applyTheme() {
  * edition) — localStorage overrides force capability verdicts for
  * screenshots WITHOUT touching any network path, one key per capability:
  * `ocr.browseStateOverride`, `ocr.docsStateOverride`, `ocr.voiceStateOverride`,
+ * `ocr.ttsStateOverride` (P2-305),
  * `ocr.relayStateOverride` (value "down") and `ocr.agentStateOverride` (value
  * "missing"). Fail-closed twice over: only the DEGRADED states of the tables
  * owned by machinestate.ts are honored — never "ready"/"complete", never
@@ -181,6 +182,7 @@ export function applyTheme() {
 const HATCH_STATES: readonly string[] = BROWSE_STATES.filter((s) => s !== "ready");
 const DOCS_HATCH_STATES: readonly string[] = DOC_STATES.filter((s) => s !== "complete");
 const VOICE_HATCH_STATES: readonly string[] = VOICE_STATES.filter((s) => s !== "ready");
+const TTS_HATCH_STATES: readonly string[] = TTS_STATES.filter((s) => s !== "ready");
 
 function forcedBrowseState(): string | undefined {
   const forced = localStorage.getItem("ocr.browseStateOverride") ?? "";
@@ -195,6 +197,11 @@ function forcedDocsState(): string | undefined {
 function forcedVoiceState(): string | undefined {
   const forced = localStorage.getItem("ocr.voiceStateOverride") ?? "";
   return VOICE_HATCH_STATES.includes(forced) ? forced : undefined;
+}
+
+function forcedTtsState(): string | undefined {
+  const forced = localStorage.getItem("ocr.ttsStateOverride") ?? "";
+  return TTS_HATCH_STATES.includes(forced) ? forced : undefined;
 }
 
 /** The boolean verdicts have a single degraded value each: a relay this
@@ -267,6 +274,11 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
   const [agentVerdict, setAgentVerdict] = useState<{ binaryFound?: boolean; binarySource?: string | null } | null>(null);
   const [docsVerdict, setDocsVerdict] = useState<{ state?: string; message?: string } | null>(null);
   const [voiceVerdict, setVoiceVerdict] = useState<{ state?: string; message?: string } | null>(null);
+  // NAMING (P2-305): the spoken-reply verdict is `ttsVerdict` — deliberately
+  // NOT `voice*`, that family is the transcription verdict (voiceVerdict)
+  // and the voice PREFERENCES state above; the daemon's pair is
+  // ttsState/ttsMessage and the view keeps the same names.
+  const [ttsVerdict, setTtsVerdict] = useState<{ state?: string; message?: string } | null>(null);
   const [nrMode, setNrMode] = useState<"daily" | "days" | "interval">("daily");
   const [nrDays, setNrDays] = useState<number[]>([1, 2, 3, 4, 5]);
   const [nrInterval, setNrInterval] = useState(60);
@@ -362,6 +374,15 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
           ? {
               state: (s.body as { voiceState?: string }).voiceState,
               message: (s.body as { voiceMessage?: string }).voiceMessage,
+            }
+          : null);
+        // P2-305: the spoken-reply pair rides the SAME mount read, read
+        // exactly like the voice pair above — absent field is null and
+        // therefore no row.
+        setTtsVerdict((s.body as { ttsState?: string }).ttsState !== undefined
+          ? {
+              state: (s.body as { ttsState?: string }).ttsState,
+              message: (s.body as { ttsMessage?: string }).ttsMessage,
             }
           : null);
       }
@@ -506,6 +527,7 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
   // join version, disk and browse, all from that one mount read (the
   // P2-292/P2-296 mirror publishes them). The hatch below only fills
   // verdicts the payload does not carry, and only in its degraded states.
+  // P2-305: spoken replies (ttsState/ttsMessage) ride the same read.
   const machineRows = readinessRows({
     relay: {
       ok: relayVerdict?.ok ?? forcedRelayOk(),
@@ -524,6 +546,8 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
     browseMessage: browse?.message,
     voiceState: voiceVerdict?.state ?? forcedVoiceState(),
     voiceMessage: voiceVerdict?.message,
+    ttsState: ttsVerdict?.state ?? forcedTtsState(),
+    ttsMessage: ttsVerdict?.message,
   });
   const machineSummary = summarize(machineRows);
 
