@@ -247,21 +247,33 @@ at boot).
 
 Settings → **Machine state** ("Estado da máquina") gathers every readiness
 verdict the machine itself reports — the remote relay link, the agent server
-and its version, disk space, document → PDF conversion — in a single calm
-list, worst verdict first, each row with a severity marker (green / amber /
-red), a short label and **the machine's own phrase, verbatim**: the app never
-rewrites a phrase and never invents one. The section consumes the same
-settings read the screen already performs (the daemon mirrors its health
-verdicts on `GET /__ocr/settings`) — no new request, no new poll.
+and its version, disk space, document → PDF conversion, site browsing — in a
+single calm list, worst verdict first, each row with a severity marker
+(green / amber / red), a short label and **the machine's own phrase,
+verbatim**: the app never rewrites a phrase and never invents one. The section
+consumes the same settings read the screen already performs (the daemon mirrors
+its health verdicts on `GET /__ocr/settings`) — no new request, no new poll.
 
 - A verdict the connected daemon does not report simply renders no row; with
   nothing known yet the section shows the calm empty state. Nothing in the
   panel ever blocks or disables a control — it describes the machine hosting
   the daemon, never the phone.
+- Site browsing (P2-287) follows the verdict table written in
+  `apps/web/src/lib/machinestate.ts`: ready → normal, no-browser → red,
+  disabled → amber (the machine's owner turned it off) and unknown → amber,
+  never green — announcing a readiness that was never measured is worse than
+  admitting we do not know. The row renders only when the connected daemon
+  reports the verdict on the channel the screen already reads; until that
+  continuation lands, a daemon that does not report it simply renders no row.
 - Deterministic screenshots: `OCR_OPENCODE_OLD=1` forces the too-old agent
   version (amber row) and `OCR_DISK_FULL=1` the critical disk verdict (red
   row) on the daemon — the same hatches documented for the single-line
-  indicators above.
+  indicators above. For the browse row the web-side hatch
+  `localStorage.setItem("ocr.browseStateOverride", "no-browser")` forces the
+  verdict in the app itself (values: `no-browser`, `disabled`, `unknown` —
+  deliberately NOT `ready`, so the hatch can never fabricate a green row;
+  anything else is ignored, the real payload always wins and no phrase is
+  ever invented — the label alone carries the row).
 
 ## Local daemon port fallback (P2-143)
 

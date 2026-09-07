@@ -5,23 +5,37 @@
  * spoke.
  *
  * The input is the daemon's /api/health readiness block (versionState,
- * diskState, docConvertState, the relay object, the opencode object) — every
- * field is read tolerantly: absent or ill-typed fields are simply ignored and
- * never become a row. The app feeds the module the readiness verdicts already
- * mirrored on the existing GET /__ocr/settings read, so the Settings section
- * makes no new request and starts no new poll; fields the PWA channel does not
- * carry yet (relay, binary, doc conversion) simply yield no row until a
- * future channel delivers them.
+ * diskState, docConvertState, browseState, the relay object, the opencode
+ * object) — every field is read tolerantly: absent or ill-typed fields are
+ * simply ignored and never become a row. The app feeds the module the
+ * readiness verdicts already mirrored on the existing GET /__ocr/settings
+ * read (version + disk, P2-213/P2-215), so the Settings section makes no new
+ * request and starts no new poll; fields the settings channel does not carry
+ * yet (relay, binary, doc conversion, browse) simply yield no row until a
+ * future channel delivers them — the browse row (P2-287) ships first and
+ * stays silent on daemons that do not report its verdict, exactly like relay
+ * and docs.
  *
  * Severity has exactly three levels. The ordering is worst-first with a fixed,
  * documented key order as the tie-break, so the list never dances between two
  * polls that report the same verdicts. The daemon's phrases are rendered
  * verbatim — the module never rewrites them and never invents its own; the
- * only UI copy (labels, header) travels as i18n keys per the P2-118 lesson. */
+ * only UI copy (labels, header) travels as i18n keys per the P2-118 lesson.
+ *
+ * The browse row (P2-287) maps the four documented P2-284 verdicts by THIS
+ * table, written here so tests and reviews share one truth:
+ *   ready      → ok
+ *   no-browser → unavailable  (the machine cannot open sites at all)
+ *   disabled   → attention    (the machine's owner turned browsing off)
+ *   unknown    → attention    (fail-closed, NEVER ok — announcing a readiness
+ *                             that was never measured is worse than admitting
+ *                             we do not know)
+ * It is the documented exception to the "unknown stays silent" rule below:
+ * a browse verdict of "unknown" IS a row, with attention severity. */
 
 export type MachineSeverity = "ok" | "attention" | "unavailable";
 
-export type MachineRowKey = "relay" | "agent" | "version" | "disk" | "docs";
+export type MachineRowKey = "relay" | "agent" | "version" | "disk" | "docs" | "browse";
 
 export interface MachineReadinessRow {
   /** Stable row key — doubles as the documented fixed tie-break order. */
@@ -42,6 +56,7 @@ export const MACHINE_ROW_ORDER: readonly MachineRowKey[] = [
   "version",
   "disk",
   "docs",
+  "browse",
 ];
 
 /** Severity → the shared .status-dot chrome class (apps/web/src/index.css).
@@ -52,6 +67,11 @@ export const MACHINE_SEVERITY_DOT: Record<MachineSeverity, string> = {
   unavailable: "err",
 };
 
+/** The four documented P2-284 browse verdicts the browse row accepts — the
+ * executable form of the table in the header, exported so the view's
+ * documented evidence hatch reuses one truth instead of duplicating it. */
+export const BROWSE_STATES: readonly string[] = ["ready", "no-browser", "disabled", "unknown"];
+
 const SEVERITY_RANK: Record<MachineSeverity, number> = { ok: 0, attention: 1, unavailable: 2 };
 
 /** i18n key of the short label per row (P2-118: the view resolves it). */
@@ -61,6 +81,7 @@ const LABEL_KEYS: Record<MachineRowKey, string> = {
   version: "machineLabelVersion",
   disk: "machineLabelDisk",
   docs: "machineLabelDocs",
+  browse: "machineLabelBrowse",
 };
 
 /** Tolerant read of an object-typed field: only a plain object passes. */
@@ -82,9 +103,11 @@ function row(key: MachineRowKey, severity: MachineSeverity, message: unknown): M
 /**
  * Build the readiness rows from a possibly partial or malformed health
  * payload. Never throws, never invents: a payload that is not an object
- * yields [], a field of the wrong type is ignored, and an "unknown" verdict
- * yields no row (the daemon's neutral state — the calm empty state covers it,
- * mirroring the P2-213/P2-215 fail-open discipline).
+ * yields [], a field of the wrong type is ignored, and — except for the
+ * documented browse exception in the header (unknown → attention, fail-
+ * closed) — an "unknown" verdict yields no row (the daemon's neutral state,
+ * the calm empty state covers it, mirroring the P2-213/P2-215 fail-open
+ * discipline).
  */
 export function readinessRows(health: unknown): MachineReadinessRow[] {
   const body = asObject(health);
@@ -139,6 +162,22 @@ export function readinessRows(health: unknown): MachineReadinessRow[] {
         "docs",
         docState === "complete" ? "ok" : docState === "partial" ? "attention" : "unavailable",
         asString(body.docConvertMessage),
+      ),
+    );
+  }
+
+  // browse — site-opening readiness (P2-284 payload fields, P2-287 row).
+  // Only the four documented verdicts become a row, each with exactly the
+  // severity of the table in the header; absent, non-textual or out-of-table
+  // values yield no row — same tolerance as every other line. "unknown" is
+  // the fail-closed exception: an attention row, never an approved one.
+  const browseState = asString(body.browseState);
+  if (BROWSE_STATES.includes(browseState)) {
+    candidates.push(
+      row(
+        "browse",
+        browseState === "ready" ? "ok" : browseState === "no-browser" ? "unavailable" : "attention",
+        asString(body.browseMessage),
       ),
     );
   }

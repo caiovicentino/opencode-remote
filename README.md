@@ -133,12 +133,12 @@ private. That is the product: **local power, remote control, zero trust**.
   that forces the critical verdict for deterministic screenshots
 - **Machine state panel** — Settings → **Machine state** gathers in one calm
   list every readiness verdict the machine itself reports: the remote relay
-  link, the agent server and its version, disk space and document→PDF
-  conversion. Worst verdict first, one row per verdict with a severity marker
-  and **the machine's own phrase, verbatim** — the app never rewrites it and
-  never invents one. Verdicts the connected daemon does not report simply
-  don't appear (calm empty state), and nothing in the panel ever blocks: it
-  describes the machine hosting the daemon — never the phone
+  link, the agent server and its version, disk space, document→PDF
+  conversion and site browsing. Worst verdict first, one row per verdict with
+  a severity marker and **the machine's own phrase, verbatim** — the app never
+  rewrites it and never invents one. Verdicts the connected daemon does not
+  report simply don't appear (calm empty state), and nothing in the panel ever
+  blocks: it describes the machine hosting the daemon — never the phone
 - **Files** — upload from the phone, preview anything, export a conversation
   as markdown with one tap; every file card has a ⧉ button that copies the
   file's full path (Clipboard API with an execCommand fallback)
@@ -169,7 +169,11 @@ private. That is the product: **local power, remote control, zero trust**.
   (invalid values fail the boot, fail-closed)
 - **Site-opening readiness (P2-284)** — the machine announces in
   `GET /api/health` (`browseState` / `browseMessage` / `browseCheckedAt`)
-  whether it knows how to open sites, before you ask; installing the
+  whether it knows how to open sites, before you ask; the Settings
+  **Machine state** panel renders that verdict as its red/amber/green
+  "Web browsing" row whenever the connected daemon reports it on the
+  settings channel the screen already reads (P2-287; mirroring the verdict
+  onto that channel is the registered continuation task). Installing the
   Playwright browser is optional, and when it is missing the agent answers
   with one short pt-BR sentence instead of a raw English error
 - **Handoff** — continue the exact session on your Mac (laptop icon in the

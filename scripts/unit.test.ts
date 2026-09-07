@@ -9467,6 +9467,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "machineLabelVersion",
     "machineLabelDisk",
     "machineLabelDocs",
+    "machineLabelBrowse",
   ];
   check(
     "machinestate: labels and empty state resolve per locale (no raw-key fallback)",
@@ -9509,6 +9510,214 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       (daemonIndexSrc.match(/machinestate/g) || []).length === 0,
   );
 }
+
+
+// --- P2-287: the browse-readiness row (site opening) ----------------------------
+// The four documented P2-284 verdicts map to severities by the table written
+// in the machinestate.ts header: ready→ok, no-browser→unavailable,
+// disabled→attention (the machine's owner turned it off), unknown→attention
+// (fail-closed, NEVER ok). Absent, non-textual and out-of-table values yield
+// no row — the same tolerance as every other line.
+{
+  // The daemon's own phrases, exactly as /api/health serves them
+  // (browsecap.ts constants, copied as fixtures — the module only
+  // passes them through verbatim, it never authors phrases).
+  const BROWSE_PHRASES = {
+    ready: "Navegação de sites pronta neste computador.",
+    noBrowser:
+      "Este computador ainda não tem navegador para abrir sites — instalar o navegador do Playwright é opcional e fica a cargo de quem gerencia a máquina.",
+    disabled:
+      "A navegação de sites está desligada neste computador — quem gerencia a máquina é quem decide quando ligá-la.",
+    unknown:
+      "Não deu para verificar a navegação de sites agora — o resto do app segue disponível do mesmo jeito.",
+  };
+  const browseRow = (state: unknown, message: unknown = "") =>
+    readinessRows({ browseState: state, browseMessage: message }).find((r) => r.key === "browse");
+
+  // The complete severity table: each documented verdict → exactly its severity.
+  const ready = browseRow("ready", BROWSE_PHRASES.ready);
+  const noBrowser = browseRow("no-browser", BROWSE_PHRASES.noBrowser);
+  const disabled = browseRow("disabled", BROWSE_PHRASES.disabled);
+  const unknown = browseRow("unknown", BROWSE_PHRASES.unknown);
+  check(
+    "P2-287: ready → normal and no-browser → unavailable, each with its marker",
+    ready?.severity === "ok" &&
+      MACHINE_SEVERITY_DOT[ready.severity] === "ok" &&
+      ready.labelKey === "machineLabelBrowse" &&
+      noBrowser?.severity === "unavailable" &&
+      MACHINE_SEVERITY_DOT[noBrowser.severity] === "err",
+  );
+  check(
+    "P2-287: disabled → attention (the owner's choice) and unknown → attention, NEVER ok (fail-closed)",
+    disabled?.severity === "attention" &&
+      MACHINE_SEVERITY_DOT[disabled.severity] === "wait" &&
+      unknown?.severity === "attention" &&
+      unknown!.severity !== "ok" &&
+      MACHINE_SEVERITY_DOT[unknown!.severity] === "wait",
+  );
+
+  // Tolerance: absent, non-textual and out-of-table verdicts never become a
+  // row — and JAMAIS an approved one.
+  check(
+    "P2-287: absent browse verdict yields no row (payloads with and without other rows)",
+    browseRow(undefined) === undefined &&
+      readinessRows({}).some((r) => r.key === "browse") === false &&
+      readinessRows({ diskState: "ok", diskMessage: "x" }).some((r) => r.key === "browse") === false,
+  );
+  check(
+    "P2-287: non-textual browse verdicts yield no row",
+    browseRow(42) === undefined &&
+      browseRow(true) === undefined &&
+      browseRow(null) === undefined &&
+      browseRow({ state: "ready" }) === undefined &&
+      browseRow(["ready"]) === undefined,
+  );
+  check(
+    "P2-287: verdicts outside the documented table yield no row",
+    browseRow("quebrado") === undefined &&
+      browseRow("") === undefined &&
+      browseRow("Ready") === undefined &&
+      browseRow("no_browser") === undefined,
+  );
+
+  // The machine's phrase rides verbatim — rendered literally, never rewritten.
+  check(
+    "P2-287: the daemon's browse phrases ride verbatim (never rewritten, never invented)",
+    ready?.message === BROWSE_PHRASES.ready &&
+      noBrowser?.message === BROWSE_PHRASES.noBrowser &&
+      disabled?.message === BROWSE_PHRASES.disabled &&
+      unknown?.message === BROWSE_PHRASES.unknown,
+  );
+  // A non-textual message degrades to the empty phrase (label carries the row),
+  // exactly like the agent row — never an invented sentence.
+  check(
+    "P2-287: a non-textual message renders as the empty phrase, not an invented one",
+    browseRow("ready", 42)?.message === "" && browseRow("ready", null)?.message === "",
+  );
+
+  // Ordering: worse first, and the same-severity tie-break follows the fixed
+  // MACHINE_ROW_ORDER — proven with two attention rows on both sides of browse.
+  const tie = readinessRows({
+    opencode: { versionState: "too-old", versionMessage: "x" },
+    diskState: "low",
+    diskMessage: "y",
+    browseState: "disabled",
+    browseMessage: BROWSE_PHRASES.disabled,
+  });
+  check(
+    "P2-287: same-severity ties keep the fixed key order with the browse row last (append, never insert)",
+    tie.map((r) => r.key).join(",") === "version,disk,browse" &&
+      tie.every((r) => r.severity === "attention") &&
+      MACHINE_ROW_ORDER[MACHINE_ROW_ORDER.length - 1] === "browse" &&
+      MACHINE_ROW_ORDER.join(",") === "relay,agent,version,disk,docs,browse",
+  );
+  const worseFirst = readinessRows({
+    diskState: "ok",
+    diskMessage: "x",
+    browseState: "no-browser",
+    browseMessage: BROWSE_PHRASES.noBrowser,
+  });
+  check(
+    "P2-287: an unavailable browse row sorts before ok rows (worst first)",
+    worseFirst.map((r) => r.key).join(",") === "browse,disk",
+  );
+
+  // Deterministic: the same input twice, the identical result.
+  const once = JSON.stringify(
+    readinessRows({ browseState: "unknown", browseMessage: BROWSE_PHRASES.unknown }),
+  );
+  const twice = JSON.stringify(
+    readinessRows({ browseState: "unknown", browseMessage: BROWSE_PHRASES.unknown }),
+  );
+  check("P2-287: the same input yields the identical result on two calls", once === twice && once.includes("browse"));
+
+  // Hygiene: no path, no port, no address, no secret in any returned browse
+  // phrase, and none in the label itself.
+  const allBrowse = [ready, noBrowser, disabled, unknown].map((r) => r!.message);
+  const labelEn = translate("en", "machineLabelBrowse");
+  const labelPt = translate("pt", "machineLabelBrowse");
+  check(
+    "P2-287: no returned browse phrase or label contains a path, port, address or secret",
+    [...allBrowse, labelEn, labelPt].every(
+      (m) =>
+        !m.includes("://") &&
+        !m.startsWith("/") &&
+        !m.startsWith("\\\\") &&
+        !/^[A-Za-z]:\\/.test(m) &&
+        !m.includes("127.0.0.1") &&
+        !m.includes(":8792") &&
+        !m.includes("localhost") &&
+        !m.includes("Bearer") &&
+        !m.includes("token"),
+    ),
+  );
+
+  // Label parity: the new key exists in BOTH locales with the exact same key
+  // set (P2-118/P2-275 lessons), resolves in each (no raw-key fallback), and
+  // carries no emoji (P2-107).
+  check(
+    "P2-287: machineLabelBrowse has exact en/pt key parity and resolves per locale",
+    "machineLabelBrowse" in dict.en &&
+      "machineLabelBrowse" in dict.pt &&
+      labelEn !== "machineLabelBrowse" &&
+      labelPt !== "machineLabelBrowse" &&
+      labelEn.trim() !== "" &&
+      labelPt.trim() !== "",
+  );
+
+  // Real-repo assertions: the view feeds the row from the SAME settings read
+  // (no new request, no new poll) and the hatch stays fail-closed.
+  const settingsViewSrc = readFileSync(
+    new URL("../apps/web/src/components/SettingsView.tsx", import.meta.url),
+    "utf8",
+  );
+  const machineStateSrc = readFileSync(new URL("../apps/web/src/lib/machinestate.ts", import.meta.url), "utf8");
+  check(
+    "P2-287: SettingsView feeds the browse row from the same settings read — no /api/health fetch, no browse timer",
+    settingsViewSrc.includes("browseState: browse?.state ?? forcedBrowseState()") &&
+      settingsViewSrc.includes('request("GET", "/__ocr/settings"') &&
+      !settingsViewSrc.includes("/api/health") &&
+      (settingsViewSrc.match(/(?:setInterval|setTimeout)\s*\([^)]*browse/gi) || []).length === 0,
+  );
+  check(
+    "P2-287: the evidence hatch is fail-closed — only degraded states, never ready, real payload wins, no phrase forced",
+    settingsViewSrc.includes('BROWSE_STATES.filter((s) => s !== "ready")') &&
+      settingsViewSrc.includes("HATCH_STATES.includes(forced)") &&
+      !settingsViewSrc.includes("browseMessage: forced") &&
+      (settingsViewSrc.match("ocr.browseStateOverride") || []).length >= 1,
+  );
+  check(
+    "P2-287: BROWSE_STATES has one owner — the view imports the set machinestate exports (no duplicated table)",
+    machineStateSrc.includes(
+      'export const BROWSE_STATES: readonly string[] = ["ready", "no-browser", "disabled", "unknown"];',
+    ) &&
+      settingsViewSrc.includes('import { readinessRows, summarize, MACHINE_SEVERITY_DOT, BROWSE_STATES } from "../lib/machinestate";') &&
+      !settingsViewSrc.includes('new Set(["ready"'),
+  );
+  check(
+    "P2-287: machinestate keeps the browse row last in MACHINE_ROW_ORDER and pure (no React, no fetch, no node:)",
+    machineStateSrc.includes('"docs",\n  "browse",') &&
+      !machineStateSrc.includes("from \"react\"") &&
+      !machineStateSrc.includes("fetch(") &&
+      !machineStateSrc.includes("node:"),
+  );
+  check(
+    "P2-287: apps/daemon stays untouched — the settings body keeps its exact shape and carries no browse mirror",
+    (() => {
+      const src = readFileSync(new URL("../apps/daemon/src/index.ts", import.meta.url), "utf8");
+      const settingsGet = src.split('"/__ocr/settings" && req.method === "GET"')[1] ?? "";
+      const body = settingsGet.split("return {")[1]?.split("};")[0] ?? "";
+      const handler = settingsGet.split('/__ocr/settings" && req.method === "PATCH"')[0] ?? "";
+      return (
+        body.includes("opencodeVersion: opencodeVersion") &&
+        body.includes("disk: diskStatus()") &&
+        !body.includes("browse") &&
+        !handler.includes("maybeReprobeBrowse")
+      );
+    })(),
+  );
+}
+
 
 
 // --- P2-148: first-run welcome flag (pure decision) -----------------------------
@@ -22886,7 +23095,11 @@ check("P2-241: no new periodic timer was introduced by the handler", !dlBlock.in
   // revalidation appears ONLY at the described use points: the transcribe
   // refusal, the health route (doc-convert + version + browse) and the
   // settings read (version) — never anywhere else. P2-284 adds the browse
-  // verdict on the health route as the fifth use point.
+  // verdict on the health route as the fifth use point. P2-287 twice briefly
+  // mirrored the browse verdict onto the settings read; the review rejected
+  // the apps/daemon scope breach both times (the spec contradiction is
+  // escalated to a planner/strategist round, not resolved inside this UI
+  // task), so the count is back to five.
   {
     const lines = code.split("\n");
     const callLines = lines.filter((l) =>

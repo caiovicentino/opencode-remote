@@ -4,7 +4,7 @@ import { APP_VERSION } from "../version";
 import { useT, setLang, getLang, type Lang } from "../lib/i18n";
 import { timeAgo } from "../lib/time";
 import { getTtsLang, setTtsLang as persistTtsLang, type TtsLang } from "../lib/voice";
-import { readinessRows, summarize, MACHINE_SEVERITY_DOT } from "../lib/machinestate";
+import { readinessRows, summarize, MACHINE_SEVERITY_DOT, BROWSE_STATES } from "../lib/machinestate";
 import type { UpstreamNotice } from "../lib/degraded";
 
 /** P2-187: phone relay resolution from the desktop shell (mirrors
@@ -149,6 +149,21 @@ export function applyTheme() {
   document.documentElement.style.fontSize = font === "small" ? "14px" : font === "large" ? "19px" : "16.5px";
 }
 
+/** P2-287: deterministic-evidence hatch (the P2-218 lesson, web edition) —
+ * `ocr.browseStateOverride` in localStorage forces the browse verdict for
+ * screenshots WITHOUT touching any network path. Fail-closed twice over:
+ * only the DEGRADED states of BROWSE_STATES (owned by machinestate.ts) are
+ * honored — never "ready", so the hatch can never fabricate an approval for
+ * a machine that never measured one — and the real payload always wins. No
+ * phrase is ever invented (the label alone carries the row). Documented in
+ * docs/troubleshooting.md beside the daemon hatches. */
+const HATCH_STATES: readonly string[] = BROWSE_STATES.filter((s) => s !== "ready");
+
+function forcedBrowseState(): string | undefined {
+  const forced = localStorage.getItem("ocr.browseStateOverride") ?? "";
+  return HATCH_STATES.includes(forced) ? forced : undefined;
+}
+
 export default function SettingsView({ request, onBack, transport, getDiagnostics, onPairRemote, getRelaySetting, setRelayUrl, getWebAppUrl, setWebAppUrl, upstream }: Props) {
   const [devices, setDevices] = useState<Device[]>([]);
   const [name, setName] = useState("");
@@ -188,6 +203,12 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
   // P2-215: disk-space verdict for the volume hosting the daemon's state dir —
   // same channel as above (additive `disk` field on /__ocr/settings).
   const [disk, setDisk] = useState<{ state?: string; message?: string } | null>(null);
+  // P2-287: browse-readiness verdict (site opening) — additive fields on
+  // /__ocr/settings; daemons do not send them yet (the daemon-side mirror is
+  // the registered continuation), so the read yields no browse row until
+  // then and only the documented evidence hatch below can force one,
+  // fail-closed.
+  const [browse, setBrowse] = useState<{ state?: string; message?: string } | null>(null);
   const [nrMode, setNrMode] = useState<"daily" | "days" | "interval">("daily");
   const [nrDays, setNrDays] = useState<number[]>([1, 2, 3, 4, 5]);
   const [nrInterval, setNrInterval] = useState(60);
@@ -242,6 +263,12 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
         setDaemonVersion((s.body as { version?: string }).version ?? "");
         setOpencodeVersion((s.body as { opencodeVersion?: { state?: string; message?: string } }).opencodeVersion ?? null);
         setDisk((s.body as { disk?: { state?: string; message?: string } }).disk ?? null);
+        setBrowse((s.body as { browseState?: string; browseMessage?: string }).browseState !== undefined
+          ? {
+              state: (s.body as { browseState?: string }).browseState,
+              message: (s.body as { browseMessage?: string }).browseMessage,
+            }
+          : null);
       }
       const cs = await request("GET", "/__ocr/clip-style");
       if (cs.status === 200) setStyle((cs.body as Record<string, unknown>) ?? {});
@@ -357,6 +384,11 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
   // or malformed verdicts, so a legacy daemon yields the calm empty state.
   // The daemon's phrases render verbatim; the app never rewrites them and
   // never invents its own.
+  // P2-287: the browse verdict turns into the site-browsing row from the
+  // same read — still no new route, no new request, no new poll. Daemons do
+  // not carry the field yet (registered continuation), so on today's daemons
+  // only the fail-closed hatch below produces the row; the real payload
+  // always wins once a daemon does send it.
   const machineRows = readinessRows({
     opencode: {
       versionState: opencodeVersion?.state,
@@ -364,6 +396,8 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
     },
     diskState: disk?.state,
     diskMessage: disk?.message,
+    browseState: browse?.state ?? forcedBrowseState(),
+    browseMessage: browse?.message,
   });
   const machineSummary = summarize(machineRows);
 
