@@ -1,7 +1,7 @@
 /**
- * P2-242/P2-253 — boot- and daemon-smoke parity between the CI packaging
- * jobs and the release workflow. The CI packaging jobs (desktop-package,
- * desktop-package-win) only INSPECT the packaged bundle
+ * P2-242/P2-253/P2-304 — boot-, daemon- and installer-smoke parity between
+ * the CI packaging jobs and the release workflow. The CI packaging jobs
+ * (desktop-package, desktop-package-win) only INSPECT the packaged bundle
  * (scripts/dist-smoke.mjs); the real executions of the package — the app
  * booting (main throwing at boot, an asar missing an asset the renderer asks
  * for, a blank window) and the daemon sidecar serving on the packaged
@@ -13,7 +13,9 @@
  * the real package AND runs the packaged daemon sidecar smoke
  * (P2-251/P2-253) — after packaging, with shell: bash declared
  * (P2-126/P2-164 lessons: pwsh does not expand globs) and its own timeout —
- * in BOTH workflows.
+ * in BOTH workflows; and that every job that SHIPS the Windows setup exe
+ * (P2-304) also smoke-installs it exactly once before the upload, with the
+ * same shell/timeout hygiene.
  *
  * Pure by construction: no node:fs, no node:child_process, no fetch, no
  * network — the caller reads the real-world inputs (the workflow files) and
@@ -185,6 +187,13 @@ const BOOT_RUN = /packaged-boot\.mjs/;
 /** A step that boots the packaged daemon sidecar via the P2-251 smoke. */
 const DAEMON_SMOKE_RUN = /packaged-daemon-smoke\.mjs/;
 
+/** A step that smoke-installs the NSIS setup exe (P2-304). */
+const INSTALLER_SMOKE_RUN = /installer-smoke\.mjs/;
+
+/** A step that uploads the Windows setup exe to the release — the job SHIPS
+ * an installer, so the installer itself must be smoke-installed first. */
+const SETUP_UPLOAD_RUN = /apps\/desktop\/dist\/\*\.exe/;
+
 /**
  * Cross-check the packaging jobs of the integration (ci) and release
  * workflows, returning one problem per cause in the established problems
@@ -200,7 +209,14 @@ const DAEMON_SMOKE_RUN = /packaged-daemon-smoke\.mjs/;
  *   held to the same bar);
  * - a daemon-smoke step positioned before the packaging step it validates;
  * - a daemon-smoke step without shell: bash declared explicitly;
- * - a daemon-smoke step without its own timeout-minutes.
+ * - a daemon-smoke step without its own timeout-minutes;
+ * - a job that uploads the Windows setup exe but never runs the installer
+ *   smoke (P2-304);
+ * - more than one installer-smoke step in the same job (P2-304);
+ * - an installer-smoke step positioned before packaging or after the upload
+ *   that ships the setup exe (P2-304);
+ * - an installer-smoke step without shell: bash declared explicitly (P2-304);
+ * - an installer-smoke step without its own timeout-minutes (P2-304).
  * A job that packages nothing is never flagged. Every problem names the job
  * and says in one sentence what to do; the order is stable for the same
  * input, and no problem ever embeds a file path from the input.
@@ -262,6 +278,48 @@ export function bootSmokeParity(ciJobs: readonly WorkflowJob[], releaseJobs: rea
             problems.push(
               `boot-smoke-parity: job "${job.name}" of the ${workflow} workflow smokes the daemon sidecar without its own timeout-minutes — add one so a hung daemon cannot hold the runner`,
             );
+          }
+        }
+      }
+      // P2-304: a job that SHIPS the Windows setup exe must prove the
+      // installer actually installs, boots and uninstalls BEFORE the upload
+      // — release-only by shape (the ci packaging jobs build --dir targets
+      // and never produce an installer), keyed on the upload step itself so
+      // no job name is hardcoded.
+      const uploadAt = job.steps.findIndex((s) => SETUP_UPLOAD_RUN.test(s.run));
+      if (uploadAt > -1) {
+        const installerSmokes = job.steps.filter((s) => INSTALLER_SMOKE_RUN.test(s.run));
+        if (installerSmokes.length === 0) {
+          problems.push(
+            `boot-smoke-parity: job "${job.name}" of the ${workflow} workflow ships the Windows setup exe but never smoke-installs it — add a step before the upload that runs the installer smoke (installer-smoke.mjs) against the resolved setup exe`,
+          );
+        } else {
+          if (installerSmokes.length > 1) {
+            problems.push(
+              `boot-smoke-parity: job "${job.name}" of the ${workflow} workflow runs the installer smoke more than once — keep exactly one occurrence`,
+            );
+          }
+          for (const smoke of installerSmokes) {
+            if (job.steps.indexOf(smoke) < packagingAt) {
+              problems.push(
+                `boot-smoke-parity: job "${job.name}" of the ${workflow} workflow smoke-installs the setup exe before the packaging step it validates — move the installer smoke after packaging`,
+              );
+            }
+            if (job.steps.indexOf(smoke) > uploadAt) {
+              problems.push(
+                `boot-smoke-parity: job "${job.name}" of the ${workflow} workflow smoke-installs the setup exe after the upload that ships it — move the installer smoke before the upload`,
+              );
+            }
+            if (smoke.shell !== "bash") {
+              problems.push(
+                `boot-smoke-parity: job "${job.name}" of the ${workflow} workflow smoke-installs the setup exe without declaring shell: bash — declare shell: bash explicitly (pwsh does not expand globs)`,
+              );
+            }
+            if (smoke.timeoutMinutes === null) {
+              problems.push(
+                `boot-smoke-parity: job "${job.name}" of the ${workflow} workflow smoke-installs the setup exe without its own timeout-minutes — add one so a hung installer cannot hold the runner`,
+              );
+            }
           }
         }
       }

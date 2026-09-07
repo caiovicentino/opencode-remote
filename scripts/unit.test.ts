@@ -869,6 +869,7 @@ import { findWindowsInstaller, listProblems, smokeFlags, windowsInstallerProblem
 
 import { bootVerdict } from "../apps/desktop/scripts/packaged-boot-verdict.mjs";
 import { candidatePaths } from "../apps/desktop/scripts/packaged-boot-layout.mjs";
+import { installerVerdict } from "../apps/desktop/scripts/installer-smoke-verdict.mjs";
 
 import { daemonVerdict, MODULE_RESOLUTION_RE } from "../apps/desktop/scripts/packaged-daemon-verdict.mjs";
 
@@ -23650,6 +23651,207 @@ check(
   }
   const parity = bootSmokeParity(ciJobs, releaseJobs);
   check("P2-253: scripts/bootsmokeparity.ts is green against the real files of both workflows", parity.length === 0, parity.join(" | "));
+}
+
+// --- P2-304: installer smoke — installerVerdict table + release.yml wiring --
+
+{
+  const src = (rel: string[]) => readFileSync(join(import.meta.dirname, "..", ...rel), "utf8");
+  const verdictSrc = src(["apps", "desktop", "scripts", "installer-smoke-verdict.mjs"]);
+  const driverSrc = src(["apps", "desktop", "scripts", "installer-smoke.mjs"]);
+
+  const GOOD = {
+    install: { exitCode: 0, signal: null, dirAppeared: true },
+    layout: { executable: true, daemonEntry: true, webDist: true, uninstaller: true },
+    boot: { driverAvailable: true, loadFinished: true, rootEmpty: false, canarySeen: true, consoleErrors: [] as string[] },
+    uninstall: { attempted: true, exitCode: 0, signal: null },
+    dirGone: true,
+  };
+  const v = (over: Partial<typeof GOOD>) => installerVerdict({ ...GOOD, ...over });
+
+  // full verdict table (first match wins: install → layout → boot →
+  // uninstall → leftovers — each stage subsumes the ones after it)
+  check("P2-304: all facts good → ok with no reason", installerVerdict(GOOD).ok === true && installerVerdict(GOOD).reason === null);
+  check("P2-304: installer exit code non-zero → install-failed", v({ install: { exitCode: 3, signal: null, dirAppeared: true } }).reason === "install-failed");
+  check("P2-304: installer killed by signal → install-failed", v({ install: { exitCode: null, signal: "SIGKILL", dirAppeared: true } }).reason === "install-failed");
+  check("P2-304: install dir never appeared → install-failed", v({ install: { exitCode: 0, signal: null, dirAppeared: false } }).reason === "install-failed");
+  check("P2-304: missing executable → layout-missing", v({ layout: { executable: false, daemonEntry: true, webDist: true, uninstaller: true } }).reason === "layout-missing");
+  check("P2-304: missing daemon entry → layout-missing", v({ layout: { executable: true, daemonEntry: false, webDist: true, uninstaller: true } }).reason === "layout-missing");
+  check("P2-304: missing web dist → layout-missing", v({ layout: { executable: true, daemonEntry: true, webDist: false, uninstaller: true } }).reason === "layout-missing");
+  check("P2-304: missing uninstaller → layout-missing", v({ layout: { executable: true, daemonEntry: true, webDist: true, uninstaller: false } }).reason === "layout-missing");
+  check(
+    "P2-304: layout-missing names every missing piece in one message",
+    (() => {
+      const verdict = v({ layout: { executable: false, daemonEntry: false, webDist: false, uninstaller: false } });
+      return verdict.reason === "layout-missing" && /ausente/.test(verdict.message) && /executável/.test(verdict.message) && /desinstalador/.test(verdict.message);
+    })(),
+  );
+  check("P2-304: driver unavailable fails closed → boot-failed", v({ boot: { ...GOOD.boot, driverAvailable: false } }).reason === "boot-failed");
+  check("P2-304: load not finished → boot-failed", v({ boot: { ...GOOD.boot, loadFinished: false } }).reason === "boot-failed");
+  check("P2-304: blank window → boot-failed", v({ boot: { ...GOOD.boot, rootEmpty: true } }).reason === "boot-failed");
+  check("P2-304: canary not seen → boot-failed (never a vacuous pass)", v({ boot: { ...GOOD.boot, canarySeen: false } }).reason === "boot-failed");
+  check("P2-304: console errors → boot-failed", v({ boot: { ...GOOD.boot, consoleErrors: ["boom"] } }).reason === "boot-failed");
+  check("P2-304: boot-failed cites the inner boot reason", v({ boot: { ...GOOD.boot, loadFinished: false } }).message.includes("load-failed"));
+  check("P2-304: uninstaller exit non-zero → uninstall-failed", v({ uninstall: { attempted: true, exitCode: 5, signal: null } }).reason === "uninstall-failed");
+  check("P2-304: uninstall never attempted → uninstall-failed (fail closed)", v({ uninstall: { attempted: false, exitCode: null, signal: null } }).reason === "uninstall-failed");
+  check("P2-304: dir still present after a clean uninstall → leftover-files", v({ dirGone: false }).reason === "leftover-files");
+  check("P2-304: install-failed outranks everything (later stages never ran)", v({ install: { exitCode: 1, signal: null, dirAppeared: false }, dirGone: false }).reason === "install-failed");
+  check("P2-304: uninstall-failed outranks leftover-files", v({ uninstall: { attempted: true, exitCode: 5, signal: null }, dirGone: false }).reason === "uninstall-failed");
+
+  // message hygiene: short pt-BR, no paths, no URL schemes, no secrets
+  const all = [
+    installerVerdict(GOOD),
+    v({ install: { exitCode: 3, signal: null, dirAppeared: true } }),
+    v({ layout: { executable: true, daemonEntry: false, webDist: true, uninstaller: true } }),
+    v({ boot: { ...GOOD.boot, driverAvailable: false } }),
+    v({ boot: { ...GOOD.boot, loadFinished: false } }),
+    v({ uninstall: { attempted: true, exitCode: 5, signal: null } }),
+    v({ dirGone: false }),
+  ];
+  check(
+    "P2-304: every verdict message is non-empty and free of paths, URLs and secrets",
+    all.every((x) => typeof x.message === "string" && x.message.trim().length > 0 && !/[\\/]/.test(x.message) && !/https?:/i.test(x.message)),
+  );
+  check("P2-304: each reason carries a distinct message", new Set(all.map((x) => x.message)).size === all.length);
+
+  // the verdict module stays pure (P2-194 lesson): no I/O of any kind
+  check(
+    "P2-304: installer-smoke-verdict.mjs is pure (no node: fs/os/path/net/http/child_process imports)",
+    !/node:(fs|os|path|net|http|child_process)/.test(verdictSrc.replace(/\/\/.*$/gm, "")),
+  );
+
+  // the driver carries the full pipeline and the hermetic contract of
+  // packaged-boot.mjs verbatim (P2-242 lesson: no thinner CI-only variant)
+  check(
+    "P2-304: driver installs silently — /S and /D= last unquoted argument (NSIS contract)",
+    driverSrc.includes('"/S"') && driverSrc.includes("`/D=${installDir}`") && driverSrc.includes("windowsVerbatimArguments"),
+  );
+  check(
+    "P2-304: driver reuses the packaged-boot hermetic contract (same env fn, same canary, same verdict module)",
+    driverSrc.includes('hermeticBootEnv } from "./packaged-boot.mjs"') &&
+      driverSrc.includes('CANARY } from "./packaged-boot-verdict.mjs"') &&
+      driverSrc.includes('installerVerdict } from "./installer-smoke-verdict.mjs"'),
+  );
+  check(
+    "P2-304: driver checks the installed layout (exe, resources/daemon, resources/web-dist, uninstaller)",
+    driverSrc.includes('"resources", "daemon", "index.js"') &&
+      driverSrc.includes('"resources", "web-dist", "index.html"') &&
+      driverSrc.includes("uninstallerPath"),
+  );
+  check(
+    "P2-304: driver fails closed BEFORE any machine mutation when playwright-core is unavailable",
+    driverSrc.includes("refusing to pass vacuously") && driverSrc.indexOf("refusing to pass vacuously") < driverSrc.indexOf("const installer = spawn"),
+  );
+  check(
+    "P2-304: driver refuses non-Windows hosts (NSIS never executes there) and bounds every child",
+    driverSrc.includes('process.platform !== "win32"') && driverSrc.includes("waitExit"),
+  );
+  check(
+    "P2-304: driver runs the uninstaller silently and requires the install dir to vanish",
+    driverSrc.includes("uninstallerPath, [\"/S\"]") && driverSrc.includes("dirGone"),
+  );
+  check(
+    "P2-304: driver cleans up the temp install tree and temp home even on failure",
+    driverSrc.includes("rmSync(workspace") && driverSrc.includes("rmSync(tempHome"),
+  );
+
+  // parity rules (synthetic fixtures, same shape as the P2-251/P2-253 ones)
+  const wfJob = (name: string, steps: WorkflowStep[]): WorkflowJob => ({ name, platform: "x", steps });
+  const pkgStep: WorkflowStep = { name: "Package", run: "npm run dist --workspace @ocr/desktop -- --mac --dir", shell: null, timeoutMinutes: null };
+  const bootStep: WorkflowStep = { name: "Boot", run: 'node apps/desktop/scripts/packaged-boot.mjs "$APP"', shell: "bash", timeoutMinutes: 10 };
+  const daemonStep: WorkflowStep = { name: "Smoke the packaged daemon sidecar", run: 'node apps/desktop/scripts/packaged-daemon-smoke.mjs "$APP"', shell: "bash", timeoutMinutes: 5 };
+  const installerStep: WorkflowStep = { name: "Smoke-install the Windows installer", run: 'node apps/desktop/scripts/installer-smoke.mjs "$EXE"', shell: "bash", timeoutMinutes: 10 };
+  const setupUpload: WorkflowStep = {
+    name: "Attach setup exe + update metadata to the GitHub release",
+    run: 'gh release upload "$GITHUB_REF_NAME" \\\n  apps/desktop/dist/*.exe apps/desktop/dist/latest.yml \\\n  --clobber',
+    shell: "bash",
+    timeoutMinutes: 5,
+  };
+  const winJob = (steps: WorkflowStep[]) => bootSmokeParity([], [wfJob("desktop-win", steps)]);
+  check(
+    "P2-304: a job shipping the setup exe without the installer smoke yields exactly one problem naming the job",
+    (() => {
+      const problems = winJob([pkgStep, bootStep, daemonStep, setupUpload]);
+      return problems.length === 1 && problems[0].includes('"desktop-win"') && problems[0].includes("never smoke-installs");
+    })(),
+  );
+  check(
+    "P2-304: a complete correct job (package, boot, daemon smoke, installer smoke, upload) yields zero problems",
+    winJob([pkgStep, bootStep, daemonStep, installerStep, setupUpload]).length === 0,
+  );
+  check(
+    "P2-304: two installer smokes yield the uniqueness problem",
+    (() => {
+      const problems = winJob([pkgStep, bootStep, daemonStep, installerStep, installerStep, setupUpload]);
+      return problems.length === 1 && problems[0].includes("more than once");
+    })(),
+  );
+  check(
+    "P2-304: an installer smoke before packaging yields the position problem",
+    (() => {
+      const problems = winJob([installerStep, pkgStep, bootStep, daemonStep, setupUpload]);
+      return problems.length === 1 && problems[0].includes("before the packaging step");
+    })(),
+  );
+  check(
+    "P2-304: an installer smoke after the upload yields the position problem",
+    (() => {
+      const problems = winJob([pkgStep, bootStep, daemonStep, setupUpload, installerStep]);
+      return problems.length === 1 && problems[0].includes("after the upload");
+    })(),
+  );
+  check(
+    "P2-304: shell/timeout hygiene yields one problem per cause, no short-circuit",
+    (() => {
+      const problems = winJob([pkgStep, bootStep, daemonStep, { ...installerStep, shell: null, timeoutMinutes: null }, setupUpload]);
+      return problems.length === 2 && problems.some((p) => p.includes("shell: bash")) && problems.some((p) => p.includes("timeout-minutes"));
+    })(),
+  );
+  check(
+    "P2-304: a ci job that never uploads the setup exe is never flagged (dir-target packaging)",
+    bootSmokeParity([wfJob("desktop-package-win", [pkgStep, bootStep, daemonStep])], []).length === 0,
+  );
+  check(
+    "P2-304: a job uploading only the dmg is never flagged (no setup exe to smoke-install)",
+    bootSmokeParity(
+      [],
+      [wfJob("desktop-dmg", [pkgStep, bootStep, daemonStep, { name: "Attach DMG", run: "gh release upload apps/desktop/dist/*.dmg", shell: "bash", timeoutMinutes: 5 }])],
+    ).length === 0,
+  );
+
+  // real-repo assertion: the actual release.yml runs the installer smoke in
+  // desktop-win exactly once, after the daemon smoke and before the upload,
+  // with shell: bash + its own timeout — and parity stays green overall.
+  const release = src([".github", "workflows", "release.yml"]);
+  const winStart = release.indexOf("\n  desktop-win:");
+  const winEnd = release.indexOf("\n  release-verify:");
+  const win = winStart > -1 && winEnd > winStart ? release.slice(winStart, winEnd) : "";
+  const daemonAt = win.indexOf("Smoke the packaged daemon sidecar");
+  const smokeAt = win.indexOf("Smoke-install the Windows installer");
+  const uploadAt = win.indexOf("Attach setup exe + update metadata");
+  const stepSlice = smokeAt > -1 ? win.slice(smokeAt, win.indexOf("\n      - name:", smokeAt)) : "";
+  check(
+    "P2-304: release.yml desktop-win runs the installer smoke between the daemon smoke and the upload",
+    daemonAt > -1 && smokeAt > daemonAt && uploadAt > smokeAt,
+  );
+  check(
+    "P2-304: exactly one installer-smoke.mjs occurrence in the desktop-win job",
+    win.split("installer-smoke.mjs").length === 2,
+  );
+  check(
+    "P2-304: the installer smoke step declares shell: bash and its own timeout-minutes",
+    stepSlice.includes("shell: bash") && /timeout-minutes: \d+/.test(stepSlice),
+  );
+  check(
+    "P2-304: the step resolves the setup exe under apps/desktop/dist and runs installer-smoke.mjs against it",
+    stepSlice.includes("find apps/desktop/dist") && stepSlice.includes("node apps/desktop/scripts/installer-smoke.mjs"),
+  );
+  {
+    const ciJobs = parseWorkflowJobs(readFileSync(join(import.meta.dirname, "..", ".github", "workflows", "ci.yml"), "utf8"));
+    const releaseJobs = parseWorkflowJobs(release);
+    const problems = bootSmokeParity(ciJobs, releaseJobs);
+    check("P2-304: bootSmokeParity is green against the real workflows with the installer rule", problems.length === 0, problems.join(" | "));
+  }
 }
 
 // --- download plan (P2-241) ---------------------------------------------------

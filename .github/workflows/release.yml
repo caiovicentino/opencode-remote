@@ -331,6 +331,23 @@ jobs:
           [ -n "$DIR" ] || { echo "packaged-daemon-smoke: no win-unpacked dir under apps/desktop/dist — nothing to boot"; exit 1; }
           node apps/desktop/scripts/packaged-daemon-smoke.mjs "$DIR"
 
+      # P2-304: everything above proves the UNPACKED bundle — the setup exe a
+      # Windows user actually runs (NSIS install dir, shortcut, uninstall
+      # entry) still had zero proof. Install it silently into a temp dir, check
+      # the installed layout, boot the INSTALLED executable with the same
+      # hermetic contract as the boot smoke above, uninstall silently and
+      # require the install dir to disappear — all BEFORE the upload below.
+      # Playwright missing fails closed. shell: bash (P2-126 lesson) and its
+      # own timeout (P2-245 lesson).
+      - name: Smoke-install the Windows installer
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          EXE="$(find apps/desktop/dist -maxdepth 1 -type f -name '*.exe' | head -1)"
+          [ -n "$EXE" ] || { echo "installer-smoke: no setup exe found under apps/desktop/dist — nothing to install"; exit 1; }
+          echo "installer-smoke: smoke-installing $EXE"
+          node apps/desktop/scripts/installer-smoke.mjs "$EXE"
+
       - name: Attach setup exe + update metadata to the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

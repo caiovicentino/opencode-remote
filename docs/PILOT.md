@@ -182,7 +182,29 @@ ci.yml também rodam o `Smoke the packaged daemon sidecar` (depois do boot do
 pacote, mesmo script e mesmo contrato hermético do release, exigido por
 `scripts/bootsmokeparity.ts` nos dois workflows) — a regressão de
 empacotamento do daemon passa a ser pega no pull request, não mais somente na
-tag.
+tag. Desde a P2-304 o job desktop-win também **instala o instalador de
+verdade** antes de anexá-lo (passo `Smoke-install the Windows installer`,
+`apps/desktop/scripts/installer-smoke.mjs`, depois do smoke do daemon
+empacotado e antes do upload do setup exe): o setup NSIS roda em modo
+silencioso (`/S`, alvo via `/D=` — último argumento, sem aspas) num diretório
+temporário com ambiente hermético (allowlist de vars, HOME/APPDATA apontando
+para um descartável, então o wipe de app-data da P2-249 nunca alcança perfil
+real), confere a árvore instalada (executável, `resources/daemon/index.js`,
+`resources/web-dist`, desinstalador presente), abre o executável **instalado**
+com o mesmo contrato hermético do boot smoke (`hermeticBootEnv` de
+`packaged-boot.mjs` e o mesmo `bootVerdict` — userData temporário, sessão
+própria da execução, nenhum sidecar, pareamento forçado para baixo) e roda o
+desinstalador em modo silencioso exigindo o diretório de instalação de volta.
+O veredito vive na função pura `installerVerdict`
+(`installer-smoke-verdict.mjs`) com motivos `install-failed`, `layout-missing`,
+`boot-failed`, `uninstall-failed` e `leftover-files`; Playwright ausente falha
+fechado **antes** de qualquer mutação da máquina. Exigido por
+`scripts/bootsmokeparity.ts` no job que anexa o setup exe (exatamente uma
+ocorrência, depois do empacotamento e antes do upload, `shell: bash` e timeout
+próprio). Como os irmãos de empacotamento (P2-204/P2-251), o smoke de
+instalador fica **fora do gate determinístico por design** — só roda no
+workflow de release, numa máquina Windows real (NSIS não executa em outro
+host; o script falha fechado fora do Windows).
 Na mesma ponta de distribuição, o job `release-feeds` do workflow confere o
 CONTEÚDO dos quatro feeds de update antes da publicação (P2-157, estendido
 pela P2-212): `update-mac-arm64.json` e `update-mac-x64.json` — os dois que
