@@ -34,7 +34,9 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   um beco (P1-071: todo fluxo alcançável no primeiro boot)
 - Painel de artifact com animação de entrada/saída e backdrop
 - Gauge de contexto e recap (P1-079) no rodapé do chat, discretos
-- Rotinas agendadas visíveis ("Programado"), histórico de execução por rotina
+- Rotinas agendadas visíveis ("Programado"), com histórico de execução por
+  rotina já renderizado na tela de ajustes (P2-318: linha colapsável calma por
+  rotina, mais recente primeiro, com estado vazio falado)
 - Cmd+K: switcher de sessões com preview e teclas ←/→
 
 ## Regra de ouro

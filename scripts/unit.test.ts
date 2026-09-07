@@ -352,6 +352,12 @@ import {
 } from "../apps/web/src/lib/installhint";
 
 import { previewFromEvents, clipPreview } from "../apps/web/src/lib/sessionPreview";
+import {
+  ROUTINE_HISTORY_VIEW_CAP,
+  formatDurationMs,
+  routineHistoryRows,
+  type RoutineHistoryRow,
+} from "../apps/web/src/lib/routinehistoryview";
 
 import {
   capMessagePage,
@@ -11042,6 +11048,105 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check("preview: long text clipped with an ellipsis", pv.s2.length === 90 && pv.s2.endsWith("…"));
   check("preview: sessions without text have no entry", !("s-idle" in pv));
   check("preview: clipPreview trims the edges", clipPreview("  a   b  ") === "a b");
+}
+
+// --- P2-318: routine history view rows (routinehistoryview.ts) ----------------
+{
+  const NOW = Date.parse("2026-09-07T12:00:00.000Z");
+  // stub translator: proves every label comes from the dictionary, never JSX
+  const t = (key: string, vars?: Record<string, string | number>) =>
+    key + (vars && vars.n !== undefined ? `#${vars.n}` : "");
+  const rec = (at: string, durationMs = 1_000, outcome = "completed") => ({ at, durationMs, outcome });
+
+  // --- the acceptance table: absent, empty, malformed, over-cap, degenerate --
+  const table: Array<{ name: string; history: unknown; want: number }> = [
+    { name: "absent history → no rows", history: undefined, want: 0 },
+    { name: "null history → no rows", history: null, want: 0 },
+    { name: "non-array history → no rows", history: "nope", want: 0 },
+    { name: "object history → no rows", history: {}, want: 0 },
+    { name: "empty history → no rows", history: [], want: 0 },
+    {
+      name: "malformed record in the middle → discarded alone",
+      history: [rec("2026-09-07T11:00:00.000Z"), { at: "garbage" }, rec("2026-09-07T10:00:00.000Z")],
+      want: 2,
+    },
+    {
+      name: "every malformed shape is dropped, well-formed siblings survive",
+      history: [
+        { nope: true },
+        rec("2026-09-07T09:00:00.000Z"),
+        { at: "2026-09-07T09:30:00.000Z", durationMs: -5, outcome: "completed" },
+        { at: "2026-09-07T09:30:00.000Z", durationMs: 1.5, outcome: "completed" },
+        { at: "2026-09-07T09:30:00.000Z", durationMs: 5, outcome: "exploded" },
+        { at: "2026-09-07T09:30:00.000Z", durationMs: 5, outcome: null },
+        rec("2026-09-07T08:00:00.000Z"),
+      ],
+      want: 2,
+    },
+    { name: "degenerate duration survives with 0s", history: [rec("2026-09-07T11:59:00.000Z", 0)], want: 1 },
+  ];
+  for (const tc of table) {
+    check(`rhv: ${tc.name}`, routineHistoryRows(tc.history, NOW, t).length === tc.want);
+  }
+
+  // --- ordering: newest first regardless of wire order (stable) --------------
+  const unsorted = routineHistoryRows(
+    [rec("2026-09-05T10:00:00.000Z"), rec("2026-09-07T10:00:00.000Z"), rec("2026-09-06T10:00:00.000Z")],
+    NOW,
+    t,
+  );
+  check(
+    "rhv: rows come back newest first",
+    unsorted[0].at === "2026-09-07T10:00:00.000Z" && unsorted[2].at === "2026-09-05T10:00:00.000Z",
+  );
+
+  // --- cap: documented ceiling of visible rows --------------------------------
+  check("rhv: view cap is a small documented positive integer", Number.isInteger(ROUTINE_HISTORY_VIEW_CAP) && ROUTINE_HISTORY_VIEW_CAP >= 3 && ROUTINE_HISTORY_VIEW_CAP <= 30);
+  const many = Array.from({ length: ROUTINE_HISTORY_VIEW_CAP + 12 }, (_, i) =>
+    rec(new Date(NOW - (i + 1) * 60_000).toISOString()),
+  );
+  const capped = routineHistoryRows(many, NOW, t);
+  check("rhv: over-cap history is capped to the newest rows", capped.length === ROUTINE_HISTORY_VIEW_CAP);
+  check("rhv: cap keeps the NEWEST rows, not the first wire rows", capped[0].at === many[0].at && capped.at(-1)!.at === many[ROUTINE_HISTORY_VIEW_CAP - 1].at);
+
+  // --- labels: dictionary keys + timeAgo reuse --------------------------------
+  const fiveMinAgo = NOW - 5 * 60_000;
+  const oneRow = routineHistoryRows([rec("2026-09-07T11:55:00.000Z", 72_000, "failed")], NOW, t)[0];
+  check("rhv: when label comes from timeAgo semantics", oneRow.whenLabel === "5m");
+  check("rhv: outcome label is the dictionary key, never JSX text", oneRow.outcomeLabel === "routineOutcomeFailed");
+  check("rhv: failed outcome maps the failed key", oneRow.outcome === "failed");
+  check("rhv: duration label is readable", oneRow.durationLabel === "1m 12s");
+  const justNow = routineHistoryRows([rec(new Date(NOW).toISOString())], NOW, t)[0];
+  check("rhv: just-now row asks the dictionary for the label", justNow.whenLabel === "routineHistoryJustNow");
+  const skippedRow = routineHistoryRows([rec(new Date(NOW - 120_000).toISOString(), 0, "skipped")], NOW, t)[0];
+  check("rhv: skipped outcome maps the skipped key", skippedRow.outcomeLabel === "routineOutcomeSkipped");
+  check("rhv: degenerate duration renders as 0s", skippedRow.durationLabel === "0s");
+
+  // --- formatDurationMs table -------------------------------------------------
+  const durTable: Array<[number, string]> = [
+    [0, "0s"],
+    [-5, "0s"],
+    [Number.NaN, "0s"],
+    [999, "0s"],
+    [1_000, "1s"],
+    [59_000, "59s"],
+    [60_000, "1m"],
+    [72_000, "1m 12s"],
+    [3_600_000, "1h"],
+    [3_600_000 + 120_000, "1h 02m"],
+  ];
+  for (const [ms, want] of durTable) {
+    check(`rhv: formatDurationMs(${ms}) → ${want}`, formatDurationMs(ms) === want);
+  }
+
+  // --- purity: same input, two calls, identical result ------------------------
+  const source = [rec("2026-09-07T11:00:00.000Z"), { junk: 1 }, rec("2026-09-07T10:00:00.000Z", 0, "skipped")];
+  const a: RoutineHistoryRow[] = routineHistoryRows(source, NOW, t);
+  const b: RoutineHistoryRow[] = routineHistoryRows(source, NOW, t);
+  check("rhv: same input always yields the identical result", JSON.stringify(a) === JSON.stringify(b));
+  const before = JSON.stringify(source);
+  void routineHistoryRows(source, NOW, t);
+  check("rhv: the input array is never mutated", JSON.stringify(source) === before);
 }
 
 // --- P2-220: iOS install hint (pure verdict + tolerant dismissal flag) --------

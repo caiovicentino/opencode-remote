@@ -242,7 +242,11 @@ remoto, zero confiança**.
   janela de 30 minutos após o horário marcado (rotina criada depois do horário
   fica marcada como cumprida no dia, sem executar na hora) e as falhas de
   disparo tentam no máximo 3 vezes por dia antes de fechar o dia com estado de
-  erro, enquanto o modo por intervalo mantém o próprio ritmo de propósito
+  erro, enquanto o modo por intervalo mantém o próprio ritmo de propósito; na
+  tela de ajustes, cada rotina ganha uma linha colapsável "Histórico de
+  execuções" com as dez corridas mais recentes (quando relativo, resultado
+  traduzido e duração) e uma frase curta de estado vazio quando não há
+  registros
 - **Seguro por construção** — gate com passkey (WebAuthn), ECDH P-256 +
   AES-256-GCM, anti-replay, allowlist de dispositivos, audit log, biometria
 - **Dispositivos distinguíveis** — cada pareamento ganha um rótulo estável e
