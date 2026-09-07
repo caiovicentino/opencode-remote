@@ -153,6 +153,21 @@ identity servers, no accounts.
     surface (and every log line) shows only a short host-based label — never
     the full endpoint.
 
+16. **Third-party actions are pinned (P2-278).** Every `uses:` reference of
+    both workflows is pinned to a full commit SHA (the original tag kept in
+    a same-line comment), and `npm run check:action-pins`
+    (`scripts/check-action-pins.ts`, verdict in the pure `scripts/actionpins.ts`)
+    runs in the `verify` job after the install step, failing the job only on
+    a reject verdict — a third-party action not pinned to a full commit SHA;
+    a first-party owner (`scripts/action-owners.json`) pinned only by a tag
+    and a still-valid exemption (`scripts/action-exemptions.json`, with
+    reason and expiry) only warn: to add a new action, pin it to a commit
+    SHA resolved from the public GitHub API and keep the tag as a comment;
+    to exempt an unresolvable reference, add an entry with the
+    `owner/action` id, a one-sentence reason and an expiry date to
+    `scripts/action-exemptions.json` — past the expiry the reference counts
+    in full again.
+
 ## Key rotation
 
 Delete `~/.opencode-remote/daemon.json` (or `manage.ts revoke-all`) and

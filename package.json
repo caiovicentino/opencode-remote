@@ -23,6 +23,7 @@
     "test:unit-win": "tsx scripts/portable-suite.ts",
     "audit:deps": "tsx scripts/audit-deps.ts",
     "check:workflow-perms": "tsx scripts/check-workflow-perms.ts",
+    "check:action-pins": "tsx scripts/check-action-pins.ts",
     "test:desktop": "tsx scripts/desktop-sidecar.test.ts",
     "test:desktop-update": "tsx scripts/desktop-update.test.ts",
     "test:desktop-render": "tsx scripts/desktop-render.test.ts",

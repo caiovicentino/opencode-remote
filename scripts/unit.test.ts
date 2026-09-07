@@ -911,6 +911,8 @@ import {
   type WorkflowJobPerms,
   type WorkflowScopeAllowlist,
 } from "./workflowperms";
+import { actionPinsVerdict, COMMIT_SHA_PATTERN, type ActionRef } from "./actionpins";
+import { parseWorkflowActionRefs } from "./check-action-pins";
 
 
 let failures = 0;
@@ -19062,7 +19064,11 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
   check(
     "P2-219: checkout, node 22 and npm ci mirror the mac desktop-package job",
-    ["actions/checkout@v4", "node-version: 22", "cache: npm", "run: npm ci"].every((needle) => win.includes(needle) && mac.includes(needle)),
+    // P2-278: the checkout needle follows the action-pinning gate — both jobs
+    // must carry the identical SHA-pinned reference.
+    ["actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4", "node-version: 22", "cache: npm", "run: npm ci"].every(
+      (needle) => win.includes(needle) && mac.includes(needle),
+    ),
   );
   const pkgAt = win.indexOf("Package Windows bundle");
   const pkgStep = pkgAt > -1 ? win.slice(pkgAt, win.indexOf("\n      - name:", pkgAt)) : "";
@@ -24813,6 +24819,223 @@ check("P2-241: no new periodic timer was introduced by the handler", !dlBlock.in
       fnBody.includes("PASTE_FALLBACK_IMAGE_NAME") && fnBody.includes("PASTE_FALLBACK_FILE_NAME"),
     );
   }
+}
+
+// --- P2-278: action pinning verdict (actionpins.ts) --------------------------
+{
+  const mkRef = (
+    file: string,
+    job: string,
+    owner: string,
+    action: string,
+    ref: string,
+    readFailed = false,
+  ): ActionRef => ({ file, job, owner, action, ref, ...(readFailed ? { readFailed: true } : {}) });
+  const OWNERS = ["caiovicentino"];
+  const NOW = Date.parse("2026-09-06T12:00:00.000Z");
+  const LONG_SHA = "11d5960a326750d5838078e36cf38b85af677262";
+  const shortSha = LONG_SHA.slice(0, 39);
+  const nonHexSha = LONG_SHA.slice(0, 10) + "g" + LONG_SHA.slice(11);
+
+  // Rule 1: an absent, empty or failed-read input warns and NEVER approves —
+  // checking zero references is exactly the same as having no gate.
+  check(
+    "P2-278: an absent input warns and never approves",
+    actionPinsVerdict(null, OWNERS, [], NOW).outcome === "warn" &&
+      actionPinsVerdict(undefined, OWNERS, [], NOW).outcome === "warn",
+  );
+  check(
+    "P2-278: an empty reference list warns and never approves",
+    actionPinsVerdict([], OWNERS, [], NOW).outcome === "warn",
+  );
+  check(
+    "P2-278: a failed read warns even with an unpinned third-party ref present (rule order)",
+    actionPinsVerdict(
+      [mkRef("ci.yml", "verify", "", "", "", true), mkRef("release.yml", "release", "docker", "login-action", "v3")],
+      OWNERS,
+      [],
+      NOW,
+    ).outcome === "warn",
+  );
+
+  // Rule 2: a non-finite current instant is refused instead of guessed.
+  check(
+    "P2-278: a non-finite current instant is rejected",
+    actionPinsVerdict([mkRef("ci.yml", "verify", "docker", "login-action", "v3")], OWNERS, [], NaN).outcome ===
+      "reject" &&
+      actionPinsVerdict([mkRef("ci.yml", "verify", "docker", "login-action", "v3")], OWNERS, [], Infinity)
+        .outcome === "reject",
+  );
+
+  // Rule 3: a local action of this very repository is ignored, never a line.
+  check(
+    "P2-278: a local reference is ignored without becoming a report line",
+    actionPinsVerdict([mkRef("ci.yml", "verify", "", "./.github/actions/local", "")], OWNERS, [], NOW)
+      .outcome === "approve" && actionPinsVerdict([mkRef("ci.yml", "verify", "", "./.github/actions/local", "")], OWNERS, [], NOW).lines.length === 0,
+  );
+
+  // Rule 4: the case the gate exists for — a third-party ref without a full
+  // commit SHA rejects; a short SHA and a non-hex character reject too.
+  check(
+    "P2-278: an unpinned third-party reference rejects",
+    actionPinsVerdict([mkRef("release.yml", "relay-image", "docker", "login-action", "v3")], OWNERS, [], NOW)
+      .outcome === "reject",
+  );
+  check(
+    "P2-278: a short SHA and a non-hex SHA reject",
+    actionPinsVerdict([mkRef("ci.yml", "verify", "docker", "login-action", shortSha)], OWNERS, [], NOW).outcome ===
+      "reject" &&
+      actionPinsVerdict([mkRef("ci.yml", "verify", "docker", "login-action", nonHexSha)], OWNERS, [], NOW)
+        .outcome === "reject",
+  );
+  check(
+    "P2-278: a third-party reference pinned to a forty-hex-digit SHA approves",
+    actionPinsVerdict([mkRef("ci.yml", "verify", "docker", "login-action", LONG_SHA)], OWNERS, [], NOW).outcome ===
+      "approve",
+  );
+
+  // Rule order: an expired exemption stops applying and the unpinned ref
+  // counts in full (reject), even though the exemption entry exists.
+  check(
+    "P2-278: an unpinned third-party ref with an expired exemption rejects (rule order)",
+    actionPinsVerdict(
+      [mkRef("release.yml", "relay-image", "docker", "login-action", "v3")],
+      OWNERS,
+      [{ id: "docker/login-action", reason: "resolution unavailable", expiresAt: "2026-01-01T00:00:00.000Z" }],
+      NOW,
+    ).outcome === "reject",
+  );
+
+  // Rule 5: a still-valid exemption downgrades to warn and stays reported.
+  {
+    const report = actionPinsVerdict(
+      [mkRef("release.yml", "relay-image", "docker", "login-action", "v3")],
+      OWNERS,
+      [{ id: "docker/login-action", reason: "resolution unavailable", expiresAt: "2027-01-01T00:00:00.000Z" }],
+      NOW,
+    );
+    check(
+      "P2-278: a still-valid exemption downgrades to warn and never leaves the report",
+      report.outcome === "warn" &&
+        report.lines.length === 1 &&
+        report.lines[0]?.includes("exempt until 2027-01-01T00:00:00.000Z"),
+    );
+  }
+
+  // Rule 6: a first-party action pinned only by a tag warns.
+  check(
+    "P2-278: a first-party reference pinned only by a tag warns",
+    actionPinsVerdict([mkRef("ci.yml", "verify", "caiovicentino", "my-action", "v1")], OWNERS, [], NOW).outcome ===
+      "warn",
+  );
+
+  // Determinism: identical report for the same input in two calls, and a
+  // stable (file, job, action) ordering regardless of the input order.
+  {
+    const messy = [
+      mkRef("release.yml", "release", "docker", "login-action", "v3"),
+      mkRef("ci.yml", "verify", "actions", "setup-node", LONG_SHA),
+      mkRef("ci.yml", "scope", "actions", "checkout", LONG_SHA),
+    ];
+    const run1 = actionPinsVerdict(messy, OWNERS, [], NOW);
+    const run2 = actionPinsVerdict([...messy].reverse(), OWNERS, [], NOW);
+    check(
+      "P2-278: the same input yields an identical report in two calls",
+      JSON.stringify(run1) === JSON.stringify(actionPinsVerdict(messy, OWNERS, [], NOW)),
+    );
+    check(
+      "P2-278: report lines are stably ordered by file, job and action name",
+      JSON.stringify(run1) === JSON.stringify(run2) &&
+        JSON.stringify(run1.lines.map((l) => l.split(" ")[2])) ===
+          JSON.stringify(["ci.yml/scope", "ci.yml/verify", "release.yml/release"]),
+    );
+  }
+
+  // Real-repo assertions: both real workflows, the CI step, the exemptions
+  // file and the purity of the verdict module.
+  const root = join(import.meta.dirname, "..");
+  const ownersDoc = JSON.parse(readFileSync(join(root, "scripts", "action-owners.json"), "utf8")) as {
+    owners: string[];
+  };
+  const firstParty = new Set(ownersDoc.owners);
+  const ciRefs = parseWorkflowActionRefs(
+    readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8"),
+  ).refs;
+  const releaseRefs = parseWorkflowActionRefs(
+    readFileSync(join(root, ".github", "workflows", "release.yml"), "utf8"),
+  ).refs;
+  check(
+    "P2-278: the real workflows carry action references to check",
+    ciRefs.length + releaseRefs.length > 0,
+  );
+  check(
+    "P2-278: no third-party reference in the real workflows goes without a full commit SHA",
+    [...ciRefs, ...releaseRefs].every(
+      (r) => firstParty.has(r.owner) || COMMIT_SHA_PATTERN.test(r.ref),
+    ),
+  );
+
+  // The gate step: unique, pinned between install and build, bash shell and
+  // own timeout (P2-245/P2-255 lessons), wired through package.json.
+  const ciYml = readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8");
+  const gateName = "- name: Action pins gate";
+  const verifyJob = ciYml.slice(0, ciYml.indexOf("\n  scope:"));
+  const gateAt = verifyJob.indexOf(gateName);
+  const gateEnd = verifyJob.indexOf("- name:", gateAt + 10);
+  const gateBlock = gateAt >= 0 && gateEnd > gateAt ? verifyJob.slice(gateAt, gateEnd) : "";
+  const installAt = verifyJob.indexOf("- name: Install\n");
+  const buildAt = verifyJob.indexOf("- name: Build\n");
+  check(
+    "P2-278: the action-pins step exists exactly once in ci.yml",
+    ciYml.split(gateName).length === 2,
+  );
+  check(
+    "P2-278: the step sits after the install step and before the build step",
+    installAt > -1 && gateAt > installAt && buildAt > gateAt,
+  );
+  check(
+    "P2-278: the step declares shell bash and its own timeout-minutes",
+    gateBlock.includes("shell: bash") && gateBlock.includes("timeout-minutes:"),
+  );
+  check(
+    "P2-278: the step runs the script via the package.json entry",
+    gateBlock.includes("npm run check:action-pins") &&
+      (JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { scripts: Record<string, string> })
+        .scripts["check:action-pins"] === "tsx scripts/check-action-pins.ts",
+  );
+
+  // The versioned exemptions file: every entry identified, motivated,
+  // deadlined — and never a token, machine path or address.
+  const exemptionsRaw = readFileSync(join(root, "scripts", "action-exemptions.json"), "utf8");
+  const exemptionsDoc = JSON.parse(exemptionsRaw) as {
+    exemptions: Array<{ id?: string; reason?: string; expiresAt?: string }>;
+  };
+  check(
+    "P2-278: every real exemption entry carries id, reason and a parseable expiry",
+    exemptionsDoc.exemptions.every(
+      (e) =>
+        typeof e.id === "string" &&
+        e.id.length > 0 &&
+        typeof e.reason === "string" &&
+        e.reason.length > 0 &&
+        typeof e.expiresAt === "string" &&
+        !Number.isNaN(Date.parse(e.expiresAt)),
+    ),
+  );
+  check(
+    "P2-278: the exemptions file carries no token, machine path or address",
+    !/ghp_|github_pat_|npm_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]|xox[bap]/.test(exemptionsRaw) &&
+      !/\/Users\/|\/home\/|[A-Za-z]:\\/.test(exemptionsRaw) &&
+      !/https?:\/\//.test(exemptionsRaw),
+  );
+
+  // Purity: the verdict module imports no file system, no process spawning
+  // and no network vocabulary at all.
+  const pinsSrc = readFileSync(join(root, "scripts", "actionpins.ts"), "utf8");
+  check(
+    "P2-278: actionpins.ts imports no node:child_process, node:fs or fetch",
+    !/^import[^\n]*(node:child_process|node:fs|fetch)/m.test(pinsSrc) && !pinsSrc.includes("fetch("),
+  );
 }
 
 if (failures > 0) {

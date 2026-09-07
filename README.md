@@ -1130,6 +1130,14 @@ installer — while dev-only findings and network outages only warn; operators
 exempt an advisory with a deadline in `scripts/audit-exemptions.json`
 (see [docs/security.md](docs/security.md)).
 
+**Action pinning gate (P2-278).** Every third-party action of both workflows
+is pinned to a full commit SHA (`npm run check:action-pins`), so a moved
+version tag can never run unreviewed code inside the job that signs and
+publishes the installers; a new action is added by pinning it to a SHA from
+the public GitHub API, and an unresolvable reference is exempted with a
+deadline in `scripts/action-exemptions.json`
+(see [docs/security.md](docs/security.md)).
+
 ## Pilot — autonomous development (24/7)
 
 This repo evolves itself: the Pilot service ([docs/PILOT.md](docs/PILOT.md)) picks tasks from
