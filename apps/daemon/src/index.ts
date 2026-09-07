@@ -997,6 +997,12 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
     // No new route, no new request, no new poll, no new timer.
     maybeReprobeDocConvert();
     await maybeReprobeBrowse();
+    // P2-296: the voice verdict rides this channel too — re-probed lazily at
+    // this same point under the same readiness policy, so installing whisper
+    // or its model is picked up without a restart. No new route, no new
+    // request, no new poll, no new timer.
+    await maybeReprobeTranscription();
+    const stt = sttStatus();
     return {
       id: req.id,
       status: 200,
@@ -1026,6 +1032,11 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
             binaryFound: binaryPick.path !== null,
             binarySource: binaryPick.source,
           },
+          // P2-296: the voice pair joins the mirror — the same hatch-aware
+          // sttStatus() the stt-status route answers; the pure mirror decides
+          // what rides, appended after the existing entries (never reordered).
+          voiceState: stt.state,
+          voiceMessage: stt.message,
         }),
       },
     };
@@ -3407,6 +3418,13 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       maybeReprobeOpencodeVersion();
       // P2-284: the browse verdict is answered here too — same lazy policy.
       await maybeReprobeBrowse();
+      // P2-296: the voice verdict is answered here too — same lazy policy
+      // (at most once per OCR_READINESS_MIN_MS, honoring OCR_READINESS_DISABLE),
+      // so installing whisper or its model is picked up without a restart.
+      await maybeReprobeTranscription();
+      // The same hatch-aware verdict the stt-status route serves (the
+      // documented OCR_STT_BLOCK=1 hatch forces these fields as well).
+      const stt = sttStatus();
       send(200, {
         healthy: true,
         version: VERSION,
@@ -3477,6 +3495,15 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
         browseState: browseCap.state,
         browseMessage: browseCap.message,
         browseCheckedAt: readinessCheckedAt(readinessState.browse.probedAt),
+        // P2-296: additive voice-transcription readiness — same grammar as
+        // the doc-conversion pair: state + short pt-BR phrase + last-probe
+        // instant (null before the first probe). No absolute path, model
+        // file, install script, port, address, env var or secret ever
+        // reaches the payload, and no existing field is removed, renamed or
+        // repositioned.
+        voiceState: stt.state,
+        voiceMessage: stt.message,
+        voiceCheckedAt: readinessCheckedAt(readinessState.transcription.probedAt),
       });
       return true;
     }
