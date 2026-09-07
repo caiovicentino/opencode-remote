@@ -15372,41 +15372,47 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
 
 // --- P2-295: gatekeeper-verify — the distributed DMG container gets the same Gatekeeper gate
 {
-  // Realistic tool outputs of a healthy Developer ID + notarized run against
-  // the DMG container itself (spctl with -t open, stapler validate on the
-  // image).
-  const healthyDmg = {
+  // Review round 2 pinned the REAL packaging shape: electron-builder leaves
+  // dmg.sign off and never staples the image, so every shipped container is
+  // UNSIGNED and UNSTAPLED in every mode — the signature and the ticket live
+  // on the .app inside. These are the real tool outputs of that baseline.
+  const realDmg = {
     mode: "developer-id",
     notarizeRequested: true,
-    codesign: "apps/desktop/dist/OpenCode Remote-1.2.3-arm64.dmg: valid on disk\n",
-    spctl: "apps/desktop/dist/OpenCode Remote-1.2.3-arm64.dmg: accepted\nsource=Notarized Developer ID\norigin=Notarized Developer ID: Example (TEAM1234)\n",
-    stapler: "The validate action worked for apps/desktop/dist/OpenCode Remote-1.2.3-arm64.dmg\n",
+    codesign: "apps/desktop/dist/OpenCode-Remote-1.2.3-arm64.dmg: code object is not signed at all\n",
+    spctl: "apps/desktop/dist/OpenCode-Remote-1.2.3-arm64.dmg: rejected (the code is valid but does not seem to be an applet)\n",
+    stapler: "apps/desktop/dist/OpenCode-Remote-1.2.3-arm64.dmg does not have a ticket stapled to it.\n",
   };
 
   check(
-    "P2-295: developer-id + notarization + success outputs of all three tools on the container → no problems",
-    dmgProblems(healthyDmg).length === 0,
-    JSON.stringify(dmgProblems(healthyDmg)),
+    "P2-295: the real unsigned/unstapled container (developer-id + notarization requested) → no problems",
+    dmgProblems(realDmg).length === 0,
+    JSON.stringify(dmgProblems(realDmg)),
+  );
+  const realDmgAdhoc = dmgProblems({ ...realDmg, mode: "adhoc", notarizeRequested: false });
+  check(
+    "P2-295: the real unsigned container on the ad-hoc no-secrets path → no problem at all",
+    realDmgAdhoc.length === 0,
+    JSON.stringify(realDmgAdhoc),
   );
 
-  // The documented no-secrets path: ad-hoc container, no notarization. spctl
-  // rejecting the image and the missing staple are EXPECTED there (right-click
-  // → Open); the signature itself must still verify.
-  const adhocDmg = dmgProblems({
-    mode: "adhoc",
-    notarizeRequested: false,
-    codesign: healthyDmg.codesign,
-    spctl: "apps/desktop/dist/OpenCode Remote-1.2.3-arm64.dmg: rejected (the code is valid but does not seem to be an applet)\n",
-    stapler: "apps/desktop/dist/OpenCode Remote-1.2.3-arm64.dmg does not have a ticket stapled to it.\n",
-  });
+  // A container that DOES verify as signed (dmg.sign=true someday) is held to
+  // the full bar: accepted by spctl and stapled when notarization was asked.
+  const signedDmg = {
+    mode: "developer-id",
+    notarizeRequested: true,
+    codesign: "apps/desktop/dist/OpenCode-Remote-1.2.3-arm64.dmg: valid on disk\n",
+    spctl: "apps/desktop/dist/OpenCode-Remote-1.2.3-arm64.dmg: accepted\nsource=Notarized Developer ID\norigin=Notarized Developer ID: Example (TEAM1234)\n",
+    stapler: "The validate action worked for apps/desktop/dist/OpenCode-Remote-1.2.3-arm64.dmg\n",
+  };
   check(
-    "P2-295: ad-hoc container without notarization → no problem at all",
-    adhocDmg.length === 0,
-    JSON.stringify(adhocDmg),
+    "P2-295: signed container + developer-id + notarization + success outputs of all three tools → no problems",
+    dmgProblems(signedDmg).length === 0,
+    JSON.stringify(dmgProblems(signedDmg)),
   );
 
   // Rule 1: a mode outside the documented pair is a problem
-  const drifted = dmgProblems({ ...healthyDmg, mode: "self-signed" });
+  const drifted = dmgProblems({ ...realDmg, mode: "self-signed" });
   check(
     "P2-295: unknown signing-profile mode → problem",
     drifted.some((p) => p.includes("mode") && p.includes("self-signed")),
@@ -15415,7 +15421,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
 
   // Rule 2: empty output of each of the three tools is fail-closed
   for (const tool of ["codesign", "spctl", "stapler"] as const) {
-    const problems = dmgProblems({ ...healthyDmg, [tool]: "" });
+    const problems = dmgProblems({ ...realDmg, [tool]: "" });
     check(
       `P2-295: empty ${tool} output on the container → problem (fail-closed)`,
       problems.some((p) => p.startsWith(`${tool}:`) && p.includes("no output")),
@@ -15424,71 +15430,79 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   }
 
   // Rule 2: unrecognizable output is fail-closed too (Apple rewording must fail loudly)
-  const gibberish = dmgProblems({ ...healthyDmg, stapler: "the image seems fine, trust me\n" });
+  const gibberish = dmgProblems({ ...realDmg, stapler: "the image seems fine, trust me\n" });
   check(
     "P2-295: unrecognizable stapler output on the container → problem",
     gibberish.some((p) => p.startsWith("stapler:") && p.includes("unrecognizable")),
     JSON.stringify(gibberish),
   );
 
-  // Rule 3: an invalid signature is a problem
+  // Rule 3: a FAILED signature verification — a verdict that is neither
+  // "valid on disk" nor the documented unsigned baseline — is a problem
   const invalid = dmgProblems({
-    ...healthyDmg,
-    codesign: "apps/desktop/dist/OpenCode Remote-1.2.3-arm64.dmg: code object is not signed at all\n",
+    ...realDmg,
+    codesign: "apps/desktop/dist/OpenCode-Remote-1.2.3-arm64.dmg: invalid signature (code Invalid)\n",
   });
   check(
-    "P2-295: invalid codesign signature on the container → problem",
+    "P2-295: failed codesign verification on the container → problem",
     invalid.some((p) => p.startsWith("codesign:") && p.includes("failed")),
     JSON.stringify(invalid),
   );
 
-  // Rule 4: an spctl rejection is a problem in developer-id mode…
-  const rejectedDevId = dmgProblems({
-    ...healthyDmg,
-    spctl: "apps/desktop/dist/OpenCode Remote-1.2.3-arm64.dmg: rejected (the code is valid but does not seem to be an applet)\n",
+  // Rule 4: an spctl rejection is a problem only for a SIGNED container in
+  // developer-id mode…
+  const rejectedSignedDevId = dmgProblems({
+    ...signedDmg,
+    spctl: "apps/desktop/dist/OpenCode-Remote-1.2.3-arm64.dmg: rejected (the code is valid but does not seem to be an applet)\n",
   });
   check(
-    "P2-295: spctl rejected on the container in developer-id mode → problem",
-    rejectedDevId.some((p) => p.startsWith("spctl:") && p.includes("rejected")),
-    JSON.stringify(rejectedDevId),
+    "P2-295: spctl rejected on a signed container in developer-id mode → problem",
+    rejectedSignedDevId.some((p) => p.startsWith("spctl:") && p.includes("rejected")),
+    JSON.stringify(rejectedSignedDevId),
   );
-  // …and NOT a problem in ad-hoc mode
-  const rejectedAdhoc = dmgProblems({
-    ...healthyDmg,
+  // …NOT a problem for the real unsigned container, even in developer-id mode
+  // (the reviewer's exact scenario: electron-builder never signs the image)
+  const rejectedUnsignedDevId = dmgProblems(realDmg);
+  check(
+    "P2-295: spctl rejected on the unsigned container in developer-id mode → NOT a problem (app inside carries the signature)",
+    rejectedUnsignedDevId.length === 0,
+    JSON.stringify(rejectedUnsignedDevId),
+  );
+  const rejectedUnsignedAdhoc = dmgProblems({
+    ...realDmg,
     mode: "adhoc",
     notarizeRequested: false,
-    spctl: "apps/desktop/dist/OpenCode Remote-1.2.3-arm64.dmg: rejected (the code is valid but does not seem to be an applet)\n",
   });
   check(
-    "P2-295: spctl rejected on the container in ad-hoc mode → NOT a problem (right-click → Open is the documented flow)",
-    rejectedAdhoc.length === 0,
-    JSON.stringify(rejectedAdhoc),
+    "P2-295: spctl rejected on the unsigned container in ad-hoc mode → NOT a problem (right-click → Open is the documented flow)",
+    rejectedUnsignedAdhoc.length === 0,
+    JSON.stringify(rejectedUnsignedAdhoc),
   );
 
   // Rule 5: a missing ticket is a problem only when notarization was requested
-  const unstapled = dmgProblems({
-    ...healthyDmg,
-    stapler: "apps/desktop/dist/OpenCode Remote-1.2.3-arm64.dmg does not have a ticket stapled to it.\n",
+  // AND the container itself verifies as signed
+  const unstapledSigned = dmgProblems({
+    ...signedDmg,
+    stapler: "apps/desktop/dist/OpenCode-Remote-1.2.3-arm64.dmg does not have a ticket stapled to it.\n",
   });
   check(
-    "P2-295: missing staple ticket on the container with notarization requested → problem",
-    unstapled.some((p) => p.startsWith("stapler:") && p.includes("ticket")),
-    JSON.stringify(unstapled),
+    "P2-295: missing staple ticket on a signed container with notarization requested → problem",
+    unstapledSigned.some((p) => p.startsWith("stapler:") && p.includes("ticket")),
+    JSON.stringify(unstapledSigned),
   );
-  const unstapledNoNotarize = dmgProblems({
-    ...healthyDmg,
-    notarizeRequested: false,
-    stapler: "apps/desktop/dist/OpenCode Remote-1.2.3-arm64.dmg does not have a ticket stapled to it.\n",
+  const unstapledUnsigned = dmgProblems({
+    ...realDmg,
+    stapler: "apps/desktop/dist/OpenCode-Remote-1.2.3-arm64.dmg does not have a ticket stapled to it.\n",
   });
   check(
-    "P2-295: missing staple ticket on the container without notarization requested → NOT a problem",
-    unstapledNoNotarize.length === 0,
-    JSON.stringify(unstapledNoNotarize),
+    "P2-295: missing staple ticket on the unsigned container with notarization requested → NOT a problem (unsigned container has nothing to staple)",
+    unstapledUnsigned.length === 0,
+    JSON.stringify(unstapledUnsigned),
   );
 
   // Rule order proven: an invalid mode AND an empty tool output hold at the
   // same time — the mode problem is reported FIRST and both are cumulative.
-  const order = dmgProblems({ ...healthyDmg, mode: "self-signed", codesign: "" });
+  const order = dmgProblems({ ...realDmg, mode: "self-signed", codesign: "" });
   check(
     "P2-295: rule order — mode problem comes first, empty-output problem is cumulative",
     order.length === 2 && order[0]!.includes("mode") && order[1]!.startsWith("codesign:") && order[1]!.includes("no output"),
@@ -15496,7 +15510,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 
   // Pure: the same input yields the same problem list on every call
-  const twice = [dmgProblems(healthyDmg), dmgProblems(healthyDmg)];
+  const twice = [dmgProblems(realDmg), dmgProblems(realDmg)];
   check(
     "P2-295: same input in two calls → identical result",
     JSON.stringify(twice[0]) === JSON.stringify(twice[1]),
@@ -15509,10 +15523,10 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   const script = join(repoRoot, "scripts", "gatekeeper-verify.ts");
   const tmp = mkdtempSync(join("/tmp", "gatekeeper-dmg-"));
   for (const [name, content] of [
-    ["codesign.txt", healthyDmg.codesign],
-    ["spctl.txt", healthyDmg.spctl],
-    ["stapler.txt", healthyDmg.stapler],
-    ["bad-stapler.txt", "apps/desktop/dist/OpenCode Remote-1.2.3-arm64.dmg does not have a ticket stapled to it.\n"],
+    ["codesign.txt", realDmg.codesign],
+    ["spctl.txt", realDmg.spctl],
+    ["stapler.txt", realDmg.stapler],
+    ["bad-stapler.txt", "the image seems fine, trust me\n"],
   ] as const) {
     writeFileSync(join(tmp, name), content);
   }
@@ -15527,7 +15541,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   };
   const dmgOk = runDmgCli(["dmg", "developer-id", "true", join(tmp, "codesign.txt"), join(tmp, "spctl.txt"), join(tmp, "stapler.txt")]);
   check(
-    "P2-295: cli dmg mode exits 0 on a healthy developer-id container",
+    "P2-295: cli dmg mode exits 0 on the real unsigned container even with developer-id + notarization",
     dmgOk.code === 0 && dmgOk.out.includes("gatekeeper-verify: OK") && dmgOk.out.includes("dmg container"),
     dmgOk.out,
   );
@@ -15537,7 +15551,16 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     dmgFail.code === 1 && dmgFail.out.includes("gatekeeper-verify: FAIL") && dmgFail.out.includes("1 problem(s) found") && dmgFail.out.includes("stapler"),
     dmgFail.out,
   );
-  const oldForm = runDmgCli(["developer-id", "true", join(tmp, "codesign.txt"), join(tmp, "spctl.txt"), join(tmp, "stapler.txt")]);
+  // The original bundle form keeps its own healthy fixture: the unsigned
+  // container outputs are dmg-mode baseline, NOT bundle-mode baseline.
+  for (const [name, content] of [
+    ["app-codesign.txt", "apps/desktop/dist/mac-arm64/OpenCode Remote.app: valid on disk\n"],
+    ["app-spctl.txt", "apps/desktop/dist/mac-arm64/OpenCode Remote.app: accepted\nsource=Developer ID: Application: Example (TEAM1234)\n"],
+    ["app-stapler.txt", "The validate action worked for apps/desktop/dist/mac-arm64/OpenCode Remote.app\n"],
+  ] as const) {
+    writeFileSync(join(tmp, name), content);
+  }
+  const oldForm = runDmgCli(["developer-id", "true", join(tmp, "app-codesign.txt"), join(tmp, "app-spctl.txt"), join(tmp, "app-stapler.txt")]);
   check(
     "P2-295: the original (bundle) cli invocation still works unchanged",
     oldForm.code === 0 && oldForm.out.includes("gatekeeper-verify: OK") && oldForm.out.includes("bundle"),
@@ -15571,9 +15594,11 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     JSON.stringify(newBlock),
   );
   check(
-    "P2-295: DMG verification locates exactly one DMG and fails on zero or multiple",
+    "P2-295: DMG verification finds every container, fails on zero, and loops over each one (P2-191 ships one DMG per arch)",
     newBlock.includes("find apps/desktop/dist -maxdepth 1 -type f -name '*.dmg'") &&
-      newBlock.includes('"$DMG_COUNT" != "1"') &&
+      newBlock.includes('[ -n "$DMGS" ]') &&
+      newBlock.includes("while IFS= read -r DMG") &&
+      newBlock.includes('done <<< "$DMGS"') &&
       newBlock.includes("exit 1"),
     JSON.stringify(newBlock),
   );
