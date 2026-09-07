@@ -530,6 +530,9 @@ export const dict = {
     // P2-297: the voice-transcription readiness row — same discipline; the
     // phrase comes from the daemon (P2-296 payload), never from here.
     machineLabelVoice: "Voice transcription",
+    // P2-305: the spoken-reply (TTS) readiness row — same discipline; the
+    // phrase comes from the daemon (ttsMessage), never from here.
+    machineLabelSpoken: "Spoken replies",
     // P2-275: the remaining Settings sections ride the dict — SettingsView no
     // longer carries literal JSX copy. Product names (MCP, AutoMode) stay.
     aboutTitle: "About",
@@ -1070,6 +1073,9 @@ export const dict = {
     // P2-297: linha de prontidão da transcrição de voz — mesma disciplina; a
     // frase vem da máquina (payload da P2-296), nunca daqui.
     machineLabelVoice: "Transcrição de voz",
+    // P2-305: linha de prontidão da resposta falada (TTS) — mesma disciplina;
+    // a frase vem da máquina (ttsMessage), nunca daqui.
+    machineLabelSpoken: "Resposta falada",
     // P2-275: seções restantes das Configurações no dicionário — o SettingsView
     // não tem mais copy literal no JSX. Nomes de produto (MCP, AutoMode) ficam.
     aboutTitle: "Sobre",

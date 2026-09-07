@@ -9942,11 +9942,11 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     browseMessage: BROWSE_PHRASES.disabled,
   });
   check(
-    "P2-287/P2-297: same-severity ties keep the fixed key order with browse kept in place and voice appended last (append, never insert)",
+    "P2-287/P2-297/P2-305: same-severity ties keep the fixed key order with browse kept in place and voice+spoken appended last (append, never insert)",
     tie.map((r) => r.key).join(",") === "version,disk,browse" &&
       tie.every((r) => r.severity === "attention") &&
-      MACHINE_ROW_ORDER[MACHINE_ROW_ORDER.length - 1] === "voice" &&
-      MACHINE_ROW_ORDER.join(",") === "relay,agent,version,disk,docs,browse,voice",
+      MACHINE_ROW_ORDER[MACHINE_ROW_ORDER.length - 1] === "spoken" &&
+      MACHINE_ROW_ORDER.join(",") === "relay,agent,version,disk,docs,browse,voice,spoken",
   );
   const worseFirst = readinessRows({
     diskState: "ok",
@@ -10028,7 +10028,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     machineStateSrc.includes(
       'export const BROWSE_STATES: readonly string[] = ["ready", "no-browser", "disabled", "unknown"];',
     ) &&
-      settingsViewSrc.includes('import { readinessRows, summarize, MACHINE_SEVERITY_DOT, BROWSE_STATES, DOC_STATES, VOICE_STATES } from "../lib/machinestate";') &&
+      settingsViewSrc.includes('import { readinessRows, summarize, MACHINE_SEVERITY_DOT, BROWSE_STATES, DOC_STATES, VOICE_STATES, TTS_STATES } from "../lib/machinestate";') &&
       !settingsViewSrc.includes('new Set(["ready"'),
   );
   check(
@@ -10164,8 +10164,8 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   // no existing row changes position.
   check(
     "P2-297: the voice key is appended at the end of MACHINE_ROW_ORDER — no existing row changes position",
-    MACHINE_ROW_ORDER.join(",") === "relay,agent,version,disk,docs,browse,voice" &&
-      MACHINE_ROW_ORDER.slice(0, -1).join(",") === "relay,agent,version,disk,docs,browse",
+    MACHINE_ROW_ORDER.join(",") === "relay,agent,version,disk,docs,browse,voice,spoken" &&
+      MACHINE_ROW_ORDER.slice(0, -2).join(",") === "relay,agent,version,disk,docs,browse",
   );
 
   // Deterministic: the same input twice, the identical result.
@@ -10232,6 +10232,114 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       settingsViewSrc.includes("ok: relayVerdict?.ok ?? forcedRelayOk()") &&
       settingsViewSrc.includes("binaryFound: agentVerdict?.binaryFound ?? forcedAgentFound()") &&
       settingsViewSrc.includes("docConvertState: docsVerdict?.state ?? forcedDocsState()"),
+  );
+}
+
+// --- P2-305: the spoken-reply (TTS) row — same discipline as its sisters -------
+{
+  // The closed table: ready → ok, missing-tool → unavailable. Both verdicts
+  // carry the daemon's own phrase (ttsMessage) verbatim.
+  const TTS_PHRASES = {
+    ready: "Esta máquina responde em voz alta.",
+    missingTool: "Esta máquina não tem a ferramenta de fala instalada.",
+  };
+  const spokenReady = readinessRows({ ttsState: "ready", ttsMessage: TTS_PHRASES.ready });
+  check(
+    "P2-305: a ready TTS verdict becomes exactly one ok spoken row with the daemon's phrase verbatim",
+    spokenReady.length === 1 &&
+      spokenReady[0].key === "spoken" &&
+      spokenReady[0].severity === "ok" &&
+      spokenReady[0].labelKey === "machineLabelSpoken" &&
+      spokenReady[0].message === TTS_PHRASES.ready,
+  );
+  const spokenMissingTool = readinessRows({ ttsState: "missing-tool", ttsMessage: TTS_PHRASES.missingTool });
+  check(
+    "P2-305: a missing-tool TTS verdict becomes exactly one unavailable spoken row with the daemon's phrase verbatim",
+    spokenMissingTool.length === 1 &&
+      spokenMissingTool[0].key === "spoken" &&
+      spokenMissingTool[0].severity === "unavailable" &&
+      spokenMissingTool[0].message === TTS_PHRASES.missingTool,
+  );
+
+  // The silence rule: absent, non-textual and out-of-table verdicts never
+  // become a row (same tolerance as every other line).
+  check(
+    "P2-305: absent, non-textual and out-of-table TTS verdicts yield no row",
+    readinessRows({}).length === 0 &&
+      readinessRows({ ttsMessage: TTS_PHRASES.ready }).length === 0 &&
+      readinessRows({ ttsState: 7, ttsMessage: TTS_PHRASES.ready }).length === 0 &&
+      readinessRows({ ttsState: "unknown", ttsMessage: TTS_PHRASES.ready }).length === 0 &&
+      readinessRows({ ttsState: "", ttsMessage: TTS_PHRASES.ready }).length === 0 &&
+      readinessRows({ ttsState: "ready ", ttsMessage: TTS_PHRASES.ready }).length === 0,
+  );
+
+  // A non-string ttsMessage is ignored (empty phrase), but the row itself
+  // still rides the measured verdict — the label alone carries it.
+  const spokenNoPhrase = readinessRows({ ttsState: "missing-tool", ttsMessage: 42 });
+  check(
+    "P2-305: a non-textual ttsMessage never crashes the row — phrase is empty, verdict still measured",
+    spokenNoPhrase.length === 1 && spokenNoPhrase[0].message === "",
+  );
+
+  // Append discipline: the spoken key sits at the END of MACHINE_ROW_ORDER —
+  // no existing row changes position (P2-297 lesson, EXPERIENCE.md).
+  check(
+    "P2-305: the spoken key is appended at the end of MACHINE_ROW_ORDER — no existing row changes position",
+    MACHINE_ROW_ORDER.join(",") === "relay,agent,version,disk,docs,browse,voice,spoken" &&
+      MACHINE_ROW_ORDER[MACHINE_ROW_ORDER.length - 1] === "spoken" &&
+      MACHINE_ROW_ORDER.slice(0, -1).join(",") === "relay,agent,version,disk,docs,browse,voice",
+  );
+
+  // Same input twice, identical result (pure module, stable across calls).
+  const spokenTwice = JSON.stringify(readinessRows({ ttsState: "missing-tool", ttsMessage: TTS_PHRASES.missingTool }));
+  check(
+    "P2-305: the same TTS payload yields the identical result on two calls",
+    spokenTwice === JSON.stringify(readinessRows({ ttsState: "missing-tool", ttsMessage: TTS_PHRASES.missingTool })),
+  );
+
+  // Label parity: the new key exists in BOTH locales (P2-118/P2-275 lessons),
+  // resolves in each (no raw-key fallback) and carries no emoji (P2-107).
+  const spokenLabelEn = translate("en", "machineLabelSpoken");
+  const spokenLabelPt = translate("pt", "machineLabelSpoken");
+  check(
+    "P2-305: machineLabelSpoken has exact en/pt key parity, resolves per locale and carries no emoji",
+    "machineLabelSpoken" in dict.en &&
+      "machineLabelSpoken" in dict.pt &&
+      spokenLabelEn !== "machineLabelSpoken" &&
+      spokenLabelPt !== "machineLabelSpoken" &&
+      spokenLabelEn.trim() !== "" &&
+      spokenLabelPt.trim() !== "" &&
+      !/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(spokenLabelEn + spokenLabelPt),
+  );
+
+  // Real-repo assertions: the view's evidence hatch reuses the EXPORTED
+  // TTS_STATES table (one truth, no duplicated list) and the spoken pair is
+  // wired from the same mount read with the tts* identifiers.
+  const settingsViewSpokenSrc = readFileSync(
+    new URL("../apps/web/src/components/SettingsView.tsx", import.meta.url),
+    "utf8",
+  );
+  const settingsSpokenGetAt = settingsViewSpokenSrc.indexOf('request("GET", "/__ocr/settings")');
+  const settingsSpokenClipAt = settingsViewSpokenSrc.indexOf(
+    'request("GET", "/__ocr/clip-style")',
+    settingsSpokenGetAt,
+  );
+  const spokenMountRead =
+    settingsSpokenGetAt >= 0 && settingsSpokenClipAt > settingsSpokenGetAt
+      ? settingsViewSpokenSrc.slice(settingsSpokenGetAt, settingsSpokenClipAt)
+      : "";
+  check(
+    "P2-305: the spoken hatch reuses the exported TTS_STATES table — degraded-only, no duplicated state list",
+    settingsViewSpokenSrc.includes('TTS_STATES.filter((s) => s !== "ready")') &&
+      settingsViewSpokenSrc.includes('localStorage.getItem("ocr.ttsStateOverride")') &&
+      settingsViewSpokenSrc.includes("ttsState: ttsVerdict?.state ?? forcedTtsState()"),
+  );
+  check(
+    "P2-305: the spoken pair rides the SAME mount read — setTtsVerdict inside the one settings GET",
+    spokenMountRead.includes("setTtsVerdict") &&
+      (settingsViewSpokenSrc.match(/request\("GET", "\/__ocr\/settings"\)/g) || []).length === 1 &&
+      settingsViewSpokenSrc.includes("(s.body as { ttsState?: string }).ttsState") &&
+      settingsViewSpokenSrc.includes("(s.body as { ttsMessage?: string }).ttsMessage"),
   );
 }
 
