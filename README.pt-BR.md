@@ -70,9 +70,10 @@ remoto, zero confiança**.
   `GET /__ocr/voice/stt-status` (`{ available, state, message }`, espelhando a
   rota de tts-status). Desde a P2-296 o mesmo veredito também viaja em
   `GET /api/health` (`voiceState` / `voiceMessage` / `voiceCheckedAt`) e no
-  canal `GET /__ocr/settings` que a tela de Configurações já lê — a linha de
-  voz do Estado da máquina segue como continuação declarada até apps/web
-  ganhar a chave correspondente. Instale no host com
+  canal `GET /__ocr/settings` que a tela de Configurações já lê — e desde a
+  P2-297 o painel Estado da máquina renderiza esse veredito na linha "Transcrição
+  de voz", a sétima e última linha do painel, sem nenhuma linha pendente de
+  canal futuro. Instale no host com
   `./scripts/setup-whisper.sh`.
   `OCR_STT_BLOCK=1` no daemon é um hatch de teste que força o veredito
   missing-binary para evidência visual determinística
@@ -121,11 +122,14 @@ remoto, zero confiança**.
   veredito crítico para evidência visual determinística
 - **Painel Estado da máquina** — Configurações → **Estado da máquina** reúne
   numa lista calma todos os vereditos de prontidão que a própria máquina
-  informa: o elo remoto com o relay, o servidor do agente e a versão dele,
-  espaço em disco, conversão de documentos e navegação de sites. O pior
+  informa, em sete linhas: o elo remoto com o relay, o servidor do agente e a
+  versão dele, espaço em disco, conversão de documentos, navegação de sites e
+  transcrição de voz. O pior
   veredito primeiro, uma linha por veredito com marcador de severidade e **a
   frase da própria máquina, literal** — o app nunca a reescreve e nunca inventa
-  outra. Vereditos que o daemon conectado não informa simplesmente não
+  outra. Nenhuma linha fica pendente de canal futuro (P2-297 ligou as quatro
+  últimas na mesma leitura de settings), vereditos que o daemon conectado não
+  informa simplesmente não
   aparecem (estado vazio calmo), e nada no painel impede qualquer ação: ele
   descreve a máquina que hospeda o daemon — nunca o celular
 - **Arquivos** — envie do celular, dê preview de tudo, exporte a conversa
@@ -163,8 +167,8 @@ remoto, zero confiança**.
   de você pedir; o painel **Estado da máquina** das Configurações renderiza
   esse veredito na linha "Navegação de sites" (verde/âmbar/vermelho) pelo
   canal `GET /__ocr/settings` que a tela já lê (P2-287/P2-288) — e desde a
-  P2-292 as linhas de relay e de agente também viajam nesse mesmo canal, sem
-  nenhuma linha nova além dessas duas pendente. Instalar o navegador do
+  P2-297 todas as linhas do painel viajam nesse mesmo canal, sem nenhuma
+  linha pendente de canal futuro. Instalar o navegador do
   Playwright é opcional, e quando ele
   falta o agente responde com uma frase curta em português em vez de um erro
   cru em inglês

@@ -9802,6 +9802,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "machineLabelDisk",
     "machineLabelDocs",
     "machineLabelBrowse",
+    "machineLabelVoice",
   ];
   check(
     "machinestate: labels and empty state resolve per locale (no raw-key fallback)",
@@ -9939,11 +9940,11 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     browseMessage: BROWSE_PHRASES.disabled,
   });
   check(
-    "P2-287: same-severity ties keep the fixed key order with the browse row last (append, never insert)",
+    "P2-287/P2-297: same-severity ties keep the fixed key order with browse kept in place and voice appended last (append, never insert)",
     tie.map((r) => r.key).join(",") === "version,disk,browse" &&
       tie.every((r) => r.severity === "attention") &&
-      MACHINE_ROW_ORDER[MACHINE_ROW_ORDER.length - 1] === "browse" &&
-      MACHINE_ROW_ORDER.join(",") === "relay,agent,version,disk,docs,browse",
+      MACHINE_ROW_ORDER[MACHINE_ROW_ORDER.length - 1] === "voice" &&
+      MACHINE_ROW_ORDER.join(",") === "relay,agent,version,disk,docs,browse,voice",
   );
   const worseFirst = readinessRows({
     diskState: "ok",
@@ -10021,11 +10022,11 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       (settingsViewSrc.match("ocr.browseStateOverride") || []).length >= 1,
   );
   check(
-    "P2-287: BROWSE_STATES has one owner — the view imports the set machinestate exports (no duplicated table)",
+    "P2-287: BROWSE_STATES has one owner — the view imports the sets machinestate exports (no duplicated table)",
     machineStateSrc.includes(
       'export const BROWSE_STATES: readonly string[] = ["ready", "no-browser", "disabled", "unknown"];',
     ) &&
-      settingsViewSrc.includes('import { readinessRows, summarize, MACHINE_SEVERITY_DOT, BROWSE_STATES } from "../lib/machinestate";') &&
+      settingsViewSrc.includes('import { readinessRows, summarize, MACHINE_SEVERITY_DOT, BROWSE_STATES, DOC_STATES, VOICE_STATES } from "../lib/machinestate";') &&
       !settingsViewSrc.includes('new Set(["ready"'),
   );
   check(
@@ -10049,6 +10050,186 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
         handler.includes("maybeReprobeBrowse")
       );
     })(),
+  );
+}
+
+
+// --- P2-297: the voice-readiness row + the fully wired panel --------------------
+// The three documented P2-296 verdicts map to severities by the closed table
+// written in the machinestate.ts header: ready→ok, missing-model→attention
+// (the engine is there, the model is not), missing-binary→unavailable (the
+// machine cannot hear at all). Absent, non-textual and out-of-table values
+// yield no row — the general silence rule; navigation stays the ONLY
+// documented "unknown" exception.
+{
+  // The daemon's own phrases, exactly as the settings mirror serves them
+  // (voicecap.ts register, copied as fixtures — the module only passes them
+  // through verbatim, it never authors phrases).
+  const VOICE_PHRASES = {
+    ready: "Esta máquina transcreve voz.",
+    missingModel:
+      "O computador tem o motor de transcrição, mas falta o modelo de voz — quem gerencia a máquina precisa concluir a instalação.",
+    missingBinary: "Esta máquina ainda não tem motor de transcrição de voz.",
+  };
+  const voiceRow = (state: unknown, message: unknown = "") =>
+    readinessRows({ voiceState: state, voiceMessage: message }).find((r) => r.key === "voice");
+
+  // The complete closed table: each documented verdict → exactly its severity
+  // plus the daemon's literal phrase, with the correct marker.
+  const ready = voiceRow("ready", VOICE_PHRASES.ready);
+  const missingModel = voiceRow("missing-model", VOICE_PHRASES.missingModel);
+  const missingBinary = voiceRow("missing-binary", VOICE_PHRASES.missingBinary);
+  check(
+    "P2-297: ready → ok and missing-model → attention (the engine is there, the model is not), each with its marker",
+    ready?.severity === "ok" &&
+      MACHINE_SEVERITY_DOT[ready.severity] === "ok" &&
+      ready.labelKey === "machineLabelVoice" &&
+      missingModel?.severity === "attention" &&
+      MACHINE_SEVERITY_DOT[missingModel.severity] === "wait",
+  );
+  check(
+    "P2-297: missing-binary → unavailable (the machine cannot hear at all), never a softer verdict",
+    missingBinary?.severity === "unavailable" &&
+      missingBinary!.severity !== "attention" &&
+      missingBinary!.severity !== "ok" &&
+      MACHINE_SEVERITY_DOT[missingBinary!.severity] === "err",
+  );
+
+  // The machine's phrase rides verbatim — rendered literally, never rewritten.
+  check(
+    "P2-297: the daemon's voice phrases ride verbatim (never rewritten, never invented)",
+    ready?.message === VOICE_PHRASES.ready &&
+      missingModel?.message === VOICE_PHRASES.missingModel &&
+      missingBinary?.message === VOICE_PHRASES.missingBinary,
+  );
+
+  // Tolerance: out-of-table, absent and non-textual verdicts never become a
+  // row — the general silence rule (navigation stays the only exception).
+  check(
+    "P2-297: verdicts outside the closed table yield no voice row",
+    voiceRow("junk") === undefined &&
+      voiceRow("") === undefined &&
+      voiceRow("Ready") === undefined &&
+      voiceRow("missing_model") === undefined &&
+      voiceRow("unknown") === undefined,
+  );
+  check(
+    "P2-297: an absent voice verdict yields no row (payloads with and without other rows)",
+    voiceRow(undefined) === undefined &&
+      readinessRows({}).some((r) => r.key === "voice") === false &&
+      readinessRows({ diskState: "ok", diskMessage: "x" }).some((r) => r.key === "voice") === false,
+  );
+  check(
+    "P2-297: non-textual voice verdicts yield no row",
+    voiceRow(42) === undefined &&
+      voiceRow(true) === undefined &&
+      voiceRow(null) === undefined &&
+      voiceRow({ state: "ready" }) === undefined &&
+      voiceRow(["ready"]) === undefined,
+  );
+
+  // The full panel: a complete payload produces exactly the seven rows, worst
+  // first, with the fixed MACHINE_ROW_ORDER tie-break inside each severity.
+  const FULL_SEVEN = {
+    relay: { ok: false, reason: "O endereço do relay não passou na validação." },
+    opencode: {
+      binaryFound: false,
+      binarySource: null,
+      versionState: "too-old",
+      versionMessage: "O opencode instalado nesta máquina é mais antigo do que este app espera.",
+    },
+    diskState: "low",
+    diskMessage: "O disco desta máquina está ficando sem espaço.",
+    docConvertState: "partial",
+    docConvertMessage: "Esta máquina converte documentos com fidelidade parcial.",
+    browseState: "no-browser",
+    browseMessage: "Este computador ainda não tem navegador para abrir sites.",
+    voiceState: "missing-model",
+    voiceMessage: VOICE_PHRASES.missingModel,
+  };
+  const seven = readinessRows(FULL_SEVEN);
+  check(
+    "P2-297: a complete payload produces exactly the seven rows, worst first with the fixed tie-break",
+    seven.map((r) => r.key).join(",") === "relay,agent,browse,version,disk,docs,voice" &&
+      seven.length === 7 &&
+      seven.slice(0, 3).every((r) => r.severity === "unavailable") &&
+      seven.slice(3).every((r) => r.severity === "attention") &&
+      seven[6].key === "voice" &&
+      seven[6].message === VOICE_PHRASES.missingModel,
+  );
+
+  // Append discipline: the voice key sits at the END of MACHINE_ROW_ORDER —
+  // no existing row changes position.
+  check(
+    "P2-297: the voice key is appended at the end of MACHINE_ROW_ORDER — no existing row changes position",
+    MACHINE_ROW_ORDER.join(",") === "relay,agent,version,disk,docs,browse,voice" &&
+      MACHINE_ROW_ORDER.slice(0, -1).join(",") === "relay,agent,version,disk,docs,browse",
+  );
+
+  // Deterministic: the same input twice, the identical result.
+  const sevenOnce = JSON.stringify(readinessRows(FULL_SEVEN));
+  check(
+    "P2-297: the same payload yields the identical result on two calls",
+    sevenOnce === JSON.stringify(readinessRows(FULL_SEVEN)) && sevenOnce.includes("voice"),
+  );
+
+  // Label parity: the new key exists in BOTH locales (P2-118/P2-275 lessons),
+  // resolves in each (no raw-key fallback) and carries no emoji (P2-107).
+  const voiceLabelEn = translate("en", "machineLabelVoice");
+  const voiceLabelPt = translate("pt", "machineLabelVoice");
+  check(
+    "P2-297: machineLabelVoice has exact en/pt key parity, resolves per locale and carries no emoji",
+    "machineLabelVoice" in dict.en &&
+      "machineLabelVoice" in dict.pt &&
+      voiceLabelEn !== "machineLabelVoice" &&
+      voiceLabelPt !== "machineLabelVoice" &&
+      voiceLabelEn.trim() !== "" &&
+      voiceLabelPt.trim() !== "" &&
+      !/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(voiceLabelEn + voiceLabelPt),
+  );
+
+  // Real-repo assertion: the view reads the four new field groups from the
+  // SAME mount read (exactly one settings GET, every new setter inside that
+  // same effect), introduces no request/route/poll/timer, and keeps the
+  // voice-readiness identifier clear of the voice-preferences state.
+  const settingsViewSrc = readFileSync(
+    new URL("../apps/web/src/components/SettingsView.tsx", import.meta.url),
+    "utf8",
+  );
+  const settingsGetAt = settingsViewSrc.indexOf('request("GET", "/__ocr/settings")');
+  const clipStyleAt = settingsViewSrc.indexOf('request("GET", "/__ocr/clip-style")', settingsGetAt);
+  const mountRead = settingsGetAt >= 0 && clipStyleAt > settingsGetAt
+    ? settingsViewSrc.slice(settingsGetAt, clipStyleAt)
+    : "";
+  check(
+    "P2-297: the four new field groups ride the SAME mount read — one settings GET, all new setters inside it",
+    settingsGetAt >= 0 &&
+      (settingsViewSrc.match(/request\("GET", "\/__ocr\/settings"\)/g) || []).length === 1 &&
+      ["setRelayVerdict", "setAgentVerdict", "setDocsVerdict", "setVoiceVerdict"].every((s) =>
+        mountRead.includes(s),
+      ),
+  );
+  check(
+    "P2-297: no new poll and no new timer for the new capabilities",
+    (settingsViewSrc.match(/setInterval|setTimeout/g) || []).length === 0 &&
+      !settingsViewSrc.includes("/api/health"),
+  );
+  check(
+    "P2-297: the voice-readiness identifier does not collide with the voice-preferences state (collision documented in place)",
+    settingsViewSrc.includes("const [voice, setVoice] = useState(getVoiceSettings())") &&
+      settingsViewSrc.includes("const [voiceVerdict, setVoiceVerdict]") &&
+      settingsViewSrc.includes("voiceState: voiceVerdict?.state ?? forcedVoiceState()") &&
+      settingsViewSrc.includes("CANNOT be called\n  // `voice`"),
+  );
+  check(
+    "P2-297: the evidence hatch now covers every capability, degraded-only, real payload wins",
+    settingsViewSrc.includes('VOICE_STATES.filter((s) => s !== "ready")') &&
+      settingsViewSrc.includes('DOC_STATES.filter((s) => s !== "complete")') &&
+      settingsViewSrc.includes('localStorage.getItem("ocr.relayStateOverride") === "down"') &&
+      settingsViewSrc.includes('localStorage.getItem("ocr.agentStateOverride") === "missing"') &&
+      settingsViewSrc.includes("ok: relayVerdict?.ok ?? forcedRelayOk()") &&
+      settingsViewSrc.includes("binaryFound: agentVerdict?.binaryFound ?? forcedAgentFound()") &&
+      settingsViewSrc.includes("docConvertState: docsVerdict?.state ?? forcedDocsState()"),
   );
 }
 

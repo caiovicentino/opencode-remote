@@ -174,9 +174,10 @@ same channel additively — `relay` (`ok` + `reason`, the health relay object
 minus the address, which never rides) and `opencode` (`binaryFound` +
 `binarySource`) — so the panel's first two lines reach a lay user, and no
 line besides these two stays pending. Since P2-296 the voice pair rides the
-same rules too — `voiceState` / `voiceMessage`, appended last; the Settings
-**Machine state** voice line remains a declared continuation until apps/web
-gains the corresponding key. No existing field of the response is renamed,
+same rules too — `voiceState` / `voiceMessage`, appended last. Since P2-297
+apps/web reads every group on this same channel, so the Settings
+**Machine state** panel renders all seven lines and no line stays pending a
+future channel. No existing field of the response is renamed,
 removed or repositioned.
 
 ### Pairing state (P2-007)

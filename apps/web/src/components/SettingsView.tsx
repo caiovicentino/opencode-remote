@@ -4,7 +4,7 @@ import { APP_VERSION } from "../version";
 import { useT, setLang, getLang, type Lang } from "../lib/i18n";
 import { timeAgo } from "../lib/time";
 import { getTtsLang, setTtsLang as persistTtsLang, type TtsLang } from "../lib/voice";
-import { readinessRows, summarize, MACHINE_SEVERITY_DOT, BROWSE_STATES } from "../lib/machinestate";
+import { readinessRows, summarize, MACHINE_SEVERITY_DOT, BROWSE_STATES, DOC_STATES, VOICE_STATES } from "../lib/machinestate";
 import type { UpstreamNotice } from "../lib/degraded";
 
 /** P2-187: phone relay resolution from the desktop shell (mirrors
@@ -167,19 +167,44 @@ export function applyTheme() {
   document.documentElement.style.fontSize = font === "small" ? "14px" : font === "large" ? "19px" : "16.5px";
 }
 
-/** P2-287: deterministic-evidence hatch (the P2-218 lesson, web edition) —
- * `ocr.browseStateOverride` in localStorage forces the browse verdict for
- * screenshots WITHOUT touching any network path. Fail-closed twice over:
- * only the DEGRADED states of BROWSE_STATES (owned by machinestate.ts) are
- * honored — never "ready", so the hatch can never fabricate an approval for
- * a machine that never measured one — and the real payload always wins. No
- * phrase is ever invented (the label alone carries the row). Documented in
- * docs/troubleshooting.md beside the daemon hatches. */
+/** P2-287/P2-297: deterministic-evidence hatch (the P2-218 lesson, web
+ * edition) — localStorage overrides force capability verdicts for
+ * screenshots WITHOUT touching any network path, one key per capability:
+ * `ocr.browseStateOverride`, `ocr.docsStateOverride`, `ocr.voiceStateOverride`,
+ * `ocr.relayStateOverride` (value "down") and `ocr.agentStateOverride` (value
+ * "missing"). Fail-closed twice over: only the DEGRADED states of the tables
+ * owned by machinestate.ts are honored — never "ready"/"complete", never
+ * ok/binaryFound — so the hatch can never fabricate an approval for a machine
+ * that never measured one, and the real payload always wins when it exists.
+ * No phrase is ever forced or invented (the label alone carries the row).
+ * Documented in docs/troubleshooting.md beside the daemon hatches. */
 const HATCH_STATES: readonly string[] = BROWSE_STATES.filter((s) => s !== "ready");
+const DOCS_HATCH_STATES: readonly string[] = DOC_STATES.filter((s) => s !== "complete");
+const VOICE_HATCH_STATES: readonly string[] = VOICE_STATES.filter((s) => s !== "ready");
 
 function forcedBrowseState(): string | undefined {
   const forced = localStorage.getItem("ocr.browseStateOverride") ?? "";
   return HATCH_STATES.includes(forced) ? forced : undefined;
+}
+
+function forcedDocsState(): string | undefined {
+  const forced = localStorage.getItem("ocr.docsStateOverride") ?? "";
+  return DOCS_HATCH_STATES.includes(forced) ? forced : undefined;
+}
+
+function forcedVoiceState(): string | undefined {
+  const forced = localStorage.getItem("ocr.voiceStateOverride") ?? "";
+  return VOICE_HATCH_STATES.includes(forced) ? forced : undefined;
+}
+
+/** The boolean verdicts have a single degraded value each: a relay this
+ * machine cannot reach and an agent binary nobody found. */
+function forcedRelayOk(): boolean | undefined {
+  return localStorage.getItem("ocr.relayStateOverride") === "down" ? false : undefined;
+}
+
+function forcedAgentFound(): boolean | undefined {
+  return localStorage.getItem("ocr.agentStateOverride") === "missing" ? false : undefined;
 }
 
 export default function SettingsView({ request, onBack, transport, getDiagnostics, onPairRemote, getRelaySetting, setRelayUrl, getWebAppUrl, setWebAppUrl, getProxySetting, setProxyChoice, upstream }: Props) {
@@ -227,6 +252,21 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
   // then and only the documented evidence hatch below can force one,
   // fail-closed.
   const [browse, setBrowse] = useState<{ state?: string; message?: string } | null>(null);
+  // P2-297: the remaining capability groups — the relay link, the agent
+  // binary, doc conversion and voice transcription — ride the SAME
+  // /__ocr/settings read (the daemon's P2-292/P2-296 mirror publishes them):
+  // still no new route, no new request, no new poll, no new timer. Same
+  // tolerant read as browse above — an absent field is null and therefore
+  // no row.
+  // NAMING (P2-297): the voice-readiness state below CANNOT be called
+  // `voice` — that identifier is already the voice PREFERENCES state (the
+  // getVoiceSettings() draft at the `const [voice, setVoice]` line above)
+  // and the collision would silently break both. It is `voiceVerdict`; do
+  // not "simplify" it back.
+  const [relayVerdict, setRelayVerdict] = useState<{ ok?: boolean; reason?: string | null } | null>(null);
+  const [agentVerdict, setAgentVerdict] = useState<{ binaryFound?: boolean; binarySource?: string | null } | null>(null);
+  const [docsVerdict, setDocsVerdict] = useState<{ state?: string; message?: string } | null>(null);
+  const [voiceVerdict, setVoiceVerdict] = useState<{ state?: string; message?: string } | null>(null);
   const [nrMode, setNrMode] = useState<"daily" | "days" | "interval">("daily");
   const [nrDays, setNrDays] = useState<number[]>([1, 2, 3, 4, 5]);
   const [nrInterval, setNrInterval] = useState(60);
@@ -302,6 +342,26 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
           ? {
               state: (s.body as { browseState?: string }).browseState,
               message: (s.body as { browseMessage?: string }).browseMessage,
+            }
+          : null);
+        // P2-297: same read, same tolerant shape — the relay object and the
+        // agent binary pair are object-typed fields (a non-object payload
+        // entry is null and therefore no row); the doc and voice pairs are
+        // flat state+message pairs read exactly like browse above.
+        const relayField = (s.body as { relay?: { ok?: boolean; reason?: string | null } }).relay;
+        setRelayVerdict(relayField && typeof relayField === "object" ? relayField : null);
+        const agentField = (s.body as { opencode?: { binaryFound?: boolean; binarySource?: string | null } }).opencode;
+        setAgentVerdict(agentField && typeof agentField === "object" ? agentField : null);
+        setDocsVerdict((s.body as { docConvertState?: string }).docConvertState !== undefined
+          ? {
+              state: (s.body as { docConvertState?: string }).docConvertState,
+              message: (s.body as { docConvertMessage?: string }).docConvertMessage,
+            }
+          : null);
+        setVoiceVerdict((s.body as { voiceState?: string }).voiceState !== undefined
+          ? {
+              state: (s.body as { voiceState?: string }).voiceState,
+              message: (s.body as { voiceMessage?: string }).voiceMessage,
             }
           : null);
       }
@@ -436,25 +496,34 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
   }
 
   // P2-232: machine readiness rows from the SAME /__ocr/settings object this
-  // view already fetches on mount (opencodeVersion + disk, the daemon's own
-  // verdict mirrors) — no new request, no new poll. The module ignores absent
-  // or malformed verdicts, so a legacy daemon yields the calm empty state.
-  // The daemon's phrases render verbatim; the app never rewrites them and
-  // never invents its own.
+  // view already fetches on mount — no new request, no new poll. The module
+  // ignores absent or malformed verdicts, so a legacy daemon yields the calm
+  // empty state. The daemon's phrases render verbatim; the app never rewrites
+  // them and never invents its own.
   // P2-287: the browse verdict turns into the site-browsing row from the
-  // same read — still no new route, no new request, no new poll. Daemons do
-  // not carry the field yet (registered continuation), so on today's daemons
-  // only the fail-closed hatch below produces the row; the real payload
-  // always wins once a daemon does send it.
+  // same read.
+  // P2-297: every capability is wired — relay, agent binary, docs and voice
+  // join version, disk and browse, all from that one mount read (the
+  // P2-292/P2-296 mirror publishes them). The hatch below only fills
+  // verdicts the payload does not carry, and only in its degraded states.
   const machineRows = readinessRows({
+    relay: {
+      ok: relayVerdict?.ok ?? forcedRelayOk(),
+      reason: relayVerdict?.reason ?? null,
+    },
     opencode: {
+      binaryFound: agentVerdict?.binaryFound ?? forcedAgentFound(),
       versionState: opencodeVersion?.state,
       versionMessage: opencodeVersion?.message,
     },
     diskState: disk?.state,
     diskMessage: disk?.message,
+    docConvertState: docsVerdict?.state ?? forcedDocsState(),
+    docConvertMessage: docsVerdict?.message,
     browseState: browse?.state ?? forcedBrowseState(),
     browseMessage: browse?.message,
+    voiceState: voiceVerdict?.state ?? forcedVoiceState(),
+    voiceMessage: voiceVerdict?.message,
   });
   const machineSummary = summarize(machineRows);
 
