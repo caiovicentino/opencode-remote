@@ -402,6 +402,50 @@ The chunk route (`GET /__ocr/download/chunk`) and the 500,000-byte chunk
 count are untouched. Refusal log lines carry only the static reason — never
 the path, file name or size.
 
+## Scheduled routines — per-routine execution history (P2-316)
+
+`GET /__ocr/routines` keeps returning the scheduled routines and now each
+routine carries an optional `history` field beside the `lastRun` mark it
+already had — one record per trigger, **newest first**, so a routine that has
+been failing every day is visible instead of leaving no trace anywhere:
+
+```json
+{
+  "id": "…",
+  "name": "Bom dia",
+  "lastRun": "2026-09-07",
+  "history": [
+    { "at": "2026-09-07T10:00:02.123Z", "durationMs": 2141, "outcome": "completed", "sessionId": "ses_…" },
+    { "at": "2026-09-06T10:00:01.004Z", "durationMs": 187, "outcome": "failed" },
+    { "at": "2026-09-05T10:00:00.900Z", "durationMs": 0, "outcome": "skipped" }
+  ]
+}
+```
+
+- **Record fields (only these four, ever)** — `at`: trigger start instant in
+  ISO form; `durationMs`: trigger duration in milliseconds; `outcome`: a
+  closed set — `completed` (the run finished and produced its result),
+  `failed` (the fire failed, the agent run errored, or the run was released
+  by the 2 h lease), `skipped` (the day was closed without a fire — machine
+  off past the 30-minute window or the retry ceiling reached); and
+  `sessionId`: the identifier of the session created for the run, when there
+  is one.
+- **Cap** — at most **30 records per routine** (`ROUTINE_HISTORY_CAP` in
+  `apps/daemon/src/routinehistory.ts`), always the newest ones: appending
+  never refuses a record, the oldest is discarded to make room, and the cap
+  is re-applied on every load, so the file cannot grow without bound.
+- **Privacy guarantee** — a record never carries the routine prompt text,
+  an agent reply or error text, an absolute path, or user data of any other
+  kind. The history answers whether the routine ran, how long a trigger took
+  and whether it failed — nothing about the content that flowed through it.
+  The contract lives in the `routinehistory.ts` header and is pinned by unit
+  tests.
+- **Persistence and tolerance** — the history is stored on the routine in the
+  same `routines.json` file (no new file, same atomic 0600 write). A load
+  tolerates an old file without the field, a missing or truncated history and
+  malformed records: only the invalid record is discarded — never the routine,
+  never the whole list. Routines without history simply omit the field.
+
 ## SDK (TypeScript/JS)
 
 ```js
