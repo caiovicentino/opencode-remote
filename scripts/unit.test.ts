@@ -907,7 +907,7 @@ import {
   privacyProblems,
 } from "./mac-privacy";
 
-import { touchesDesktop, touchesRelayImage } from "./ci-scope";
+import { touchesDesktop, touchesPortableSuite, touchesRelayImage } from "./ci-scope";
 
 import { PORTABLE_TESTS, portableSuitePlan } from "./portable-suite";
 
@@ -21833,6 +21833,128 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+// --- P2-317: ci-scope — touchesPortableSuite, portable-battery scope classifier
+{
+  check(
+    "P2-317: touchesPortableSuite — a path under each app code directory counts",
+    touchesPortableSuite(["apps/desktop/src/main.ts"]) &&
+      touchesPortableSuite(["apps/web/src/lib/viewState.ts"]) &&
+      touchesPortableSuite(["apps/daemon/src/agentbin.ts"]) &&
+      touchesPortableSuite(["apps/relay/src/webroot.ts"]) &&
+      touchesPortableSuite(["apps/pilot/src/index.ts"]),
+  );
+  check(
+    "P2-317: touchesPortableSuite — shared package and scripts paths count",
+    touchesPortableSuite(["packages/protocol/src/framing.ts"]) &&
+      touchesPortableSuite(["packages/sdk/src/client.ts"]) &&
+      touchesPortableSuite(["scripts/installloc.ts"]),
+  );
+  check(
+    "P2-317: touchesPortableSuite — root package-lock.json and bare dir entries count",
+    touchesPortableSuite(["package-lock.json"]) &&
+      touchesPortableSuite(["apps"]) &&
+      touchesPortableSuite(["packages"]) &&
+      touchesPortableSuite(["scripts"]),
+  );
+  check(
+    "P2-317: touchesPortableSuite — docs-only changeset is inert",
+    !touchesPortableSuite(["docs/PILOT.md", "README.md", "apps/web/ios/App/CapApp-SPM/README.md"]),
+  );
+  check(
+    "P2-317: touchesPortableSuite — media-only changeset is inert, even inside an app dir",
+    !touchesPortableSuite(["assets/demo.mp4", "apps/web/public/icon-192.png", "apps\\desktop\\build\\icon.png"]),
+  );
+  check("P2-317: touchesPortableSuite — empty diff", !touchesPortableSuite([]));
+  check("P2-317: touchesPortableSuite — blank entries are ignored", !touchesPortableSuite(["", "   "]));
+  check(
+    "P2-317: touchesPortableSuite — windows-style separators normalize like forward ones",
+    touchesPortableSuite(["apps\\daemon\\src\\agentbin.ts"]) &&
+      touchesPortableSuite(["packages\\sdk\\src\\client.ts"]) &&
+      touchesPortableSuite(["apps\\daemon\\src\\agentbin.ts"]) === touchesPortableSuite(["apps/daemon/src/agentbin.ts"]),
+  );
+  check(
+    "P2-317: touchesPortableSuite — ./ prefix and whitespace normalize",
+    touchesPortableSuite([" ./apps/relay/src/webroot.ts"]) && touchesPortableSuite(["./package-lock.json"]),
+  );
+  check(
+    "P2-317: touchesPortableSuite — lookalike prefixes outside the surface don't count",
+    !touchesPortableSuite(["scripts-helper/x.ts", "src/apps-mock/x.ts", "packages-x/y.ts"]),
+  );
+
+  // Determinism: the same input must classify identically on every call —
+  // the CLI writes GITHUB_OUTPUT from this verdict alone.
+  const sample = ["docs/PILOT.md", "", "apps/daemon/src/agentbin.ts", "apps\\relay\\src\\webroot.ts", "package-lock.json"];
+  check(
+    "P2-317: touchesPortableSuite — same input, two calls, identical verdict",
+    touchesPortableSuite(sample) === touchesPortableSuite(sample) && touchesPortableSuite(sample) === true,
+  );
+
+  // Real-repo assertion: the scope job declares the new output beside the two
+  // existing ones and verify-win cites both outputs in its condition.
+  const root = join(import.meta.dirname, "..");
+  const ci = readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8");
+  const scopeSrc = readFileSync(join(root, "scripts", "ci-scope.ts"), "utf8");
+  check(
+    "P2-317: scope job declares the portable-suite output beside the untouched desktop and relay-image ones",
+    ci.includes("desktop: ${{ steps.scope.outputs.desktop }}") &&
+      ci.includes("relay-image: ${{ steps.scope.outputs.relay-image }}") &&
+      ci.includes("portable-suite: ${{ steps.scope.outputs.portable-suite }}"),
+  );
+  const winStart = ci.indexOf("\n  verify-win:\n");
+  const winEnd = ci.indexOf("\n  relay-image:");
+  const winJob = winStart > -1 && winEnd > winStart ? ci.slice(winStart, winEnd) : "";
+  check(
+    "P2-317: verify-win runs when the desktop OR the portable-suite output is true",
+    winJob.includes("if: needs.scope.outputs.desktop == 'true' || needs.scope.outputs.portable-suite == 'true'"),
+  );
+  check(
+    "P2-317: verify-win keeps its least-privilege block, pinned actions, shell: bash steps and timeouts intact",
+    winJob.includes("permissions:\n      contents: read") &&
+      winJob.includes("actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4") &&
+      winJob.includes("actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4") &&
+      (winJob.match(/^ {8}shell: bash$/gm) ?? []).length === 3 &&
+      (winJob.match(/timeout-minutes:/g) ?? []).length === 3,
+  );
+
+  // The other scope-gated jobs keep today's conditions, unchanged.
+  const pkgStart = ci.indexOf("\n  desktop-package:");
+  const pkgEnd = ci.indexOf("\n  desktop-package-win:");
+  const macPkg = pkgStart > -1 && pkgEnd > pkgStart ? ci.slice(pkgStart, pkgEnd) : "";
+  check(
+    "P2-317: desktop-package and desktop-package-win stay gated ONLY on the desktop output",
+    macPkg.includes("if: needs.scope.outputs.desktop == 'true'") &&
+      !macPkg.includes("portable-suite") &&
+      !macPkg.includes("relay-image"),
+  );
+  const relayStart = ci.indexOf("\n  relay-image:");
+  const relayJob = relayStart > -1 ? ci.slice(relayStart) : "";
+  check(
+    "P2-317: relay-image stays gated ONLY on the relay-image output",
+    relayJob.includes("if: needs.scope.outputs.relay-image == 'true'") && !relayJob.includes("portable-suite"),
+  );
+
+  // CLI contract: the third line is written beside the two existing ones and
+  // the meaning of the existing lines is unchanged (same template, same order).
+  const desktopAt = scopeSrc.indexOf("`desktop=${desktop ? \"true\" : \"false\"}`");
+  const relayAt = scopeSrc.indexOf("`relay-image=${relayImage ? \"true\" : \"false\"}`");
+  const portableAt = scopeSrc.indexOf("`portable-suite=${portableSuite ? \"true\" : \"false\"}`");
+  check(
+    "P2-317: CLI mode writes portable-suite beside the two existing output lines, in order",
+    desktopAt > -1 && relayAt > desktopAt && portableAt > relayAt,
+  );
+
+  // The condition is registered where the gates look for it.
+  const scopesDoc = JSON.parse(readFileSync(join(root, "scripts", "workflow-scopes.json"), "utf8")) as {
+    conditions?: Record<string, string>;
+  };
+  check(
+    "P2-317: workflow-scopes.json registers the new verify-win condition",
+    typeof scopesDoc.conditions?.["ci.yml/verify-win"] === "string" &&
+      scopesDoc.conditions["ci.yml/verify-win"].includes("portable-suite") &&
+      scopesDoc.conditions["ci.yml/verify-win"].includes("desktop"),
+  );
+}
+
 // --- P2-224: portable (Windows-safe) unit suite --------------------------------
 
 {
@@ -21898,8 +22020,9 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check("P2-224: ci.yml has the verify-win job on windows-latest", winStart > -1 && winJob.includes("runs-on: windows-latest"));
 
   check(
-    "P2-224: verify-win depends on scope and is conditioned on the desktop output (P2-219 indicator)",
-    winJob.includes("needs: scope") && winJob.includes("if: needs.scope.outputs.desktop == 'true'"),
+    "P2-224: verify-win depends on scope and is conditioned on the scope outputs (P2-317 widened it to desktop OR portable-suite)",
+    winJob.includes("needs: scope") &&
+      winJob.includes("if: needs.scope.outputs.desktop == 'true' || needs.scope.outputs.portable-suite == 'true'"),
   );
 
   const typecheckAt = winJob.indexOf("run: npm run typecheck");

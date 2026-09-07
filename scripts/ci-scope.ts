@@ -13,6 +13,11 @@
  * third-party GitHub action. P2-222 adds the sister classifier
  * `touchesRelayImage` (same contract, relay image surface) so a broken
  * deploy/relay/Dockerfile fails the PR instead of the release-day job.
+ * P2-317 adds the sister classifier `touchesPortableSuite` (same contract,
+ * the surface the portable Windows battery exercises) so the verify-win job
+ * also runs for PRs that only touch apps/daemon or apps/relay path logic —
+ * until then those PRs stayed green with zero Windows-specific lines
+ * executed on Windows (the exact P2-299 failure mode).
  */
 import { appendFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -69,15 +74,74 @@ export function touchesRelayImage(changed: readonly string[]): boolean {
   });
 }
 
+/** Directory prefixes whose change can alter what the portable battery runs against. */
+const PORTABLE_DIRS = ["apps/", "packages/", "scripts/"];
+
+/** Bare directory entries that count, beside the root lockfile. */
+const PORTABLE_EXACT_ENTRIES = ["apps", "packages", "scripts", "package-lock.json"];
+
+/**
+ * Extensions of files that are inert for the battery no matter where they
+ * sit: media assets and documentation never change the path logic the
+ * portable suite exercises, so a docs-only or media-only changeset
+ * classifies false (P2-317).
+ */
+const INERT_EXTENSIONS = [
+  ".gif",
+  ".ico",
+  ".icns",
+  ".jpeg",
+  ".jpg",
+  ".md",
+  ".mdx",
+  ".mov",
+  ".mp3",
+  ".mp4",
+  ".otf",
+  ".pdf",
+  ".png",
+  ".svg",
+  ".ttf",
+  ".wav",
+  ".webp",
+  ".woff",
+  ".woff2",
+];
+
+/**
+ * P2-317: true when any changed path can change behavior the portable
+ * Windows battery (scripts/portable-suite.ts, run by the verify-win job)
+ * exercises: the app code directories — apps/daemon and apps/relay carry
+ * Windows-specific decisions such as the agent binary resolution, the
+ * document-converter known install locations and the relay webroot — the
+ * shared packages, the scripts directory itself and the root
+ * package-lock.json. Normalization is identical to the sisters', so a diff
+ * produced on any OS classifies the same. Sister of touchesDesktop and
+ * touchesRelayImage: same shape, the battery surface — this one widens the
+ * verify-win condition instead of gating a new job.
+ */
+export function touchesPortableSuite(changed: readonly string[]): boolean {
+  return changed.some((raw) => {
+    const path = raw.trim().replace(/\\/g, "/").replace(/^\.\//, "");
+    if (path === "") return false;
+    if (INERT_EXTENSIONS.some((ext) => path.toLowerCase().endsWith(ext))) return false;
+    if (PORTABLE_EXACT_ENTRIES.includes(path)) return true;
+    return PORTABLE_DIRS.some((dir) => path.startsWith(dir));
+  });
+}
+
 function cli(argv: readonly string[]): void {
   const desktop = touchesDesktop(argv);
   const relayImage = touchesRelayImage(argv);
-  // P2-222: two scope indicators now flow out of the same classification —
+  const portableSuite = touchesPortableSuite(argv);
+  // P2-222/P2-317: the scope indicators flow out of the same classification —
   // the desktop line stays byte for byte what it always was, the relay-image
-  // line gates the new PR relay-image job beside it.
+  // line gates the PR relay-image job beside it and the portable-suite line
+  // widens the verify-win condition (P2-317).
   const lines = [
     `desktop=${desktop ? "true" : "false"}`,
     `relay-image=${relayImage ? "true" : "false"}`,
+    `portable-suite=${portableSuite ? "true" : "false"}`,
   ];
   for (const line of lines) console.log(`ci-scope: ${line}`);
   const output = process.env.GITHUB_OUTPUT;
