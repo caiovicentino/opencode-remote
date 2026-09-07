@@ -612,6 +612,8 @@ import {
 import { tlsPlan } from "../apps/relay/src/tlsconfig";
 import { certExpiryVerdict, CERT_CLOCK_TOLERANCE_MS, CERT_WARN_WINDOW_MS } from "../apps/relay/src/certexpiry";
 import { certReloadVerdict, type CertPairImpression, type CertReloadOutcome } from "../apps/relay/src/certreload";
+import { certChainVerdict, type CertChainVerdict } from "../apps/relay/src/certchain";
+import { healthzPayload } from "../apps/relay/src/healthz";
 
 import { makeIpTagger, UNKNOWN_IP_TAG, IP_TAG_LENGTH } from "../apps/relay/src/iptag";
 
@@ -13030,6 +13032,209 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P2-306: no new dependency — the relay still depends only on @ocr/protocol and ws",
     JSON.stringify(Object.keys(relayPkg.dependencies).sort()) === JSON.stringify(["@ocr/protocol", "ws"]),
+  );
+}
+
+
+// --- P2-310: relay certificate chain verdict table ----------------------------
+{
+  const link = (subject: string, issuer: string) => ({ subject, issuer });
+  const ROOT = "CN=Test Root";
+  const MID = "CN=Test Intermediate";
+  const LEAF = "CN=Test Leaf";
+  const ALL_CHAIN_VERDICTS: CertChainVerdict[] = [
+    "complete",
+    "self-signed",
+    "leaf-only",
+    "broken-order",
+    "unknown",
+  ];
+
+  // 1. the verdict table, one entry per documented outcome
+  const complete = certChainVerdict([link(LEAF, MID), link(MID, ROOT), link(ROOT, ROOT)]);
+  check("P2-310: full chain in file order → complete", complete.verdict === "complete", complete.reason);
+  const twoLinks = certChainVerdict([link(LEAF, MID), link(MID, ROOT)]);
+  check("P2-310: leaf plus intermediate → complete", twoLinks.verdict === "complete");
+  const selfSigned = certChainVerdict([link(ROOT, ROOT)]);
+  check(
+    "P2-310: single certificate whose subject equals its issuer → self-signed",
+    selfSigned.verdict === "self-signed",
+    selfSigned.reason,
+  );
+  const leafOnly = certChainVerdict([link(LEAF, MID)]);
+  check(
+    "P2-310: single certificate whose subject differs from its issuer → leaf-only",
+    leafOnly.verdict === "leaf-only",
+    leafOnly.reason,
+  );
+  const broken = certChainVerdict([link(LEAF, MID), link(ROOT, ROOT)]);
+  check("P2-310: two certificates that do not chain → broken-order", broken.verdict === "broken-order", broken.reason);
+  const wrongOrder = certChainVerdict([link(MID, ROOT), link(LEAF, MID)]);
+  check("P2-310: chain written in the wrong order → broken-order", wrongOrder.verdict === "broken-order");
+  const gap = certChainVerdict([link(LEAF, MID), link(ROOT, ROOT), link(ROOT, ROOT)]);
+  check("P2-310: three certificates with a broken middle link → broken-order", gap.verdict === "broken-order");
+  check(
+    "P2-310: every documented verdict is reachable from the table",
+    [complete, twoLinks, selfSigned, leafOnly, broken, wrongOrder, gap].every((o) =>
+      ALL_CHAIN_VERDICTS.includes(o.verdict),
+    ),
+  );
+
+  // 2. degenerate inputs → unknown (fail-closed), never a guessed verdict
+  check("P2-310: empty list → unknown", certChainVerdict([]).verdict === "unknown");
+  check("P2-310: undefined input → unknown", certChainVerdict(undefined).verdict === "unknown");
+  check("P2-310: null input → unknown", certChainVerdict(null).verdict === "unknown");
+  check("P2-310: non-array input → unknown", certChainVerdict(`CN=${LEAF}`).verdict === "unknown");
+  check("P2-310: numeric input → unknown", certChainVerdict(42).verdict === "unknown");
+  check("P2-310: entries that are not objects → unknown", certChainVerdict([null, link(LEAF, MID)]).verdict === "unknown");
+  check("P2-310: non-textual subject → unknown", certChainVerdict([{ subject: 1, issuer: MID }]).verdict === "unknown");
+  check("P2-310: missing issuer → unknown", certChainVerdict([{ subject: LEAF }]).verdict === "unknown");
+  check("P2-310: blank subject → unknown", certChainVerdict([link("  ", MID)]).verdict === "unknown");
+  check(
+    "P2-310: a partially parseable list never guesses healthy → unknown",
+    certChainVerdict([link(LEAF, MID), undefined]).verdict === "unknown",
+  );
+
+  // 3. determinism: the same input twice produces an identical result
+  const a = certChainVerdict([link(LEAF, MID), link(MID, ROOT)]);
+  const b = certChainVerdict([link(LEAF, MID), link(MID, ROOT)]);
+  check("P2-310: same input twice → identical verdict and reason", a.verdict === b.verdict && a.reason === b.reason);
+
+  // 4. every phrase is static and blind: no digits, no path separators, no
+  // host, no subject/issuer/serial/fingerprint material
+  const phrases = [complete, twoLinks, selfSigned, leafOnly, broken, wrongOrder, gap, a, certChainVerdict([]), certChainVerdict(undefined)].map(
+    (o) => o.reason,
+  );
+  const forbidden = ["localhost", "127.0.0.1", "https", "pem", ".key", "issuer", "serial", "fingerprint", "CN=", "subject"];
+  check(
+    "P2-310: every reason phrase is static and free of path, host, port, subject, issuer or secret material",
+    phrases.every(
+      (r) =>
+        !/[\d]/.test(r) &&
+        !r.includes("/") &&
+        !r.includes("\\") &&
+        !r.includes(":\\") &&
+        forbidden.every((f) => !r.includes(f)),
+    ),
+  );
+
+  // 5. the real module stays pure: no node:fs, node:tls, node:crypto, no
+  // network call and no import statement at all
+  const root = join(import.meta.dirname, "..");
+  const chainSrc = readFileSync(join(root, "apps", "relay", "src", "certchain.ts"), "utf8");
+  check(
+    "P2-310: certchain.ts imports nothing (no node:fs, node:tls, node:crypto, no network)",
+    !chainSrc.includes("node:fs") &&
+      !chainSrc.includes("node:tls") &&
+      !chainSrc.includes("node:crypto") &&
+      !chainSrc.includes("node:http") &&
+      !chainSrc.includes("fetch") &&
+      !/^import /m.test(chainSrc) &&
+      !chainSrc.includes("require("),
+  );
+
+  // 6. the real index.ts classifies at boot AND re-classifies inside the
+  // EXISTING reload sweep — no new timer, no new route, no new dependency
+  const relayIndex = readFileSync(join(root, "apps", "relay", "src", "index.ts"), "utf8");
+  const bootAt = relayIndex.indexOf("certChainVerdict(");
+  const listenPositions = [...relayIndex.matchAll(/\.listen\(/g)].map((m) => m.index);
+  check(
+    "P2-310: the chain is classified at boot, before any listener opens (metrics and relay included)",
+    bootAt > 0 && listenPositions.length >= 2 && listenPositions.every((p) => bootAt < p),
+  );
+  check(
+    "P2-310: no new timer or route — still exactly one setInterval and two server.on handlers",
+    (relayIndex.match(/setInterval\(/g) ?? []).length === 1 && (relayIndex.match(/server\.on\(/g) ?? []).length === 2,
+  );
+  const reloadStart = relayIndex.indexOf("P2-306 hot reload");
+  const reloadEnd = relayIndex.indexOf("const nextCert = certExpiryVerdict(");
+  const reloadBlock = reloadStart > 0 && reloadEnd > reloadStart ? relayIndex.slice(reloadStart, reloadEnd) : "";
+  check(
+    "P2-310: the existing reload sweep re-classifies the chain when it adopts new material",
+    reloadBlock.includes("certChainVerdict(extractCertLinks") &&
+      reloadBlock.includes("lastCertChainState") &&
+      reloadBlock.includes("applied && freshCert"),
+  );
+  check(
+    "P2-310: the boot classification logs exactly one static line per verdict",
+    relayIndex.includes("relay TLS certificate chain classified") &&
+      relayIndex.includes("relay TLS certificate chain state changed"),
+  );
+  check(
+    "P2-310: the healthz getter publishes the sweep-maintained verdict, never the frozen boot const",
+    relayIndex.includes("certChain: () => lastCertChainState") &&
+      !relayIndex.includes("certChain: () => CERT_CHAIN?.verdict"),
+  );
+  const chainStart = relayIndex.indexOf("const CERT_CHAIN");
+  const chainEnd = relayIndex.indexOf("let lastCertChainState");
+  const chainBlock = chainStart > 0 && chainEnd > chainStart ? relayIndex.slice(chainStart, chainEnd) : "";
+  check(
+    "P2-310: the chain verdict only explains — tls-only boot block that never exits, closes, terminates or listens",
+    chainBlock.length > 0 &&
+      chainBlock.includes('if (TLS.mode !== "tls") return undefined;') &&
+      chainBlock.includes("relay TLS certificate chain classified") &&
+      !chainBlock.includes("process.exit") &&
+      !chainBlock.includes(".close(") &&
+      !chainBlock.includes(".terminate(") &&
+      !chainBlock.includes(".listen("),
+  );
+
+  // 7. the healthz body carries the verdict additively and fail-closed
+  const healthzSrc = readFileSync(join(root, "apps", "relay", "src", "healthz.ts"), "utf8");
+  const withChain = healthzPayload(
+    {
+      version: "0.2.0",
+      startedAt: 1_000_000,
+      rooms: () => 0,
+      roomsRejected: () => 0,
+      certChain: () => "leaf-only",
+    },
+    1_090_000,
+  );
+  const withoutChain = healthzPayload(
+    { version: "0.2.0", startedAt: 1_000_000, rooms: () => 0, roomsRejected: () => 0 },
+    1_090_000,
+  );
+  check(
+    "P2-310: a state with the getter publishes certChainState; without it the body keeps the exact shape",
+    withChain.certChainState === "leaf-only" &&
+      !("certChainState" in withoutChain) &&
+      healthzSrc.includes("CERT_CHAIN_STATES.has(chain)"),
+  );
+  check(
+    "P2-310: an out-of-table verdict publishes nothing (fail-closed, never invented)",
+    healthzPayload(
+      {
+        version: "0.2.0",
+        startedAt: 1_000_000,
+        rooms: () => 0,
+        roomsRejected: () => 0,
+        certChain: () => "made-up" as CertChainVerdict,
+      },
+      1_090_000,
+    ).certChainState === undefined,
+  );
+  check(
+    "P2-310: the unknown verdict is part of the documented table and publishes as measured",
+    healthzPayload(
+      {
+        version: "0.2.0",
+        startedAt: 1_000_000,
+        rooms: () => 0,
+        roomsRejected: () => 0,
+        certChain: () => "unknown",
+      },
+      1_090_000,
+    ).certChainState === "unknown",
+  );
+
+  // 8. no new dependency
+  const relayPkg310 = JSON.parse(readFileSync(join(root, "apps", "relay", "package.json"), "utf8")) as {
+    dependencies: Record<string, string>;
+  };
+  check(
+    "P2-310: no new dependency — the relay still depends only on @ocr/protocol and ws",
+    JSON.stringify(Object.keys(relayPkg310.dependencies).sort()) === JSON.stringify(["@ocr/protocol", "ws"]),
   );
 }
 

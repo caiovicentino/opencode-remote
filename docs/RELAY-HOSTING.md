@@ -361,6 +361,23 @@ outage. No timer, route, port or dependency was added, plain mode (no pair
 configured) never touches this path, and no log line ever carries the file
 path or any certificate material.
 
+The certificate **chain** is classified too (P2-310): the boot reads every
+`CERTIFICATE` block in `RELAY_TLS_CERT` — not just the first one the
+validity preflight sees — and logs exactly one static line (`relay TLS
+certificate chain classified`) with the outcome: `complete` (leaf and
+intermediates, in file order), `self-signed` (one certificate only),
+`leaf-only` (the classic mistake of pointing the variable at the bare leaf —
+clients that do not already hold the intermediate in cache may refuse the
+handshake while the owner's own Mac, which does, connects fine),
+`broken-order` (two or more certificates that do not chain in file order) or
+`unknown` (the file could not be assessed — fail-closed). When the hot
+reload above adopts a renewal, the same sweep re-classifies the new material
+and logs one deduplicated `relay TLS certificate chain state changed` line
+per transition. The verdict is purely explanatory: it never refuses a boot,
+closes a connection or changes an admission decision — it exists so the
+operator hears the explanation from the relay instead of reverse-engineering
+a phone that refuses to connect.
+
 ### The log level is fail-closed too (P2-177)
 
 `RELAY_LOG_LEVEL` selects which JSONL lines the relay writes. The four
@@ -708,6 +725,28 @@ being a plain `use` — or when `relay_cert_expiry_seconds` drops below the
 renewal budget (a common choice is three days). The seconds gauge is the line
 that fires first, days before the handshake failures every phone would
 otherwise be the first to report at once.
+
+### Certificate chain state on the probe (P2-310)
+
+When the relay runs with a TLS pair, one more additive field rides the same
+body: `certChainState` — one of `complete`, `self-signed`, `leaf-only`,
+`broken-order`, `unknown` — the chain classification the boot computed and
+the reload sweep keeps current. It answers the question an expiring
+certificate never explains: the relay is healthy, the certificate is valid,
+and still a phone outside refuses the handshake — because the certificate
+file carries only the leaf (`leaf-only`) and the client does not hold the
+intermediate in cache.
+
+The field is fail-closed like the expiry ones: absent in plain mode (`ws://`,
+no certificate), never announcing a classification the relay did not measure
+(`unknown` publishes as measured), and carrying only the short static verdict
+string — never a subject, issuer, serial number, fingerprint, file path or
+host. It is observability, not policy: no connection is refused because of
+it. The drain response keeps the field, exactly like every other one:
+
+```json
+{"ok":false,"version":"0.2.0","uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0,"roomsRejectedInvalidRoomId":0,"roomsRejectedSocketRoomCap":0,"certExpiryVerdict":"use","certExpiryInS":86400,"certChainState":"leaf-only","draining":true}
+```
 
 ### During the drain: 503 on purpose (P2-145)
 
