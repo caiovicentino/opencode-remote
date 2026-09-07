@@ -854,10 +854,15 @@ try {
   // Two hermetic boots cover the four spec states:
   //   boot 1 (OCR_DESKTOP_CAMERA_BLOCK=1): "sem camera" → unavailable panel
   //     with the paste CTA → "colar codigo" (back on the primary form);
+  //     P2-319 adds the camera verdict — the permission refusal shows the
+  //     actionable pt-BR phrase + the system-panel action instead of the
+  //     static sentence;
   //   boot 2 (OCR_DESKTOP_MEDIA_FAKE=1): live "preview" (incl. the 390px
   //     layout beat) → feed killed → "NO SIGNAL" unavailable state.
   const scanShot1440 = join(shotsDir, "P2-117-scan-1440.png");
   const scanShot390 = join(shotsDir, "P2-117-scan-390.png");
+  const blockedShot1440 = join(shotsDir, "P2-319-scan-1440.png");
+  const blockedShot390 = join(shotsDir, "P2-319-scan-390.png");
   const scannerState = "document.querySelector('.qr-scanner')?.dataset.state ?? ''";
   {
     const scanBlockEnv = {
@@ -882,6 +887,22 @@ try {
         await waitProbe("scan: unavailable state rendered", scannerState, (v) => v.includes("unavailable"), scanBlockEnv);
         const cta = run("scan: paste CTA present", ["ipc", "!!document.querySelector('.qr-paste-cta')"], 15_000, scanBlockEnv);
         if (cta.ok) check("scan: paste CTA visible in the unavailable state", /true/.test(cta.stdout));
+        // P2-319: the shell answers app:camAccess with "denied" under the
+        // hatch — the verdict phrase (pt-BR, static) replaces the old
+        // dictionary sentence and the system-panel action appears.
+        const blockedTitle = run("scan-blocked: verdict phrase rendered", ["ipc", "document.querySelector('.qr-unavailable-title')?.textContent ?? ''"], 15_000, scanBlockEnv);
+        if (blockedTitle.ok) {
+          check(
+            "scan-blocked: OS verdict phrase replaces the static sentence",
+            /negado no sistema/.test(blockedTitle.stdout) && !/Permissão de câmera negada/.test(blockedTitle.stdout),
+          );
+        }
+        const panelBtn = run("scan-blocked: system-panel action present", ["ipc", "!!document.querySelector('.qr-panel-cta')"], 15_000, scanBlockEnv);
+        if (panelBtn.ok) check("scan-blocked: panel action visible", /true/.test(panelBtn.stdout));
+        const b1 = run("scan-blocked: 1440x900 evidence shot", ["shot", blockedShot1440, "1440", "900"], 15_000, scanBlockEnv);
+        if (b1.ok) check("scan-blocked: 1440x900 shot is a real PNG", pngSize(blockedShot1440).join("x") === "1440x900");
+        const b2 = run("scan-blocked: 390 evidence shot", ["shot", blockedShot390, "390", "844"], 15_000, scanBlockEnv);
+        if (b2.ok) check("scan-blocked: 390 shot is a real PNG", pngSize(blockedShot390)[0] === 390);
         // "colar codigo": the CTA returns to the primary paste form.
         run("scan: click paste CTA", ["click", ".qr-paste-cta"], 15_000, scanBlockEnv);
         const back = run("scan: primary paste form restored", ["ipc", "!!document.querySelector('.pair-submit')"], 15_000, scanBlockEnv);

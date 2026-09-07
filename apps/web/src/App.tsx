@@ -29,6 +29,7 @@ import PairingOverlay, { type WebAppInfo } from "./components/PairingOverlay";
 import SessionsView from "./components/SessionsView";
 import SidebarAccount from "./components/SidebarAccount";
 import ChatView, { type MicAccessVerdict } from "./components/ChatView";
+import { type CameraAccessVerdict } from "./components/QrScanner";
 import HomeView from "./components/HomeView";
 import { setDraft } from "./lib/drafts";
 import SettingsView, {
@@ -169,6 +170,8 @@ interface DesktopBridge {
   setProxyChoice?: (choice: { mode: "system" | "direct" | "fixed"; address?: string }) => Promise<ProxySettingWriteResult>;
   /** P2-312: microphone-permission verdict (desktop shell only, mirrored in ChatView). */
   getMicAccess?: () => Promise<MicAccessVerdict | null>;
+  /** P2-319: camera-permission verdict (desktop shell only, mirrored in QrScanner). */
+  getCamAccess?: () => Promise<CameraAccessVerdict | null>;
 }
 
 function desktopBridge(): DesktopBridge | null {
@@ -939,6 +942,7 @@ export default function App() {
           onPairRemote={desktopBridge()?.setRemotePairing ? () => void desktopBridge()?.setRemotePairing?.(true) : undefined}
           localMode={pairingState?.mode === "local"}
           preferPaste={!!desktopBridge()}
+          getCamAccess={desktopBridge()?.getCamAccess}
         />
       </div>
     );
@@ -1017,6 +1021,7 @@ export default function App() {
             onPairRemote={desktopBridge()?.setRemotePairing ? () => void desktopBridge()?.setRemotePairing?.(true) : undefined}
             localMode={pairingState?.mode === "local"}
             preferPaste={!!desktopBridge()}
+            getCamAccess={desktopBridge()?.getCamAccess}
           />
         )}
       </div>

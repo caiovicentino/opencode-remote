@@ -104,6 +104,7 @@ import { downloadVerdict, DOWNLOAD_LIMITS, uniqueDownloadName } from "./download
 import { guestAttachDecision, guestNavigationDecision } from "./webviewguard";
 import { permissionDecision, requestingScheme } from "./permissions";
 import { micAccessVerdict } from "./micaccess";
+import { camAccessVerdict } from "./camaccess";
 import { loginItemSupported, logsDirPath, openLogsFolder, trayIconSource, updateGuardReleaseLabel } from "./tray";
 import { trayStatus } from "./traystatus";
 import { shellLang, shellLabels, SUPPORTED_SHELL_LANGS, type ShellLangDecision, type ShellLabels } from "./shelllang";
@@ -1841,6 +1842,22 @@ async function onReady(): Promise<void> {
       // Unsupported platform — the pure verdict fails closed to "unknown".
     }
     return micAccessVerdict(process.platform, permissionCtx.cameraBlocked ? "denied" : status);
+  });
+
+  // P2-319: the camera verdict the QR scanner shows when the OS refuses the
+  // capture — the same form as the mic handler above, and the state is read
+  // at REQUEST time, never at boot, because the user can flip the permission
+  // while the app is open. The P2-117 test hatch (cameraBlocked) answers
+  // denied, so the scanner's system-blocked flow stays reproducible in the
+  // harness.
+  ipcMain.handle("app:camAccess", () => {
+    let status: unknown = "unknown";
+    try {
+      status = systemPreferences.getMediaAccessStatus("camera");
+    } catch {
+      // Unsupported platform — the pure verdict fails closed to "unknown".
+    }
+    return camAccessVerdict(process.platform, permissionCtx.cameraBlocked ? "denied" : status);
   });
 
   // P2-241: the single download policy for the whole shell, registered

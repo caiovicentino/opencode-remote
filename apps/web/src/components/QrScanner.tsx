@@ -3,6 +3,15 @@ import jsQR from "jsqr";
 import { feedVerdict } from "../lib/qrFeed";
 import { useT } from "../lib/i18n";
 
+/** P2-319: shape mirrored from apps/desktop/src/camaccess.ts — the web
+ * workspace never imports the desktop one (same pattern as MicAccessVerdict
+ * in ChatView). */
+export interface CameraAccessVerdict {
+  verdict: "ready" | "will-ask" | "blocked-by-system" | "unknown";
+  phrase: string;
+  settingsTarget: string | null;
+}
+
 interface Props {
   onScan: (text: string) => void;
   onCancel: () => void;
@@ -10,6 +19,10 @@ interface Props {
    * the pairing URI is the primary path (a camera pointed at another screen is
    * a circular flow); the scanner must always offer the way back. */
   onPaste: () => void;
+  /** P2-319: camera-permission verdict (desktop shell only). When the bridge
+   * is present, a permission refusal shows the OS verdict's phrase plus the
+   * system-panel action; without it (the phone) the dictionary copy stays. */
+  getCamAccess?: () => Promise<CameraAccessVerdict | null>;
 }
 
 export type ScanPhase = "looking" | "preview" | "unavailable";
@@ -30,12 +43,18 @@ function errorReason(err: unknown): ScanReason {
 /** In-app QR scanner built on getUserMedia + jsQR. Works on iOS Safari.
  * Renders a visible state machine — looking → preview → unavailable — so the
  * screen never degrades to an empty black box with a single gray caption. */
-export default function QrScanner({ onScan, onCancel, onPaste }: Props) {
+export default function QrScanner({ onScan, onCancel, onPaste, getCamAccess }: Props) {
   const t = useT();
   const videoRef = useRef<HTMLVideoElement>(null);
   const [phase, setPhase] = useState<ScanPhase>("looking");
   const [reason, setReason] = useState<ScanReason>("generic");
+  const [camVerdict, setCamVerdict] = useState<CameraAccessVerdict | null>(null);
   const doneRef = useRef(false);
+  // P2-319: the getter lives behind a ref so asking the shell for the verdict
+  // never re-runs the scan effect (the prop identity would otherwise restart
+  // the camera on every parent render).
+  const camAccessRef = useRef(getCamAccess);
+  camAccessRef.current = getCamAccess;
 
   useEffect(() => {
     let stream: MediaStream | null = null;
@@ -53,6 +72,18 @@ export default function QrScanner({ onScan, onCancel, onPaste }: Props) {
       stream?.getTracks().forEach((tr) => tr.stop());
       stream = null;
       if (watchdog) clearInterval(watchdog);
+      // P2-319: a permission refusal inside the desktop shell asks the shell
+      // what the OS actually says (not asked yet / denied / readable) — the
+      // answer replaces the phone-oriented sentence below the paste CTA.
+      if (r === "permission") {
+        camAccessRef.current?.()
+          .then((v) => {
+            if (!cancelled && !doneRef.current) setCamVerdict(v ?? null);
+          })
+          .catch(() => {
+            if (!cancelled && !doneRef.current) setCamVerdict(null);
+          });
+      }
     }
 
     /** Empty-feed detector (P2-117): a capture device with no input shows its
@@ -143,6 +174,16 @@ export default function QrScanner({ onScan, onCancel, onPaste }: Props) {
     };
   }, [onScan]);
 
+  // P2-319: the system-panel action only makes sense when the system is in
+  // the way — the same gating as the composer's mic panel (P2-312).
+  const camPanel =
+    phase === "unavailable" &&
+    reason === "permission" &&
+    camVerdict &&
+    (camVerdict.verdict === "blocked-by-system" || camVerdict.verdict === "unknown")
+      ? camVerdict.settingsTarget
+      : null;
+
   return (
     <div
       className="screen qr-scanner"
@@ -155,7 +196,22 @@ export default function QrScanner({ onScan, onCancel, onPaste }: Props) {
       </header>
       {phase === "unavailable" ? (
         <div className="qr-unavailable" role="alert">
-          <p className="qr-unavailable-title">{t(`scanErr_${reason}`)}</p>
+          <p className="qr-unavailable-title">
+            {reason === "permission" && camVerdict?.phrase ? camVerdict.phrase : t(`scanErr_${reason}`)}
+          </p>
+          {camPanel && (
+            <button
+              className="qr-panel-cta"
+              onClick={() => {
+                // P2-319: the existing external-open path — the shell's
+                // window-open handler routes the panel target through
+                // extlink.ts to the OS (the phone never renders this).
+                window.open(camPanel, "_blank", "noopener");
+              }}
+            >
+              {t("camOpenPanel")}
+            </button>
+          )}
           <button className="primary qr-paste-cta" onClick={onPaste}>
             {t("scanPasteCta")}
           </button>
