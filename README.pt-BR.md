@@ -740,7 +740,13 @@ um zip publicado com o token `arm64` e `update-mac-x64.json` para um com
 reais consultam são exatamente os conferidos), e o apelido `update-mac.json`,
 que só existe para a base pré-P2-191, precisa continuar idêntico ao documento
 arm64. A publicação segue bloqueada enquanto qualquer feed apontar para
-artefato ausente ou da arquitetura errada.
+artefato ausente ou da arquitetura errada. A integridade também é conferida
+(P2-308): o mesmo job `release-feeds` baixa os artefatos da release, mede o
+sha512 (base64) e o tamanho em bytes com `node:crypto` e confronta cada
+digest declarado pelo feed via `scripts/feedhash.ts`, derrubando a release
+ainda em rascunho em vez de publicar um feed que o app recusaria para
+sempre — e como o feed JSON do Squirrel.Mac não declara digest, só os feeds
+que declaram sha512 (hoje o `latest.yml`) são conferidos pelo hash.
 
 **Releases nascem como rascunho** (P2-179): o `gh release create` roda com
 `--draft`, então nada fica visível para a base instalada enquanto os jobs de
