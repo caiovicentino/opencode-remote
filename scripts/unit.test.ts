@@ -211,6 +211,7 @@ import {
   sanitizeLoadFailure,
 } from "../apps/desktop/src/loadfail";
 import { installBlocksUpdate } from "../apps/desktop/src/update";
+import { winDownloadDecision } from "../apps/desktop/src/winupdate";
 import {
   isWakeEventType,
   RESPAWN_WAIT_CEILING_MS,
@@ -19536,7 +19537,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     offerBlock.includes("hooks.log(`update install not offered (${verdict.state}): ${verdict.message}`)"),
   );
   check(
-    "P2-211: the block is fail-open — only dmg-volume/translocated ever block",
+    "P2-211: the block is fail-open — ok/unknown/absent never block",
     !installBlocksUpdate(null) &&
       !installBlocksUpdate(undefined) &&
       !installBlocksUpdate({ state: "unknown", message: "x" }) &&
@@ -19733,6 +19734,150 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "P2-299: the three existing surfaces carry the Windows verdict unfiltered (no new surface, no state allowlist)",
     mainSrc.includes("log(`[desktop] install location: ${bootInstallLocation.state}`)") &&
       mainSrc.includes("installLocation: bootInstallLocation"),
+  );
+}
+
+// --- P2-301: the update gate knows the Windows states too -----------------------
+
+{
+  // Full truth table of installBlocksUpdate over the seven installloc.ts
+  // states plus an absent and a non-object verdict. dmg-volume and
+  // translocated keep blocking exactly as today; zip-temp and unc-share now
+  // block; ok, downloads, unknown, absent and non-object stay fail-open.
+  check(
+    "P2-301: installBlocksUpdate — dmg-volume and translocated keep blocking exactly as today",
+    installBlocksUpdate({ state: "dmg-volume", message: "x" }) &&
+      installBlocksUpdate({ state: "translocated", message: "x" }),
+  );
+  check(
+    "P2-301: installBlocksUpdate — the Windows states zip-temp and unc-share now block too",
+    installBlocksUpdate({ state: "zip-temp", message: "x" }) &&
+      installBlocksUpdate({ state: "unc-share", message: "x" }),
+  );
+  check(
+    "P2-301: installBlocksUpdate — ok, downloads, unknown, absent and non-object stay fail-open",
+    !installBlocksUpdate({ state: "ok", message: "x" }) &&
+      !installBlocksUpdate({ state: "downloads", message: "x" }) &&
+      !installBlocksUpdate({ state: "unknown", message: "x" }) &&
+      !installBlocksUpdate(null) &&
+      !installBlocksUpdate(undefined) &&
+      !installBlocksUpdate("dmg-volume" as unknown as { state: string; message: string }) &&
+      !installBlocksUpdate(42 as unknown as { state: string; message: string }),
+  );
+
+  // Full truth table of winDownloadDecision. Base input: the happy path
+  // (packaged Windows build on an explicit user action, no verdict).
+  const dec = (overrides: Partial<Parameters<typeof winDownloadDecision>[0]> = {}) =>
+    winDownloadDecision({
+      harnessSession: false,
+      packaged: true,
+      platform: "win32",
+      explicitAction: true,
+      installLocation: null,
+      ...overrides,
+    });
+  const BLOCKING = ["dmg-volume", "translocated", "zip-temp", "unc-share"];
+
+  // Rule 1: the harness session wins over EVERYTHING (P2-221 lesson),
+  // including a blocking location — proven again in the order cases below.
+  check(
+    "P2-301: winDownloadDecision — the harness session still wins over everything",
+    dec({ harnessSession: true }).action === "skip" && dec({ harnessSession: true }).reason === "harness-session",
+  );
+  // Rules 2 and 3: unchanged skip reasons.
+  check(
+    "P2-301: winDownloadDecision — not-packaged and platform-not-windows keep today's skip reasons",
+    dec({ packaged: false }).reason === "not-packaged" &&
+      dec({ platform: "darwin" }).reason === "platform-not-windows",
+  );
+  // Rule 4 (new, additive): an explicit action with a blocking location skips
+  // with the new static reason, for every blocking state.
+  check(
+    "P2-301: winDownloadDecision — explicit action with a blocking location skips with the new reason",
+    BLOCKING.every(
+      (state) =>
+        dec({ installLocation: { state, message: "x" } }).action === "skip" &&
+        dec({ installLocation: { state, message: "x" } }).reason === "install-location-blocks",
+    ),
+  );
+  check(
+    "P2-301: winDownloadDecision — explicit action with ok/downloads/unknown/absent keeps downloading",
+    dec({ installLocation: { state: "ok", message: "x" } }).action === "download" &&
+      dec({ installLocation: { state: "downloads", message: "x" } }).action === "download" &&
+      dec({ installLocation: { state: "unknown", message: "x" } }).action === "download" &&
+      dec({ installLocation: null }).action === "download" &&
+      dec({ installLocation: undefined }).action === "download" &&
+      dec({}).action === "download",
+  );
+  check(
+    "P2-301: winDownloadDecision — a non-object verdict is fail-open (download)",
+    dec({ installLocation: "dmg-volume" as unknown as null }).action === "download" &&
+      dec({ installLocation: 7 as unknown as null }).action === "download",
+  );
+  // Rule order proven by collisions: harness-session beats the blocking
+  // location, and platform-not-windows beats it too — the location rule is
+  // the FIFTH consulted, never the first.
+  check(
+    "P2-301: winDownloadDecision — harness session + blocking location resolves harness-session",
+    dec({ harnessSession: true, installLocation: { state: "zip-temp", message: "x" } }).reason === "harness-session",
+  );
+  check(
+    "P2-301: winDownloadDecision — platform-not-windows + blocking location resolves platform-not-windows",
+    dec({ platform: "darwin", installLocation: { state: "unc-share", message: "x" } }).reason ===
+      "platform-not-windows",
+  );
+  // Purity: the same input yields the identical decision on every call.
+  check(
+    "P2-301: winDownloadDecision — the same input yields the identical decision twice",
+    (() => {
+      const a = dec({ installLocation: { state: "zip-temp", message: "x" } });
+      const b = dec({ installLocation: { state: "zip-temp", message: "x" } });
+      return a.action === b.action && a.reason === b.reason;
+    })(),
+  );
+
+  // real-source assertion over the REAL main.ts: the decision consumes the
+  // verdict the shell already resolved at boot, adds no disk access and no
+  // periodic timer, and the refusal logs ONE line in the install route's
+  // exact format.
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  const callAt = mainSrc.indexOf("const decision = winDownloadDecision({");
+  const callBlock = callAt >= 0 ? mainSrc.slice(callAt, mainSrc.indexOf("});", callAt)) : "";
+  check(
+    "P2-301: main.ts hands the decision the boot-resolved verdict (single installVerdict call site, never recomputed by the handler)",
+    callBlock.includes("installLocation: bootInstallLocation") &&
+      (mainSrc.match(/installVerdict\(/g) ?? []).length === 1 &&
+      mainSrc.includes("bootInstallLocation = installVerdict(process.platform, process.execPath, inApplicationsFolder, app.isPackaged)") &&
+      !callBlock.includes("installVerdict("),
+  );
+  check(
+    "P2-301: the decision call gains no new disk access, no new system call and no new timer",
+    callBlock.length > 0 &&
+      !callBlock.includes("readFile") &&
+      !callBlock.includes("existsSync") &&
+      !callBlock.includes("statSync") &&
+      !callBlock.includes("exec") &&
+      !callBlock.includes("fetch(") &&
+      !callBlock.includes("setTimeout") &&
+      !callBlock.includes("setInterval"),
+  );
+  check(
+    "P2-301: the location refusal logs ONE line in the install route's exact format (state + static phrase)",
+    mainSrc.includes(
+      "log(`[desktop] update install not offered (${bootInstallLocation.state}): ${bootInstallLocation.message}`)",
+    ) &&
+      mainSrc.indexOf("update install not offered (${bootInstallLocation.state})", callAt) >
+        mainSrc.indexOf("install-location-blocks", callAt),
+  );
+
+  // real-source assertion over the REAL winupdate.ts: the decision layer keeps
+  // its import hygiene (no electron, no node built-ins, no fetch import).
+  const winSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "winupdate.ts"), "utf8");
+  check(
+    "P2-301: winupdate.ts stays pure — it never imports electron, node:fs, node:path, node:os or fetch",
+    !/from\s+["'](electron|node:fs|node:path|node:os|node:child_process|fetch)["']/.test(winSrc) &&
+      !/^\s*import\s+["'](electron|node:fs|node:path|node:os|node:child_process|fetch)/m.test(winSrc) &&
+      !winSrc.includes("require("),
   );
 }
 

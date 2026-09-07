@@ -416,16 +416,35 @@ export function versionFromDownloadedArgs(args: unknown[]): string | null {
 }
 
 /**
- * P2-211: pure gate for the consent dialog. True ONLY when the boot
- * install-location verdict proves the bundle is not replaceable — running
- * from a mounted DMG volume or from Gatekeeper's quarantine translocation
- * copy — because Squirrel.Mac cannot swap a read-only/random bundle: the
- * restart would come back as the very same version. Every other state (ok,
- * downloads, unknown, absent) is fail-open: the dialog flow works exactly as
- * before, and nothing here blocks any other use of the app.
+ * P2-211 (macOS) / P2-301 (Windows, additive): pure gate for the consent
+ * dialog. True ONLY when the boot install-location verdict proves the bundle
+ * on disk cannot be replaced by the updater. The blocking table, written here
+ * as a contract — one state per line, with the physical reason the running
+ * binary can never be swapped:
+ *   dmg-volume   — the bundle runs read-only straight from the mounted DMG
+ *                  volume; Squirrel.Mac cannot write into a mounted image.
+ *   translocated — Gatekeeper runs a randomized read-only copy under
+ *                  AppTranslocation; the original bundle is never touched.
+ *   zip-temp     — Windows Explorer unpacked the exe into the profile's temp
+ *                  dir; the NSIS installer writes to the Programs area while
+ *                  the temp copy the person reopens stays exactly as it is.
+ *   unc-share    — the exe runs straight off a network share; the installer
+ *                  writes to the local disk while the shared copy the person
+ *                  reopens stays on someone else's machine.
+ * Every other state (ok, downloads, unknown, absent verdict, non-object
+ * verdict) is fail-open: the dialog flow works exactly as before and nothing
+ * here blocks any other use of the app — blocking on doubt would freeze a
+ * fleet on a defective release, the explicit P2-291 lesson. Pure function:
+ * no electron, no node:fs, no node:path, no I/O of any kind (same discipline
+ * as updatespace.ts and updateguard.ts).
  */
 export function installBlocksUpdate(verdict: { state: string; message: string } | null | undefined): boolean {
-  return verdict?.state === "dmg-volume" || verdict?.state === "translocated";
+  return (
+    verdict?.state === "dmg-volume" ||
+    verdict?.state === "translocated" ||
+    verdict?.state === "zip-temp" ||
+    verdict?.state === "unc-share"
+  );
 }
 
 /**
