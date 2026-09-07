@@ -3558,13 +3558,16 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
         // relayProxyState is "direct" (today's path) or "tunnel" (HTTP
         // CONNECT through the machine's proxy) and relayProxyReason is a
         // static pt-BR phrase authored by relayproxy.ts — the proxy address
-        // never rides.
+        // never rides. P2-311 adds the additive sibling relayProxyAuth with
+        // exactly two values, "none" and "basic" — presence only; the proxy
+        // credential's secret never rides this surface.
         relay: {
           url: redactRelayUrl(RELAY_URL),
           ok: !relayDisabled,
           reason: relayDisabled ? relayUrl.problems.join(" ") : null,
           relayProxyState: relayProxy.state,
           relayProxyReason: relayProxy.reason,
+          relayProxyAuth: relayProxy.auth,
         },
         // P2-190: additive bootstrap pairing-window verdict — true while a
         // virgin daemon (empty allowlist) would still auto-pair the first

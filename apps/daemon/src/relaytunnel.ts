@@ -66,7 +66,9 @@ export interface RelayTunnelOptions {
  * A non-200 CONNECT answer destroys the tunnel socket and fails with a short
  * pt-BR message that carries NO address and NO credential — the message only
  * feeds relaydialerror.ts's classifier (the "recusad…" text maps to the
- * `refused` kind).
+ * `refused` kind, and a 407 additionally picks up the proxy-auth hint of
+ * P2-311). The same holds for the P2-311 Proxy-Authorization secret: it goes
+ * out on the wire only, never into a log, an error message or /api/health.
  */
 export function createRelayTunnelConnect(
   tunnel: RelayProxyTunnel,
@@ -99,7 +101,13 @@ export function createRelayTunnelConnect(
       port: tunnel.port,
       method: "CONNECT",
       path: authority,
-      headers: { host: authority },
+      headers: {
+        host: authority,
+        // P2-311: the proxy credential rides ONLY here, and only when it
+        // exists — the secret is already encoded by proxyauth.ts (opaque),
+        // so it never reaches a log line, an error message or /api/health.
+        ...(tunnel.secret ? { "proxy-authorization": tunnel.secret } : {}),
+      },
       ...(tunnel.secure
         ? {
             createConnection: () => {

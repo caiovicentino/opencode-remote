@@ -66,6 +66,14 @@ const HINTS: Record<RelayDialKind, string> = {
   transient: "falha temporária ao alcançar o relay: tentando de novo",
 };
 
+/**
+ * P2-311: a 407 from the machine's proxy means the CONNECT reached the proxy
+ * but its authentication demand was not satisfied. Additive hint refinement
+ * only — the kind stays `refused`, the floor and the reconnection backoff are
+ * exactly the pre-P2-311 ones. Static pt-BR: no address, no user, no secret.
+ */
+const PROXY_AUTH_407_HINT = "o proxy pediu autenticação e recusou a credencial";
+
 export interface RelayDialVerdict {
   kind: RelayDialKind;
   /** Minimum wait in ms before the next dial (0 = follow the retry schedule). */
@@ -130,5 +138,12 @@ export function relayDialVerdict(
 ): RelayDialVerdict {
   const known = typeof code === "string" ? CODE_KINDS[code] : undefined;
   const kind = known ?? classifyByText(typeof message === "string" ? message : "");
-  return { kind, floorMs: RELAY_DIAL_FLOOR_MS[kind], hint: HINTS[kind] };
+  // P2-311: additive hint refinement — keyed on the tunnel's own status
+  // wording so a Node message that merely contains "407" (a port number, for
+  // instance) can never trigger it.
+  const hint =
+    kind === "refused" && /\(status 407\)/.test(typeof message === "string" ? message : "")
+      ? PROXY_AUTH_407_HINT
+      : HINTS[kind];
+  return { kind, floorMs: RELAY_DIAL_FLOOR_MS[kind], hint };
 }
