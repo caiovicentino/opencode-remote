@@ -610,7 +610,7 @@ import {
 
 import { tlsPlan } from "../apps/relay/src/tlsconfig";
 import { certExpiryVerdict, CERT_CLOCK_TOLERANCE_MS, CERT_WARN_WINDOW_MS } from "../apps/relay/src/certexpiry";
-import { certReloadVerdict, type CertPairImpression } from "../apps/relay/src/certreload";
+import { certReloadVerdict, type CertPairImpression, type CertReloadOutcome } from "../apps/relay/src/certreload";
 
 import { makeIpTagger, UNKNOWN_IP_TAG, IP_TAG_LENGTH } from "../apps/relay/src/iptag";
 
@@ -12863,6 +12863,69 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   const b = certReloadVerdict(IN_SERVICE, freshPair, NOW, TOL);
   check("P2-306: same input twice → identical verdict and reason", a.verdict === b.verdict && a.reason === b.reason);
 
+  // 8b. wiring sequence A→B→C against the dedupe gate: the application must
+  // happen unconditionally and the dedupe must gate the LOG LINE only — two
+  // consecutive valid renewals both swap the material even though the static
+  // outcome text is identical (the same-shape logic the real sweep applies,
+  // pinned to the real source by the structural checks further below)
+  const renewedPair = (n: number): CertPairImpression =>
+    pair({
+      certSize: 2_000 + n,
+      certMtimeMs: NOW - 1_000 - n,
+      keySize: 2_100 + n,
+      keyMtimeMs: NOW - 1_000 - n,
+      notBefore: NOW - 1_000 - n,
+      notAfter: NOW + 90 * DAY,
+    });
+  let inService = IN_SERVICE;
+  let onDisk = IN_SERVICE;
+  let lastLogged: CertReloadOutcome | undefined;
+  let appliedCount = 0;
+  let loggedCount = 0;
+  const tick = (fresh: CertPairImpression, applies: boolean) => {
+    const outcome = certReloadVerdict(inService, fresh, NOW, TOL);
+    onDisk = fresh; // the on-disk impression moves whatever the verdict
+    let logged = outcome;
+    if (outcome.verdict === "adopt") {
+      if (applies) {
+        inService = fresh;
+        appliedCount++;
+      } else {
+        logged = { verdict: "refuse", reason: "relay certificate renewal could not be applied: keeping the material in service instead of risking a broken pair (fail-closed)" };
+      }
+    }
+    if (logged.verdict === "adopt") {
+      lastLogged = logged;
+      loggedCount++; // one line per adoption — each follows a real file change
+    } else if (
+      logged.verdict === "refuse" &&
+      (logged.verdict !== lastLogged?.verdict || logged.reason !== lastLogged?.reason)
+    ) {
+      lastLogged = logged;
+      loggedCount++; // refusals of the same stuck pair deduplicate
+    }
+  };
+  tick(renewedPair(1), true); // A→B: applies and logs
+  tick(renewedPair(2), true); // B→C: applies and logs again (dedupe never gates the swap)
+  check(
+    "P2-306: consecutive renewals A→B→C apply twice and log twice — one static line per adoption",
+    appliedCount === 2 && loggedCount === 2 && inService.notAfter === NOW + 90 * DAY && onDisk.certSize === 2_002,
+  );
+
+  // 8c. a renewal that validates but cannot be applied is refused once, keeps
+  // the material in service and is never re-read until the files move again
+  const stuck = renewedPair(9);
+  tick(stuck, false);
+  tick(renewedPair(11), false); // same refusal stuck another tick → deduplicated
+  check(
+    "P2-306: a failed application refuses once, keeps the old material and advances only the on-disk impression",
+    appliedCount === 2 &&
+      loggedCount === 3 &&
+      inService.notAfter === NOW + 90 * DAY &&
+      onDisk.certSize === 2_011 &&
+      lastLogged?.verdict === "refuse",
+  );
+
   // 9. every phrase is static and blind: no digits, no path separators, no
   // host, no subject/issuer/serial/fingerprint, no secret material
   const phrases = [unchanged, renewed, skewExpired, skewFuture, illegible, expired, notYet, nanStart, nanEnd, infNow, a].map(
@@ -12914,12 +12977,24 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P2-306: the reload block swaps the context and never closes a socket, exits or listens",
     reloadBlock.length > 0 &&
-      reloadBlock.includes("setSecureContext") &&
+      reloadBlock.includes("server.setSecureContext({ cert: freshCert, key: freshKey })") &&
       reloadBlock.includes("CERT_EXPIRY.notAfter = fresh.notAfter") &&
       !reloadBlock.includes("process.exit") &&
       !reloadBlock.includes(".close(") &&
       !reloadBlock.includes(".terminate(") &&
       !reloadBlock.includes(".listen("),
+  );
+  const applyAt = reloadBlock.indexOf("server.setSecureContext");
+  const dedupeAt = reloadBlock.indexOf("lastOutcome?.verdict");
+  const applyToLog = applyAt >= 0 ? reloadBlock.slice(applyAt, reloadBlock.indexOf("relay TLS certificate renewed")) : "";
+  check(
+    "P2-306: the application precedes the log dedupe and sits in its own try/catch — a mismatched key refuses instead of crashing the sweep",
+    applyAt > 0 &&
+      dedupeAt > applyAt &&
+      applyToLog.includes("catch") &&
+      reloadBlock.includes("CERT_RELOAD.inService") &&
+      reloadBlock.includes("CERT_RELOAD.onDisk = fresh;") &&
+      reloadBlock.includes("relay certificate renewal could not be applied"),
   );
 
   // 12. no new route: the relay still registers exactly the two handlers it

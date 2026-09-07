@@ -688,9 +688,18 @@ const CERT_RELOAD = (() => {
     // partial impression: the sweep re-probes the files and compares
   }
   return {
-    impression,
+    // what the running server actually holds — moves only when a renewal is
+    // applied for real
+    inService: { ...impression },
+    // the last on-disk state the sweep has seen, whatever the verdict — a
+    // refused or inapplicable pair is never re-read tick after tick; only a
+    // NEW file change re-opens the verdict
+    onDisk: { ...impression },
     // P2-306: exactly one log line per transition — a repeated refusal of the
     // same reason (a renewal stuck illegible for hours) never spams the log.
+    // The dedupe gates the LOG LINE only, never the application: two valid
+    // renewals in a row must both apply even though the static outcome text
+    // is identical.
     lastOutcome: undefined as CertReloadOutcome | undefined,
   };
 })();
@@ -1046,10 +1055,10 @@ if (PING_INTERVAL_S > 0) {
       }
       const moved =
         probe !== undefined &&
-        (probe.cert.size !== CERT_RELOAD.impression.certSize ||
-          probe.cert.mtimeMs !== CERT_RELOAD.impression.certMtimeMs ||
-          probe.key.size !== CERT_RELOAD.impression.keySize ||
-          probe.key.mtimeMs !== CERT_RELOAD.impression.keyMtimeMs);
+        (probe.cert.size !== CERT_RELOAD.onDisk.certSize ||
+          probe.cert.mtimeMs !== CERT_RELOAD.onDisk.certMtimeMs ||
+          probe.key.size !== CERT_RELOAD.onDisk.keySize ||
+          probe.key.mtimeMs !== CERT_RELOAD.onDisk.keyMtimeMs);
       if (probe && moved) {
         const fresh: CertPairImpression = {
           certSize: Number.NaN,
@@ -1067,7 +1076,9 @@ if (PING_INTERVAL_S > 0) {
           const cert = new X509Certificate(freshCert);
           fresh.notBefore = Date.parse(cert.validFrom);
           fresh.notAfter = Date.parse(cert.validTo);
-          // post-read stats: the impression describes the bytes just read
+          // stats captured BEFORE the read: a renewal whose writes straddle
+          // this tick leaves the impression one step behind the disk and the
+          // next sweep re-reads and heals it
           fresh.certSize = probe.cert.size;
           fresh.certMtimeMs = probe.cert.mtimeMs;
           fresh.keySize = probe.key.size;
@@ -1075,23 +1086,55 @@ if (PING_INTERVAL_S > 0) {
         } catch {
           // partial impression: the verdict refuses fail-closed
         }
-        const outcome = certReloadVerdict(CERT_RELOAD.impression, fresh, now, CERT_CLOCK_TOLERANCE_MS);
-        if (
-          outcome.verdict !== CERT_RELOAD.lastOutcome?.verdict ||
-          outcome.reason !== CERT_RELOAD.lastOutcome?.reason
-        ) {
-          CERT_RELOAD.lastOutcome = outcome;
-          if (outcome.verdict === "adopt") {
+        // the on-disk impression moves whatever the verdict — a refused or
+        // inapplicable pair is never re-read and re-parsed tick after tick
+        CERT_RELOAD.onDisk = fresh;
+        const outcome = certReloadVerdict(CERT_RELOAD.inService, fresh, now, CERT_CLOCK_TOLERANCE_MS);
+        let applied = false;
+        if (outcome.verdict === "adopt") {
+          // the swap itself is where a mismatched or truncated key (a renewal
+          // written as two files whose writes straddled a sweep) is first
+          // proven: the throw is caught and becomes a refusal — the relay
+          // keeps the material in service instead of crashing at exactly the
+          // renewal deadline
+          try {
             if (freshCert && freshKey && CERT_EXPIRY && "setSecureContext" in server) {
               server.setSecureContext({ cert: freshCert, key: freshKey });
               CERT_EXPIRY.notBefore = fresh.notBefore;
               CERT_EXPIRY.notAfter = fresh.notAfter;
-              CERT_RELOAD.impression = fresh;
+              CERT_RELOAD.inService = fresh;
+              applied = true;
             }
-            ev("info", "relay TLS certificate renewed", { reason: outcome.reason });
-          } else if (outcome.verdict === "refuse") {
-            ev("warn", "relay TLS certificate renewal refused", { reason: outcome.reason });
+          } catch {
+            applied = false;
           }
+        }
+        // one static line per transition: every ADOPTION follows a real file
+        // change and logs exactly once (the next tick finds the stats settled,
+        // so this can never spam), while a REFUSAL of the same stuck pair
+        // would repeat tick after tick and is deduplicated by verdict+reason.
+        // Neither branch gates the application: two valid renewals in a row
+        // (A→B→C) must both swap the material even though the static text is
+        // identical. A renewal that validated but could not be applied is
+        // logged as the refusal it effectively is.
+        const logged: CertReloadOutcome =
+          outcome.verdict === "adopt" && !applied
+            ? {
+                verdict: "refuse",
+                reason:
+                  "relay certificate renewal could not be applied: keeping the material in service instead of risking a broken pair (fail-closed)",
+              }
+            : outcome;
+        if (logged.verdict === "adopt") {
+          CERT_RELOAD.lastOutcome = logged;
+          ev("info", "relay TLS certificate renewed", { reason: logged.reason });
+        } else if (
+          logged.verdict === "refuse" &&
+          (logged.verdict !== CERT_RELOAD.lastOutcome?.verdict ||
+            logged.reason !== CERT_RELOAD.lastOutcome?.reason)
+        ) {
+          CERT_RELOAD.lastOutcome = logged;
+          ev("warn", "relay TLS certificate renewal refused", { reason: logged.reason });
         }
       }
     }
