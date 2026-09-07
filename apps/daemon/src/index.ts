@@ -116,6 +116,13 @@ import {
   expiredKeys,
   stagedOverLimit,
 } from "./chunkstore.js";
+// P2-314: download-start ceilings — pure admission verdict + entries-ceiling
+// eviction, same hygiene as chunkstore.ts (all I/O stays in this file).
+import {
+  downloadCapLimits,
+  downloadVerdict,
+  evictOldestKeys,
+} from "./downloadcap.js";
 import {
   classifyUpstream,
   UPSTREAM_PROBE_TIMEOUT_MS,
@@ -172,6 +179,9 @@ const bodyLimitResolution = bodyLimit(process.env);
 // P2-181: the chunk-staging ceilings are resolved exactly once at boot too —
 // same fail-closed contract: any problem means exit 1 with no listener.
 const chunkLimits = chunkStoreLimits(process.env);
+// P2-314: the download ceilings are resolved exactly once at boot — same
+// fail-closed contract: any problem means exit 1 with no listener.
+const downloadCaps = downloadCapLimits(process.env);
 // P2-190: the bootstrap pairing window is resolved exactly once at boot —
 // same fail-closed contract: an invalid OCR_PAIR_WINDOW_MS never falls back
 // to the default; main() logs one line per problem and exits 1 with no
@@ -939,10 +949,33 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
     } catch {
       return { id: req.id, status: 404, body: { error: "file not found" } };
     }
+    // P2-314: the ceilings are consulted BEFORE any identifier exists — a
+    // refusal must leave no registration behind, and a download already in
+    // progress is never evicted by a newcomer's arrival (the newcomer is the
+    // one refused). The verdict messages are static pt-BR copy: no path, no
+    // file name, no measured size ever leaves the daemon.
+    const verdict = downloadVerdict(size, downloads.size, downloadCaps.maxBytes, downloadCaps.maxOpenDownloads);
+    if (!verdict.allow) {
+      log("warn", "download start refused", { reason: verdict.reason });
+      return {
+        id: req.id,
+        status: verdict.reason === "file-above-cap" ? 413 : 429,
+        body: { error: verdict.message },
+      };
+    }
     const id = randomUUID();
     downloads.set(id, { path: abs, size, at: Date.now() });
     for (const [k, v] of downloads) {
       if (Date.now() - v.at > 30 * 60_000) downloads.delete(k);
+    }
+    // P2-314: hard entries ceiling on top of the age prune — if the map ever
+    // holds more than the documented number of open downloads, the oldest
+    // registrations go first.
+    for (const k of evictOldestKeys(
+      Array.from(downloads, ([key, v]) => ({ key, at: v.at })),
+      downloadCaps.maxOpenDownloads,
+    )) {
+      downloads.delete(k);
     }
     metrics.inc("ocr_downloads_total");
     return { id: req.id, status: 200, body: { id, size, chunks: Math.max(1, Math.ceil(size / 500_000)) } };
@@ -4100,6 +4133,13 @@ async function main() {
   // invalid OCR_UPLOAD_MAX_MB never falls back to the default silently.
   if (chunkLimits.problems.length > 0) {
     for (const problem of chunkLimits.problems) log("error", problem);
+    process.exit(1);
+    return;
+  }
+  // P2-314: same fail-closed contract for the download ceilings — an invalid
+  // OCR_DOWNLOAD_MAX_MB never falls back to the default silently.
+  if (downloadCaps.problems.length > 0) {
+    for (const problem of downloadCaps.problems) log("error", problem);
     process.exit(1);
     return;
   }

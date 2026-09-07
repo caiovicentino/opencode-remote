@@ -275,6 +275,17 @@ import {
   UPLOAD_MAX_MB_CEILING,
 } from "../apps/daemon/src/chunkstore";
 
+import {
+  DEFAULT_DOWNLOAD_MAX_MB,
+  DEFAULT_MAX_OPEN_DOWNLOADS,
+  DOWNLOAD_FILE_ABOVE_CAP_MESSAGE,
+  DOWNLOAD_MAX_MB_CEILING,
+  DOWNLOAD_TOO_MANY_OPEN_MESSAGE,
+  downloadCapLimits,
+  downloadVerdict as downloadStartVerdict,
+  evictOldestKeys,
+} from "../apps/daemon/src/downloadcap";
+
 import { classifyUpstream, UPSTREAM_PROBE_TIMEOUT_MS } from "../apps/daemon/src/upstream";
 
 import { opencodeCandidates, pickOpencodeBinary } from "../apps/daemon/src/opencodebin";
@@ -14391,7 +14402,9 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   // -- the real index.ts: both chunk routes bounded, completion cap untouched ----
   const daemonSrc181 = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
   const stagerStart = daemonSrc181.indexOf("function stageChunk");
-  const firstHandler = daemonSrc181.indexOf('"/__ocr/transcribe/chunk" && req.method === "POST"', stagerStart);
+  // P2-314: the slice ends where stageChunk ends (the tunnel banner right
+  // below it) — later routes with their own warn logs must not leak in.
+  const firstHandler = daemonSrc181.indexOf("tunnel to the local opencode server", stagerStart);
   const stager = stagerStart >= 0 && firstHandler > stagerStart ? daemonSrc181.slice(stagerStart, firstHandler) : "";
   const warnLogs = stager.match(/log\("warn", [^\n]+/g) ?? [];
   check(
@@ -14428,6 +14441,260 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "P2-181: boot is fail-closed for the chunk limits — logs each problem and exits 1",
     /for \(const problem of chunkLimits\.problems\) log\("error", problem\)/.test(daemonSrc181) &&
       /chunkLimits\.problems\.length > 0[\s\S]{0,400}process\.exit\(1\)/.test(daemonSrc181),
+  );
+}
+
+// --- P2-314: download-start ceilings (downloadcap.ts) ----------------------------
+{
+  // -- constants pinned to the upload pattern -----------------------------------
+  check(
+    "P2-314: download defaults mirror the upload pattern (200MB default, 2000 ceiling, 8 concurrent)",
+    DEFAULT_DOWNLOAD_MAX_MB === DEFAULT_UPLOAD_MAX_MB &&
+      DEFAULT_DOWNLOAD_MAX_MB === 200 &&
+      DOWNLOAD_MAX_MB_CEILING === UPLOAD_MAX_MB_CEILING &&
+      DOWNLOAD_MAX_MB_CEILING === 2000 &&
+      DEFAULT_MAX_OPEN_DOWNLOADS === DEFAULT_MAX_STAGED_IDS &&
+      DEFAULT_MAX_OPEN_DOWNLOADS === 8,
+  );
+
+  // -- downloadCapLimits: env matrix ---------------------------------------------
+  const dlDefaults = downloadCapLimits({});
+  check(
+    "P2-314: missing env keeps today's defaults (200MB, 8 open) with no problem",
+    dlDefaults.problems.length === 0 &&
+      dlDefaults.maxBytes === DEFAULT_DOWNLOAD_MAX_MB * 1_000_000 &&
+      dlDefaults.maxOpenDownloads === DEFAULT_MAX_OPEN_DOWNLOADS,
+  );
+  const dlBlank = downloadCapLimits({ OCR_DOWNLOAD_MAX_MB: "   " });
+  check(
+    "P2-314: blank env keeps the defaults with no problem",
+    dlBlank.problems.length === 0 && dlBlank.maxBytes === DEFAULT_DOWNLOAD_MAX_MB * 1_000_000,
+  );
+  const dlValid = downloadCapLimits({ OCR_DOWNLOAD_MAX_MB: "500" });
+  check(
+    "P2-314: valid value resolves the byte ceiling and keeps the open-download ceiling",
+    dlValid.problems.length === 0 && dlValid.maxBytes === 500_000_000 && dlValid.maxOpenDownloads === 8,
+  );
+  check(
+    "P2-314: at the documented ceiling is accepted",
+    downloadCapLimits({ OCR_DOWNLOAD_MAX_MB: String(DOWNLOAD_MAX_MB_CEILING) }).problems.length === 0,
+  );
+  const degenerateEnv: Array<[string, string]> = [
+    ["not a number", "abc"],
+    ["negative", "-1"],
+    ["zero", "0"],
+    ["fractional", "1.5"],
+    ["above the ceiling", String(DOWNLOAD_MAX_MB_CEILING + 1)],
+  ];
+  for (const [label, value] of degenerateEnv) {
+    const res = downloadCapLimits({ OCR_DOWNLOAD_MAX_MB: value });
+    check(`P2-314: ${label} env value is a problem`, res.problems.length === 1 && res.problems[0]!.includes("OCR_DOWNLOAD_MAX_MB"));
+  }
+
+  // -- refusal grammar byte-for-byte identical to OCR_UPLOAD_MAX_MB's ------------
+  for (const value of ["abc", "-1", "0", "1.5", String(DOWNLOAD_MAX_MB_CEILING + 1)]) {
+    const dl = downloadCapLimits({ OCR_DOWNLOAD_MAX_MB: value });
+    const up = chunkStoreLimits({ OCR_UPLOAD_MAX_MB: value });
+    check(
+      `P2-314: refusal grammar for ${JSON.stringify(value)} matches OCR_UPLOAD_MAX_MB word for word`,
+      dl.problems.length === 1 &&
+        up.problems.length === 1 &&
+        dl.problems[0] === up.problems[0]!.replaceAll("OCR_UPLOAD_MAX_MB", "OCR_DOWNLOAD_MAX_MB"),
+    );
+  }
+
+  // -- determinism: same input twice → identical result ---------------------------
+  const dlA = downloadCapLimits({ OCR_DOWNLOAD_MAX_MB: "abc" });
+  const dlB = downloadCapLimits({ OCR_DOWNLOAD_MAX_MB: "abc" });
+  check(
+    "P2-314: the same env resolves identically on two calls",
+    JSON.stringify(dlA) === JSON.stringify(dlB) && dlA.problems.length === 1,
+  );
+  const vA = downloadStartVerdict(300_000_000, 3, 200_000_000, 8);
+  const vB = downloadStartVerdict(300_000_000, 3, 200_000_000, 8);
+  check(
+    "P2-314: the same verdict input resolves identically on two calls",
+    JSON.stringify(vA) === JSON.stringify(vB) && !vA.allow && vA.reason === "file-above-cap",
+  );
+
+  // -- downloadVerdict: rule table (each rule + degenerate inputs) -----------------
+  const MAXB = 200_000_000;
+  const MAXOPEN = DEFAULT_MAX_OPEN_DOWNLOADS;
+  const rows: Array<[string, unknown, unknown, unknown, unknown, "allow" | "file-above-cap" | "too-many-open"]> = [
+    ["a small file with room allows", 100, 0, MAXB, MAXOPEN, "allow"],
+    ["a zero-byte file with room allows", 0, 0, MAXB, MAXOPEN, "allow"],
+    ["exactly at the cap still allows", MAXB, 0, MAXB, MAXOPEN, "allow"],
+    ["one byte above the cap refuses", MAXB + 1, 0, MAXB, MAXOPEN, "file-above-cap"],
+    ["live count at the ceiling refuses", 100, MAXOPEN, MAXB, MAXOPEN, "too-many-open"],
+    ["live count above the ceiling refuses", 100, MAXOPEN + 5, MAXB, MAXOPEN, "too-many-open"],
+    ["the size rule comes before the open-count rule", MAXB + 1, MAXOPEN, MAXB, MAXOPEN, "file-above-cap"],
+    ["NaN size refuses fail-closed", Number.NaN, 0, MAXB, MAXOPEN, "file-above-cap"],
+    ["negative size refuses fail-closed", -1, 0, MAXB, MAXOPEN, "file-above-cap"],
+    ["infinite size refuses fail-closed", Number.POSITIVE_INFINITY, 0, MAXB, MAXOPEN, "file-above-cap"],
+    ["fractional size refuses fail-closed", 1.5, 0, MAXB, MAXOPEN, "file-above-cap"],
+    ["non-numeric size refuses fail-closed", "100", 0, MAXB, MAXOPEN, "file-above-cap"],
+    ["undefined size refuses fail-closed", undefined, 0, MAXB, MAXOPEN, "file-above-cap"],
+    ["a zero maxBytes ceiling refuses fail-closed", 100, 0, 0, MAXOPEN, "file-above-cap"],
+    ["a NaN maxBytes ceiling refuses fail-closed", 100, 0, Number.NaN, MAXOPEN, "file-above-cap"],
+    ["a negative live count refuses fail-closed", 100, -1, MAXB, MAXOPEN, "too-many-open"],
+    ["a fractional live count refuses fail-closed", 100, 0.5, MAXB, MAXOPEN, "too-many-open"],
+    ["a non-numeric live count refuses fail-closed", 100, "0", MAXB, MAXOPEN, "too-many-open"],
+    ["a zero open ceiling refuses fail-closed", 100, 0, MAXB, 0, "too-many-open"],
+    ["a fractional open ceiling refuses fail-closed", 100, 0, MAXB, 1.5, "too-many-open"],
+    ["a NaN open ceiling refuses fail-closed", 100, 0, MAXB, Number.NaN, "too-many-open"],
+  ];
+  for (const [label, size, live, maxBytes, maxOpen, expected] of rows) {
+    const v = downloadStartVerdict(size, live, maxBytes, maxOpen);
+    check(
+      `P2-314: downloadVerdict — ${label} → ${expected}`,
+      expected === "allow" ? v.allow === true : v.allow === false && v.reason === expected,
+    );
+  }
+
+  // -- message boundary: static pt-BR phrases, no path, no name, no size ----------
+  const refusedBig = downloadStartVerdict(300_000_000, 0, MAXB, MAXOPEN);
+  const refusedBigger = downloadStartVerdict(900_000_000, 0, MAXB, MAXOPEN);
+  check(
+    "P2-314: the 413 phrase is static and never carries a path, name, digit or separator",
+    refusedBig.message === DOWNLOAD_FILE_ABOVE_CAP_MESSAGE &&
+      refusedBigger.message === refusedBig.message &&
+      !/[0-9/\\]/.test(refusedBig.message),
+  );
+  const refusedMany = downloadStartVerdict(100, MAXOPEN, MAXB, MAXOPEN);
+  const refusedManyMore = downloadStartVerdict(999_999, MAXOPEN + 1, MAXB, MAXOPEN);
+  check(
+    "P2-314: the 429 phrase is static and never carries a path, name, digit or separator",
+    refusedMany.message === DOWNLOAD_TOO_MANY_OPEN_MESSAGE &&
+      refusedManyMore.message === refusedMany.message &&
+      !/[0-9/\\]/.test(refusedMany.message),
+  );
+
+  // -- evictOldestKeys: entries-ceiling backstop -----------------------------------
+  check(
+    "P2-314: evictOldestKeys evicts nothing on an empty, below-ceiling or exactly-at-ceiling list",
+    evictOldestKeys([], 8).length === 0 &&
+      evictOldestKeys([{ key: "a", at: 1 }], 8).length === 0 &&
+      evictOldestKeys(
+        [
+          { key: "a", at: 1 },
+          { key: "b", at: 2 },
+        ],
+        2,
+      ).length === 0,
+  );
+  const two = evictOldestKeys(
+    [
+      { key: "old", at: 1 },
+      { key: "mid", at: 2 },
+      { key: "new", at: 3 },
+    ],
+    2,
+  );
+  check("P2-314: one entry above the ceiling evicts exactly the oldest", two.length === 1 && two[0] === "old");
+  const entries414 = [
+    { key: "a", at: 5 },
+    { key: "b", at: 1 },
+    { key: "c", at: 1 },
+    { key: "d", at: 3 },
+  ];
+  const evicted = evictOldestKeys(entries414, 2);
+  check(
+    "P2-314: eviction lands on the ceiling, oldest first, ties by insertion order",
+    evicted.length === 2 && evicted[0] === "b" && evicted[1] === "c",
+  );
+  check("P2-314: eviction never mutates its input", entries414.length === 4 && entries414[0]!.key === "a");
+  const evA = evictOldestKeys(entries414, 2);
+  const evB = evictOldestKeys(entries414, 2);
+  check("P2-314: eviction is identical for the same input on two calls", JSON.stringify(evA) === JSON.stringify(evB));
+
+  // -- route simulation: admission, refusals and the entries ceiling ---------------
+  {
+    const caps = downloadCapLimits({});
+    const downloads = new Map<string, { size: number; at: number }>();
+    const refusals: Array<number | "413" | "429"> = [];
+    const start = (size: number): { id: string; chunks: number } | null => {
+      const verdict = downloadStartVerdict(size, downloads.size, caps.maxBytes, caps.maxOpenDownloads);
+      if (!verdict.allow) {
+        refusals.push(verdict.reason === "file-above-cap" ? "413" : "429");
+        return null;
+      }
+      const id = `id-${downloads.size}`;
+      downloads.set(id, { size, at: Date.now() });
+      for (const k of evictOldestKeys(
+        Array.from(downloads, ([key, v]) => ({ key, at: v.at })),
+        caps.maxOpenDownloads,
+      )) {
+        downloads.delete(k);
+      }
+      return { id, chunks: Math.max(1, Math.ceil(size / 500_000)) };
+    };
+    const first = start(1_200_000);
+    check(
+      "P2-314: a file within the default starts exactly like today — same id registration and 3-chunk count for 1.2MB",
+      first !== null && first.chunks === 3 && first.chunks === Math.max(1, Math.ceil(1_200_000 / 500_000)),
+    );
+    for (let i = 0; i < DEFAULT_MAX_OPEN_DOWNLOADS + 3; i++) start(1_000);
+    check(
+      "P2-314: starts beyond the ceiling answer 429 and no identifier is created",
+      refusals.every((r) => r === "429") && downloads.size === DEFAULT_MAX_OPEN_DOWNLOADS,
+    );
+    const survivor = downloads.keys().next().value;
+    check(
+      "P2-314: a download already in progress survives every refused arrival",
+      survivor === "id-0" && downloads.has("id-0"),
+    );
+    const beforeBigRefusal = downloads.size;
+    const bigRefusal = start(300_000_000);
+    check(
+      "P2-314: a file above the ceiling answers 413 with no registration",
+      bigRefusal === null && refusals.includes("413") && downloads.size === beforeBigRefusal,
+    );
+  }
+
+  // -- the real index.ts: verdict before the id, 413/429 mapping, untouched chunk route
+  const daemonSrc314 = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  const startAt = daemonSrc314.indexOf('"/__ocr/download/start" && req.method === "POST"');
+  const chunkRouteAt = daemonSrc314.indexOf('"/__ocr/download/chunk" && req.method === "GET"', startAt);
+  const startSlice = startAt >= 0 && chunkRouteAt > startAt ? daemonSrc314.slice(startAt, chunkRouteAt) : "";
+  check(
+    "P2-314: the start route consults the boot-resolved caps BEFORE creating any identifier",
+    startSlice.includes("downloadVerdict(") &&
+      startSlice.indexOf("downloadVerdict(") < startSlice.indexOf("randomUUID()") &&
+      startSlice.includes("downloadCaps.maxBytes") &&
+      startSlice.includes("downloadCaps.maxOpenDownloads"),
+  );
+  check(
+    "P2-314: the start route answers 413 for file-above-cap and 429 for too-many-open",
+    startSlice.includes('verdict.reason === "file-above-cap" ? 413 : 429'),
+  );
+  check(
+    "P2-314: the refusal log carries only the static reason — never a path, name or size",
+    startSlice.includes('log("warn", "download start refused", { reason: verdict.reason })'),
+  );
+  check(
+    "P2-314: the entries-ceiling eviction runs after the insertion, and a refused start never counts as delivered",
+    startSlice.indexOf("downloads.set(") >= 0 &&
+      startSlice.indexOf("evictOldestKeys(") > startSlice.indexOf("downloads.set(") &&
+      startSlice.indexOf("metrics.inc(") > startSlice.indexOf("downloadVerdict("),
+  );
+  check(
+    "P2-314: the chunk-count formula stays byte-identical to today's",
+    startSlice.includes("chunks: Math.max(1, Math.ceil(size / 500_000))"),
+  );
+  const devicesAt = daemonSrc314.indexOf('"/__ocr/devices" && req.method === "GET"', chunkRouteAt);
+  const chunkSlice =
+    chunkRouteAt >= 0 && devicesAt > chunkRouteAt ? daemonSrc314.slice(chunkRouteAt, devicesAt) : "";
+  check(
+    "P2-314: the chunk route stays untouched — no verdict, no insertion, no eviction",
+    chunkSlice.length > 0 &&
+      !chunkSlice.includes("downloadVerdict(") &&
+      !chunkSlice.includes("downloads.set(") &&
+      !chunkSlice.includes("evictOldestKeys("),
+  );
+  check(
+    "P2-314: boot is fail-closed for the download caps — logs each problem and exits 1",
+    /for \(const problem of downloadCaps\.problems\) log\("error", problem\)/.test(daemonSrc314) &&
+      /downloadCaps\.problems\.length > 0[\s\S]{0,400}process\.exit\(1\)/.test(daemonSrc314),
   );
 }
 

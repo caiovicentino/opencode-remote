@@ -370,6 +370,35 @@ boot: one error line per problem, exit code 1, no listener. Refusal log lines
 carry only the route and the refused size — never chunk content, full ids,
 tokens or session ids.
 
+## Download start limits (P2-314)
+
+Starting a download (`POST /__ocr/download/start`) is bounded before any
+identifier is created, with the same fail-closed shape as the upload path
+above:
+
+- **File ceiling** — `OCR_DOWNLOAD_MAX_MB` (default **200 MB**, whole
+  megabytes, documented maximum **2000** — the same default and ceiling as
+  `OCR_UPLOAD_MAX_MB`). A file whose measured size is above the ceiling
+  answers **413** with a short static pt-BR phrase
+  (`Arquivo grande demais para transferir por aqui.`) that never contains the
+  path, the file name or the measured size.
+- **Open downloads** — at most **8** entries in the open-downloads map; a
+  start beyond that answers **429** with a short static pt-BR phrase
+  (`Muitas transferências abertas ao mesmo tempo — tente de novo em
+  instantes.`). A download already in progress is never interrupted by
+  another start — the newcomer is the one refused.
+- **Entries ceiling** — on top of the existing 30-minute age prune, the
+  open-downloads map never holds more than the 8 documented entries; if it
+  ever does, the oldest registrations are discarded first.
+- **Fail-closed boot** — an invalid `OCR_DOWNLOAD_MAX_MB` (non-numeric,
+  negative, zero, fractional or above the 2000 MB ceiling) is refused at
+  boot exactly like `OCR_UPLOAD_MAX_MB`: one error line per problem, exit
+  code 1, no listener.
+
+The chunk route (`GET /__ocr/download/chunk`) and the 500,000-byte chunk
+count are untouched. Refusal log lines carry only the static reason — never
+the path, file name or size.
+
 ## SDK (TypeScript/JS)
 
 ```js
