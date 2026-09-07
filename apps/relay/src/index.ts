@@ -545,7 +545,7 @@ if (METRICS.port && METRICS.problems.length === 0) {
           // pre-existing line above stays byte for byte.
           ...certExpiryMetrics(
             lastCertExpiryVerdict,
-            CERT_EXPIRY ? Math.floor((CERT_EXPIRY.notAfter - Date.now()) / 1000) : 0,
+            CERT_EXPIRY ? Math.floor((CERT_EXPIRY.notAfter - Date.now()) / 1000) : Number.NaN,
           ),
         ];
         res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });

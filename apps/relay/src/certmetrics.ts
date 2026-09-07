@@ -21,7 +21,9 @@ import type { CertExpiryVerdict } from "./certexpiry.js";
  *   1. A missing, non-textual or out-of-table verdict returns the empty set
  *      — and a healthy-certificate line is NEVER invented. Fail-closed:
  *      publishing a certificate health nobody measured is worse than
- *      staying silent.
+ *      staying silent. Out-of-table includes every name the table does not
+ *      own — inherited property names like "constructor" or "toString"
+ *      never reach a published line through the prototype chain.
  *   2. The no-certificate mode (plain ws://, no TLS pair) therefore also
  *      returns the empty set — never an invented set of zeros.
  *   3. A remaining-seconds value that is negative or non-finite publishes
@@ -74,10 +76,13 @@ const CERT_EXPIRY_STATES: Record<CertExpiryVerdict, number> = {
 export function certExpiryMetrics(verdict: unknown, secondsLeft: number): string[] {
   // rules 1+2: an absent, non-textual or out-of-table verdict (the no-cert
   // mode included) publishes nothing at all — never a healthy line, never
-  // invented zeros
+  // invented zeros. The table lookup is an own-property check on purpose:
+  // inherited names like "constructor", "toString" or "__proto__" resolve
+  // through a plain object's prototype chain and would otherwise slip past
+  // an undefined guard as a garbage "state" nobody measured.
   if (typeof verdict !== "string") return [];
+  if (!Object.hasOwn(CERT_EXPIRY_STATES, verdict)) return [];
   const state = CERT_EXPIRY_STATES[verdict as CertExpiryVerdict];
-  if (state === undefined) return [];
   // rule 3: negative or non-finite remainder floors at zero
   const seconds = Number.isFinite(secondsLeft) ? Math.max(0, Math.floor(secondsLeft)) : 0;
   // rules 4+5: the numeric state gauge and the seconds gauge, always in

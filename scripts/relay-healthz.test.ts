@@ -1850,7 +1850,13 @@ check("cert-metrics: null verdict returns the empty set", JSON.stringify(certExp
 check("cert-metrics: non-textual verdict returns the empty set", (() => {
   return [42, true, 1.5, {}, [], { verdict: "use" }].every((v) => JSON.stringify(certExpiryMetrics(v, 50)) === "[]");
 })());
-for (const outside of ["expired", "USE", "", "warn ", "healthy"]) {
+for (const outside of [
+  "expired", "USE", "", "warn ", "healthy",
+  // inherited property names must resolve as out-of-table, never through
+  // the plain-object prototype chain (a garbage "state" nobody measured)
+  "constructor", "toString", "hasOwnProperty", "isPrototypeOf",
+  "propertyIsEnumerable", "toLocaleString", "valueOf", "__proto__",
+]) {
   check(
     `cert-metrics: verdict outside the documented table returns the empty set (${JSON.stringify(outside)})`,
     JSON.stringify(certExpiryMetrics(outside, 50)) === "[]",
