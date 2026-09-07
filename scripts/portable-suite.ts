@@ -63,6 +63,7 @@ export const PORTABLE_TESTS: readonly string[] = [
   "relay-knobnames.test.ts",
   "release-watch.test.ts",
   "routinedue.test.ts",
+  "settingsmirror.test.ts",
   "shelllang.test.ts",
   "sidecar-log.test.ts",
   "thinking.test.ts",

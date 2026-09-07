@@ -142,6 +142,20 @@ to open sites BEFORE the user asks, and installing the Playwright browser
 afterwards is picked up without a restart. No phrase ever carries a path,
 port, address, environment variable or the raw error tail.
 
+### `/__ocr/settings` — machine-readiness mirror (P2-288)
+
+`GET /__ocr/settings` carries the document-conversion and site-navigation
+verdicts additively — `docConvertState`, `docConvertMessage`, `browseState`,
+`browseMessage` — the same names and values `GET /api/health` publishes, so
+the Settings **Machine state** panel renders both lines from the channel it
+already reads (no new route, no new request, no new poll, no periodic timer).
+Both capabilities are re-probed lazily at this point under the same
+`OCR_READINESS_MIN_MS` / `OCR_READINESS_DISABLE` policy as the version
+verdict; a capability that was never measured stays silent instead of
+announcing readiness, and the relay and agent lines remain the registered
+continuations that do not ride this channel yet. No existing field of the
+response is renamed, removed or repositioned.
+
 ### Pairing state (P2-007)
 
 Two read-only routes serve the desktop shell's first-run QR overlay; they are
