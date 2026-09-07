@@ -1638,7 +1638,10 @@ the CJS bundle has no `import.meta`; dev checkouts run the TypeScript source
 via the workspace `tsx` install, and `OCR_DAEMON_ENTRY` overrides both) — waits
 for `GET 127.0.0.1:8792/api/health`
 to answer **with an authenticated 200** before showing the UI, and terminates
-the child on quit. The health probe challenges the responder unauthenticated first and only
+the child on quit — gracefully on both platforms since P2-315: the stop
+request rides the spawn IPC channel (a local pipe, no port) into the same
+drain SIGTERM runs, with the fixed signal walk kept only as the fallback when
+that channel is not connected. The health probe challenges the responder unauthenticated first and only
 sends the bearer token to something reproducing the daemon's 401 signature, so a
 generic 200-anywhere process squatting on the port is never trusted nor fed the
 token. A daemon already on the port (launchd/CLI install) is reused only when

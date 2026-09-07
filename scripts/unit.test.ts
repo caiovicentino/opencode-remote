@@ -611,7 +611,7 @@ import {
 import { browseTarget, clickPoint, validSession, viewportFromParams } from "../apps/daemon/src/browse";
 import { browseReadiness } from "../apps/daemon/src/browsecap";
 
-import { createShutdown, DRAIN_MS, stopAccepting } from "../apps/daemon/src/shutdown";
+import { createShutdown, DRAIN_MS, isSidecarStopMessage, stopAccepting } from "../apps/daemon/src/shutdown";
 
 import {
   createShutdown as relayCreateShutdown,
@@ -741,6 +741,11 @@ import type { PilotConfig } from "../apps/pilot/src/state";
 import { overlayVisible, phonePaired, localPairing } from "../apps/desktop/src/pairing";
 
 import { classifySidecarExit } from "../apps/desktop/src/sidecarexit";
+import {
+  planSidecarStop,
+  SIDECAR_STOP_GRACE_MS,
+  type SidecarStopStep,
+} from "../apps/desktop/src/sidecarstop";
 
 import {
   createSidecarRedactor,
@@ -11640,6 +11645,119 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       return !s.includes("<") && !s.includes(">") && !s.includes("{") && !s.includes("}") && !s.includes("/") && !/\p{Extended_Pictographic}/u.test(s);
     }),
   ));
+}
+
+// --- P2-315: sidecar stop planner (pure, no electron/node:fs) -----------------
+
+{
+  const json = (v: unknown) => JSON.stringify(v);
+  const graceful: SidecarStopStep[] = [
+    { kind: "message", payload: { type: "shutdown" } },
+    { kind: "wait", ms: SIDECAR_STOP_GRACE_MS },
+    { kind: "signal", signal: "SIGKILL" },
+  ];
+  const signalWalk: SidecarStopStep[] = [
+    { kind: "signal", signal: "SIGTERM" },
+    { kind: "wait", ms: SIDECAR_STOP_GRACE_MS },
+    { kind: "signal", signal: "SIGKILL" },
+  ];
+  // The full truth table: platform × channel × child alive/dead.
+  for (const platform of ["win32", "darwin", "linux"]) {
+    check(
+      `P2-315: ${platform} + channel + alive → the graceful IPC walk`,
+      json(planSidecarStop({ platform, channelConnected: true, childAlive: true })) === json(graceful),
+    );
+    check(
+      `P2-315: ${platform} + no channel + alive → the fixed signal walk`,
+      json(planSidecarStop({ platform, channelConnected: false, childAlive: true })) === json(signalWalk),
+    );
+    check(
+      `P2-315: ${platform} + dead child → no step at all (either channel state)`,
+      planSidecarStop({ platform, channelConnected: true, childAlive: false }).length === 0 &&
+        planSidecarStop({ platform, channelConnected: false, childAlive: false }).length === 0,
+    );
+  }
+  // The point of P2-315: the graceful path is IDENTICAL on every platform, so
+  // the macOS pipeline exercises the exact code Windows uses.
+  check(
+    "P2-315: the graceful plan is byte-identical across win32/darwin/linux",
+    json(planSidecarStop({ platform: "win32", channelConnected: true, childAlive: true })) ===
+      json(planSidecarStop({ platform: "darwin", channelConnected: true, childAlive: true })) &&
+      json(planSidecarStop({ platform: "darwin", channelConnected: true, childAlive: true })) ===
+        json(planSidecarStop({ platform: "linux", channelConnected: true, childAlive: true })),
+  );
+  check("P2-315: the grace is the untouched 3s backstop", SIDECAR_STOP_GRACE_MS === 3000);
+  // Degenerate and non-textual inputs: never throw, always a closed plan.
+  check("P2-315: unreadable input yields no steps", (() => {
+    for (const bad of [null, undefined, 42, "stop", [], new Date(), () => 1]) {
+      if (planSidecarStop(bad).length !== 0) return false;
+    }
+    return true;
+  })());
+  check(
+    "P2-315: missing/shapeless childAlive yields no steps",
+    planSidecarStop({}).length === 0 &&
+      planSidecarStop({ channelConnected: true }).length === 0 &&
+      planSidecarStop({ childAlive: 1 }).length === 0 &&
+      planSidecarStop({ childAlive: "yes" }).length === 0,
+  );
+  check(
+    "P2-315: garbage channel state degrades to the signal walk, never to a no-op",
+    json(planSidecarStop({ childAlive: true })) === json(signalWalk) &&
+      json(planSidecarStop({ childAlive: true, channelConnected: "yes" })) === json(signalWalk),
+  );
+  check(
+    "P2-315: a non-textual platform still gets the graceful plan (the plan never branches on it)",
+    json(planSidecarStop({ platform: 7, channelConnected: true, childAlive: true })) === json(graceful),
+  );
+  // Determinism: identical result for the same input in two calls, fresh
+  // objects each time so no call can mutate another's plan.
+  const detInput = { platform: "win32", channelConnected: true, childAlive: true };
+  const planA = planSidecarStop(detInput);
+  const planB = planSidecarStop(detInput);
+  check(
+    "P2-315: determinism — the same input yields the exact same plan twice (fresh objects)",
+    json(planA) === json(planB) && planA !== planB && planA[0] !== planB[0],
+  );
+  // Purity: read the REAL source — no electron, no node:fs, no import at all.
+  const stopSrc = readFileSync(
+    join(import.meta.dirname, "..", "apps", "desktop", "src", "sidecarstop.ts"),
+    "utf8",
+  );
+  check(
+    "P2-315: purity — sidecarstop.ts imports no electron and no node:fs (no imports at all)",
+    !/(^|\n)\s*import[^\n]*(electron|node:fs|node:child_process|node:net|fetch)/.test(stopSrc) &&
+      !/^import\b/m.test(stopSrc),
+  );
+  // Wiring: the shell spawns with the IPC channel and executes the planner's
+  // sequence.
+  const daemonSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "daemon.ts"), "utf8");
+  check(
+    "P2-315: wiring — the sidecar spawn opens the IPC message channel (stdio 4th entry)",
+    daemonSrc.includes('stdio: ["ignore", "pipe", "pipe", "ipc"]'),
+  );
+  check(
+    "P2-315: wiring — the stop executes the planner's sequence",
+    daemonSrc.includes("planSidecarStop(") && daemonSrc.includes("child.send(step.payload"),
+  );
+  // Daemon side: exactly the shell's message is accepted, everything else is
+  // ignored silently.
+  check("P2-315: daemon accepts exactly the shell's shutdown message", isSidecarStopMessage({ type: "shutdown" }));
+  check("P2-315: daemon ignores unknown messages", (() => {
+    for (const bad of [null, undefined, 0, "shutdown", ["shutdown"], { type: "stop" }, { type: "SHUTDOWN" }, { type: 1 }, {}, { other: true }]) {
+      if (isSidecarStopMessage(bad)) return false;
+    }
+    return true;
+  })());
+  check(
+    "P2-315: stop-message verdict is deterministic",
+    isSidecarStopMessage({ type: "shutdown" }) === isSidecarStopMessage({ type: "shutdown" }),
+  );
+  const daemonIndexSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  check(
+    "P2-315: wiring — the daemon routes the IPC message through the SIGTERM drain",
+    daemonIndexSrc.includes('process.on("message"') && daemonIndexSrc.includes("isSidecarStopMessage"),
+  );
 }
 
 

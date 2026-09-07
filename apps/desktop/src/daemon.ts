@@ -10,6 +10,7 @@ import { createServer } from "node:net";
 import { log, logError } from "./desktop-log";
 import { teeSidecarChunk } from "./sidecar-log";
 import { classifySidecarExit, type SidecarExitVerdict } from "./sidecarexit";
+import { planSidecarStop, type SidecarStopStep } from "./sidecarstop";
 import type { RelayLinkFacts } from "./relaylink";
 import { candidatePorts, pickDaemonPort, type DaemonPortReason } from "./daemonport";
 import { DEFAULT_RELAY_URL } from "./relaysetting";
@@ -584,7 +585,11 @@ function spawnChild(entry: DaemonEntry): void {
     // stderr switched from "inherit" to "pipe" (P3-018) so both streams can be
     // teed into userData/logs/daemon-sidecar.log — inherit is invisible in the
     // packaged app, where the stage-5 user has no terminal at all.
-    stdio: ["ignore", "pipe", "pipe"],
+    // P2-315: the fourth channel is the child's IPC message pipe (a local
+    // socketpair on macOS, a named pipe on Windows) — the graceful-stop
+    // request travels over it. No port is bound and no network listener is
+    // added; the constitution's port rule is untouched.
+    stdio: ["ignore", "pipe", "pipe", "ipc"],
   });
   sidecar.child = child;
   sidecar.spawned = true;
@@ -810,7 +815,26 @@ async function reconnectProbe(): Promise<void> {
   scheduleReconnectProbe(reconnectDelayMs(reconnectActive ? reconnectAttempts : 1, RESPAWN_DELAYS_MS));
 }
 
-/** Terminate the child we spawned (SIGTERM → 3s grace → SIGKILL). Idempotent. */
+/**
+ * P2-315: exit status of the last intentionally stopped sidecar child (null
+ * before the first stop). Diagnostic + eval-battery surface: the graceful IPC
+ * stop is proven by the real daemon exiting with code 0 after the shell's
+ * message (never a signal kill).
+ */
+let lastStop: { code: number | null; signal: NodeJS.Signals | null } | null = null;
+
+export function lastStopExit(): { code: number | null; signal: NodeJS.Signals | null } | null {
+  return lastStop ? { ...lastStop } : null;
+}
+
+/**
+ * Terminate the child we spawned. P2-315: the sequence is decided by the pure
+ * planner in sidecarstop.ts — a graceful shutdown request over the IPC message
+ * channel when it is connected (identical on both platforms; the daemon runs
+ * the same drain as SIGTERM), falling back to the fixed signal walk when it
+ * is not — keeping the 3s grace, the idempotency, the pending-respawn
+ * cancellation and the resolve-only-on-exit contract. Idempotent.
+ */
 export async function stopDaemonSidecar(): Promise<void> {
   // A pending respawn must never fire after (or during) an intentional stop,
   // and neither may an adopted-daemon reconnect probe (P1-053).
@@ -831,15 +855,53 @@ export async function stopDaemonSidecar(): Promise<void> {
     return;
   }
   sidecar.stopping = true;
+  const plan = planSidecarStop({
+    platform: process.platform,
+    channelConnected: child.connected === true && typeof child.send === "function",
+    childAlive: true,
+  });
   await new Promise<void>((resolve) => {
     // Resolve only on "exit" so callers observe a fully dead, reaped child;
-    // the timer merely escalates SIGTERM → SIGKILL after the grace period.
-    const timer = setTimeout(() => child.kill("SIGKILL"), 3000);
-    child.once("exit", () => {
-      clearTimeout(timer);
+    // the timer merely escalates to the plan's force signal after the grace.
+    let timer: NodeJS.Timeout | null = null;
+    child.once("exit", (code, signal) => {
+      if (timer) clearTimeout(timer);
+      lastStop = { code, signal };
       resolve();
     });
-    child.kill("SIGTERM");
+    const runSignal = (signal: "SIGTERM" | "SIGKILL"): void => {
+      try {
+        child.kill(signal);
+      } catch {
+        /* the child died while the stop was in flight — exit resolves next */
+      }
+    };
+    // Execute the plan in order: steps up to and including the wait run
+    // inline (graceful request / fallback signal / grace arming); everything
+    // after the wait is escalation the timer delivers only if the child is
+    // still alive when the grace expires.
+    const waitAt = plan.findIndex((step) => step.kind === "wait");
+    const escalation: SidecarStopStep[] = waitAt === -1 ? [] : plan.slice(waitAt + 1);
+    for (const step of waitAt === -1 ? plan : plan.slice(0, waitAt + 1)) {
+      if (step.kind === "message") {
+        // A send failure (channel died mid-stop) is not fatal: the plan's
+        // force signal after the grace still applies. The callback keeps a
+        // racing send from emitting a stray child "error".
+        try {
+          child.send(step.payload, () => {});
+        } catch {
+          /* channel gone — fall through to the force path */
+        }
+      } else if (step.kind === "signal") {
+        runSignal(step.signal);
+      } else if (step.kind === "wait" && timer === null) {
+        timer = setTimeout(() => {
+          for (const step of escalation) {
+            if (step.kind === "signal") runSignal(step.signal);
+          }
+        }, step.ms);
+      }
+    }
   });
   sidecar.child = null;
   sidecar.stopping = false;

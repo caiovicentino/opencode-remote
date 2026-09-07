@@ -82,7 +82,7 @@ import { diskVerdict, type DiskVerdict } from "./diskguard.js";
 import { docConvertProbe, docConvertVerdict, type DocConvertVerdict } from "./doccap.js";
 import { WindowCache, contextPct, sessionTokenTotal } from "./contextgauge.js";
 import { ArtifactWatcher } from "./artifactwatch.js";
-import { createShutdown, stopAccepting } from "./shutdown.js";
+import { createShutdown, isSidecarStopMessage, stopAccepting } from "./shutdown.js";
 import { localUpgradeAllowed } from "./localws.js";
 import { createRelayRetry } from "./relayretry.js";
 import { classifyRelayClose, effectiveRetryDelayMs, type RelayCloseKind } from "./relayclose.js";
@@ -3079,6 +3079,15 @@ const { shutdown, isShuttingDown } = createShutdown({
 });
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
 process.on("SIGINT", () => void shutdown("SIGINT"));
+// P2-315: the desktop shell's stop request arrives over the spawn IPC channel
+// (a local socketpair/named pipe — no port, no network listener). Windows has
+// no real signals, so this is what makes the shell's quit graceful there:
+// accepted messages run the SAME drain path as SIGTERM; unknown messages are
+// ignored without noise (verdict: pure isSidecarStopMessage in shutdown.ts).
+process.on("message", (raw: unknown) => {
+  if (!isSidecarStopMessage(raw)) return;
+  void shutdown("SIGTERM");
+});
 
 function connectRelay() {
   // P2-139: an invalid RELAY_URL never opens a socket. The reason is logged
