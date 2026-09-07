@@ -48,7 +48,8 @@ import {
 } from "./identitybackup.js";
 import { appendAudit, readAuditTail } from "./auditlog.js";
 import { capMessagePage, parsePageLimit, shouldPaginateMessages, type HistoryRowLike } from "./paginate.js";
-import { handleBrowse } from "./browse.js";
+import { handleBrowse, probeBrowse } from "./browse.js";
+import { browseReadiness, type BrowseVerdict } from "./browsecap.js";
 import {
   avgDoneDuration,
   buildCards,
@@ -499,6 +500,27 @@ function probeDocConvert(): void {
   } catch (err) {
     docConvert = docConvertVerdict(process.platform, { soffice: false, textutil: false, cupsfilter: false });
     log("warn", "doc conversion probe failed — advertising unavailable", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+// P2-284: browse readiness, judged by the pure browsecap.ts verdict from the
+// normalized probe of browse.ts. Probed EXACTLY ONCE at boot on the same
+// readiness hook — never per request, never periodic — and announced in
+// /api/health BEFORE the user asks the agent to open a site, instead of the
+// old raw English error with an install command mid-conversation.
+let browseCap: BrowseVerdict = browseReadiness(null);
+
+/** One async probe (resolves the playwright library, checks the executable on
+ * disk); never throws — a probe that cannot run degrades to the unknown
+ * verdict with a single log line instead of an exception. */
+async function probeBrowseCap(): Promise<void> {
+  try {
+    browseCap = browseReadiness(await probeBrowse(existsSync));
+  } catch (err) {
+    browseCap = browseReadiness(null);
+    log("warn", "browse probe failed — advertising unknown", {
       error: err instanceof Error ? err.message : String(err),
     });
   }
@@ -1856,10 +1878,11 @@ const readinessKnobs = parseReadinessKnobs(process.env);
 
 /** Per-capability probe bookkeeping: when the cached verdict was established
  * and whether a probe is currently running (never duplicated). */
-const readinessState: Record<"transcription" | "doc-convert" | "opencode-version", { probedAt: number; inFlight: boolean }> = {
+const readinessState: Record<"transcription" | "doc-convert" | "opencode-version" | "browse", { probedAt: number; inFlight: boolean }> = {
   transcription: { probedAt: 0, inFlight: false },
   "doc-convert": { probedAt: 0, inFlight: false },
   "opencode-version": { probedAt: 0, inFlight: false },
+  browse: { probedAt: 0, inFlight: false },
 };
 
 /** ISO instant of the last probe of a capability, for the health payload. */
@@ -1923,6 +1946,27 @@ function maybeReprobeOpencodeVersion(): void {
   st.probedAt = Date.now();
   refreshOpencodeBinary(true);
   if (binaryPick.path !== null) probeOpencodeVersion(binaryPick.path);
+}
+
+/** Lazy browse re-probe: reuses probeBrowseCap() as-is. "ready" is the only
+ * verdict that proves the capability works; "disabled" can never flip inside
+ * a running process (the kill switch is read from the environment the daemon
+ * booted with), so both count as ready for the re-probe plan — installing the
+ * playwright browser flips "no-browser" to "ready" without a restart. */
+async function maybeReprobeBrowse(): Promise<void> {
+  const st = readinessState.browse;
+  const ready = browseCap.state === "ready" || browseCap.state === "disabled";
+  const plan = readinessRefreshPlan(ready, st.probedAt, Date.now(), st.inFlight, readinessKnobs);
+  if (readinessKnobs.disabled || plan.action !== "redo") return;
+  st.inFlight = true;
+  try {
+    await probeBrowseCap();
+  } finally {
+    st.inFlight = false;
+    st.probedAt = Date.now();
+    // one line per re-done probe: capability name + resulting state only
+    log("info", "readiness re-probe", { capability: "browse", state: browseCap.state });
+  }
 }
 
 /** Record a finished probe: refreshes the /api/health detail and the legacy
@@ -3238,6 +3282,8 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       // answers immediately, never delayed).
       maybeReprobeDocConvert();
       maybeReprobeOpencodeVersion();
+      // P2-284: the browse verdict is answered here too — same lazy policy.
+      await maybeReprobeBrowse();
       send(200, {
         healthy: true,
         version: VERSION,
@@ -3301,6 +3347,13 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
         // (ISO instant, null before the first probe). Existing fields keep
         // their exact shape for the consumers P2-232 introduced.
         docConvertCheckedAt: readinessCheckedAt(readinessState["doc-convert"].probedAt),
+        // P2-284: additive browse-readiness verdict — probed once at boot,
+        // lazily re-probed at this route. No path, port, address, env var or
+        // raw error tail ever reaches the payload, and no existing field is
+        // removed, renamed or repositioned.
+        browseState: browseCap.state,
+        browseMessage: browseCap.message,
+        browseCheckedAt: readinessCheckedAt(readinessState.browse.probedAt),
       });
       return true;
     }
@@ -3851,10 +3904,16 @@ async function main() {
   // memory, before any server answers; boot never blocks on it.
   probeDocConvert();
 
+  // P2-284: browse capability joins the same hook — one probe before any
+  // server answers. Async (resolves the playwright library) but cheap, and it
+  // never throws; it never installs, downloads or launches a browser.
+  await probeBrowseCap();
+
   // P2-250: stamp the boot instants of the cached verdicts — the lazy
   // re-probes count their interval from here. No additional boot probe.
   readinessState.transcription.probedAt = Date.now();
   readinessState["doc-convert"].probedAt = Date.now();
+  readinessState.browse.probedAt = Date.now();
 
   log("info", "daemon starting (protocol v2)", {
     machine: machineName,
