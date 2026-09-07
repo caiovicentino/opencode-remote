@@ -2682,6 +2682,76 @@ button.desk-new:hover:not(:disabled) {
   justify-content: center;
 }
 
+/* ── P2-281: in-conversation search — floating find bar over the transcript.
+   Shares the chat header's ghost-button chrome and the overlay shadow token;
+   the entrance rides the 150ms interaction beat (dies under the global
+   prefers-reduced-motion block). */
+.chat-search {
+  position: absolute;
+  top: 10px;
+  left: 0;
+  right: 0;
+  margin-inline: auto;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  width: min(420px, calc(100% - 24px));
+  padding: 3px 6px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-overlay);
+  color: var(--muted);
+  animation: msg-in var(--motion-fast) var(--ease-out);
+}
+.chat-search > svg {
+  flex-shrink: 0;
+  margin-left: 5px;
+}
+.chat-search input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-size: var(--font-size-sm);
+  padding: 5px 6px;
+}
+.chat-search input::placeholder {
+  color: var(--muted);
+}
+.chat-search-count {
+  font-size: var(--font-size-xs);
+  color: var(--muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  padding-right: 4px;
+}
+/* matches inside the bubbles: quiet accent wash for the neighbours, solid
+   accent for the occurrence the reader is on */
+.msg mark.search-mark {
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
+  color: inherit;
+  border-radius: 3px;
+  padding: 0 1px;
+  margin: 0 -1px;
+}
+.msg mark.search-mark-current {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+/* bubble-level cues for matches that can't be inline-marked (markdown,
+   code fences): a quiet accent rail, stronger for the active one */
+.msg.search-hit {
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.msg.search-current {
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: 2px;
+}
+
 /* P2-049: connection dropped — slim in-flow banner with the attempt counter
    (replaces the 9px header dot in the chat) */
 .conn-banner {

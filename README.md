@@ -56,6 +56,15 @@ private. That is the product: **local power, remote control, zero trust**.
   you Approve/Deny, so you always know what you're green-lighting
 - **Interactive questions** — the model asks, you tap an option from the beach
 - **Rewind** — go back to any point of the conversation *and* the code, one tap
+- **In-conversation search (P2-281)** — find any message inside the open chat,
+  not just the session titles: `Cmd+F` / `Ctrl+F` or the header magnifier opens
+  a floating find bar with a position/total counter, `Enter`/`↑`/`↓` walk the
+  matches and `Esc` closes. Matching ignores case and accents (the term is
+  never read as regex), the active occurrence is scrolled to the center of the
+  transcript and highlighted (inline marks on plain prose, an accent rail on
+  markdown-heavy bubbles), and a term with no hits gets a calm "no matches"
+  state. Search covers the messages already loaded in the view — page in older
+  history to search deeper
 - **Context gauge** — when the model's context window is known, the chat
   header shows how full it is for that session (token totals from opencode,
   yellow from 70%, red from 85%), refreshed whenever the agent goes idle
