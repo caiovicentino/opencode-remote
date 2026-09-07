@@ -313,6 +313,16 @@ export function IconCheck(p: IconProps) {
   );
 }
 
+/** P2-282: per-bubble copy-message action (two stacked sheets, lucide-style). */
+export function IconCopy(p: IconProps) {
+  return (
+    <Icon {...p}>
+      <rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
+      <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+    </Icon>
+  );
+}
+
 /** P2-107: tool-call still running (replaces the "⏳" glyph). */
 export function IconClock(p: IconProps) {
   return (

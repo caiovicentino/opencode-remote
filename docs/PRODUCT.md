@@ -25,6 +25,9 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
 - Composer: attach (+), mic, seletor de modelo/esforço inline, textarea auto-grow
 - Colar no composer anexa print/imagem/arquivo copiado (P2-277, até 4 itens por
   colagem de 25 MB cada); colar texto continua sendo texto
+- Copiar mensagem direto da bolha (P2-282): alvo de 44px sempre visível no
+  telefone, hover/foco no ponteiro, confirmação calma no próprio botão — o
+  texto copiado é a resposta, sem rastro de raciocínio nem de tools
 - Home viva no shell desktop (P2-123): greeting serifado com glifo, composer
   central (~640px) com toggle Chat/Cowork + seletor de modelo + mic, e 3 ideias
   clicáveis que pré-preenchem a primeira mensagem — o estado vazio deixa de ser

@@ -16,6 +16,8 @@ import { useModelStatus } from "../lib/modelstatus";
 import { useModelSelector } from "../lib/models";
 import ModelMenuItems from "./ModelMenuItems";
 import { saveFile } from "../lib/files";
+import { copyText } from "../lib/clipboard";
+import { copyPlan, type CopyPart } from "../lib/copymsg";
 import { useT } from "../lib/i18n";
 import { humanizeError } from "../lib/errors";
 import { getVoiceSettings } from "./SettingsView";
@@ -62,7 +64,7 @@ import {
   type ThinkingState,
 } from "../lib/thinking";
 import { initialUnreadState, reduceUnread, sendUnreadToShell } from "../lib/unread";
-import { ArtifactIcon, IconArrowLeft, IconArrowUp, IconChat, IconCheck, IconChevronDown, IconChevronUp, IconClock, IconDownload, IconLaptop, IconMic, IconPlus, IconRefresh, IconSearch, IconSpeaker, IconWrench, IconX } from "./icons";
+import { ArtifactIcon, IconArrowLeft, IconArrowUp, IconChat, IconCheck, IconCopy, IconChevronDown, IconChevronUp, IconClock, IconDownload, IconLaptop, IconMic, IconPlus, IconRefresh, IconSearch, IconSpeaker, IconWrench, IconX } from "./icons";
 
 interface Props {
   sessionId: string;
@@ -178,6 +180,17 @@ function attachmentLabel(items: PendingImage[]): string {
     labels.push(`[file ${i.filename}]`);
   }
   return labels.join(" ");
+}
+
+/** P2-282: a bubble's already-normalized copy parts — the stored reasoning
+ * (rendered as the collapsed thinking block) plus the answer text. lib/copymsg
+ * owns the decision: reasoning is stripped before any joining, so whoever
+ * copies gets the answer, never the machine's internal trail. */
+function copyPartsOf(b: Bubble): CopyPart[] {
+  const parts: CopyPart[] = [];
+  if (b.thinking?.text) parts.push({ type: "reasoning", text: b.thinking.text });
+  if (b.text) parts.push({ type: "text", text: b.text });
+  return parts;
 }
 
 /** P3-085: collapsible reasoning block ("Pensou por Xs", Claude Desktop
@@ -358,6 +371,10 @@ export default function ChatView({
   const [error, setError] = useState("");
   // text of the last failed send, so the error banner can offer one-tap retry
   const [retryText, setRetryText] = useState("");
+  // P2-282: per-bubble copy — a calm confirmation on the button itself for
+  // ~2s; the failure surfaces where every conversation error already appears.
+  const [copiedBubble, setCopiedBubble] = useState<number | null>(null);
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // transient errors: red text should not stick around forever
   useEffect(() => {
@@ -759,6 +776,21 @@ export default function ChatView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchOpen]);
 
+  // P2-282: the copy gesture itself — served by lib/copymsg's plan through
+  // the existing copyText (the exact clipboard path FileCard, SettingsView
+  // and PairingOverlay already use), never a new clipboard path.
+  function copyBubble(bubbleIdx: number, text: string) {
+    void copyText(text).then((ok) => {
+      if (ok) {
+        setCopiedBubble(bubbleIdx);
+        if (copyTimer.current) clearTimeout(copyTimer.current);
+        copyTimer.current = setTimeout(() => setCopiedBubble(null), 2000);
+      } else {
+        setError(t("copyMsgFailed"));
+      }
+    });
+  }
+
   function pickAgent(value: string) {
     setAgent(value);
     localStorage.setItem("ocr_agent", value);
@@ -831,7 +863,17 @@ export default function ChatView({
     setSearchOpen(false);
     setSearchTerm("");
     setSearchIdx(0);
+    // P2-282: so is the copy confirmation
+    setCopiedBubble(null);
+    if (copyTimer.current) clearTimeout(copyTimer.current);
   }, [sessionId]);
+
+  // P2-282: no timer may fire a state write after unmount
+  useEffect(() => {
+    return () => {
+      if (copyTimer.current) clearTimeout(copyTimer.current);
+    };
+  }, []);
 
   // P2-090: auto-open the split-pane when the turn goes idle right after the
   // agent wrote an artifact. The pure pairing (write → next idle) lives in
@@ -2377,6 +2419,11 @@ export default function ChatView({
               : currentHit && bubbleHits.includes(currentHit)
                 ? " search-current"
                 : " search-hit";
+            // P2-282: lib/copymsg owns the verdict — an unavailable plan
+            // renders no copy button at all (a button that copies nothing is
+            // worse than no button).
+            const plan = copyPlan(copyPartsOf(b));
+            const copied = copiedBubble === bubbleIdx;
             return (
             <div
               key={i}
@@ -2412,6 +2459,19 @@ export default function ChatView({
                 <HighlightedText text={b.text} hits={bubbleHits} active={currentHit} />
               ) : (
                 renderBubbleText(b.text, request, setError)
+              )}
+              {plan.verdict === "copy" && (
+                <div className="msg-copy-row">
+                  <button
+                    className="msg-copy"
+                    data-copied={copied || undefined}
+                    aria-label={copied ? t("copied") : t("copyMessage")}
+                    title={t("copyMessage")}
+                    onClick={() => copyBubble(bubbleIdx, plan.text)}
+                  >
+                    {copied ? <IconCheck size={15} /> : <IconCopy size={15} />}
+                  </button>
+                </div>
               )}
               {b.role === "assistant" &&
                 artifactMentions(b.text, artifacts).map((a) => (

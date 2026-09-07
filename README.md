@@ -65,6 +65,15 @@ private. That is the product: **local power, remote control, zero trust**.
   markdown-heavy bubbles), and a term with no hits gets a calm "no matches"
   state. Search covers the messages already loaded in the view — page in older
   history to search deeper
+- **Copy message (P2-282)** — every chat bubble gets a copy action, so the
+  phone (no right-click, no native context menu) can lift an answer — code
+  included — out of the conversation. The action sits under each bubble: a
+  44×44 touch target that is always visible on touch devices, revealed by
+  hover or keyboard focus on pointer devices, with a calm two-second "copied"
+  confirmation on the button itself. The copied text is the answer only —
+  the model's reasoning and tool trails are stripped, code blocks keep their
+  fences and language, and a bubble with nothing copyable offers no button at
+  all. Copy failures surface in the same place as conversation errors
 - **Context gauge** — when the model's context window is known, the chat
   header shows how full it is for that session (token totals from opencode,
   yellow from 70%, red from 85%), refreshed whenever the agent goes idle
