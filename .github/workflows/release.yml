@@ -103,6 +103,18 @@ jobs:
       - name: Smoke-check the packaged bundle
         run: npm run dist:smoke --workspace @ocr/desktop
 
+      # P2-325: the distributables get the same fail-closed size gate the
+      # build output has had since P2-162 — this is the job that really builds
+      # the DMG and the Squirrel zips, so the gate runs with --expect and a
+      # missing type or an installer above its documented ceiling
+      # (scripts/artifactbudget.ts) aborts the release BEFORE the upload
+      # below. Fail closed on a missing or empty packaging dir. shell: bash
+      # (P2-126 lesson) and its own timeout (P2-245 lesson).
+      - name: Check artifact sizes
+        timeout-minutes: 5
+        shell: bash
+        run: npm run check:artifact-size -- --expect dmg,zip
+
       # P2-204: dist-smoke only INSPECTS the package; a regression that only
       # shows up at runtime — main throwing at boot, an asar missing an asset
       # the renderer asks for, an entitlement killing the process — used to
@@ -307,6 +319,18 @@ jobs:
       - name: Smoke-check the packaged bundle
         shell: bash
         run: npm run dist:smoke --workspace @ocr/desktop
+
+      # P2-325: same artifact-size gate as the mac job — this is the job that
+      # really builds the NSIS setup exe, so the gate runs with --expect and
+      # an installer above its documented ceiling
+      # (scripts/artifactbudget.ts) aborts the release BEFORE the upload
+      # below; the unpacked win-unpacked payload is skipped by the collector,
+      # so the app's own .exe binary is never mistaken for the installer.
+      # shell: bash (P2-126 lesson) and its own timeout (P2-245 lesson).
+      - name: Check artifact sizes
+        timeout-minutes: 5
+        shell: bash
+        run: npm run check:artifact-size -- --expect exe
 
       # P2-183: the preflight deciding mode=authenticode proves INTENT to sign,
       # not that the packaged exe actually carries a valid signature — an

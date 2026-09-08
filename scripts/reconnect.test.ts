@@ -119,9 +119,34 @@ async function handshake() {
       // when the daemon dials while the handshake is in flight
       if (frame.from === state.room && frame.payload === "") return;
       if (frame.from === "testclient") return;
-      clearTimeout(t);
-      ws.off("message", onMsg);
-      resolve(frame.payload!);
+      // a sealed op-response from the previous session can also land here
+      // after a daemon restart (the relay replays queued frames) — it is not
+      // the confirm; keep waiting instead of resolving with binary garbage
+      let parsed: { confirm?: unknown };
+      try {
+        parsed = JSON.parse(atob(frame.payload!));
+      } catch {
+        return;
+      }
+    if (typeof parsed.confirm !== "string") return;
+    // the daemon's post-restart announce frames are also base64 JSON with a
+    // confirm-shaped field — only the real confirm opens with the CURRENT
+    // session key, so verify it here instead of failing one layer down
+    void (async () => {
+      try {
+        const check = await openSealed<{ ok: boolean }>(
+          parsed.confirm as string,
+          key,
+          new TextEncoder().encode("ocr-confirm"),
+        );
+        if (!check?.ok) return; // stale or foreign confirm — keep waiting
+        clearTimeout(t);
+        ws.off("message", onMsg);
+        resolve(frame.payload!);
+      } catch {
+        // unopenable frame — keep waiting
+      }
+    })();
     };
     ws.on("message", onMsg);
   });
@@ -151,6 +176,9 @@ function request(method: string, path: string, body?: unknown): Promise<OpRespon
       }
       if (payload?.type === "reconnect") {
         ws.off("message", onMsg);
+        // the retried request owns the deadline now — the outer 8s window
+        // must not fire mid-handshake on a slow runner
+        clearTimeout(t);
         await handshake();
         return resolve(request(method, path, body));
       }
@@ -171,6 +199,24 @@ function request(method: string, path: string, body?: unknown): Promise<OpRespon
       (payload) => ws.send(JSON.stringify({ room: state.room, from: "testclient", seq, payload })),
     );
   });
+}
+
+// the relay is a blind router: an op addressed to a room the restarted daemon
+// has not rejoined yet is dropped silently — every post-restart op gets the
+// same bounded retry, not only the first one (the upload steps died on this
+// race while the transcribe step's dedicated retry loop masked it)
+async function withRetry(label: string, op: () => Promise<OpResponse>): Promise<OpResponse> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await op();
+    } catch (e) {
+      if ((e as Error).message !== "request timeout") throw e;
+      lastErr = e;
+      console.error(`${label}: retry ${attempt + 1}/2 (frame dropped while the daemon rejoins)`);
+    }
+  }
+  throw lastErr;
 }
 
 // relay may still be booting (tsx cold start): retry until it accepts
@@ -232,68 +278,53 @@ await new Promise((r) => setTimeout(r, 1000));
 daemon = startDaemon();
 await daemonAnnounce;
 
-res = await (async () => {
-  // P3-337 gate round 3: under heavy machine load the restarted daemon's room
-  // re-join can lag its socket opening, and the relay — a blind router — drops
-  // an op addressed to a room the daemon has not rejoined yet. Retry the op a
-  // bounded number of times (fresh frame id per attempt) instead of failing
-  // the whole gate step on one dropped frame.
-  let lastErr: unknown;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      return await request("POST", "/__ocr/transcribe/chunk", { id: "t2", idx: 0, data: "" });
-    } catch (e) {
-      if ((e as Error).message !== "request timeout") throw e;
-      lastErr = e;
-      console.error(`op retry ${attempt + 1}/2: daemon had not rejoined the room yet`);
-    }
-  }
-  throw lastErr;
-})();
+res = await withRetry("post-restart op", () =>
+  request("POST", "/__ocr/transcribe/chunk", { id: "t2", idx: 0, data: "" }),
+);
 if (res.status !== 200) throw new Error(`post-restart op failed: ${res.status}`);
 console.log("op after daemon restart (auto re-handshake): OK");
 
 // --- image upload + data URL substitution ----------------------------------
-res = await request("POST", "/__ocr/upload/chunk", {
+res = await withRetry("upload chunk", () => request("POST", "/__ocr/upload/chunk", {
   id: "u1",
   idx: 0,
   data: Buffer.from("hello-image").toString("base64"),
-});
+}));
 if (res.status !== 200) throw new Error(`upload chunk failed: ${res.status}`);
-res = await request("POST", "/__ocr/upload/complete", {
+res = await withRetry("upload complete", () => request("POST", "/__ocr/upload/complete", {
   id: "u1",
   mime: "image/jpeg",
   filename: "t.jpg",
-});
+}));
 if (res.status !== 200) throw new Error(`upload complete failed: ${res.status}`);
 if ((res.body as { url?: string }).url !== "ocr-upload://u1") {
   throw new Error(`unexpected upload url: ${JSON.stringify(res.body)}`);
 }
-res = await request("POST", "/session/ses_x/message", {
+res = await withRetry("message substitution", () => request("POST", "/session/ses_x/message", {
   parts: [{ type: "file", url: "ocr-upload://u1", mime: "image/jpeg", filename: "t.jpg" }],
-});
+}));
 // daemon reaches opencode (down => 502) only if substitution succeeded
 if (res.status !== 502) throw new Error(`expected 502 (opencode down), got ${res.status}`);
 console.log("image attachment substitution: OK");
-res = await request("POST", "/session/ses_x/message", {
+res = await withRetry("message expired", () => request("POST", "/session/ses_x/message", {
   parts: [{ type: "file", url: "ocr-upload://gone", mime: "image/jpeg", filename: "t.jpg" }],
-});
+}));
 if (res.status !== 410) throw new Error(`expected 410 for expired upload, got ${res.status}`);
 console.log("expired attachment rejection: OK");
 
 // --- file-kind upload (e.g. video) persisted for agent tools ---------------
-res = await request("POST", "/__ocr/upload/chunk", {
+res = await withRetry("file chunk", () => request("POST", "/__ocr/upload/chunk", {
   id: "f1",
   idx: 0,
   data: Buffer.from("fake-video-bytes").toString("base64"),
-});
+}));
 if (res.status !== 200) throw new Error(`file chunk failed: ${res.status}`);
-res = await request("POST", "/__ocr/upload/complete", {
+res = await withRetry("file complete", () => request("POST", "/__ocr/upload/complete", {
   id: "f1",
   mime: "video/mp4",
   filename: "v.mp4",
   kind: "file",
-});
+}));
 if (res.status !== 200) throw new Error(`file complete failed: ${res.status}`);
 const filePath = (res.body as { path?: string }).path;
 if (!filePath || !existsSync(filePath)) throw new Error(`file not persisted: ${filePath}`);
