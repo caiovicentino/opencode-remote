@@ -222,6 +222,19 @@ identity servers, no accounts.
     timeout, one that is not a positive integer, one above the ceiling — or
     when a workflow file is missing, unreadable or unparseable (fail closed).
 
+21. **Distributable artifact sizes (P2-325).** The release.yml packaging
+    jobs run `npm run check:artifact-size` after packaging and before the
+    upload (`scripts/check-artifact-size.ts`, verdict in the pure
+    `scripts/artifactbudget.ts`): desktop-dmg demands `--expect dmg,zip` and
+    desktop-win `--expect exe`, so every DMG, Squirrel.Mac zip and NSIS
+    installer must exist and stay under the documented **180 MB** per-type
+    ceiling; a size that is missing, zero, negative or not a number fails
+    closed, as does a missing, unreadable or empty packaging output — raise
+    a ceiling only on purpose, bumping `ARTIFACT_BUDGETS` with the
+    justification in the commit message. The ci.yml packaging jobs (dir
+    targets only, no installers) run the same collector as a standing
+    fail-closed guard on the packaging output.
+
 ## Key rotation
 
 Delete `~/.opencode-remote/daemon.json` (or `manage.ts revoke-all`) and
