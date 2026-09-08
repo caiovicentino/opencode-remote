@@ -1503,7 +1503,9 @@ and **Pair a phone with this machine** (host entry). An invalid pairing code
 renders a styled error block with an inline helper showing the expected
 `opencode-remote://pair?…` format (announced to screen readers), and on the
 first-run QR splash "Pair later" is now a quiet text link — the QR is the only
-primary element on that screen.
+primary element on that screen. The brand header sits centered on the same
+axis as the first-run welcome wizard (P3-339), so the unpaired journey reads
+as one product.
 
 **Auto-preview (P1-072)**: when the agent brings up a local site (http.server,
 vite, a dev server…) and mentions `http://localhost:<port>` in its reply, the

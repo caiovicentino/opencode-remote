@@ -10666,6 +10666,38 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+// --- P3-339: one brand-header treatment across the unpaired journey ----------
+{
+  const css = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");
+  const ruleFor = (sel: string): string => {
+    const at = css.indexOf(sel);
+    return at === -1 ? "" : css.slice(at, css.indexOf("}", at));
+  };
+  const welcome = ruleFor(".welcome header");
+  const pairing = ruleFor(".pair-wrap .pair-screen header");
+  check(
+    "P3-339: welcome wizard centers the brand header",
+    welcome.includes("text-align: center"),
+  );
+  // .screen > header is a flex row (space-between), and flex items ignore
+  // text-align — the pairing rule must drop the flex (its only child is the
+  // h1) or the centering silently no-ops.
+  check(
+    "P3-339: pairing screen centers the brand header to match the wizard",
+    pairing.includes("display: block") && pairing.includes("text-align: center"),
+  );
+  // The scanner's toolbar header (back button + title, flex layout) must not
+  // be caught by the centered brand-header rule: the scanner replaces the
+  // pair-screen element in the same wrapper, so its root must not carry the
+  // .pair-screen class the rule is scoped to.
+  const scannerSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "QrScanner.tsx"), "utf8");
+  check(
+    "P3-339: the centered rule stays scoped to .pair-screen (scanner untouched)",
+    pairing.startsWith(".pair-wrap .pair-screen header") &&
+      !/className="screen qr-scanner[^"]*pair-screen/.test(scannerSrc),
+  );
+}
+
 
 // --- P2-028 per-task token costs from opencode.db -----------------------------
 {

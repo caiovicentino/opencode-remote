@@ -2426,6 +2426,17 @@ button.desk-new:hover:not(:disabled) {
   padding-left: 20px;
   padding-right: 20px;
 }
+/* P3-339: one brand-header treatment across the unpaired journey — the
+   welcome wizard centers its h1 (.welcome header, same axis as .home-head)
+   and this screen, the wizard's next step, matches. The generic .screen >
+   header rule above turns this header into a space-between flex row, and
+   flex items ignore text-align, so the flex is dropped (the only child is
+   the h1). Cards below stay left-aligned; the scanner's toolbar header is a
+   different element and is not touched (it carries the back button). */
+.pair-wrap .pair-screen header {
+  display: block;
+  text-align: center;
+}
 /* The two pairing directions (client ceremony / host entry) as titled cards. */
 .pair-section {
   display: flex;
